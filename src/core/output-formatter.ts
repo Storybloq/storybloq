@@ -453,6 +453,364 @@ export function formatHandoverContent(
   return content;
 }
 
+// --- Snapshot / Recap / Export ---
+
+import type { RecapResult, SnapshotDiff } from "./snapshot.js";
+
+export function formatSnapshotResult(
+  result: { filename: string; retained: number; pruned: number },
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(result), null, 2);
+  }
+  let line = `Snapshot saved: ${result.filename} (${result.retained} retained`;
+  if (result.pruned > 0) line += `, ${result.pruned} pruned`;
+  line += ")";
+  return line;
+}
+
+export function formatRecap(
+  recap: RecapResult,
+  state: ProjectState,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(recap), null, 2);
+  }
+
+  const lines: string[] = [];
+
+  if (!recap.snapshot) {
+    // No snapshot fallback — show status + note
+    lines.push(`# ${escapeMarkdownInline(state.config.project)} — Recap`);
+    lines.push("");
+    lines.push("No snapshot found. Run `claudestory snapshot` to enable session diffs.");
+    lines.push("");
+    lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`);
+    lines.push(`Issues: ${state.openIssueCount} open`);
+  } else {
+    lines.push(`# ${escapeMarkdownInline(state.config.project)} — Recap`);
+    lines.push("");
+    lines.push(`Since snapshot: ${recap.snapshot.createdAt}`);
+    if (recap.partial) {
+      lines.push("**Note:** Snapshot was taken from a project with integrity warnings. Diff may be incomplete.");
+    }
+
+    const changes = recap.changes!;
+    const hasChanges = hasAnyChanges(changes);
+
+    if (!hasChanges) {
+      lines.push("");
+      lines.push("No changes since last snapshot.");
+    } else {
+      // Phase transitions
+      if (changes.phases.statusChanged.length > 0) {
+        lines.push("");
+        lines.push("## Phase Transitions");
+        for (const p of changes.phases.statusChanged) {
+          lines.push(`- **${escapeMarkdownInline(p.name)}** (${p.id}): ${p.from} → ${p.to}`);
+        }
+      }
+
+      // Ticket changes
+      const ticketChanges = changes.tickets;
+      if (ticketChanges.added.length > 0 || ticketChanges.removed.length > 0 || ticketChanges.statusChanged.length > 0) {
+        lines.push("");
+        lines.push("## Tickets");
+        for (const t of ticketChanges.statusChanged) {
+          lines.push(`- ${t.id}: ${escapeMarkdownInline(t.title)} — ${t.from} → ${t.to}`);
+        }
+        for (const t of ticketChanges.added) {
+          lines.push(`- ${t.id}: ${escapeMarkdownInline(t.title)} — **new**`);
+        }
+        for (const t of ticketChanges.removed) {
+          lines.push(`- ${t.id}: ${escapeMarkdownInline(t.title)} — **removed**`);
+        }
+      }
+
+      // Issue changes
+      const issueChanges = changes.issues;
+      if (issueChanges.added.length > 0 || issueChanges.resolved.length > 0 || issueChanges.statusChanged.length > 0) {
+        lines.push("");
+        lines.push("## Issues");
+        for (const i of issueChanges.resolved) {
+          lines.push(`- ${i.id}: ${escapeMarkdownInline(i.title)} — **resolved**`);
+        }
+        for (const i of issueChanges.statusChanged) {
+          lines.push(`- ${i.id}: ${escapeMarkdownInline(i.title)} — ${i.from} → ${i.to}`);
+        }
+        for (const i of issueChanges.added) {
+          lines.push(`- ${i.id}: ${escapeMarkdownInline(i.title)} — **new**`);
+        }
+      }
+
+      // Blocker changes
+      if (changes.blockers.added.length > 0 || changes.blockers.cleared.length > 0) {
+        lines.push("");
+        lines.push("## Blockers");
+        for (const name of changes.blockers.cleared) {
+          lines.push(`- ${escapeMarkdownInline(name)} — **cleared**`);
+        }
+        for (const name of changes.blockers.added) {
+          lines.push(`- ${escapeMarkdownInline(name)} — **new**`);
+        }
+      }
+    }
+  }
+
+  // Suggested actions (always shown)
+  const actions = recap.suggestedActions;
+  lines.push("");
+  lines.push("## Suggested Actions");
+
+  if (actions.nextTicket) {
+    lines.push(`- **Next:** ${actions.nextTicket.id} — ${escapeMarkdownInline(actions.nextTicket.title)}${actions.nextTicket.phase ? ` (${actions.nextTicket.phase})` : ""}`);
+  }
+
+  if (actions.highSeverityIssues.length > 0) {
+    for (const i of actions.highSeverityIssues) {
+      lines.push(`- **${i.severity} issue:** ${i.id} — ${escapeMarkdownInline(i.title)}`);
+    }
+  }
+
+  if (actions.recentlyClearedBlockers.length > 0) {
+    lines.push(`- **Recently cleared:** ${actions.recentlyClearedBlockers.map(escapeMarkdownInline).join(", ")}`);
+  }
+
+  if (!actions.nextTicket && actions.highSeverityIssues.length === 0 && actions.recentlyClearedBlockers.length === 0) {
+    lines.push("- No urgent actions.");
+  }
+
+  return lines.join("\n");
+}
+
+export function formatExport(
+  state: ProjectState,
+  mode: "all" | "phase",
+  phaseId: string | null,
+  format: OutputFormat,
+): string {
+  if (mode === "phase" && phaseId) {
+    return formatPhaseExport(state, phaseId, format);
+  }
+  return formatFullExport(state, format);
+}
+
+function formatPhaseExport(
+  state: ProjectState,
+  phaseId: string,
+  format: OutputFormat,
+): string {
+  const phase = state.roadmap.phases.find((p) => p.id === phaseId);
+  if (!phase) {
+    // Should be caught upstream, but defensive
+    return formatError("not_found", `Phase "${phaseId}" not found`, format);
+  }
+
+  const phaseStatus = state.phaseStatus(phaseId);
+  const leaves = state.phaseTickets(phaseId);
+
+  // Collect umbrella ancestors
+  const umbrellaAncestors = new Map<string, Ticket>();
+  for (const leaf of leaves) {
+    if (leaf.parentTicket) {
+      const parent = state.ticketByID(leaf.parentTicket);
+      if (parent && !umbrellaAncestors.has(parent.id)) {
+        umbrellaAncestors.set(parent.id, parent);
+      }
+    }
+  }
+
+  // Cross-phase dependencies
+  const crossPhaseDeps = new Map<string, Ticket>();
+  for (const leaf of leaves) {
+    for (const blockerId of leaf.blockedBy) {
+      const blocker = state.ticketByID(blockerId);
+      if (blocker && blocker.phase !== phaseId && !crossPhaseDeps.has(blocker.id)) {
+        crossPhaseDeps.set(blocker.id, blocker);
+      }
+    }
+  }
+
+  // Related issues
+  const relatedIssues = state.issues.filter(
+    (i) =>
+      i.status !== "resolved" &&
+      (i.phase === phaseId ||
+        i.relatedTickets.some((tid) => {
+          const t = state.ticketByID(tid);
+          return t && t.phase === phaseId;
+        })),
+  );
+
+  // Active blockers
+  const activeBlockers = state.roadmap.blockers.filter(
+    (b) => !isBlockerCleared(b),
+  );
+
+  if (format === "json") {
+    return JSON.stringify(
+      successEnvelope({
+        phase: { id: phase.id, name: phase.name, description: phase.description, status: phaseStatus },
+        tickets: leaves.map((t) => ({ id: t.id, title: t.title, status: t.status, type: t.type, order: t.order })),
+        umbrellaAncestors: [...umbrellaAncestors.values()].map((t) => ({ id: t.id, title: t.title })),
+        crossPhaseDependencies: [...crossPhaseDeps.values()].map((t) => ({ id: t.id, title: t.title, status: t.status, phase: t.phase })),
+        issues: relatedIssues.map((i) => ({ id: i.id, title: i.title, severity: i.severity, status: i.status })),
+        blockers: activeBlockers.map((b) => ({ name: b.name, note: b.note ?? null })),
+      }),
+      null,
+      2,
+    );
+  }
+
+  const lines: string[] = [];
+  lines.push(`# ${escapeMarkdownInline(phase.name)} (${phase.id})`);
+  lines.push("");
+  lines.push(`Status: ${phaseStatus}`);
+  if (phase.description) {
+    lines.push(`Description: ${escapeMarkdownInline(phase.description)}`);
+  }
+
+  if (leaves.length > 0) {
+    lines.push("");
+    lines.push("## Tickets");
+    for (const t of leaves) {
+      const indicator = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
+      const parentNote = t.parentTicket && umbrellaAncestors.has(t.parentTicket) ? ` (under ${t.parentTicket})` : "";
+      lines.push(`${indicator} ${t.id}: ${escapeMarkdownInline(t.title)}${parentNote}`);
+    }
+  }
+
+  if (crossPhaseDeps.size > 0) {
+    lines.push("");
+    lines.push("## Cross-Phase Dependencies");
+    for (const [, dep] of crossPhaseDeps) {
+      lines.push(`- ${dep.id}: ${escapeMarkdownInline(dep.title)} [${dep.status}] (${dep.phase ?? "unphased"})`);
+    }
+  }
+
+  if (relatedIssues.length > 0) {
+    lines.push("");
+    lines.push("## Open Issues");
+    for (const i of relatedIssues) {
+      lines.push(`- ${i.id} [${i.severity}]: ${escapeMarkdownInline(i.title)}`);
+    }
+  }
+
+  if (activeBlockers.length > 0) {
+    lines.push("");
+    lines.push("## Active Blockers");
+    for (const b of activeBlockers) {
+      lines.push(`- ${escapeMarkdownInline(b.name)}${b.note ? ` — ${escapeMarkdownInline(b.note)}` : ""}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatFullExport(
+  state: ProjectState,
+  format: OutputFormat,
+): string {
+  const phases = phasesWithStatus(state);
+
+  if (format === "json") {
+    return JSON.stringify(
+      successEnvelope({
+        project: state.config.project,
+        phases: phases.map((p) => ({
+          id: p.phase.id,
+          name: p.phase.name,
+          description: p.phase.description,
+          status: p.status,
+          tickets: state.phaseTickets(p.phase.id).map((t) => ({
+            id: t.id,
+            title: t.title,
+            status: t.status,
+            type: t.type,
+          })),
+        })),
+        issues: state.issues.map((i) => ({
+          id: i.id,
+          title: i.title,
+          severity: i.severity,
+          status: i.status,
+        })),
+        blockers: state.roadmap.blockers.map((b) => ({
+          name: b.name,
+          cleared: isBlockerCleared(b),
+          note: b.note ?? null,
+        })),
+      }),
+      null,
+      2,
+    );
+  }
+
+  const lines: string[] = [];
+  lines.push(`# ${escapeMarkdownInline(state.config.project)} — Full Export`);
+  lines.push("");
+  lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
+  lines.push(`Issues: ${state.openIssueCount} open`);
+
+  lines.push("");
+  lines.push("## Phases");
+  for (const p of phases) {
+    const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
+    lines.push("");
+    lines.push(`### ${indicator} ${escapeMarkdownInline(p.phase.name)} (${p.phase.id})`);
+    if (p.phase.description) {
+      lines.push(escapeMarkdownInline(p.phase.description));
+    }
+    const tickets = state.phaseTickets(p.phase.id);
+    if (tickets.length > 0) {
+      lines.push("");
+      for (const t of tickets) {
+        const ti = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
+        lines.push(`${ti} ${t.id}: ${escapeMarkdownInline(t.title)}`);
+      }
+    }
+  }
+
+  if (state.issues.length > 0) {
+    lines.push("");
+    lines.push("## Issues");
+    for (const i of state.issues) {
+      const resolved = i.status === "resolved" ? " ✓" : "";
+      lines.push(`- ${i.id} [${i.severity}]: ${escapeMarkdownInline(i.title)}${resolved}`);
+    }
+  }
+
+  const blockers = state.roadmap.blockers;
+  if (blockers.length > 0) {
+    lines.push("");
+    lines.push("## Blockers");
+    for (const b of blockers) {
+      const cleared = isBlockerCleared(b) ? "[x]" : "[ ]";
+      lines.push(`${cleared} ${escapeMarkdownInline(b.name)}${b.note ? ` — ${escapeMarkdownInline(b.note)}` : ""}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function hasAnyChanges(diff: SnapshotDiff): boolean {
+  return (
+    diff.tickets.added.length > 0 ||
+    diff.tickets.removed.length > 0 ||
+    diff.tickets.statusChanged.length > 0 ||
+    diff.issues.added.length > 0 ||
+    diff.issues.resolved.length > 0 ||
+    diff.issues.statusChanged.length > 0 ||
+    diff.blockers.added.length > 0 ||
+    diff.blockers.cleared.length > 0 ||
+    diff.phases.added.length > 0 ||
+    diff.phases.removed.length > 0 ||
+    diff.phases.statusChanged.length > 0
+  );
+}
+
 // --- Private Helpers ---
 
 function truncate(text: string, maxLen: number): string {

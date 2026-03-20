@@ -764,7 +764,7 @@ export function serializeJSON(obj: unknown): string {
 }
 
 /** Atomic write: write to temp file, then rename. */
-async function atomicWrite(
+export async function atomicWrite(
   targetPath: string,
   content: string,
 ): Promise<void> {
@@ -804,7 +804,7 @@ async function fsyncWrite(
  * Symlink protection: resolve both root and target parent via realpath,
  * verify target is under root. On existing targets, lstat to reject symlinks.
  */
-async function guardPath(
+export async function guardPath(
   target: string,
   root: string,
 ): Promise<void> {

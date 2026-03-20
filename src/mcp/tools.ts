@@ -21,6 +21,8 @@ import {
 } from "../models/types.js";
 import type { CommandContext, CommandResult } from "../cli/types.js";
 
+import { withProjectLock } from "../core/project-loader.js";
+
 // Handler imports — pure functions, no run.ts side effects
 import { handleStatus } from "../cli/commands/status.js";
 import { handleValidate } from "../cli/commands/validate.js";
@@ -40,6 +42,9 @@ import {
   handleIssueList,
   handleIssueGet,
 } from "../cli/commands/issue.js";
+import { handleRecap } from "../cli/commands/recap.js";
+import { handleSnapshot } from "../cli/commands/snapshot.js";
+import { handleExport } from "../cli/commands/export.js";
 import {
   handlePhaseList,
   handlePhaseCurrent,
@@ -104,6 +109,38 @@ export async function runMcpReadTool(
     }
 
     return { content: [{ type: "text", text }] };
+  } catch (err: unknown) {
+    if (err instanceof ProjectLoaderError) {
+      return { content: [{ type: "text", text: formatMcpError(err.code, err.message) }], isError: true };
+    }
+    if (err instanceof CliValidationError) {
+      return { content: [{ type: "text", text: formatMcpError(err.code, err.message) }], isError: true };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: "text", text: formatMcpError("io_error", message) }], isError: true };
+  }
+}
+
+/**
+ * Shared pipeline for MCP write tools.
+ * Mirrors runMcpReadTool but uses pinnedRoot with withProjectLock for atomicity.
+ * The handler receives (root, format) and manages locking internally.
+ */
+export async function runMcpWriteTool(
+  pinnedRoot: string,
+  handler: (root: string, format: "md") => Promise<CommandResult>,
+): Promise<McpToolResult> {
+  try {
+    const result = await handler(pinnedRoot, "md");
+
+    if (result.errorCode && INFRASTRUCTURE_ERROR_CODES.includes(result.errorCode)) {
+      return {
+        content: [{ type: "text", text: formatMcpError(result.errorCode, result.output) }],
+        isError: true,
+      };
+    }
+
+    return { content: [{ type: "text", text: result.output }] };
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
       return { content: [{ type: "text", text: formatMcpError(err.code, err.message) }], isError: true };
@@ -232,4 +269,38 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       filename: z.string().describe("Handover filename (e.g. 2026-03-20-session.md)"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleHandoverGet(args.filename, ctx)));
+
+  // --- T-084: Recap + Snapshot + Export ---
+
+  server.registerTool("claudestory_recap", {
+    description: "Session diff — changes since last snapshot + suggested next actions. Shows what changed and what to work on.",
+  }, () => runMcpReadTool(pinnedRoot, handleRecap));
+
+  server.registerTool("claudestory_snapshot", {
+    description: "Save current project state for session diffs. Creates a snapshot in .story/snapshots/.",
+  }, () => runMcpWriteTool(pinnedRoot, handleSnapshot));
+
+  server.registerTool("claudestory_export", {
+    description: "Self-contained project document for sharing",
+    inputSchema: {
+      phase: z.string().optional().describe("Export a single phase by ID"),
+      all: z.boolean().optional().describe("Export entire project"),
+    },
+  }, (args) => {
+    if (!args.phase && !args.all) {
+      return Promise.resolve({
+        content: [{ type: "text" as const, text: formatMcpError("invalid_input", "Specify either phase or all") }],
+        isError: true,
+      });
+    }
+    if (args.phase && args.all) {
+      return Promise.resolve({
+        content: [{ type: "text" as const, text: formatMcpError("invalid_input", "Arguments phase and all are mutually exclusive") }],
+        isError: true,
+      });
+    }
+    const mode = args.all ? "all" : "phase";
+    const phaseId = args.phase ?? null;
+    return runMcpReadTool(pinnedRoot, (ctx) => handleExport(ctx, mode as "all" | "phase", phaseId));
+  });
 }

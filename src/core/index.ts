@@ -15,6 +15,8 @@ export {
   runTransactionUnlocked,
   sortKeysDeep,
   serializeJSON,
+  atomicWrite,
+  guardPath,
   type LoadOptions,
   type LoadResult,
   type WithProjectLockOptions,
@@ -67,6 +69,16 @@ export {
   type InitResult,
 } from "./init.js";
 export {
+  saveSnapshot,
+  loadLatestSnapshot,
+  diffStates,
+  buildRecap,
+  SnapshotV1Schema,
+  type SnapshotV1,
+  type SnapshotDiff,
+  type RecapResult,
+} from "./snapshot.js";
+export {
   ExitCode,
   successEnvelope,
   errorEnvelope,
@@ -88,6 +100,9 @@ export {
   formatInitResult,
   formatHandoverList,
   formatHandoverContent,
+  formatSnapshotResult,
+  formatRecap,
+  formatExport,
   type ExitCodeValue,
   type SuccessEnvelope,
   type ErrorEnvelope,

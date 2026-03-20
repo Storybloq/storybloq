@@ -12,6 +12,9 @@ import {
   registerHandoverCommand,
   registerBlockerCommand,
   registerValidateCommand,
+  registerSnapshotCommand,
+  registerRecapCommand,
+  registerExportCommand,
 } from "./register.js";
 
 // Version injected at build time by tsup define
@@ -59,6 +62,9 @@ cli = registerIssueCommand(cli);
 cli = registerHandoverCommand(cli);
 cli = registerBlockerCommand(cli);
 cli = registerValidateCommand(cli);
+cli = registerSnapshotCommand(cli);
+cli = registerRecapCommand(cli);
+cli = registerExportCommand(cli);
 
 // Top-level error handling: both sync try-catch and async .catch() are needed.
 // yargs' parseAsync() calls parse() synchronously — if .fail() throws during

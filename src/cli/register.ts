@@ -56,6 +56,11 @@ import {
 // Re-export init's register (init has no handler separation)
 export { registerInitCommand } from "./commands/init.js";
 
+// New T-084 handler imports
+import { handleRecap } from "./commands/recap.js";
+import { handleExport } from "./commands/export.js";
+import { handleSnapshot } from "./commands/snapshot.js";
+
 // ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
@@ -1243,5 +1248,106 @@ export function registerPhaseCommand(yargs: Argv): Argv {
         )
         .strict(),
     () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
+// snapshot
+// ---------------------------------------------------------------------------
+
+export function registerSnapshotCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "snapshot",
+    "Save current project state for session diffs",
+    (y) => addFormatOption(y),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      const root = (
+        await import("../core/project-root-discovery.js")
+      ).discoverProjectRoot();
+      if (!root) {
+        writeOutput(
+          formatError("not_found", "No .story/ project found.", format),
+        );
+        process.exitCode = ExitCode.USER_ERROR;
+        return;
+      }
+      try {
+        const result = await handleSnapshot(root, format);
+        writeOutput(result.output);
+        process.exitCode = result.exitCode ?? ExitCode.OK;
+      } catch (err: unknown) {
+        if (err instanceof CliValidationError) {
+          writeOutput(formatError(err.code, err.message, format));
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
+        const { ProjectLoaderError } = await import("../core/errors.js");
+        if (err instanceof ProjectLoaderError) {
+          writeOutput(formatError(err.code, err.message, format));
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        writeOutput(formatError("io_error", message, format));
+        process.exitCode = ExitCode.USER_ERROR;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// recap
+// ---------------------------------------------------------------------------
+
+export function registerRecapCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "recap",
+    "Session diff — changes since last snapshot + suggested actions",
+    (y) => addFormatOption(y),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      await runReadCommand(format, handleRecap);
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// export
+// ---------------------------------------------------------------------------
+
+export function registerExportCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "export",
+    "Self-contained project document for sharing",
+    (y) =>
+      addFormatOption(
+        y
+          .option("phase", {
+            type: "string",
+            describe: "Export a single phase by ID",
+          })
+          .option("all", {
+            type: "boolean",
+            describe: "Export entire project",
+          })
+          .conflicts("phase", "all")
+          .check((argv) => {
+            if (!argv.phase && !argv.all) {
+              throw new Error(
+                "Specify either --phase <id> or --all",
+              );
+            }
+            return true;
+          }),
+      ),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      const mode = argv.all ? "all" : "phase";
+      const phaseId = (argv.phase as string | undefined) ?? null;
+      await runReadCommand(format, (ctx) =>
+        handleExport(ctx, mode as "all" | "phase", phaseId),
+      );
+    },
   );
 }

@@ -1,5 +1,5 @@
 {
-  "name": "claudestory",
+  "name": "@anthropologies/claudestory",
   "version": "0.1.0",
   "type": "module",
   "exports": {

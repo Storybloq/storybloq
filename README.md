@@ -5,7 +5,7 @@ Cross-session context persistence for AI coding assistants. Tracks tickets, issu
 ## Installation
 
 ```bash
-npm install -g claudestory
+npm install -g @anthropologies/claudestory
 ```
 
 Requires Node.js 20+.
@@ -140,7 +140,7 @@ This gives the AI full project context from the first message.
 ## Library Usage
 
 ```typescript
-import { loadProject, ProjectState } from "claudestory";
+import { loadProject, ProjectState } from "@anthropologies/claudestory";
 
 const { state, warnings } = await loadProject("/path/to/project");
 console.log(state.tickets.length); // all tickets

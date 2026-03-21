@@ -95,16 +95,10 @@ The MCP server provides 19 tools for Claude Code integration. It imports the sam
 ### Setup with Claude Code
 
 ```bash
-claude mcp add claudestory -- npx -y @anthropologies/claudestory --mcp
+claude mcp add claudestory -s user -- npx -y @anthropologies/claudestory --mcp
 ```
 
-That's it. No global install required. Claude Code will spawn the MCP server automatically.
-
-For a specific project root (recommended when working across multiple projects):
-
-```bash
-claude mcp add claudestory -- env CLAUDESTORY_PROJECT_ROOT=/path/to/project npx -y @anthropologies/claudestory --mcp
-```
+That's it. One command, global — works in every project that has a `.story/` directory. No global install required. The MCP server auto-discovers the project root by walking up from the working directory.
 
 ### MCP Tools
 

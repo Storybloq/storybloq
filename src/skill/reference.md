@@ -198,6 +198,41 @@ Clear (resolve) a blocker
 claudestory blocker clear --name <n> [--note <note>] [--format json|md]
 ```
 
+### note list
+List notes with optional status/tag filters
+
+```
+claudestory note list [--status <s>] [--tag <t>] [--format json|md]
+```
+
+### note get
+Get a note by ID
+
+```
+claudestory note get <id> [--format json|md]
+```
+
+### note create
+Create a new note
+
+```
+claudestory note create --content <c> [--title <t>] [--tags <tags>] [--format json|md]
+```
+
+### note update
+Update a note
+
+```
+claudestory note update <id> [--content <c>] [--title <t>] [--tags <tags>] [--clear-tags] [--status <s>] [--format json|md]
+```
+
+### note delete
+Delete a note
+
+```
+claudestory note delete <id> [--format json|md]
+```
+
 ### validate
 Reference integrity + schema checks on all .story/ files
 
@@ -261,6 +296,14 @@ claudestory setup-skill
 - **claudestory_recap** — Session diff — changes since last snapshot
 - **claudestory_snapshot** — Save current project state snapshot
 - **claudestory_export** (phase?, all?) — Self-contained project document
+- **claudestory_note_list** (status?, tag?) — List notes
+- **claudestory_note_get** (id) — Get note by ID
+- **claudestory_note_create** (content, title?, tags?) — Create note
+- **claudestory_note_update** (id, content?, title?, tags?, status?) — Update note
+- **claudestory_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?) — Create ticket
+- **claudestory_ticket_update** (id, status?, title?, order?, description?, phase?, parentTicket?) — Update ticket
+- **claudestory_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
+- **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?) — Update issue
 
 ## Common Workflows
 

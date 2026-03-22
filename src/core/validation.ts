@@ -66,6 +66,22 @@ export function validateProject(state: ProjectState): ValidationResult {
     }
   }
 
+  // Duplicate note IDs
+  const noteIDCounts = new Map<string, number>();
+  for (const n of state.notes) {
+    noteIDCounts.set(n.id, (noteIDCounts.get(n.id) ?? 0) + 1);
+  }
+  for (const [id, count] of noteIDCounts) {
+    if (count > 1) {
+      findings.push({
+        level: "error",
+        code: "duplicate_note_id",
+        message: `Duplicate note ID: ${id} appears ${count} times.`,
+        entity: id,
+      });
+    }
+  }
+
   // Duplicate roadmap phase IDs
   const phaseIDCounts = new Map<string, number>();
   for (const p of state.roadmap.phases) {

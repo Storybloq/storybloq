@@ -143,6 +143,7 @@ function validatePostWriteState(
   const postState = new ProjectState({
     tickets: existingTickets,
     issues: [...state.issues],
+    notes: [...state.notes],
     roadmap: state.roadmap,
     config: state.config,
     handoverFilenames: [...state.handoverFilenames],

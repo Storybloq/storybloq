@@ -1,5 +1,6 @@
 export { TicketSchema, type Ticket } from "./ticket.js";
 export { IssueSchema, type Issue } from "./issue.js";
+export { NoteSchema, type Note } from "./note.js";
 export {
   BlockerSchema,
   type Blocker,
@@ -19,6 +20,9 @@ export {
   TICKET_TYPES,
   ISSUE_STATUSES,
   ISSUE_SEVERITIES,
+  NOTE_STATUSES,
+  NOTE_ID_REGEX,
+  NoteIdSchema,
   OUTPUT_FORMATS,
   ERROR_CODES,
   DATE_REGEX,
@@ -26,6 +30,7 @@ export {
   type TicketType,
   type IssueStatus,
   type IssueSeverity,
+  type NoteStatus,
   type OutputFormat,
   type ErrorCode,
 } from "./types.js";

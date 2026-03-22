@@ -24,6 +24,15 @@ export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 export const ISSUE_SEVERITIES = ["critical", "high", "medium", "low"] as const;
 export type IssueSeverity = (typeof ISSUE_SEVERITIES)[number];
 
+// --- Note enums ---
+
+export const NOTE_STATUSES = ["active", "archived"] as const;
+export type NoteStatus = (typeof NOTE_STATUSES)[number];
+export const NOTE_ID_REGEX = /^N-\d+$/;
+export const NoteIdSchema = z
+  .string()
+  .regex(NOTE_ID_REGEX, "Note ID must match N-NNN");
+
 // --- Output/error types ---
 
 export const OUTPUT_FORMATS = ["json", "md"] as const;

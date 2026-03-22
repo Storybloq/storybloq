@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateProject, mergeValidation } from "../../src/core/validation.js";
-import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase } from "./test-factories.js";
+import { makeTicket, makeIssue, makeNote, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 import type { LoadWarning } from "../../src/core/errors.js";
 
 describe("validateProject", () => {
@@ -75,6 +75,13 @@ describe("validateProject", () => {
       issues: [makeIssue({ id: "ISS-001" }), makeIssue({ id: "ISS-001" })],
     });
     expect(validateProject(state).findings.some((f) => f.code === "duplicate_issue_id")).toBe(true);
+  });
+
+  it("reports duplicate note IDs", () => {
+    const state = makeState({
+      notes: [makeNote({ id: "N-001" }), makeNote({ id: "N-001" })],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "duplicate_note_id")).toBe(true);
   });
 
   it("reports duplicate phase IDs", () => {

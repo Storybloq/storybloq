@@ -1,7 +1,7 @@
 /**
  * MCP tool registration and shared pipeline for claudestory tools.
  *
- * 19 tools (15 read + 4 write). Read tools use a shared pipeline:
+ * 27 tools (17 read + 10 write). Read tools use a shared pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
 import { z } from "zod";
@@ -14,10 +14,12 @@ import { CliValidationError } from "../cli/helpers.js";
 import {
   TICKET_ID_REGEX,
   ISSUE_ID_REGEX,
+  NOTE_ID_REGEX,
   TICKET_STATUSES,
   TICKET_TYPES,
   ISSUE_STATUSES,
   ISSUE_SEVERITIES,
+  NOTE_STATUSES,
 } from "../models/types.js";
 import type { CommandContext, CommandResult } from "../cli/types.js";
 
@@ -37,12 +39,22 @@ import {
   handleTicketGet,
   handleTicketNext,
   handleTicketBlocked,
+  handleTicketCreate,
+  handleTicketUpdate,
 } from "../cli/commands/ticket.js";
 import {
   handleIssueList,
   handleIssueGet,
+  handleIssueCreate,
+  handleIssueUpdate,
 } from "../cli/commands/issue.js";
 import { handleRecap } from "../cli/commands/recap.js";
+import {
+  handleNoteList,
+  handleNoteGet,
+  handleNoteCreate,
+  handleNoteUpdate,
+} from "../cli/commands/note.js";
 import { handleSnapshot } from "../cli/commands/snapshot.js";
 import { handleExport } from "../cli/commands/export.js";
 import { handleHandoverCreate } from "../cli/commands/handover.js";
@@ -257,9 +269,10 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     inputSchema: {
       status: z.enum(ISSUE_STATUSES).optional().describe("Filter by status: open, inprogress, resolved"),
       severity: z.enum(ISSUE_SEVERITIES).optional().describe("Filter by severity: critical, high, medium, low"),
+      component: z.string().optional().describe("Filter by component name"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleIssueList({ status: args.status, severity: args.severity }, ctx),
+    handleIssueList({ status: args.status, severity: args.severity, component: args.component }, ctx),
   ));
 
   server.registerTool("claudestory_issue_get", {
@@ -327,4 +340,184 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       handleHandoverCreate(args.content, args.slug ?? "session", "md", root),
     );
   });
+
+  // --- Ticket write tools ---
+
+  server.registerTool("claudestory_ticket_create", {
+    description: "Create a new ticket",
+    inputSchema: {
+      title: z.string().describe("Ticket title"),
+      type: z.enum(TICKET_TYPES).describe("Ticket type: task, feature, chore"),
+      phase: z.string().optional().describe("Phase ID"),
+      description: z.string().optional().describe("Ticket description"),
+      blockedBy: z.array(z.string().regex(TICKET_ID_REGEX)).optional().describe("IDs of blocking tickets"),
+      parentTicket: z.string().regex(TICKET_ID_REGEX).optional().describe("Parent ticket ID (makes this a sub-ticket)"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleTicketCreate(
+      {
+        title: args.title,
+        type: args.type,
+        phase: args.phase ?? null,
+        description: args.description ?? "",
+        blockedBy: args.blockedBy ?? [],
+        parentTicket: args.parentTicket ?? null,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("claudestory_ticket_update", {
+    description: "Update an existing ticket",
+    inputSchema: {
+      id: z.string().regex(TICKET_ID_REGEX).describe("Ticket ID (e.g. T-001)"),
+      status: z.enum(TICKET_STATUSES).optional().describe("New status: open, inprogress, complete"),
+      title: z.string().optional().describe("New title"),
+      order: z.number().optional().describe("New sort order"),
+      description: z.string().optional().describe("New description"),
+      phase: z.string().nullable().optional().describe("New phase ID (null to clear)"),
+      parentTicket: z.string().regex(TICKET_ID_REGEX).nullable().optional().describe("Parent ticket ID (null to clear)"),
+      blockedBy: z.array(z.string().regex(TICKET_ID_REGEX)).optional().describe("IDs of blocking tickets"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleTicketUpdate(
+      args.id,
+      {
+        status: args.status,
+        title: args.title,
+        order: args.order,
+        description: args.description,
+        phase: args.phase,
+        parentTicket: args.parentTicket,
+        blockedBy: args.blockedBy,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  // --- Issue write tools ---
+
+  server.registerTool("claudestory_issue_create", {
+    description: "Create a new issue",
+    inputSchema: {
+      title: z.string().describe("Issue title"),
+      severity: z.enum(ISSUE_SEVERITIES).describe("Issue severity: critical, high, medium, low"),
+      impact: z.string().describe("Impact description"),
+      components: z.array(z.string()).optional().describe("Affected components"),
+      relatedTickets: z.array(z.string().regex(TICKET_ID_REGEX)).optional().describe("Related ticket IDs"),
+      location: z.array(z.string()).optional().describe("File locations"),
+      phase: z.string().optional().describe("Phase ID"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleIssueCreate(
+      {
+        title: args.title,
+        severity: args.severity,
+        impact: args.impact,
+        components: args.components ?? [],
+        relatedTickets: args.relatedTickets ?? [],
+        location: args.location ?? [],
+        phase: args.phase,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("claudestory_issue_update", {
+    description: "Update an existing issue",
+    inputSchema: {
+      id: z.string().regex(ISSUE_ID_REGEX).describe("Issue ID (e.g. ISS-001)"),
+      status: z.enum(ISSUE_STATUSES).optional().describe("New status: open, inprogress, resolved"),
+      title: z.string().optional().describe("New title"),
+      severity: z.enum(ISSUE_SEVERITIES).optional().describe("New severity"),
+      impact: z.string().optional().describe("New impact description"),
+      resolution: z.string().nullable().optional().describe("Resolution description (null to clear)"),
+      components: z.array(z.string()).optional().describe("Affected components"),
+      relatedTickets: z.array(z.string().regex(TICKET_ID_REGEX)).optional().describe("Related ticket IDs"),
+      location: z.array(z.string()).optional().describe("File locations"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleIssueUpdate(
+      args.id,
+      {
+        status: args.status,
+        title: args.title,
+        severity: args.severity,
+        impact: args.impact,
+        resolution: args.resolution,
+        components: args.components,
+        relatedTickets: args.relatedTickets,
+        location: args.location,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  // --- Note tools ---
+
+  server.registerTool("claudestory_note_list", {
+    description: "List notes with optional status/tag filters",
+    inputSchema: {
+      status: z.enum(NOTE_STATUSES).optional().describe("Filter by status: active, archived"),
+      tag: z.string().optional().describe("Filter by tag"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
+    handleNoteList({ status: args.status, tag: args.tag }, ctx),
+  ));
+
+  server.registerTool("claudestory_note_get", {
+    description: "Get a note by ID",
+    inputSchema: {
+      id: z.string().regex(NOTE_ID_REGEX).describe("Note ID (e.g. N-001)"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleNoteGet(args.id, ctx)));
+
+  server.registerTool("claudestory_note_create", {
+    description: "Create a new note",
+    inputSchema: {
+      content: z.string().describe("Note content"),
+      title: z.string().optional().describe("Note title"),
+      tags: z.array(z.string()).optional().describe("Tags for the note"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleNoteCreate(
+      {
+        content: args.content,
+        title: args.title ?? null,
+        tags: args.tags ?? [],
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("claudestory_note_update", {
+    description: "Update an existing note",
+    inputSchema: {
+      id: z.string().regex(NOTE_ID_REGEX).describe("Note ID (e.g. N-001)"),
+      content: z.string().optional().describe("New content"),
+      title: z.string().nullable().optional().describe("New title (null to clear)"),
+      tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
+      status: z.enum(NOTE_STATUSES).optional().describe("New status: active, archived"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleNoteUpdate(
+      args.id,
+      {
+        content: args.content,
+        title: args.title,
+        tags: args.tags,
+        clearTags: args.tags !== undefined && args.tags.length === 0,
+        status: args.status,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  // No MCP delete tools for any entity — deletion is destructive and stays CLI-only (human-gated).
 }

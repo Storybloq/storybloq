@@ -8,15 +8,17 @@ import {
   realpath,
   lstat,
   open,
+  mkdir,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve, relative, extname, dirname, basename } from "node:path";
 import lockfile from "proper-lockfile";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
+import { NoteSchema, type Note } from "../models/note.js";
 import { RoadmapSchema, type Roadmap } from "../models/roadmap.js";
 import { ConfigSchema, type Config } from "../models/config.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../models/types.js";
+import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
 import {
   ProjectLoaderError,
@@ -123,6 +125,14 @@ export async function loadProject(
     warnings,
   );
 
+  // 7b. Load notes (best-effort)
+  const notes = await loadDirectory<Note>(
+    join(wrapDir, "notes"),
+    absRoot,
+    NoteSchema,
+    warnings,
+  );
+
   // 8. List handovers
   const handoversDir = join(wrapDir, "handovers");
   const handoverFilenames = await listHandovers(
@@ -148,6 +158,7 @@ export async function loadProject(
   const state = new ProjectState({
     tickets,
     issues,
+    notes,
     roadmap,
     config,
     handoverFilenames,
@@ -346,6 +357,66 @@ export async function deleteIssue(
       throw new ProjectLoaderError(
         "not_found",
         `Issue file not found: issues/${id}.json`,
+      );
+    }
+    await unlink(targetPath);
+  });
+}
+
+/**
+ * Writes a note file WITHOUT acquiring the project lock.
+ * Use inside withProjectLock when the lock is already held.
+ */
+export async function writeNoteUnlocked(
+  note: Note,
+  root: string,
+): Promise<void> {
+  const parsed = NoteSchema.parse(note);
+  if (!NOTE_ID_REGEX.test(parsed.id)) {
+    throw new ProjectLoaderError(
+      "invalid_input",
+      `Invalid note ID: ${parsed.id}`,
+    );
+  }
+  const wrapDir = resolve(root, ".story");
+  const targetPath = join(wrapDir, "notes", `${parsed.id}.json`);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await guardPath(targetPath, wrapDir);
+  const json = serializeJSON(parsed);
+  await atomicWrite(targetPath, json);
+}
+
+export async function writeNote(
+  note: Note,
+  root: string,
+): Promise<void> {
+  const wrapDir = resolve(root, ".story");
+  await withLock(wrapDir, async () => {
+    await writeNoteUnlocked(note, root);
+  });
+}
+
+export async function deleteNote(
+  id: string,
+  root: string,
+): Promise<void> {
+  if (!NOTE_ID_REGEX.test(id)) {
+    throw new ProjectLoaderError(
+      "invalid_input",
+      `Invalid note ID: ${id}`,
+    );
+  }
+  const wrapDir = resolve(root, ".story");
+  const targetPath = join(wrapDir, "notes", `${id}.json`);
+  await guardPath(targetPath, wrapDir);
+
+  await withLock(wrapDir, async () => {
+    try {
+      await stat(targetPath);
+    } catch {
+      throw new ProjectLoaderError(
+        "not_found",
+        `Note file not found: notes/${id}.json`,
       );
     }
     await unlink(targetPath);
@@ -637,8 +708,9 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const warnings: LoadWarning[] = [];
   const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings);
   const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings);
+  const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
-  const state = new ProjectState({ tickets, issues, roadmap, config, handoverFilenames });
+  const state = new ProjectState({ tickets, issues, notes, roadmap, config, handoverFilenames });
   return { state, warnings };
 }
 

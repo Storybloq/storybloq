@@ -13,7 +13,10 @@ import {
   parseOutputFormat,
   parseTicketId,
   parseIssueId,
+  parseNoteId,
   normalizeArrayOption,
+  normalizeTags,
+  readStdinContent,
   CliValidationError,
 } from "./helpers.js";
 import { formatError, ExitCode } from "../core/output-formatter.js";
@@ -44,6 +47,13 @@ import {
   handleIssueUpdate,
   handleIssueDelete,
 } from "./commands/issue.js";
+import {
+  handleNoteList,
+  handleNoteGet,
+  handleNoteCreate,
+  handleNoteUpdate,
+  handleNoteDelete,
+} from "./commands/note.js";
 import {
   handlePhaseList,
   handlePhaseCurrent,
@@ -501,6 +511,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   default: "",
                   describe: "Ticket description",
                 })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read description from stdin",
+                })
                 .option("blocked-by", {
                   type: "string",
                   array: true,
@@ -509,7 +524,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 .option("parent-ticket", {
                   type: "string",
                   describe: "Parent ticket ID (makes this a sub-ticket)",
-                }),
+                })
+                .conflicts("description", "stdin"),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -528,12 +544,16 @@ export function registerTicketCommand(yargs: Argv): Argv {
               return;
             }
             try {
+              let description = argv.description as string;
+              if (argv.stdin) {
+                description = await readStdinContent();
+              }
               const result = await handleTicketCreate(
                 {
                   title: argv.title as string,
                   type: argv.type as string,
                   phase: argv.phase === "" ? null : (argv.phase as string | undefined) ?? null,
-                  description: argv.description as string,
+                  description,
                   blockedBy: normalizeArrayOption(
                     argv["blocked-by"] as string[] | undefined,
                   ),
@@ -597,6 +617,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New description",
                 })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read description from stdin",
+                })
                 .option("blocked-by", {
                   type: "string",
                   array: true,
@@ -605,7 +630,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 .option("parent-ticket", {
                   type: "string",
                   describe: "Parent ticket ID",
-                }),
+                })
+                .conflicts("description", "stdin"),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -625,6 +651,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
               return;
             }
             try {
+              let description = argv.description as string | undefined;
+              if (argv.stdin) {
+                description = await readStdinContent();
+              }
               const result = await handleTicketUpdate(
                 id,
                 {
@@ -632,7 +662,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   title: argv.title as string | undefined,
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
                   order: argv.order as number | undefined,
-                  description: argv.description as string | undefined,
+                  description,
                   blockedBy: argv["blocked-by"]
                     ? normalizeArrayOption(argv["blocked-by"] as string[])
                     : undefined,
@@ -722,6 +752,10 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 .option("severity", {
                   type: "string",
                   describe: "Filter by severity",
+                })
+                .option("component", {
+                  type: "string",
+                  describe: "Filter by component",
                 }),
             ),
           async (argv) => {
@@ -731,6 +765,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 {
                   status: argv.status as string | undefined,
                   severity: argv.severity as string | undefined,
+                  component: argv.component as string | undefined,
                 },
                 ctx,
               ),
@@ -772,8 +807,16 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 })
                 .option("impact", {
                   type: "string",
-                  demandOption: true,
                   describe: "Impact description",
+                })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read impact from stdin",
+                })
+                .option("phase", {
+                  type: "string",
+                  describe: "Phase ID",
                 })
                 .option("components", {
                   type: "string",
@@ -789,6 +832,13 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   array: true,
                   describe: "File locations",
+                })
+                .conflicts("impact", "stdin")
+                .check((a) => {
+                  if (!a.impact && !a.stdin) {
+                    throw new Error("Specify either --impact or --stdin");
+                  }
+                  return true;
                 }),
             ),
           async (argv) => {
@@ -808,11 +858,15 @@ export function registerIssueCommand(yargs: Argv): Argv {
               return;
             }
             try {
+              let impact = (argv.impact as string | undefined) ?? "";
+              if (argv.stdin) {
+                impact = await readStdinContent();
+              }
               const result = await handleIssueCreate(
                 {
                   title: argv.title as string,
                   severity: argv.severity as string,
-                  impact: argv.impact as string,
+                  impact,
                   components: normalizeArrayOption(
                     argv.components as string[] | undefined,
                   ),
@@ -822,6 +876,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   location: normalizeArrayOption(
                     argv.location as string[] | undefined,
                   ),
+                  phase: (argv.phase as string | undefined),
                 },
                 format,
                 root,
@@ -876,6 +931,11 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New impact description",
                 })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read impact from stdin",
+                })
                 .option("resolution", {
                   type: "string",
                   describe: "Resolution description",
@@ -894,7 +954,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   array: true,
                   describe: "File locations",
-                }),
+                })
+                .conflicts("impact", "stdin"),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -914,13 +975,17 @@ export function registerIssueCommand(yargs: Argv): Argv {
               return;
             }
             try {
+              let impact = argv.impact as string | undefined;
+              if (argv.stdin) {
+                impact = await readStdinContent();
+              }
               const result = await handleIssueUpdate(
                 id,
                 {
                   status: argv.status as string | undefined,
                   title: argv.title as string | undefined,
                   severity: argv.severity as string | undefined,
-                  impact: argv.impact as string | undefined,
+                  impact,
                   resolution:
                     argv.resolution === ""
                       ? null
@@ -1477,6 +1542,269 @@ export function registerExportCommand(yargs: Argv): Argv {
 // ---------------------------------------------------------------------------
 // reference
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// note
+// ---------------------------------------------------------------------------
+
+export function registerNoteCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "note",
+    "Manage notes",
+    (y) =>
+      y
+        .command(
+          "list",
+          "List notes",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("status", {
+                  type: "string",
+                  choices: ["active", "archived"],
+                  describe: "Filter by status",
+                })
+                .option("tag", {
+                  type: "string",
+                  describe: "Filter by tag",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) =>
+              handleNoteList(
+                {
+                  status: argv.status as string | undefined,
+                  tag: argv.tag as string | undefined,
+                },
+                ctx,
+              ),
+            );
+          },
+        )
+        .command(
+          "get <id>",
+          "Get a note",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", {
+                type: "string",
+                demandOption: true,
+                describe: "Note ID (e.g. N-001)",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseNoteId(argv.id as string);
+            await runReadCommand(format, (ctx) => handleNoteGet(id, ctx));
+          },
+        )
+        .command(
+          "create",
+          "Create a note",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("content", {
+                  type: "string",
+                  describe: "Note content",
+                })
+                .option("title", {
+                  type: "string",
+                  describe: "Note title",
+                })
+                .option("tags", {
+                  type: "array",
+                  describe: "Tags for the note",
+                })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read content from stdin",
+                })
+                .conflicts("content", "stdin")
+                .check((argv) => {
+                  if (!argv.content && !argv.stdin) {
+                    throw new Error(
+                      "Specify either --content or --stdin",
+                    );
+                  }
+                  return true;
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            try {
+              let content: string;
+              if (argv.stdin) {
+                content = await readStdinContent();
+              } else {
+                content = argv.content as string;
+              }
+              const result = await handleNoteCreate(
+                {
+                  content,
+                  title: argv.title as string | undefined ?? null,
+                  tags: argv.tags as string[] | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "update <id>",
+          "Update a note",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Note ID (e.g. N-001)",
+                })
+                .option("content", {
+                  type: "string",
+                  describe: "New content",
+                })
+                .option("title", {
+                  type: "string",
+                  describe: "New title",
+                })
+                .option("tags", {
+                  type: "array",
+                  describe: "New tags (replaces existing)",
+                })
+                .option("clear-tags", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Clear all tags",
+                })
+                .option("status", {
+                  type: "string",
+                  choices: ["active", "archived"],
+                  describe: "New status",
+                })
+                .option("stdin", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Read content from stdin",
+                })
+                .conflicts("content", "stdin")
+                .conflicts("tags", "clear-tags"),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseNoteId(argv.id as string);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            let content: string | undefined;
+            if (argv.stdin) {
+              content = await readStdinContent();
+            } else {
+              content = argv.content as string | undefined;
+            }
+
+            try {
+              const result = await handleNoteUpdate(
+                id,
+                {
+                  content,
+                  title: argv.title === ""
+                    ? null
+                    : (argv.title as string | undefined),
+                  tags: argv.tags as string[] | undefined,
+                  clearTags: argv["clear-tags"] as boolean,
+                  status: argv.status as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "delete <id>",
+          "Delete a note",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", {
+                type: "string",
+                demandOption: true,
+                describe: "Note ID (e.g. N-001)",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseNoteId(argv.id as string);
+            await runDeleteCommand(format, false, async (ctx) =>
+              handleNoteDelete(id, format, ctx.root),
+            );
+          },
+        )
+        .demandCommand(
+          1,
+          "Specify a note subcommand: list, get, create, update, delete",
+        )
+        .strict(),
+    () => {},
+  );
+}
 
 export function registerReferenceCommand(yargs: Argv): Argv {
   return yargs.command(

@@ -1,5 +1,6 @@
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
+import type { Note } from "../models/note.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { Config } from "../models/config.js";
 import type { IssueSeverity } from "../models/types.js";
@@ -14,6 +15,7 @@ export class ProjectState {
   // --- Public raw inputs (readonly) ---
   readonly tickets: readonly Ticket[];
   readonly issues: readonly Issue[];
+  readonly notes: readonly Note[];
   readonly roadmap: Readonly<Roadmap>;
   readonly config: Readonly<Config>;
   readonly handoverFilenames: readonly string[];
@@ -30,6 +32,7 @@ export class ProjectState {
   private readonly reverseBlocksMap: Map<string, Ticket[]>;
   private readonly ticketsByID: Map<string, Ticket>;
   private readonly issuesByID: Map<string, Issue>;
+  private readonly notesByID: Map<string, Note>;
 
   // --- Counts ---
   readonly totalTicketCount: number;
@@ -37,16 +40,20 @@ export class ProjectState {
   readonly completeTicketCount: number;
   readonly openIssueCount: number;
   readonly issuesBySeverity: ReadonlyMap<IssueSeverity, number>;
+  readonly activeNoteCount: number;
+  readonly archivedNoteCount: number;
 
   constructor(input: {
     tickets: Ticket[];
     issues: Issue[];
+    notes: Note[];
     roadmap: Roadmap;
     config: Config;
     handoverFilenames: string[];
   }) {
     this.tickets = input.tickets;
     this.issues = input.issues;
+    this.notes = input.notes;
     this.roadmap = input.roadmap;
     this.config = input.config;
     this.handoverFilenames = input.handoverFilenames;
@@ -128,6 +135,13 @@ export class ProjectState {
     }
     this.issuesByID = iByID;
 
+    // Notes: last-wins (same as issues)
+    const nByID = new Map<string, Note>();
+    for (const n of input.notes) {
+      nByID.set(n.id, n);
+    }
+    this.notesByID = nByID;
+
     // Step 7: Counts
     this.totalTicketCount = input.tickets.length;
     this.openTicketCount = input.tickets.filter(
@@ -147,6 +161,13 @@ export class ProjectState {
       }
     }
     this.issuesBySeverity = bySev;
+
+    this.activeNoteCount = input.notes.filter(
+      (n) => n.status === "active",
+    ).length;
+    this.archivedNoteCount = input.notes.filter(
+      (n) => n.status === "archived",
+    ).length;
   }
 
   // --- Query Methods ---
@@ -203,6 +224,10 @@ export class ProjectState {
 
   issueByID(id: string): Issue | undefined {
     return this.issuesByID.get(id);
+  }
+
+  noteByID(id: string): Note | undefined {
+    return this.notesByID.get(id);
   }
 
   // --- Deletion Safety ---

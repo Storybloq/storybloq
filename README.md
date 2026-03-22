@@ -135,6 +135,32 @@ Auto-inject project recap at session start — shows what changed since last sna
 claudestory recap --format md 2>/dev/null
 ```
 
+### PreCompact Hook (auto-snapshot)
+
+`setup-skill` configures a PreCompact hook that runs `claudestory snapshot --quiet` before context compaction. This ensures `recap` always shows changes since the last compaction — no manual snapshots needed.
+
+Installed automatically by `setup-skill`. To skip: `claudestory setup-skill --skip-hooks`.
+
+Manual configuration (add to `~/.claude/settings.json`):
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claudestory snapshot --quiet"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 ### Session End
 
 Save a snapshot before ending your session so the next `recap` can show diffs:

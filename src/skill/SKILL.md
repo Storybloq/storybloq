@@ -87,7 +87,7 @@ Then ask: **"What would you like to work on?"**
 
 **Never modify or overwrite existing handover files.** Handovers are append-only historical records. Always create new handover files — never edit, replace, or write to an existing one. If you need to correct something from a previous session, create a new handover that references the correction. This prevents accidental data loss during sessions.
 
-Before writing a handover at the end of a session, run `claudestory snapshot` first. This ensures the next session's recap can show what changed. Until the PreCompact hook is automated (T-102), snapshots must be taken manually.
+Before writing a handover at the end of a session, run `claudestory snapshot` first. This ensures the next session's recap can show what changed. If `setup-skill` has been run, a PreCompact hook auto-takes snapshots before context compaction.
 
 ## Ticket and Issue Discipline
 
@@ -106,12 +106,30 @@ When starting work on a ticket, update its status to `inprogress`. When done, up
 
 ## Managing Tickets and Issues
 
-Ticket and issue CRUD operations (create, update, delete) are **CLI-only** — there are no MCP tools for these. Use the `claudestory` CLI via Bash:
+Ticket and issue create/update operations are available via both CLI and MCP tools. Delete remains CLI-only.
+
+CLI examples:
 - `claudestory ticket create --title "..." --type task --phase p0`
 - `claudestory ticket update T-001 --status complete`
 - `claudestory issue create --title "..." --severity high --impact "..."`
 
+MCP examples:
+- `claudestory_ticket_create` with `title`, `type`, and optional `phase`, `description`, `blockedBy`, `parentTicket`
+- `claudestory_ticket_update` with `id` and optional `status`, `title`, `order`, `description`, `phase`, `parentTicket`
+- `claudestory_issue_create` with `title`, `severity`, `impact`, and optional `components`, `relatedTickets`, `location`, `phase`
+- `claudestory_issue_update` with `id` and optional `status`, `title`, `severity`, `impact`, `resolution`, `components`, `relatedTickets`, `location`
+
 Read operations (list, get, next, blocked) are available via both CLI and MCP.
+
+## Notes
+
+**Notes** are unstructured brainstorming artifacts — ideas, design thinking, "what if" explorations. Use notes when the content doesn't fit tickets (planned work) or issues (discovered problems).
+
+Create notes via CLI: `claudestory note create --content "..." --tags idea`
+
+Create notes via MCP: `claudestory_note_create` with `content`, optional `title` and `tags`.
+
+List, get, and update notes via MCP: `claudestory_note_list`, `claudestory_note_get`, `claudestory_note_update`. Delete remains CLI-only: `claudestory note delete <id>`.
 
 ## Command & Tool Reference
 

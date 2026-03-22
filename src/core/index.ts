@@ -5,11 +5,14 @@ export {
   writeTicketUnlocked,
   writeIssue,
   writeIssueUnlocked,
+  writeNote,
+  writeNoteUnlocked,
   writeRoadmap,
   writeRoadmapUnlocked,
   writeConfig,
   deleteTicket,
   deleteIssue,
+  deleteNote,
   withProjectLock,
   runTransaction,
   runTransactionUnlocked,
@@ -54,6 +57,7 @@ export {
 export {
   nextTicketID,
   nextIssueID,
+  nextNoteID,
   nextOrder,
 } from "./id-allocation.js";
 export {

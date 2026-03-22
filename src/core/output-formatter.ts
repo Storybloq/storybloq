@@ -1,6 +1,7 @@
 import type { OutputFormat, ErrorCode } from "../models/types.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
+import type { Note } from "../models/note.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
@@ -112,6 +113,8 @@ export function formatStatus(
     openTickets: state.leafTicketCount - state.completeLeafTicketCount,
     blockedTickets: state.blockedCount,
     openIssues: state.openIssueCount,
+    activeNotes: state.activeNoteCount,
+    archivedNotes: state.archivedNoteCount,
     handovers: state.handoverFilenames.length,
     phases: phases.map((p) => ({
       id: p.phase.id,
@@ -130,6 +133,7 @@ export function formatStatus(
     "",
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
     `Issues: ${state.openIssueCount} open`,
+    `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
     `Handovers: ${state.handoverFilenames.length}`,
     "",
     "## Phases",
@@ -404,6 +408,81 @@ export function formatBlockerList(
   return lines.join("\n");
 }
 
+export function formatNote(
+  note: Note,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(note), null, 2);
+  }
+
+  const title = note.title ?? `${note.createdDate} — ${note.id}`;
+  const statusBadge = note.status === "archived" ? " (archived)" : "";
+  const lines: string[] = [
+    `# ${escapeMarkdownInline(title)}${statusBadge}`,
+    "",
+    `Status: ${note.status}`,
+  ];
+  if (note.tags.length > 0) {
+    lines.push(`Tags: ${note.tags.join(", ")}`);
+  }
+  lines.push(`Created: ${note.createdDate} | Updated: ${note.updatedDate}`);
+  lines.push("", fencedBlock(note.content));
+  return lines.join("\n");
+}
+
+export function formatNoteList(
+  notes: readonly Note[],
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(notes), null, 2);
+  }
+  if (notes.length === 0) return "No notes found.";
+  const lines: string[] = [];
+  for (const n of notes) {
+    const title = n.title ?? n.id;
+    const status = n.status === "archived" ? "[x]" : "[ ]";
+    const tagInfo = n.status === "archived"
+      ? " (archived)"
+      : n.tags.length > 0
+        ? ` (${n.tags.join(", ")})`
+        : "";
+    lines.push(`${status} ${n.id}: ${escapeMarkdownInline(title)}${tagInfo}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatNoteCreateResult(
+  note: Note,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(note), null, 2);
+  }
+  return `Created note ${note.id}: ${note.title ?? note.id}`;
+}
+
+export function formatNoteUpdateResult(
+  note: Note,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(note), null, 2);
+  }
+  return `Updated note ${note.id}: ${note.title ?? note.id}`;
+}
+
+export function formatNoteDeleteResult(
+  id: string,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ id, deleted: true }), null, 2);
+  }
+  return `Deleted note ${id}.`;
+}
+
 export function formatError(
   code: ErrorCode,
   message: string,
@@ -525,7 +604,7 @@ export function formatRecap(
 
       // Ticket changes
       const ticketChanges = changes.tickets;
-      if (ticketChanges.added.length > 0 || ticketChanges.removed.length > 0 || ticketChanges.statusChanged.length > 0) {
+      if (ticketChanges.added.length > 0 || ticketChanges.removed.length > 0 || ticketChanges.statusChanged.length > 0 || ticketChanges.descriptionChanged.length > 0) {
         lines.push("");
         lines.push("## Tickets");
         for (const t of ticketChanges.statusChanged) {
@@ -537,11 +616,14 @@ export function formatRecap(
         for (const t of ticketChanges.removed) {
           lines.push(`- ${t.id}: ${escapeMarkdownInline(t.title)} — **removed**`);
         }
+        for (const t of ticketChanges.descriptionChanged) {
+          lines.push(`- ${t.id}: description updated`);
+        }
       }
 
       // Issue changes
       const issueChanges = changes.issues;
-      if (issueChanges.added.length > 0 || issueChanges.resolved.length > 0 || issueChanges.statusChanged.length > 0) {
+      if (issueChanges.added.length > 0 || issueChanges.resolved.length > 0 || issueChanges.statusChanged.length > 0 || issueChanges.impactChanged.length > 0) {
         lines.push("");
         lines.push("## Issues");
         for (const i of issueChanges.resolved) {
@@ -552,6 +634,9 @@ export function formatRecap(
         }
         for (const i of issueChanges.added) {
           lines.push(`- ${i.id}: ${escapeMarkdownInline(i.title)} — **new**`);
+        }
+        for (const i of issueChanges.impactChanged) {
+          lines.push(`- ${i.id}: impact updated`);
         }
       }
 
@@ -564,6 +649,21 @@ export function formatRecap(
         }
         for (const name of changes.blockers.added) {
           lines.push(`- ${escapeMarkdownInline(name)} — **new**`);
+        }
+      }
+
+      // Note changes
+      if (changes.notes && (changes.notes.added.length > 0 || changes.notes.removed.length > 0 || changes.notes.updated.length > 0)) {
+        lines.push("");
+        lines.push("## Notes");
+        for (const n of changes.notes.added) {
+          lines.push(`- ${n.id}: added`);
+        }
+        for (const n of changes.notes.removed) {
+          lines.push(`- ${n.id}: removed`);
+        }
+        for (const n of changes.notes.updated) {
+          lines.push(`- ${n.id}: updated (${n.changedFields.join(", ")})`);
         }
       }
     }
@@ -747,6 +847,12 @@ function formatFullExport(
           severity: i.severity,
           status: i.status,
         })),
+        notes: state.notes.map((n) => ({
+          id: n.id,
+          title: n.title,
+          status: n.status,
+          tags: n.tags,
+        })),
         blockers: state.roadmap.blockers.map((b) => ({
           name: b.name,
           cleared: isBlockerCleared(b),
@@ -763,6 +869,7 @@ function formatFullExport(
   lines.push("");
   lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
   lines.push(`Issues: ${state.openIssueCount} open`);
+  lines.push(`Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`);
 
   lines.push("");
   lines.push("## Phases");
@@ -792,6 +899,17 @@ function formatFullExport(
     }
   }
 
+  const activeNotes = state.notes.filter((n) => n.status === "active");
+  if (activeNotes.length > 0) {
+    lines.push("");
+    lines.push("## Notes");
+    for (const n of activeNotes) {
+      const title = n.title ?? n.id;
+      const tagInfo = n.tags.length > 0 ? ` (${n.tags.join(", ")})` : "";
+      lines.push(`- ${n.id}: ${escapeMarkdownInline(title)}${tagInfo}`);
+    }
+  }
+
   const blockers = state.roadmap.blockers;
   if (blockers.length > 0) {
     lines.push("");
@@ -810,14 +928,19 @@ function hasAnyChanges(diff: SnapshotDiff): boolean {
     diff.tickets.added.length > 0 ||
     diff.tickets.removed.length > 0 ||
     diff.tickets.statusChanged.length > 0 ||
+    diff.tickets.descriptionChanged.length > 0 ||
     diff.issues.added.length > 0 ||
     diff.issues.resolved.length > 0 ||
     diff.issues.statusChanged.length > 0 ||
+    diff.issues.impactChanged.length > 0 ||
     diff.blockers.added.length > 0 ||
     diff.blockers.cleared.length > 0 ||
     diff.phases.added.length > 0 ||
     diff.phases.removed.length > 0 ||
-    diff.phases.statusChanged.length > 0
+    diff.phases.statusChanged.length > 0 ||
+    (diff.notes?.added.length ?? 0) > 0 ||
+    (diff.notes?.removed.length ?? 0) > 0 ||
+    (diff.notes?.updated.length ?? 0) > 0
   );
 }
 

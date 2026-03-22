@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { nextTicketID, nextIssueID, nextOrder } from "../../src/core/id-allocation.js";
-import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase } from "./test-factories.js";
+import { nextTicketID, nextIssueID, nextNoteID, nextOrder } from "../../src/core/id-allocation.js";
+import { makeTicket, makeIssue, makeNote, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 
 describe("nextTicketID", () => {
   it("returns T-001 for empty array", () => {
@@ -58,6 +58,28 @@ describe("nextIssueID", () => {
   it("handles large numbers", () => {
     const issues = [makeIssue({ id: "ISS-999" })];
     expect(nextIssueID(issues)).toBe("ISS-1000");
+  });
+});
+
+describe("nextNoteID", () => {
+  it("returns N-001 for empty array", () => {
+    expect(nextNoteID([])).toBe("N-001");
+  });
+
+  it("returns N-004 when max is N-003", () => {
+    const notes = [
+      makeNote({ id: "N-001" }),
+      makeNote({ id: "N-003" }),
+    ];
+    expect(nextNoteID(notes)).toBe("N-004");
+  });
+
+  it("ignores malformed IDs", () => {
+    const notes = [
+      makeNote({ id: "N-002" }),
+      { id: "NOTE-bad", title: null, content: "x", tags: [], status: "active" as const, createdDate: "2026-03-20", updatedDate: "2026-03-20" },
+    ] as any;
+    expect(nextNoteID(notes)).toBe("N-003");
   });
 });
 

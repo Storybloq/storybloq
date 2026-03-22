@@ -15,6 +15,7 @@ import { loadProject } from "../../src/core/project-loader.js";
 import {
   makeTicket,
   makeIssue,
+  makeNote,
   makePhase,
   makeRoadmap,
   makeState,
@@ -348,6 +349,51 @@ describe("snapshot", () => {
       expect(diff.blockers.cleared).toEqual(["API key"]);
     });
 
+    it("detects ticket description changes", () => {
+      const snap = makeState({
+        tickets: [makeTicket({ id: "T-001", description: "Old desc" })],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+      const cur = makeState({
+        tickets: [makeTicket({ id: "T-001", description: "New desc" })],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+
+      const diff = diffStates(snap, cur);
+      expect(diff.tickets.descriptionChanged).toHaveLength(1);
+      expect(diff.tickets.descriptionChanged[0]).toMatchObject({ id: "T-001" });
+    });
+
+    it("detects issue impact changes", () => {
+      const snap = makeState({
+        issues: [makeIssue({ id: "ISS-001", impact: "Old impact" })],
+      });
+      const cur = makeState({
+        issues: [makeIssue({ id: "ISS-001", impact: "New impact" })],
+      });
+
+      const diff = diffStates(snap, cur);
+      expect(diff.issues.impactChanged).toHaveLength(1);
+      expect(diff.issues.impactChanged[0]).toMatchObject({ id: "ISS-001" });
+    });
+
+    it("does not report unchanged content", () => {
+      const snap = makeState({
+        tickets: [makeTicket({ id: "T-001", description: "Same desc" })],
+        issues: [makeIssue({ id: "ISS-001", impact: "Same impact" })],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+      const cur = makeState({
+        tickets: [makeTicket({ id: "T-001", description: "Same desc" })],
+        issues: [makeIssue({ id: "ISS-001", impact: "Same impact" })],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+
+      const diff = diffStates(snap, cur);
+      expect(diff.tickets.descriptionChanged).toEqual([]);
+      expect(diff.issues.impactChanged).toEqual([]);
+    });
+
     it("returns empty diff when nothing changed", () => {
       const state = makeState({
         tickets: [makeTicket({ id: "T-001" })],
@@ -358,8 +404,10 @@ describe("snapshot", () => {
       expect(diff.tickets.added).toEqual([]);
       expect(diff.tickets.removed).toEqual([]);
       expect(diff.tickets.statusChanged).toEqual([]);
+      expect(diff.tickets.descriptionChanged).toEqual([]);
       expect(diff.issues.added).toEqual([]);
       expect(diff.issues.resolved).toEqual([]);
+      expect(diff.issues.impactChanged).toEqual([]);
       expect(diff.phases.statusChanged).toEqual([]);
       expect(diff.blockers.added).toEqual([]);
       expect(diff.blockers.cleared).toEqual([]);
@@ -445,6 +493,68 @@ describe("snapshot", () => {
       expect(recap.changes).not.toBeNull();
       expect(recap.changes!.tickets.statusChanged).toHaveLength(1);
       expect(recap.changes!.phases.statusChanged).toHaveLength(1);
+    });
+
+    it("detects note additions in diff", () => {
+      const snap = makeState();
+      const current = makeState({
+        notes: [makeNote({ id: "N-001", content: "Idea" })],
+      });
+      const diff = diffStates(snap, current);
+      expect(diff.notes.added).toHaveLength(1);
+      expect(diff.notes.added[0]!.id).toBe("N-001");
+      expect(diff.notes.removed).toHaveLength(0);
+      expect(diff.notes.updated).toHaveLength(0);
+    });
+
+    it("detects note removals in diff", () => {
+      const snap = makeState({
+        notes: [makeNote({ id: "N-001", content: "Old idea" })],
+      });
+      const current = makeState();
+      const diff = diffStates(snap, current);
+      expect(diff.notes.removed).toHaveLength(1);
+      expect(diff.notes.removed[0]!.id).toBe("N-001");
+      expect(diff.notes.added).toHaveLength(0);
+    });
+
+    it("detects note content and tag updates in diff", () => {
+      const snap = makeState({
+        notes: [makeNote({ id: "N-001", content: "Old", tags: ["a"] })],
+      });
+      const current = makeState({
+        notes: [makeNote({ id: "N-001", content: "New", tags: ["a", "b"] })],
+      });
+      const diff = diffStates(snap, current);
+      expect(diff.notes.updated).toHaveLength(1);
+      expect(diff.notes.updated[0]!.changedFields).toContain("content");
+      expect(diff.notes.updated[0]!.changedFields).toContain("tags");
+      expect(diff.notes.updated[0]!.changedFields).not.toContain("status");
+    });
+
+    it("does not report unchanged notes", () => {
+      const note = makeNote({ id: "N-001", content: "Same" });
+      const snap = makeState({ notes: [note] });
+      const current = makeState({ notes: [note] });
+      const diff = diffStates(snap, current);
+      expect(diff.notes.added).toHaveLength(0);
+      expect(diff.notes.removed).toHaveLength(0);
+      expect(diff.notes.updated).toHaveLength(0);
+    });
+
+    it("parses old snapshot without notes field", () => {
+      const oldSnapshot = {
+        version: 1,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        project: "test",
+        config: minimalConfig,
+        roadmap: emptyRoadmap,
+        tickets: [],
+        issues: [],
+        // no notes field
+      };
+      const parsed = SnapshotV1Schema.parse(oldSnapshot);
+      expect(parsed.notes).toEqual([]);
     });
 
     it("filters high severity issues for suggested actions", () => {

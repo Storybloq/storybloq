@@ -1,6 +1,7 @@
 import { ProjectState } from "../../src/core/project-state.js";
 import type { Ticket } from "../../src/models/ticket.js";
 import type { Issue } from "../../src/models/issue.js";
+import type { Note } from "../../src/models/note.js";
 import type { Roadmap, Phase } from "../../src/models/roadmap.js";
 import type { Config } from "../../src/models/config.js";
 
@@ -37,6 +38,20 @@ export function makeIssue(
     relatedTickets: [],
     ...overrides,
   } as Issue;
+}
+
+export function makeNote(
+  overrides: Partial<Note> & { id: string },
+): Note {
+  return {
+    title: `Test ${overrides.id}`,
+    content: "Test note content.",
+    tags: [],
+    status: "active",
+    createdDate: "2026-03-20",
+    updatedDate: "2026-03-20",
+    ...overrides,
+  } as Note;
 }
 
 export function makePhase(
@@ -79,6 +94,7 @@ export function makeState(
   opts: {
     tickets?: Ticket[];
     issues?: Issue[];
+    notes?: Note[];
     roadmap?: Roadmap;
     handoverFilenames?: string[];
   } = {},
@@ -86,6 +102,7 @@ export function makeState(
   return new ProjectState({
     tickets: opts.tickets ?? [],
     issues: opts.issues ?? [],
+    notes: opts.notes ?? [],
     roadmap: opts.roadmap ?? emptyRoadmap,
     config: minimalConfig,
     handoverFilenames: opts.handoverFilenames ?? [],

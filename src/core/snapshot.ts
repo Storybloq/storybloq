@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
+import { NoteSchema, type Note } from "../models/note.js";
 import { RoadmapSchema, type Roadmap } from "../models/roadmap.js";
 import { ConfigSchema, type Config } from "../models/config.js";
 import { ProjectState, type PhaseStatus } from "./project-state.js";
@@ -34,6 +35,7 @@ export const SnapshotV1Schema = z.object({
   roadmap: RoadmapSchema,
   tickets: z.array(TicketSchema),
   issues: z.array(IssueSchema),
+  notes: z.array(NoteSchema).optional().default([]),
   warnings: z.array(LoadWarningSchema).optional(),
 });
 
@@ -69,6 +71,7 @@ export async function saveSnapshot(
     roadmap: state.roadmap as Roadmap,
     tickets: [...state.tickets] as Ticket[],
     issues: [...state.issues] as Issue[],
+    notes: [...state.notes] as Note[],
     ...(warnings.length > 0
       ? {
           warnings: warnings.map((w) => ({
@@ -150,16 +153,29 @@ export interface PhaseChange {
   to: string;
 }
 
+export interface ContentChange {
+  id: string;
+  title: string;
+}
+
+export interface NoteChange {
+  id: string;
+  title: string | null;
+  changedFields: string[];
+}
+
 export interface SnapshotDiff {
   tickets: {
     added: Array<{ id: string; title: string }>;
     removed: Array<{ id: string; title: string }>;
     statusChanged: TicketChange[];
+    descriptionChanged: ContentChange[];
   };
   issues: {
     added: Array<{ id: string; title: string }>;
     resolved: Array<{ id: string; title: string }>;
     statusChanged: IssueChange[];
+    impactChanged: ContentChange[];
   };
   blockers: {
     added: string[];
@@ -169,6 +185,11 @@ export interface SnapshotDiff {
     added: Array<{ id: string; name: string }>;
     removed: Array<{ id: string; name: string }>;
     statusChanged: PhaseChange[];
+  };
+  notes: {
+    added: Array<{ id: string; title: string | null }>;
+    removed: Array<{ id: string; title: string | null }>;
+    updated: NoteChange[];
   };
 }
 
@@ -197,13 +218,19 @@ export function diffStates(
   const ticketsAdded: Array<{ id: string; title: string }> = [];
   const ticketsRemoved: Array<{ id: string; title: string }> = [];
   const ticketsStatusChanged: TicketChange[] = [];
+  const ticketsDescriptionChanged: ContentChange[] = [];
 
   for (const [id, cur] of curTickets) {
     const snap = snapTickets.get(id);
     if (!snap) {
       ticketsAdded.push({ id, title: cur.title });
-    } else if (snap.status !== cur.status) {
-      ticketsStatusChanged.push({ id, title: cur.title, from: snap.status, to: cur.status });
+    } else {
+      if (snap.status !== cur.status) {
+        ticketsStatusChanged.push({ id, title: cur.title, from: snap.status, to: cur.status });
+      }
+      if (snap.description !== cur.description) {
+        ticketsDescriptionChanged.push({ id, title: cur.title });
+      }
     }
   }
   for (const [id, snap] of snapTickets) {
@@ -219,16 +246,22 @@ export function diffStates(
   const issuesAdded: Array<{ id: string; title: string }> = [];
   const issuesResolved: Array<{ id: string; title: string }> = [];
   const issuesStatusChanged: IssueChange[] = [];
+  const issuesImpactChanged: ContentChange[] = [];
 
   for (const [id, cur] of curIssues) {
     const snap = snapIssues.get(id);
     if (!snap) {
       issuesAdded.push({ id, title: cur.title });
-    } else if (snap.status !== cur.status) {
-      if (cur.status === "resolved") {
-        issuesResolved.push({ id, title: cur.title });
-      } else {
-        issuesStatusChanged.push({ id, title: cur.title, from: snap.status, to: cur.status });
+    } else {
+      if (snap.status !== cur.status) {
+        if (cur.status === "resolved") {
+          issuesResolved.push({ id, title: cur.title });
+        } else {
+          issuesStatusChanged.push({ id, title: cur.title, from: snap.status, to: cur.status });
+        }
+      }
+      if (snap.impact !== cur.impact) {
+        issuesImpactChanged.push({ id, title: cur.title });
       }
     }
   }
@@ -286,11 +319,41 @@ export function diffStates(
     }
   }
 
+  // --- Notes ---
+  const snapNotes = new Map(snapshotState.notes.map((n) => [n.id, n]));
+  const curNotes = new Map(currentState.notes.map((n) => [n.id, n]));
+
+  const notesAdded: Array<{ id: string; title: string | null }> = [];
+  const notesRemoved: Array<{ id: string; title: string | null }> = [];
+  const notesUpdated: NoteChange[] = [];
+
+  for (const [id, cur] of curNotes) {
+    const snap = snapNotes.get(id);
+    if (!snap) {
+      notesAdded.push({ id, title: cur.title });
+    } else {
+      const changedFields: string[] = [];
+      if (snap.title !== cur.title) changedFields.push("title");
+      if (snap.content !== cur.content) changedFields.push("content");
+      if (JSON.stringify([...snap.tags].sort()) !== JSON.stringify([...cur.tags].sort())) changedFields.push("tags");
+      if (snap.status !== cur.status) changedFields.push("status");
+      if (changedFields.length > 0) {
+        notesUpdated.push({ id, title: cur.title, changedFields });
+      }
+    }
+  }
+  for (const [id, snap] of snapNotes) {
+    if (!curNotes.has(id)) {
+      notesRemoved.push({ id, title: snap.title });
+    }
+  }
+
   return {
-    tickets: { added: ticketsAdded, removed: ticketsRemoved, statusChanged: ticketsStatusChanged },
-    issues: { added: issuesAdded, resolved: issuesResolved, statusChanged: issuesStatusChanged },
+    tickets: { added: ticketsAdded, removed: ticketsRemoved, statusChanged: ticketsStatusChanged, descriptionChanged: ticketsDescriptionChanged },
+    issues: { added: issuesAdded, resolved: issuesResolved, statusChanged: issuesStatusChanged, impactChanged: issuesImpactChanged },
     blockers: { added: blockersAdded, cleared: blockersCleared },
     phases: { added: phasesAdded, removed: phasesRemoved, statusChanged: phasesStatusChanged },
+    notes: { added: notesAdded, removed: notesRemoved, updated: notesUpdated },
   };
 }
 
@@ -335,6 +398,7 @@ export function buildRecap(
   const snapshotState = new ProjectState({
     tickets: snapshot.tickets,
     issues: snapshot.issues,
+    notes: snapshot.notes ?? [],
     roadmap: snapshot.roadmap,
     config: snapshot.config,
     handoverFilenames: [],

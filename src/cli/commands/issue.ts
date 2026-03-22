@@ -33,7 +33,7 @@ export { ISSUE_STATUSES, ISSUE_SEVERITIES };
 // --- Read Handlers ---
 
 export function handleIssueList(
-  filters: { status?: string; severity?: string },
+  filters: { status?: string; severity?: string; component?: string },
   ctx: CommandContext,
 ): CommandResult {
   let issues = [...ctx.state.issues];
@@ -55,6 +55,9 @@ export function handleIssueList(
       );
     }
     issues = issues.filter((i) => i.severity === filters.severity);
+  }
+  if (filters.component) {
+    issues = issues.filter((i) => i.components.includes(filters.component!));
   }
 
   return { output: formatIssueList(issues, ctx.format) };
@@ -101,6 +104,7 @@ function validatePostWriteIssueState(
   const postState = new ProjectState({
     tickets: [...state.tickets],
     issues: existingIssues,
+    notes: [...state.notes],
     roadmap: state.roadmap,
     config: state.config,
     handoverFilenames: [...state.handoverFilenames],
@@ -121,6 +125,7 @@ export async function handleIssueCreate(
     components: string[];
     relatedTickets: string[];
     location: string[];
+    phase?: string;
   },
   format: string,
   root: string,
@@ -152,6 +157,7 @@ export async function handleIssueCreate(
       discoveredDate: todayISO(),
       resolvedDate: null,
       relatedTickets: args.relatedTickets,
+      phase: args.phase ?? null,
     };
 
     validatePostWriteIssueState(issue, state, true);

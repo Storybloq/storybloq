@@ -79,6 +79,32 @@ describe("handleIssueList", () => {
     expect(() => handleIssueList({ severity: "invalid" }, ctx)).toThrow(CliValidationError);
   });
 
+  it("filters by component matches", () => {
+    const ctx = makeCtx({
+      state: makeState({
+        issues: [
+          makeIssue({ id: "ISS-001", components: ["ui", "api"] }),
+          makeIssue({ id: "ISS-002", components: ["core"] }),
+        ],
+      }),
+    });
+    const result = handleIssueList({ component: "ui" }, ctx);
+    expect(result.output).toContain("ISS-001");
+    expect(result.output).not.toContain("ISS-002");
+  });
+
+  it("filters by component no matches", () => {
+    const ctx = makeCtx({
+      state: makeState({
+        issues: [
+          makeIssue({ id: "ISS-001", components: ["ui"] }),
+        ],
+      }),
+    });
+    const result = handleIssueList({ component: "nonexistent" }, ctx);
+    expect(result.output).not.toContain("ISS-001");
+  });
+
   it("returns empty message when no issues", () => {
     const ctx = makeCtx();
     const result = handleIssueList({}, ctx);

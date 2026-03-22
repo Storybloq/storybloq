@@ -1,0 +1,9 @@
+{
+  "id": "N-001",
+  "title": "Architecture brainstorm",
+  "content": "Ideas for service layer refactoring.",
+  "tags": ["architecture", "design"],
+  "status": "active",
+  "createdDate": "2026-03-20",
+  "updatedDate": "2026-03-21"
+}

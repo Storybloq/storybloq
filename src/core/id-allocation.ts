@@ -1,10 +1,12 @@
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
+import type { Note } from "../models/note.js";
 import type { ProjectState } from "./project-state.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../models/types.js";
+import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX } from "../models/types.js";
 
 const TICKET_NUMERIC_REGEX = /^T-(\d+)[a-z]?$/;
 const ISSUE_NUMERIC_REGEX = /^ISS-(\d+)$/;
+const NOTE_NUMERIC_REGEX = /^N-(\d+)$/;
 
 /**
  * Next ticket ID: scan existing IDs, find max numeric part, return T-(max+1).
@@ -39,6 +41,23 @@ export function nextIssueID(issues: readonly Issue[]): string {
     }
   }
   return `ISS-${String(max + 1).padStart(3, "0")}`;
+}
+
+/**
+ * Next note ID: scan existing IDs, find max numeric part, return N-(max+1).
+ * Zero-padded to 3 digits minimum.
+ */
+export function nextNoteID(notes: readonly Note[]): string {
+  let max = 0;
+  for (const n of notes) {
+    if (!NOTE_ID_REGEX.test(n.id)) continue;
+    const match = n.id.match(NOTE_NUMERIC_REGEX);
+    if (match?.[1]) {
+      const num = parseInt(match[1], 10);
+      if (num > max) max = num;
+    }
+  }
+  return `N-${String(max + 1).padStart(3, "0")}`;
 }
 
 /**

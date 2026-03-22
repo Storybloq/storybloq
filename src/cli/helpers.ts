@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import {
   TicketIdSchema,
   IssueIdSchema,
+  NoteIdSchema,
   DateSchema,
   OUTPUT_FORMATS,
   type OutputFormat,
@@ -151,4 +152,70 @@ export async function parseHandoverFilename(
   }
 
   return raw;
+}
+
+export function parseNoteId(raw: string): string {
+  const result = NoteIdSchema.safeParse(raw);
+  if (!result.success) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Invalid note ID "${raw}": ${formatZodError(result.error)}`,
+    );
+  }
+  return result.data;
+}
+
+/**
+ * Normalizes tag values from CLI input.
+ * Non-string items are silently filtered (intentional: yargs produces [true] for bare --tags).
+ * MCP callers are pre-validated by Zod z.array(z.string()), so non-strings never reach here from MCP.
+ * Filters non-strings,
+ * trims, lowercases, replaces spaces with hyphens, strips invalid chars,
+ * collapses hyphens, deduplicates, and filters empties.
+ */
+export function normalizeTags(raw: unknown[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const normalized = item
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  }
+  return result;
+}
+
+/**
+ * Reads all content from stdin (piped input).
+ * Throws CliValidationError if stdin is a TTY or content is empty.
+ */
+export async function readStdinContent(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new CliValidationError(
+      "invalid_input",
+      "--stdin requires piped input, not a TTY",
+    );
+  }
+  const chunks: Array<Buffer | string> = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer | string);
+  }
+  const content = Buffer.concat(
+    chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(c))),
+  ).toString("utf-8");
+  if (!content.trim()) {
+    throw new CliValidationError(
+      "invalid_input",
+      "Stdin content is empty",
+    );
+  }
+  return content;
 }

@@ -167,6 +167,34 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--name", "--note"],
   },
   {
+    name: "note list",
+    description: "List notes with optional status/tag filters",
+    usage: "claudestory note list [--status <s>] [--tag <t>] [--format json|md]",
+    flags: ["--status", "--tag"],
+  },
+  {
+    name: "note get",
+    description: "Get a note by ID",
+    usage: "claudestory note get <id> [--format json|md]",
+  },
+  {
+    name: "note create",
+    description: "Create a new note",
+    usage: "claudestory note create --content <c> [--title <t>] [--tags <tags>] [--format json|md]",
+    flags: ["--content", "--title", "--tags"],
+  },
+  {
+    name: "note update",
+    description: "Update a note",
+    usage: "claudestory note update <id> [--content <c>] [--title <t>] [--tags <tags>] [--clear-tags] [--status <s>] [--format json|md]",
+    flags: ["--content", "--title", "--tags", "--clear-tags", "--status"],
+  },
+  {
+    name: "note delete",
+    description: "Delete a note",
+    usage: "claudestory note delete <id> [--format json|md]",
+  },
+  {
     name: "validate",
     description: "Reference integrity + schema checks on all .story/ files",
     usage: "claudestory validate [--format json|md]",
@@ -220,6 +248,14 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_recap", description: "Session diff — changes since last snapshot" },
   { name: "claudestory_snapshot", description: "Save current project state snapshot" },
   { name: "claudestory_export", description: "Self-contained project document", params: ["phase?", "all?"] },
+  { name: "claudestory_note_list", description: "List notes", params: ["status?", "tag?"] },
+  { name: "claudestory_note_get", description: "Get note by ID", params: ["id"] },
+  { name: "claudestory_note_create", description: "Create note", params: ["content", "title?", "tags?"] },
+  { name: "claudestory_note_update", description: "Update note", params: ["id", "content?", "title?", "tags?", "status?"] },
+  { name: "claudestory_ticket_create", description: "Create ticket", params: ["title", "type", "phase?", "description?", "blockedBy?", "parentTicket?"] },
+  { name: "claudestory_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "order?", "description?", "phase?", "parentTicket?"] },
+  { name: "claudestory_issue_create", description: "Create issue", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "phase?"] },
+  { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?"] },
 ];
 
 export function handleReference(format: OutputFormat): string {

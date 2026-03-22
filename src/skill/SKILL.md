@@ -61,7 +61,7 @@ Call these in order:
 
 1. **Project status** — call `claudestory_status` MCP tool
 2. **Session recap** — call `claudestory_recap` MCP tool (shows changes since last snapshot)
-3. **Latest handover** — call `claudestory_handover_latest` MCP tool (last session's context)
+3. **Recent handovers** — call `claudestory_handover_latest` MCP tool with `count: 3` (last 3 sessions' context — ensures reasoning behind recent decisions is preserved, not just the latest session's state)
 4. **Development rules** — read `RULES.md` if it exists in the project root
 5. **Lessons learned** — read `WORK_STRATEGIES.md` if it exists in the project root
 6. **Recent commits** — run `git log --oneline -10`
@@ -87,9 +87,16 @@ Then ask: **"What would you like to work on?"**
 
 **Never modify or overwrite existing handover files.** Handovers are append-only historical records. Always create new handover files — never edit, replace, or write to an existing one. If you need to correct something from a previous session, create a new handover that references the correction. This prevents accidental data loss during sessions.
 
+Before writing a handover at the end of a session, run `claudestory snapshot` first. This ensures the next session's recap can show what changed. Until the PreCompact hook is automated (T-102), snapshots must be taken manually.
+
 ## Ticket and Issue Discipline
 
 **Tickets** are planned work — features, tasks, refactors. They represent intentional, scoped commitments.
+
+**Ticket types:**
+- `task` — Implementation work: building features, writing code, fixing bugs, refactoring.
+- `feature` — A user-facing capability or significant new functionality. Larger scope than a task.
+- `chore` — Maintenance, publishing, documentation, cleanup. No functional change to the product.
 
 **Issues** are discovered problems — bugs, inconsistencies, gaps, risks found during work. If you're not sure whether something is a ticket or an issue, make it an issue. It can be promoted to a ticket later.
 

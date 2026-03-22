@@ -62,6 +62,9 @@ import { handleRecap } from "./commands/recap.js";
 import { handleExport } from "./commands/export.js";
 import { handleSnapshot } from "./commands/snapshot.js";
 
+// Reference command
+import { handleReference } from "./commands/reference.js";
+
 // ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
@@ -1347,13 +1350,26 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
   return yargs.command(
     "snapshot",
     "Save current project state for session diffs",
-    (y) => addFormatOption(y),
+    (y) =>
+      addFormatOption(
+        y.option("quiet", {
+          type: "boolean",
+          default: false,
+          describe: "Suppress output (for hook usage)",
+        }),
+      ),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
+      const quiet = argv.quiet as boolean;
       const root = (
         await import("../core/project-root-discovery.js")
       ).discoverProjectRoot();
       if (!root) {
+        if (quiet) {
+          process.stderr.write("No .story/ project found.\n");
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
         writeOutput(
           formatError("not_found", "No .story/ project found.", format),
         );
@@ -1361,10 +1377,18 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
         return;
       }
       try {
-        const result = await handleSnapshot(root, format);
-        writeOutput(result.output);
+        const result = await handleSnapshot(root, format, { quiet });
+        if (!quiet && result.output) {
+          writeOutput(result.output);
+        }
         process.exitCode = result.exitCode ?? ExitCode.OK;
       } catch (err: unknown) {
+        if (quiet) {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(message + "\n");
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
         if (err instanceof CliValidationError) {
           writeOutput(formatError(err.code, err.message, format));
           process.exitCode = ExitCode.USER_ERROR;
@@ -1436,6 +1460,39 @@ export function registerExportCommand(yargs: Argv): Argv {
       await runReadCommand(format, (ctx) =>
         handleExport(ctx, mode as "all" | "phase", phaseId),
       );
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// reference
+// ---------------------------------------------------------------------------
+
+export function registerReferenceCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "reference",
+    "Print CLI command and MCP tool reference",
+    (y) => addFormatOption(y),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      const output = handleReference(format);
+      writeOutput(output);
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// setup-skill
+// ---------------------------------------------------------------------------
+
+export function registerSetupSkillCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "setup-skill",
+    "Install the /story skill globally for Claude Code",
+    () => {},
+    async () => {
+      const { handleSetupSkill } = await import("./commands/setup-skill.js");
+      await handleSetupSkill();
     },
   );
 }

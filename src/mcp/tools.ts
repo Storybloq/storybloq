@@ -1,7 +1,7 @@
 /**
- * MCP tool registration and shared pipeline for claudestory read tools.
+ * MCP tool registration and shared pipeline for claudestory tools.
  *
- * All 15 tools are read-only and use the same pipeline:
+ * 19 tools (15 read + 4 write). Read tools use a shared pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
 import { z } from "zod";

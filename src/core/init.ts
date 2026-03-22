@@ -1,5 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeConfig, writeRoadmap, loadProject } from "./project-loader.js";
 import { ProjectLoaderError, CURRENT_SCHEMA_VERSION, INTEGRITY_WARNING_TYPES } from "./errors.js";
@@ -101,15 +100,6 @@ export async function initProject(
   await writeConfig(config, absRoot);
   await writeRoadmap(roadmap, absRoot);
 
-  // Scaffold Claude Code /prime skill (only on fresh init, not --force)
-  const skillDir = join(absRoot, ".claude", "skills", "prime");
-  const skillPath = join(skillDir, "SKILL.md");
-  if (!existsSync(skillPath)) {
-    await mkdir(skillDir, { recursive: true });
-    await writeFile(skillPath, PRIME_SKILL_CONTENT, "utf-8");
-    created.push(".claude/skills/prime/SKILL.md");
-  }
-
   // Validate existing data files when force-reinitializing.
   // Uses loadProject (permissive) — catches both JSON parse errors AND Zod schema
   // violations, matching exactly what strict mode will reject on future writes.
@@ -135,72 +125,3 @@ export async function initProject(
     warnings,
   };
 }
-
-// --- Skill Content ---
-
-const PRIME_SKILL_CONTENT = `---
-name: prime
-description: Load full claudestory project context. Use at session start for any project with a .story/ directory.
----
-
-# Prime: Load Project Context
-
-Get full project context in one command for any project using claudestory.
-
-## Step 0: Check Setup
-
-First, check if the claudestory MCP tools are available by looking for \`claudestory_status\` in your available tools.
-
-**If MCP tools ARE available**, proceed to Step 1.
-
-**If MCP tools are NOT available**, help the user set up:
-
-1. Check if the \`claudestory\` CLI is installed by running: \`claudestory --version\`
-2. If NOT installed, tell the user:
-   \`\`\`
-   claudestory CLI not found. To set up:
-   npm install -g @anthropologies/claudestory
-   claude mcp add claudestory -s user -- claudestory --mcp
-   Then restart Claude Code and run /prime again.
-   \`\`\`
-3. If CLI IS installed but MCP not registered, offer to register it for them.
-   With user permission, run: \`claude mcp add claudestory -s user -- claudestory --mcp\`
-   Tell the user to restart Claude Code and run /prime again.
-
-**If MCP tools are unavailable and user doesn't want to set up**, fall back to CLI:
-- Run \`claudestory status\` via Bash
-- Run \`claudestory recap\` via Bash
-- Run \`claudestory handover latest\` via Bash
-- Then continue to Steps 4-6 below.
-
-## Step 1: Project Status
-Call the \`claudestory_status\` MCP tool.
-
-## Step 2: Session Recap
-Call the \`claudestory_recap\` MCP tool.
-
-## Step 3: Latest Handover
-Call the \`claudestory_handover_latest\` MCP tool.
-
-## Step 4: Development Rules
-Read \`RULES.md\` if it exists in the project root.
-
-## Step 5: Lessons Learned
-Read \`WORK_STRATEGIES.md\` if it exists in the project root.
-
-## Step 6: Recent Commits
-Run \`git log --oneline -10\`.
-
-## After Loading
-
-Present a concise summary:
-- Project progress (X/Y tickets, current phase)
-- What changed since last snapshot
-- What the last session accomplished
-- Next ticket to work on
-- Any high-severity issues or blockers
-- Key process rules (if WORK_STRATEGIES.md exists)
-
-Then ask: "What would you like to work on?"
-`;
-

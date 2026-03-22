@@ -7,7 +7,6 @@ import type { LoadWarning } from "./errors.js";
 import type { ValidationResult } from "./validation.js";
 import type { NextTicketOutcome } from "./queries.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
-
 // --- Exit Codes ---
 
 export const ExitCode = {
@@ -427,6 +426,7 @@ export function formatInitResult(
   if (result.warnings.length > 0) {
     lines.push("", `Warning: ${result.warnings.length} corrupt file(s) found. Run \`claudestory validate\` to inspect.`);
   }
+  lines.push("", "Tip: Run `claudestory setup-skill` to install the /story skill for Claude Code.");
   return lines.join("\n");
 }
 
@@ -832,4 +832,78 @@ function formatTicketOneLiner(t: Ticket, state: ProjectState): string {
   const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
   const blocked = state.isBlocked(t) ? " [BLOCKED]" : "";
   return `${status} ${t.id}: ${escapeMarkdownInline(t.title)}${blocked}`;
+}
+
+// --- Reference ---
+
+export interface CommandEntry {
+  readonly name: string;
+  readonly description: string;
+  readonly usage: string;
+  readonly flags?: readonly string[];
+}
+
+export interface McpToolEntry {
+  readonly name: string;
+  readonly description: string;
+  readonly params?: readonly string[];
+}
+
+export function formatReference(
+  commands: readonly CommandEntry[],
+  mcpTools: readonly McpToolEntry[],
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ commands, mcpTools }), null, 2);
+  }
+
+  const lines: string[] = [];
+  lines.push("# claudestory Reference");
+  lines.push("");
+  lines.push("## CLI Commands");
+  lines.push("");
+  for (const cmd of commands) {
+    lines.push(`### ${cmd.name}`);
+    lines.push(cmd.description);
+    lines.push("");
+    lines.push("```");
+    lines.push(cmd.usage);
+    lines.push("```");
+    lines.push("");
+  }
+
+  lines.push("## MCP Tools");
+  lines.push("");
+  for (const tool of mcpTools) {
+    const params = tool.params?.length ? ` (${tool.params.join(", ")})` : "";
+    lines.push(`- **${tool.name}**${params} — ${tool.description}`);
+  }
+
+  lines.push("");
+  lines.push("## Common Workflows");
+  lines.push("");
+  lines.push("### Session Start");
+  lines.push("1. `claudestory status` — project overview");
+  lines.push("2. `claudestory recap` — what changed since last snapshot");
+  lines.push("3. `claudestory handover latest` — last session context");
+  lines.push("4. `claudestory ticket next` — what to work on");
+  lines.push("");
+  lines.push("### Session End");
+  lines.push("1. `claudestory snapshot` — save state for diffs");
+  lines.push("2. `claudestory handover create --content <md>` — write session handover");
+  lines.push("");
+  lines.push("### Project Setup");
+  lines.push("1. `npm install -g @anthropologies/claudestory` — install CLI");
+  lines.push("2. `claudestory setup-skill` — install /story skill for Claude Code");
+  lines.push("3. `claudestory init --name my-project` — initialize .story/ in your project");
+  lines.push("");
+  lines.push("## Troubleshooting");
+  lines.push("");
+  lines.push("- **MCP not connected:** Run `claude mcp add claudestory -s user -- claudestory --mcp`");
+  lines.push("- **CLI not found:** Run `npm install -g @anthropologies/claudestory`");
+  lines.push("- **Stale data:** Run `claudestory validate` to check integrity");
+  lines.push("- **/story not available:** Run `claudestory setup-skill` to install the skill");
+
+  return lines.join("\n");
 }

@@ -13,6 +13,7 @@
   },
   "files": [
     "dist",
+    "src/skill",
     "README.md"
   ],
   "engines": {

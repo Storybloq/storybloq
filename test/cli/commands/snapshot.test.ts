@@ -49,6 +49,25 @@ describe("snapshot command", () => {
     expect(parsed.data.retained).toBe(1);
     expect(parsed.data.pruned).toBe(0);
   });
+
+  it("quiet mode returns empty output", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-cmd-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+
+    const result = await handleSnapshot(dir, "md", { quiet: true });
+    expect(result.output).toBe("");
+  });
+
+  it("quiet mode still creates snapshot file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-cmd-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+
+    await handleSnapshot(dir, "md", { quiet: true });
+    const files = await readdir(join(dir, ".story", "snapshots"));
+    expect(files.length).toBe(1);
+  });
 });
 
 describe("formatSnapshotResult", () => {

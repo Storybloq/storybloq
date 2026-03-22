@@ -27,6 +27,8 @@ async function runCli(): Promise<void> {
     registerSnapshotCommand,
     registerRecapCommand,
     registerExportCommand,
+    registerReferenceCommand,
+    registerSetupSkillCommand,
   } = await import("./register.js");
 
   // Version injected at build time by tsup define
@@ -73,6 +75,8 @@ async function runCli(): Promise<void> {
   cli = registerSnapshotCommand(cli);
   cli = registerRecapCommand(cli);
   cli = registerExportCommand(cli);
+  cli = registerReferenceCommand(cli);
+  cli = registerSetupSkillCommand(cli);
 
   function handleUnexpectedError(err: unknown): void {
     if (err instanceof HandledError) return;

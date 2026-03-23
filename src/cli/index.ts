@@ -30,6 +30,7 @@ async function runCli(): Promise<void> {
     registerNoteCommand,
     registerRecommendCommand,
     registerReferenceCommand,
+    registerSelftestCommand,
     registerSetupSkillCommand,
   } = await import("./register.js");
 
@@ -80,6 +81,7 @@ async function runCli(): Promise<void> {
   cli = registerExportCommand(cli);
   cli = registerRecommendCommand(cli);
   cli = registerReferenceCommand(cli);
+  cli = registerSelftestCommand(cli);
   cli = registerSetupSkillCommand(cli);
 
   function handleUnexpectedError(err: unknown): void {

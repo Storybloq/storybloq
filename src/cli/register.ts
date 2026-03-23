@@ -76,6 +76,9 @@ import { handleSnapshot } from "./commands/snapshot.js";
 // Reference command
 import { handleReference } from "./commands/reference.js";
 
+// Selftest command
+import { handleSelftest } from "./commands/selftest.js";
+
 // ---------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------
@@ -1840,6 +1843,51 @@ export function registerRecommendCommand(yargs: Argv): Argv {
       const raw = Number(argv.count) || 5;
       const count = Math.max(1, Math.min(10, Math.floor(raw)));
       await runReadCommand(format, (ctx) => handleRecommend(ctx, count));
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// selftest
+// ---------------------------------------------------------------------------
+
+export function registerSelftestCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "selftest",
+    "Run integration smoke test — create/update/delete cycle across all entity types",
+    (y) => addFormatOption(y),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      const root = (
+        await import("../core/project-root-discovery.js")
+      ).discoverProjectRoot();
+      if (!root) {
+        writeOutput(
+          formatError("not_found", "No .story/ project found.", format),
+        );
+        process.exitCode = ExitCode.USER_ERROR;
+        return;
+      }
+      try {
+        const result = await handleSelftest(root, format);
+        writeOutput(result.output);
+        process.exitCode = result.exitCode ?? ExitCode.OK;
+      } catch (err: unknown) {
+        if (err instanceof CliValidationError) {
+          writeOutput(formatError(err.code, err.message, format));
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
+        const { ProjectLoaderError } = await import("../core/errors.js");
+        if (err instanceof ProjectLoaderError) {
+          writeOutput(formatError(err.code, err.message, format));
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        writeOutput(formatError("io_error", message, format));
+        process.exitCode = ExitCode.USER_ERROR;
+      }
     },
   );
 }

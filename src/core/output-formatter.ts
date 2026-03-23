@@ -8,6 +8,7 @@ import type { LoadWarning } from "./errors.js";
 import type { ValidationResult } from "./validation.js";
 import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
+import type { SelftestResult } from "../cli/commands/selftest.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
 // --- Exit Codes ---
 
@@ -1011,6 +1012,45 @@ function hasAnyChanges(diff: SnapshotDiff): boolean {
     (diff.notes?.removed.length ?? 0) > 0 ||
     (diff.notes?.updated.length ?? 0) > 0
   );
+}
+
+// --- Selftest ---
+
+export function formatSelftestResult(
+  result: SelftestResult,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(result), null, 2);
+  }
+
+  const lines: string[] = ["# Self-test Report", ""];
+
+  // Group results by entity
+  const entities: Array<"ticket" | "issue" | "note"> = ["ticket", "issue", "note"];
+  for (const entity of entities) {
+    const checks = result.results.filter((r) => r.entity === entity);
+    if (checks.length === 0) continue;
+    lines.push(`## ${entity.charAt(0).toUpperCase() + entity.slice(1)}`);
+    for (const check of checks) {
+      const mark = check.passed ? "[x]" : "[ ]";
+      const suffix = check.passed ? "" : ` — ${check.detail}`;
+      lines.push(`- ${mark} ${check.step}${suffix}`);
+    }
+    lines.push("");
+  }
+
+  if (result.cleanupErrors.length > 0) {
+    lines.push("## Cleanup Warnings");
+    lines.push("");
+    for (const err of result.cleanupErrors) {
+      lines.push(`- ${err}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`Result: ${result.passed}/${result.total} passed`);
+  return lines.join("\n");
 }
 
 // --- Private Helpers ---

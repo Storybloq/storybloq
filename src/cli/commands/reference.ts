@@ -227,6 +227,11 @@ export const COMMANDS: readonly CommandEntry[] = [
     usage: "claudestory reference [--format json|md]",
   },
   {
+    name: "selftest",
+    description: "Run integration smoke test — create/update/delete cycle across all entity types",
+    usage: "claudestory selftest [--format json|md]",
+  },
+  {
     name: "setup-skill",
     description: "Install the /story skill globally for Claude Code",
     usage: "claudestory setup-skill",
@@ -262,6 +267,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "order?", "description?", "phase?", "parentTicket?"] },
   { name: "claudestory_issue_create", description: "Create issue", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "phase?"] },
   { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?"] },
+  { name: "claudestory_selftest", description: "Integration smoke test — create/update/delete cycle" },
 ];
 
 export function handleReference(format: OutputFormat): string {

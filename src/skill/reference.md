@@ -275,6 +275,13 @@ Print CLI command and MCP tool reference
 claudestory reference [--format json|md]
 ```
 
+### selftest
+Run integration smoke test — create/update/delete cycle across all entity types
+
+```
+claudestory selftest [--format json|md]
+```
+
 ### setup-skill
 Install the /story skill globally for Claude Code
 
@@ -312,6 +319,7 @@ claudestory setup-skill
 - **claudestory_ticket_update** (id, status?, title?, order?, description?, phase?, parentTicket?) — Update ticket
 - **claudestory_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
 - **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?) — Update issue
+- **claudestory_selftest** — Integration smoke test — create/update/delete cycle
 
 ## Common Workflows
 

@@ -1,7 +1,7 @@
 /**
  * MCP tool registration and shared pipeline for claudestory tools.
  *
- * 28 tools (18 read + 10 write). Read tools use a shared pipeline:
+ * 29 tools (18 read + 11 write). Read tools use a shared pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
 import { z } from "zod";
@@ -58,6 +58,7 @@ import {
 import { handleRecommend } from "../cli/commands/recommend.js";
 import { handleSnapshot } from "../cli/commands/snapshot.js";
 import { handleExport } from "../cli/commands/export.js";
+import { handleSelftest } from "../cli/commands/selftest.js";
 import { handleHandoverCreate } from "../cli/commands/handover.js";
 import {
   handlePhaseList,
@@ -537,4 +538,12 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
   ));
 
   // No MCP delete tools for any entity — deletion is destructive and stays CLI-only (human-gated).
+
+  // --- Selftest ---
+
+  server.registerTool("claudestory_selftest", {
+    description: "Integration smoke test — creates, updates, and deletes test entities to verify the full pipeline",
+  }, () => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleSelftest(root, format),
+  ));
 }

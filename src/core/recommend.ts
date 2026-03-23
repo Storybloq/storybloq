@@ -10,6 +10,7 @@ import type { Ticket } from "../models/ticket.js";
 import type { IssueSeverity } from "../models/types.js";
 import {
   nextTicket,
+  currentPhase,
   ticketsUnblockedBy,
   umbrellaProgress,
   descendantLeaves,
@@ -52,6 +53,11 @@ const SEVERITY_RANK: Record<IssueSeverity, number> = {
   medium: 2,
   low: 1,
 };
+
+/** Penalty per phase ahead of current phase (for ticket recommendations). */
+const PHASE_DISTANCE_PENALTY = 100;
+/** Maximum phase-distance penalty (caps at 4+ phases ahead). */
+const MAX_PHASE_PENALTY = 400;
 
 /**
  * Category priority for deterministic tiebreaking (lower = higher priority).
@@ -96,6 +102,26 @@ export function recommend(
       if (!existing || rec.score > existing.score) {
         dedup.set(rec.id, rec);
       }
+    }
+  }
+
+  // Phase-distance penalty: tickets in future phases are penalized
+  const curPhase = currentPhase(state);
+  const curPhaseIdx = curPhase ? phaseIndex.get(curPhase.id) ?? 0 : 0;
+  for (const [id, rec] of dedup) {
+    if (rec.kind !== "ticket") continue;
+    const ticket = state.ticketByID(id);
+    if (!ticket || ticket.phase == null) continue;
+    const ticketPhaseIdx = phaseIndex.get(ticket.phase);
+    if (ticketPhaseIdx === undefined) continue;
+    const phasesAhead = ticketPhaseIdx - curPhaseIdx;
+    if (phasesAhead > 0) {
+      const penalty = Math.min(phasesAhead * PHASE_DISTANCE_PENALTY, MAX_PHASE_PENALTY);
+      dedup.set(id, {
+        ...rec,
+        score: rec.score - penalty,
+        reason: rec.reason + " (future phase)",
+      });
     }
   }
 

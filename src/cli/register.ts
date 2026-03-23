@@ -515,12 +515,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 })
                 .option("description", {
                   type: "string",
-                  default: "",
                   describe: "Ticket description",
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read description from stdin",
                 })
                 .option("blocked-by", {
@@ -551,7 +549,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              let description = argv.description as string;
+              let description = (argv.description as string | undefined) ?? "";
               if (argv.stdin) {
                 description = await readStdinContent();
               }
@@ -626,7 +624,6 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read description from stdin",
                 })
                 .option("blocked-by", {
@@ -818,7 +815,6 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read impact from stdin",
                 })
                 .option("phase", {
@@ -940,7 +936,6 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read impact from stdin",
                 })
                 .option("resolution", {
@@ -1626,7 +1621,6 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read content from stdin",
                 })
                 .conflicts("content", "stdin")
@@ -1723,7 +1717,6 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 })
                 .option("stdin", {
                   type: "boolean",
-                  default: false,
                   describe: "Read content from stdin",
                 })
                 .conflicts("content", "stdin")

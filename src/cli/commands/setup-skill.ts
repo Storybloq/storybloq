@@ -246,14 +246,20 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
       log("  MCP server registered globally");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      const isAlreadyRegistered = message.includes("already exists");
       const isNotFound = message.includes("ENOENT") || message.includes("not found");
-      log("");
-      if (isNotFound) {
+      if (isAlreadyRegistered) {
+        mcpRegistered = true;
+        log("  MCP server already registered globally");
+      } else if (isNotFound) {
+        log("");
         log("MCP registration skipped — `claude` CLI not found in PATH.");
+        log("  To register manually: claude mcp add claudestory -s user -- claudestory --mcp");
       } else {
+        log("");
         log(`MCP registration failed: ${message.split("\n")[0]}`);
+        log("  To register manually: claude mcp add claudestory -s user -- claudestory --mcp");
       }
-      log("  To register manually: claude mcp add claudestory -s user -- claudestory --mcp");
     }
   } else {
     log("");

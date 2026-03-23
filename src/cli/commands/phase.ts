@@ -129,10 +129,8 @@ export async function handlePhaseCreate(
       label: args.label,
       name: args.name,
       description: args.description,
+      ...(args.summary !== undefined && { summary: args.summary }),
     };
-    if (args.summary !== undefined) {
-      (phase as Record<string, unknown>).summary = args.summary;
-    }
 
     const newPhases = [...state.roadmap.phases];
     if (args.atStart) {
@@ -177,11 +175,13 @@ export async function handlePhaseRename(
     }
 
     const existing = state.roadmap.phases[idx]!;
-    const phase: Phase = { ...existing };
-    if (updates.name !== undefined) (phase as Record<string, unknown>).name = updates.name;
-    if (updates.label !== undefined) (phase as Record<string, unknown>).label = updates.label;
-    if (updates.description !== undefined) (phase as Record<string, unknown>).description = updates.description;
-    if (updates.summary !== undefined) (phase as Record<string, unknown>).summary = updates.summary;
+    const phase: Phase = {
+      ...existing,
+      ...(updates.name !== undefined && { name: updates.name }),
+      ...(updates.label !== undefined && { label: updates.label }),
+      ...(updates.description !== undefined && { description: updates.description }),
+      ...(updates.summary !== undefined && { summary: updates.summary }),
+    };
 
     const newPhases = [...state.roadmap.phases];
     newPhases[idx] = phase;

@@ -212,25 +212,28 @@ export async function handleIssueUpdate(
       validateRelatedTickets(updates.relatedTickets, state);
     }
 
-    // Merge updates
-    const issue: Issue = { ...existing };
-    if (updates.title !== undefined) (issue as Record<string, unknown>).title = updates.title;
-    if (updates.severity !== undefined) (issue as Record<string, unknown>).severity = updates.severity;
-    if (updates.impact !== undefined) (issue as Record<string, unknown>).impact = updates.impact;
-    if (updates.resolution !== undefined) (issue as Record<string, unknown>).resolution = updates.resolution;
-    if (updates.components !== undefined) (issue as Record<string, unknown>).components = updates.components;
-    if (updates.relatedTickets !== undefined) (issue as Record<string, unknown>).relatedTickets = updates.relatedTickets;
-    if (updates.location !== undefined) (issue as Record<string, unknown>).location = updates.location;
-
     // Status transition with date management
+    const statusChanges: Partial<Issue> = {};
     if (updates.status !== undefined && updates.status !== existing.status) {
-      (issue as Record<string, unknown>).status = updates.status;
+      statusChanges.status = updates.status as IssueStatus;
       if (updates.status === "resolved" && existing.status !== "resolved") {
-        (issue as Record<string, unknown>).resolvedDate = todayISO();
+        statusChanges.resolvedDate = todayISO();
       } else if (updates.status !== "resolved" && existing.status === "resolved") {
-        (issue as Record<string, unknown>).resolvedDate = null;
+        statusChanges.resolvedDate = null;
       }
     }
+
+    const issue: Issue = {
+      ...existing,
+      ...(updates.title !== undefined && { title: updates.title }),
+      ...(updates.severity !== undefined && { severity: updates.severity as IssueSeverity }),
+      ...(updates.impact !== undefined && { impact: updates.impact }),
+      ...(updates.resolution !== undefined && { resolution: updates.resolution }),
+      ...(updates.components !== undefined && { components: updates.components }),
+      ...(updates.relatedTickets !== undefined && { relatedTickets: updates.relatedTickets }),
+      ...(updates.location !== undefined && { location: updates.location }),
+      ...statusChanges,
+    };
 
     validatePostWriteIssueState(issue, state, false);
     await writeIssueUnlocked(issue, root);

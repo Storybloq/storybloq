@@ -258,24 +258,27 @@ export async function handleTicketUpdate(
       validateParentTicket(updates.parentTicket, id, state);
     }
 
-    // Merge updates
-    const ticket: Ticket = { ...existing };
-    if (updates.title !== undefined) (ticket as Record<string, unknown>).title = updates.title;
-    if (updates.description !== undefined) (ticket as Record<string, unknown>).description = updates.description;
-    if (updates.phase !== undefined) (ticket as Record<string, unknown>).phase = updates.phase;
-    if (updates.order !== undefined) (ticket as Record<string, unknown>).order = updates.order;
-    if (updates.blockedBy !== undefined) (ticket as Record<string, unknown>).blockedBy = updates.blockedBy;
-    if (updates.parentTicket !== undefined) (ticket as Record<string, unknown>).parentTicket = updates.parentTicket === null ? undefined : updates.parentTicket;
-
     // Status transition with date management
+    const statusChanges: Partial<Ticket> = {};
     if (updates.status !== undefined && updates.status !== existing.status) {
-      (ticket as Record<string, unknown>).status = updates.status;
+      statusChanges.status = updates.status as TicketStatus;
       if (updates.status === "complete" && existing.status !== "complete") {
-        (ticket as Record<string, unknown>).completedDate = todayISO();
+        statusChanges.completedDate = todayISO();
       } else if (updates.status !== "complete" && existing.status === "complete") {
-        (ticket as Record<string, unknown>).completedDate = null;
+        statusChanges.completedDate = null;
       }
     }
+
+    const ticket: Ticket = {
+      ...existing,
+      ...(updates.title !== undefined && { title: updates.title }),
+      ...(updates.description !== undefined && { description: updates.description }),
+      ...(updates.phase !== undefined && { phase: updates.phase }),
+      ...(updates.order !== undefined && { order: updates.order }),
+      ...(updates.blockedBy !== undefined && { blockedBy: updates.blockedBy }),
+      ...(updates.parentTicket !== undefined && { parentTicket: updates.parentTicket }),
+      ...statusChanges,
+    };
 
     validatePostWriteState(ticket, state, false);
     await writeTicketUnlocked(ticket, root);

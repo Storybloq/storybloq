@@ -37,56 +37,16 @@ describe("NoteSchema", () => {
       }
     });
 
-    it("defaults omitted title to null", () => {
+    it("accepts tags as-is without transformation", () => {
       const data = {
-        id: "N-010", content: "No title key at all.",
-        tags: [], status: "active",
+        id: "N-010", title: null, content: "Pre-normalized tags.",
+        tags: ["foo", "bar", "hello-world"], status: "active",
         createdDate: "2026-03-20", updatedDate: "2026-03-20",
       };
       const result = NoteSchema.safeParse(data);
       expect(result.success).toBe(true);
       if (result.success) {
-        expect(result.data.title).toBeNull();
-      }
-    });
-
-    it("defaults omitted tags to empty array", () => {
-      const data = {
-        id: "N-010", title: null, content: "No tags key.",
-        status: "active",
-        createdDate: "2026-03-20", updatedDate: "2026-03-20",
-      };
-      const result = NoteSchema.safeParse(data);
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.tags).toEqual([]);
-      }
-    });
-
-    it("defaults null tags to empty array", () => {
-      const data = {
-        id: "N-010", title: null, content: "Null tags.",
-        tags: null, status: "active",
-        createdDate: "2026-03-20", updatedDate: "2026-03-20",
-      };
-      const result = NoteSchema.safeParse(data);
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.tags).toEqual([]);
-      }
-    });
-
-    it("normalizes tags (trim, lowercase, dedupe, strip special chars)", () => {
-      const data = {
-        id: "N-010", title: null, content: "Tag normalization test.",
-        tags: ["FOO", "  bar  ", "foo", "hello world", "a--b", "!!!"],
-        status: "active",
-        createdDate: "2026-03-20", updatedDate: "2026-03-20",
-      };
-      const result = NoteSchema.safeParse(data);
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.tags).toEqual(["foo", "bar", "hello-world", "a-b"]);
+        expect(result.data.tags).toEqual(["foo", "bar", "hello-world"]);
       }
     });
 
@@ -105,6 +65,33 @@ describe("NoteSchema", () => {
   });
 
   describe("invalid notes", () => {
+    it("rejects missing title field", () => {
+      const data = {
+        id: "N-010", content: "No title key at all.",
+        tags: [], status: "active",
+        createdDate: "2026-03-20", updatedDate: "2026-03-20",
+      };
+      expect(NoteSchema.safeParse(data).success).toBe(false);
+    });
+
+    it("rejects missing tags field", () => {
+      const data = {
+        id: "N-010", title: null, content: "No tags key.",
+        status: "active",
+        createdDate: "2026-03-20", updatedDate: "2026-03-20",
+      };
+      expect(NoteSchema.safeParse(data).success).toBe(false);
+    });
+
+    it("rejects null tags", () => {
+      const data = {
+        id: "N-010", title: null, content: "Null tags.",
+        tags: null, status: "active",
+        createdDate: "2026-03-20", updatedDate: "2026-03-20",
+      };
+      expect(NoteSchema.safeParse(data).success).toBe(false);
+    });
+
     it("rejects empty content after trim", () => {
       const data = {
         id: "N-010", title: "Empty", content: "",

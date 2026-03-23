@@ -542,6 +542,29 @@ describe("snapshot", () => {
       expect(diff.notes.updated).toHaveLength(0);
     });
 
+    it("detects added handovers", () => {
+      const snap = makeState({ handoverFilenames: [] });
+      const current = makeState({ handoverFilenames: ["2026-03-23-session.md"] });
+      const diff = diffStates(snap, current);
+      expect(diff.handovers.added).toEqual(["2026-03-23-session.md"]);
+      expect(diff.handovers.removed).toEqual([]);
+    });
+
+    it("detects removed handovers", () => {
+      const snap = makeState({ handoverFilenames: ["2026-03-22-session.md"] });
+      const current = makeState({ handoverFilenames: [] });
+      const diff = diffStates(snap, current);
+      expect(diff.handovers.removed).toEqual(["2026-03-22-session.md"]);
+      expect(diff.handovers.added).toEqual([]);
+    });
+
+    it("does not report unchanged handovers", () => {
+      const state = makeState({ handoverFilenames: ["2026-03-22-session.md"] });
+      const diff = diffStates(state, state);
+      expect(diff.handovers.added).toEqual([]);
+      expect(diff.handovers.removed).toEqual([]);
+    });
+
     it("parses old snapshot without notes field", () => {
       const oldSnapshot = {
         version: 1,

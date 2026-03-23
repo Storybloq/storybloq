@@ -36,6 +36,7 @@ export const SnapshotV1Schema = z.object({
   tickets: z.array(TicketSchema),
   issues: z.array(IssueSchema),
   notes: z.array(NoteSchema).optional().default([]),
+  handoverFilenames: z.array(z.string()).optional().default([]),
   warnings: z.array(LoadWarningSchema).optional(),
 });
 
@@ -72,6 +73,7 @@ export async function saveSnapshot(
     tickets: [...state.tickets] as Ticket[],
     issues: [...state.issues] as Issue[],
     notes: [...state.notes] as Note[],
+    handoverFilenames: [...state.handoverFilenames],
     ...(warnings.length > 0
       ? {
           warnings: warnings.map((w) => ({
@@ -190,6 +192,10 @@ export interface SnapshotDiff {
     added: Array<{ id: string; title: string | null }>;
     removed: Array<{ id: string; title: string | null }>;
     updated: NoteChange[];
+  };
+  handovers: {
+    added: string[];
+    removed: string[];
   };
 }
 
@@ -348,12 +354,27 @@ export function diffStates(
     }
   }
 
+  // --- Handovers ---
+  const snapHandovers = new Set(snapshotState.handoverFilenames);
+  const curHandovers = new Set(currentState.handoverFilenames);
+
+  const handoversAdded: string[] = [];
+  const handoversRemoved: string[] = [];
+
+  for (const h of curHandovers) {
+    if (!snapHandovers.has(h)) handoversAdded.push(h);
+  }
+  for (const h of snapHandovers) {
+    if (!curHandovers.has(h)) handoversRemoved.push(h);
+  }
+
   return {
     tickets: { added: ticketsAdded, removed: ticketsRemoved, statusChanged: ticketsStatusChanged, descriptionChanged: ticketsDescriptionChanged },
     issues: { added: issuesAdded, resolved: issuesResolved, statusChanged: issuesStatusChanged, impactChanged: issuesImpactChanged },
     blockers: { added: blockersAdded, cleared: blockersCleared },
     phases: { added: phasesAdded, removed: phasesRemoved, statusChanged: phasesStatusChanged },
     notes: { added: notesAdded, removed: notesRemoved, updated: notesUpdated },
+    handovers: { added: handoversAdded, removed: handoversRemoved },
   };
 }
 
@@ -401,7 +422,7 @@ export function buildRecap(
     notes: snapshot.notes ?? [],
     roadmap: snapshot.roadmap,
     config: snapshot.config,
-    handoverFilenames: [],
+    handoverFilenames: snapshot.handoverFilenames ?? [],
   });
 
   const changes = diffStates(snapshotState, currentState);

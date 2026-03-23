@@ -722,6 +722,18 @@ export function formatRecap(
         }
       }
 
+      // Handover changes
+      if (changes.handovers && (changes.handovers.added.length > 0 || changes.handovers.removed.length > 0)) {
+        lines.push("");
+        lines.push("## Handovers");
+        for (const h of changes.handovers.added) {
+          lines.push(`- ${h} — **new**`);
+        }
+        for (const h of changes.handovers.removed) {
+          lines.push(`- ${h} — removed`);
+        }
+      }
+
       // Note changes
       if (changes.notes && (changes.notes.added.length > 0 || changes.notes.removed.length > 0 || changes.notes.updated.length > 0)) {
         lines.push("");
@@ -1010,7 +1022,9 @@ function hasAnyChanges(diff: SnapshotDiff): boolean {
     diff.phases.statusChanged.length > 0 ||
     (diff.notes?.added.length ?? 0) > 0 ||
     (diff.notes?.removed.length ?? 0) > 0 ||
-    (diff.notes?.updated.length ?? 0) > 0
+    (diff.notes?.updated.length ?? 0) > 0 ||
+    (diff.handovers?.added.length ?? 0) > 0 ||
+    (diff.handovers?.removed.length ?? 0) > 0
   );
 }
 

@@ -151,33 +151,24 @@ export async function handleNoteUpdate(
       throw new CliValidationError("not_found", `Note ${id} not found`);
     }
 
-    const note: Note = { ...existing };
-
-    // Content
-    if (updates.content !== undefined) {
-      (note as Record<string, unknown>).content = updates.content;
-    }
-
-    // Title: explicitly "" → null, undefined → unchanged
-    if (updates.title !== undefined) {
-      const trimmed = updates.title?.trim();
-      (note as Record<string, unknown>).title = !trimmed ? null : updates.title;
-    }
-
     // Tags: --clear-tags → []. --tags with values → replace. neither → unchanged.
+    const tagsUpdate: Partial<Note> = {};
     if (updates.clearTags) {
-      (note as Record<string, unknown>).tags = [];
+      tagsUpdate.tags = [];
     } else if (updates.tags !== undefined) {
-      (note as Record<string, unknown>).tags = normalizeTags(updates.tags);
+      tagsUpdate.tags = normalizeTags(updates.tags);
     }
 
-    // Status
-    if (updates.status !== undefined) {
-      (note as Record<string, unknown>).status = updates.status;
-    }
-
-    // Always bump updatedDate
-    (note as Record<string, unknown>).updatedDate = todayISO();
+    const note: Note = {
+      ...existing,
+      ...(updates.content !== undefined && { content: updates.content }),
+      ...(updates.title !== undefined && {
+        title: !updates.title?.trim() ? null : updates.title,
+      }),
+      ...tagsUpdate,
+      ...(updates.status !== undefined && { status: updates.status as NoteStatus }),
+      updatedDate: todayISO(),
+    };
 
     await writeNoteUnlocked(note, root);
     updatedNote = note;

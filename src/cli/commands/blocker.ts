@@ -79,10 +79,8 @@ export async function handleBlockerClear(
       ...existing,
       cleared: true,
       clearedDate: todayISO(),
+      ...(note !== undefined && { note }),
     };
-    if (note !== undefined) {
-      (updated as Record<string, unknown>).note = note;
-    }
 
     const newBlockers = [...state.roadmap.blockers];
     newBlockers[idx] = updated;

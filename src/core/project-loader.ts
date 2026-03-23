@@ -126,12 +126,10 @@ export async function loadProject(
   );
 
   // 7b. Load notes (best-effort)
-  // NoteSchema uses preprocess for optional title/tags defaults — cast needed
-  // because ZodEffects input type differs from output type.
   const notes = await loadDirectory<Note>(
     join(wrapDir, "notes"),
     absRoot,
-    NoteSchema as unknown as ZodType<Note>,
+    NoteSchema,
     warnings,
   );
 
@@ -710,7 +708,7 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const warnings: LoadWarning[] = [];
   const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings);
   const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings);
-  const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema as unknown as ZodType<Note>, warnings);
+  const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
   const state = new ProjectState({ tickets, issues, notes, roadmap, config, handoverFilenames });
   return { state, warnings };

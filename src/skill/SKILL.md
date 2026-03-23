@@ -80,6 +80,12 @@ If none found (empty or near-empty directory) → skip to **1c. New Project Inte
 
 #### 1b. Existing Project — Analyze
 
+Before diving into analysis, briefly introduce claudestory to the user:
+
+"Claude Story tracks your project's roadmap, tickets, issues, and session handovers in a `.story/` directory. Every Claude Code session starts by reading this context, so you never re-explain your project from scratch. Sessions build on each other: decisions, blockers, and lessons carry forward automatically. I'll analyze your project and propose a structure. You can adjust everything before I create anything."
+
+Keep it to 3-4 sentences. Not a sales pitch, just enough that the user knows what they're opting into and that they're in control.
+
 Read these files to understand the project (skip any that don't exist, skip files > 50KB):
 
 1. **README.md** — project description, goals, feature list, roadmap/TODO sections
@@ -144,9 +150,19 @@ Show the user a structured proposal (table format, not raw JSON):
 - **Tickets per phase** (title, type, status)
 - **Issues** (if GitHub import was used)
 
-Ask: "Does this look right? I can adjust phases, add/remove tickets, or change anything before creating."
+Before asking for approval, briefly explain what they're looking at:
 
-Iterate section by section until the user approves.
+"**How this works:** Phases are milestones in your project's development. They track progress from setup to shipping. Tickets are specific work items within each phase. After setup, typing `/story` at the start of any Claude Code session loads this context automatically. Claude will know your project's state, what was done last session, and what to work on next."
+
+Then ask for approval with clear interaction guidance:
+
+"Does this look right? You can:
+- Adjust any phase (rename, reorder, add, remove)
+- Change tickets (add, remove, rephrase, move between phases)
+- Mark phases as complete or in-progress
+- Split or merge phases
+
+I'll iterate until you're happy, then create everything."
 
 #### 1e. Execute on Approval
 

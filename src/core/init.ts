@@ -3,13 +3,14 @@ import { join, resolve } from "node:path";
 import { writeConfig, writeRoadmap, loadProject } from "./project-loader.js";
 import { ProjectLoaderError, CURRENT_SCHEMA_VERSION, INTEGRITY_WARNING_TYPES } from "./errors.js";
 import type { Config } from "../models/config.js";
-import type { Roadmap } from "../models/roadmap.js";
+import type { Roadmap, Phase } from "../models/roadmap.js";
 
 export interface InitOptions {
   name: string;
   force?: boolean;
   type?: string;
   language?: string;
+  phases?: Phase[];
 }
 
 export interface InitResult {
@@ -88,7 +89,7 @@ export async function initProject(
   const roadmap: Roadmap = {
     title: options.name,
     date: today,
-    phases: [
+    phases: options.phases ?? [
       {
         id: "p0",
         label: "PHASE 0",

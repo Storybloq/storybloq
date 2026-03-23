@@ -1,13 +1,13 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtemp, rm, cp, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, cp, writeFile, mkdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runMcpReadTool } from "../../src/mcp/tools.js";
+import { runMcpReadTool, runMcpWriteTool } from "../../src/mcp/tools.js";
 
 // Handler imports
 import { handleStatus } from "../../src/cli/commands/status.js";
 import { handleTicketGet } from "../../src/cli/commands/ticket.js";
-import { handlePhaseList } from "../../src/cli/commands/phase.js";
+import { handlePhaseList, handlePhaseCreate } from "../../src/cli/commands/phase.js";
 import { handleIssueList } from "../../src/cli/commands/issue.js";
 import { handleHandoverList, handleHandoverLatest } from "../../src/cli/commands/handover.js";
 import { handleValidate } from "../../src/cli/commands/validate.js";
@@ -142,6 +142,60 @@ describe("MCP integration — real filesystem", () => {
     // not_found is informational, not isError
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("No handovers");
+  });
+});
+
+describe("MCP integration — phase_create write pipeline", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  it("claudestory_phase_create — creates phase via write pipeline", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await runMcpWriteTool(dir, (root, format) =>
+      handlePhaseCreate(
+        { id: "alpha", name: "Alpha", label: "PHASE 1", description: "First", after: "p0", atStart: false },
+        format, root,
+      ),
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Created phase alpha");
+    const raw = await readFile(join(dir, ".story", "roadmap.json"), "utf-8");
+    const roadmap = JSON.parse(raw);
+    expect(roadmap.phases).toHaveLength(2);
+    expect(roadmap.phases[1].id).toBe("alpha");
+  });
+
+  it("claudestory_phase_create — duplicate ID returns error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await runMcpWriteTool(dir, (root, format) =>
+      handlePhaseCreate(
+        { id: "p0", name: "Dup", label: "DUP", description: "Dup", after: "p0", atStart: false },
+        format, root,
+      ),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("already exists");
+  });
+
+  it("claudestory_phase_create — missing positioning returns error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await runMcpWriteTool(dir, (root, format) =>
+      handlePhaseCreate(
+        { id: "p1", name: "Test", label: "T", description: "T", atStart: false },
+        format, root,
+      ),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Must specify");
   });
 });
 

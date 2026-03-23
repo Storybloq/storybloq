@@ -319,6 +319,7 @@ claudestory setup-skill
 - **claudestory_ticket_update** (id, status?, title?, order?, description?, phase?, parentTicket?) — Update ticket
 - **claudestory_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
 - **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?) — Update issue
+- **claudestory_phase_create** (id, name, label, description, summary?, after?, atStart?) — Create phase in roadmap
 - **claudestory_selftest** — Integration smoke test — create/update/delete cycle
 
 ## Common Workflows

@@ -267,6 +267,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "order?", "description?", "phase?", "parentTicket?"] },
   { name: "claudestory_issue_create", description: "Create issue", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "phase?"] },
   { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?"] },
+  { name: "claudestory_phase_create", description: "Create phase in roadmap", params: ["id", "name", "label", "description", "summary?", "after?", "atStart?"] },
   { name: "claudestory_selftest", description: "Integration smoke test — create/update/delete cycle" },
 ];
 

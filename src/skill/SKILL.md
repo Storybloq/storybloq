@@ -52,8 +52,99 @@ Check if the claudestory MCP tools are available by looking for `claudestory_sta
 ## Step 1: Check Project
 
 - If `.story/` exists in the current working directory (or a parent) → proceed to Step 2
-- If no `.story/` but the directory looks like a real project (has package.json, Cargo.toml, go.mod, pyproject.toml, .git, etc.) → offer to initialize: "Want me to set up claudestory? It creates a .story/ directory for tracking tickets, issues, and session handovers." With permission, run `claudestory init --name <project-name>`
-- If not a project directory → explain what claudestory is and suggest navigating to a project
+- If no `.story/` but project indicators exist (code, manifest, .git) → run the **AI-Assisted Setup Flow** below
+- If no `.story/` and no project indicators → explain what claudestory is and suggest navigating to a project
+
+### AI-Assisted Setup Flow
+
+This flow creates a meaningful `.story/` project instead of empty scaffolding. Claude analyzes the project, proposes structure, and creates everything via MCP tools.
+
+#### 1a. Detect Project Type
+
+Check for project indicators to determine if this is an **existing project** or a **new/empty project**:
+
+- `package.json` → npm/node (read `name`, `description`, check for `typescript` dep)
+- `Cargo.toml` → Rust
+- `go.mod` → Go
+- `pyproject.toml` / `requirements.txt` → Python
+- `*.xcodeproj` / `Package.swift` → Swift/macOS
+- `*.sln` / `*.csproj` → C#/.NET
+- `Gemfile` → Ruby
+- `.git/` → has version history
+
+If none found (empty or near-empty directory) → skip to **1c. New Project Interview**.
+
+#### 1b. Existing Project — Analyze
+
+Read these files to understand the project (skip any that don't exist, skip files > 50KB):
+
+1. **README.md** — project description, goals, feature list, roadmap/TODO sections
+2. **Package manifest** — project name, dependencies, scripts
+3. **CLAUDE.md** — existing project spec (if any)
+4. **Top-level directory listing** — identify major components (src/, test/, docs/, etc.)
+5. **Git summary** — `git log --oneline -20` for recent work patterns
+6. **GitHub issues (ask user first)** — `gh issue list --limit 30 --state open --json number,title,labels,body,createdAt`. If gh fails (auth, rate limit, no remote), skip cleanly and note "GitHub import skipped: [reason]"
+
+**Derive project metadata:**
+- **name**: from package manifest `name` field, or directory name
+- **type**: from package manager (npm, cargo, pip, etc.)
+- **language**: from file extensions and manifest
+
+**Assess project stage** from the data — don't use fixed thresholds. A project with 3 commits and a half-written README is greenfield. A project with 500+ commits, test suites, and release tags is mature. A project with 200 commits and active PRs is active development. Use your judgment.
+
+**Propose 3-7 phases** reflecting the project's actual development trajectory. Examples:
+- Library: setup → core-api → documentation → testing → publishing
+- App: mvp → auth → data-layer → ui-polish → deployment
+- Mid-development project: capture completed work as early phases, then plan forward
+
+**Propose initial tickets** per active phase (2-5 each), based on:
+- README TODOs or roadmap sections (treat as hints, not ground truth)
+- GitHub issues if imported — infer from label semantics: bug/defect labels → issues, enhancement/feature labels → tickets
+- Obvious gaps (missing tests, no CI, no docs, etc.)
+- If more than 30 GitHub issues exist, note "Showing 30 of N. Additional issues can be imported later."
+
+**Important:** Only mark phases complete if explicitly confirmed by user or docs — do NOT infer completion from git history alone.
+
+#### 1c. New Project — Interview
+
+Ask the user:
+1. "What are you building?" — project name and purpose
+2. "What's the tech stack?" — language, framework, project type
+3. "What are the major milestones?" — helps define phases
+4. "What's the first thing to build?" — seeds the first ticket
+
+Propose phases and initial tickets from the answers.
+
+#### 1d. Present Proposal
+
+Show the user a structured proposal (table format, not raw JSON):
+- **Project:** name, type, language
+- **Phases** (table: id, name, description)
+- **Tickets per phase** (title, type, status)
+- **Issues** (if GitHub import was used)
+
+Ask: "Does this look right? I can adjust phases, add/remove tickets, or change anything before creating."
+
+Iterate section by section until the user approves.
+
+#### 1e. Execute on Approval
+
+1. Call `claudestory_init` with name, type, language — after this, all MCP tools become available dynamically
+2. Call `claudestory_phase_create` for each phase — first phase with `atStart: true`, subsequent with `after: <previous-phase-id>`
+3. Call `claudestory_ticket_create` for each ticket
+4. Call `claudestory_issue_create` for each imported GitHub issue
+5. Call `claudestory_ticket_update` to mark already-complete tickets as `complete`
+6. Call `claudestory_snapshot` to save initial baseline
+
+#### 1f. Post-Setup
+
+After creation completes:
+- Confirm what was created (e.g., "Created 5 phases, 12 tickets, and 3 issues")
+- Check if `.gitignore` includes `.story/snapshots/` (warn if missing — snapshots should not be committed)
+- Suggest creating `CLAUDE.md` if it doesn't exist (project spec for AI sessions)
+- Suggest creating `RULES.md` if it doesn't exist (development constraints)
+- Write an initial handover documenting the setup decisions
+- Proceed to Step 2 (Load Context) to show the new project state
 
 ## Step 2: Load Context (Default /story Behavior)
 

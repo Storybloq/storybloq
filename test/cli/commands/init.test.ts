@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../../src/core/init.js";
@@ -94,5 +94,41 @@ describe("init command logic", () => {
     tmpDirs.push(dir);
     const result = await initProject(dir, { name: "test" });
     expect(result.warnings).toEqual([]);
+  });
+
+  it("creates empty roadmap phases when phases: [] is passed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "init-test-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "empty-phases", phases: [] });
+    const raw = await readFile(join(dir, ".story", "roadmap.json"), "utf-8");
+    const roadmap = JSON.parse(raw);
+    expect(roadmap.phases).toEqual([]);
+    expect(roadmap.title).toBe("empty-phases");
+  });
+
+  it("creates default p0 phase when phases not specified", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "init-test-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "default-phases" });
+    const raw = await readFile(join(dir, ".story", "roadmap.json"), "utf-8");
+    const roadmap = JSON.parse(raw);
+    expect(roadmap.phases).toHaveLength(1);
+    expect(roadmap.phases[0].id).toBe("p0");
+    expect(roadmap.phases[0].name).toBe("Setup");
+  });
+
+  it("uses custom phases when provided", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "init-test-"));
+    tmpDirs.push(dir);
+    const customPhases = [
+      { id: "mvp", label: "PHASE 1", name: "MVP", description: "Minimum viable product" },
+      { id: "polish", label: "PHASE 2", name: "Polish", description: "UI refinement" },
+    ];
+    await initProject(dir, { name: "custom", phases: customPhases });
+    const raw = await readFile(join(dir, ".story", "roadmap.json"), "utf-8");
+    const roadmap = JSON.parse(raw);
+    expect(roadmap.phases).toHaveLength(2);
+    expect(roadmap.phases[0].id).toBe("mvp");
+    expect(roadmap.phases[1].id).toBe("polish");
   });
 });

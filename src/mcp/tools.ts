@@ -1,7 +1,7 @@
 /**
  * MCP tool registration and shared pipeline for claudestory tools.
  *
- * 29 tools (18 read + 11 write). Read tools use a shared pipeline:
+ * 30 tools (20 read + 10 write). Read tools use a shared pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
 import { z } from "zod";
@@ -64,6 +64,7 @@ import {
   handlePhaseList,
   handlePhaseCurrent,
   handlePhaseTickets,
+  handlePhaseCreate,
 } from "../cli/commands/phase.js";
 
 // --- Error classification ---
@@ -531,6 +532,35 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         tags: args.tags,
         clearTags: args.tags !== undefined && args.tags.length === 0,
         status: args.status,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  // --- Phase write tools ---
+
+  server.registerTool("claudestory_phase_create", {
+    description: "Create a new phase in the roadmap. Exactly one of after or atStart is required for positioning.",
+    inputSchema: {
+      id: z.string().describe("Phase ID — lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
+      name: z.string().describe("Phase display name"),
+      label: z.string().describe("Phase label (e.g. 'PHASE 1')"),
+      description: z.string().describe("Phase description"),
+      summary: z.string().optional().describe("One-line summary for compact display"),
+      after: z.string().optional().describe("Insert after this phase ID"),
+      atStart: z.boolean().optional().describe("Insert at beginning of roadmap"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handlePhaseCreate(
+      {
+        id: args.id,
+        name: args.name,
+        label: args.label,
+        description: args.description,
+        summary: args.summary,
+        after: args.after,
+        atStart: args.atStart ?? false,
       },
       format,
       root,

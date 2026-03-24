@@ -613,6 +613,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New title",
                 })
+                .option("type", {
+                  type: "string",
+                  describe: "New type",
+                })
                 .option("phase", {
                   type: "string",
                   describe: "New phase ID",
@@ -667,6 +671,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 {
                   status: argv.status as string | undefined,
                   title: argv.title as string | undefined,
+                  type: argv.type as string | undefined,
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
                   order: argv.order as number | undefined,
                   description,
@@ -882,7 +887,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   location: normalizeArrayOption(
                     argv.location as string[] | undefined,
                   ),
-                  phase: (argv.phase as string | undefined),
+                  phase: argv.phase === "" ? undefined : (argv.phase as string | undefined),
                 },
                 format,
                 root,
@@ -960,6 +965,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   array: true,
                   describe: "File locations",
                 })
+                .option("order", {
+                  type: "number",
+                  describe: "New sort order",
+                })
+                .option("phase", {
+                  type: "string",
+                  describe: "New phase ID",
+                })
                 .conflicts("impact", "stdin"),
             ),
           async (argv) => {
@@ -1004,6 +1017,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   location: argv.location
                     ? normalizeArrayOption(argv.location as string[])
                     : undefined,
+                  order: argv.order as number | undefined,
+                  phase: argv.phase === "" ? null : argv.phase as string | undefined,
                 },
                 format,
                 root,

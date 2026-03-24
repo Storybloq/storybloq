@@ -51,8 +51,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket update",
     description: "Update a ticket",
-    usage: "claudestory ticket update <id> [--status <s>] [--title <t>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]",
-    flags: ["--status", "--title", "--phase", "--order", "--description", "--blocked-by", "--parent-ticket"],
+    usage: "claudestory ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]",
+    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--blocked-by", "--parent-ticket"],
   },
   {
     name: "ticket delete",
@@ -74,14 +74,14 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue create",
     description: "Create a new issue",
-    usage: "claudestory issue create --title <t> --severity <s> --impact <i> [--components <c>] [--related-tickets <ids>] [--location <locs>] [--format json|md]",
-    flags: ["--title", "--severity", "--impact", "--components", "--related-tickets", "--location"],
+    usage: "claudestory issue create --title <t> --severity <s> --impact <i> [--components <c>] [--related-tickets <ids>] [--location <locs>] [--phase <p>] [--format json|md]",
+    flags: ["--title", "--severity", "--impact", "--components", "--related-tickets", "--location", "--phase"],
   },
   {
     name: "issue update",
     description: "Update an issue",
-    usage: "claudestory issue update <id> [--status <s>] [--title <t>] [--severity <sev>] [--impact <i>] [--resolution <r>] [--components <c>] [--related-tickets <ids>] [--location <locs>] [--format json|md]",
-    flags: ["--status", "--title", "--severity", "--impact", "--resolution", "--components", "--related-tickets", "--location"],
+    usage: "claudestory issue update <id> [--status <s>] [--title <t>] [--severity <sev>] [--impact <i>] [--resolution <r>] [--components <c>] [--related-tickets <ids>] [--location <locs>] [--order <n>] [--phase <p>] [--format json|md]",
+    flags: ["--status", "--title", "--severity", "--impact", "--resolution", "--components", "--related-tickets", "--location", "--order", "--phase"],
   },
   {
     name: "issue delete",
@@ -247,7 +247,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_ticket_get", description: "Get a ticket by ID", params: ["id"] },
   { name: "claudestory_ticket_next", description: "Highest-priority unblocked ticket(s)", params: ["count?"] },
   { name: "claudestory_ticket_blocked", description: "All blocked tickets with dependencies" },
-  { name: "claudestory_issue_list", description: "List issues with optional filters", params: ["status?", "severity?"] },
+  { name: "claudestory_issue_list", description: "List issues with optional filters", params: ["status?", "severity?", "component?"] },
   { name: "claudestory_issue_get", description: "Get an issue by ID", params: ["id"] },
   { name: "claudestory_handover_list", description: "List handover filenames (newest first)" },
   { name: "claudestory_handover_latest", description: "Content of most recent handover" },
@@ -264,9 +264,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_note_create", description: "Create note", params: ["content", "title?", "tags?"] },
   { name: "claudestory_note_update", description: "Update note", params: ["id", "content?", "title?", "tags?", "status?"] },
   { name: "claudestory_ticket_create", description: "Create ticket", params: ["title", "type", "phase?", "description?", "blockedBy?", "parentTicket?"] },
-  { name: "claudestory_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "order?", "description?", "phase?", "parentTicket?"] },
+  { name: "claudestory_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "type?", "order?", "description?", "phase?", "parentTicket?", "blockedBy?"] },
   { name: "claudestory_issue_create", description: "Create issue", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "phase?"] },
-  { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?"] },
+  { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?", "order?", "phase?"] },
   { name: "claudestory_phase_create", description: "Create phase in roadmap", params: ["id", "name", "label", "description", "summary?", "after?", "atStart?"] },
   { name: "claudestory_selftest", description: "Integration smoke test — create/update/delete cycle" },
 ];

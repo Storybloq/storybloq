@@ -392,6 +392,24 @@ describe("handleTicketUpdate", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.data.customField).toBe("preserved");
   });
+
+  it("updates type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    const result = await handleTicketUpdate("T-001", { type: "feature" }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.type).toBe("feature");
+  });
+
+  it("rejects invalid type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    await expect(
+      handleTicketUpdate("T-001", { type: "invalid" }, "md", dir),
+    ).rejects.toThrow("Unknown ticket type");
+  });
 });
 
 describe("handleTicketDelete", () => {

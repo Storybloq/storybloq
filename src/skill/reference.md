@@ -55,7 +55,7 @@ claudestory ticket create --title <t> --type <type> [--phase <p>] [--description
 Update a ticket
 
 ```
-claudestory ticket update <id> [--status <s>] [--title <t>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
+claudestory ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
 ```
 
 ### ticket delete
@@ -83,14 +83,14 @@ claudestory issue get <id> [--format json|md]
 Create a new issue
 
 ```
-claudestory issue create --title <t> --severity <s> --impact <i> [--components <c>] [--related-tickets <ids>] [--location <locs>] [--format json|md]
+claudestory issue create --title <t> --severity <s> --impact <i> [--components <c>] [--related-tickets <ids>] [--location <locs>] [--phase <p>] [--format json|md]
 ```
 
 ### issue update
 Update an issue
 
 ```
-claudestory issue update <id> [--status <s>] [--title <t>] [--severity <sev>] [--impact <i>] [--resolution <r>] [--components <c>] [--related-tickets <ids>] [--location <locs>] [--format json|md]
+claudestory issue update <id> [--status <s>] [--title <t>] [--severity <sev>] [--impact <i>] [--resolution <r>] [--components <c>] [--related-tickets <ids>] [--location <locs>] [--order <n>] [--phase <p>] [--format json|md]
 ```
 
 ### issue delete
@@ -299,7 +299,7 @@ claudestory setup-skill
 - **claudestory_ticket_get** (id) — Get a ticket by ID
 - **claudestory_ticket_next** (count?) — Highest-priority unblocked ticket(s)
 - **claudestory_ticket_blocked** — All blocked tickets with dependencies
-- **claudestory_issue_list** (status?, severity?) — List issues with optional filters
+- **claudestory_issue_list** (status?, severity?, component?) — List issues with optional filters
 - **claudestory_issue_get** (id) — Get an issue by ID
 - **claudestory_handover_list** — List handover filenames (newest first)
 - **claudestory_handover_latest** — Content of most recent handover
@@ -316,9 +316,9 @@ claudestory setup-skill
 - **claudestory_note_create** (content, title?, tags?) — Create note
 - **claudestory_note_update** (id, content?, title?, tags?, status?) — Update note
 - **claudestory_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?) — Create ticket
-- **claudestory_ticket_update** (id, status?, title?, order?, description?, phase?, parentTicket?) — Update ticket
+- **claudestory_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?) — Update ticket
 - **claudestory_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
-- **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?) — Update issue
+- **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, order?, phase?) — Update issue
 - **claudestory_phase_create** (id, name, label, description, summary?, after?, atStart?) — Create phase in roadmap
 - **claudestory_selftest** — Integration smoke test — create/update/delete cycle
 

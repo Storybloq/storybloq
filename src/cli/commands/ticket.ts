@@ -224,6 +224,7 @@ export async function handleTicketUpdate(
   updates: {
     status?: string;
     title?: string;
+    type?: string;
     phase?: string | null;
     order?: number;
     description?: string;
@@ -237,6 +238,12 @@ export async function handleTicketUpdate(
     throw new CliValidationError(
       "invalid_input",
       `Unknown ticket status "${updates.status}": must be one of ${TICKET_STATUSES.join(", ")}`,
+    );
+  }
+  if (updates.type !== undefined && !TICKET_TYPES.includes(updates.type as TicketType)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Unknown ticket type "${updates.type}": must be one of ${TICKET_TYPES.join(", ")}`,
     );
   }
 
@@ -272,6 +279,7 @@ export async function handleTicketUpdate(
     const ticket: Ticket = {
       ...existing,
       ...(updates.title !== undefined && { title: updates.title }),
+      ...(updates.type !== undefined && { type: updates.type as TicketType }),
       ...(updates.description !== undefined && { description: updates.description }),
       ...(updates.phase !== undefined && { phase: updates.phase }),
       ...(updates.order !== undefined && { order: updates.order }),

@@ -140,6 +140,9 @@ export async function handleIssueCreate(
   let createdIssue: Issue | undefined;
 
   await withProjectLock(root, { strict: true }, async ({ state }) => {
+    if (args.phase && !state.roadmap.phases.some((p) => p.id === args.phase)) {
+      throw new CliValidationError("invalid_input", `Phase "${args.phase}" not found in roadmap`);
+    }
     if (args.relatedTickets.length > 0) {
       validateRelatedTickets(args.relatedTickets, state);
     }
@@ -183,6 +186,8 @@ export async function handleIssueUpdate(
     components?: string[];
     relatedTickets?: string[];
     location?: string[];
+    order?: number;
+    phase?: string | null;
   },
   format: string,
   root: string,
@@ -208,6 +213,11 @@ export async function handleIssueUpdate(
       throw new CliValidationError("not_found", `Issue ${id} not found`);
     }
 
+    if (updates.phase !== undefined && updates.phase !== null) {
+      if (!state.roadmap.phases.some((p) => p.id === updates.phase)) {
+        throw new CliValidationError("invalid_input", `Phase "${updates.phase}" not found in roadmap`);
+      }
+    }
     if (updates.relatedTickets) {
       validateRelatedTickets(updates.relatedTickets, state);
     }
@@ -232,6 +242,8 @@ export async function handleIssueUpdate(
       ...(updates.components !== undefined && { components: updates.components }),
       ...(updates.relatedTickets !== undefined && { relatedTickets: updates.relatedTickets }),
       ...(updates.location !== undefined && { location: updates.location }),
+      ...(updates.order !== undefined && { order: updates.order }),
+      ...(updates.phase !== undefined && { phase: updates.phase }),
       ...statusChanges,
     };
 

@@ -393,7 +393,8 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       id: z.string().regex(TICKET_ID_REGEX).describe("Ticket ID (e.g. T-001)"),
       status: z.enum(TICKET_STATUSES).optional().describe("New status: open, inprogress, complete"),
       title: z.string().optional().describe("New title"),
-      order: z.number().optional().describe("New sort order"),
+      type: z.enum(TICKET_TYPES).optional().describe("New type: task, feature, chore"),
+      order: z.number().int().optional().describe("New sort order"),
       description: z.string().optional().describe("New description"),
       phase: z.string().nullable().optional().describe("New phase ID (null to clear)"),
       parentTicket: z.string().regex(TICKET_ID_REGEX).nullable().optional().describe("Parent ticket ID (null to clear)"),
@@ -405,6 +406,7 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       {
         status: args.status,
         title: args.title,
+        type: args.type,
         order: args.order,
         description: args.description,
         phase: args.phase,
@@ -457,6 +459,8 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       components: z.array(z.string()).optional().describe("Affected components"),
       relatedTickets: z.array(z.string().regex(TICKET_ID_REGEX)).optional().describe("Related ticket IDs"),
       location: z.array(z.string()).optional().describe("File locations"),
+      order: z.number().int().optional().describe("New sort order"),
+      phase: z.string().nullable().optional().describe("New phase ID (null to clear)"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleIssueUpdate(
@@ -470,6 +474,8 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         components: args.components,
         relatedTickets: args.relatedTickets,
         location: args.location,
+        order: args.order,
+        phase: args.phase,
       },
       format,
       root,

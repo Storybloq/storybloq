@@ -226,6 +226,30 @@ describe("handleIssueCreate", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.data.location).toEqual([]);
   });
+
+  it("accepts valid phase", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-create-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await handleIssueCreate(
+      { title: "Phased", severity: "high", impact: "x", components: [], relatedTickets: [], location: [], phase: "p0" },
+      "json", dir,
+    );
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.phase).toBe("p0");
+  });
+
+  it("rejects nonexistent phase", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-create-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await expect(
+      handleIssueCreate(
+        { title: "Bad phase", severity: "high", impact: "x", components: [], relatedTickets: [], location: [], phase: "nonexistent" },
+        "md", dir,
+      ),
+    ).rejects.toThrow("not found in roadmap");
+  });
 });
 
 describe("handleIssueUpdate", () => {
@@ -297,6 +321,43 @@ describe("handleIssueUpdate", () => {
     const result = await handleIssueUpdate("ISS-001", { components: ["ui", "api"] }, "json", dir);
     const parsed = JSON.parse(result.output);
     expect(parsed.data.components).toEqual(["ui", "api"]);
+  });
+
+  it("updates order", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    const result = await handleIssueUpdate("ISS-001", { order: 42 }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.order).toBe(42);
+  });
+
+  it("updates phase", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    const result = await handleIssueUpdate("ISS-001", { phase: "p0" }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.phase).toBe("p0");
+  });
+
+  it("clears phase to null", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    await handleIssueUpdate("ISS-001", { phase: "p0" }, "md", dir);
+    const result = await handleIssueUpdate("ISS-001", { phase: null }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.phase).toBeNull();
+  });
+
+  it("rejects invalid phase", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    await expect(
+      handleIssueUpdate("ISS-001", { phase: "nonexistent" }, "md", dir),
+    ).rejects.toThrow("not found in roadmap");
   });
 });
 

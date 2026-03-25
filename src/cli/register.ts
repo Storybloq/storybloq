@@ -1918,7 +1918,7 @@ export function registerSetupSkillCommand(yargs: Argv): Argv {
       y.option("skip-hooks", {
         type: "boolean",
         default: false,
-        description: "Skip PreCompact hook registration",
+        description: "Skip hook registration (PreCompact + Stop)",
       }),
     async (argv) => {
       const { handleSetupSkill } = await import("./commands/setup-skill.js");

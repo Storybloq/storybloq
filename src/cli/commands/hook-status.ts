@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
+import { STORY_GITIGNORE_ENTRIES } from "../../core/init.js";
 import {
   deriveClaudeStatus,
   deriveWorkspaceId,
@@ -148,16 +149,11 @@ function findActiveSession(root: string): SessionState | null {
 }
 
 // ---------------------------------------------------------------------------
-// Gitignore — one-time check per process
+// Gitignore — ensure ephemeral entries are gitignored
 // ---------------------------------------------------------------------------
 
-const gitignoreCheckedRoots = new Set<string>();
-
-function ensureGitignoreOnce(root: string): void {
-  if (gitignoreCheckedRoots.has(root)) return;
-
+function ensureGitignore(root: string): void {
   const gitignorePath = join(root, ".story", ".gitignore");
-  const requiredEntries = ["snapshots/", "status.json", "sessions/"];
 
   let existing = "";
   try {
@@ -167,20 +163,16 @@ function ensureGitignoreOnce(root: string): void {
   }
 
   const lines = existing.split("\n").map((l) => l.trim());
-  const missing = requiredEntries.filter((e) => !lines.includes(e));
-  if (missing.length === 0) {
-    gitignoreCheckedRoots.add(root);
-    return;
-  }
+  const missing = STORY_GITIGNORE_ENTRIES.filter((e) => !lines.includes(e));
+  if (missing.length === 0) return;
 
   let content = existing;
   if (content.length > 0 && !content.endsWith("\n")) content += "\n";
   content += missing.join("\n") + "\n";
   try {
     writeFileSync(gitignorePath, content, "utf-8");
-    gitignoreCheckedRoots.add(root); // Only mark checked on success
   } catch {
-    // Best-effort — don't block status writing, will retry next invocation
+    // Best-effort — don't block status writing
   }
 }
 
@@ -189,7 +181,7 @@ function ensureGitignoreOnce(root: string): void {
 // ---------------------------------------------------------------------------
 
 function writeStatus(root: string, payload: StatusPayload): void {
-  ensureGitignoreOnce(root);
+  ensureGitignore(root);
   const statusPath = join(root, ".story", "status.json");
   const content = JSON.stringify(payload, null, 2) + "\n";
   atomicWriteSync(statusPath, content);

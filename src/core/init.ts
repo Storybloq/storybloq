@@ -105,7 +105,7 @@ export async function initProject(
 
   // Ensure .story/.gitignore covers ephemeral files
   const gitignorePath = join(wrapDir, ".gitignore");
-  await ensureGitignoreEntries(gitignorePath, ["snapshots/", "status.json", "sessions/"]);
+  await ensureGitignoreEntries(gitignorePath, STORY_GITIGNORE_ENTRIES);
 
   // Validate existing data files when force-reinitializing.
   // Uses loadProject (permissive) — catches both JSON parse errors AND Zod schema
@@ -137,7 +137,14 @@ export async function initProject(
  * Ensures a .gitignore file contains the specified entries.
  * Creates the file if it doesn't exist. Idempotent — skips entries already present.
  */
-async function ensureGitignoreEntries(
+/** Ephemeral .story/ entries that should always be gitignored. Single source of truth. */
+export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/"];
+
+/**
+ * Ensures a .gitignore file contains the specified entries.
+ * Creates the file if it doesn't exist. Idempotent — skips entries already present.
+ */
+export async function ensureGitignoreEntries(
   gitignorePath: string,
   entries: string[],
 ): Promise<void> {

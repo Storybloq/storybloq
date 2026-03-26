@@ -148,7 +148,8 @@ export async function handleSessionClearCompact(root: string, sessionId?: string
     }
 
     const preCompactState = info.state.preCompactState;
-    const isValidState = preCompactState && WORKFLOW_STATES.includes(preCompactState as typeof WORKFLOW_STATES[number]);
+    const SAFE_RESUME_STATES = WORKFLOW_STATES.filter(s => s !== "COMPACT" && s !== "SESSION_END");
+    const isValidState = preCompactState && SAFE_RESUME_STATES.includes(preCompactState as typeof SAFE_RESUME_STATES[number]);
 
     if (isValidState) {
       // Valid: clear resumeBlocked, refresh timestamp (keeps compactPending for discovery)

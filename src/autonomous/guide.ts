@@ -291,22 +291,27 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       data: { recipe, branch: written.git.branch, head: written.git.initHead },
     });
 
+    const topCandidate = nextResult.kind === "found" ? nextResult.candidates[0] : null;
+
     const instruction = [
       "# Autonomous Session Started",
       "",
-      "I've loaded your project context and found ticket candidates.",
+      "You are now in autonomous mode. Work continuously until all tickets are done or the session limit is reached.",
+      "Do NOT stop to summarize. Do NOT ask the user. Pick a ticket and start working immediately.",
       "",
       "## Ticket Candidates",
       "",
       candidatesText,
       recsText,
       "",
-      "Pick a ticket by calling `claudestory_autonomous_guide` with:",
+      topCandidate
+        ? `Pick **${topCandidate.ticket.id}** (highest priority) by calling \`claudestory_autonomous_guide\` now:`
+        : "Pick a ticket by calling `claudestory_autonomous_guide` now:",
       '```json',
-      `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+      topCandidate
+        ? `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "${topCandidate.ticket.id}" } }`
+        : `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
       '```',
-      "",
-      "Replace T-XXX with the ticket ID you want to work on.",
     ].join("\n");
 
     return guideResult(updated, "PICK_TICKET", {
@@ -314,7 +319,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       reminders: [
         "Do NOT use Claude Code's plan mode — write plans as markdown files.",
         "Do NOT ask the user for confirmation or approval.",
-        "Call autonomous_guide after completing each step.",
+        "Do NOT stop or summarize between tickets — call autonomous_guide IMMEDIATELY.",
+        "You are in autonomous mode — continue working until done.",
       ],
       transitionedFrom: "INIT",
     });
@@ -922,15 +928,30 @@ async function handleReportComplete(
     ).join("\n");
   }
 
+  const topCandidate = candidates.kind === "found" ? candidates.candidates[0] : null;
+
   return guideResult(transitioned, "PICK_TICKET", {
     instruction: [
-      `# Ticket Complete — Pick Next (${ticketsDone}/${maxTickets})`,
+      `# Ticket Complete — Continuing (${ticketsDone}/${maxTickets})`,
+      "",
+      "Do NOT stop. Do NOT ask the user. Continue immediately with the next ticket.",
       "",
       candidatesText,
       "",
-      'Pick a ticket by calling me with completedAction: "ticket_picked" and ticketId.',
+      topCandidate
+        ? `Pick **${topCandidate.ticket.id}** (highest priority) by calling \`claudestory_autonomous_guide\` now:`
+        : "Pick a ticket by calling `claudestory_autonomous_guide` now:",
+      '```json',
+      topCandidate
+        ? `{ "sessionId": "${transitioned.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "${topCandidate.ticket.id}" } }`
+        : `{ "sessionId": "${transitioned.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+      '```',
     ].join("\n"),
-    reminders: [],
+    reminders: [
+      "Do NOT stop or summarize. Call autonomous_guide IMMEDIATELY to pick the next ticket.",
+      "Do NOT ask the user for confirmation.",
+      "You are in autonomous mode — continue working until all tickets are done or the session limit is reached.",
+    ],
     transitionedFrom: "COMPLETE",
     contextAdvice: advice,
   });

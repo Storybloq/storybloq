@@ -96,6 +96,10 @@ export function createSession(
     pendingProjectMutation: null,
     resumeFromRevision: null,
     preCompactState: null,
+    compactPending: false,
+    compactPreparedAt: null,
+    resumeBlocked: false,
+    terminationReason: null,
     waitingForRetry: false,
     lastGuideCall: now,
     startedAt: now,
@@ -320,6 +324,122 @@ export function findSessionById(root: string, sessionId: string): ActiveSessionI
   const state = readSession(dir);
   if (!state) return null;
   return { state, dir };
+}
+
+// ---------------------------------------------------------------------------
+// Compact preparation (ISS-032: hook-driven compaction)
+// ---------------------------------------------------------------------------
+
+export interface CompactPrepareResult {
+  sessionId: string;
+  preCompactState: string;
+  resumeFromRevision: number;
+}
+
+/**
+ * Prepare a session for compaction. Used by BOTH the CLI hook (session-compact-prepare)
+ * and the guide's handlePreCompact action. Sets state=COMPACT with compactPending marker.
+ *
+ * Guards: SESSION_END → throw, FINALIZE → throw, stale COMPACT → throw.
+ * Idempotent: if already pending (compactPending + COMPACT), refreshes timestamp only.
+ */
+export function prepareForCompact(
+  dir: string,
+  state: FullSessionState,
+  opts?: { expectedHead?: string },
+): CompactPrepareResult {
+  if (state.state === "SESSION_END") throw new Error("Session already ended");
+  if (state.state === "FINALIZE") throw new Error("Cannot compact during FINALIZE — complete the commit first");
+
+  // Idempotent: already pending → refresh timestamp + expectedHead
+  if (state.compactPending && state.state === "COMPACT") {
+    const updatedGit = opts?.expectedHead
+      ? { ...state.git, expectedHead: opts.expectedHead }
+      : state.git;
+    writeSessionSync(dir, { ...state, compactPreparedAt: new Date().toISOString(), resumeBlocked: false, git: updatedGit });
+    return {
+      sessionId: state.sessionId,
+      preCompactState: state.preCompactState ?? state.state,
+      resumeFromRevision: state.resumeFromRevision ?? state.revision,
+    };
+  }
+
+  // Stale manual COMPACT (state=COMPACT but compactPending=false)
+  if (state.state === "COMPACT") {
+    throw new Error("Session is in COMPACT state but not pending. Call resume or clear-compact.");
+  }
+
+  const resumeTarget = state.state === "HANDOVER" ? "PICK_TICKET" : state.state;
+
+  const written = writeSessionSync(dir, {
+    ...state,
+    state: "COMPACT",
+    previousState: state.state,
+    preCompactState: resumeTarget,
+    resumeFromRevision: state.revision,
+    compactPending: true,
+    compactPreparedAt: new Date().toISOString(),
+    resumeBlocked: false,
+    git: { ...state.git, expectedHead: opts?.expectedHead ?? state.git.expectedHead },
+  });
+
+  return {
+    sessionId: written.sessionId,
+    preCompactState: resumeTarget,
+    resumeFromRevision: state.revision,  // pre-write value, matches what's stored in state.json
+  };
+}
+
+/**
+ * Find a resumable session (compactPending + active + workspace match).
+ * Used by session-resume-prompt CLI (SessionStart hook).
+ * Separate from findActiveSessionFull to preserve single-session invariant.
+ * Read-only — no lock needed.
+ */
+export function findResumableSession(root: string): { info: ActiveSessionInfo; stale: boolean } | null {
+  const sessDir = sessionsRoot(root);
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(sessDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  let workspaceId: string;
+  try {
+    workspaceId = deriveWorkspaceId(root);
+  } catch {
+    return null;
+  }
+
+  const FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
+  let best: { info: ActiveSessionInfo; stale: boolean } | null = null;
+  let bestPreparedAt = 0;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(sessDir, entry.name);
+    const session = readSession(dir);
+    if (!session) continue;
+    if (session.status !== "active") continue;
+    if (!session.compactPending) continue;
+    if (session.lease?.workspaceId && session.lease.workspaceId !== workspaceId) continue;
+    // No lease expiry check — compactPreparedAt freshness handles staleness.
+    // Lease expiry is for session management (findActiveSessionFull), not hook discovery.
+
+    const preparedAt = session.compactPreparedAt
+      ? new Date(session.compactPreparedAt).getTime()
+      : 0;
+    const preparedAtValid = Number.isNaN(preparedAt) ? 0 : preparedAt;
+    const isStale = Date.now() - preparedAtValid > FRESHNESS_MS;
+
+    if (preparedAtValid > bestPreparedAt) {
+      best = { info: { state: session, dir }, stale: isStale };
+      bestPreparedAt = preparedAtValid;
+    }
+  }
+
+  return best;
 }
 
 // ---------------------------------------------------------------------------

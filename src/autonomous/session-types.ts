@@ -317,6 +317,12 @@ export const SessionStateSchema = z.object({
   // COMPACT resume
   resumeFromRevision: z.number().nullable().default(null),
   preCompactState: z.string().nullable().default(null),
+  compactPending: z.boolean().default(false),
+  compactPreparedAt: z.string().nullable().default(null),
+  resumeBlocked: z.boolean().default(false),
+
+  // Session termination
+  terminationReason: z.enum(["normal", "cancelled", "admin_recovery"]).nullable().default(null),
 
   // Session metadata
   waitingForRetry: z.boolean().default(false),

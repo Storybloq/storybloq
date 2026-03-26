@@ -1998,3 +1998,63 @@ export function registerConfigCommand(yargs: Argv): Argv {
       .demandCommand(1, "Specify a config subcommand. Available: set-overrides"),
   );
 }
+
+// ---------------------------------------------------------------------------
+// session (ISS-032: hook-driven compaction)
+// ---------------------------------------------------------------------------
+
+export function registerSessionCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "session",
+    false as unknown as string, // hidden — machine-facing
+    (y) =>
+      y
+        .command(
+          "compact-prepare",
+          "Prepare session for compaction (PreCompact hook)",
+          () => {},
+          async () => {
+            const { handleSessionCompactPrepare } = await import("./commands/session-compact.js");
+            await handleSessionCompactPrepare();
+          },
+        )
+        .command(
+          "resume-prompt",
+          "Output resume instruction after compaction (SessionStart hook)",
+          () => {},
+          async () => {
+            const { handleSessionResumePrompt } = await import("./commands/session-compact.js");
+            await handleSessionResumePrompt();
+          },
+        )
+        .command(
+          "clear-compact",
+          "Clear stale compact marker (admin)",
+          (y2) =>
+            y2.positional("sessionId", {
+              type: "string",
+              describe: "Session ID (optional — scans for compactPending session if omitted)",
+            }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionClearCompact } = await import("./commands/session-compact.js");
+            try {
+              const result = await handleSessionClearCompact(root, argv.sessionId as string | undefined);
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .demandCommand(1, "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact")
+        .strict(),
+    () => {},
+  );
+}

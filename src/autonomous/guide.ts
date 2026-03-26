@@ -23,6 +23,8 @@ import {
   sessionDir,
   withSessionLock,
   type SessionConfig,
+  prepareForCompact,
+  findResumableSession,
 } from "./session.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
@@ -130,10 +132,44 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // Check for existing active session
   const existing = findActiveSessionFull(root);
   if (existing && !isLeaseExpired(existing.state)) {
+    // ISS-032: compactPending sessions always block with specific recovery instructions
+    if (existing.state.compactPending) {
+      const preparedAt = existing.state.compactPreparedAt ? new Date(existing.state.compactPreparedAt).getTime() : 0;
+      const staleThreshold = 60 * 60 * 1000; // 1 hour
+      const isStale = Date.now() - preparedAt > staleThreshold;
+      if (isStale) {
+        return guideError(new Error(
+          `Stale compacted session ${existing.state.sessionId} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, never resumed). ` +
+          `SessionStart hook is no longer prompting for this session.\n` +
+          `- To resume anyway: call action "resume" with sessionId "${existing.state.sessionId}"\n` +
+          `- To abandon and start fresh: run "claudestory session clear-compact ${existing.state.sessionId}"`,
+        ));
+      }
+      return guideError(new Error(
+        `Active session ${existing.state.sessionId} is awaiting compaction resume.\n` +
+        `- To continue: call action "resume" with sessionId "${existing.state.sessionId}"\n` +
+        `- To abandon: run "claudestory session clear-compact ${existing.state.sessionId}"`,
+      ));
+    }
     return guideError(new Error(
       `Active session ${existing.state.sessionId} already exists for this workspace. ` +
       `Use action: "resume" to continue or "cancel" to end it.`,
     ));
+  }
+
+  // ISS-032: Also check for compactPending sessions with expired leases
+  // (findActiveSessionFull filters expired leases, so compacted sessions >45min old are invisible)
+  if (!existing) {
+    const resumable = findResumableSession(root);
+    if (resumable) {
+      const sid = resumable.info.state.sessionId;
+      const preparedAt = resumable.info.state.compactPreparedAt ? new Date(resumable.info.state.compactPreparedAt).getTime() : 0;
+      return guideError(new Error(
+        `${resumable.stale ? "Stale c" : "C"}ompacted session ${sid} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, lease expired but not resumed).\n` +
+        `- To resume: call action "resume" with sessionId "${sid}"\n` +
+        `- To abandon: run "claudestory session clear-compact ${sid}"`,
+      ));
+    }
   }
 
   // Supersede any stale sessions (findActiveSessionFull filters these out, so scan separately)
@@ -361,6 +397,14 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   let state = refreshLease(info.state);
   const currentState = state.state as WorkflowState;
   const report = args.report;
+
+  // Fail-closed: reject reports on sessions with inconsistent compactPending (ISS-032)
+  if (state.compactPending && currentState !== "COMPACT") {
+    return guideError(new Error(
+      `Session has pending compaction in inconsistent state (${currentState}). ` +
+      `Call action: "resume" or run "claudestory session clear-compact ${args.sessionId}".`,
+    ));
+  }
 
   switch (currentState) {
     case "PICK_TICKET":
@@ -1004,10 +1048,9 @@ async function handleReportComplete(
     // Hard ticket cap reached — end session
     nextState = "HANDOVER";
   } else if (pressure === "critical") {
-    // Context pressure critical — compact and continue (don't end session)
-    nextState = "HANDOVER";
+    // ISS-032: critical pressure is advisory — hooks handle compaction
     advice = "compact-now";
-    // HANDOVER handler will route to COMPACT instead of SESSION_END when advice is compact-now
+    nextState = "PICK_TICKET";
   } else if (pressure === "high") {
     advice = "consider-compact";
     nextState = "PICK_TICKET";
@@ -1105,50 +1148,13 @@ async function handleReportHandover(
     } catch { /* truly best-effort */ }
   }
 
-  // Decide: compact and continue, or end session
-  // Use stored pressure level (already evaluated in handleReportComplete)
-  const pressureLevel = state.contextPressure?.level ?? "low";
-  const maxTickets = state.config.maxTicketsPerSession;
-  const capReached = maxTickets > 0 && state.completedTickets.length >= maxTickets;
-
-  let hasMoreTickets = false;
-  try {
-    const { state: ps } = await loadProject(root);
-    hasMoreTickets = nextTickets(ps, 1).kind === "found";
-  } catch {
-    // loadProject failure — default to ending session (safe fallback)
-  }
-
-  if (pressureLevel === "critical" && hasMoreTickets && !capReached) {
-    // Compact and continue — stay in HANDOVER, tell Claude to call pre_compact
-    // (pre_compact will transition to COMPACT and flush state)
-    return guideResult(state, "HANDOVER", {
-      instruction: [
-        "# Context Compaction Needed",
-        "",
-        `${state.completedTickets.length} ticket(s) completed so far. Handover written. Context is large — time to compact and continue.`,
-        "",
-        "Call `claudestory_autonomous_guide` with `action: \"pre_compact\"` now:",
-        '```json',
-        `{ "sessionId": "${state.sessionId}", "action": "pre_compact" }`,
-        '```',
-        "",
-        "After pre_compact responds, run `/compact`, then call with `action: \"resume\"` to continue working on more tickets.",
-      ].join("\n"),
-      reminders: [
-        "Do NOT stop. This is a context compaction, not a session end.",
-        "Call pre_compact → /compact → resume to continue autonomous work.",
-      ],
-      contextAdvice: "compact-now",
-    });
-  }
-
-  // End session
+  // ISS-032: handover always ends session. Compact-continue removed — hooks handle compaction.
   const written = writeSessionSync(dir, {
     ...state,
     state: "SESSION_END",
     previousState: "HANDOVER",
     status: "completed",
+    terminationReason: "normal",
   });
 
   appendEvent(dir, {
@@ -1189,19 +1195,182 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ));
   }
 
+  // Check compactPending — stale COMPACT sessions get a clear message
+  if (!info.state.compactPending) {
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state but compactPending is false (stale compact). ` +
+      `Run "claudestory session clear-compact ${args.sessionId}" to recover.`,
+    ));
+  }
+
   // Validate preCompactState is a known workflow state
   const resumeState = info.state.preCompactState;
   if (!resumeState || !WORKFLOW_STATES.includes(resumeState as typeof WORKFLOW_STATES[number])) {
     return guideError(new Error(
-      `Session ${args.sessionId} has invalid preCompactState: ${resumeState}. Cannot resume safely.`,
+      `Session ${args.sessionId} has invalid preCompactState: ${resumeState}. ` +
+      `Run "claudestory session clear-compact ${args.sessionId}" to recover.`,
     ));
   }
 
+  // ISS-032: 3-branch HEAD validation
+  const headResult = await gitHead(root);
+  const expectedHead = info.state.git.expectedHead;
+
+  // Branch C: Cannot validate HEAD (git unavailable)
+  // Note: missing expectedHead with working git → skip validation (Branch A, backward compat)
+  if (!headResult.ok) {
+    // Keep compactPending — session must remain discoverable
+    const blockedState = writeSessionSync(info.dir, {
+      ...refreshLease(info.state),
+      resumeBlocked: true,
+    });
+    appendEvent(info.dir, {
+      rev: blockedState.revision,
+      type: "resume_blocked",
+      timestamp: new Date().toISOString(),
+      data: { reason: "cannot_validate_head", expectedHead: expectedHead ?? null, gitAvailable: headResult.ok },
+    });
+    return guideError(new Error(
+      `Cannot validate git state for session ${args.sessionId}. ` +
+      `Check git status and try "resume" again, or run "claudestory session clear-compact ${args.sessionId}" to end the session.`,
+    ));
+  }
+
+  // Branch B: HEAD mismatch (drift during compaction)
+  if (expectedHead && headResult.data.hash !== expectedHead) {
+    // State-specific recovery routing
+    const recoveryMapping: Record<string, { state: string; resetPlan: boolean; resetCode: boolean }> = {
+      PICK_TICKET:  { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+      COMPLETE:     { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+      HANDOVER:     { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+      PLAN:         { state: "PLAN",        resetPlan: true,  resetCode: false },
+      IMPLEMENT:    { state: "PLAN",        resetPlan: true,  resetCode: false },
+      PLAN_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },
+      CODE_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },
+      FINALIZE:     { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
+    };
+    const mapping = recoveryMapping[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
+
+    const recoveryReviews = {
+      plan: mapping.resetPlan ? [] : info.state.reviews.plan,
+      code: mapping.resetCode ? [] : info.state.reviews.code,
+    };
+
+    const recoveryTicket = info.state.ticket
+      ? { ...info.state.ticket, realizedRisk: undefined, lastPlanHash: undefined }
+      : undefined;
+
+    const driftWritten = writeSessionSync(info.dir, {
+      ...refreshLease(info.state),
+      state: mapping.state,
+      previousState: "COMPACT",
+      preCompactState: null,
+      resumeFromRevision: null,
+      compactPending: false,
+      compactPreparedAt: null,
+      resumeBlocked: false,
+      finalizeCheckpoint: null,
+      reviews: recoveryReviews,
+      ticket: recoveryTicket,
+      contextPressure: { ...info.state.contextPressure, compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1 },
+      git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash },
+    });
+
+    appendEvent(info.dir, {
+      rev: driftWritten.revision,
+      type: "resume_conflict",
+      timestamp: new Date().toISOString(),
+      data: { drift: true, previousState: resumeState, recoveryState: mapping.state, expectedHead, actualHead: headResult.data.hash, ticketId: info.state.ticket?.id },
+    });
+
+    // State-specific actionable instructions after drift recovery
+    const driftPreamble = `**HEAD changed during compaction** (expected ${expectedHead.slice(0, 8)}, got ${headResult.data.hash.slice(0, 8)}). Review state invalidated.\n\n`;
+
+    if (mapping.state === "PICK_TICKET") {
+      // Load candidates for PICK_TICKET
+      let candidatesText = "No ticket candidates available.";
+      let topCandidate: { ticket: { id: string; title: string } } | null = null;
+      try {
+        const { state: ps } = await loadProject(root);
+        const result = nextTickets(ps, 5);
+        if (result.kind === "found") {
+          topCandidate = result.candidates[0] ?? null;
+          candidatesText = result.candidates.map((c, i) =>
+            `${i + 1}. **${c.ticket.id}: ${c.ticket.title}** (${c.ticket.type})`,
+          ).join("\n");
+        }
+      } catch { /* use default */ }
+
+      return guideResult(driftWritten, "PICK_TICKET", {
+        instruction: [
+          `# Resumed After Compact — HEAD Mismatch`,
+          "",
+          driftPreamble + "Pick the next ticket.",
+          candidatesText,
+          "",
+          topCandidate
+            ? `Pick **${topCandidate.ticket.id}** by calling \`claudestory_autonomous_guide\` now:`
+            : "Pick a ticket now:",
+          '```json',
+          topCandidate
+            ? `{ "sessionId": "${driftWritten.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "${topCandidate.ticket.id}" } }`
+            : `{ "sessionId": "${driftWritten.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+          '```',
+        ].join("\n"),
+        reminders: ["Do NOT stop. Pick a ticket immediately."],
+      });
+    }
+
+    if (mapping.state === "PLAN") {
+      const ticketInfo = driftWritten.ticket ? `for ${driftWritten.ticket.id}: ${driftWritten.ticket.title}` : "";
+      return guideResult(driftWritten, "PLAN", {
+        instruction: [
+          `# Resumed After Compact — HEAD Mismatch`,
+          "",
+          `${driftPreamble}Write a new implementation plan ${ticketInfo}. Save to \`.story/sessions/${driftWritten.sessionId}/plan.md\`.`,
+          "",
+          `When done, call \`claudestory_autonomous_guide\` with:`,
+          '```json',
+          `{ "sessionId": "${driftWritten.sessionId}", "action": "report", "report": { "completedAction": "plan_written" } }`,
+          '```',
+        ].join("\n"),
+        reminders: ["Previous plan/reviews invalidated by drift. Write a fresh plan."],
+      });
+    }
+
+    if (mapping.state === "IMPLEMENT") {
+      const ticketInfo = driftWritten.ticket ? `for ${driftWritten.ticket.id}: ${driftWritten.ticket.title}` : "";
+      return guideResult(driftWritten, "IMPLEMENT", {
+        instruction: [
+          `# Resumed After Compact — HEAD Mismatch`,
+          "",
+          `${driftPreamble}Re-implement ${ticketInfo}. Previous commit state was invalidated.`,
+          "",
+          `When done, call \`claudestory_autonomous_guide\` with:`,
+          '```json',
+          `{ "sessionId": "${driftWritten.sessionId}", "action": "report", "report": { "completedAction": "implementation_done" } }`,
+          '```',
+        ].join("\n"),
+        reminders: ["Re-implement and verify before re-submitting for code review."],
+      });
+    }
+
+    // Fallback for unmapped states
+    return guideResult(driftWritten, mapping.state, {
+      instruction: `# Resumed After Compact — HEAD Mismatch\n\n${driftPreamble}Recovered to state: **${mapping.state}**. Continue from here.`,
+      reminders: [],
+    });
+  }
+
+  // Branch A: HEAD matches — normal resume
   const written = writeSessionSync(info.dir, {
     ...refreshLease(info.state),
     state: resumeState,
     preCompactState: null,
     resumeFromRevision: null,
+    compactPending: false,
+    compactPreparedAt: null,
+    resumeBlocked: false,
     contextPressure: { ...info.state.contextPressure, compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1 },
   });
 
@@ -1272,49 +1441,39 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
   const info = findSessionById(root, args.sessionId);
   if (!info) return guideError(new Error(`Session ${args.sessionId} not found`));
 
-  // Guard: cannot compact a terminated or already-compacting session
-  if (info.state.state === "SESSION_END") {
-    return guideError(new Error(`Session ${args.sessionId} is already ended and cannot be compacted.`));
-  }
-  if (info.state.state === "COMPACT") {
-    return guideError(new Error(`Session ${args.sessionId} is already in COMPACT state. Call action: "resume" to continue.`));
-  }
-
+  // ISS-032: delegate to shared helper
   const headResult = await gitHead(root);
 
-  // Determine resume target: if compacting from HANDOVER (compact-continue flow),
-  // resume at PICK_TICKET (handover already written, go straight to next ticket).
-  // Otherwise resume at the current state.
-  const resumeTarget = info.state.state === "HANDOVER" ? "PICK_TICKET" : info.state.state;
+  let result;
+  try {
+    result = prepareForCompact(info.dir, refreshLease(info.state), {
+      expectedHead: headResult.ok ? headResult.data.hash : undefined,
+    });
+  } catch (err) {
+    return guideError(err);
+  }
 
-  const written = writeSessionSync(info.dir, {
-    ...refreshLease(info.state),
-    state: "COMPACT",
-    previousState: info.state.state,
-    preCompactState: resumeTarget,
-    resumeFromRevision: info.state.revision,
-    git: {
-      ...info.state.git,
-      expectedHead: headResult.ok ? headResult.data.hash : info.state.git.expectedHead,
-    },
-  });
-
-  // Save snapshot (uses withProjectLock internally via saveSnapshot)
+  // Save snapshot AFTER state write (compactPending persisted even if snapshot fails)
   try {
     const loadResult = await loadProject(root);
     const { saveSnapshot } = await import("../core/snapshot.js");
     await saveSnapshot(root, loadResult);
   } catch { /* best-effort */ }
 
+  // Read back actual written state (revision and timestamps must match disk)
+  const reread = findSessionById(root, args.sessionId);
+  const written = reread?.state ?? info.state;
+
   return guideResult(written, "COMPACT", {
     instruction: [
       "# Ready for Compact",
       "",
-      "State flushed. Run `/compact` now.",
+      "State flushed. Context compaction will happen automatically via hooks.",
+      "If you need to compact manually, run `/compact` now.",
       "",
       "After compact, call `claudestory_autonomous_guide` with:",
       '```json',
-      `{ "sessionId": "${written.sessionId}", "action": "resume" }`,
+      `{ "sessionId": "${result.sessionId}", "action": "resume" }`,
       '```',
     ].join("\n"),
     reminders: [],
@@ -1341,6 +1500,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     state: "SESSION_END",
     previousState: info.state.state,
     status: "completed",
+    terminationReason: "cancelled",
+    compactPending: false,
+    compactPreparedAt: null,
+    resumeBlocked: false,
   });
 
   appendEvent(info.dir, {

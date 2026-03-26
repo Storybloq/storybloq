@@ -81,7 +81,7 @@ describe("registerPreCompactHook", () => {
     expect(preCompact[0]!.matcher).toBe("");
     expect(preCompact[0]!.hooks).toHaveLength(1);
     expect(preCompact[0]!.hooks[0]!.type).toBe("command");
-    expect(preCompact[0]!.hooks[0]!.command).toBe("claudestory snapshot --quiet");
+    expect(preCompact[0]!.hooks[0]!.command).toBe("claudestory session compact-prepare");
   });
 
   it("merges into existing settings preserving other config", async () => {
@@ -160,7 +160,7 @@ describe("registerPreCompactHook", () => {
     await writeFile(settingsPath, JSON.stringify({
       hooks: {
         PreCompact: [
-          { matcher: "auto", hooks: [{ type: "command", command: "claudestory snapshot --quiet" }] },
+          { matcher: "auto", hooks: [{ type: "command", command: "claudestory session compact-prepare" }] },
         ],
       },
     }, null, 2), "utf-8");

@@ -22,6 +22,7 @@ import {
   findSessionById,
   sessionDir,
   withSessionLock,
+  type SessionConfig,
 } from "./session.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
@@ -142,10 +143,24 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   }
 
   const wsId = deriveWorkspaceId(root);
-  const recipe = "coding"; // TODO: read from config.json
+
+  // Read recipe + config overrides from project
+  let recipe = "coding";
+  let sessionConfig: SessionConfig = {};
+  try {
+    const { state: projectState } = await loadProject(root);
+    const projectConfig = projectState.config as Record<string, unknown>;
+    if (typeof projectConfig.recipe === "string") recipe = projectConfig.recipe;
+    if (projectConfig.recipeOverrides && typeof projectConfig.recipeOverrides === "object") {
+      const overrides = projectConfig.recipeOverrides as Record<string, unknown>;
+      if (typeof overrides.maxTicketsPerSession === "number") sessionConfig.maxTicketsPerSession = overrides.maxTicketsPerSession;
+      if (typeof overrides.compactThreshold === "string") sessionConfig.compactThreshold = overrides.compactThreshold;
+      if (Array.isArray(overrides.reviewBackends)) sessionConfig.reviewBackends = overrides.reviewBackends as string[];
+    }
+  } catch { /* best-effort — use defaults */ }
 
   // Create session — wrapped in try/finally for cleanup on failure
-  const session = createSession(root, recipe, wsId);
+  const session = createSession(root, recipe, wsId, sessionConfig);
   const dir = sessionDir(root, session.sessionId);
 
   try {
@@ -882,7 +897,8 @@ async function handleReportComplete(
   if (pressure === "critical") {
     nextState = "HANDOVER";
     advice = "compact-now";
-  } else if (ticketsDone >= maxTickets) {
+  } else if (maxTickets > 0 && ticketsDone >= maxTickets) {
+    // maxTickets === 0 means no cap — session continues until context pressure or no tickets
     nextState = "HANDOVER";
   } else if (pressure === "high") {
     advice = "consider-compact";

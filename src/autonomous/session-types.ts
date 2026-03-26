@@ -328,9 +328,9 @@ export const SessionStateSchema = z.object({
   supersededSession: z.string().optional(),
   stealReason: z.string().optional(),
 
-  // Recipe overrides
+  // Recipe overrides (maxTicketsPerSession: 0 = no limit)
   config: z.object({
-    maxTicketsPerSession: z.number().default(3),
+    maxTicketsPerSession: z.number().min(0).default(3),
     compactThreshold: z.string().default("high"),
     reviewBackends: z.array(z.string()).default(["codex", "agent"]),
   }).default({ maxTicketsPerSession: 3, compactThreshold: "high", reviewBackends: ["codex", "agent"] }),

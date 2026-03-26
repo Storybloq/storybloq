@@ -52,10 +52,18 @@ function eventsPath(dir: string): string {
 // ---------------------------------------------------------------------------
 
 /** Create a new session directory and write initial state.json. */
+export interface SessionConfig {
+  maxTicketsPerSession?: number;
+  compactThreshold?: string;
+  reviewBackends?: string[];
+}
+
+/** Create a new session directory and write initial state.json. */
 export function createSession(
   root: string,
   recipe: string,
   workspaceId: string,
+  configOverrides?: SessionConfig,
 ): FullSessionState {
   const id = randomUUID();
   const dir = sessionDir(root, id);
@@ -93,9 +101,9 @@ export function createSession(
     startedAt: now,
     guideCallCount: 0,
     config: {
-      maxTicketsPerSession: 3,
-      compactThreshold: "high",
-      reviewBackends: ["codex", "agent"],
+      maxTicketsPerSession: configOverrides?.maxTicketsPerSession ?? 3,
+      compactThreshold: configOverrides?.compactThreshold ?? "high",
+      reviewBackends: configOverrides?.reviewBackends ?? ["codex", "agent"],
     },
   };
 

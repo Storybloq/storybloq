@@ -21,6 +21,11 @@ export const ConfigSchema = z
     language: z.string(),
     features: FeaturesSchema,
     recipe: z.string().optional(),
+    recipeOverrides: z.object({
+      maxTicketsPerSession: z.number().min(0).optional(),
+      compactThreshold: z.string().optional(),
+      reviewBackends: z.array(z.string()).optional(),
+    }).optional(),
   })
   .passthrough();
 

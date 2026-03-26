@@ -458,7 +458,21 @@ async function handleReportPlan(
   // Compute initial risk
   const risk = assessRisk(undefined, undefined);
 
-  // TODO: phased commit to update ticket to inprogress in .story/
+  // Update ticket to inprogress in .story/ (first durable work product)
+  if (state.ticket) {
+    try {
+      const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
+      await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
+        const ticket = projectState.ticketByID(state.ticket!.id);
+        if (ticket && ticket.status !== "inprogress") {
+          const updated = { ...ticket, status: "inprogress" as const };
+          await writeTicketUnlocked(updated, root);
+        }
+      });
+    } catch {
+      // Best-effort — don't block plan review if ticket update fails
+    }
+  }
 
   const written = writeSessionSync(dir, {
     ...state,
@@ -894,12 +908,14 @@ async function handleReportComplete(
   let nextState: WorkflowState;
   let advice: ContextAdvice = "ok";
 
-  if (pressure === "critical") {
+  if (maxTickets > 0 && ticketsDone >= maxTickets) {
+    // Hard ticket cap reached — end session
+    nextState = "HANDOVER";
+  } else if (pressure === "critical") {
+    // Context pressure critical — compact and continue (don't end session)
     nextState = "HANDOVER";
     advice = "compact-now";
-  } else if (maxTickets > 0 && ticketsDone >= maxTickets) {
-    // maxTickets === 0 means no cap — session continues until context pressure or no tickets
-    nextState = "HANDOVER";
+    // HANDOVER handler will route to COMPACT instead of SESSION_END when advice is compact-now
   } else if (pressure === "high") {
     advice = "consider-compact";
     nextState = "PICK_TICKET";
@@ -997,6 +1013,45 @@ async function handleReportHandover(
     } catch { /* truly best-effort */ }
   }
 
+  // Decide: compact and continue, or end session
+  // Use stored pressure level (already evaluated in handleReportComplete)
+  const pressureLevel = state.contextPressure?.level ?? "low";
+  const maxTickets = state.config.maxTicketsPerSession;
+  const capReached = maxTickets > 0 && state.completedTickets.length >= maxTickets;
+
+  let hasMoreTickets = false;
+  try {
+    const { state: ps } = await loadProject(root);
+    hasMoreTickets = nextTickets(ps, 1).kind === "found";
+  } catch {
+    // loadProject failure — default to ending session (safe fallback)
+  }
+
+  if (pressureLevel === "critical" && hasMoreTickets && !capReached) {
+    // Compact and continue — stay in HANDOVER, tell Claude to call pre_compact
+    // (pre_compact will transition to COMPACT and flush state)
+    return guideResult(state, "HANDOVER", {
+      instruction: [
+        "# Context Compaction Needed",
+        "",
+        `${state.completedTickets.length} ticket(s) completed so far. Handover written. Context is large — time to compact and continue.`,
+        "",
+        "Call `claudestory_autonomous_guide` with `action: \"pre_compact\"` now:",
+        '```json',
+        `{ "sessionId": "${state.sessionId}", "action": "pre_compact" }`,
+        '```',
+        "",
+        "After pre_compact responds, run `/compact`, then call with `action: \"resume\"` to continue working on more tickets.",
+      ].join("\n"),
+      reminders: [
+        "Do NOT stop. This is a context compaction, not a session end.",
+        "Call pre_compact → /compact → resume to continue autonomous work.",
+      ],
+      contextAdvice: "compact-now",
+    });
+  }
+
+  // End session
   const written = writeSessionSync(dir, {
     ...state,
     state: "SESSION_END",
@@ -1058,6 +1113,46 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     contextPressure: { ...info.state.contextPressure, compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1 },
   });
 
+  // If resuming at PICK_TICKET, load candidates and give directive instructions
+  if (resumeState === "PICK_TICKET") {
+    let candidatesText = "No ticket candidates available.";
+    let topCandidate: { ticket: { id: string; title: string } } | null = null;
+    try {
+      const { state: ps } = await loadProject(root);
+      const result = nextTickets(ps, 5);
+      if (result.kind === "found") {
+        topCandidate = result.candidates[0] ?? null;
+        candidatesText = result.candidates.map((c, i) =>
+          `${i + 1}. **${c.ticket.id}: ${c.ticket.title}** (${c.ticket.type})`,
+        ).join("\n");
+      }
+    } catch { /* use default text */ }
+
+    return guideResult(written, "PICK_TICKET", {
+      instruction: [
+        "# Resumed After Compact — Continue Working",
+        "",
+        `${written.completedTickets.length} ticket(s) done so far. Context compacted. Pick the next ticket immediately.`,
+        "",
+        candidatesText,
+        "",
+        topCandidate
+          ? `Pick **${topCandidate.ticket.id}** by calling \`claudestory_autonomous_guide\` now:`
+          : "Pick a ticket now:",
+        '```json',
+        topCandidate
+          ? `{ "sessionId": "${written.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "${topCandidate.ticket.id}" } }`
+          : `{ "sessionId": "${written.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+        '```',
+      ].join("\n"),
+      reminders: [
+        "Do NOT stop or summarize. Pick the next ticket IMMEDIATELY.",
+        "Do NOT ask the user for confirmation.",
+        "You are in autonomous mode — continue working.",
+      ],
+    });
+  }
+
   return guideResult(written, resumeState, {
     instruction: [
       "# Resumed After Compact",
@@ -1069,6 +1164,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ].join("\n"),
     reminders: [
       "Do NOT use plan mode.",
+      "Do NOT stop or summarize.",
       "Call autonomous_guide after completing each step.",
     ],
   });
@@ -1094,11 +1190,16 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
 
   const headResult = await gitHead(root);
 
+  // Determine resume target: if compacting from HANDOVER (compact-continue flow),
+  // resume at PICK_TICKET (handover already written, go straight to next ticket).
+  // Otherwise resume at the current state.
+  const resumeTarget = info.state.state === "HANDOVER" ? "PICK_TICKET" : info.state.state;
+
   const written = writeSessionSync(info.dir, {
     ...refreshLease(info.state),
     state: "COMPACT",
     previousState: info.state.state,
-    preCompactState: info.state.state,
+    preCompactState: resumeTarget,
     resumeFromRevision: info.state.revision,
     git: {
       ...info.state.git,

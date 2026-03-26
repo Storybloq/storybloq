@@ -12,6 +12,7 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 `/story` is one smart command. Parse the user's intent from context:
 
 - `/story` → full context load (default, see Step 2 below)
+- `/story auto` → start autonomous mode (see Autonomous Mode below)
 - `/story handover` → draft a session handover. Summarize the session's work, then call `claudestory_handover_create` with the drafted content and a descriptive slug
 - `/story snapshot` → save project state (call `claudestory_snapshot` MCP tool)
 - `/story export` → export project for sharing. Ask the user whether to export the current phase or the full project, then call `claudestory_export` with either `phase` or `all` set
@@ -260,6 +261,29 @@ Create notes via CLI: `claudestory note create --content "..." --tags idea`
 Create notes via MCP: `claudestory_note_create` with `content`, optional `title` and `tags`.
 
 List, get, and update notes via MCP: `claudestory_note_list`, `claudestory_note_get`, `claudestory_note_update`. Delete remains CLI-only: `claudestory note delete <id>`.
+
+## Autonomous Mode
+
+`/story auto` starts an autonomous coding session. The guide picks tickets, plans, reviews, implements, and commits — looping until all tickets are done or the session limit is reached.
+
+**How it works:**
+
+1. Call `claudestory_autonomous_guide` with `{ "sessionId": null, "action": "start" }`
+2. The guide returns an instruction with ticket candidates and exact JSON for the next call
+3. Follow every instruction exactly. Call the guide back after each step.
+4. The guide advances through: PICK_TICKET → PLAN → PLAN_REVIEW → IMPLEMENT → CODE_REVIEW → FINALIZE → COMPLETE → loop
+5. Continue until the guide returns SESSION_END
+
+**Critical rules for autonomous mode:**
+- Do NOT use Claude Code's plan mode — write plans as markdown files
+- Do NOT ask the user for confirmation or approval
+- Do NOT stop or summarize between tickets — call the guide IMMEDIATELY
+- Follow the guide's instructions exactly — it specifies which tools to call, what parameters to use
+- After each step completes, call `claudestory_autonomous_guide` with `action: "report"` and the results
+
+**If the guide says to compact:** Call `claudestory_autonomous_guide` with `action: "pre_compact"`, then run `/compact`, then call with `action: "resume"`.
+
+**If something goes wrong:** Call `claudestory_autonomous_guide` with `action: "cancel"` to cleanly end the session.
 
 ## Command & Tool Reference
 

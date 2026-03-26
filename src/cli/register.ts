@@ -1942,3 +1942,55 @@ export function registerHookStatusCommand(yargs: Argv): Argv {
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+
+export function registerConfigCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "config",
+    "Manage project configuration",
+    (y) =>
+      y.command(
+        "set-overrides",
+        "Set or clear recipe overrides in config.json",
+        (y2) =>
+          y2
+            .option("json", {
+              type: "string",
+              describe: "JSON object to merge into recipeOverrides",
+            })
+            .option("clear", {
+              type: "boolean",
+              describe: "Remove recipeOverrides entirely (reset to defaults)",
+            })
+            .option("format", {
+              choices: ["json", "md"] as const,
+              default: "md" as const,
+              describe: "Output format",
+            }),
+        async (argv) => {
+          const { handleConfigSetOverrides } = await import("./commands/config-update.js");
+          const { writeOutput } = await import("./run.js");
+          const format = argv.format as "json" | "md";
+          try {
+            const result = await handleConfigSetOverrides(
+              process.cwd(),
+              format,
+              { json: argv.json as string | undefined, clear: argv.clear === true },
+            );
+            writeOutput(result.output);
+            if (result.errorCode) process.exitCode = 1;
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            const { formatError } = await import("../core/output-formatter.js");
+            const { ExitCode } = await import("../core/output-formatter.js");
+            writeOutput(formatError("io_error", message, format));
+            process.exitCode = ExitCode.USER_ERROR;
+          }
+        },
+      )
+      .demandCommand(1, "Specify a config subcommand. Available: set-overrides"),
+  );
+}

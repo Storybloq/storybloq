@@ -60,6 +60,7 @@ import { handleSnapshot } from "../cli/commands/snapshot.js";
 import { handleExport } from "../cli/commands/export.js";
 import { handleSelftest } from "../cli/commands/selftest.js";
 import { handleHandoverCreate } from "../cli/commands/handover.js";
+import { handleAutonomousGuide } from "../autonomous/guide.js";
 import {
   handlePhaseList,
   handlePhaseCurrent,
@@ -582,4 +583,30 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
   }, () => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleSelftest(root, format),
   ));
+
+  // --- Autonomous guide ---
+
+  server.registerTool("claudestory_autonomous_guide", {
+    description: "Autonomous session orchestrator. Call at every decision point during autonomous mode.",
+    inputSchema: {
+      sessionId: z.string().uuid().nullable().describe("Session ID (null for start action)"),
+      action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]).describe("Action to perform"),
+      report: z.object({
+        completedAction: z.string().describe("What was completed"),
+        ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),
+        commitHash: z.string().optional().describe("Git commit hash (for commit_done)"),
+        handoverContent: z.string().optional().describe("Handover markdown content"),
+        verdict: z.string().optional().describe("Review verdict: approve|revise|request_changes|reject"),
+        findings: z.array(z.object({
+          id: z.string(),
+          severity: z.string(),
+          category: z.string(),
+          description: z.string(),
+          disposition: z.string(),
+        })).optional().describe("Review findings"),
+        reviewerSessionId: z.string().optional().describe("Codex session ID"),
+        notes: z.string().optional().describe("Free-text notes"),
+      }).optional().describe("Report data (required for report action)"),
+    },
+  }, (args) => handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]));
 }

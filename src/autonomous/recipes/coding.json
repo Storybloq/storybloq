@@ -1,0 +1,9 @@
+{
+  "id": "coding",
+  "schemaVersion": 1,
+  "defaults": {
+    "maxTicketsPerSession": 3,
+    "compactThreshold": "high",
+    "reviewBackends": ["codex", "agent"]
+  }
+}

@@ -20,6 +20,7 @@ export const ConfigSchema = z
     type: z.string(),
     language: z.string(),
     features: FeaturesSchema,
+    recipe: z.string().optional(),
   })
   .passthrough();
 

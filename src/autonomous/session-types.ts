@@ -1,4 +1,5 @@
 import { realpathSync } from "node:fs";
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Workflow states from N-005 v5.1 state machine
@@ -129,3 +130,294 @@ export interface StatusPayloadInactive {
 }
 
 export type StatusPayload = StatusPayloadActive | StatusPayloadInactive;
+
+// ---------------------------------------------------------------------------
+// Workflow state enum values (for Zod schema)
+// ---------------------------------------------------------------------------
+
+export const WORKFLOW_STATES = [
+  "INIT", "LOAD_CONTEXT", "PICK_TICKET",
+  "PLAN", "PLAN_REVIEW",
+  "IMPLEMENT", "CODE_REVIEW",
+  "FINALIZE", "COMPACT",
+  "HANDOVER", "COMPLETE", "SESSION_END",
+] as const;
+
+export const WorkflowStateSchema = z.enum(WORKFLOW_STATES);
+
+// ---------------------------------------------------------------------------
+// Session schema version
+// ---------------------------------------------------------------------------
+
+export const CURRENT_SESSION_SCHEMA_VERSION = 1 as const;
+
+// ---------------------------------------------------------------------------
+// Finalize checkpoint
+// ---------------------------------------------------------------------------
+
+export type FinalizeCheckpoint = "staged" | "precommit_passed" | "committed";
+
+// ---------------------------------------------------------------------------
+// Review record (stored in state.json reviews arrays)
+// ---------------------------------------------------------------------------
+
+export interface ReviewRecord {
+  readonly round: number;
+  readonly reviewer: string;
+  readonly verdict: string;
+  readonly findingCount: number;
+  readonly criticalCount: number;
+  readonly majorCount: number;
+  readonly suggestionCount: number;
+  readonly codexSessionId?: string;
+  readonly timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Finding (from Claude's review report)
+// ---------------------------------------------------------------------------
+
+export interface Finding {
+  readonly id: string;
+  readonly severity: "critical" | "major" | "minor" | "suggestion";
+  readonly category: string;
+  readonly description: string;
+  readonly disposition: "open" | "addressed" | "contested";
+  readonly recommendedNextState?: "PLAN" | "IMPLEMENT";
+}
+
+// ---------------------------------------------------------------------------
+// Git baseline (captured at INIT)
+// ---------------------------------------------------------------------------
+
+export interface GitBaseline {
+  readonly head: string;
+  readonly branch: string | null;
+  readonly mergeBase: string | null;
+  readonly porcelain: readonly string[];
+  readonly dirtyTrackedFiles: Readonly<Record<string, { blobHash: string }>>;
+  readonly untrackedPaths: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Pending project mutation (cross-domain consistency)
+// ---------------------------------------------------------------------------
+
+export type PendingProjectMutation =
+  | { type: "ticket_update"; target: string; field: string; value: string; transitionId: string }
+  | { type: "ticket_recovery_write"; target: string; transitionId: string }
+  | { type: "ticket_recovery_clear"; target: string; transitionId: string }
+  | { type: "handover_create"; filename: string | null; transitionId: string }
+  | { type: "issue_create"; expectedId: string; transitionId: string }
+  | { type: "snapshot_save"; filename: string | null; transitionId: string };
+
+// ---------------------------------------------------------------------------
+// Event entry (append-only JSONL in events.log)
+// ---------------------------------------------------------------------------
+
+export interface EventEntry {
+  readonly rev: number;
+  readonly type: string;
+  readonly timestamp: string;
+  readonly data: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Full session state (authoritative, written to state.json)
+// ---------------------------------------------------------------------------
+
+export const SessionStateSchema = z.object({
+  schemaVersion: z.literal(CURRENT_SESSION_SCHEMA_VERSION),
+  sessionId: z.string().uuid(),
+  recipe: z.string(),
+  state: z.string(),
+  previousState: z.string().optional(),
+  revision: z.number().int().min(0),
+  status: z.enum(["active", "completed", "superseded"]).default("active"),
+
+  // Ticket in progress
+  ticket: z.object({
+    id: z.string(),
+    title: z.string(),
+    risk: z.string().optional(),
+    realizedRisk: z.string().optional(),
+    claimed: z.boolean().default(false),
+  }).optional(),
+
+  // Review tracking
+  reviews: z.object({
+    plan: z.array(z.object({
+      round: z.number(),
+      reviewer: z.string(),
+      verdict: z.string(),
+      findingCount: z.number(),
+      criticalCount: z.number(),
+      majorCount: z.number(),
+      suggestionCount: z.number(),
+      codexSessionId: z.string().optional(),
+      timestamp: z.string(),
+    })).default([]),
+    code: z.array(z.object({
+      round: z.number(),
+      reviewer: z.string(),
+      verdict: z.string(),
+      findingCount: z.number(),
+      criticalCount: z.number(),
+      majorCount: z.number(),
+      suggestionCount: z.number(),
+      codexSessionId: z.string().optional(),
+      timestamp: z.string(),
+    })).default([]),
+  }).default({ plan: [], code: [] }),
+
+  // Completed tickets this session
+  completedTickets: z.array(z.object({
+    id: z.string(),
+    title: z.string().optional(),
+    commitHash: z.string().optional(),
+    risk: z.string().optional(),
+  })).default([]),
+
+  // FINALIZE checkpoint
+  finalizeCheckpoint: z.enum(["staged", "precommit_passed", "committed"]).nullable().default(null),
+
+  // Git state
+  git: z.object({
+    branch: z.string().nullable().default(null),
+    initHead: z.string().optional(),
+    mergeBase: z.string().nullable().default(null),
+    expectedHead: z.string().optional(),
+    baseline: z.object({
+      porcelain: z.array(z.string()).default([]),
+      dirtyTrackedFiles: z.record(z.object({ blobHash: z.string() })).default({}),
+      untrackedPaths: z.array(z.string()).default([]),
+    }).optional(),
+  }).default({ branch: null, mergeBase: null }),
+
+  // Lease
+  lease: z.object({
+    workspaceId: z.string().optional(),
+    lastHeartbeat: z.string(),
+    expiresAt: z.string(),
+  }),
+
+  // Context pressure
+  contextPressure: z.object({
+    level: z.string().default("low"),
+    guideCallCount: z.number().default(0),
+    ticketsCompleted: z.number().default(0),
+    compactionCount: z.number().default(0),
+    eventsLogBytes: z.number().default(0),
+  }).default({ level: "low", guideCallCount: 0, ticketsCompleted: 0, compactionCount: 0, eventsLogBytes: 0 }),
+
+  // Pending project mutation (for crash recovery)
+  pendingProjectMutation: z.any().nullable().default(null),
+
+  // COMPACT resume
+  resumeFromRevision: z.number().nullable().default(null),
+  preCompactState: z.string().nullable().default(null),
+
+  // Session metadata
+  waitingForRetry: z.boolean().default(false),
+  lastGuideCall: z.string().optional(),
+  startedAt: z.string(),
+  guideCallCount: z.number().default(0),
+
+  // Supersession tracking
+  supersededBy: z.string().optional(),
+  supersededSession: z.string().optional(),
+  stealReason: z.string().optional(),
+
+  // Recipe overrides
+  config: z.object({
+    maxTicketsPerSession: z.number().default(3),
+    compactThreshold: z.string().default("high"),
+    reviewBackends: z.array(z.string()).default(["codex", "agent"]),
+  }).default({ maxTicketsPerSession: 3, compactThreshold: "high", reviewBackends: ["codex", "agent"] }),
+}).passthrough();
+
+export type FullSessionState = z.infer<typeof SessionStateSchema>;
+
+// ---------------------------------------------------------------------------
+// Guide input (from MCP tool call)
+// ---------------------------------------------------------------------------
+
+export type GuideAction = "start" | "report" | "resume" | "pre_compact" | "cancel";
+
+export interface GuideReportInput {
+  readonly completedAction: string;
+  readonly ticketId?: string;
+  readonly commitHash?: string;
+  readonly handoverContent?: string;
+  readonly verdict?: string;
+  readonly findings?: readonly Finding[];
+  readonly reviewerSessionId?: string;
+  readonly notes?: string;
+}
+
+export interface GuideInput {
+  readonly sessionId: string | null;
+  readonly action: GuideAction;
+  readonly report?: GuideReportInput;
+}
+
+// ---------------------------------------------------------------------------
+// Guide output (returned to Claude)
+// ---------------------------------------------------------------------------
+
+export interface SessionSummary {
+  readonly ticket: string;
+  readonly risk: string;
+  readonly completed: readonly string[];
+  readonly currentStep: string;
+  readonly contextPressure: string;
+  readonly branch: string | null;
+}
+
+export type ContextAdvice = "ok" | "consider-compact" | "compact-now";
+
+export interface GuideOutput {
+  readonly sessionId: string;
+  readonly state: string;
+  readonly transitionedFrom?: string;
+  readonly instruction: string;
+  readonly reminders: readonly string[];
+  readonly contextAdvice: ContextAdvice;
+  readonly sessionSummary: SessionSummary;
+}
+
+// ---------------------------------------------------------------------------
+// Git result (discriminated union for git operations)
+// ---------------------------------------------------------------------------
+
+export type GitResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; reason: string; message: string };
+
+// ---------------------------------------------------------------------------
+// Diff stats
+// ---------------------------------------------------------------------------
+
+export interface DiffStats {
+  readonly filesChanged: number;
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly totalLines: number;
+}
+
+// ---------------------------------------------------------------------------
+// Pressure level
+// ---------------------------------------------------------------------------
+
+export type PressureLevel = "low" | "medium" | "high" | "critical";
+
+// ---------------------------------------------------------------------------
+// Branch validation result
+// ---------------------------------------------------------------------------
+
+export type BranchValidation =
+  | { status: "ok" }
+  | { status: "head_ahead_own"; commitHash: string }
+  | { status: "head_ahead_unknown"; commitHash: string }
+  | { status: "head_diverged" }
+  | { status: "branch_mismatch"; expected: string; actual: string };

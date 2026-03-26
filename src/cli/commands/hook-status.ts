@@ -1,14 +1,14 @@
-import { readdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import { STORY_GITIGNORE_ENTRIES } from "../../core/init.js";
 import {
   deriveClaudeStatus,
-  deriveWorkspaceId,
   CURRENT_STATUS_SCHEMA_VERSION,
   type SessionState,
   type StatusPayload,
 } from "../../autonomous/session-types.js";
+import { findActiveSessionMinimal } from "../../autonomous/session.js";
 
 // ---------------------------------------------------------------------------
 // Stdin reading — silent version (no throws, no validation)
@@ -76,79 +76,6 @@ function activePayload(session: SessionState): StatusPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Session scanning
-// ---------------------------------------------------------------------------
-
-function findActiveSession(root: string): SessionState | null {
-  const sessionsDir = join(root, ".story", "sessions");
-
-  let entries: ReturnType<typeof readdirSync>;
-  try {
-    entries = readdirSync(sessionsDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-
-  let workspaceId: string;
-  try {
-    workspaceId = deriveWorkspaceId(root);
-  } catch {
-    return null;
-  }
-
-  const now = Date.now();
-  let best: SessionState | null = null;
-  let bestGuideCall = 0;
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-
-    const statePath = join(sessionsDir, entry.name, "state.json");
-    let raw: string;
-    try {
-      raw = readFileSync(statePath, "utf-8");
-    } catch {
-      continue;
-    }
-
-    let session: SessionState;
-    try {
-      session = JSON.parse(raw) as SessionState;
-    } catch {
-      continue;
-    }
-
-    // Must have a valid sessionId
-    if (!session.sessionId || typeof session.sessionId !== "string") continue;
-
-    // Workspace must match (missing workspaceId treated as compatible for forward-compat)
-    if (session.lease?.workspaceId && session.lease.workspaceId !== workspaceId) continue;
-
-    // Lease must not be stale
-    if (!session.lease?.expiresAt) continue;
-    const expires = new Date(session.lease.expiresAt).getTime();
-    if (Number.isNaN(expires) || expires <= now) continue;
-
-    // Pick most recent lastGuideCall, tie-break by sessionId
-    const guideCall = session.lastGuideCall
-      ? new Date(session.lastGuideCall).getTime()
-      : 0;
-    const guideCallValid = Number.isNaN(guideCall) ? 0 : guideCall;
-
-    if (
-      !best ||
-      guideCallValid > bestGuideCall ||
-      (guideCallValid === bestGuideCall && session.sessionId > best.sessionId)
-    ) {
-      best = session;
-      bestGuideCall = guideCallValid;
-    }
-  }
-
-  return best;
-}
-
-// ---------------------------------------------------------------------------
 // Gitignore — ensure ephemeral entries are gitignored
 // ---------------------------------------------------------------------------
 
@@ -203,7 +130,7 @@ export async function handleHookStatus(): Promise<void> {
     if (process.stdin.isTTY) {
       const root = discoverProjectRoot();
       if (root) {
-        const session = findActiveSession(root);
+        const session = findActiveSessionMinimal(root);
         const payload = session ? activePayload(session) : inactivePayload();
         writeStatus(root, payload);
       }
@@ -244,7 +171,7 @@ export async function handleHookStatus(): Promise<void> {
     }
 
     // Scan for active session
-    const session = findActiveSession(root);
+    const session = findActiveSessionMinimal(root);
     const payload = session ? activePayload(session) : inactivePayload();
     writeStatus(root, payload);
   } catch {

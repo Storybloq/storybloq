@@ -365,6 +365,14 @@ export const SessionStateSchema = z.object({
     reviewBackends: z.array(z.string()).default(["codex", "agent"]),
   }).default({ maxTicketsPerSession: 3, compactThreshold: "high", reviewBackends: ["codex", "agent"] }),
 
+  // T-123: Issue sweep tracking
+  issueSweepState: z.object({
+    remaining: z.array(z.string()),
+    current: z.string().nullable(),
+    resolved: z.array(z.string()),
+  }).nullable().default(null),
+  pipelinePhase: z.enum(["ticket", "postComplete"]).default("ticket"),
+
   // T-124: Test stage baseline and retry tracking
   testBaseline: z.object({
     exitCode: z.number(),

@@ -2,10 +2,11 @@
   "id": "coding",
   "schemaVersion": 2,
   "pipeline": ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
-  "postComplete": [],
+  "postComplete": ["ISSUE_SWEEP"],
   "stages": {
     "PLAN_REVIEW": { "backends": ["codex", "agent"] },
-    "CODE_REVIEW": { "backends": ["codex", "agent"] }
+    "CODE_REVIEW": { "backends": ["codex", "agent"] },
+    "ISSUE_SWEEP": { "enabled": false }
   },
   "dirtyFileHandling": "block",
   "defaults": {

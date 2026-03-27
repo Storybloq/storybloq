@@ -374,7 +374,7 @@ describe("resolveRecipe", () => {
     expect(recipe.pipeline).toContain("PICK_TICKET");
     expect(recipe.pipeline).toContain("PLAN");
     expect(recipe.pipeline).toContain("COMPLETE");
-    expect(recipe.postComplete).toEqual([]);
+    expect(recipe.postComplete).toContain("ISSUE_SWEEP");
   });
 
   it("applies project overrides over recipe defaults", () => {

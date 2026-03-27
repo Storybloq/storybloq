@@ -11,6 +11,7 @@ import { TestStage } from "./test.js";
 import { CodeReviewStage } from "./code-review.js";
 import { FinalizeStage } from "./finalize.js";
 import { CompleteStage } from "./complete.js";
+import { IssueSweepStage } from "./issue-sweep.js";
 import { HandoverStage } from "./handover.js";
 
 // Register all extracted stages (pipeline order)
@@ -22,4 +23,5 @@ registerStage(new TestStage());
 registerStage(new CodeReviewStage());
 registerStage(new FinalizeStage());
 registerStage(new CompleteStage());
+registerStage(new IssueSweepStage());
 registerStage(new HandoverStage());

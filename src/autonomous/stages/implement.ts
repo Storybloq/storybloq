@@ -47,12 +47,10 @@ export class ImplementStage implements WorkflowStage {
       }
     }
 
-    // Update ticket with realized risk
-    ctx.writeState({
+    // Stage field updates (persisted atomically with state transition by processAdvance)
+    ctx.updateDraft({
       ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk } : ctx.state.ticket,
     });
-
-    ctx.appendEvent("implementation_done", { realizedRisk });
 
     // Build the next stage's instruction (CODE_REVIEW or TEST)
     // During hybrid dispatch, the next stage may not be registered yet,

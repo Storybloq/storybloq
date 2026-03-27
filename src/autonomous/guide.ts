@@ -614,20 +614,27 @@ async function processAdvance(
     ));
   }
 
+  // Short-circuit: if the stage already transitioned to SESSION_END (terminal),
+  // return the result directly without pipeline lookup (HandoverStage fix)
+  if (ctx.state.state === "SESSION_END" && advance.action === "advance" && "result" in advance && advance.result) {
+    return guideResult(ctx.state, "SESSION_END", advance.result);
+  }
+
   switch (advance.action) {
     case "advance": {
       const pipeline = ctx.state.resolvedPipeline ?? ctx.recipe.pipeline;
       const next = findNextStage(pipeline, currentStage.id, ctx);
 
       if (next.kind === "unregistered") {
-        // Hybrid dispatch: next pipeline stage not yet extracted — write transition
-        // and return instruction telling Claude to report back (switch will handle it)
+        // Hybrid dispatch: next pipeline stage not yet extracted — write transition.
+        // Use advance.result if present (stage pre-computed the instruction),
+        // otherwise fall back to generic "report back" for the switch to handle.
         assertTransition(currentStage.id as WorkflowState, next.id as WorkflowState);
         ctx.writeState({ state: next.id, previousState: currentStage.id });
-        return guideResult(ctx.state, next.id, {
-          instruction: `Transitioned to ${next.id}. Report back to continue.`,
-          reminders: [],
-        });
+        const resultForNext = ("result" in advance && advance.result)
+          ? advance.result
+          : { instruction: `Transitioned to ${next.id}. Report back to continue.`, reminders: [] as string[] };
+        return guideResult(ctx.state, next.id, resultForNext);
       }
 
       if (next.kind === "exhausted") {
@@ -666,6 +673,7 @@ async function processAdvance(
       const nextStage = next.stage;
       assertTransition(currentStage.id as WorkflowState, nextStage.id as WorkflowState);
       ctx.writeState({ state: nextStage.id, previousState: currentStage.id });
+      ctx.appendEvent("transition", { from: currentStage.id, to: nextStage.id });
       const enterResult = "result" in advance && advance.result
         ? advance.result
         : await nextStage.enter(ctx);
@@ -682,16 +690,18 @@ async function processAdvance(
       const target = advance.target;
       const targetStage = getStage(target);
       if (!targetStage) {
-        // Target not registered — write transition, delegate to legacy switch on next report
+        // Target not registered — write transition. Use advance.result if provided,
+        // otherwise delegate to legacy switch on next report.
         assertTransition(currentStage.id as WorkflowState, target as WorkflowState);
         ctx.writeState({ state: target, previousState: currentStage.id });
-        return guideResult(ctx.state, target, {
-          instruction: `Transitioned to ${target}. Report back to continue.`,
-          reminders: [],
-        });
+        const resultForTarget = ("result" in advance && advance.result)
+          ? advance.result
+          : { instruction: `Transitioned to ${target}. Report back to continue.`, reminders: [] as string[] };
+        return guideResult(ctx.state, target, resultForTarget);
       }
       assertTransition(currentStage.id as WorkflowState, target as WorkflowState);
       ctx.writeState({ state: target, previousState: currentStage.id });
+      ctx.appendEvent("transition", { from: currentStage.id, to: target, action: advance.action });
       const enterResult = "result" in advance && advance.result
         ? advance.result
         : await targetStage.enter(ctx);

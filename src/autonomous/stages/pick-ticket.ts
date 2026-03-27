@@ -76,14 +76,12 @@ export class PickTicketStage implements WorkflowStage {
     const planPath = join(ctx.dir, "plan.md");
     try { if (existsSync(planPath)) unlinkSync(planPath); } catch { /* best-effort */ }
 
-    // Write state transition
-    ctx.writeState({
+    // Stage field updates (persisted atomically with state transition by processAdvance)
+    ctx.updateDraft({
       ticket: { id: ticket.id, title: ticket.title, claimed: true },
       reviews: { plan: [], code: [] },
       finalizeCheckpoint: null,
     });
-
-    ctx.appendEvent("ticket_picked", { ticketId: ticket.id, title: ticket.title });
 
     // Produce PLAN instruction (advance with result for hybrid dispatch)
     return {

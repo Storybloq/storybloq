@@ -33,8 +33,6 @@ export class PlanStage implements WorkflowStage {
       instruction: [
         `# Plan for ${ticket?.id ?? "unknown"}: ${ticket?.title ?? ""}`,
         "",
-        ticket?.title ? `## Ticket Description\n\n${ticket.title}` : "",
-        "",
         `Write an implementation plan for this ticket. Save it to \`.story/sessions/${ctx.state.sessionId}/plan.md\`.`,
         "",
         "When done, call `claudestory_autonomous_guide` with:",
@@ -95,12 +93,10 @@ export class PlanStage implements WorkflowStage {
       return { action: "retry", instruction: `Cannot claim ticket ${ctx.state.ticket?.id} — it is not open or is already claimed by another session. Pick a different ticket.` };
     }
 
-    // Write state transition
-    ctx.writeState({
+    // Stage field updates (persisted atomically with state transition by processAdvance)
+    ctx.updateDraft({
       ticket: ctx.state.ticket ? { ...ctx.state.ticket, risk, lastPlanHash: planHash } : ctx.state.ticket,
     });
-
-    ctx.appendEvent("plan_written", { planLength: planContent.length, risk });
 
     // Produce PLAN_REVIEW instruction (advance with result for hybrid dispatch)
     const backends = ctx.state.config.reviewBackends;

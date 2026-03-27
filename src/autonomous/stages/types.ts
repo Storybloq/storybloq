@@ -84,6 +84,15 @@ export class StageContext {
   }
 
   /**
+   * Stage changes to the internal snapshot WITHOUT persisting to disk.
+   * Use this for field updates that should be atomically committed with the
+   * state transition in processAdvance (avoids crash-recovery windows).
+   */
+  updateDraft(updates: Partial<FullSessionState>): void {
+    this._state = { ...this._state, ...updates } as FullSessionState;
+  }
+
+  /**
    * Write state updates atomically. Returns the written state with incremented revision.
    * Updates the internal snapshot so subsequent reads via `this.state` are consistent.
    */
@@ -107,6 +116,50 @@ export class StageContext {
   /** Load the .story/ project state (tickets, issues, roadmap). */
   async loadProject(): Promise<{ state: ProjectState }> {
     return loadProject(this.root);
+  }
+
+  /**
+   * Drain pending deferrals — attempt to file each as an issue.
+   * Updates state with filed/remaining deferrals. Returns true if all filed.
+   */
+  async drainDeferrals(): Promise<boolean> {
+    const pending = [...(this._state.pendingDeferrals ?? [])];
+    if (pending.length === 0) return true;
+
+    const SEVERITY_MAP: Record<string, string> = { critical: "critical", major: "high", minor: "medium" };
+    const filed = [...(this._state.filedDeferrals ?? [])];
+    const remaining: typeof pending = [];
+
+    for (const entry of pending) {
+      try {
+        const { handleIssueCreate } = await import("../../cli/commands/issue.js");
+        const severity = SEVERITY_MAP[entry.severity] ?? "medium";
+        const title = `[${entry.category}] ${entry.description.slice(0, 80)}`;
+        const result = await handleIssueCreate(
+          { title, severity, impact: entry.description, components: ["autonomous"], relatedTickets: [], location: [] },
+          "json",
+          this.root,
+        );
+        let issueId: string | undefined;
+        try {
+          const parsed = JSON.parse(result.output ?? "");
+          issueId = parsed?.data?.id;
+        } catch {
+          const match = result.output?.match(/ISS-\d+/);
+          issueId = match?.[0];
+        }
+        if (issueId) {
+          filed.push({ fingerprint: entry.fingerprint, issueId });
+        } else {
+          remaining.push(entry);
+        }
+      } catch {
+        remaining.push(entry);
+      }
+    }
+
+    this.writeState({ filedDeferrals: filed, pendingDeferrals: remaining } as Partial<FullSessionState>);
+    return remaining.length === 0;
   }
 }
 

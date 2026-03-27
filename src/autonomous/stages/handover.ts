@@ -48,8 +48,8 @@ export class HandoverStage implements WorkflowStage {
     }
 
     // ISS-037: final drain of pending deferrals before session end
-    // drainPendingDeferrals is called by handleReport pre-dispatch, but we do
-    // a final check here via the state's pending deferrals
+    // Pre-dispatch drain handles the common case; this is the belt-and-suspenders final attempt
+    await ctx.drainDeferrals();
     const hasUnfiled = (ctx.state.pendingDeferrals ?? []).length > 0;
 
     // End session

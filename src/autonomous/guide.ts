@@ -479,6 +479,33 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       },
     };
 
+    // T-124: Capture test baseline if TEST stage is enabled
+    const testConfig = resolvedRecipe.stages?.TEST as Record<string, unknown> | undefined;
+    if (testConfig?.enabled && resolvedRecipe.pipeline.includes("TEST")) {
+      const testCommand = (testConfig.command as string) ?? "npm test";
+      if (!testCommand) {
+        deleteSession(root, session.sessionId);
+        return guideError(new Error("TEST stage is enabled but stages.TEST.command is not configured. Set the test command in config.json recipeOverrides or the recipe file."));
+      }
+      // Capture baseline — best-effort, non-blocking
+      try {
+        const { execFile: execFileCb } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const execFileAsync = promisify(execFileCb);
+        const parts = testCommand.split(" ");
+        const result = await execFileAsync(parts[0]!, parts.slice(1), { cwd: root, timeout: 120_000, maxBuffer: 5 * 1024 * 1024 }).catch((err: { code?: number; stdout?: string; stderr?: string }) => ({
+          stdout: err.stdout ?? "",
+          stderr: err.stderr ?? "",
+          exitCode: err.code ?? 1,
+        }));
+        const exitCode = "exitCode" in result ? (result.exitCode as number) : 0;
+        const output = ("stdout" in result ? String(result.stdout) : "").slice(-500);
+        updated = { ...updated, testBaseline: { exitCode, passCount: 0, failCount: 0, summary: output } };
+      } catch {
+        // Non-blocking — if baseline capture fails, tests still run during TEST stage
+      }
+    }
+
     // Load context
     const { state: projectState, warnings } = await loadProject(root);
     const handoversDir = join(root, ".story", "handovers");

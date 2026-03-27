@@ -365,6 +365,15 @@ export const SessionStateSchema = z.object({
     reviewBackends: z.array(z.string()).default(["codex", "agent"]),
   }).default({ maxTicketsPerSession: 3, compactThreshold: "high", reviewBackends: ["codex", "agent"] }),
 
+  // T-124: Test stage baseline and retry tracking
+  testBaseline: z.object({
+    exitCode: z.number(),
+    passCount: z.number(),
+    failCount: z.number(),
+    summary: z.string(),
+  }).nullable().default(null),
+  testRetryCount: z.number().default(0),
+
   // T-128: Resolved recipe (frozen at session start, survives compact/resume)
   resolvedPipeline: z.array(z.string()).optional(),
   resolvedPostComplete: z.array(z.string()).optional(),

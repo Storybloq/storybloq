@@ -99,6 +99,51 @@ export async function gitDiffCachedNames(cwd: string): Promise<GitResult<string[
   );
 }
 
+/**
+ * Stash dirty tracked files with a descriptive message.
+ * Returns the stash commit hash (stable identifier — won't shift if other stashes are created).
+ */
+export async function gitStash(cwd: string, message: string): Promise<GitResult<string>> {
+  // Push the stash
+  const pushResult = await git(cwd, ["stash", "push", "-m", message], () => undefined);
+  if (!pushResult.ok) return { ok: false, reason: pushResult.reason, message: pushResult.message };
+
+  // Capture the commit hash of the stash we just created (it's at stash@{0} right now)
+  const hashResult = await git(cwd, ["rev-parse", "stash@{0}"], (out) => out.trim());
+  if (!hashResult.ok) return { ok: false, reason: "stash_hash_failed", message: "Stash created but could not capture commit hash" };
+
+  return { ok: true, data: hashResult.data };
+}
+
+/**
+ * Pop a stash entry by commit hash. Finds the stash ref matching the hash,
+ * then pops it. Falls back to simple `git stash pop` if no hash provided.
+ */
+export async function gitStashPop(cwd: string, commitHash?: string): Promise<GitResult<void>> {
+  if (!commitHash) {
+    return git(cwd, ["stash", "pop"], () => undefined);
+  }
+
+  // Find the stash ref that matches this commit hash
+  const listResult = await git(cwd, ["stash", "list", "--format=%gd %H"], (out) =>
+    out.split("\n").filter(l => l.length > 0).map(l => {
+      const [ref, hash] = l.split(" ", 2);
+      return { ref: ref!, hash: hash! };
+    }),
+  );
+  if (!listResult.ok) {
+    // Fallback: try popping stash@{0}
+    return git(cwd, ["stash", "pop"], () => undefined);
+  }
+
+  const match = listResult.data.find(e => e.hash === commitHash);
+  if (!match) {
+    return { ok: false, reason: "stash_not_found", message: `No stash entry with commit hash ${commitHash}` };
+  }
+
+  return git(cwd, ["stash", "pop", match.ref], () => undefined);
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

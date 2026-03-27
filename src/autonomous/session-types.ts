@@ -297,6 +297,11 @@ export const SessionStateSchema = z.object({
       dirtyTrackedFiles: z.record(z.object({ blobHash: z.string() })).default({}),
       untrackedPaths: z.array(z.string()).default([]),
     }).optional(),
+    // T-125: Auto-stash tracking for dirty-file handling
+    autoStash: z.object({
+      ref: z.string(),
+      stashedAt: z.string(),
+    }).nullable().default(null),
   }).default({ branch: null, mergeBase: null }),
 
   // Lease

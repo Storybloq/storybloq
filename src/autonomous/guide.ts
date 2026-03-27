@@ -29,7 +29,7 @@ import {
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
 import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
-import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash } from "./git-inspector.js";
+import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
@@ -400,6 +400,9 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       ));
     }
 
+    // T-125: Track auto-stash if dirty files are stashed
+    let autoStashRef: { ref: string; stashedAt: string } | null = null;
+
     // Capture git baseline
     const statusResult = await gitStatus(root);
     // Try common default branch names for merge-base
@@ -421,14 +424,30 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       }
     }
 
-    // If dirty tracked files exist, require workspace isolation
+    // T-125: Dirty-file handling — stash or block based on recipe config
     if (Object.keys(dirtyTracked).length > 0) {
-      deleteSession(root, session.sessionId);
-      const dirtyFiles = Object.keys(dirtyTracked).join(", ");
-      return guideError(new Error(
-        `Cannot start: ${Object.keys(dirtyTracked).length} dirty tracked file(s): ${dirtyFiles}. ` +
-        `Create a feature branch or stash changes first, then call start again.`,
-      ));
+      const dirtyFileHandling = resolvedRecipe.dirtyFileHandling ?? "block";
+      if (dirtyFileHandling === "stash") {
+        const stashMessage = `claudestory-auto-${session.sessionId}`;
+        const stashResult = await gitStash(root, stashMessage);
+        if (!stashResult.ok) {
+          deleteSession(root, session.sessionId);
+          return guideError(new Error(
+            `Cannot auto-stash dirty files: ${stashResult.message}. ` +
+            `Stash or commit changes manually, then call start again.`,
+          ));
+        }
+        // Record stash ref in session for restore on completion/cancel
+        autoStashRef = { ref: stashResult.data, stashedAt: new Date().toISOString() };
+      } else {
+        // "block" (default) — existing behavior
+        deleteSession(root, session.sessionId);
+        const dirtyFiles = Object.keys(dirtyTracked).join(", ");
+        return guideError(new Error(
+          `Cannot start: ${Object.keys(dirtyTracked).length} dirty tracked file(s): ${dirtyFiles}. ` +
+          `Create a feature branch or stash changes first, then call start again.`,
+        ));
+      }
     }
 
     let updated: FullSessionState = {
@@ -445,6 +464,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           dirtyTrackedFiles: dirtyTracked,
           untrackedPaths,
         },
+        autoStash: autoStashRef,
       },
       // T-128: Freeze resolved recipe for session lifetime (survives compact/resume)
       resolvedPipeline: resolvedRecipe.pipeline,
@@ -1144,6 +1164,14 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     }
   }
 
+  // T-125: Restore auto-stashed changes on cancel
+  let stashPopFailed = false;
+  const autoStash = cancelInfo.state.git.autoStash;
+  if (autoStash) {
+    const popResult = await gitStashPop(root, autoStash.ref);
+    if (!popResult.ok) stashPopFailed = true;
+  }
+
   const written = writeSessionSync(cancelInfo.dir, {
     ...cancelInfo.state,
     state: "SESSION_END",
@@ -1165,11 +1193,13 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
       ticketId: ticketId ?? null,
       ticketReleased,
       ticketConflict,
+      stashPopFailed,
     },
   });
 
+  const stashNote = stashPopFailed ? " Auto-stash pop failed — run `git stash pop` manually." : "";
   return {
-    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) were completed.` }],
+    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) were completed.${stashNote}` }],
   };
 }
 

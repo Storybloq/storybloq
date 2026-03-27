@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { handleHandoverCreate } from "../../cli/commands/handover.js";
+import { gitStashPop } from "../git-inspector.js";
 
 /**
  * HANDOVER stage — Claude writes a session handover document.
@@ -47,8 +48,18 @@ export class HandoverStage implements WorkflowStage {
       } catch { /* truly best-effort */ }
     }
 
+    // T-125: Restore auto-stashed changes before session end
+    let stashPopFailed = false;
+    const autoStash = ctx.state.git.autoStash;
+    if (autoStash) {
+      const popResult = await gitStashPop(ctx.root, autoStash.ref);
+      if (!popResult.ok) {
+        stashPopFailed = true;
+        // Leave stash intact — user can manually pop with: git stash pop
+      }
+    }
+
     // ISS-037: final drain of pending deferrals before session end
-    // Pre-dispatch drain handles the common case; this is the belt-and-suspenders final attempt
     await ctx.drainDeferrals();
     const hasUnfiled = (ctx.state.pendingDeferrals ?? []).length > 0;
 
@@ -74,7 +85,7 @@ export class HandoverStage implements WorkflowStage {
         instruction: [
           "# Session Complete",
           "",
-          `${ticketsDone} ticket(s) completed.${handoverFailed ? " Handover creation failed — fallback saved to session directory." : " Handover written."} Session ended.`,
+          `${ticketsDone} ticket(s) completed.${handoverFailed ? " Handover creation failed — fallback saved to session directory." : " Handover written."}${stashPopFailed ? " Auto-stash pop failed — run `git stash pop` manually." : ""} Session ended.`,
           "",
           ctx.state.completedTickets.map((t) => `- ${t.id}${t.title ? `: ${t.title}` : ""} (${t.commitHash ?? "no commit"})`).join("\n"),
         ].join("\n"),

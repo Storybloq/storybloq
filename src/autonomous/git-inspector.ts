@@ -121,9 +121,8 @@ export async function gitStash(cwd: string, message: string): Promise<GitResult<
       const refHash = await git(cwd, ["rev-parse", ref], (out) => out.trim());
       if (refHash.ok) return { ok: true, data: refHash.data };
     }
-    // Can't identify — pop to restore workspace so we don't orphan
-    await git(cwd, ["stash", "pop"], () => undefined);
-    return { ok: false, reason: "stash_hash_failed", message: "Stash created but could not capture commit hash. Stash was popped to restore workspace." };
+    // Can't identify — do NOT pop blindly (could pop wrong stash if concurrent operations)
+    return { ok: false, reason: "stash_hash_failed", message: "Stash created but could not be identified. Run `git stash list` to find and pop it manually." };
   }
 
   return { ok: true, data: hashResult.data };

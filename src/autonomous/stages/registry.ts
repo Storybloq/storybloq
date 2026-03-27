@@ -29,6 +29,11 @@ export function registeredStageIds(): readonly string[] {
   return [...stages.keys()];
 }
 
+/** Clear all registered stages. For test isolation only. */
+export function resetStageRegistry(): void {
+  stages.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline helpers
 // ---------------------------------------------------------------------------

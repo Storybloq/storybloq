@@ -482,18 +482,17 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     // T-124: Capture test baseline if TEST stage is enabled
     const testConfig = resolvedRecipe.stages?.TEST as Record<string, unknown> | undefined;
     if (testConfig?.enabled && resolvedRecipe.pipeline.includes("TEST")) {
-      const testCommand = (testConfig.command as string) ?? "npm test";
+      const testCommand = testConfig.command as string | undefined;
       if (!testCommand) {
         deleteSession(root, session.sessionId);
         return guideError(new Error("TEST stage is enabled but stages.TEST.command is not configured. Set the test command in config.json recipeOverrides or the recipe file."));
       }
       // Capture baseline — best-effort, non-blocking
       try {
-        const { execFile: execFileCb } = await import("node:child_process");
+        const { exec: execCb } = await import("node:child_process");
         const { promisify } = await import("node:util");
-        const execFileAsync = promisify(execFileCb);
-        const parts = testCommand.split(" ");
-        const result = await execFileAsync(parts[0]!, parts.slice(1), { cwd: root, timeout: 120_000, maxBuffer: 5 * 1024 * 1024 }).catch((err: { code?: number; stdout?: string; stderr?: string }) => ({
+        const execAsync = promisify(execCb);
+        const result = await execAsync(testCommand, { cwd: root, timeout: 120_000, maxBuffer: 5 * 1024 * 1024 }).catch((err: { code?: number; stdout?: string; stderr?: string }) => ({
           stdout: err.stdout ?? "",
           stderr: err.stderr ?? "",
           exitCode: err.code ?? 1,
@@ -699,7 +698,9 @@ async function processAdvance(
         if (post.kind === "found") {
           assertTransition(currentStage.id as WorkflowState, post.stage.id as WorkflowState);
           ctx.writeState({ state: post.stage.id, previousState: currentStage.id });
-          const enterResult = await post.stage.enter(ctx);
+          const enterResult = "result" in advance && advance.result
+            ? advance.result
+            : await post.stage.enter(ctx);
           if (isStageAdvance(enterResult)) return processAdvance(ctx, post.stage, enterResult, depth + 1);
           return guideResult(ctx.state, post.stage.id, enterResult);
         }

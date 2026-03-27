@@ -2,6 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput, ContextAdvice } from "../session-types.js";
 import { evaluatePressure } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
+import { findFirstPostComplete } from "./registry.js";
 
 /**
  * COMPLETE stage — Ticket completed, decide next action.
@@ -50,6 +51,14 @@ export class CompleteStage implements WorkflowStage {
     }
 
     if (nextTarget === "HANDOVER") {
+      // Check postComplete pipeline before going to HANDOVER
+      const postComplete = ctx.state.resolvedPostComplete ?? ctx.recipe.postComplete;
+      const postStage = findFirstPostComplete(postComplete, ctx);
+      if (postStage) {
+        ctx.writeState({ pipelinePhase: "postComplete" as const });
+        return { action: "goto", target: postStage.id };
+      }
+
       return {
         action: "goto",
         target: "HANDOVER",
@@ -65,7 +74,7 @@ export class CompleteStage implements WorkflowStage {
           transitionedFrom: "COMPLETE",
           contextAdvice: advice,
         },
-      };
+      } as StageAdvance;
     }
 
     // Back to PICK_TICKET with fresh candidates

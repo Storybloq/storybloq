@@ -107,7 +107,7 @@ export class IssueSweepStage implements WorkflowStage {
 
       if (remaining.length === 0) {
         ctx.appendEvent("issue_sweep_complete", { resolved: resolved.length });
-        return { action: "advance" };
+        return { action: "goto", target: "HANDOVER" };
       }
 
       // Load next issue details
@@ -131,6 +131,6 @@ export class IssueSweepStage implements WorkflowStage {
 
     // No current issue — sweep is done
     ctx.appendEvent("issue_sweep_complete", { resolved: sweep.resolved.length });
-    return { action: "advance" };
+    return { action: "goto", target: "HANDOVER" };
   }
 }

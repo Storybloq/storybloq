@@ -156,8 +156,9 @@ async function fileDeferredFindings(
     pending.push({ fingerprint: fp, severity: f.severity, category: f.category, description: f.description, reviewKind });
   }
 
-  let updated = { ...state, pendingDeferrals: pending } as FullSessionState;
-  updated = await drainPendingDeferrals(root, dir, updated);
+  // Persist pending entries first (crash-safe: survives before drain attempt)
+  const persisted = writeSessionSync(dir, { ...state, pendingDeferrals: pending } as FullSessionState);
+  let updated = await drainPendingDeferrals(root, dir, persisted);
   return updated;
 }
 
@@ -1028,7 +1029,9 @@ async function handleReportCodeReview(
       timestamp: new Date().toISOString(),
       data: { round: roundNum, verdict, findingCount: findings.length, redirectedTo: "PLAN" },
     });
-    return guideResult(planResetWritten, "PLAN", {
+    // ISS-037: file deferred findings before returning (don't skip on PLAN redirect)
+    const postFiling = await fileDeferredFindings(root, dir, planResetWritten, findings, "code");
+    return guideResult(postFiling, "PLAN", {
       instruction: "Code review recommends rethinking the approach. Write a new plan and call me with completedAction: \"plan_written\".",
       reminders: [],
       transitionedFrom: "CODE_REVIEW",
@@ -1081,7 +1084,7 @@ async function handleReportCodeReview(
     instruction: [
       `Code review round ${roundNum} found issues. Fix them and re-review with **${reviewer}**.`,
       "",
-      `Capture diff with: ${state.git.mergeBase ? `\`git diff ${state.git.mergeBase}\`` : "`git diff HEAD`"}. Pass FULL output — do NOT compress or summarize.`,
+      `Capture diff with: ${state.git.mergeBase ? `\`git diff ${state.git.mergeBase}\`` : "`git diff HEAD` + `git ls-files --others --exclude-standard`"}. Pass FULL output — do NOT compress or summarize.`,
     ].join("\n"),
     reminders: ["Pass FULL diff output to reviewer. Do NOT compress or summarize."],
   });

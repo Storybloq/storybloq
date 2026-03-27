@@ -233,6 +233,9 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
       } catch { /* best-effort */ }
     }
 
+    // Flag unfiled deferrals (don't attempt drain — admin stop should be fast)
+    const hasUnfiledDeferrals = (info.state.pendingDeferrals ?? []).length > 0;
+
     // Write SESSION_END
     const written = writeSessionSync(info.dir, {
       ...info.state,
@@ -240,6 +243,7 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
       previousState: info.state.state,
       status: "completed" as const,
       terminationReason: "admin_recovery",
+      deferralsUnfiled: hasUnfiledDeferrals,
       compactPending: false,
       compactPreparedAt: null,
       resumeBlocked: false,

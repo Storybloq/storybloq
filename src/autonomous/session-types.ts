@@ -155,7 +155,7 @@ export const CURRENT_SESSION_SCHEMA_VERSION = 1 as const;
 // Finalize checkpoint
 // ---------------------------------------------------------------------------
 
-export type FinalizeCheckpoint = "staged" | "precommit_passed" | "committed";
+export type FinalizeCheckpoint = "staged" | "staged_override" | "precommit_passed" | "committed";
 
 // ---------------------------------------------------------------------------
 // Review record (stored in state.json reviews arrays)
@@ -280,7 +280,7 @@ export const SessionStateSchema = z.object({
   })).default([]),
 
   // FINALIZE checkpoint
-  finalizeCheckpoint: z.enum(["staged", "precommit_passed", "committed"]).nullable().default(null),
+  finalizeCheckpoint: z.enum(["staged", "staged_override", "precommit_passed", "committed"]).nullable().default(null),
 
   // Git state
   git: z.object({

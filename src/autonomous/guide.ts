@@ -66,6 +66,7 @@ async function recoverPendingMutation(
   const expectedCurrent = m.expectedCurrent as string | undefined;
   const postMutation = m.postMutation as Record<string, unknown> | undefined;
 
+  let conflict = false;
   try {
     const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
     await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
@@ -82,21 +83,27 @@ async function recoverPendingMutation(
         }
         await writeTicketUnlocked(updated, root);
       } else {
-        // Ticket in unexpected state — conflict
+        // Ticket in unexpected state — conflict: clear marker, do NOT apply postMutation
+        conflict = true;
         appendEvent(dir, {
           rev: state.revision,
           type: "mutation_conflict",
           timestamp: new Date().toISOString(),
           data: { targetId, expected: expectedCurrent, actual: ticket.status, transitionId: m.transitionId },
         });
-        // Clear marker without applying postMutation
         writeSessionSync(dir, { ...state, pendingProjectMutation: null });
-        return;
       }
     });
   } catch {
     // Lock/IO failure — leave marker for next attempt
     return state;
+  }
+
+  // Conflict detected — marker cleared, no postMutation applied
+  if (conflict) {
+    // Re-read the state we just wrote (with cleared marker)
+    const { readSession } = await import("./session.js");
+    return readSession(dir) ?? state;
   }
 
   // Apply postMutation if present and session not already in target state
@@ -204,9 +211,11 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
 
 async function handleStart(root: string, args: GuideInput): Promise<McpToolResult> {
   // ISS-024: recover pending mutations on existing sessions before checking
-  const existing = findActiveSessionFull(root);
+  let existing = findActiveSessionFull(root);
   if (existing && !isLeaseExpired(existing.state)) {
     await recoverPendingMutation(existing.dir, existing.state, root);
+    // Re-read after recovery — session may have been ended by postMutation
+    existing = findActiveSessionFull(root);
   }
   if (existing && !isLeaseExpired(existing.state)) {
     // ISS-032: compactPending sessions always block with specific recovery instructions
@@ -524,6 +533,13 @@ async function handleReportPickTicket(
   const ticket = projectState.ticketByID(ticketId);
   if (!ticket) return guideError(new Error(`Ticket ${ticketId} not found`));
   if (projectState.isBlocked(ticket)) return guideError(new Error(`Ticket ${ticketId} is blocked`));
+  // ISS-027: Reject non-open tickets (already inprogress/complete) unless claimed by this session
+  if (ticket.status !== "open") {
+    const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
+    if (!(ticket.status === "inprogress" && ticketClaim === state.sessionId)) {
+      return guideError(new Error(`Ticket ${ticketId} is ${ticket.status} — pick an open ticket.`));
+    }
+  }
 
   // Clean up stale plan from previous ticket (ISS-029)
   const planPath = join(dir, "plan.md");
@@ -599,6 +615,7 @@ async function handleReportPlan(
   const risk = assessRisk(undefined, undefined);
 
   // Update ticket to inprogress in .story/ with session ownership (ISS-024/ISS-027)
+  let claimFailed = false;
   if (state.ticket) {
     try {
       const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
@@ -608,14 +625,21 @@ async function handleReportPlan(
         const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
         // Claim guard: only claim if open+unclaimed or already claimed by this session
         if (ticket.status === "inprogress" && ticketClaim === state.sessionId) return; // idempotent
-        if (ticket.status !== "open" && ticket.status !== "inprogress") return; // can't claim non-open
-        if (ticketClaim && ticketClaim !== state.sessionId) return; // already claimed by another
+        if (ticket.status !== "open") { claimFailed = true; return; } // can't claim non-open
+        if (ticketClaim && ticketClaim !== state.sessionId) { claimFailed = true; return; } // claimed by another
         const updated = { ...ticket, status: "inprogress" as const, claimedBySession: state.sessionId };
         await writeTicketUnlocked(updated, root);
       });
     } catch {
       // Best-effort — don't block plan review if ticket update fails
     }
+  }
+
+  if (claimFailed) {
+    return guideResult(state, "PLAN", {
+      instruction: `Cannot claim ticket ${state.ticket?.id} — it is not open or is already claimed by another session. Pick a different ticket.`,
+      reminders: [],
+    });
   }
 
   const written = writeSessionSync(dir, {
@@ -968,7 +992,7 @@ async function handleReportFinalize(
   const checkpoint = state.finalizeCheckpoint;
 
   // --- Checkpoint: stage ---
-  if (action === "files_staged" && (!checkpoint || checkpoint === "staged")) {
+  if (action === "files_staged" && (!checkpoint || checkpoint === "staged" || checkpoint === "staged_override")) {
     const stagedResult = await gitDiffCachedNames(root);
     if (!stagedResult.ok || stagedResult.data.length === 0) {
       return guideResult(state, "FINALIZE", {
@@ -979,17 +1003,26 @@ async function handleReportFinalize(
 
     // ISS-025: Overlap detection — block staging of pre-existing untracked files
     const baselineUntracked = state.git.baseline?.untrackedPaths ?? [];
-    if (baselineUntracked.length > 0 && !report.overrideOverlap) {
+    let overlapOverridden = false;
+    if (baselineUntracked.length > 0) {
       const overlap = stagedResult.data.filter((f: string) => baselineUntracked.includes(f));
       if (overlap.length > 0) {
-        return guideResult(state, "FINALIZE", {
-          instruction: `Pre-existing untracked files are staged: ${overlap.join(", ")}. Unstage them with \`git restore --staged ${overlap.join(" ")}\`, or report with overrideOverlap: true to proceed.`,
-          reminders: [],
-        });
+        if (report.overrideOverlap) {
+          overlapOverridden = true; // persisted in finalizeCheckpoint below
+        } else {
+          return guideResult(state, "FINALIZE", {
+            instruction: `Pre-existing untracked files are staged: ${overlap.join(", ")}. Unstage them with \`git restore --staged ${overlap.join(" ")}\`, or report with overrideOverlap: true to proceed.`,
+            reminders: [],
+          });
+        }
       }
     }
 
-    const written = writeSessionSync(dir, { ...state, finalizeCheckpoint: "staged" });
+    // Persist override flag in finalizeCheckpoint so precommit_passed re-check honors it
+    const written = writeSessionSync(dir, {
+      ...state,
+      finalizeCheckpoint: overlapOverridden ? "staged_override" : "staged",
+    });
 
     return guideResult(written, "FINALIZE", {
       instruction: [
@@ -1010,6 +1043,12 @@ async function handleReportFinalize(
         reminders: [],
       });
     }
+    if (checkpoint === "committed") {
+      return guideResult(state, "FINALIZE", {
+        instruction: "Commit was already recorded.",
+        reminders: [],
+      });
+    }
 
     // Verify staged set is still intact after hooks
     const stagedResult = await gitDiffCachedNames(root);
@@ -1020,6 +1059,21 @@ async function handleReportFinalize(
         instruction: "Pre-commit hooks appear to have cleared the staging area. Re-stage your changes and call me with completedAction: \"files_staged\".",
         reminders: [],
       });
+    }
+
+    // ISS-025: Re-check overlap after hooks (skip if user previously overrode)
+    if (checkpoint !== "staged_override") {
+      const baselineUntracked2 = state.git.baseline?.untrackedPaths ?? [];
+      if (baselineUntracked2.length > 0) {
+        const overlap = stagedResult.data.filter((f: string) => baselineUntracked2.includes(f));
+        if (overlap.length > 0) {
+          const written2 = writeSessionSync(dir, { ...state, finalizeCheckpoint: null });
+          return guideResult(written2, "FINALIZE", {
+            instruction: `Pre-commit hooks staged pre-existing untracked files: ${overlap.join(", ")}. Unstage them and re-stage, then call with completedAction: "files_staged".`,
+            reminders: [],
+          });
+        }
+      }
     }
 
     const written = writeSessionSync(dir, { ...state, finalizeCheckpoint: "precommit_passed" });
@@ -1046,7 +1100,7 @@ async function handleReportFinalize(
         reminders: [],
       });
     }
-    if (checkpoint === "staged") {
+    if (checkpoint === "staged" || checkpoint === "staged_override") {
       return guideResult(state, "FINALIZE", {
         instruction: "You must pass pre-commit checks first. Call me with completedAction: \"precommit_passed\".",
         reminders: [],

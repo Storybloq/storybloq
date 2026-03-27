@@ -36,6 +36,7 @@ import { StageContext, isStageAdvance, type StageAdvance, type StageResult } fro
 import "./stages/index.js"; // Register all extracted stages
 
 import { loadProject } from "../core/project-loader.js";
+import { buildLessonDigest } from "../core/lessons.js";
 import { loadLatestSnapshot } from "../core/snapshot.js";
 import { buildRecap } from "../core/snapshot.js";
 import { nextTickets } from "../core/queries.js";
@@ -552,14 +553,17 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
     // Read project files
     const rulesText = readFileSafe(join(root, "RULES.md"));
-    const strategiesText = readFileSafe(join(root, "WORK_STRATEGIES.md"));
+    // T-134: Include lessons and legacy WORK_STRATEGIES.md during migration; lessons appear first
+    const lessonDigest = buildLessonDigest(projectState.lessons);
+    const workStrategies = readFileSafe(join(root, "WORK_STRATEGIES.md"));
 
     // Write context digest
     const digestParts = [
       handoverText ? `## Recent Handovers\n\n${handoverText}` : "",
       recapText ? `## Recap\n\n${recapText}` : "",
       rulesText ? `## Development Rules\n\n${rulesText}` : "",
-      strategiesText ? `## Work Strategies\n\n${strategiesText}` : "",
+      lessonDigest || "",
+      workStrategies ? `## Work Strategies\n\n${workStrategies}` : "",
     ].filter(Boolean);
     const digest = digestParts.join("\n\n---\n\n");
     try {

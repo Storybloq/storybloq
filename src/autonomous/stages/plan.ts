@@ -9,13 +9,13 @@ function readFileSafe(path: string): string {
   try { return readFileSync(path, "utf-8"); } catch { return ""; }
 }
 
-/** DJB2 hash for plan fingerprinting (ISS-035). */
+/** DJB2 hash for plan fingerprinting (ISS-035). Must match guide.ts simpleHash. */
 function simpleHash(content: string): string {
   let hash = 5381;
   for (let i = 0; i < content.length; i++) {
-    hash = ((hash << 5) + hash + content.charCodeAt(i)) | 0;
+    hash = ((hash << 5) + hash + content.charCodeAt(i)) & 0xffffffff;
   }
-  return (hash >>> 0).toString(16);
+  return hash.toString(36);
 }
 
 /**

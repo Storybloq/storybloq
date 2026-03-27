@@ -38,6 +38,11 @@ export class FinalizeStage implements WorkflowStage {
     const action = report.completedAction;
     const checkpoint = ctx.state.finalizeCheckpoint;
 
+    // ISS-031: Already committed — advance regardless of action (re-entry guard)
+    if (checkpoint === "committed") {
+      return { action: "advance" };
+    }
+
     // --- Checkpoint: stage ---
     if (action === "files_staged" && (!checkpoint || checkpoint === "staged" || checkpoint === "staged_override")) {
       return this.handleStage(ctx, report);
@@ -104,9 +109,7 @@ export class FinalizeStage implements WorkflowStage {
     if (!checkpoint || checkpoint === null) {
       return { action: "retry", instruction: 'You must stage files first. Call me with completedAction: "files_staged" after staging.' };
     }
-    if (checkpoint === "committed") {
-      return { action: "retry", instruction: "Commit was already recorded." };
-    }
+    // checkpoint === "committed" is handled by the top-level guard in report()
 
     // Verify staged set is still intact after hooks
     const stagedResult = await gitDiffCachedNames(ctx.root);
@@ -152,10 +155,7 @@ export class FinalizeStage implements WorkflowStage {
     if (checkpoint === "staged" || checkpoint === "staged_override") {
       return { action: "retry", instruction: 'You must pass pre-commit checks first. Call me with completedAction: "precommit_passed".' };
     }
-    if (checkpoint === "committed") {
-      // Already committed — advance to COMPLETE (ISS-031)
-      return { action: "advance" };
-    }
+    // checkpoint === "committed" is handled by the top-level guard in report()
 
     const commitHash = report.commitHash;
     if (!commitHash) {

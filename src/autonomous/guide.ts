@@ -723,7 +723,13 @@ async function runPipelineStage(
   recipe: import("./stages/types.js").ResolvedRecipe,
 ): Promise<McpToolResult> {
   const stage = getStage(state.state);
-  if (!stage) return guideError(new Error(`Unknown stage: ${state.state}`));
+  if (!stage) {
+    return guideError(new Error(
+      `Stage "${state.state}" is not registered. ` +
+      `If this is TEST or ISSUE_SWEEP, update the recipe to exclude the stage or wait for T-124/T-123. ` +
+      `Otherwise, this is a bug — the session state references a stage that does not exist.`,
+    ));
+  }
 
   const ctx = new StageContext(root, dir, state, recipe);
   const advance = await stage.report(ctx, report);

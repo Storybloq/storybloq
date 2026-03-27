@@ -186,13 +186,13 @@ export class StageContext {
   }
 }
 
-/** DJB2 hash — same algorithm as guide.ts simpleHash. */
+/** DJB2 hash — must match guide.ts simpleHash exactly for fingerprint compatibility. */
 function djb2Hash(content: string): string {
   let hash = 5381;
   for (let i = 0; i < content.length; i++) {
-    hash = ((hash << 5) + hash + content.charCodeAt(i)) | 0;
+    hash = ((hash << 5) + hash + content.charCodeAt(i)) & 0xffffffff;
   }
-  return (hash >>> 0).toString(16);
+  return hash.toString(36);
 }
 
 // ---------------------------------------------------------------------------

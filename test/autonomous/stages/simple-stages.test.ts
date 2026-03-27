@@ -213,12 +213,12 @@ describe("PlanStage", () => {
     const planContent = "# Same Plan\n\nNothing changed.";
     writeFileSync(join(sessionDir, "plan.md"), planContent, "utf-8");
 
-    // Compute the expected hash (DJB2)
+    // Compute the expected hash (DJB2 — must match guide.ts simpleHash: & 0xffffffff + base 36)
     let hash = 5381;
     for (let i = 0; i < planContent.length; i++) {
-      hash = ((hash << 5) + hash + planContent.charCodeAt(i)) | 0;
+      hash = ((hash << 5) + hash + planContent.charCodeAt(i)) & 0xffffffff;
     }
-    const planHash = (hash >>> 0).toString(16);
+    const planHash = hash.toString(36);
 
     const state = makeState({
       state: "PLAN",

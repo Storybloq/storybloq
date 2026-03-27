@@ -616,8 +616,11 @@ async function processAdvance(
 
   // Short-circuit: if the stage already transitioned to SESSION_END (terminal),
   // return the result directly without pipeline lookup (HandoverStage fix)
-  if (ctx.state.state === "SESSION_END" && advance.action === "advance" && "result" in advance && advance.result) {
-    return guideResult(ctx.state, "SESSION_END", advance.result);
+  if (ctx.state.state === "SESSION_END" && advance.action === "advance") {
+    const terminalResult = ("result" in advance && advance.result)
+      ? advance.result
+      : { instruction: "Session ended.", reminders: [] as string[] };
+    return guideResult(ctx.state, "SESSION_END", terminalResult);
   }
 
   switch (advance.action) {

@@ -238,6 +238,7 @@ export const SessionStateSchema = z.object({
   previousState: z.string().optional(),
   revision: z.number().int().min(0),
   status: z.enum(["active", "completed", "superseded"]).default("active"),
+  mode: z.enum(["auto", "review", "plan", "guided"]).default("auto"),
 
   // Ticket in progress
   ticket: z.object({
@@ -403,6 +404,10 @@ export type FullSessionState = z.infer<typeof SessionStateSchema>;
 
 export type GuideAction = "start" | "report" | "resume" | "pre_compact" | "cancel";
 
+/** Session execution mode: auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket end-to-end */
+export type SessionMode = "auto" | "review" | "plan" | "guided";
+export const SESSION_MODES = ["auto", "review", "plan", "guided"] as const;
+
 export interface GuideReportInput {
   readonly completedAction: string;
   readonly ticketId?: string;
@@ -419,6 +424,10 @@ export interface GuideInput {
   readonly sessionId: string | null;
   readonly action: GuideAction;
   readonly report?: GuideReportInput;
+  /** Execution mode (default: "auto"). Only used with action: "start". */
+  readonly mode?: SessionMode;
+  /** Ticket ID for tiered modes (review, plan, guided). */
+  readonly ticketId?: string;
 }
 
 // ---------------------------------------------------------------------------

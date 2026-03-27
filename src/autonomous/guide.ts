@@ -357,9 +357,19 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
   const wsId = deriveWorkspaceId(root);
 
+  // Determine session mode
+  const mode = args.mode ?? "auto";
+
+  // Non-auto modes require ticketId
+  if (mode !== "auto" && !args.ticketId) {
+    return guideError(new Error(
+      `Mode "${mode}" requires a ticketId. Call with: { "action": "start", "mode": "${mode}", "ticketId": "T-XXX" }`,
+    ));
+  }
+
   // Read recipe + config overrides from project
   let recipe = "coding";
-  let sessionConfig: SessionConfig = {};
+  let sessionConfig: SessionConfig = { mode };
   try {
     const { state: projectState } = await loadProject(root);
     const projectConfig = projectState.config as Record<string, unknown>;
@@ -371,6 +381,11 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       if (Array.isArray(overrides.reviewBackends)) sessionConfig.reviewBackends = overrides.reviewBackends as string[];
     }
   } catch { /* best-effort — use defaults */ }
+
+  // Guided mode: force single ticket
+  if (mode === "guided") {
+    sessionConfig.maxTicketsPerSession = 1;
+  }
 
   // Resolve recipe into frozen pipeline configuration
   const resolvedRecipe = resolveRecipe(recipe, {
@@ -391,13 +406,15 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       return guideError(new Error("This directory is not a git repository or git is not available. Autonomous mode requires git."));
     }
 
-    // Check for staged changes
-    const stagedResult = await gitDiffCachedNames(root);
-    if (stagedResult.ok && stagedResult.data.length > 0) {
-      deleteSession(root, session.sessionId);
-      return guideError(new Error(
-        `Cannot start: ${stagedResult.data.length} staged file(s). Unstage with \`git restore --staged .\` or commit them first, then call start again.\n\nStaged: ${stagedResult.data.join(", ")}`,
-      ));
+    // Check for staged changes (review mode skips — dirty tree allowed)
+    if (mode !== "review") {
+      const stagedResult = await gitDiffCachedNames(root);
+      if (stagedResult.ok && stagedResult.data.length > 0) {
+        deleteSession(root, session.sessionId);
+        return guideError(new Error(
+          `Cannot start: ${stagedResult.data.length} staged file(s). Unstage with \`git restore --staged .\` or commit them first, then call start again.\n\nStaged: ${stagedResult.data.join(", ")}`,
+        ));
+      }
     }
 
     // T-125: Track auto-stash if dirty files are stashed
@@ -425,7 +442,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     }
 
     // T-125: Dirty-file handling — stash or block based on recipe config
-    if (Object.keys(dirtyTracked).length > 0) {
+    // Review mode: dirty tree allowed (user has code ready for review)
+    if (Object.keys(dirtyTracked).length > 0 && mode !== "review") {
       const dirtyFileHandling = resolvedRecipe.dirtyFileHandling ?? "block";
       if (dirtyFileHandling === "stash") {
         const stashMessage = `claudestory-auto-${session.sessionId}`;
@@ -548,6 +566,125 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       writeFileSync(join(dir, "context-digest.md"), digest, "utf-8");
     } catch { /* best-effort */ }
 
+    // --- Tiered mode: non-auto modes skip PICK_TICKET and enter at specific stage ---
+    if (mode !== "auto" && args.ticketId) {
+      const ticket = projectState.ticketByID(args.ticketId);
+      if (!ticket) {
+        deleteSession(root, session.sessionId);
+        return guideError(new Error(`Ticket ${args.ticketId} not found.`));
+      }
+
+      // Validate ticket is workable (same checks as PICK_TICKET)
+      if (mode !== "review") {
+        // review mode allows any ticket status — user already has code
+        if (ticket.status === "complete") {
+          deleteSession(root, session.sessionId);
+          return guideError(new Error(`Ticket ${args.ticketId} is already complete.`));
+        }
+        if (projectState.isBlocked(ticket)) {
+          deleteSession(root, session.sessionId);
+          return guideError(new Error(`Ticket ${args.ticketId} is blocked by: ${ticket.blockedBy.join(", ")}.`));
+        }
+      }
+
+      // Determine entry state based on mode
+      let entryState: string;
+      if (mode === "review") {
+        entryState = "CODE_REVIEW";
+      } else if (mode === "plan") {
+        entryState = "PLAN";
+      } else {
+        // guided — enters at PLAN like auto, but maxTickets=1 already set
+        entryState = "PLAN";
+      }
+
+      // Set ticket and transition to entry state
+      updated = {
+        ...updated,
+        state: entryState,
+        previousState: "INIT",
+        ticket: {
+          id: ticket.id,
+          title: ticket.title,
+          risk: assessRisk(ticket).risk,
+          claimed: true,
+        },
+      };
+
+      updated = refreshLease(updated);
+      const pressure = evaluatePressure(updated);
+      updated = { ...updated, contextPressure: { ...updated.contextPressure, level: pressure } };
+      const written = writeSessionSync(dir, updated);
+
+      appendEvent(dir, {
+        rev: written.revision,
+        type: "start",
+        timestamp: new Date().toISOString(),
+        data: { recipe, branch: written.git.branch, head: written.git.initHead, mode, ticketId: args.ticketId },
+      });
+
+      const modeLabels: Record<string, string> = {
+        review: "Review Mode",
+        plan: "Plan Mode",
+        guided: "Guided Mode",
+      };
+
+      // Build mode-specific instruction
+      let instruction: string;
+      if (mode === "review") {
+        const mergeBase = updated.git.mergeBase;
+        const diffCommand = mergeBase
+          ? `\`git diff ${mergeBase}\``
+          : `\`git diff HEAD\` AND \`git ls-files --others --exclude-standard\``;
+        instruction = [
+          `# ${modeLabels[mode]} — ${ticket.id}: ${ticket.title}`,
+          "",
+          `Reviewing code for ticket **${ticket.id}**. Capture the diff and run a code review.`,
+          "",
+          `Capture diff with: ${diffCommand}`,
+          "",
+          "**IMPORTANT:** Pass the FULL unified diff output to the reviewer. Do NOT summarize.",
+          "",
+          "When the code review is done, call `claudestory_autonomous_guide` with the verdict:",
+          '```json',
+          `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "code_review_round", "verdict": "<approve|revise|request_changes|reject>", "findings": [...] } }`,
+          '```',
+        ].join("\n");
+      } else {
+        instruction = [
+          `# ${modeLabels[mode]} — ${ticket.id}: ${ticket.title}`,
+          "",
+          `Write an implementation plan for ticket **${ticket.id}**: ${ticket.title}`,
+          ticket.description ? `\n**Description:**\n${ticket.description}` : "",
+          "",
+          `Write the plan as a markdown file at \`.story/sessions/${updated.sessionId}/plan.md\`.`,
+          "Do NOT use Claude Code's plan mode.",
+          "",
+          "When done, call `claudestory_autonomous_guide`:",
+          '```json',
+          `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "plan_written" } }`,
+          '```',
+        ].join("\n");
+      }
+
+      const reminders = mode === "guided"
+        ? [
+            "Do NOT use Claude Code's plan mode — write plans as markdown files.",
+            "This is guided mode — single ticket, full pipeline.",
+          ]
+        : [
+            `This is ${mode} mode — session ends after ${mode === "review" ? "code review approval" : "plan review approval"}.`,
+          ];
+
+      return guideResult(updated, entryState, {
+        instruction,
+        reminders,
+        transitionedFrom: "INIT",
+      });
+    }
+
+    // --- Auto mode: full autonomous flow ---
+
     // Get ticket candidates
     const nextResult = nextTickets(projectState, 5);
     let candidatesText = "";
@@ -585,7 +722,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       rev: written.revision,
       type: "start",
       timestamp: new Date().toISOString(),
-      data: { recipe, branch: written.git.branch, head: written.git.initHead },
+      data: { recipe, branch: written.git.branch, head: written.git.initHead, mode: "auto" },
     });
 
     const topCandidate = nextResult.kind === "found" ? nextResult.candidates[0] : null;

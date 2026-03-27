@@ -117,6 +117,28 @@ export class PlanReviewStage implements WorkflowStage {
     }
 
     if (nextAction === "IMPLEMENT") {
+      // T-135: Plan mode exits after plan review approval
+      if (ctx.state.mode === "plan") {
+        ctx.writeState({
+          status: "completed" as const,
+          terminationReason: "normal" as const,
+        });
+        return {
+          action: "goto",
+          target: "SESSION_END",
+          result: {
+            instruction: [
+              "# Plan Review Complete",
+              "",
+              `Plan for **${ctx.state.ticket?.id}** has been approved after ${roundNum} review round(s).`,
+              "",
+              "Session ending — plan mode is complete.",
+            ].join("\n"),
+            reminders: [],
+            transitionedFrom: "PLAN_REVIEW",
+          },
+        } as StageAdvance;
+      }
       return { action: "advance" };
     }
 

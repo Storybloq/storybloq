@@ -1,12 +1,14 @@
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { Note } from "../models/note.js";
+import type { Lesson } from "../models/lesson.js";
 import type { ProjectState } from "./project-state.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX } from "../models/types.js";
+import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX, LESSON_ID_REGEX } from "../models/types.js";
 
 const TICKET_NUMERIC_REGEX = /^T-(\d+)[a-z]?$/;
 const ISSUE_NUMERIC_REGEX = /^ISS-(\d+)$/;
 const NOTE_NUMERIC_REGEX = /^N-(\d+)$/;
+const LESSON_NUMERIC_REGEX = /^L-(\d+)$/;
 
 /**
  * Next ticket ID: scan existing IDs, find max numeric part, return T-(max+1).
@@ -58,6 +60,23 @@ export function nextNoteID(notes: readonly Note[]): string {
     }
   }
   return `N-${String(max + 1).padStart(3, "0")}`;
+}
+
+/**
+ * Next lesson ID: scan existing IDs, find max numeric part, return L-(max+1).
+ * Zero-padded to 3 digits minimum.
+ */
+export function nextLessonID(lessons: readonly Lesson[]): string {
+  let max = 0;
+  for (const l of lessons) {
+    if (!LESSON_ID_REGEX.test(l.id)) continue;
+    const match = l.id.match(LESSON_NUMERIC_REGEX);
+    if (match?.[1]) {
+      const num = parseInt(match[1], 10);
+      if (num > max) max = num;
+    }
+  }
+  return `L-${String(max + 1).padStart(3, "0")}`;
 }
 
 /**

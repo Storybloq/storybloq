@@ -16,9 +16,10 @@ import lockfile from "proper-lockfile";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
 import { NoteSchema, type Note } from "../models/note.js";
+import { LessonSchema, type Lesson } from "../models/lesson.js";
 import { RoadmapSchema, type Roadmap } from "../models/roadmap.js";
 import { ConfigSchema, type Config } from "../models/config.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX } from "../models/types.js";
+import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX, LESSON_ID_REGEX } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
 import {
   ProjectLoaderError,
@@ -133,6 +134,14 @@ export async function loadProject(
     warnings,
   );
 
+  // 7c. Load lessons (best-effort — empty array if directory absent)
+  const lessons = await loadDirectory<Lesson>(
+    join(wrapDir, "lessons"),
+    absRoot,
+    LessonSchema,
+    warnings,
+  );
+
   // 8. List handovers
   const handoversDir = join(wrapDir, "handovers");
   const handoverFilenames = await listHandovers(
@@ -159,6 +168,7 @@ export async function loadProject(
     tickets,
     issues,
     notes,
+    lessons,
     roadmap,
     config,
     handoverFilenames,
@@ -420,6 +430,78 @@ export async function deleteNote(
       );
     }
     await unlink(targetPath);
+  });
+}
+
+/**
+ * Writes a lesson file WITHOUT acquiring the project lock.
+ * Use inside withProjectLock when the lock is already held.
+ */
+export async function writeLessonUnlocked(
+  lesson: Lesson,
+  root: string,
+): Promise<void> {
+  const parsed = LessonSchema.parse(lesson);
+  if (!LESSON_ID_REGEX.test(parsed.id)) {
+    throw new ProjectLoaderError(
+      "invalid_input",
+      `Invalid lesson ID: ${parsed.id}`,
+    );
+  }
+  const wrapDir = resolve(root, ".story");
+  const targetPath = join(wrapDir, "lessons", `${parsed.id}.json`);
+  await mkdir(dirname(targetPath), { recursive: true });
+  await guardPath(targetPath, wrapDir);
+  const json = serializeJSON(parsed);
+  await atomicWrite(targetPath, json);
+}
+
+export async function writeLesson(
+  lesson: Lesson,
+  root: string,
+): Promise<void> {
+  const wrapDir = resolve(root, ".story");
+  await withLock(wrapDir, async () => {
+    await writeLessonUnlocked(lesson, root);
+  });
+}
+
+/**
+ * Deletes a lesson file WITHOUT acquiring the project lock.
+ * Use inside withProjectLock when the lock is already held.
+ */
+export async function deleteLessonUnlocked(
+  id: string,
+  root: string,
+): Promise<void> {
+  if (!LESSON_ID_REGEX.test(id)) {
+    throw new ProjectLoaderError(
+      "invalid_input",
+      `Invalid lesson ID: ${id}`,
+    );
+  }
+  const wrapDir = resolve(root, ".story");
+  const targetPath = join(wrapDir, "lessons", `${id}.json`);
+  await guardPath(targetPath, wrapDir);
+
+  try {
+    await stat(targetPath);
+  } catch {
+    throw new ProjectLoaderError(
+      "not_found",
+      `Lesson file not found: lessons/${id}.json`,
+    );
+  }
+  await unlink(targetPath);
+}
+
+export async function deleteLesson(
+  id: string,
+  root: string,
+): Promise<void> {
+  const wrapDir = resolve(root, ".story");
+  await withLock(wrapDir, async () => {
+    await deleteLessonUnlocked(id, root);
   });
 }
 
@@ -709,8 +791,9 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings);
   const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings);
   const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings);
+  const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
-  const state = new ProjectState({ tickets, issues, notes, roadmap, config, handoverFilenames });
+  const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames });
   return { state, warnings };
 }
 

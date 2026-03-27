@@ -1,6 +1,7 @@
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { Note } from "../models/note.js";
+import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { Config } from "../models/config.js";
 import type { IssueSeverity } from "../models/types.js";
@@ -16,6 +17,7 @@ export class ProjectState {
   readonly tickets: readonly Ticket[];
   readonly issues: readonly Issue[];
   readonly notes: readonly Note[];
+  readonly lessons: readonly Lesson[];
   readonly roadmap: Readonly<Roadmap>;
   readonly config: Readonly<Config>;
   readonly handoverFilenames: readonly string[];
@@ -33,6 +35,7 @@ export class ProjectState {
   private readonly ticketsByID: Map<string, Ticket>;
   private readonly issuesByID: Map<string, Issue>;
   private readonly notesByID: Map<string, Note>;
+  private readonly lessonsByID: Map<string, Lesson>;
 
   // --- Counts ---
   readonly totalTicketCount: number;
@@ -42,11 +45,14 @@ export class ProjectState {
   readonly issuesBySeverity: ReadonlyMap<IssueSeverity, number>;
   readonly activeNoteCount: number;
   readonly archivedNoteCount: number;
+  readonly activeLessonCount: number;
+  readonly deprecatedLessonCount: number;
 
   constructor(input: {
     tickets: Ticket[];
     issues: Issue[];
     notes: Note[];
+    lessons?: Lesson[];
     roadmap: Roadmap;
     config: Config;
     handoverFilenames: string[];
@@ -54,6 +60,7 @@ export class ProjectState {
     this.tickets = input.tickets;
     this.issues = input.issues;
     this.notes = input.notes;
+    this.lessons = input.lessons ?? [];
     this.roadmap = input.roadmap;
     this.config = input.config;
     this.handoverFilenames = input.handoverFilenames;
@@ -142,6 +149,13 @@ export class ProjectState {
     }
     this.notesByID = nByID;
 
+    // Lessons: last-wins (same as issues)
+    const lByID = new Map<string, Lesson>();
+    for (const l of this.lessons) {
+      lByID.set(l.id, l);
+    }
+    this.lessonsByID = lByID;
+
     // Step 7: Counts
     this.totalTicketCount = input.tickets.length;
     this.openTicketCount = input.tickets.filter(
@@ -167,6 +181,13 @@ export class ProjectState {
     ).length;
     this.archivedNoteCount = input.notes.filter(
       (n) => n.status === "archived",
+    ).length;
+
+    this.activeLessonCount = this.lessons.filter(
+      (l) => l.status === "active",
+    ).length;
+    this.deprecatedLessonCount = this.lessons.filter(
+      (l) => l.status === "deprecated" || l.status === "superseded",
     ).length;
   }
 
@@ -228,6 +249,10 @@ export class ProjectState {
 
   noteByID(id: string): Note | undefined {
     return this.notesByID.get(id);
+  }
+
+  lessonByID(id: string): Lesson | undefined {
+    return this.lessonsByID.get(id);
   }
 
   // --- Deletion Safety ---

@@ -58,6 +58,7 @@ export async function initProject(
   await mkdir(join(wrapDir, "issues"), { recursive: true });
   await mkdir(join(wrapDir, "handovers"), { recursive: true });
   await mkdir(join(wrapDir, "notes"), { recursive: true });
+  await mkdir(join(wrapDir, "lessons"), { recursive: true });
 
   const created: string[] = [
     ".story/config.json",
@@ -66,6 +67,7 @@ export async function initProject(
     ".story/issues/",
     ".story/handovers/",
     ".story/notes/",
+    ".story/lessons/",
   ];
 
   // Today's date

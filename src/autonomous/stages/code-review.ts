@@ -137,6 +137,28 @@ export class CodeReviewStage implements WorkflowStage {
     }
 
     if (nextAction === "FINALIZE") {
+      // T-135: Review mode exits after code review approval
+      if (ctx.state.mode === "review") {
+        ctx.writeState({
+          status: "completed" as const,
+          terminationReason: "normal" as const,
+        });
+        return {
+          action: "goto",
+          target: "SESSION_END",
+          result: {
+            instruction: [
+              "# Code Review Complete",
+              "",
+              `Code for **${ctx.state.ticket?.id}** has been approved after ${roundNum} review round(s).`,
+              "",
+              "Session ending — review mode is complete. You can now proceed to commit.",
+            ].join("\n"),
+            reminders: [],
+            transitionedFrom: "CODE_REVIEW",
+          },
+        } as StageAdvance;
+      }
       return { action: "advance" };
     }
 

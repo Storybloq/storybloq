@@ -56,6 +56,7 @@ export interface SessionConfig {
   maxTicketsPerSession?: number;
   compactThreshold?: string;
   reviewBackends?: string[];
+  mode?: "auto" | "review" | "plan" | "guided";
 }
 
 /** Create a new session directory and write initial state.json. */
@@ -77,6 +78,7 @@ export function createSession(
     state: "INIT",
     revision: 0,
     status: "active",
+    mode: configOverrides?.mode ?? "auto",
     reviews: { plan: [], code: [] },
     completedTickets: [],
     finalizeCheckpoint: null,

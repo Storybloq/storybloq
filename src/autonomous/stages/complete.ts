@@ -26,6 +26,27 @@ export class CompleteStage implements WorkflowStage {
 
     const ticketsDone = ctx.state.completedTickets.length;
     const maxTickets = ctx.state.config.maxTicketsPerSession;
+    const mode = ctx.state.mode ?? "auto";
+
+    // T-135: Non-auto modes (guided) end after single ticket
+    if (mode !== "auto") {
+      return {
+        action: "goto",
+        target: "HANDOVER",
+        result: {
+          instruction: [
+            `# Ticket Complete — ${mode} mode session ending`,
+            "",
+            `Ticket **${ctx.state.ticket?.id}** completed. Write a brief session handover.`,
+            "",
+            'Call me with completedAction: "handover_written" and include the content in handoverContent.',
+          ].join("\n"),
+          reminders: [],
+          transitionedFrom: "COMPLETE",
+          contextAdvice: "ok" as ContextAdvice,
+        },
+      } as StageAdvance;
+    }
 
     // Determine next action
     let nextTarget: string;

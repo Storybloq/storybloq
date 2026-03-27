@@ -2,6 +2,7 @@ import type { OutputFormat, ErrorCode } from "../models/types.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { Note } from "../models/note.js";
+import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
@@ -117,6 +118,8 @@ export function formatStatus(
     openIssues: state.openIssueCount,
     activeNotes: state.activeNoteCount,
     archivedNotes: state.archivedNoteCount,
+    activeLessons: state.activeLessonCount,
+    deprecatedLessons: state.deprecatedLessonCount,
     handovers: state.handoverFilenames.length,
     phases: phases.map((p) => ({
       id: p.phase.id,
@@ -136,6 +139,7 @@ export function formatStatus(
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
     `Issues: ${state.openIssueCount} open`,
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
+    `Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`,
     `Handovers: ${state.handoverFilenames.length}`,
     "",
     "## Phases",
@@ -553,6 +557,105 @@ export function formatNoteDeleteResult(
   return `Deleted note ${id}.`;
 }
 
+// --- Lesson formatters ---
+
+export function formatLesson(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+
+  const statusBadge = lesson.status !== "active" ? ` (${lesson.status})` : "";
+  const lines: string[] = [
+    `# ${escapeMarkdownInline(lesson.title)}${statusBadge}`,
+    "",
+    `Status: ${lesson.status} | Source: ${lesson.source} | Reinforcements: ${lesson.reinforcements}`,
+  ];
+  if (lesson.tags.length > 0) {
+    lines.push(`Tags: ${lesson.tags.join(", ")}`);
+  }
+  lines.push(`Created: ${lesson.createdDate} | Updated: ${lesson.updatedDate} | Last validated: ${lesson.lastValidated}`);
+  if (lesson.supersedes) {
+    lines.push(`Supersedes: ${lesson.supersedes}`);
+  }
+  lines.push("", "## Content", "", lesson.content);
+  if (lesson.context) {
+    lines.push("", "## Context", "", lesson.context);
+  }
+  return lines.join("\n");
+}
+
+export function formatLessonList(
+  lessons: readonly Lesson[],
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lessons), null, 2);
+  }
+  if (lessons.length === 0) return "No lessons found.";
+  const lines: string[] = [];
+  for (const l of lessons) {
+    const status = l.status === "active" ? "[ ]" : "[x]";
+    const reinforced = l.reinforcements > 0 ? ` (×${l.reinforcements})` : "";
+    const tagInfo = l.tags.length > 0 ? ` [${l.tags.join(", ")}]` : "";
+    lines.push(`${status} ${l.id}: ${escapeMarkdownInline(l.title)}${reinforced}${tagInfo}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatLessonDigest(
+  digest: string,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ digest }), null, 2);
+  }
+  if (!digest) return "No active lessons.";
+  return digest;
+}
+
+export function formatLessonCreateResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Created lesson ${lesson.id}: ${lesson.title}`;
+}
+
+export function formatLessonUpdateResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Updated lesson ${lesson.id}: ${lesson.title}`;
+}
+
+export function formatLessonReinforceResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Reinforced lesson ${lesson.id}: ${lesson.title} (×${lesson.reinforcements})`;
+}
+
+export function formatLessonDeleteResult(
+  id: string,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ id, deleted: true }), null, 2);
+  }
+  return `Deleted lesson ${id}.`;
+}
+
 export function formatError(
   code: ErrorCode,
   message: string,
@@ -746,6 +849,24 @@ export function formatRecap(
         }
         for (const n of changes.notes.updated) {
           lines.push(`- ${n.id}: updated (${n.changedFields.join(", ")})`);
+        }
+      }
+
+      // Lesson changes
+      if (changes.lessons && (changes.lessons.added.length > 0 || changes.lessons.removed.length > 0 || changes.lessons.updated.length > 0 || changes.lessons.reinforced.length > 0)) {
+        lines.push("");
+        lines.push("## Lessons");
+        for (const l of changes.lessons.added) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — **new**`);
+        }
+        for (const l of changes.lessons.removed) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — removed`);
+        }
+        for (const l of changes.lessons.updated) {
+          lines.push(`- ${l.id}: updated (${l.changedFields.join(", ")})`);
+        }
+        for (const l of changes.lessons.reinforced) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — reinforced (${l.from} → ${l.to})`);
         }
       }
     }
@@ -952,6 +1073,7 @@ function formatFullExport(
   lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
   lines.push(`Issues: ${state.openIssueCount} open`);
   lines.push(`Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`);
+  lines.push(`Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`);
 
   lines.push("");
   lines.push("## Phases");

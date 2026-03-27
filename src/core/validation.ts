@@ -82,6 +82,45 @@ export function validateProject(state: ProjectState): ValidationResult {
     }
   }
 
+  // Duplicate lesson IDs
+  const lessonIDCounts = new Map<string, number>();
+  for (const l of state.lessons) {
+    lessonIDCounts.set(l.id, (lessonIDCounts.get(l.id) ?? 0) + 1);
+  }
+  for (const [id, count] of lessonIDCounts) {
+    if (count > 1) {
+      findings.push({
+        level: "error",
+        code: "duplicate_lesson_id",
+        message: `Duplicate lesson ID: ${id} appears ${count} times.`,
+        entity: id,
+      });
+    }
+  }
+
+  // Lesson reference checks
+  const lessonIDs = new Set(state.lessons.map((l) => l.id));
+  for (const l of state.lessons) {
+    // supersedes ref
+    if (l.supersedes != null) {
+      if (l.supersedes === l.id) {
+        findings.push({
+          level: "error",
+          code: "self_ref_supersedes",
+          message: `Lesson ${l.id} references itself in supersedes.`,
+          entity: l.id,
+        });
+      } else if (!lessonIDs.has(l.supersedes)) {
+        findings.push({
+          level: "error",
+          code: "invalid_supersedes_ref",
+          message: `Lesson ${l.id} supersedes nonexistent lesson ${l.supersedes}.`,
+          entity: l.id,
+        });
+      }
+    }
+  }
+
   // Duplicate roadmap phase IDs
   const phaseIDCounts = new Map<string, number>();
   for (const p of state.roadmap.phases) {

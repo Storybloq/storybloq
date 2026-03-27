@@ -33,6 +33,7 @@ import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCac
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
+import "./stages/index.js"; // Register all extracted stages
 
 import { loadProject } from "../core/project-loader.js";
 import { loadLatestSnapshot } from "../core/snapshot.js";
@@ -753,24 +754,14 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
     return runPipelineStage(root, info.dir, state, report, recipe);
   }
 
-  // Legacy switch — shrinks as stages are extracted in T-137/T-138
+  // Legacy switch — 3 remaining handlers (extracted in T-138)
   switch (currentState) {
-    case "PICK_TICKET":
-      return handleReportPickTicket(root, info.dir, state, report);
-    case "PLAN":
-      return handleReportPlan(root, info.dir, state, report);
     case "PLAN_REVIEW":
       return handleReportPlanReview(root, info.dir, state, report);
-    case "IMPLEMENT":
-      return handleReportImplement(root, info.dir, state, report);
     case "CODE_REVIEW":
       return handleReportCodeReview(root, info.dir, state, report);
     case "FINALIZE":
       return handleReportFinalize(root, info.dir, state, report);
-    case "COMPLETE":
-      return handleReportComplete(root, info.dir, state, report);
-    case "HANDOVER":
-      return handleReportHandover(root, info.dir, state, report);
     case "TEST":
     case "ISSUE_SWEEP":
       return guideError(new Error(

@@ -793,10 +793,19 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
     const topCandidate = nextResult.kind === "found" ? nextResult.candidates[0] : null;
 
+    const maxTickets = updated.config.maxTicketsPerSession;
+    const interval = updated.config.handoverInterval ?? 5;
+    const sessionDesc = maxTickets > 0
+      ? `Work continuously until all tickets are done or you reach ${maxTickets} tickets.`
+      : "Work continuously until all tickets are done.";
+    const checkpointDesc = interval > 0
+      ? ` A checkpoint handover will be saved every ${interval} tickets.`
+      : "";
+
     const instruction = [
       "# Autonomous Session Started",
       "",
-      "You are now in autonomous mode. Work continuously until all tickets are done or the session limit is reached.",
+      `You are now in autonomous mode. ${sessionDesc}${checkpointDesc}`,
       "Do NOT stop to summarize. Do NOT ask the user. Pick a ticket and start working immediately.",
       "",
       "## Ticket Candidates",

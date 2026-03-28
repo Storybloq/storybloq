@@ -1,5 +1,4 @@
 import type {
-  ContextAdvice,
   FullSessionState,
   GuideReportInput,
 } from "../session-types.js";
@@ -14,7 +13,7 @@ import type { ProjectState } from "../../core/project-state.js";
 export interface StageResult {
   readonly instruction: string;
   readonly reminders?: readonly string[];
-  readonly contextAdvice?: ContextAdvice;
+  readonly contextAdvice?: string;
   readonly transitionedFrom?: string;
 }
 

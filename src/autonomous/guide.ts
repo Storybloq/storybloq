@@ -7,7 +7,6 @@ import {
   type GuideOutput,
   type FullSessionState,
   type SessionSummary,
-  type ContextAdvice,
   type WorkflowState,
 } from "./session-types.js";
 import {
@@ -1489,7 +1488,6 @@ function guideResult(
     instruction: string;
     reminders?: readonly string[];
     transitionedFrom?: string;
-    contextAdvice?: ContextAdvice;
   },
 ): McpToolResult {
   const summary: SessionSummary = {
@@ -1507,7 +1505,7 @@ function guideResult(
     transitionedFrom: opts.transitionedFrom,
     instruction: opts.instruction,
     reminders: opts.reminders ?? [],
-    contextAdvice: opts.contextAdvice ?? "ok",
+    contextAdvice: "ok",
     sessionSummary: summary,
   };
 
@@ -1523,7 +1521,6 @@ function guideResult(
     `**Completed:** ${summary.completed.length > 0 ? summary.completed.join(", ") : "none"}`,
     `**Tickets done:** ${summary.completed.length}`,
     summary.branch ? `**Branch:** ${summary.branch}` : "",
-    output.contextAdvice !== "ok" ? `**Context:** ${output.contextAdvice}` : "",
     output.reminders.length > 0 ? `\n**Reminders:**\n${output.reminders.map((r) => `- ${r}`).join("\n")}` : "",
   ].filter(Boolean);
 

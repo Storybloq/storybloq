@@ -17,8 +17,8 @@ interface Limits { calls: number; tickets: number; bytes: number; }
  * |----------|----------------------------------------|------------------|
  * | low      | <30 calls, <3 tickets, <150KB events   | Continue         |
  * | medium   | 30+ calls OR 3+ tickets OR >150KB      | Evaluate         |
- * | high     | 60+ calls OR 5+ tickets OR >800KB      | consider-compact |
- * | critical | >90 calls OR 8+ tickets OR >1.5MB      | compact-now      |
+ * | high     | 60+ calls OR 5+ tickets OR >800KB      | (logged only)    |
+ * | critical | >90 calls OR 8+ tickets OR >1.5MB      | (logged only)    |
  */
 const THRESHOLDS: Record<string, { critical: Limits; high: Limits; medium: Limits }> = {
   critical: {

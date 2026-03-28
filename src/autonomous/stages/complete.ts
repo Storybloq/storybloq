@@ -1,5 +1,5 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput, ContextAdvice } from "../session-types.js";
+import type { GuideReportInput } from "../session-types.js";
 import { evaluatePressure } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
 import { findFirstPostComplete, type NextStageResult } from "./registry.js";
@@ -43,23 +43,15 @@ export class CompleteStage implements WorkflowStage {
           ].join("\n"),
           reminders: [],
           transitionedFrom: "COMPLETE",
-          contextAdvice: "ok" as ContextAdvice,
         },
       } as StageAdvance;
     }
 
-    // Determine next action
+    // Determine next action — no pressure-based routing (T-146: Claude Code handles compaction naturally)
     let nextTarget: string;
-    let advice: ContextAdvice = "ok";
 
     if (maxTickets > 0 && ticketsDone >= maxTickets) {
       nextTarget = "HANDOVER";
-    } else if (pressure === "critical") {
-      advice = "compact-now";
-      nextTarget = "PICK_TICKET";
-    } else if (pressure === "high") {
-      advice = "consider-compact";
-      nextTarget = "PICK_TICKET";
     } else {
       nextTarget = "PICK_TICKET";
     }
@@ -96,7 +88,7 @@ export class CompleteStage implements WorkflowStage {
           ].join("\n"),
           reminders: [],
           transitionedFrom: "COMPLETE",
-          contextAdvice: advice,
+          contextAdvice: "ok",
         },
       } as StageAdvance;
     }

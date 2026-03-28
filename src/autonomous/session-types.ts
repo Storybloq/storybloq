@@ -451,7 +451,7 @@ export interface SessionSummary {
   readonly branch: string | null;
 }
 
-export type ContextAdvice = "ok" | "consider-compact" | "compact-now";
+export type ContextAdvice = "ok";
 
 export interface GuideOutput {
   readonly sessionId: string;

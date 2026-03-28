@@ -2406,7 +2406,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
           },
         )
         .command(
-          "clear-compact",
+          "clear-compact [sessionId]",
           "Clear stale compact marker (admin)",
           (y2) =>
             y2.positional("sessionId", {
@@ -2432,7 +2432,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
           },
         )
         .command(
-          "stop",
+          "stop [sessionId]",
           "Stop an active session (admin)",
           (y2) =>
             y2.positional("sessionId", {

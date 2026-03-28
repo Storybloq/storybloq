@@ -163,6 +163,18 @@ export class FinalizeStage implements WorkflowStage {
       }
     }
 
+    // ISS-047: Re-validate ticket file in staged set after hooks
+    const ticketId = ctx.state.ticket?.id;
+    if (ticketId) {
+      const ticketPath = `.story/tickets/${ticketId}.json`;
+      if (!stagedResult.data.includes(ticketPath)) {
+        return {
+          action: "retry",
+          instruction: `Pre-commit hooks may have modified the staged set. Ticket file ${ticketPath} is no longer staged. Run \`git add ${ticketPath}\` and call me again with completedAction: "files_staged".`,
+        };
+      }
+    }
+
     ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
 
     return {

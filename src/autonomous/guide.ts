@@ -319,7 +319,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           `Stale compacted session ${existing.state.sessionId} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, never resumed). ` +
           `SessionStart hook is no longer prompting for this session.\n` +
           `- To resume anyway: call action "resume" with sessionId "${existing.state.sessionId}"\n` +
-          `- To abandon and start fresh: run "claudestory session clear-compact ${existing.state.sessionId}"`,
+          `- To abandon and start fresh: run "claudestory session stop ${existing.state.sessionId}"`,
         ));
       }
       return guideError(new Error(
@@ -344,7 +344,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       return guideError(new Error(
         `${resumable.stale ? "Stale c" : "C"}ompacted session ${sid} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, lease expired but not resumed).\n` +
         `- To resume: call action "resume" with sessionId "${sid}"\n` +
-        `- To abandon: run "claudestory session clear-compact ${sid}"`,
+        `- To abandon: run "claudestory session stop ${sid}"`,
       ));
     }
   }
@@ -1027,7 +1027,7 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   if (state.compactPending && currentState !== "COMPACT") {
     return guideError(new Error(
       `Session has pending compaction in inconsistent state (${currentState}). ` +
-      `Call action: "resume" or run "claudestory session clear-compact ${args.sessionId}".`,
+      `Call action: "resume" or run "claudestory session stop ${args.sessionId}".`,
     ));
   }
 
@@ -1077,7 +1077,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   if (!resumeState || !WORKFLOW_STATES.includes(resumeState as typeof WORKFLOW_STATES[number])) {
     return guideError(new Error(
       `Session ${args.sessionId} has invalid preCompactState: ${resumeState}. ` +
-      `Run "claudestory session clear-compact ${args.sessionId}" to recover.`,
+      `Run "claudestory session stop ${args.sessionId}" to terminate.`,
     ));
   }
 
@@ -1101,7 +1101,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     });
     return guideError(new Error(
       `Cannot validate git state for session ${args.sessionId}. ` +
-      `Check git status and try "resume" again, or run "claudestory session clear-compact ${args.sessionId}" to end the session.`,
+      `Check git status and try "resume" again, or run "claudestory session stop ${args.sessionId}" to end the session.`,
     ));
   }
 

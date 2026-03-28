@@ -437,6 +437,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       } else if (line.length > 3) {
         // Tracked file with modifications (M, A, D, R, C, etc.)
         const filePath = line.slice(3).trim();
+        // Skip .story/ files — managed by claudestory, always safe to have dirty
+        if (filePath.startsWith(".story/")) continue;
         const hashResult = await gitBlobHash(root, filePath);
         dirtyTracked[filePath] = { blobHash: hashResult.ok ? hashResult.data : "" };
       }

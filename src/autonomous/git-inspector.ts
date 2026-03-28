@@ -157,6 +157,32 @@ export async function gitStashPop(cwd: string, commitHash?: string): Promise<Git
   return git(cwd, ["stash", "pop", match.ref], () => undefined);
 }
 
+// Strict ref format: hex SHA (short or full) or HEAD. Rejects option injection (leading -)
+const SAFE_REF = /^[0-9a-f]{4,40}$/i;
+
+/** Git log between two refs (oneline), capped at limit. Best-effort. */
+export async function gitLogRange(
+  cwd: string,
+  from: string | null,
+  to: string | null,
+  limit = 20,
+): Promise<GitResult<string[]>> {
+  // Validate refs to prevent option injection from corrupted session state
+  if (from && !SAFE_REF.test(from)) {
+    return { ok: false, reason: "invalid_ref", message: `Invalid git ref: ${from}` };
+  }
+  if (to && !SAFE_REF.test(to)) {
+    return { ok: false, reason: "invalid_ref", message: `Invalid git ref: ${to}` };
+  }
+  // Require both from and to for a meaningful session range
+  if (!from || !to) {
+    return { ok: true, data: [] };
+  }
+  return git(cwd, ["log", "--oneline", `-${limit}`, `${from}..${to}`], (out) =>
+    out.split("\n").filter((l) => l.trim().length > 0),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

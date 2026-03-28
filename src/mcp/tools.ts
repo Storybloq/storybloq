@@ -72,6 +72,7 @@ import { handleExport } from "../cli/commands/export.js";
 import { handleSelftest } from "../cli/commands/selftest.js";
 import { handleHandoverCreate } from "../cli/commands/handover.js";
 import { handleAutonomousGuide } from "../autonomous/guide.js";
+import { handleSessionReport } from "../cli/commands/session-report.js";
 import {
   handlePhaseList,
   handlePhaseCurrent,
@@ -679,6 +680,28 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
   }, () => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleSelftest(root, format),
   ));
+
+  // --- Session report ---
+
+  server.registerTool("claudestory_session_report", {
+    description: "Generate a structured analysis of an autonomous session — works even if project state is corrupted",
+    inputSchema: {
+      sessionId: z.string().uuid().describe("Session ID to analyze"),
+    },
+  }, async (args) => {
+    try {
+      const result = await handleSessionReport(args.sessionId, pinnedRoot);
+      return {
+        content: [{ type: "text" as const, text: result.output }],
+        isError: result.isError ?? false,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  });
 
   // --- Autonomous guide ---
 

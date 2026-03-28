@@ -166,6 +166,41 @@ export function appendEvent(dir: string, event: EventEntry): void {
   }
 }
 
+/** Read events.log with tolerant parsing — skips malformed lines. */
+export function readEvents(dir: string): { events: EventEntry[]; malformedCount: number } {
+  const path = eventsPath(dir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    return { events: [], malformedCount: 0 };
+  }
+
+  const events: EventEntry[] = [];
+  let malformedCount = 0;
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (
+        typeof parsed === "object" && parsed !== null &&
+        typeof parsed.rev === "number" &&
+        typeof parsed.type === "string" &&
+        typeof parsed.timestamp === "string" &&
+        (parsed.data === undefined || (typeof parsed.data === "object" && parsed.data !== null))
+      ) {
+        events.push(parsed as EventEntry);
+      } else {
+        malformedCount++;
+      }
+    } catch {
+      malformedCount++;
+    }
+  }
+  return { events, malformedCount };
+}
+
 /** Delete a session directory. Used for cleanup on failed start. */
 export function deleteSession(root: string, sessionId: string): void {
   const dir = sessionDir(root, sessionId);

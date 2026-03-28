@@ -103,6 +103,14 @@ export function resolveRecipe(
     }
   }
 
+  // VERIFY: insert AFTER CODE_REVIEW (smoke test endpoints before FINALIZE)
+  if ((stages.VERIFY as Record<string, unknown>)?.enabled) {
+    const codeReviewIdx = pipeline.indexOf("CODE_REVIEW");
+    if (codeReviewIdx !== -1 && !pipeline.includes("VERIFY")) {
+      pipeline.splice(codeReviewIdx + 1, 0, "VERIFY");
+    }
+  }
+
   // TEST: insert AFTER IMPLEMENT (verify tests pass post-implementation)
   if ((stages.TEST as Record<string, unknown>)?.enabled) {
     const implementIdx = pipeline.indexOf("IMPLEMENT");

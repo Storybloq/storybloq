@@ -15,6 +15,7 @@ export type WorkflowState =
   | "WRITE_TESTS"
   | "TEST"
   | "CODE_REVIEW"
+  | "VERIFY"
   | "FINALIZE"
   | "COMPACT"
   | "HANDOVER"
@@ -35,6 +36,7 @@ const WORKING_STATES: ReadonlySet<string> = new Set([
   "WRITE_TESTS",
   "TEST",
   "CODE_REVIEW",
+  "VERIFY",
   "FINALIZE",
   "COMPACT",
   "ISSUE_SWEEP",
@@ -144,7 +146,7 @@ export type StatusPayload = StatusPayloadActive | StatusPayloadInactive;
 export const WORKFLOW_STATES = [
   "INIT", "LOAD_CONTEXT", "PICK_TICKET",
   "PLAN", "PLAN_REVIEW",
-  "IMPLEMENT", "WRITE_TESTS", "TEST", "CODE_REVIEW",
+  "IMPLEMENT", "WRITE_TESTS", "TEST", "CODE_REVIEW", "VERIFY",
   "FINALIZE", "COMPACT",
   "HANDOVER", "COMPLETE", "ISSUE_SWEEP", "SESSION_END",
 ] as const;
@@ -386,6 +388,7 @@ export const SessionStateSchema = z.object({
   }).nullable().default(null),
   testRetryCount: z.number().default(0),
   writeTestsRetryCount: z.number().default(0),
+  verifyRetryCount: z.number().default(0),
 
   // T-128: Resolved recipe (frozen at session start, survives compact/resume)
   resolvedPipeline: z.array(z.string()).optional(),

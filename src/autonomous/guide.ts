@@ -567,6 +567,29 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       }
     }
 
+    // T-131: INIT validation for VERIFY stage
+    const verifyConfig = resolvedRecipe.stages?.VERIFY as Record<string, unknown> | undefined;
+    if (verifyConfig?.enabled && resolvedRecipe.pipeline.includes("VERIFY")) {
+      const startCmd = verifyConfig.startCommand as string | undefined;
+      const readinessUrl = verifyConfig.readinessUrl as string | undefined;
+      if (!startCmd || !startCmd.trim()) {
+        deleteSession(root, session.sessionId);
+        return guideError(new Error("VERIFY stage is enabled but stages.VERIFY.startCommand is not configured."));
+      }
+      if (readinessUrl) {
+        try {
+          const parsed = new URL(readinessUrl);
+          if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
+            deleteSession(root, session.sessionId);
+            return guideError(new Error(`VERIFY stage readinessUrl must be localhost. Got: "${readinessUrl}".`));
+          }
+        } catch {
+          deleteSession(root, session.sessionId);
+          return guideError(new Error(`VERIFY stage readinessUrl is not a valid URL: "${readinessUrl}".`));
+        }
+      }
+    }
+
     // Load context
     const { state: projectState, warnings } = await loadProject(root);
     const handoversDir = join(root, ".story", "handovers");
@@ -1081,6 +1104,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       PLAN:         { state: "PLAN",        resetPlan: true,  resetCode: false },
       IMPLEMENT:    { state: "PLAN",        resetPlan: true,  resetCode: false },
       WRITE_TESTS:  { state: "PLAN",        resetPlan: true,  resetCode: false },  // T-139: baseline stale after HEAD change
+      VERIFY:       { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },  // T-131: reviewed code stale after HEAD drift
       PLAN_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },
       TEST:         { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },  // T-128: tests invalidated by HEAD change
       CODE_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },

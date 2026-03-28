@@ -7,6 +7,7 @@
     "PLAN_REVIEW": { "backends": ["codex", "agent"] },
     "CODE_REVIEW": { "backends": ["codex", "agent"] },
     "WRITE_TESTS": { "enabled": false, "command": "npm test", "onExhaustion": "plan" },
+    "VERIFY": { "enabled": false, "startCommand": "npm run dev", "readinessUrl": "http://localhost:3000", "endpoints": [] },
     "ISSUE_SWEEP": { "enabled": false }
   },
   "dirtyFileHandling": "block",

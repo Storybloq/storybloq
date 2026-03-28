@@ -553,9 +553,9 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
     // Read project files
     const rulesText = readFileSafe(join(root, "RULES.md"));
-    // T-134: Include lessons and legacy WORK_STRATEGIES.md during migration; lessons appear first
+    // T-134: Lessons are the product feature for process knowledge.
+    // Project-specific files (like WORK_STRATEGIES.md) are handled by CLAUDE.md.
     const lessonDigest = buildLessonDigest(projectState.lessons);
-    const workStrategies = readFileSafe(join(root, "WORK_STRATEGIES.md"));
 
     // Write context digest
     const digestParts = [
@@ -563,7 +563,6 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       recapText ? `## Recap\n\n${recapText}` : "",
       rulesText ? `## Development Rules\n\n${rulesText}` : "",
       lessonDigest || "",
-      workStrategies ? `## Work Strategies\n\n${workStrategies}` : "",
     ].filter(Boolean);
     const digest = digestParts.join("\n\n---\n\n");
     try {

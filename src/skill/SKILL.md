@@ -50,7 +50,7 @@ Check if the claudestory MCP tools are available by looking for `claudestory_sta
 - Run `claudestory recap` via Bash
 - Run `claudestory handover latest` via Bash
 - Read `RULES.md` if it exists in the project root
-- Run `claudestory lesson digest` via Bash. If output is "No active lessons." or empty, read `WORK_STRATEGIES.md` instead
+- Run `claudestory lesson digest` via Bash
 - Run `git log --oneline -10`
 - Then continue to Step 3 below
 
@@ -196,7 +196,7 @@ Call these in order:
 2. **Session recap** — call `claudestory_recap` MCP tool (shows changes since last snapshot)
 3. **Recent handovers** — call `claudestory_handover_latest` MCP tool with `count: 3` (last 3 sessions' context — ensures reasoning behind recent decisions is preserved, not just the latest session's state)
 4. **Development rules** — read `RULES.md` if it exists in the project root
-5. **Lessons learned** — call `claudestory_lesson_digest` MCP tool. Also read `WORK_STRATEGIES.md` if it exists (both are included — lessons take priority, strategies supplement during migration)
+5. **Lessons learned** — call `claudestory_lesson_digest` MCP tool
 6. **Recent commits** — run `git log --oneline -10`
 
 ## Step 3: Present Summary
@@ -208,7 +208,7 @@ After loading context, present a concise summary:
 - What the last session accomplished (from handover)
 - Next ticket to work on
 - Any high-severity issues or blockers
-- Key process rules (from lessons digest and/or WORK_STRATEGIES.md)
+- Key process rules (from lessons digest)
 
 For collaborative sessions, `claudestory_recommend` provides context-aware suggestions mixing tickets and issues. For autonomous sessions, `claudestory_ticket_next` provides queue-based next ticket.
 

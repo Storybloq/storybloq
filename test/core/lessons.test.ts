@@ -79,4 +79,16 @@ describe("buildLessonDigest", () => {
     const result = buildLessonDigest(lessons);
     expect(result).not.toContain("(×");
   });
+
+  it("starts with # heading (H1) — callers downgrade for context digest", () => {
+    const lessons = [
+      makeLesson({ id: "L-001", title: "Test" }),
+    ];
+    const result = buildLessonDigest(lessons);
+    expect(result).toMatch(/^# Lessons Learned/);
+    // Context digest in guide.ts applies .replace(/^# /m, "## ") to downgrade to H2
+    const downgraded = result.replace(/^# /m, "## ");
+    expect(downgraded).toMatch(/^## Lessons Learned/);
+    expect(downgraded).not.toMatch(/^# /m); // no remaining H1
+  });
 });

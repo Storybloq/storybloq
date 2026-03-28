@@ -96,6 +96,12 @@ describe("LessonSchema", () => {
       expect(LessonSchema.safeParse({ ...validLesson, supersedes: "T-001" }).success).toBe(false);
     });
 
+    it("supersedes uses LessonIdSchema — rejects same formats as id field", () => {
+      // Supersedes and id must accept/reject the same patterns (uses shared LessonIdSchema)
+      expect(LessonSchema.safeParse({ ...validLesson, supersedes: "LESSON-001" }).success).toBe(false);
+      expect(LessonSchema.safeParse({ ...validLesson, supersedes: "L-005" }).success).toBe(true);
+    });
+
     it("rejects invalid date format", () => {
       expect(LessonSchema.safeParse({ ...validLesson, createdDate: "March 27" }).success).toBe(false);
     });

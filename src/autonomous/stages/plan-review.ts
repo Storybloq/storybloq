@@ -99,7 +99,7 @@ export class PlanReviewStage implements WorkflowStage {
       : { ...ctx.state.reviews, plan: planReviews };
 
     ctx.writeState({
-      reviews: nextAction === "PLAN" ? reviewsForWrite : { ...ctx.state.reviews, plan: planReviews },
+      reviews: reviewsForWrite,
     });
 
     ctx.appendEvent("plan_review", {

@@ -84,7 +84,8 @@ export class FinalizeStage implements WorkflowStage {
             };
           }
         }
-        // Commit is valid — delegate to handleCommit
+        // Commit is valid — fast-forward checkpoint so handleCommit accepts it
+        ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
         return this.handleCommit(ctx, { ...report, commitHash: headResult.data.hash });
       }
       return { action: "retry", instruction: 'No files are staged. Stage your changes and call me again with completedAction: "files_staged".' };

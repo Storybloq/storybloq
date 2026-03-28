@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { nextTicketID, nextIssueID, nextNoteID, nextOrder } from "../../src/core/id-allocation.js";
-import { makeTicket, makeIssue, makeNote, makeState, makeRoadmap, makePhase } from "./test-factories.js";
+import { nextTicketID, nextIssueID, nextNoteID, nextLessonID, nextOrder } from "../../src/core/id-allocation.js";
+import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 
 describe("nextTicketID", () => {
   it("returns T-001 for empty array", () => {
@@ -80,6 +80,28 @@ describe("nextNoteID", () => {
       { id: "NOTE-bad", title: null, content: "x", tags: [], status: "active" as const, createdDate: "2026-03-20", updatedDate: "2026-03-20" },
     ] as any;
     expect(nextNoteID(notes)).toBe("N-003");
+  });
+});
+
+describe("nextLessonID", () => {
+  it("returns L-001 for empty array", () => {
+    expect(nextLessonID([])).toBe("L-001");
+  });
+
+  it("returns L-004 when max is L-003", () => {
+    const lessons = [
+      makeLesson({ id: "L-001" }),
+      makeLesson({ id: "L-003" }),
+    ];
+    expect(nextLessonID(lessons)).toBe("L-004");
+  });
+
+  it("ignores malformed IDs", () => {
+    const lessons = [
+      makeLesson({ id: "L-002" }),
+      { id: "LESSON-bad" } as any,
+    ];
+    expect(nextLessonID(lessons)).toBe("L-003");
   });
 });
 

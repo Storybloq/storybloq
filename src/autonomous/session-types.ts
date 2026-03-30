@@ -368,11 +368,11 @@ export const SessionStateSchema = z.object({
 
   // Recipe overrides (maxTicketsPerSession: 0 = no limit)
   config: z.object({
-    maxTicketsPerSession: z.number().min(0).default(0),
-    handoverInterval: z.number().min(0).default(5),
+    maxTicketsPerSession: z.number().min(0).default(5),
+    handoverInterval: z.number().min(0).default(3),
     compactThreshold: z.string().default("high"),
     reviewBackends: z.array(z.string()).default(["codex", "agent"]),
-  }).default({ maxTicketsPerSession: 0, compactThreshold: "high", reviewBackends: ["codex", "agent"], handoverInterval: 5 }),
+  }).default({ maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["codex", "agent"], handoverInterval: 3 }),
 
   // T-123: Issue sweep tracking
   issueSweepState: z.object({

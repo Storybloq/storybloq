@@ -794,7 +794,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     const topCandidate = nextResult.kind === "found" ? nextResult.candidates[0] : null;
 
     const maxTickets = updated.config.maxTicketsPerSession;
-    const interval = updated.config.handoverInterval ?? 5;
+    const interval = updated.config.handoverInterval ?? 3;
     const sessionDesc = maxTickets > 0
       ? `Work continuously until all tickets are done or you reach ${maxTickets} tickets.`
       : "Work continuously until all tickets are done.";

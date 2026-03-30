@@ -1,9 +1,22 @@
 {
   "id": "coding",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "pipeline": ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
+  "postComplete": ["LESSON_CAPTURE", "ISSUE_SWEEP"],
+  "stages": {
+    "PLAN_REVIEW": { "backends": ["codex", "agent"] },
+    "CODE_REVIEW": { "backends": ["codex", "agent"] },
+    "WRITE_TESTS": { "enabled": true, "command": "npm test", "onExhaustion": "plan" },
+    "TEST": { "enabled": true, "command": "npm test" },
+    "VERIFY": { "enabled": false, "startCommand": "npm run dev", "readinessUrl": "http://localhost:3000", "endpoints": [] },
+    "LESSON_CAPTURE": { "enabled": false },
+    "ISSUE_SWEEP": { "enabled": false }
+  },
+  "dirtyFileHandling": "block",
   "defaults": {
-    "maxTicketsPerSession": 3,
+    "maxTicketsPerSession": 0,
     "compactThreshold": "high",
-    "reviewBackends": ["codex", "agent"]
+    "reviewBackends": ["codex", "agent"],
+    "handoverInterval": 5
   }
 }

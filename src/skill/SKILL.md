@@ -13,6 +13,9 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 
 - `/story` → full context load (default, see Step 2 below)
 - `/story auto` → start autonomous mode (see Autonomous Mode below)
+- `/story review T-XXX` → start review mode for a ticket (see Tiered Access below)
+- `/story plan T-XXX` → start plan mode for a ticket (see Tiered Access below)
+- `/story guided T-XXX` → start guided mode for a ticket (see Tiered Access below)
 - `/story handover` → draft a session handover. Summarize the session's work, then call `claudestory_handover_create` with the drafted content and a descriptive slug
 - `/story snapshot` → save project state (call `claudestory_snapshot` MCP tool)
 - `/story export` → export project for sharing. Ask the user whether to export the current phase or the full project, then call `claudestory_export` with either `phase` or `all` set
@@ -46,7 +49,8 @@ Check if the claudestory MCP tools are available by looking for `claudestory_sta
 - Run `claudestory status` via Bash
 - Run `claudestory recap` via Bash
 - Run `claudestory handover latest` via Bash
-- Read `RULES.md` and `WORK_STRATEGIES.md` if they exist in the project root
+- Read `RULES.md` if it exists in the project root
+- Run `claudestory lesson digest` via Bash
 - Run `git log --oneline -10`
 - Then continue to Step 3 below
 
@@ -192,8 +196,16 @@ Call these in order:
 2. **Session recap** — call `claudestory_recap` MCP tool (shows changes since last snapshot)
 3. **Recent handovers** — call `claudestory_handover_latest` MCP tool with `count: 3` (last 3 sessions' context — ensures reasoning behind recent decisions is preserved, not just the latest session's state)
 4. **Development rules** — read `RULES.md` if it exists in the project root
-5. **Lessons learned** — read `WORK_STRATEGIES.md` if it exists in the project root
+5. **Lessons learned** — call `claudestory_lesson_digest` MCP tool
 6. **Recent commits** — run `git log --oneline -10`
+
+## Step 2b: Empty Scaffold Check
+
+After `claudestory_status` returns, check in order:
+
+1. **Integrity guard** — if the response starts with "Warning:" and contains "item(s) skipped due to data integrity issues", this is NOT an empty scaffold. Tell the user to run `claudestory validate`. Continue Step 2/3 normally.
+2. **Scaffold detection** — check BOTH: output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`. If met AND the project has code indicators (git history, package manifest, source files), route to the AI-Assisted Setup Flow (section 1b above) instead of Step 3. Skip remaining Step 2 calls and Step 3.
+3. **Empty without code** — if scaffold detected but no code indicators (truly empty directory), continue to Step 3 which will show: "Your project is set up but has no tickets yet. Would you like me to help you create your first phase and tickets?"
 
 ## Step 3: Present Summary
 
@@ -204,7 +216,7 @@ After loading context, present a concise summary:
 - What the last session accomplished (from handover)
 - Next ticket to work on
 - Any high-severity issues or blockers
-- Key process rules (from WORK_STRATEGIES.md if it exists)
+- Key process rules (from lessons digest)
 
 For collaborative sessions, `claudestory_recommend` provides context-aware suggestions mixing tickets and issues. For autonomous sessions, `claudestory_ticket_next` provides queue-based next ticket.
 
@@ -284,6 +296,45 @@ List, get, and update notes via MCP: `claudestory_note_list`, `claudestory_note_
 **If the guide says to compact:** Call `claudestory_autonomous_guide` with `action: "pre_compact"`, then run `/compact`, then call with `action: "resume"`.
 
 **If something goes wrong:** Call `claudestory_autonomous_guide` with `action: "cancel"` to cleanly end the session.
+
+## Tiered Access — Review, Plan, Guided Modes
+
+The autonomous guide supports four execution tiers. Same guide, same handlers, different entry/exit points.
+
+### `/story review T-XXX`
+
+"I wrote code for T-XXX, review it." Enters at CODE_REVIEW, loops review rounds, exits on approval.
+
+1. Call `claudestory_autonomous_guide` with `{ "sessionId": null, "action": "start", "mode": "review", "ticketId": "T-XXX" }`
+2. The guide enters CODE_REVIEW — follow its diff capture and review instructions
+3. On approve: session ends automatically. On revise/reject: fix code, re-review
+4. After approval, you can proceed to commit — the guide does NOT auto-commit in review mode
+
+**Note:** Review mode relaxes git constraints — dirty working tree is allowed since the user has code ready for review.
+
+### `/story plan T-XXX`
+
+"Help me plan T-XXX." Enters at PLAN, runs PLAN_REVIEW rounds, exits on approval.
+
+1. Call `claudestory_autonomous_guide` with `{ "sessionId": null, "action": "start", "mode": "plan", "ticketId": "T-XXX" }`
+2. The guide enters PLAN — write the implementation plan as a markdown file
+3. On plan review approve: session ends automatically. On revise/reject: revise plan, re-review
+4. The approved plan is saved in `.story/sessions/<id>/plan.md`
+
+### `/story guided T-XXX`
+
+"Do T-XXX end to end with review." Full pipeline for a single ticket: PLAN → PLAN_REVIEW → IMPLEMENT → CODE_REVIEW → FINALIZE → COMPLETE → HANDOVER → SESSION_END.
+
+1. Call `claudestory_autonomous_guide` with `{ "sessionId": null, "action": "start", "mode": "guided", "ticketId": "T-XXX" }`
+2. Follow every instruction exactly, calling the guide back after each step
+3. Session ends automatically after the single ticket is complete
+
+**Guided vs Auto:** Guided mode forces `maxTicketsPerSession: 1` and exits after the ticket. Auto mode loops until all tickets are done or the session limit is reached.
+
+### All tiered modes:
+- Require a `ticketId` — no ad-hoc review without a ticket in V1
+- Use the same review process as auto mode (same backends, same adaptive depth)
+- Can be cancelled with `action: "cancel"` at any point
 
 ## Command & Tool Reference
 

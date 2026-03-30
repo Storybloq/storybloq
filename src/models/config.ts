@@ -20,7 +20,7 @@ export const ConfigSchema = z
     type: z.string(),
     language: z.string(),
     features: FeaturesSchema,
-    recipe: z.string().optional(),
+    recipe: z.string().optional(),  // default "coding" applied in guide.ts handleStart
     recipeOverrides: z.object({
       maxTicketsPerSession: z.number().min(0).optional(),
       compactThreshold: z.string().optional(),

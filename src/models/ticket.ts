@@ -23,6 +23,8 @@ export const TicketSchema = z
     createdBy: z.string().nullable().optional(),
     assignedTo: z.string().nullable().optional(),
     lastModifiedBy: z.string().nullable().optional(),
+    // ISS-027: Autonomous session ownership — set when ticket claimed as inprogress
+    claimedBySession: z.string().nullable().optional(),
   })
   .passthrough();
 

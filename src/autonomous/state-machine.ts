@@ -9,11 +9,16 @@ const TRANSITIONS: Record<WorkflowState, readonly (WorkflowState | "*")[]> = {
   LOAD_CONTEXT:  ["PICK_TICKET"],         // internal (never seen by Claude)
   PICK_TICKET:   ["PLAN", "SESSION_END"],
   PLAN:          ["PLAN_REVIEW"],
-  PLAN_REVIEW:   ["IMPLEMENT", "PLAN", "PLAN_REVIEW"],   // approve → IMPLEMENT, reject → PLAN, stay for next round
-  IMPLEMENT:     ["CODE_REVIEW"],
-  CODE_REVIEW:   ["FINALIZE", "IMPLEMENT", "PLAN", "CODE_REVIEW"], // approve → FINALIZE, reject → IMPLEMENT/PLAN, stay for next round
+  PLAN_REVIEW:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "PLAN_REVIEW", "SESSION_END"],   // approve → IMPLEMENT/WRITE_TESTS, reject → PLAN, stay for next round; SESSION_END for tiered exit
+  IMPLEMENT:     ["CODE_REVIEW", "TEST"],  // TEST when test stage enabled
+  WRITE_TESTS:   ["IMPLEMENT", "WRITE_TESTS", "PLAN"],  // advance → IMPLEMENT, retry stays, exhaustion → PLAN
+  TEST:          ["CODE_REVIEW", "IMPLEMENT", "TEST"],  // pass → CODE_REVIEW, fail → IMPLEMENT, retry
+  CODE_REVIEW:   ["VERIFY", "FINALIZE", "IMPLEMENT", "PLAN", "CODE_REVIEW", "SESSION_END"], // approve → VERIFY/FINALIZE, reject → IMPLEMENT/PLAN, stay for next round; SESSION_END for tiered exit
+  VERIFY:        ["FINALIZE", "IMPLEMENT", "VERIFY"],  // pass → FINALIZE, fail → IMPLEMENT, retry
   FINALIZE:      ["COMPLETE"],
-  COMPLETE:      ["PICK_TICKET", "HANDOVER", "SESSION_END"],
+  COMPLETE:      ["PICK_TICKET", "HANDOVER", "ISSUE_SWEEP", "SESSION_END"],
+  LESSON_CAPTURE: ["ISSUE_SWEEP", "HANDOVER", "LESSON_CAPTURE"],  // advance → ISSUE_SWEEP, retry self, done → HANDOVER
+  ISSUE_SWEEP:   ["ISSUE_SWEEP", "HANDOVER", "PICK_TICKET"],  // retry (next issue), done → HANDOVER, loop → PICK_TICKET
   HANDOVER:      ["COMPACT", "SESSION_END", "PICK_TICKET"],
   COMPACT:       ["*"],                   // resume restores pre-compact state
   SESSION_END:   [],                      // terminal

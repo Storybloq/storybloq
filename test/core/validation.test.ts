@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { validateProject, mergeValidation } from "../../src/core/validation.js";
-import { makeTicket, makeIssue, makeNote, makeState, makeRoadmap, makePhase } from "./test-factories.js";
+import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 import type { LoadWarning } from "../../src/core/errors.js";
 
 describe("validateProject", () => {
@@ -82,6 +82,37 @@ describe("validateProject", () => {
       notes: [makeNote({ id: "N-001" }), makeNote({ id: "N-001" })],
     });
     expect(validateProject(state).findings.some((f) => f.code === "duplicate_note_id")).toBe(true);
+  });
+
+  it("reports duplicate lesson IDs", () => {
+    const state = makeState({
+      lessons: [makeLesson({ id: "L-001" }), makeLesson({ id: "L-001" })],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "duplicate_lesson_id")).toBe(true);
+  });
+
+  it("reports self-referencing supersedes", () => {
+    const state = makeState({
+      lessons: [makeLesson({ id: "L-001", supersedes: "L-001" })],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "self_ref_supersedes")).toBe(true);
+  });
+
+  it("reports invalid supersedes ref", () => {
+    const state = makeState({
+      lessons: [makeLesson({ id: "L-001", supersedes: "L-999" })],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "invalid_supersedes_ref")).toBe(true);
+  });
+
+  it("accepts valid supersedes ref", () => {
+    const state = makeState({
+      lessons: [
+        makeLesson({ id: "L-001", supersedes: null }),
+        makeLesson({ id: "L-002", supersedes: "L-001" }),
+      ],
+    });
+    expect(validateProject(state).findings.filter((f) => f.code.includes("supersedes"))).toHaveLength(0);
   });
 
   it("reports duplicate phase IDs", () => {

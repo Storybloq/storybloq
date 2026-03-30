@@ -15,11 +15,14 @@ import {
   TICKET_ID_REGEX,
   ISSUE_ID_REGEX,
   NOTE_ID_REGEX,
+  LESSON_ID_REGEX,
   TICKET_STATUSES,
   TICKET_TYPES,
   ISSUE_STATUSES,
   ISSUE_SEVERITIES,
   NOTE_STATUSES,
+  LESSON_STATUSES,
+  LESSON_SOURCES,
 } from "../models/types.js";
 import type { CommandContext, CommandResult } from "../cli/types.js";
 
@@ -55,12 +58,21 @@ import {
   handleNoteCreate,
   handleNoteUpdate,
 } from "../cli/commands/note.js";
+import {
+  handleLessonList,
+  handleLessonGet,
+  handleLessonDigest,
+  handleLessonCreate,
+  handleLessonUpdate,
+  handleLessonReinforce,
+} from "../cli/commands/lesson.js";
 import { handleRecommend } from "../cli/commands/recommend.js";
 import { handleSnapshot } from "../cli/commands/snapshot.js";
 import { handleExport } from "../cli/commands/export.js";
 import { handleSelftest } from "../cli/commands/selftest.js";
 import { handleHandoverCreate } from "../cli/commands/handover.js";
 import { handleAutonomousGuide } from "../autonomous/guide.js";
+import { handleSessionReport } from "../cli/commands/session-report.js";
 import {
   handlePhaseList,
   handlePhaseCurrent,
@@ -545,6 +557,91 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     ),
   ));
 
+  // --- Lesson tools ---
+
+  server.registerTool("claudestory_lesson_list", {
+    description: "List lessons with optional status/tag/source filters",
+    inputSchema: {
+      status: z.enum(LESSON_STATUSES).optional().describe("Filter by status: active, deprecated, superseded"),
+      tag: z.string().optional().describe("Filter by tag"),
+      source: z.enum(LESSON_SOURCES).optional().describe("Filter by source: review, correction, postmortem, manual"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
+    handleLessonList({ status: args.status, tag: args.tag, source: args.source }, ctx),
+  ));
+
+  server.registerTool("claudestory_lesson_get", {
+    description: "Get a lesson by ID",
+    inputSchema: {
+      id: z.string().regex(LESSON_ID_REGEX).describe("Lesson ID (e.g. L-001)"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleLessonGet(args.id, ctx)));
+
+  server.registerTool("claudestory_lesson_digest", {
+    description: "Compiled ranked digest of active lessons — primary read interface for context loading",
+    inputSchema: {},
+  }, () => runMcpReadTool(pinnedRoot, (ctx) => handleLessonDigest(ctx)));
+
+  server.registerTool("claudestory_lesson_create", {
+    description: "Create a new lesson",
+    inputSchema: {
+      title: z.string().describe("Lesson title — concise lesson name"),
+      content: z.string().describe("The actionable rule (1-3 sentences)"),
+      context: z.string().describe("What happened that produced this lesson (evidence, ticket/issue refs)"),
+      source: z.enum(LESSON_SOURCES).describe("Lesson source: review, correction, postmortem, manual"),
+      tags: z.array(z.string()).optional().describe("Tags for the lesson"),
+      supersedes: z.string().regex(LESSON_ID_REGEX).optional().describe("ID of lesson this supersedes"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleLessonCreate(
+      {
+        title: args.title,
+        content: args.content,
+        context: args.context,
+        source: args.source,
+        tags: args.tags ?? [],
+        supersedes: args.supersedes ?? null,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("claudestory_lesson_update", {
+    description: "Update an existing lesson",
+    inputSchema: {
+      id: z.string().regex(LESSON_ID_REGEX).describe("Lesson ID (e.g. L-001)"),
+      title: z.string().optional().describe("New title"),
+      content: z.string().optional().describe("New content"),
+      context: z.string().optional().describe("New context"),
+      tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
+      status: z.enum(LESSON_STATUSES).optional().describe("New status: active, deprecated, superseded"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleLessonUpdate(
+      args.id,
+      {
+        title: args.title,
+        content: args.content,
+        context: args.context,
+        tags: args.tags,
+        clearTags: args.tags !== undefined && args.tags.length === 0,
+        status: args.status,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("claudestory_lesson_reinforce", {
+    description: "Reinforce a lesson — increment reinforcement count and update lastValidated date",
+    inputSchema: {
+      id: z.string().regex(LESSON_ID_REGEX).describe("Lesson ID (e.g. L-001)"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleLessonReinforce(args.id, format, root),
+  ));
+
   // --- Phase write tools ---
 
   server.registerTool("claudestory_phase_create", {
@@ -584,13 +681,37 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     handleSelftest(root, format),
   ));
 
+  // --- Session report ---
+
+  server.registerTool("claudestory_session_report", {
+    description: "Generate a structured analysis of an autonomous session — works even if project state is corrupted",
+    inputSchema: {
+      sessionId: z.string().uuid().describe("Session ID to analyze"),
+    },
+  }, async (args) => {
+    try {
+      const result = await handleSessionReport(args.sessionId, pinnedRoot);
+      return {
+        content: [{ type: "text" as const, text: result.output }],
+        isError: result.isError ?? false,
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  });
+
   // --- Autonomous guide ---
 
   server.registerTool("claudestory_autonomous_guide", {
-    description: "Autonomous session orchestrator. Call at every decision point during autonomous mode.",
+    description: "Autonomous session orchestrator. Call at every decision point during autonomous mode. Supports tiered access: auto (full autonomous), review (code review only), plan (plan + review), guided (single ticket end-to-end).",
     inputSchema: {
       sessionId: z.string().uuid().nullable().describe("Session ID (null for start action)"),
       action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]).describe("Action to perform"),
+      mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
+      ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
       report: z.object({
         completedAction: z.string().describe("What was completed"),
         ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),

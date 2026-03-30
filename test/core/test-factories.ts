@@ -2,6 +2,7 @@ import { ProjectState } from "../../src/core/project-state.js";
 import type { Ticket } from "../../src/models/ticket.js";
 import type { Issue } from "../../src/models/issue.js";
 import type { Note } from "../../src/models/note.js";
+import type { Lesson } from "../../src/models/lesson.js";
 import type { Roadmap, Phase } from "../../src/models/roadmap.js";
 import type { Config } from "../../src/models/config.js";
 
@@ -54,6 +55,25 @@ export function makeNote(
   } as Note;
 }
 
+export function makeLesson(
+  overrides: Partial<Lesson> & { id: string },
+): Lesson {
+  return {
+    title: `Test ${overrides.id}`,
+    content: "Test lesson content.",
+    context: "Test context.",
+    source: "manual",
+    tags: [],
+    reinforcements: 0,
+    lastValidated: "2026-03-27",
+    createdDate: "2026-03-27",
+    updatedDate: "2026-03-27",
+    supersedes: null,
+    status: "active",
+    ...overrides,
+  } as Lesson;
+}
+
 export function makePhase(
   overrides: Partial<Phase> & { id: string },
 ): Phase {
@@ -95,6 +115,7 @@ export function makeState(
     tickets?: Ticket[];
     issues?: Issue[];
     notes?: Note[];
+    lessons?: Lesson[];
     roadmap?: Roadmap;
     handoverFilenames?: string[];
   } = {},
@@ -103,6 +124,7 @@ export function makeState(
     tickets: opts.tickets ?? [],
     issues: opts.issues ?? [],
     notes: opts.notes ?? [],
+    lessons: opts.lessons ?? [],
     roadmap: opts.roadmap ?? emptyRoadmap,
     config: minimalConfig,
     handoverFilenames: opts.handoverFilenames ?? [],

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { type PhaseStatus } from "../../src/core/project-state.js";
-import { makeTicket, makeIssue, makeState } from "./test-factories.js";
+import { makeTicket, makeIssue, makeNote, makeState, makePhase, makeRoadmap } from "./test-factories.js";
 
 // --- Tests ---
 
@@ -499,6 +499,71 @@ describe("ProjectState", () => {
       const second = makeIssue({ id: "ISS-001", title: "Second" });
       const state = makeState({ issues: [first, second] });
       expect(state.issueByID("ISS-001")?.title).toBe("Second");
+    });
+  });
+
+  describe("isEmptyScaffold", () => {
+    it("returns true for empty state (0 everything, empty roadmap)", () => {
+      const state = makeState();
+      expect(state.isEmptyScaffold).toBe(true);
+    });
+
+    it("returns true for default scaffold (1 phase id='p0')", () => {
+      const state = makeState({ roadmap: makeRoadmap([makePhase({ id: "p0" })]) });
+      expect(state.isEmptyScaffold).toBe(true);
+    });
+
+    it("returns false when tickets exist", () => {
+      const state = makeState({
+        tickets: [makeTicket({ id: "T-001" })],
+        roadmap: makeRoadmap([makePhase({ id: "p0" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(false);
+    });
+
+    it("returns false when issues exist", () => {
+      const state = makeState({
+        issues: [makeIssue({ id: "ISS-001" })],
+        roadmap: makeRoadmap([makePhase({ id: "p0" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(false);
+    });
+
+    it("returns false when handovers exist", () => {
+      const state = makeState({
+        handoverFilenames: ["2026-01-01-initial.md"],
+        roadmap: makeRoadmap([makePhase({ id: "p0" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(false);
+    });
+
+    it("returns false for 2+ phases even with 0 tickets", () => {
+      const state = makeState({
+        roadmap: makeRoadmap([makePhase({ id: "p0" }), makePhase({ id: "p1" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(false);
+    });
+
+    it("returns false for 1 custom phase (id='mvp'), 0 tickets", () => {
+      const state = makeState({
+        roadmap: makeRoadmap([makePhase({ id: "mvp" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(false);
+    });
+
+    it("returns true when phase id='p0' but name is edited", () => {
+      const state = makeState({
+        roadmap: makeRoadmap([makePhase({ id: "p0", name: "Renamed Phase" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(true);
+    });
+
+    it("returns true when notes/lessons exist but nothing else", () => {
+      const state = makeState({
+        notes: [makeNote({ id: "N-001" })],
+        roadmap: makeRoadmap([makePhase({ id: "p0" })]),
+      });
+      expect(state.isEmptyScaffold).toBe(true);
     });
   });
 });

@@ -12,11 +12,16 @@ export type WorkflowState =
   | "PLAN"
   | "PLAN_REVIEW"
   | "IMPLEMENT"
+  | "WRITE_TESTS"
+  | "TEST"
   | "CODE_REVIEW"
+  | "VERIFY"
   | "FINALIZE"
   | "COMPACT"
   | "HANDOVER"
   | "COMPLETE"
+  | "LESSON_CAPTURE"
+  | "ISSUE_SWEEP"
   | "SESSION_END";
 
 // ---------------------------------------------------------------------------
@@ -29,9 +34,14 @@ const WORKING_STATES: ReadonlySet<string> = new Set([
   "PLAN",
   "PLAN_REVIEW",
   "IMPLEMENT",
+  "WRITE_TESTS",
+  "TEST",
   "CODE_REVIEW",
+  "VERIFY",
   "FINALIZE",
   "COMPACT",
+  "LESSON_CAPTURE",
+  "ISSUE_SWEEP",
 ]);
 
 const IDLE_STATES: ReadonlySet<string> = new Set([
@@ -138,9 +148,9 @@ export type StatusPayload = StatusPayloadActive | StatusPayloadInactive;
 export const WORKFLOW_STATES = [
   "INIT", "LOAD_CONTEXT", "PICK_TICKET",
   "PLAN", "PLAN_REVIEW",
-  "IMPLEMENT", "CODE_REVIEW",
+  "IMPLEMENT", "WRITE_TESTS", "TEST", "CODE_REVIEW", "VERIFY",
   "FINALIZE", "COMPACT",
-  "HANDOVER", "COMPLETE", "SESSION_END",
+  "HANDOVER", "COMPLETE", "LESSON_CAPTURE", "ISSUE_SWEEP", "SESSION_END",
 ] as const;
 
 export const WorkflowStateSchema = z.enum(WORKFLOW_STATES);
@@ -155,7 +165,7 @@ export const CURRENT_SESSION_SCHEMA_VERSION = 1 as const;
 // Finalize checkpoint
 // ---------------------------------------------------------------------------
 
-export type FinalizeCheckpoint = "staged" | "precommit_passed" | "committed";
+export type FinalizeCheckpoint = "staged" | "staged_override" | "precommit_passed" | "committed";
 
 // ---------------------------------------------------------------------------
 // Review record (stored in state.json reviews arrays)
@@ -182,7 +192,7 @@ export interface Finding {
   readonly severity: "critical" | "major" | "minor" | "suggestion";
   readonly category: string;
   readonly description: string;
-  readonly disposition: "open" | "addressed" | "contested";
+  readonly disposition: "open" | "addressed" | "contested" | "deferred";
   readonly recommendedNextState?: "PLAN" | "IMPLEMENT";
 }
 
@@ -234,6 +244,7 @@ export const SessionStateSchema = z.object({
   previousState: z.string().optional(),
   revision: z.number().int().min(0),
   status: z.enum(["active", "completed", "superseded"]).default("active"),
+  mode: z.enum(["auto", "review", "plan", "guided"]).default("auto"),
 
   // Ticket in progress
   ticket: z.object({
@@ -277,10 +288,11 @@ export const SessionStateSchema = z.object({
     title: z.string().optional(),
     commitHash: z.string().optional(),
     risk: z.string().optional(),
+    realizedRisk: z.string().optional(),
   })).default([]),
 
   // FINALIZE checkpoint
-  finalizeCheckpoint: z.enum(["staged", "precommit_passed", "committed"]).nullable().default(null),
+  finalizeCheckpoint: z.enum(["staged", "staged_override", "precommit_passed", "committed"]).nullable().default(null),
 
   // Git state
   git: z.object({
@@ -293,6 +305,11 @@ export const SessionStateSchema = z.object({
       dirtyTrackedFiles: z.record(z.object({ blobHash: z.string() })).default({}),
       untrackedPaths: z.array(z.string()).default([]),
     }).optional(),
+    // T-125: Auto-stash tracking for dirty-file handling
+    autoStash: z.object({
+      ref: z.string(),
+      stashedAt: z.string(),
+    }).nullable().default(null),
   }).default({ branch: null, mergeBase: null }),
 
   // Lease
@@ -317,6 +334,26 @@ export const SessionStateSchema = z.object({
   // COMPACT resume
   resumeFromRevision: z.number().nullable().default(null),
   preCompactState: z.string().nullable().default(null),
+  compactPending: z.boolean().default(false),
+  compactPreparedAt: z.string().nullable().default(null),
+  resumeBlocked: z.boolean().default(false),
+
+  // Session termination
+  terminationReason: z.enum(["normal", "cancelled", "admin_recovery"]).nullable().default(null),
+
+  // ISS-037: Deferred finding tracking
+  filedDeferrals: z.array(z.object({
+    fingerprint: z.string(),
+    issueId: z.string(),
+  })).default([]),
+  pendingDeferrals: z.array(z.object({
+    fingerprint: z.string(),
+    severity: z.string(),
+    category: z.string(),
+    description: z.string(),
+    reviewKind: z.enum(["plan", "code"]),
+  })).default([]),
+  deferralsUnfiled: z.boolean().default(false),
 
   // Session metadata
   waitingForRetry: z.boolean().default(false),
@@ -331,10 +368,43 @@ export const SessionStateSchema = z.object({
 
   // Recipe overrides (maxTicketsPerSession: 0 = no limit)
   config: z.object({
-    maxTicketsPerSession: z.number().min(0).default(3),
+    maxTicketsPerSession: z.number().min(0).default(0),
+    handoverInterval: z.number().min(0).default(5),
     compactThreshold: z.string().default("high"),
     reviewBackends: z.array(z.string()).default(["codex", "agent"]),
-  }).default({ maxTicketsPerSession: 3, compactThreshold: "high", reviewBackends: ["codex", "agent"] }),
+  }).default({ maxTicketsPerSession: 0, compactThreshold: "high", reviewBackends: ["codex", "agent"], handoverInterval: 5 }),
+
+  // T-123: Issue sweep tracking
+  issueSweepState: z.object({
+    remaining: z.array(z.string()),
+    current: z.string().nullable(),
+    resolved: z.array(z.string()),
+  }).nullable().default(null),
+  pipelinePhase: z.enum(["ticket", "postComplete"]).default("ticket"),
+
+  // T-124: Test stage baseline and retry tracking
+  testBaseline: z.object({
+    exitCode: z.number(),
+    passCount: z.number(),
+    failCount: z.number(),
+    summary: z.string(),
+  }).nullable().default(null),
+  testRetryCount: z.number().default(0),
+  writeTestsRetryCount: z.number().default(0),
+  verifyRetryCount: z.number().default(0),
+  verifyAutoDetected: z.boolean().default(false),
+
+  // T-128: Resolved recipe (frozen at session start, survives compact/resume)
+  resolvedPipeline: z.array(z.string()).optional(),
+  resolvedPostComplete: z.array(z.string()).optional(),
+  resolvedRecipeId: z.string().optional(),
+  resolvedStages: z.record(z.record(z.unknown())).optional(),
+  resolvedDirtyFileHandling: z.string().optional(),
+  resolvedDefaults: z.object({
+    maxTicketsPerSession: z.number(),
+    compactThreshold: z.string(),
+    reviewBackends: z.array(z.string()),
+  }).optional(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
@@ -345,6 +415,10 @@ export type FullSessionState = z.infer<typeof SessionStateSchema>;
 
 export type GuideAction = "start" | "report" | "resume" | "pre_compact" | "cancel";
 
+/** Session execution mode: auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket end-to-end */
+export type SessionMode = "auto" | "review" | "plan" | "guided";
+export const SESSION_MODES = ["auto", "review", "plan", "guided"] as const;
+
 export interface GuideReportInput {
   readonly completedAction: string;
   readonly ticketId?: string;
@@ -353,6 +427,7 @@ export interface GuideReportInput {
   readonly verdict?: string;
   readonly findings?: readonly Finding[];
   readonly reviewerSessionId?: string;
+  readonly overrideOverlap?: boolean;
   readonly notes?: string;
 }
 
@@ -360,6 +435,10 @@ export interface GuideInput {
   readonly sessionId: string | null;
   readonly action: GuideAction;
   readonly report?: GuideReportInput;
+  /** Execution mode (default: "auto"). Only used with action: "start". */
+  readonly mode?: SessionMode;
+  /** Ticket ID for tiered modes (review, plan, guided). */
+  readonly ticketId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +454,7 @@ export interface SessionSummary {
   readonly branch: string | null;
 }
 
-export type ContextAdvice = "ok" | "consider-compact" | "compact-now";
+export type ContextAdvice = "ok";
 
 export interface GuideOutput {
   readonly sessionId: string;

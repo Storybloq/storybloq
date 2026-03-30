@@ -11,6 +11,7 @@ import { z } from "zod";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
 import { NoteSchema, type Note } from "../models/note.js";
+import { LessonSchema, type Lesson } from "../models/lesson.js";
 import { RoadmapSchema, type Roadmap } from "../models/roadmap.js";
 import { ConfigSchema, type Config } from "../models/config.js";
 import { ProjectState, type PhaseStatus } from "./project-state.js";
@@ -36,6 +37,7 @@ export const SnapshotV1Schema = z.object({
   tickets: z.array(TicketSchema),
   issues: z.array(IssueSchema),
   notes: z.array(NoteSchema).optional().default([]),
+  lessons: z.array(LessonSchema).optional().default([]),
   handoverFilenames: z.array(z.string()).optional().default([]),
   warnings: z.array(LoadWarningSchema).optional(),
 });
@@ -73,6 +75,7 @@ export async function saveSnapshot(
     tickets: [...state.tickets] as Ticket[],
     issues: [...state.issues] as Issue[],
     notes: [...state.notes] as Note[],
+    lessons: [...state.lessons] as Lesson[],
     handoverFilenames: [...state.handoverFilenames],
     ...(warnings.length > 0
       ? {
@@ -166,6 +169,12 @@ export interface NoteChange {
   changedFields: string[];
 }
 
+export interface LessonChange {
+  id: string;
+  title: string;
+  changedFields: string[];
+}
+
 export interface SnapshotDiff {
   tickets: {
     added: Array<{ id: string; title: string }>;
@@ -192,6 +201,12 @@ export interface SnapshotDiff {
     added: Array<{ id: string; title: string | null }>;
     removed: Array<{ id: string; title: string | null }>;
     updated: NoteChange[];
+  };
+  lessons: {
+    added: Array<{ id: string; title: string }>;
+    removed: Array<{ id: string; title: string }>;
+    updated: LessonChange[];
+    reinforced: Array<{ id: string; title: string; from: number; to: number }>;
   };
   handovers: {
     added: string[];
@@ -354,6 +369,41 @@ export function diffStates(
     }
   }
 
+  // --- Lessons ---
+  const snapLessons = new Map(snapshotState.lessons.map((l) => [l.id, l]));
+  const curLessons = new Map(currentState.lessons.map((l) => [l.id, l]));
+
+  const lessonsAdded: Array<{ id: string; title: string }> = [];
+  const lessonsRemoved: Array<{ id: string; title: string }> = [];
+  const lessonsUpdated: LessonChange[] = [];
+  const lessonsReinforced: Array<{ id: string; title: string; from: number; to: number }> = [];
+
+  for (const [id, cur] of curLessons) {
+    const snap = snapLessons.get(id);
+    if (!snap) {
+      lessonsAdded.push({ id, title: cur.title });
+    } else {
+      const changedFields: string[] = [];
+      if (snap.title !== cur.title) changedFields.push("title");
+      if (snap.content !== cur.content) changedFields.push("content");
+      if (snap.context !== cur.context) changedFields.push("context");
+      if (snap.status !== cur.status) changedFields.push("status");
+      if (JSON.stringify([...snap.tags].sort()) !== JSON.stringify([...cur.tags].sort())) changedFields.push("tags");
+      if (snap.supersedes !== cur.supersedes) changedFields.push("supersedes");
+      if (changedFields.length > 0) {
+        lessonsUpdated.push({ id, title: cur.title, changedFields });
+      }
+      if (snap.reinforcements !== cur.reinforcements) {
+        lessonsReinforced.push({ id, title: cur.title, from: snap.reinforcements, to: cur.reinforcements });
+      }
+    }
+  }
+  for (const [id, snap] of snapLessons) {
+    if (!curLessons.has(id)) {
+      lessonsRemoved.push({ id, title: snap.title });
+    }
+  }
+
   // --- Handovers ---
   const snapHandovers = new Set(snapshotState.handoverFilenames);
   const curHandovers = new Set(currentState.handoverFilenames);
@@ -374,6 +424,7 @@ export function diffStates(
     blockers: { added: blockersAdded, cleared: blockersCleared },
     phases: { added: phasesAdded, removed: phasesRemoved, statusChanged: phasesStatusChanged },
     notes: { added: notesAdded, removed: notesRemoved, updated: notesUpdated },
+    lessons: { added: lessonsAdded, removed: lessonsRemoved, updated: lessonsUpdated, reinforced: lessonsReinforced },
     handovers: { added: handoversAdded, removed: handoversRemoved },
   };
 }
@@ -420,6 +471,7 @@ export function buildRecap(
     tickets: snapshot.tickets,
     issues: snapshot.issues,
     notes: snapshot.notes ?? [],
+    lessons: snapshot.lessons ?? [],
     roadmap: snapshot.roadmap,
     config: snapshot.config,
     handoverFilenames: snapshot.handoverFilenames ?? [],

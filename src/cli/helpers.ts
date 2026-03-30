@@ -5,6 +5,7 @@ import {
   TicketIdSchema,
   IssueIdSchema,
   NoteIdSchema,
+  LessonIdSchema,
   DateSchema,
   OUTPUT_FORMATS,
   type OutputFormat,
@@ -160,6 +161,17 @@ export function parseNoteId(raw: string): string {
     throw new CliValidationError(
       "invalid_input",
       `Invalid note ID "${raw}": ${formatZodError(result.error)}`,
+    );
+  }
+  return result.data;
+}
+
+export function parseLessonId(raw: string): string {
+  const result = LessonIdSchema.safeParse(raw);
+  if (!result.success) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Invalid lesson ID "${raw}": ${formatZodError(result.error)}`,
     );
   }
   return result.data;

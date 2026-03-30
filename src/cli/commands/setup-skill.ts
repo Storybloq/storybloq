@@ -32,10 +32,12 @@ export function resolveSkillSourceDir(): string {
 }
 
 // ---------------------------------------------------------------------------
-// PreCompact hook registration
+// Hook registration (ISS-032: hook-driven compaction)
 // ---------------------------------------------------------------------------
 
-const PRECOMPACT_HOOK_COMMAND = "claudestory snapshot --quiet";
+const PRECOMPACT_HOOK_COMMAND = "claudestory session compact-prepare";
+const LEGACY_PRECOMPACT_HOOK_COMMAND = "claudestory snapshot --quiet";
+const SESSIONSTART_HOOK_COMMAND = "claudestory session resume-prompt";
 const STOP_HOOK_COMMAND = "claudestory hook-status";
 
 interface HookEntry {
@@ -70,6 +72,7 @@ async function registerHook(
   hookType: string,
   hookEntry: HookEntry,
   settingsPath?: string,
+  matcher?: string,
 ): Promise<"registered" | "exists" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
 
@@ -135,12 +138,13 @@ async function registerHook(
     }
   }
 
-  // Find existing empty-matcher group with valid hooks array, or create one
+  // Find existing matcher group with valid hooks array, or create one
+  const targetMatcher = matcher ?? "";
   let appended = false;
   for (const group of hookArray) {
     if (typeof group !== "object" || group === null) continue;
     const g = group as MatcherGroup;
-    if (g.matcher === "" && Array.isArray(g.hooks)) {
+    if ((g.matcher ?? "") === targetMatcher && Array.isArray(g.hooks)) {
       g.hooks.push(hookEntry);
       appended = true;
       break;
@@ -148,7 +152,7 @@ async function registerHook(
   }
 
   if (!appended) {
-    hookArray.push({ matcher: "", hooks: [hookEntry] });
+    hookArray.push({ matcher: targetMatcher, hooks: [hookEntry] });
   }
 
   // Atomic write: temp file + rename
@@ -170,19 +174,86 @@ async function registerHook(
 }
 
 /**
- * Registers the PreCompact hook (snapshot before context compaction).
- * Exported for testing — callers can override settingsPath.
+ * Registers the PreCompact hook (session compact preparation).
+ * ISS-032: changed from "snapshot --quiet" to "session-compact-prepare".
  */
 export async function registerPreCompactHook(settingsPath?: string): Promise<"registered" | "exists" | "skipped"> {
   return registerHook("PreCompact", { type: "command", command: PRECOMPACT_HOOK_COMMAND }, settingsPath);
 }
 
 /**
+ * Registers the SessionStart hook (resume prompt after compaction).
+ * ISS-032: matcher "compact" matches source: "compact" in SessionStart hook input.
+ */
+export async function registerSessionStartHook(settingsPath?: string): Promise<"registered" | "exists" | "skipped"> {
+  return registerHook("SessionStart", { type: "command", command: SESSIONSTART_HOOK_COMMAND }, settingsPath, "compact");
+}
+
+/**
  * Registers the Stop hook (status.json writer after every Claude response).
- * Exported for testing — callers can override settingsPath.
  */
 export async function registerStopHook(settingsPath?: string): Promise<"registered" | "exists" | "skipped"> {
   return registerHook("Stop", { type: "command", command: STOP_HOOK_COMMAND, async: true }, settingsPath);
+}
+
+/**
+ * Removes a hook command from settings.json. Used for migration (ISS-032).
+ */
+export async function removeHook(
+  hookType: string,
+  command: string,
+  settingsPath?: string,
+): Promise<"removed" | "not_found" | "skipped"> {
+  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+
+  let raw = "{}";
+  if (existsSync(path)) {
+    try {
+      raw = await readFile(path, "utf-8");
+    } catch {
+      return "skipped";
+    }
+  }
+
+  let settings: Record<string, unknown>;
+  try {
+    settings = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return "skipped";
+  } catch {
+    return "skipped";
+  }
+
+  if (!("hooks" in settings) || typeof settings.hooks !== "object" || settings.hooks === null) return "not_found";
+  const hooks = settings.hooks as Record<string, unknown>;
+  if (!(hookType in hooks) || !Array.isArray(hooks[hookType])) return "not_found";
+
+  const hookArray = hooks[hookType] as unknown[];
+  let removed = false;
+
+  for (const group of hookArray) {
+    if (typeof group !== "object" || group === null) continue;
+    const g = group as MatcherGroup;
+    if (!Array.isArray(g.hooks)) continue;
+    const before = g.hooks.length;
+    g.hooks = g.hooks.filter((entry) => !isHookWithCommand(entry, command));
+    if (g.hooks.length < before) removed = true;
+  }
+
+  if (!removed) return "not_found";
+
+  // Atomic write
+  const tmpPath = `${path}.${process.pid}.tmp`;
+  try {
+    const dir = dirname(path);
+    await mkdir(dir, { recursive: true });
+    await writeFile(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+    await rename(tmpPath, path);
+  } catch {
+    try { await unlink(tmpPath); } catch { /* ignore */ }
+    return "skipped";
+  }
+
+  return "removed";
 }
 
 // ---------------------------------------------------------------------------
@@ -289,28 +360,41 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
     log("  claude mcp add claudestory -s user -- claudestory --mcp");
   }
 
-  // PreCompact hook registration
+  // Hook registration (ISS-032: hook-driven compaction)
   if (cliInPath && !skipHooks) {
-    const result = await registerPreCompactHook();
-    switch (result) {
+    // Migrate: remove legacy snapshot hook if present
+    const legacyRemoved = await removeHook("PreCompact", LEGACY_PRECOMPACT_HOOK_COMMAND);
+    if (legacyRemoved === "removed") {
+      log("  Removed legacy PreCompact hook (snapshot --quiet)");
+    }
+
+    // PreCompact hook
+    const precompactResult = await registerPreCompactHook();
+    switch (precompactResult) {
       case "registered":
-        log("  PreCompact hook registered — snapshots auto-taken before context compaction");
+        log("  PreCompact hook registered — session compact preparation before context compaction");
         break;
       case "exists":
         log("  PreCompact hook already configured");
         break;
       case "skipped":
-        // Error already logged by registerPreCompactHook
         break;
     }
-  } else if (!cliInPath) {
-    // Hook registration skipped because CLI not in path — already logged above
-  } else if (skipHooks) {
-    log("  Hook registration skipped (--skip-hooks)");
-  }
 
-  // Stop hook registration
-  if (cliInPath && !skipHooks) {
+    // SessionStart hook (compact matcher)
+    const sessionStartResult = await registerSessionStartHook();
+    switch (sessionStartResult) {
+      case "registered":
+        log("  SessionStart hook registered — resume prompt after compaction");
+        break;
+      case "exists":
+        log("  SessionStart hook already configured");
+        break;
+      case "skipped":
+        break;
+    }
+
+    // Stop hook
     const stopResult = await registerStopHook();
     switch (stopResult) {
       case "registered":
@@ -320,13 +404,12 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
         log("  Stop hook already configured");
         break;
       case "skipped":
-        // Error already logged by registerHook
         break;
     }
   } else if (!cliInPath) {
     // Hook registration skipped because CLI not in path — already logged above
   } else if (skipHooks) {
-    // Hook registration skipped — already logged by PreCompact block above
+    log("  Hook registration skipped (--skip-hooks)");
   }
 
   log("");

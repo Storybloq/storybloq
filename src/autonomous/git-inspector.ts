@@ -99,6 +99,97 @@ export async function gitDiffCachedNames(cwd: string): Promise<GitResult<string[
   );
 }
 
+/**
+ * Stash dirty tracked files with a descriptive message.
+ * Returns the stash commit hash (stable identifier — won't shift if other stashes are created).
+ */
+export async function gitStash(cwd: string, message: string): Promise<GitResult<string>> {
+  // Push the stash
+  const pushResult = await git(cwd, ["stash", "push", "-m", message], () => undefined);
+  if (!pushResult.ok) return { ok: false, reason: pushResult.reason, message: pushResult.message };
+
+  // Capture the commit hash of the stash we just created (it's at stash@{0} right now)
+  const hashResult = await git(cwd, ["rev-parse", "stash@{0}"], (out) => out.trim());
+  if (!hashResult.ok) {
+    // Stash was created but we can't identify it — try to find by message, or pop it to restore workspace
+    const listResult = await git(cwd, ["stash", "list", "--format=%gd %s"], (out) =>
+      out.split("\n").filter(l => l.includes(message)),
+    );
+    if (listResult.ok && listResult.data.length > 0) {
+      // Found by message — extract ref from first match
+      const ref = listResult.data[0]!.split(" ")[0]!;
+      const refHash = await git(cwd, ["rev-parse", ref], (out) => out.trim());
+      if (refHash.ok) return { ok: true, data: refHash.data };
+    }
+    // Can't identify — do NOT pop blindly (could pop wrong stash if concurrent operations)
+    return { ok: false, reason: "stash_hash_failed", message: "Stash created but could not be identified. Run `git stash list` to find and pop it manually." };
+  }
+
+  return { ok: true, data: hashResult.data };
+}
+
+/**
+ * Pop a stash entry by commit hash. Finds the stash ref matching the hash,
+ * then pops it. Falls back to simple `git stash pop` if no hash provided.
+ */
+export async function gitStashPop(cwd: string, commitHash?: string): Promise<GitResult<void>> {
+  if (!commitHash) {
+    return git(cwd, ["stash", "pop"], () => undefined);
+  }
+
+  // Find the stash ref that matches this commit hash
+  const listResult = await git(cwd, ["stash", "list", "--format=%gd %H"], (out) =>
+    out.split("\n").filter(l => l.length > 0).map(l => {
+      const [ref, hash] = l.split(" ", 2);
+      return { ref: ref!, hash: hash! };
+    }),
+  );
+  if (!listResult.ok) {
+    // Cannot list stashes — do NOT fall back to git stash pop (might pop wrong entry)
+    return { ok: false, reason: "stash_list_failed", message: `Cannot list stash entries to find ${commitHash}. Run \`git stash list\` and pop manually.` };
+  }
+
+  const match = listResult.data.find(e => e.hash === commitHash);
+  if (!match) {
+    return { ok: false, reason: "stash_not_found", message: `No stash entry with commit hash ${commitHash}` };
+  }
+
+  return git(cwd, ["stash", "pop", match.ref], () => undefined);
+}
+
+/** List files changed in a specific commit (for ISS-046 early-commit detection). */
+export async function gitDiffTreeNames(cwd: string, commitHash: string): Promise<GitResult<string[]>> {
+  return git(cwd, ["diff-tree", "--name-only", "--no-commit-id", "-r", commitHash], (out) =>
+    out.split("\n").filter((l) => l.trim().length > 0),
+  );
+}
+
+// Strict ref format: hex SHA (short or full) or HEAD. Rejects option injection (leading -)
+const SAFE_REF = /^[0-9a-f]{4,40}$/i;
+
+/** Git log between two refs (oneline), capped at limit. Best-effort. */
+export async function gitLogRange(
+  cwd: string,
+  from: string | null,
+  to: string | null,
+  limit = 20,
+): Promise<GitResult<string[]>> {
+  // Validate refs to prevent option injection from corrupted session state
+  if (from && !SAFE_REF.test(from)) {
+    return { ok: false, reason: "invalid_ref", message: `Invalid git ref: ${from}` };
+  }
+  if (to && !SAFE_REF.test(to)) {
+    return { ok: false, reason: "invalid_ref", message: `Invalid git ref: ${to}` };
+  }
+  // Require both from and to for a meaningful session range
+  if (!from || !to) {
+    return { ok: true, data: [] };
+  }
+  return git(cwd, ["log", "--oneline", `-${limit}`, `${from}..${to}`], (out) =>
+    out.split("\n").filter((l) => l.trim().length > 0),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

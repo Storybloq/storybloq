@@ -28,12 +28,14 @@ async function runCli(): Promise<void> {
     registerRecapCommand,
     registerExportCommand,
     registerNoteCommand,
+    registerLessonCommand,
     registerRecommendCommand,
     registerReferenceCommand,
     registerSelftestCommand,
     registerSetupSkillCommand,
     registerHookStatusCommand,
     registerConfigCommand,
+    registerSessionCommand,
   } = await import("./register.js");
 
   // Version injected at build time by tsup define
@@ -75,6 +77,7 @@ async function runCli(): Promise<void> {
   cli = registerTicketCommand(cli);
   cli = registerIssueCommand(cli);
   cli = registerNoteCommand(cli);
+  cli = registerLessonCommand(cli);
   cli = registerHandoverCommand(cli);
   cli = registerBlockerCommand(cli);
   cli = registerValidateCommand(cli);
@@ -87,6 +90,7 @@ async function runCli(): Promise<void> {
   cli = registerSetupSkillCommand(cli);
   cli = registerHookStatusCommand(cli);
   cli = registerConfigCommand(cli);
+  cli = registerSessionCommand(cli);
 
   function handleUnexpectedError(err: unknown): void {
     if (err instanceof HandledError) return;

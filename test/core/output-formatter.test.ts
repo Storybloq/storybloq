@@ -185,6 +185,39 @@ describe("formatStatus", () => {
     expect(parsed.data.totalTickets).toBe(2);
     expect(parsed.data.completeTickets).toBe(1);
   });
+
+  it("JSON includes isEmptyScaffold: true for empty scaffold", () => {
+    const state = makeState();
+    const json = formatStatus(state, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.data.isEmptyScaffold).toBe(true);
+  });
+
+  it("JSON includes isEmptyScaffold: false for populated project", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const json = formatStatus(state, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.data.isEmptyScaffold).toBe(false);
+  });
+
+  it("markdown includes Getting Started section for empty scaffold", () => {
+    const state = makeState();
+    const md = formatStatus(state, "md");
+    expect(md).toContain("## Getting Started");
+    expect(md).toContain("no tickets, issues, or handovers yet");
+  });
+
+  it("markdown excludes Getting Started section for populated project", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const md = formatStatus(state, "md");
+    expect(md).not.toContain("## Getting Started");
+  });
 });
 
 describe("formatPhaseList", () => {
@@ -484,6 +517,8 @@ describe("all format functions produce valid JSON", () => {
 });
 
 describe("formatRecommendations", () => {
+  const populatedState = makeState({ tickets: [makeTicket({ id: "T-001" })] });
+
   it("markdown numbered list with reason lines", () => {
     const result: RecommendResult = {
       recommendations: [
@@ -492,7 +527,7 @@ describe("formatRecommendations", () => {
       ],
       totalCandidates: 2,
     };
-    const md = formatRecommendations(result, "md");
+    const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("# Recommendations");
     expect(md).toContain("1. **ISS-001** (issue)");
     expect(md).toContain("2. **T-001** (ticket)");
@@ -500,10 +535,19 @@ describe("formatRecommendations", () => {
     expect(md).toContain("_In-progress_");
   });
 
-  it("empty → 'No recommendations' message", () => {
+  it("empty + populated → 'complete or blocked' message", () => {
     const result: RecommendResult = { recommendations: [], totalCandidates: 0 };
-    const md = formatRecommendations(result, "md");
+    const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("No recommendations");
+    expect(md).toContain("complete or blocked");
+  });
+
+  it("empty + empty scaffold → setup message", () => {
+    const result: RecommendResult = { recommendations: [], totalCandidates: 0 };
+    const scaffoldState = makeState();
+    const md = formatRecommendations(result, scaffoldState, "md");
+    expect(md).toContain("No recommendations yet");
+    expect(md).toContain("/story setup flow");
   });
 
   it("JSON envelope with recommendations + totalCandidates", () => {
@@ -513,11 +557,20 @@ describe("formatRecommendations", () => {
       ],
       totalCandidates: 5,
     };
-    const json = formatRecommendations(result, "json");
+    const json = formatRecommendations(result, populatedState, "json");
     const parsed = JSON.parse(json);
     expect(parsed.version).toBe(1);
     expect(parsed.data.recommendations).toHaveLength(1);
     expect(parsed.data.totalCandidates).toBe(5);
+    expect(parsed.data.isEmptyScaffold).toBe(false);
+  });
+
+  it("JSON envelope includes isEmptyScaffold: true for scaffold", () => {
+    const result: RecommendResult = { recommendations: [], totalCandidates: 0 };
+    const scaffoldState = makeState();
+    const json = formatRecommendations(result, scaffoldState, "json");
+    const parsed = JSON.parse(json);
+    expect(parsed.data.isEmptyScaffold).toBe(true);
   });
 
   it("footer shows 'Showing X of Y' when truncated", () => {
@@ -527,7 +580,7 @@ describe("formatRecommendations", () => {
       ],
       totalCandidates: 8,
     };
-    const md = formatRecommendations(result, "md");
+    const md = formatRecommendations(result, populatedState, "md");
     expect(md).toContain("Showing 1 of 8 candidates.");
   });
 });

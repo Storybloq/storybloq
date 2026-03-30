@@ -33,6 +33,17 @@ export const NoteIdSchema = z
   .string()
   .regex(NOTE_ID_REGEX, "Note ID must match N-NNN");
 
+// --- Lesson enums ---
+
+export const LESSON_STATUSES = ["active", "deprecated", "superseded"] as const;
+export type LessonStatus = (typeof LESSON_STATUSES)[number];
+export const LESSON_SOURCES = ["review", "correction", "postmortem", "manual"] as const;
+export type LessonSource = (typeof LESSON_SOURCES)[number];
+export const LESSON_ID_REGEX = /^L-\d+$/;
+export const LessonIdSchema = z
+  .string()
+  .regex(LESSON_ID_REGEX, "Lesson ID must match L-NNN");
+
 // --- Output/error types ---
 
 export const OUTPUT_FORMATS = ["json", "md"] as const;

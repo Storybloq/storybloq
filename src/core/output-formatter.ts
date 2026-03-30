@@ -2,6 +2,7 @@ import type { OutputFormat, ErrorCode } from "../models/types.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { Note } from "../models/note.js";
+import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
@@ -10,6 +11,10 @@ import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
 import type { SelftestResult } from "../cli/commands/selftest.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
+
+/** SKILL PROTOCOL: SKILL.md Step 2b matches this literal string. Do not change without updating SKILL.md. */
+export const EMPTY_SCAFFOLD_HEADING = "## Getting Started";
+
 // --- Exit Codes ---
 
 export const ExitCode = {
@@ -117,7 +122,10 @@ export function formatStatus(
     openIssues: state.openIssueCount,
     activeNotes: state.activeNoteCount,
     archivedNotes: state.archivedNoteCount,
+    activeLessons: state.activeLessonCount,
+    deprecatedLessons: state.deprecatedLessonCount,
     handovers: state.handoverFilenames.length,
+    isEmptyScaffold: state.isEmptyScaffold,
     phases: phases.map((p) => ({
       id: p.phase.id,
       name: p.phase.name,
@@ -136,6 +144,7 @@ export function formatStatus(
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
     `Issues: ${state.openIssueCount} open`,
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
+    `Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`,
     `Handovers: ${state.handoverFilenames.length}`,
     "",
     "## Phases",
@@ -145,6 +154,14 @@ export function formatStatus(
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
     const summary = p.phase.summary ?? truncate(p.phase.description, 80);
     lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) — ${escapeMarkdownInline(summary)}`);
+  }
+
+  if (state.isEmptyScaffold) {
+    lines.push("");
+    lines.push(EMPTY_SCAFFOLD_HEADING);
+    lines.push("");
+    lines.push("This project has been initialized but has no tickets, issues, or handovers yet.");
+    lines.push("Run the /story setup flow to analyze your project and create an initial roadmap.");
   }
 
   return lines.join("\n");
@@ -553,6 +570,105 @@ export function formatNoteDeleteResult(
   return `Deleted note ${id}.`;
 }
 
+// --- Lesson formatters ---
+
+export function formatLesson(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+
+  const statusBadge = lesson.status !== "active" ? ` (${lesson.status})` : "";
+  const lines: string[] = [
+    `# ${escapeMarkdownInline(lesson.title)}${statusBadge}`,
+    "",
+    `Status: ${lesson.status} | Source: ${lesson.source} | Reinforcements: ${lesson.reinforcements}`,
+  ];
+  if (lesson.tags.length > 0) {
+    lines.push(`Tags: ${lesson.tags.join(", ")}`);
+  }
+  lines.push(`Created: ${lesson.createdDate} | Updated: ${lesson.updatedDate} | Last validated: ${lesson.lastValidated}`);
+  if (lesson.supersedes) {
+    lines.push(`Supersedes: ${lesson.supersedes}`);
+  }
+  lines.push("", "## Content", "", lesson.content);
+  if (lesson.context) {
+    lines.push("", "## Context", "", lesson.context);
+  }
+  return lines.join("\n");
+}
+
+export function formatLessonList(
+  lessons: readonly Lesson[],
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lessons), null, 2);
+  }
+  if (lessons.length === 0) return "No lessons found.";
+  const lines: string[] = [];
+  for (const l of lessons) {
+    const status = l.status === "active" ? "[ ]" : "[x]";
+    const reinforced = l.reinforcements > 0 ? ` (×${l.reinforcements})` : "";
+    const tagInfo = l.tags.length > 0 ? ` [${l.tags.join(", ")}]` : "";
+    lines.push(`${status} ${l.id}: ${escapeMarkdownInline(l.title)}${reinforced}${tagInfo}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatLessonDigest(
+  digest: string,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ digest }), null, 2);
+  }
+  if (!digest) return "No active lessons.";
+  return digest;
+}
+
+export function formatLessonCreateResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Created lesson ${lesson.id}: ${lesson.title}`;
+}
+
+export function formatLessonUpdateResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Updated lesson ${lesson.id}: ${lesson.title}`;
+}
+
+export function formatLessonReinforceResult(
+  lesson: Lesson,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(lesson), null, 2);
+  }
+  return `Reinforced lesson ${lesson.id}: ${lesson.title} (×${lesson.reinforcements})`;
+}
+
+export function formatLessonDeleteResult(
+  id: string,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ id, deleted: true }), null, 2);
+  }
+  return `Deleted lesson ${id}.`;
+}
+
 export function formatError(
   code: ErrorCode,
   message: string,
@@ -748,6 +864,24 @@ export function formatRecap(
           lines.push(`- ${n.id}: updated (${n.changedFields.join(", ")})`);
         }
       }
+
+      // Lesson changes
+      if (changes.lessons && (changes.lessons.added.length > 0 || changes.lessons.removed.length > 0 || changes.lessons.updated.length > 0 || changes.lessons.reinforced.length > 0)) {
+        lines.push("");
+        lines.push("## Lessons");
+        for (const l of changes.lessons.added) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — **new**`);
+        }
+        for (const l of changes.lessons.removed) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — removed`);
+        }
+        for (const l of changes.lessons.updated) {
+          lines.push(`- ${l.id}: updated (${l.changedFields.join(", ")})`);
+        }
+        for (const l of changes.lessons.reinforced) {
+          lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)} — reinforced (${l.from} → ${l.to})`);
+        }
+      }
     }
   }
 
@@ -935,6 +1069,13 @@ function formatFullExport(
           status: n.status,
           tags: n.tags,
         })),
+        lessons: state.lessons.filter((l) => l.status === "active").map((l) => ({
+          id: l.id,
+          title: l.title,
+          content: l.content,
+          tags: l.tags,
+          reinforcements: l.reinforcements,
+        })),
         blockers: state.roadmap.blockers.map((b) => ({
           name: b.name,
           cleared: isBlockerCleared(b),
@@ -952,6 +1093,7 @@ function formatFullExport(
   lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
   lines.push(`Issues: ${state.openIssueCount} open`);
   lines.push(`Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`);
+  lines.push(`Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`);
 
   lines.push("");
   lines.push("## Phases");
@@ -992,6 +1134,17 @@ function formatFullExport(
     }
   }
 
+  const activeLessons = state.lessons.filter((l) => l.status === "active");
+  if (activeLessons.length > 0) {
+    lines.push("");
+    lines.push("## Lessons");
+    for (const l of activeLessons) {
+      const reinforced = l.reinforcements > 0 ? ` (×${l.reinforcements})` : "";
+      const tagInfo = l.tags.length > 0 ? ` [${l.tags.join(", ")}]` : "";
+      lines.push(`- ${l.id}: ${escapeMarkdownInline(l.title)}${reinforced}${tagInfo}`);
+    }
+  }
+
   const blockers = state.roadmap.blockers;
   if (blockers.length > 0) {
     lines.push("");
@@ -1024,7 +1177,11 @@ function hasAnyChanges(diff: SnapshotDiff): boolean {
     (diff.notes?.removed.length ?? 0) > 0 ||
     (diff.notes?.updated.length ?? 0) > 0 ||
     (diff.handovers?.added.length ?? 0) > 0 ||
-    (diff.handovers?.removed.length ?? 0) > 0
+    (diff.handovers?.removed.length ?? 0) > 0 ||
+    (diff.lessons?.added.length ?? 0) > 0 ||
+    (diff.lessons?.removed.length ?? 0) > 0 ||
+    (diff.lessons?.updated.length ?? 0) > 0 ||
+    (diff.lessons?.reinforced.length ?? 0) > 0
   );
 }
 
@@ -1156,13 +1313,17 @@ export function formatReference(
 
 export function formatRecommendations(
   result: RecommendResult,
+  state: ProjectState,
   format: OutputFormat,
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(result), null, 2);
+    return JSON.stringify(successEnvelope({ ...result, isEmptyScaffold: state.isEmptyScaffold }), null, 2);
   }
 
   if (result.recommendations.length === 0) {
+    if (state.isEmptyScaffold) {
+      return "No recommendations yet — this project needs tickets and phases. Run the /story setup flow to get started.";
+    }
     return "No recommendations — all work is complete or blocked.";
   }
 

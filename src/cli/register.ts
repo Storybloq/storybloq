@@ -14,6 +14,7 @@ import {
   parseTicketId,
   parseIssueId,
   parseNoteId,
+  parseLessonId,
   normalizeArrayOption,
   normalizeTags,
   readStdinContent,
@@ -54,6 +55,17 @@ import {
   handleNoteUpdate,
   handleNoteDelete,
 } from "./commands/note.js";
+import {
+  handleLessonList,
+  handleLessonGet,
+  handleLessonDigest,
+  handleLessonCreate,
+  handleLessonUpdate,
+  handleLessonReinforce,
+  handleLessonDelete,
+  LESSON_STATUSES,
+  LESSON_SOURCES,
+} from "./commands/lesson.js";
 import { handleRecommend } from "./commands/recommend.js";
 import {
   handlePhaseList,
@@ -1862,6 +1874,372 @@ export function registerRecommendCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// lesson
+// ---------------------------------------------------------------------------
+
+export function registerLessonCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "lesson",
+    "Manage lessons",
+    (y) =>
+      y
+        .command(
+          "list",
+          "List lessons",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("status", {
+                  type: "string",
+                  choices: [...LESSON_STATUSES],
+                  describe: "Filter by status",
+                })
+                .option("tag", {
+                  type: "string",
+                  describe: "Filter by tag",
+                })
+                .option("source", {
+                  type: "string",
+                  choices: [...LESSON_SOURCES],
+                  describe: "Filter by source",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) =>
+              handleLessonList(
+                {
+                  status: argv.status as string | undefined,
+                  tag: argv.tag as string | undefined,
+                  source: argv.source as string | undefined,
+                },
+                ctx,
+              ),
+            );
+          },
+        )
+        .command(
+          "get <id>",
+          "Get a lesson",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", {
+                type: "string",
+                demandOption: true,
+                describe: "Lesson ID (e.g. L-001)",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseLessonId(argv.id as string);
+            await runReadCommand(format, (ctx) => handleLessonGet(id, ctx));
+          },
+        )
+        .command(
+          "digest",
+          "Compiled ranked digest of active lessons",
+          (y2) => addFormatOption(y2),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleLessonDigest(ctx));
+          },
+        )
+        .command(
+          "create",
+          "Create a lesson",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("title", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Lesson title",
+                })
+                .option("content", {
+                  type: "string",
+                  describe: "Lesson content (the actionable rule)",
+                })
+                .option("context", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "What happened that produced this lesson",
+                })
+                .option("source", {
+                  type: "string",
+                  demandOption: true,
+                  choices: [...LESSON_SOURCES],
+                  describe: "Lesson source",
+                })
+                .option("tags", {
+                  type: "array",
+                  describe: "Tags for the lesson",
+                })
+                .option("supersedes", {
+                  type: "string",
+                  describe: "ID of lesson this supersedes",
+                })
+                .option("stdin", {
+                  type: "boolean",
+                  describe: "Read content from stdin",
+                })
+                .conflicts("content", "stdin")
+                .check((argv) => {
+                  if (!argv.content && !argv.stdin) {
+                    throw new Error(
+                      "Specify either --content or --stdin",
+                    );
+                  }
+                  return true;
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            try {
+              let content: string;
+              if (argv.stdin) {
+                content = await readStdinContent();
+              } else {
+                content = argv.content as string;
+              }
+              const result = await handleLessonCreate(
+                {
+                  title: argv.title as string,
+                  content,
+                  context: argv.context as string,
+                  source: argv.source as string,
+                  tags: argv.tags as string[] | undefined,
+                  supersedes: argv.supersedes as string | undefined ?? null,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "update <id>",
+          "Update a lesson",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Lesson ID (e.g. L-001)",
+                })
+                .option("title", {
+                  type: "string",
+                  describe: "New title",
+                })
+                .option("content", {
+                  type: "string",
+                  describe: "New content",
+                })
+                .option("context", {
+                  type: "string",
+                  describe: "New context",
+                })
+                .option("tags", {
+                  type: "array",
+                  describe: "New tags (replaces existing)",
+                })
+                .option("clear-tags", {
+                  type: "boolean",
+                  describe: "Clear all tags",
+                })
+                .option("status", {
+                  type: "string",
+                  choices: [...LESSON_STATUSES],
+                  describe: "New status",
+                })
+                .option("stdin", {
+                  type: "boolean",
+                  describe: "Read content from stdin",
+                })
+                .conflicts("content", "stdin")
+                .conflicts("tags", "clear-tags"),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseLessonId(argv.id as string);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            let content: string | undefined;
+            if (argv.stdin) {
+              content = await readStdinContent();
+            } else {
+              content = argv.content as string | undefined;
+            }
+
+            try {
+              const result = await handleLessonUpdate(
+                id,
+                {
+                  title: argv.title as string | undefined,
+                  content,
+                  context: argv.context as string | undefined,
+                  tags: argv.tags as string[] | undefined,
+                  clearTags: argv["clear-tags"] as boolean | undefined,
+                  status: argv.status as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "reinforce <id>",
+          "Reinforce a lesson — increment reinforcement count and update lastValidated",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", {
+                type: "string",
+                demandOption: true,
+                describe: "Lesson ID (e.g. L-001)",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseLessonId(argv.id as string);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleLessonReinforce(id, format, root);
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "delete <id>",
+          "Delete a lesson",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Lesson ID (e.g. L-001)",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseLessonId(argv.id as string);
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError("not_found", "No .story/ project found.", format),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleLessonDelete(id, format, root);
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .demandCommand(1, "Specify a lesson subcommand: list, get, digest, create, update, reinforce, delete"),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // selftest
 // ---------------------------------------------------------------------------
 
@@ -1996,5 +2374,91 @@ export function registerConfigCommand(yargs: Argv): Argv {
         },
       )
       .demandCommand(1, "Specify a config subcommand. Available: set-overrides"),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// session (ISS-032: hook-driven compaction)
+// ---------------------------------------------------------------------------
+
+export function registerSessionCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "session",
+    false as unknown as string, // hidden — machine-facing
+    (y) =>
+      y
+        .command(
+          "compact-prepare",
+          "Prepare session for compaction (PreCompact hook)",
+          () => {},
+          async () => {
+            const { handleSessionCompactPrepare } = await import("./commands/session-compact.js");
+            await handleSessionCompactPrepare();
+          },
+        )
+        .command(
+          "resume-prompt",
+          "Output resume instruction after compaction (SessionStart hook)",
+          () => {},
+          async () => {
+            const { handleSessionResumePrompt } = await import("./commands/session-compact.js");
+            await handleSessionResumePrompt();
+          },
+        )
+        .command(
+          "clear-compact [sessionId]",
+          "Clear stale compact marker (admin)",
+          (y2) =>
+            y2.positional("sessionId", {
+              type: "string",
+              describe: "Session ID (optional — scans for compactPending session if omitted)",
+            }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionClearCompact } = await import("./commands/session-compact.js");
+            try {
+              const result = await handleSessionClearCompact(root, argv.sessionId as string | undefined);
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "stop [sessionId]",
+          "Stop an active session (admin)",
+          (y2) =>
+            y2.positional("sessionId", {
+              type: "string",
+              describe: "Session ID (optional — stops active session if omitted)",
+            }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionStop } = await import("./commands/session-compact.js");
+            try {
+              const result = await handleSessionStop(root, argv.sessionId as string | undefined);
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .demandCommand(1, "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact, stop")
+        .strict(),
+    () => {},
   );
 }

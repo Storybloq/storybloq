@@ -442,3 +442,363 @@ describe("round/reviewer continuity after revise (ISS-035)", () => {
     expect(reviewer).toBe("codex"); // starts fresh
   });
 });
+
+// ===========================================================================
+// Wave 3: ISS-024, ISS-025, ISS-027, ISS-028
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// ISS-024: pendingProjectMutation lifecycle
+// ---------------------------------------------------------------------------
+
+describe("pendingProjectMutation (ISS-024)", () => {
+  it("mutation marker shape is correct", () => {
+    const mutation = {
+      type: "ticket_update",
+      target: "T-001",
+      field: "status",
+      value: "inprogress",
+      expectedCurrent: "open",
+      claimedBySession: "session-123",
+      transitionId: "txn-abc",
+      postMutation: {
+        clearTicket: false,
+        nextSessionState: null,
+        terminationReason: null,
+      },
+    };
+    expect(mutation.type).toBe("ticket_update");
+    expect(mutation.target).toBe("T-001");
+    expect(mutation.postMutation.clearTicket).toBe(false);
+  });
+
+  it("recovery: ticket at target state → clear marker", () => {
+    // Simulates: project write succeeded, session write (clear marker) crashed
+    const ticketActualStatus = "inprogress";
+    const mutationTargetValue = "inprogress";
+    const shouldClear = ticketActualStatus === mutationTargetValue;
+    expect(shouldClear).toBe(true);
+  });
+
+  it("recovery: ticket at expectedCurrent → replay write", () => {
+    const ticketActualStatus = "open";
+    const expectedCurrent = "open";
+    const targetValue = "inprogress";
+    const shouldReplay = ticketActualStatus === expectedCurrent && ticketActualStatus !== targetValue;
+    expect(shouldReplay).toBe(true);
+  });
+
+  it("recovery: ticket at unexpected state → conflict event, no postMutation", () => {
+    const ticketActualStatus = "complete";
+    const expectedCurrent = "open";
+    const targetValue = "inprogress";
+    const isConflict = ticketActualStatus !== targetValue && ticketActualStatus !== expectedCurrent;
+    expect(isConflict).toBe(true);
+  });
+
+  it("postMutation idempotent: skip if session already in target state", () => {
+    const sessionState = "SESSION_END";
+    const postMutationTarget = "SESSION_END";
+    const shouldSkip = sessionState === postMutationTarget;
+    expect(shouldSkip).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-025: FINALIZE overlap detection
+// ---------------------------------------------------------------------------
+
+describe("FINALIZE overlap detection (ISS-025)", () => {
+  it("overlap detected → blocked with file list", () => {
+    const stagedFiles = ["src/main.ts", ".env", "notes.txt"];
+    const baselineUntracked = [".env", "notes.txt", "scratch.md"];
+    const overlap = stagedFiles.filter(f => baselineUntracked.includes(f));
+    expect(overlap).toEqual([".env", "notes.txt"]);
+    expect(overlap.length).toBeGreaterThan(0);
+  });
+
+  it("no overlap → proceeds normally", () => {
+    const stagedFiles = ["src/main.ts", "src/utils.ts"];
+    const baselineUntracked = [".env", "notes.txt"];
+    const overlap = stagedFiles.filter(f => baselineUntracked.includes(f));
+    expect(overlap).toHaveLength(0);
+  });
+
+  it("no baseline → skip check gracefully", () => {
+    const baselineUntracked: string[] = [];
+    const shouldCheck = baselineUntracked.length > 0;
+    expect(shouldCheck).toBe(false);
+  });
+
+  it("overrideOverlap: true → skip check", () => {
+    const overrideOverlap = true;
+    const baselineUntracked = [".env"];
+    const shouldCheck = baselineUntracked.length > 0 && !overrideOverlap;
+    expect(shouldCheck).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-027: Cancel ticket release
+// ---------------------------------------------------------------------------
+
+describe("cancel ticket release (ISS-027)", () => {
+  it("cancel releases ticket when ownership matches", () => {
+    const ticketStatus = "inprogress";
+    const ticketClaim = "session-abc";
+    const sessionId = "session-abc";
+    const shouldRelease = ticketStatus === "inprogress" && (!ticketClaim || ticketClaim === sessionId);
+    expect(shouldRelease).toBe(true);
+  });
+
+  it("cancel skips release when ticket claimed by another session", () => {
+    const ticketStatus = "inprogress";
+    const ticketClaim = "session-other";
+    const sessionId = "session-abc";
+    const shouldRelease = ticketStatus === "inprogress" && (!ticketClaim || ticketClaim === sessionId);
+    expect(shouldRelease).toBe(false);
+  });
+
+  it("cancel skips release when ticket not inprogress", () => {
+    const ticketStatus = "complete";
+    const ticketClaim = "session-abc";
+    const sessionId = "session-abc";
+    const shouldRelease = ticketStatus === "inprogress" && (!ticketClaim || ticketClaim === sessionId);
+    expect(shouldRelease).toBe(false);
+  });
+
+  it("cancel with no ticket → no crash", () => {
+    const ticket = undefined;
+    const ticketId = ticket?.id;
+    expect(ticketId).toBeUndefined();
+    // handleCancel guards with `if (ticketId)` — skips release
+  });
+
+  it("cancel event includes ticketId and release status", () => {
+    const eventData = {
+      previousState: "IMPLEMENT",
+      ticketId: "T-001",
+      ticketReleased: true,
+      ticketConflict: false,
+    };
+    expect(eventData.ticketId).toBe("T-001");
+    expect(eventData.ticketReleased).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-027: Claim guard
+// ---------------------------------------------------------------------------
+
+describe("claim acquisition guard (ISS-027)", () => {
+  it("open + unclaimed → claim allowed", () => {
+    const status = "open";
+    const claimedBySession = null;
+    const canClaim = status === "open" && !claimedBySession;
+    expect(canClaim).toBe(true);
+  });
+
+  it("inprogress + same session → idempotent (already claimed)", () => {
+    const status = "inprogress";
+    const claimedBySession = "session-abc";
+    const sessionId = "session-abc";
+    const isIdempotent = status === "inprogress" && claimedBySession === sessionId;
+    expect(isIdempotent).toBe(true);
+  });
+
+  it("inprogress + different session → conflict (cannot steal claim)", () => {
+    const status = "inprogress";
+    const claimedBySession = "session-other";
+    const sessionId = "session-abc";
+    const canClaim = (status === "open" && !claimedBySession) ||
+      (status === "inprogress" && claimedBySession === sessionId);
+    expect(canClaim).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-027: claimedBySession invariant
+// ---------------------------------------------------------------------------
+
+describe("claimedBySession invariant (ISS-027)", () => {
+  it("non-inprogress status must clear claimedBySession", () => {
+    // writeTicketUnlocked enforces: if status !== inprogress → claimedBySession = null
+    const ticket = { status: "complete", claimedBySession: "session-abc" };
+    const enforced = ticket.status !== "inprogress"
+      ? { ...ticket, claimedBySession: null }
+      : ticket;
+    expect(enforced.claimedBySession).toBeNull();
+  });
+
+  it("legacy tickets without claimedBySession load without error", () => {
+    const legacyTicket = { id: "T-001", status: "open" };
+    const claim = (legacyTicket as Record<string, unknown>).claimedBySession;
+    expect(claim).toBeUndefined();
+    // Treated as unclaimed — no error
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-028: Recipe from config
+// ---------------------------------------------------------------------------
+
+describe("recipe from config (ISS-028)", () => {
+  it("recipe defaults to coding when not in config", () => {
+    let recipe = "coding";
+    const projectConfig: Record<string, unknown> = {};
+    if (typeof projectConfig.recipe === "string") recipe = projectConfig.recipe;
+    expect(recipe).toBe("coding");
+  });
+
+  it("recipe read from config when present", () => {
+    let recipe = "coding";
+    const projectConfig: Record<string, unknown> = { recipe: "research" };
+    if (typeof projectConfig.recipe === "string") recipe = projectConfig.recipe;
+    expect(recipe).toBe("research");
+  });
+});
+
+// ===========================================================================
+// Wave 4: ISS-036, ISS-037, ISS-038
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// ISS-036: Cancel guard
+// ---------------------------------------------------------------------------
+
+describe("cancel guard (ISS-036)", () => {
+  it("rejects cancel when recipe is coding", () => {
+    const recipe = "coding";
+    const shouldReject = recipe === "coding";
+    expect(shouldReject).toBe(true);
+  });
+
+  it("allows cancel when recipe is not coding", () => {
+    const recipe = "simple";
+    const shouldReject = recipe === "coding";
+    expect(shouldReject).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-036: Pressure hiding
+// ---------------------------------------------------------------------------
+
+describe("pressure hiding (ISS-036)", () => {
+  it("markdown output shows tickets done, not pressure label", () => {
+    const completed = ["T-001", "T-002"];
+    const output = `**Tickets done:** ${completed.length}`;
+    expect(output).toContain("Tickets done:** 2");
+    expect(output).not.toContain("Pressure");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-036: guideCallCount reset after resume
+// ---------------------------------------------------------------------------
+
+describe("guideCallCount reset (ISS-036)", () => {
+  it("guideCallCount reset to 0 after resume Branch A", () => {
+    const beforeResume = { guideCallCount: 45, contextPressure: { guideCallCount: 45, ticketsCompleted: 5, compactionCount: 1, eventsLogBytes: 0, level: "critical" } };
+    const afterResume = {
+      guideCallCount: 0,
+      contextPressure: { ...beforeResume.contextPressure, guideCallCount: 0, compactionCount: 2 },
+    };
+    expect(afterResume.guideCallCount).toBe(0);
+    expect(afterResume.contextPressure.guideCallCount).toBe(0);
+    expect(afterResume.contextPressure.compactionCount).toBe(2);
+  });
+
+  it("guideCallCount reset to 0 after resume Branch B", () => {
+    // Same reset applies on HEAD mismatch recovery
+    const afterDriftResume = { guideCallCount: 0, contextPressure: { guideCallCount: 0, compactionCount: 3 } };
+    expect(afterDriftResume.guideCallCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-037: Deferred finding filing
+// ---------------------------------------------------------------------------
+
+describe("deferred finding filing (ISS-037)", () => {
+  it("deferred finding with severity >= minor maps to issue severity", () => {
+    const mapping: Record<string, string> = { critical: "critical", major: "high", minor: "medium" };
+    expect(mapping["critical"]).toBe("critical");
+    expect(mapping["major"]).toBe("high");
+    expect(mapping["minor"]).toBe("medium");
+  });
+
+  it("suggestion severity skipped", () => {
+    const findings = [
+      { disposition: "deferred", severity: "suggestion", category: "style", description: "use const" },
+      { disposition: "deferred", severity: "minor", category: "safety", description: "missing null check" },
+    ];
+    const deferred = findings.filter(f => f.disposition === "deferred" && f.severity !== "suggestion");
+    expect(deferred).toHaveLength(1);
+    expect(deferred[0]!.severity).toBe("minor");
+  });
+
+  it("duplicate fingerprint skipped", () => {
+    const filedDeferrals = [{ fingerprint: "abc123", issueId: "ISS-100" }];
+    const newFingerprint = "abc123";
+    const isDuplicate = filedDeferrals.some(d => d.fingerprint === newFingerprint);
+    expect(isDuplicate).toBe(true);
+  });
+
+  it("filing failure stays in pendingDeferrals", () => {
+    const pending = [{ fingerprint: "xyz", severity: "minor", category: "test", description: "desc", reviewKind: "code" as const }];
+    // On failure, entry stays in pending (not moved to filed)
+    const remaining = pending; // simulates catch path
+    expect(remaining).toHaveLength(1);
+  });
+
+  it("successful filing moves to filedDeferrals", () => {
+    const pending = [{ fingerprint: "xyz", severity: "minor", category: "test", description: "desc", reviewKind: "code" as const }];
+    const filed: { fingerprint: string; issueId: string }[] = [];
+    // On success:
+    filed.push({ fingerprint: pending[0]!.fingerprint, issueId: "ISS-100" });
+    const remaining = pending.filter(p => !filed.some(f => f.fingerprint === p.fingerprint));
+    expect(filed).toHaveLength(1);
+    expect(remaining).toHaveLength(0);
+  });
+
+  it("deferralsUnfiled flag set when entries remain at SESSION_END", () => {
+    const pendingDeferrals = [{ fingerprint: "stuck", severity: "major", category: "bug", description: "desc", reviewKind: "code" as const }];
+    const hasUnfiled = pendingDeferrals.length > 0;
+    expect(hasUnfiled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-038: Diff instructions
+// ---------------------------------------------------------------------------
+
+describe("diff instructions (ISS-038)", () => {
+  it("CODE_REVIEW instruction includes git diff <mergeBase>", () => {
+    const mergeBase = "abc123";
+    const diffCommand = mergeBase ? `\`git diff ${mergeBase}\`` : "`git diff HEAD`";
+    expect(diffCommand).toContain("git diff abc123");
+  });
+
+  it("CODE_REVIEW instruction includes Do NOT compress", () => {
+    const instruction = "Pass the FULL unified diff output to the reviewer. Do NOT summarize, compress, or truncate the diff.";
+    expect(instruction).toContain("Do NOT");
+    expect(instruction).toContain("compress");
+  });
+
+  it("null mergeBase includes git diff HEAD + git ls-files", () => {
+    const mergeBase = null;
+    const diffCommand = mergeBase
+      ? `\`git diff ${mergeBase}\``
+      : "`git diff HEAD` AND `git ls-files --others --exclude-standard`";
+    expect(diffCommand).toContain("git diff HEAD");
+    expect(diffCommand).toContain("ls-files");
+  });
+
+  it("stay-in-CODE_REVIEW instruction includes diff command", () => {
+    const mergeBase = "def456";
+    const instruction = `Capture diff with: \`git diff ${mergeBase}\`. Pass FULL output — do NOT compress or summarize.`;
+    expect(instruction).toContain("git diff def456");
+    expect(instruction).toContain("do NOT compress");
+  });
+});

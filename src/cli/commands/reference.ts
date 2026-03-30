@@ -268,6 +268,12 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "claudestory_issue_create", description: "Create issue", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "phase?"] },
   { name: "claudestory_issue_update", description: "Update issue", params: ["id", "status?", "title?", "severity?", "impact?", "resolution?", "components?", "relatedTickets?", "location?", "order?", "phase?"] },
   { name: "claudestory_phase_create", description: "Create phase in roadmap", params: ["id", "name", "label", "description", "summary?", "after?", "atStart?"] },
+  { name: "claudestory_lesson_list", description: "List lessons", params: ["status?", "tag?", "source?"] },
+  { name: "claudestory_lesson_get", description: "Get lesson by ID", params: ["id"] },
+  { name: "claudestory_lesson_digest", description: "Ranked digest of active lessons for context loading" },
+  { name: "claudestory_lesson_create", description: "Create lesson", params: ["title", "content", "context", "source", "tags?", "supersedes?"] },
+  { name: "claudestory_lesson_update", description: "Update lesson", params: ["id", "title?", "content?", "context?", "tags?", "status?", "supersedes?"] },
+  { name: "claudestory_lesson_reinforce", description: "Reinforce lesson — increment count and update lastValidated", params: ["id"] },
   { name: "claudestory_selftest", description: "Integration smoke test — create/update/delete cycle" },
 ];
 

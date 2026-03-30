@@ -320,6 +320,12 @@ claudestory setup-skill
 - **claudestory_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
 - **claudestory_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, order?, phase?) — Update issue
 - **claudestory_phase_create** (id, name, label, description, summary?, after?, atStart?) — Create phase in roadmap
+- **claudestory_lesson_list** (status?, tag?, source?) — List lessons
+- **claudestory_lesson_get** (id) — Get lesson by ID
+- **claudestory_lesson_digest** — Ranked digest of active lessons for context loading
+- **claudestory_lesson_create** (title, content, context, source, tags?, supersedes?) — Create lesson
+- **claudestory_lesson_update** (id, title?, content?, context?, tags?, status?, supersedes?) — Update lesson
+- **claudestory_lesson_reinforce** (id) — Reinforce lesson — increment count and update lastValidated
 - **claudestory_selftest** — Integration smoke test — create/update/delete cycle
 
 ## Common Workflows

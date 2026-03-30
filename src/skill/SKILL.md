@@ -232,6 +232,14 @@ Then ask: **"What would you like to work on?"**
 
 Before writing a handover at the end of a session, run `claudestory snapshot` first. This ensures the next session's recap can show what changed. If `setup-skill` has been run, a PreCompact hook auto-takes snapshots before context compaction.
 
+**Lessons** capture non-obvious process learnings that should carry forward across sessions. At the end of a significant session, review what you learned and create lessons via `claudestory_lesson_create` for:
+- Patterns that worked (or failed) and why
+- Architecture decisions with non-obvious rationale
+- Tool/framework quirks discovered during implementation
+- Process improvements (review workflows, testing strategies)
+
+Don't duplicate what's already in the handover — lessons are structured, tagged, and ranked. Handovers are narrative. Use `claudestory_lesson_digest` to check existing lessons before creating duplicates. Use `claudestory_lesson_reinforce` when an existing lesson proves true again.
+
 ## Ticket and Issue Discipline
 
 **Tickets** are planned work — features, tasks, refactors. They represent intentional, scoped commitments.

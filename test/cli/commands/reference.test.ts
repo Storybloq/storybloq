@@ -85,6 +85,12 @@ describe("reference command", () => {
     expect(names).toContain("claudestory_recap");
     expect(names).toContain("claudestory_snapshot");
     expect(names).toContain("claudestory_export");
+    expect(names).toContain("claudestory_lesson_list");
+    expect(names).toContain("claudestory_lesson_get");
+    expect(names).toContain("claudestory_lesson_digest");
+    expect(names).toContain("claudestory_lesson_create");
+    expect(names).toContain("claudestory_lesson_update");
+    expect(names).toContain("claudestory_lesson_reinforce");
   });
 
   it("reference.md matches handleReference output (drift detection)", () => {

@@ -118,6 +118,7 @@ export {
   formatRecap,
   formatExport,
   formatRecommendations,
+  EMPTY_SCAFFOLD_HEADING,
   type ExitCodeValue,
   type SuccessEnvelope,
   type ErrorEnvelope,

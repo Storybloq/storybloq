@@ -199,6 +199,14 @@ Call these in order:
 5. **Lessons learned** — call `claudestory_lesson_digest` MCP tool
 6. **Recent commits** — run `git log --oneline -10`
 
+## Step 2b: Empty Scaffold Check
+
+After `claudestory_status` returns, check in order:
+
+1. **Integrity guard** — if the response starts with "Warning:" and contains "item(s) skipped due to data integrity issues", this is NOT an empty scaffold. Tell the user to run `claudestory validate`. Continue Step 2/3 normally.
+2. **Scaffold detection** — check BOTH: output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`. If met AND the project has code indicators (git history, package manifest, source files), route to the AI-Assisted Setup Flow (section 1b above) instead of Step 3. Skip remaining Step 2 calls and Step 3.
+3. **Empty without code** — if scaffold detected but no code indicators (truly empty directory), continue to Step 3 which will show: "Your project is set up but has no tickets yet. Would you like me to help you create your first phase and tickets?"
+
 ## Step 3: Present Summary
 
 After loading context, present a concise summary:

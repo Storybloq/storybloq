@@ -11,6 +11,10 @@ import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
 import type { SelftestResult } from "../cli/commands/selftest.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
+
+/** SKILL PROTOCOL: SKILL.md Step 2b matches this literal string. Do not change without updating SKILL.md. */
+export const EMPTY_SCAFFOLD_HEADING = "## Getting Started";
+
 // --- Exit Codes ---
 
 export const ExitCode = {
@@ -121,6 +125,7 @@ export function formatStatus(
     activeLessons: state.activeLessonCount,
     deprecatedLessons: state.deprecatedLessonCount,
     handovers: state.handoverFilenames.length,
+    isEmptyScaffold: state.isEmptyScaffold,
     phases: phases.map((p) => ({
       id: p.phase.id,
       name: p.phase.name,
@@ -149,6 +154,14 @@ export function formatStatus(
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
     const summary = p.phase.summary ?? truncate(p.phase.description, 80);
     lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) — ${escapeMarkdownInline(summary)}`);
+  }
+
+  if (state.isEmptyScaffold) {
+    lines.push("");
+    lines.push(EMPTY_SCAFFOLD_HEADING);
+    lines.push("");
+    lines.push("This project has been initialized but has no tickets, issues, or handovers yet.");
+    lines.push("Run the /story setup flow to analyze your project and create an initial roadmap.");
   }
 
   return lines.join("\n");
@@ -1300,13 +1313,17 @@ export function formatReference(
 
 export function formatRecommendations(
   result: RecommendResult,
+  state: ProjectState,
   format: OutputFormat,
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(result), null, 2);
+    return JSON.stringify(successEnvelope({ ...result, isEmptyScaffold: state.isEmptyScaffold }), null, 2);
   }
 
   if (result.recommendations.length === 0) {
+    if (state.isEmptyScaffold) {
+      return "No recommendations yet — this project needs tickets and phases. Run the /story setup flow to get started.";
+    }
     return "No recommendations — all work is complete or blocked.";
   }
 

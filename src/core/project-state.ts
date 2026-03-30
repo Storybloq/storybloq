@@ -239,6 +239,22 @@ export class ProjectState {
     return this.leafTickets.filter((t) => t.status !== "complete" && this.isBlocked(t)).length;
   }
 
+  /** True when the project has been initialized but not yet populated with tickets/issues/handovers. */
+  get isEmptyScaffold(): boolean {
+    return (
+      this.tickets.length === 0 &&
+      this.issues.length === 0 &&
+      this.handoverFilenames.length === 0 &&
+      this.isDefaultScaffoldPhases
+    );
+  }
+
+  private get isDefaultScaffoldPhases(): boolean {
+    const { phases } = this.roadmap;
+    if (phases.length === 0) return true;
+    return phases.length === 1 && phases[0]!.id === "p0";
+  }
+
   ticketByID(id: string): Ticket | undefined {
     return this.ticketsByID.get(id);
   }

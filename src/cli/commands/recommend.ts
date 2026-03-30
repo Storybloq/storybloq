@@ -4,5 +4,5 @@ import type { CommandContext, CommandResult } from "../types.js";
 
 export function handleRecommend(ctx: CommandContext, count: number): CommandResult {
   const result = recommend(ctx.state, count);
-  return { output: formatRecommendations(result, ctx.format) };
+  return { output: formatRecommendations(result, ctx.state, ctx.format) };
 }

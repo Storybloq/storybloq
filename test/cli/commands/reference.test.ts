@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { COMMANDS, MCP_TOOLS, handleReference } from "../../../src/cli/commands/reference.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = join(__dirname, "..", "..", "..");
 
 describe("reference command", () => {
   it("handleReference md format produces output", () => {
@@ -94,7 +98,7 @@ describe("reference command", () => {
   });
 
   it("reference.md matches handleReference output (drift detection)", () => {
-    const refPath = join("src", "skill", "reference.md");
+    const refPath = join(PROJECT_ROOT, "src", "skill", "reference.md");
     const onDisk = readFileSync(refPath, "utf-8");
     const generated = handleReference("md") + "\n";
     expect(onDisk).toBe(generated);

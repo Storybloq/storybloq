@@ -132,11 +132,30 @@ function validateParentTicket(parentId: string, ticketId: string, state: Project
   }
 }
 
+/** Build a multiset of error findings keyed by code|entity|message, with message lookup. */
+function buildErrorMultiset(findings: readonly { level: string; code: string; entity: string | null; message: string }[]): { counts: Map<string, number>; messages: Map<string, string> } {
+  const counts = new Map<string, number>();
+  const messages = new Map<string, string>();
+  for (const f of findings) {
+    if (f.level !== "error") continue;
+    const key = `${f.code}|${f.entity ?? ""}|${f.message}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    messages.set(key, f.message);
+  }
+  return { counts, messages };
+}
+
+/** ISS-065: Only block writes that make the project WORSE. Pre-existing errors pass through. */
 function validatePostWriteState(
   candidate: Ticket,
   state: ProjectState,
   isCreate: boolean,
 ): void {
+  // Pre-write validation (current state)
+  const preResult = validateProject(state);
+  const { counts: preErrors } = buildErrorMultiset(preResult.findings);
+
+  // Post-write validation (state with candidate applied)
   const existingTickets = [...state.tickets];
   if (isCreate) {
     existingTickets.push(candidate);
@@ -153,11 +172,19 @@ function validatePostWriteState(
     config: state.config,
     handoverFilenames: [...state.handoverFilenames],
   });
-  const result = validateProject(postState);
-  if (!result.valid) {
-    const errors = result.findings.filter((f) => f.level === "error");
-    const msg = errors.map((f) => f.message).join("; ");
-    throw new CliValidationError("validation_failed", `Write would create invalid state: ${msg}`);
+  const postResult = validateProject(postState);
+  const { counts: postErrors, messages: postMessages } = buildErrorMultiset(postResult.findings);
+
+  // Block only if new errors were introduced (post count > pre count)
+  const newErrors: string[] = [];
+  for (const [key, postCount] of postErrors) {
+    const preCount = preErrors.get(key) ?? 0;
+    if (postCount > preCount) {
+      newErrors.push(postMessages.get(key) ?? key);
+    }
+  }
+  if (newErrors.length > 0) {
+    throw new CliValidationError("validation_failed", `Write would create invalid state: ${newErrors.join("; ")}`);
   }
 }
 

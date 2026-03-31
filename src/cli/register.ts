@@ -25,6 +25,7 @@ import { formatError, ExitCode } from "../core/output-formatter.js";
 // Handler imports — read handlers
 import { handleStatus } from "./commands/status.js";
 import { handleValidate } from "./commands/validate.js";
+import { handleRepair, computeRepairs } from "./commands/repair.js";
 import {
   handleHandoverList,
   handleHandoverLatest,
@@ -119,6 +120,49 @@ export function registerValidateCommand(yargs: Argv): Argv {
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       await runReadCommand(format, handleValidate);
+    },
+  );
+}
+
+export function registerRepairCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "repair",
+    "Fix stale references in .story/ data",
+    (y) => y.option("dry-run", { type: "boolean", default: false, describe: "Show what would be fixed without writing" }),
+    async (argv) => {
+      const dryRun = argv["dry-run"] as boolean;
+      if (dryRun) {
+        await runReadCommand("md", (ctx) => handleRepair(ctx, true));
+      } else {
+        // Write mode: load, compute, write atomically
+        const { withProjectLock, writeTicketUnlocked, writeIssueUnlocked, runTransactionUnlocked } = await import("../core/project-loader.js");
+        const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+        await withProjectLock(root, { strict: false }, async ({ state, warnings }) => {
+          const result = computeRepairs(state, warnings);
+          if (result.error) {
+            writeOutput(result.error);
+            process.exitCode = ExitCode.USER_ERROR;
+            return;
+          }
+          if (result.fixes.length === 0) {
+            writeOutput("No stale references found. Project is clean.");
+            return;
+          }
+          await runTransactionUnlocked(root, async () => {
+            for (const ticket of result.tickets) {
+              await writeTicketUnlocked(ticket, root);
+            }
+            for (const issue of result.issues) {
+              await writeIssueUnlocked(issue, root);
+            }
+          });
+          const lines = [`Fixed ${result.fixes.length} stale reference(s):`, ""];
+          for (const fix of result.fixes) {
+            lines.push(`- ${fix.entity}.${fix.field}: ${fix.description}`);
+          }
+          writeOutput(lines.join("\n"));
+        });
+      }
     },
   );
 }

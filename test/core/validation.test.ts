@@ -115,6 +115,52 @@ describe("validateProject", () => {
     expect(validateProject(state).findings.filter((f) => f.code.includes("supersedes"))).toHaveLength(0);
   });
 
+  it("detects 2-node supersedes cycle (A->B->A)", () => {
+    const state = makeState({
+      lessons: [
+        makeLesson({ id: "L-001", supersedes: "L-002" }),
+        makeLesson({ id: "L-002", supersedes: "L-001" }),
+      ],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "supersedes_cycle")).toBe(true);
+  });
+
+  it("detects 3-node supersedes cycle (A->B->C->A)", () => {
+    const state = makeState({
+      lessons: [
+        makeLesson({ id: "L-001", supersedes: "L-002" }),
+        makeLesson({ id: "L-002", supersedes: "L-003" }),
+        makeLesson({ id: "L-003", supersedes: "L-001" }),
+      ],
+    });
+    expect(validateProject(state).findings.some((f) => f.code === "supersedes_cycle")).toBe(true);
+  });
+
+  it("allows valid supersedes chain (no cycle)", () => {
+    const state = makeState({
+      lessons: [
+        makeLesson({ id: "L-001", supersedes: null }),
+        makeLesson({ id: "L-002", supersedes: "L-001" }),
+        makeLesson({ id: "L-003", supersedes: "L-002" }),
+      ],
+    });
+    expect(validateProject(state).findings.filter((f) => f.code === "supersedes_cycle")).toHaveLength(0);
+  });
+
+  it("flags cycle lessons without affecting non-cycle lessons", () => {
+    const state = makeState({
+      lessons: [
+        makeLesson({ id: "L-001", supersedes: null }),
+        makeLesson({ id: "L-002", supersedes: "L-001" }),
+        makeLesson({ id: "L-003", supersedes: "L-004" }),
+        makeLesson({ id: "L-004", supersedes: "L-003" }),
+      ],
+    });
+    const cycles = validateProject(state).findings.filter((f) => f.code === "supersedes_cycle");
+    expect(cycles.length).toBeGreaterThan(0);
+    expect(cycles.every((f) => f.entity === "L-003" || f.entity === "L-004")).toBe(true);
+  });
+
   it("reports duplicate phase IDs", () => {
     const state = makeState({
       roadmap: makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p1" })]),

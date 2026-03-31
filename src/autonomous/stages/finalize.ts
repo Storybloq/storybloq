@@ -26,10 +26,10 @@ export class FinalizeStage implements WorkflowStage {
         "Code review passed. Time to commit.",
         "",
         ctx.state.ticket ? `1. Update ticket ${ctx.state.ticket.id} status to "complete" in .story/` : "",
-        "2. Stage all changed files (code + .story/ changes)",
+        "2. Stage only the files you created or modified for this ticket (code + .story/ changes). Do NOT use `git add -A` or `git add .`",
         "3. Call me with completedAction: \"files_staged\"",
       ].filter(Boolean).join("\n"),
-      reminders: ["Stage both code changes and .story/ ticket update in the same commit."],
+      reminders: ["Stage both code changes and .story/ ticket update in the same commit. Only stage files related to this ticket."],
       transitionedFrom: ctx.state.previousState ?? undefined,
     };
   }

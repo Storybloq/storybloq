@@ -9,6 +9,7 @@ import type { LoadWarning } from "./errors.js";
 import type { ValidationResult } from "./validation.js";
 import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
+import type { ActiveSessionSummary } from "./session-scan.js";
 import type { SelftestResult } from "../cli/commands/selftest.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
 
@@ -111,6 +112,7 @@ export function fencedBlock(content: string, lang?: string): string {
 export function formatStatus(
   state: ProjectState,
   format: OutputFormat,
+  activeSessions: readonly ActiveSessionSummary[] = [],
 ): string {
   const phases = phasesWithStatus(state);
   const data = {
@@ -132,6 +134,7 @@ export function formatStatus(
       status: p.status,
       leafCount: p.leafCount,
     })),
+    ...(activeSessions.length > 0 ? { activeSessions } : {}),
   };
 
   if (format === "json") {
@@ -154,6 +157,16 @@ export function formatStatus(
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
     const summary = p.phase.summary ?? truncate(p.phase.description, 80);
     lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) — ${escapeMarkdownInline(summary)}`);
+  }
+
+  if (activeSessions.length > 0) {
+    lines.push("");
+    lines.push("## Active Sessions");
+    lines.push("");
+    for (const s of activeSessions) {
+      const ticket = s.ticketId ? `${s.ticketId}: ${escapeMarkdownInline(s.ticketTitle ?? "")}` : "no ticket";
+      lines.push(`- ${s.sessionId.slice(0, 8)}: ${s.state} -- ${ticket} (${s.mode} mode)`);
+    }
   }
 
   if (state.isEmptyScaffold) {

@@ -27,7 +27,17 @@ export type RecommendCategory =
   | "near_complete_umbrella"
   | "phase_momentum"
   | "quick_win"
-  | "open_issue";
+  | "open_issue"
+  | "handover_context"
+  | "debt_trend";
+
+/** Optional inputs for handover context (ISS-018) and debt trend (ISS-019). */
+export interface RecommendOptions {
+  /** Content of the most recent handover file. */
+  readonly latestHandoverContent?: string;
+  /** Number of open issues in the previous snapshot. */
+  readonly previousOpenIssueCount?: number;
+}
 
 export type RecommendItemKind = "ticket" | "issue" | "action";
 
@@ -71,8 +81,10 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
   high_impact_unblock: 4,
   near_complete_umbrella: 5,
   phase_momentum: 6,
-  quick_win: 7,
-  open_issue: 8,
+  debt_trend: 7,
+  quick_win: 8,
+  handover_context: 9,
+  open_issue: 10,
 };
 
 // --- Public API ---
@@ -80,6 +92,7 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
 export function recommend(
   state: ProjectState,
   count: number,
+  options?: RecommendOptions,
 ): RecommendResult {
   const effectiveCount = Math.max(1, Math.min(10, count));
   const dedup = new Map<string, Recommendation>();
@@ -94,6 +107,7 @@ export function recommend(
     () => generatePhaseMomentum(state),
     () => generateQuickWins(state, phaseIndex),
     () => generateOpenIssues(state),
+    () => generateDebtTrend(state, options),
   ];
 
   for (const gen of generators) {
@@ -104,6 +118,9 @@ export function recommend(
       }
     }
   }
+
+  // ISS-018: Handover context boost — tickets referenced in actionable sections get +50
+  applyHandoverBoost(state, dedup, options);
 
   // Phase-distance penalty: tickets in future phases are penalized
   const curPhase = currentPhase(state);
@@ -358,4 +375,111 @@ function sortByPhaseAndOrder(
     if (aPhase !== bPhase) return aPhase - bPhase;
     return a.order - b.order;
   });
+}
+
+// --- ISS-018: Handover context boost ---
+
+const TICKET_ID_RE = /\bT-\d{3}[a-z]?\b/g;
+const ACTIONABLE_HEADING_RE = /^#+\s.*(next|open|remaining|todo|blocked)/im;
+const HANDOVER_BOOST = 50;
+const HANDOVER_BASE_SCORE = 350;
+
+/**
+ * Boost tickets referenced in the latest handover's actionable sections.
+ * Falls back to full-document scan for tickets not already complete/inprogress.
+ */
+function applyHandoverBoost(
+  state: ProjectState,
+  dedup: Map<string, Recommendation>,
+  options?: RecommendOptions,
+): void {
+  if (!options?.latestHandoverContent) return;
+  const content = options.latestHandoverContent;
+
+  // Try to isolate actionable sections (What's Next, Open Items, etc.)
+  let actionableIds = extractTicketIdsFromActionableSections(content);
+
+  // Fallback: full-doc scan, but only boost open tickets
+  if (actionableIds.size === 0) {
+    const allIds = new Set(content.match(TICKET_ID_RE) ?? []);
+    for (const id of allIds) {
+      const ticket = state.ticketByID(id);
+      if (ticket && ticket.status !== "complete" && ticket.status !== "inprogress") {
+        actionableIds.add(id);
+      }
+    }
+  }
+
+  for (const id of actionableIds) {
+    const ticket = state.ticketByID(id);
+    if (!ticket || ticket.status === "complete") continue;
+
+    const existing = dedup.get(id);
+    if (existing) {
+      dedup.set(id, {
+        ...existing,
+        score: existing.score + HANDOVER_BOOST,
+        reason: existing.reason + " (handover context)",
+      });
+    } else {
+      dedup.set(id, {
+        id,
+        kind: "ticket",
+        title: ticket.title,
+        category: "handover_context",
+        reason: "Referenced in latest handover",
+        score: HANDOVER_BASE_SCORE,
+      });
+    }
+  }
+}
+
+function extractTicketIdsFromActionableSections(content: string): Set<string> {
+  const ids = new Set<string>();
+  const lines = content.split("\n");
+  let inActionable = false;
+
+  for (const line of lines) {
+    if (/^#+\s/.test(line)) {
+      inActionable = ACTIONABLE_HEADING_RE.test(line);
+    }
+    if (inActionable) {
+      const matches = line.match(TICKET_ID_RE);
+      if (matches) for (const m of matches) ids.add(m);
+    }
+  }
+  return ids;
+}
+
+// --- ISS-019: Debt trend detection ---
+
+const DEBT_TREND_SCORE = 450;
+const DEBT_GROWTH_THRESHOLD = 0.25;
+const DEBT_ABSOLUTE_MINIMUM = 2;
+
+function generateDebtTrend(
+  state: ProjectState,
+  options?: RecommendOptions,
+): Recommendation[] {
+  if (options?.previousOpenIssueCount == null) return [];
+
+  const currentOpen = state.issues.filter((i) => i.status !== "resolved").length;
+  const previous = options.previousOpenIssueCount;
+  if (previous <= 0) return [];
+
+  const growth = (currentOpen - previous) / previous;
+  const absolute = currentOpen - previous;
+
+  if (growth > DEBT_GROWTH_THRESHOLD && absolute >= DEBT_ABSOLUTE_MINIMUM) {
+    return [{
+      id: "DEBT_TREND",
+      kind: "action",
+      title: "Issue debt growing",
+      category: "debt_trend",
+      reason: `Open issues grew from ${previous} to ${currentOpen} (+${Math.round(growth * 100)}%). Consider triaging or resolving issues before adding features.`,
+      score: DEBT_TREND_SCORE,
+    }];
+  }
+
+  return [];
 }

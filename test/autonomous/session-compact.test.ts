@@ -18,7 +18,7 @@ import {
   readSession,
 } from "../../src/autonomous/session.js";
 import { evaluatePressure } from "../../src/autonomous/context-pressure.js";
-import type { FullSessionState } from "../../src/autonomous/session-types.js";
+import { WORKFLOW_STATES, type FullSessionState } from "../../src/autonomous/session-types.js";
 
 // ---------------------------------------------------------------------------
 // Helper: build a minimal session state
@@ -326,39 +326,38 @@ describe("handleResume HEAD validation", () => {
     expect(branch).toBe("A");
   });
 
-  it("Branch B: HEAD mismatch — full recovery mapping matches production", () => {
-    // Must match the recoveryMapping in guide.ts handleResume Branch B
-    const recoveryMapping: Record<string, string> = {
-      PICK_TICKET: "PICK_TICKET",
-      COMPLETE: "PICK_TICKET",
-      HANDOVER: "PICK_TICKET",
-      PLAN: "PLAN",
-      IMPLEMENT: "PLAN",
-      PLAN_REVIEW: "PLAN",
-      CODE_REVIEW: "PLAN",
-      FINALIZE: "IMPLEMENT",
-    };
+  it("Branch B: HEAD mismatch — recovery mapping covers all resumable states", async () => {
+    // Import the real mapping — no local copy that can diverge
+    // ISS-040: these states are NOT resumable (never in recoveryMapping)
+    const NON_RESUMABLE: ReadonlySet<string> = new Set([
+      "INIT", "LOAD_CONTEXT", "COMPACT", "SESSION_END",
+    ]);
 
-    expect(recoveryMapping["PLAN"]).toBe("PLAN");
-    expect(recoveryMapping["IMPLEMENT"]).toBe("PLAN");
-    expect(recoveryMapping["PLAN_REVIEW"]).toBe("PLAN");
-    expect(recoveryMapping["CODE_REVIEW"]).toBe("PLAN");
-    expect(recoveryMapping["COMPLETE"]).toBe("PICK_TICKET");
-    expect(recoveryMapping["HANDOVER"]).toBe("PICK_TICKET");
-    expect(recoveryMapping["FINALIZE"]).toBe("IMPLEMENT");
+    // The real mapping from guide.ts
+    const { RECOVERY_MAPPING } = await import("../../src/autonomous/guide.js");
+
+    // Every WorkflowState must be in RECOVERY_MAPPING or NON_RESUMABLE — no gaps
+    for (const ws of WORKFLOW_STATES) {
+      const inMapping = ws in RECOVERY_MAPPING;
+      const inNonResumable = NON_RESUMABLE.has(ws);
+      expect(
+        inMapping || inNonResumable,
+        `WorkflowState "${ws}" is neither in RECOVERY_MAPPING nor NON_RESUMABLE`,
+      ).toBe(true);
+      expect(
+        !(inMapping && inNonResumable),
+        `WorkflowState "${ws}" is in BOTH RECOVERY_MAPPING and NON_RESUMABLE`,
+      ).toBe(true);
+    }
   });
 
-  it("Branch B: COMPLETE/HANDOVER route to PICK_TICKET (actionable state)", () => {
-    const recoveryMapping: Record<string, string> = {
-      COMPLETE: "PICK_TICKET",
-      HANDOVER: "PICK_TICKET",
-      PICK_TICKET: "PICK_TICKET",
-      FINALIZE: "IMPLEMENT",
-    };
-
-    expect(recoveryMapping["COMPLETE"]).toBe("PICK_TICKET");
-    expect(recoveryMapping["HANDOVER"]).toBe("PICK_TICKET");
-    expect(recoveryMapping["FINALIZE"]).toBe("IMPLEMENT");
+  it("Branch B: BUILD maps to IMPLEMENT with resetCode", async () => {
+    const { RECOVERY_MAPPING } = await import("../../src/autonomous/guide.js");
+    const build = RECOVERY_MAPPING["BUILD"];
+    expect(build).toBeDefined();
+    expect(build.state).toBe("IMPLEMENT");
+    expect(build.resetPlan).toBe(false);
+    expect(build.resetCode).toBe(true);
   });
 
   it("Branch B: reviews reset on drift to PLAN", () => {

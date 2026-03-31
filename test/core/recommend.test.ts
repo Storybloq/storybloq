@@ -473,4 +473,163 @@ describe("recommend", () => {
     expect(nullPhase).toBeDefined();
     expect(nullPhase!.reason).not.toContain("future phase");
   });
+
+  // --- ISS-018: Handover context boost ---
+
+  it("ticket in handover What's Next gets boosted", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open", type: "chore" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const handover = "## What Was Done\nCompleted T-099.\n\n## What's Next\n- T-001: do this thing\n";
+    // Both T-001 and T-002 appear via quick_win (chore) or phase_momentum
+    const withHandover = recommend(state, 10, { latestHandoverContent: handover });
+    const without = recommend(state, 10);
+    const t1With = withHandover.recommendations.find((r) => r.id === "T-001");
+    const t1Without = without.recommendations.find((r) => r.id === "T-001");
+    expect(t1With).toBeDefined();
+    expect(t1With!.score).toBeGreaterThan(t1Without!.score);
+    expect(t1With!.reason).toContain("handover context");
+  });
+
+  it("complete ticket in handover What Was Done gets no boost", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "complete" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const handover = "## What Was Done\nCompleted T-001.\n\n## What's Next\nNothing specific.";
+    const result = recommend(state, 10, { latestHandoverContent: handover });
+    const t1 = result.recommendations.find((r) => r.id === "T-001");
+    expect(t1).toBeUndefined(); // complete tickets are never recommended
+  });
+
+  it("no handover content = no boost (graceful degradation)", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1", status: "open" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const withHandover = recommend(state, 10, { latestHandoverContent: "## What's Next\n- T-001" });
+    const without = recommend(state, 10);
+    const scoreWith = withHandover.recommendations.find((r) => r.id === "T-001")!.score;
+    const scoreWithout = without.recommendations.find((r) => r.id === "T-001")!.score;
+    expect(scoreWith).toBeGreaterThan(scoreWithout);
+  });
+
+  it("fallback full-doc scan only boosts open tickets", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "inprogress" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    // No actionable heading -- falls back to full-doc scan
+    const handover = "Some notes about T-001 and T-002 progress.";
+    const result = recommend(state, 10, { latestHandoverContent: handover });
+    const t1 = result.recommendations.find((r) => r.id === "T-001");
+    // T-001 (open) should get boost from fallback, T-002 (inprogress) should not
+    expect(t1!.reason).toContain("handover context");
+  });
+
+  // --- ISS-019: Debt trend detection ---
+
+  it("emits debt-trend when open issues grew >25% and >=2 absolute", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+        makeIssue({ id: "ISS-003", status: "open" }),
+        makeIssue({ id: "ISS-004", status: "open" }),
+        makeIssue({ id: "ISS-005", status: "open" }),
+      ],
+    });
+    // Previous: 3 open, now: 5 open = 67% growth, +2 absolute
+    const result = recommend(state, 10, { previousOpenIssueCount: 3 });
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeDefined();
+    expect(trend!.category).toBe("debt_trend");
+    expect(trend!.score).toBe(450);
+  });
+
+  it("no debt-trend when growth is under 25%", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+        makeIssue({ id: "ISS-003", status: "open" }),
+        makeIssue({ id: "ISS-004", status: "open" }),
+      ],
+    });
+    // Previous: 4 open, now: 4 open = 0% growth
+    const result = recommend(state, 10, { previousOpenIssueCount: 4 });
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeUndefined();
+  });
+
+  it("no debt-trend when absolute growth is under 2", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+      ],
+    });
+    // Previous: 1, now: 2 = 100% growth but only +1 absolute
+    const result = recommend(state, 10, { previousOpenIssueCount: 1 });
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeUndefined();
+  });
+
+  it("no debt-trend at exactly 25% growth (strict >)", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+        makeIssue({ id: "ISS-003", status: "open" }),
+        makeIssue({ id: "ISS-004", status: "open" }),
+        makeIssue({ id: "ISS-005", status: "open" }),
+      ],
+    });
+    // Previous: 4, now: 5 = exactly 25% growth, +1 absolute (under min 2)
+    const result = recommend(state, 10, { previousOpenIssueCount: 4 });
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeUndefined();
+  });
+
+  it("debt-trend triggers at 26% growth with >=2 absolute", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+        makeIssue({ id: "ISS-003", status: "open" }),
+        makeIssue({ id: "ISS-004", status: "open" }),
+        makeIssue({ id: "ISS-005", status: "open" }),
+        makeIssue({ id: "ISS-006", status: "open" }),
+        makeIssue({ id: "ISS-007", status: "open" }),
+        makeIssue({ id: "ISS-008", status: "open" }),
+      ],
+    });
+    // Previous: 6, now: 8 = 33% growth, +2 absolute
+    const result = recommend(state, 10, { previousOpenIssueCount: 6 });
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeDefined();
+  });
+
+  it("no debt-trend without previousOpenIssueCount (graceful skip)", () => {
+    const state = makeState({
+      issues: [
+        makeIssue({ id: "ISS-001", status: "open" }),
+        makeIssue({ id: "ISS-002", status: "open" }),
+        makeIssue({ id: "ISS-003", status: "open" }),
+      ],
+    });
+    const result = recommend(state, 10);
+    const trend = result.recommendations.find((r) => r.id === "DEBT_TREND");
+    expect(trend).toBeUndefined();
+  });
 });

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   deriveWorkspaceId,
@@ -39,12 +39,63 @@ import { buildLessonDigest } from "../core/lessons.js";
 import { loadLatestSnapshot } from "../core/snapshot.js";
 import { buildRecap } from "../core/snapshot.js";
 import { nextTickets } from "../core/queries.js";
-import { recommend } from "../core/recommend.js";
+import { recommend, type RecommendOptions } from "../core/recommend.js";
 import {
   handleHandoverLatest,
   handleHandoverCreate,
 } from "../cli/commands/handover.js";
 import type { CommandContext } from "../cli/types.js";
+
+// ---------------------------------------------------------------------------
+// Recovery mapping — exported for test completeness checks (ISS-040)
+// ---------------------------------------------------------------------------
+
+export const RECOVERY_MAPPING: Readonly<Record<string, { state: string; resetPlan: boolean; resetCode: boolean }>> = {
+  PICK_TICKET:    { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+  COMPLETE:       { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+  HANDOVER:       { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+  PLAN:           { state: "PLAN",        resetPlan: true,  resetCode: false },
+  IMPLEMENT:      { state: "PLAN",        resetPlan: true,  resetCode: false },
+  WRITE_TESTS:    { state: "PLAN",        resetPlan: true,  resetCode: false },
+  BUILD:          { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
+  VERIFY:         { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
+  PLAN_REVIEW:    { state: "PLAN",        resetPlan: true,  resetCode: true  },
+  TEST:           { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
+  CODE_REVIEW:    { state: "PLAN",        resetPlan: true,  resetCode: true  },
+  FINALIZE:       { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
+  LESSON_CAPTURE: { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+  ISSUE_SWEEP:    { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+};
+
+// ---------------------------------------------------------------------------
+// Recommend options builder (ISS-018, ISS-019)
+// ---------------------------------------------------------------------------
+
+function buildGuideRecommendOptions(root: string): RecommendOptions {
+  const opts: { latestHandoverContent?: string; previousOpenIssueCount?: number } = {};
+
+  try {
+    const handoversDir = join(root, ".story", "handovers");
+    const files = readdirSync(handoversDir, "utf-8").filter((f: string) => f.endsWith(".md")).sort();
+    if (files.length > 0) {
+      opts.latestHandoverContent = readFileSync(join(handoversDir, files[files.length - 1]), "utf-8");
+    }
+  } catch { /* no handovers */ }
+
+  try {
+    const snapshotsDir = join(root, ".story", "snapshots");
+    const snapFiles = readdirSync(snapshotsDir, "utf-8").filter((f: string) => f.endsWith(".json")).sort();
+    if (snapFiles.length > 0) {
+      const raw = readFileSync(join(snapshotsDir, snapFiles[snapFiles.length - 1]), "utf-8");
+      const snap = JSON.parse(raw) as { issues?: Array<{ status?: string }> };
+      if (snap.issues) {
+        opts.previousOpenIssueCount = snap.issues.filter((i) => i.status !== "resolved").length;
+      }
+    }
+  } catch { /* no snapshots */ }
+
+  return opts;
+}
 
 // ---------------------------------------------------------------------------
 // Pending mutation recovery (ISS-024)
@@ -657,6 +708,24 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         }
       }
 
+      // ISS-043: Check if ticket is claimed by another active session
+      // Skip for review mode — user already has code, claim is irrelevant
+      if (mode !== "review") {
+        const claimId = (ticket as Record<string, unknown>).claimedBySession;
+        if (claimId && typeof claimId === "string" && claimId !== session.sessionId) {
+          const claimingSession = findSessionById(root, claimId);
+          // Block only if claiming session exists, is active, and lease is not expired
+          // TOCTOU: cooperative check — filesystem-based concurrency, sufficient for this use case
+          if (claimingSession && claimingSession.state.status === "active" && !isLeaseExpired(claimingSession.state)) {
+            deleteSession(root, session.sessionId);
+            return guideError(new Error(
+              `Ticket ${args.ticketId} is claimed by active session ${claimId}. ` +
+              `Wait for it to finish or stop it with "claudestory session stop ${claimId}".`,
+            ));
+          }
+        }
+      }
+
       // Determine entry state based on mode
       let entryState: string;
       if (mode === "review") {
@@ -770,8 +839,9 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       candidatesText = "No tickets found.";
     }
 
-    // Also get recommendations
-    const recResult = recommend(projectState, 5);
+    // Also get recommendations (with handover + snapshot context for ISS-018/019)
+    const guideRecOptions = buildGuideRecommendOptions(root);
+    const recResult = recommend(projectState, 5, guideRecOptions);
     let recsText = "";
     if (recResult.recommendations.length > 0) {
       const ticketRecs = recResult.recommendations.filter((r) => r.kind === "ticket");
@@ -1116,22 +1186,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // Branch B: HEAD mismatch (drift during compaction)
   if (expectedHead && headResult.data.hash !== expectedHead) {
     // State-specific recovery routing
-    const recoveryMapping: Record<string, { state: string; resetPlan: boolean; resetCode: boolean }> = {
-      PICK_TICKET:  { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-      COMPLETE:     { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-      HANDOVER:     { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-      PLAN:         { state: "PLAN",        resetPlan: true,  resetCode: false },
-      IMPLEMENT:    { state: "PLAN",        resetPlan: true,  resetCode: false },
-      WRITE_TESTS:  { state: "PLAN",        resetPlan: true,  resetCode: false },  // T-139: baseline stale after HEAD change
-      VERIFY:       { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },  // T-131: reviewed code stale after HEAD drift
-      PLAN_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },
-      TEST:         { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },  // T-128: tests invalidated by HEAD change
-      CODE_REVIEW:  { state: "PLAN",        resetPlan: true,  resetCode: true  },
-      FINALIZE:     { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
-      LESSON_CAPTURE: { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-      ISSUE_SWEEP:  { state: "PICK_TICKET", resetPlan: false, resetCode: false },  // T-128: post-complete, restart sweep
-    };
-    const mapping = recoveryMapping[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
+    const mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
 
     const recoveryReviews = {
       plan: mapping.resetPlan ? [] : info.state.reviews.plan,

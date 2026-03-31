@@ -121,6 +121,9 @@ export function validateProject(state: ProjectState): ValidationResult {
     }
   }
 
+  // Supersedes cycle detection (DFS)
+  detectSupersedesCycles(state, findings);
+
   // Duplicate roadmap phase IDs
   const phaseIDCounts = new Map<string, number>();
   for (const p of state.roadmap.phases) {
@@ -383,6 +386,46 @@ function dfsBlocked(
         dfsBlocked(bid, state, visited, inStack, findings);
       }
     }
+  }
+  inStack.delete(id);
+  visited.add(id);
+}
+
+function detectSupersedesCycles(
+  state: ProjectState,
+  findings: ValidationFinding[],
+): void {
+  const visited = new Set<string>();
+  const inStack = new Set<string>();
+
+  for (const l of state.lessons) {
+    if (l.supersedes == null || visited.has(l.id)) continue;
+    dfsSupersedesChain(l.id, state, visited, inStack, findings);
+  }
+}
+
+function dfsSupersedesChain(
+  id: string,
+  state: ProjectState,
+  visited: Set<string>,
+  inStack: Set<string>,
+  findings: ValidationFinding[],
+): void {
+  if (inStack.has(id)) {
+    findings.push({
+      level: "error",
+      code: "supersedes_cycle",
+      message: `Cycle detected in supersedes chain involving ${id}.`,
+      entity: id,
+    });
+    return;
+  }
+  if (visited.has(id)) return;
+
+  inStack.add(id);
+  const lesson = state.lessonByID(id);
+  if (lesson?.supersedes && lesson.supersedes !== id) {
+    dfsSupersedesChain(lesson.supersedes, state, visited, inStack, findings);
   }
   inStack.delete(id);
   visited.add(id);

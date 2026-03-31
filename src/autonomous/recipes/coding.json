@@ -1,7 +1,7 @@
 {
   "id": "coding",
   "schemaVersion": 2,
-  "pipeline": ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "BUILD", "FINALIZE", "COMPLETE"],
+  "pipeline": ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
   "postComplete": ["LESSON_CAPTURE", "ISSUE_SWEEP"],
   "stages": {
     "PLAN_REVIEW": { "backends": ["codex", "agent"] },

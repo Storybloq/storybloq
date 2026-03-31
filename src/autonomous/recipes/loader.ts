@@ -70,6 +70,7 @@ export function resolveRecipe(
     maxTicketsPerSession?: number;
     compactThreshold?: string;
     reviewBackends?: string[];
+    stages?: Record<string, Record<string, unknown>>;
   },
 ): ResolvedRecipe {
   let raw: RawRecipe;
@@ -92,8 +93,21 @@ export function resolveRecipe(
     ? [...raw.pipeline]
     : [...DEFAULT_PIPELINE];
 
-  // Insert conditional stages
-  const stages = raw.stages ?? {};
+  // Merge stage overrides from project config on top of recipe stages
+  const recipeStages = raw.stages ?? {};
+  const stageOverrides = projectOverrides?.stages ?? {};
+  const stages: Record<string, Record<string, unknown>> = {};
+  for (const [key, value] of Object.entries(recipeStages)) {
+    const override = stageOverrides[key];
+    const safeOverride = override && typeof override === "object" && !Array.isArray(override)
+      ? override as Record<string, unknown> : {};
+    stages[key] = { ...(value as Record<string, unknown>), ...safeOverride };
+  }
+  for (const [key, value] of Object.entries(stageOverrides)) {
+    if (!stages[key] && value && typeof value === "object" && !Array.isArray(value)) {
+      stages[key] = { ...value };
+    }
+  }
 
   // WRITE_TESTS: insert BEFORE IMPLEMENT (TDD — write failing tests first)
   if ((stages.WRITE_TESTS as Record<string, unknown>)?.enabled) {

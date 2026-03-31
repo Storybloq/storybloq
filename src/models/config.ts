@@ -25,6 +25,8 @@ export const ConfigSchema = z
       maxTicketsPerSession: z.number().min(0).optional(),
       compactThreshold: z.string().optional(),
       reviewBackends: z.array(z.string()).optional(),
+      handoverInterval: z.number().min(0).optional(),
+      stages: z.record(z.record(z.unknown())).optional(),
     }).optional(),
   })
   .passthrough();

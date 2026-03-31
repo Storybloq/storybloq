@@ -58,6 +58,7 @@ export interface SessionConfig {
   reviewBackends?: string[];
   mode?: "auto" | "review" | "plan" | "guided";
   handoverInterval?: number;
+  stageOverrides?: Record<string, Record<string, unknown>>;
 }
 
 /** Create a new session directory and write initial state.json. */

@@ -150,6 +150,12 @@ export class PickTicketStage implements WorkflowStage {
       return { action: "retry", instruction: `Issue ${issueId} is ${issue.status}. Pick an open issue.` };
     }
 
+    // Mark issue as inprogress in .story/
+    try {
+      const { handleIssueUpdate } = await import("../../cli/commands/issue.js");
+      await handleIssueUpdate({ id: issueId, status: "inprogress" }, "json", ctx.root);
+    } catch { /* best-effort -- don't block on status update */ }
+
     ctx.updateDraft({
       currentIssue: { id: issue.id, title: issue.title, severity: issue.severity },
       ticket: undefined,

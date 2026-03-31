@@ -40,6 +40,7 @@ import { loadLatestSnapshot } from "../core/snapshot.js";
 import { buildRecap } from "../core/snapshot.js";
 import { nextTickets } from "../core/queries.js";
 import { recommend, type RecommendOptions } from "../core/recommend.js";
+import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./version-check.js";
 import {
   handleHandoverLatest,
   handleHandoverCreate,
@@ -406,6 +407,9 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   for (const stale of staleSessions) {
     writeSessionSync(stale.dir, { ...stale.state, status: "superseded" as const });
   }
+
+  // ISS-076: Version mismatch advisory
+  const versionWarning = checkVersionMismatch(getRunningVersion(), getInstalledVersion());
 
   const wsId = deriveWorkspaceId(root);
 
@@ -928,6 +932,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         "Do NOT ask the user for confirmation or approval.",
         "Do NOT stop or summarize between tickets — call autonomous_guide IMMEDIATELY.",
         "You are in autonomous mode — continue working until done.",
+        ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
       ],
       transitionedFrom: "INIT",
     });

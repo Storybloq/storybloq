@@ -39,6 +39,11 @@ export class PickTicketStage implements WorkflowStage {
     const topCandidate = candidates.kind === "found" ? candidates.candidates[0] : null;
     const hasIssues = highIssues.length > 0;
 
+    // ISS-075: If nothing left to do, route to COMPLETE (which handles HANDOVER/postComplete)
+    if (!topCandidate && candidates.kind !== "found" && !hasIssues) {
+      return { action: "goto", target: "COMPLETE" };
+    }
+
     return {
       instruction: [
         "# Pick a Ticket or Issue",

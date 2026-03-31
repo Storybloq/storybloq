@@ -7,7 +7,7 @@ import type { WorkflowState } from "./session-types.js";
 const TRANSITIONS: Record<WorkflowState, readonly (WorkflowState | "*")[]> = {
   INIT:          ["PICK_TICKET"],         // start does INIT + LOAD_CONTEXT internally
   LOAD_CONTEXT:  ["PICK_TICKET"],         // internal (never seen by Claude)
-  PICK_TICKET:   ["PLAN", "ISSUE_FIX", "SESSION_END"],
+  PICK_TICKET:   ["PLAN", "ISSUE_FIX", "COMPLETE", "SESSION_END"],  // COMPLETE for ISS-075 (nothing left to do)
   PLAN:          ["PLAN_REVIEW"],
   PLAN_REVIEW:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "PLAN_REVIEW", "SESSION_END"],   // approve → IMPLEMENT/WRITE_TESTS, reject → PLAN, stay for next round; SESSION_END for tiered exit
   IMPLEMENT:     ["CODE_REVIEW", "TEST", "COMPLETE"],  // TEST when test stage enabled, COMPLETE for no-op tickets (ISS-069)

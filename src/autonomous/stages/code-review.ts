@@ -76,8 +76,10 @@ export class CodeReviewStage implements WorkflowStage {
 
     const risk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk ?? "low";
     const minRounds = requiredRounds(risk as "low" | "medium" | "high");
+    // ISS-073: Only count unresolved findings (open/contested) as contradictory with approve
     const hasCriticalOrMajor = findings.some(
-      (f) => f.severity === "critical" || f.severity === "major",
+      (f) => (f.severity === "critical" || f.severity === "major") &&
+        f.disposition !== "addressed" && f.disposition !== "deferred",
     );
 
     // Check for PLAN redirect

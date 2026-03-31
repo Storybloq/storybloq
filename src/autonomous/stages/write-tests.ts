@@ -49,6 +49,11 @@ export class WriteTestsStage implements WorkflowStage {
         '```',
         "",
         "Include the exit code and pass/fail counts in your notes.",
+        "",
+        "**If your approved plan requires no code changes** (e.g., the bug is already fixed), update the ticket status to complete in .story/ and report:",
+        '```json',
+        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "no_tests_needed", "notes": "No code changes needed — ticket resolved without implementation." } }`,
+        '```',
       ].join("\n"),
       reminders: [
         "Tests MUST fail — they define unimplemented behavior.",
@@ -60,6 +65,13 @@ export class WriteTestsStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // ISS-069: No-op escape hatch — ticket needs no code changes
+    if (report.completedAction === "no_tests_needed") {
+      ctx.writeState({ writeTestsRetryCount: 0 });
+      ctx.appendEvent("write_tests", { result: "skipped", reason: "no_changes_needed" });
+      return { action: "goto", target: "COMPLETE" };
+    }
+
     const notes = report.notes ?? "";
     const retryCount = ctx.state.writeTestsRetryCount ?? 0;
 

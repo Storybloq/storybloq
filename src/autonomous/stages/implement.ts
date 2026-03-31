@@ -38,6 +38,12 @@ export class ImplementStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, _report: GuideReportInput): Promise<StageAdvance> {
+    // ISS-069: No-op escape hatch — ticket needs no code changes
+    if (_report.completedAction === "no_implementation_needed") {
+      ctx.appendEvent("implement", { result: "skipped", reason: "no_changes_needed" });
+      return { action: "goto", target: "COMPLETE" };
+    }
+
     // Risk recomputation from actual diff
     let realizedRisk = ctx.state.ticket?.risk ?? "low";
     const mergeBase = ctx.state.git.mergeBase;

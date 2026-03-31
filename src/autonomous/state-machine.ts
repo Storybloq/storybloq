@@ -10,8 +10,8 @@ const TRANSITIONS: Record<WorkflowState, readonly (WorkflowState | "*")[]> = {
   PICK_TICKET:   ["PLAN", "ISSUE_FIX", "SESSION_END"],
   PLAN:          ["PLAN_REVIEW"],
   PLAN_REVIEW:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "PLAN_REVIEW", "SESSION_END"],   // approve → IMPLEMENT/WRITE_TESTS, reject → PLAN, stay for next round; SESSION_END for tiered exit
-  IMPLEMENT:     ["CODE_REVIEW", "TEST"],  // TEST when test stage enabled
-  WRITE_TESTS:   ["IMPLEMENT", "WRITE_TESTS", "PLAN"],  // advance → IMPLEMENT, retry stays, exhaustion → PLAN
+  IMPLEMENT:     ["CODE_REVIEW", "TEST", "COMPLETE"],  // TEST when test stage enabled, COMPLETE for no-op tickets (ISS-069)
+  WRITE_TESTS:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "COMPLETE"],  // advance → IMPLEMENT, retry stays, exhaustion → PLAN, no-op → COMPLETE (ISS-069)
   TEST:          ["CODE_REVIEW", "IMPLEMENT", "TEST"],  // pass → CODE_REVIEW, fail → IMPLEMENT, retry
   CODE_REVIEW:   ["VERIFY", "FINALIZE", "IMPLEMENT", "PLAN", "CODE_REVIEW", "SESSION_END"], // approve → VERIFY/FINALIZE, reject → IMPLEMENT/PLAN, stay for next round; SESSION_END for tiered exit
   VERIFY:        ["FINALIZE", "IMPLEMENT", "VERIFY"],  // pass → FINALIZE, fail → IMPLEMENT, retry

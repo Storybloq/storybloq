@@ -1,6 +1,6 @@
 {
   "name": "@anthropologies/claudestory",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "license": "UNLICENSED",
   "description": "Cross-session context persistence for AI coding projects. Tracks tickets, issues, roadmap, and handovers so every session builds on the last.",
   "keywords": [

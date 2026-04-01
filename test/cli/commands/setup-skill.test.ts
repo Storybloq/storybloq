@@ -336,6 +336,26 @@ describe("setup-skill", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Settings command
+  // -------------------------------------------------------------------------
+
+  it("SKILL.md has /story settings command in argument handler", async () => {
+    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    expect(content).toContain("/story settings");
+    expect(content).toContain("## Settings");
+  });
+
+  it("SKILL.md has config schema reference (no source code digging needed)", async () => {
+    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    expect(content).toContain("### Config Schema Reference");
+    expect(content).toContain("WRITE_TESTS");
+    expect(content).toContain("VERIFY");
+    expect(content).toContain("maxTicketsPerSession");
+    expect(content).toContain("reviewBackends");
+    expect(content).toContain("Do NOT search source code");
+  });
+
+  // -------------------------------------------------------------------------
   // Installer copies all support files
   // -------------------------------------------------------------------------
 

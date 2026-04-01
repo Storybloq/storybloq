@@ -20,6 +20,7 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 - `/story snapshot` -> save project state (call `claudestory_snapshot` MCP tool)
 - `/story export` -> export project for sharing. Ask the user whether to export the current phase or the full project, then call `claudestory_export` with either `phase` or `all` set
 - `/story status` -> quick status check (call `claudestory_status` MCP tool)
+- `/story settings` -> manage project settings (see Settings section below)
 - `/story help` -> show all capabilities (read `reference.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
 
 If the user's intent doesn't match any of these, use the full context load.
@@ -207,6 +208,130 @@ Create notes via CLI: `claudestory note create --content "..." --tags idea`
 Create notes via MCP: `claudestory_note_create` with `content`, optional `title` and `tags`.
 
 List, get, and update notes via MCP: `claudestory_note_list`, `claudestory_note_get`, `claudestory_note_update`. Delete remains CLI-only: `claudestory note delete <id>`.
+
+## Settings (/story settings)
+
+When the user runs `/story settings` or asks about project config, show current settings and let them change things via AskUserQuestion. Do NOT dig through source code or JS files -- the schema is documented here.
+
+**Step 1: Read and display current config.** Read `.story/config.json` directly. Show a clean table:
+
+```
+## Current Settings
+
+| Setting | Value |
+|---------|-------|
+| Max tickets per session | 5 |
+| Review backends | codex, agent |
+| Handover interval | every 3 tickets |
+| Compact threshold | high (default) |
+| TDD (WRITE_TESTS) | enabled |
+| Run tests (TEST) | enabled, command: npm test |
+| Smoke test (VERIFY) | disabled |
+| Build validation (BUILD) | disabled |
+```
+
+**Step 2: Ask what to change.** Use `AskUserQuestion`:
+- question: "What would you like to change?"
+- header: "Settings"
+- options:
+  - "Quality pipeline" -- TDD, tests, endpoint checks, build validation
+  - "Session limits" -- tickets per session, context compaction
+  - "Review backends" -- which reviewers to use
+  - "Handover frequency" -- how often to write session handovers
+
+**Step 3: Focused follow-up for each category:**
+
+**Quality pipeline:**
+```
+AskUserQuestion: "Quality pipeline settings"
+header: "Quality"
+options:
+- "Full pipeline" -- TDD + tests + endpoint checks + build
+- "Tests only" -- run tests after building
+- "Minimal" -- no automated checks
+- "Custom" -- pick individual stages
+```
+
+If "Custom", show each stage as a separate AskUserQuestion.
+
+**Session limits:**
+```
+AskUserQuestion: "Max tickets per autonomous session?"
+header: "Limit"
+options: "3 (conservative)", "5 (default)", "10 (aggressive)", "Unlimited"
+```
+
+**Review backends:**
+```
+AskUserQuestion: "Which reviewers for code and plan review?"
+header: "Review"
+options:
+- "Codex + Claude agent (Recommended)" -- alternate between both
+- "Codex only" -- OpenAI Codex reviews
+- "Claude agent only" -- independent Claude agent reviews
+- "None" -- skip automated review
+```
+
+**Handover frequency:**
+```
+AskUserQuestion: "Write a handover after every N tickets?"
+header: "Handover"
+options: "Every ticket", "Every 3 tickets (default)", "Every 5 tickets", "Manual only"
+```
+
+**Step 4: Apply changes.** Run via Bash:
+```
+claudestory config set-overrides --json '<constructed JSON>'
+```
+
+Show a confirmation of what changed.
+
+### Config Schema Reference
+
+Do NOT search source code for this. The schema is:
+
+```json
+{
+  "version": 2,
+  "project": "string",
+  "type": "string (npm, cargo, pip, etc.)",
+  "language": "string",
+  "features": {
+    "tickets": true, "issues": true, "handovers": true,
+    "roadmap": true, "reviews": true
+  },
+  "recipe": "string (default: coding)",
+  "recipeOverrides": {
+    "maxTicketsPerSession": "number (0 = unlimited, default: 3)",
+    "compactThreshold": "string (high/medium/low, default: high)",
+    "reviewBackends": ["codex", "agent"],
+    "handoverInterval": "number (default: 3)",
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": "boolean",
+        "command": "string (test command)",
+        "onExhaustion": "plan | advance (default: plan)"
+      },
+      "TEST": {
+        "enabled": "boolean",
+        "command": "string (default: npm test)"
+      },
+      "VERIFY": {
+        "enabled": "boolean",
+        "startCommand": "string (e.g., npm run dev)",
+        "readinessUrl": "string (e.g., http://localhost:3000)",
+        "endpoints": ["GET /api/health", "POST /api/users"]
+      },
+      "BUILD": {
+        "enabled": "boolean",
+        "command": "string (default: npm run build)"
+      },
+      "LESSON_CAPTURE": { "enabled": "boolean" },
+      "ISSUE_SWEEP": { "enabled": "boolean" }
+    }
+  }
+}
+```
 
 ## Support Files
 

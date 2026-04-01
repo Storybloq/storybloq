@@ -129,7 +129,6 @@ Example: "Rules: integer cents for money, billing engine is pure logic, TDD for 
 
 ```
 Tip: You can also use these modes anytime:
-  /story auto           I work through tickets autonomously -- plan, review, build, commit, loop
   /story guided T-XXX   One ticket end-to-end with planning and code review
   /story review T-XXX   Review code you already wrote
 ```
@@ -144,10 +143,10 @@ End with `AskUserQuestion`:
 - options:
   - "Work on [first recommended ticket ID + title] (Recommended)" -- the top ticket from the Ready table
   - "Something else" -- I'll ask what you have in mind
-  - "Autonomous mode" -- I'll work through tickets on my own
+  - "Autonomous mode" -- I'll pick tickets, plan, review, build, commit, and loop until done
 - (Other always available for free-text input)
 
-Most users want the recommended ticket -- make that one tap.
+Autonomous mode is last -- most users want to collaborate, not hand off control.
 
 ## Session Lifecycle
 

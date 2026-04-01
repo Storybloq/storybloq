@@ -87,9 +87,11 @@ After loading context, present a summary with two parts: a conversational intro 
 
 Open with the project name and progress. Mention what the last session accomplished in one sentence. Note anything important (no git repo, open issues, blockers). Keep it brief -- the tables carry the detail.
 
-**Part 2: Structured tables**
+**Part 2: Structured tables (REQUIRED -- always show these, do not fold into prose)**
 
-**Ready to Work** -- call `claudestory_recommend` for context-aware suggestions, then show a table of unblocked tickets ready to be picked up:
+You MUST show the following tables after the prose intro. Do not summarize them in paragraph form.
+
+**Ready to Work table** -- call `claudestory_recommend` for context-aware suggestions. Always render as a markdown table:
 
 ```
 ## Ready to Work
@@ -102,7 +104,7 @@ Open with the project name and progress. Mention what the last session accomplis
 
 Show up to 5 unblocked tickets. If more exist, note "(+N more unblocked)".
 
-**Decisions Pending** (only if there are TBD items in CLAUDE.md or undecided tech choices from the brief):
+**Decisions Pending** (show only if there are TBD items in CLAUDE.md or undecided tech choices):
 
 ```
 ## Decisions Pending
@@ -110,7 +112,7 @@ Show up to 5 unblocked tickets. If more exist, note "(+N more unblocked)".
 - Background jobs: Inngest vs Trigger.dev vs Vercel Cron (affects T-001)
 ```
 
-**Open Issues** (only if issues exist with status "open"):
+**Open Issues** (show only if issues exist with status "open"):
 
 ```
 ## Open Issues
@@ -119,9 +121,9 @@ Show up to 5 unblocked tickets. If more exist, note "(+N more unblocked)".
 | ISS-001  | Auth token expiry bug  | high     |
 ```
 
-**Key Rules** (from lessons digest -- only if lessons exist, keep to 2-3 most important):
+**Key Rules** (from lessons digest or RULES.md -- brief one-line callout, not a full list):
 
-Show as a brief callout, not a full list. Example: "Rules: integer cents for money, billing engine is pure logic, TDD for billing."
+Example: "Rules: integer cents for money, billing engine is pure logic, TDD for billing."
 
 **First session guide (show only when handover count is 0 or 1):**
 

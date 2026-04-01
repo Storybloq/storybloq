@@ -165,10 +165,15 @@ describe("setup-skill", () => {
 
   it("setup-flow.md refinement and review steps are opt-in", async () => {
     const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    // Refinement is opt-in
-    expect(content).toMatch(/user declines.*skip to.*1e/i);
-    // Review is opt-in
-    expect(content).toMatch(/user declines.*skip to.*1e/i);
+    // 1d2 refinement is opt-in
+    expect(content).toContain("#### 1d2. Refinement Pass (optional)");
+    // 1d3 review is opt-in
+    expect(content).toContain("#### 1d3. Proposal Review (optional)");
+    // Both have explicit decline paths
+    const refinementSection = content.split("#### 1d2")[1]!.split("#### 1d3")[0]!;
+    expect(refinementSection).toMatch(/declines.*skip/i);
+    const reviewSection = content.split("#### 1d3")[1]!.split("#### 1e")[0]!;
+    expect(reviewSection).toMatch(/declines.*skip/i);
   });
 
   it("setup-flow.md has continue-to-Step-2 directive referencing SKILL.md", async () => {

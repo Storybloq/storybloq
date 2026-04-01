@@ -488,47 +488,11 @@ After creation completes:
 - Check if `.gitignore` includes `.story/snapshots/` (warn if missing -- snapshots should not be committed)
 - Write an initial handover documenting the setup decisions. Explicitly capture which gates were answered and what was chosen: surface, characteristics, stack, system shape, execution model, deployment, data model, domain complexity, auth model, sensitive domain, AI pattern/provider/processing (if applicable), design source. This handover is the source of truth for decisions; CLAUDE.md is the project description.
 
-Then show the user a compact guide to using the system. This is their first time -- make it visual and scannable. Present it as markdown output (not AskUserQuestion):
+Present a brief completion message and tell the user how to start:
 
-```
-Your project is ready. Here's how it works from here:
+"Your project is set up -- [X] phases, [Y] tickets, CLAUDE.md, and RULES.md created. Type **`/story`** at the start of any session to load context and see what to work on. Or type **`/story auto`** to let me work through the tickets autonomously."
 
-## Daily Workflow
-
-  Start session → type /story → Claude loads full context → work → Claude writes handover → next session picks up
-
-Every session builds on the last. You never re-explain your project.
-
-## How to Work
-
-  /story                Just start here. I'll load context, show what changed,
-                        and suggest what to work on next.
-
-  /story auto           Autonomous mode. I pick tickets, plan, review, build,
-                        and commit -- looping until done. You watch.
-
-  /story guided T-XXX   One ticket, done right. I plan it, get it reviewed,
-                        build it, get the code reviewed, then commit.
-
-  /story plan T-XXX     Plan a ticket before building. Independent review included.
-
-  /story review T-XXX   Already wrote code? I'll review it.
-
-## What's in Your Project
-
-  .story/tickets/       Your work queue -- each ticket is a JSON file
-  .story/issues/        Bugs and gaps discovered during work
-  .story/handovers/     Session memory -- what was done, decided, learned
-  CLAUDE.md             Project spec -- Claude reads this first every session
-  RULES.md              Development rules -- constraints Claude follows
-
-## First Ticket
-
-  T-001: [title of first unblocked ticket]
-  Type /story to get started, or /story auto to let me handle it.
-```
-
-Do not show an AskUserQuestion after this. The guide tells the user everything they need to know -- they'll naturally type their next command.
+Keep it to 2-3 sentences. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work. No need for a manual.
 
 ---
 

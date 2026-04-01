@@ -487,7 +487,28 @@ After creation completes:
 - Confirm what was created (e.g., "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md, and RULES.md")
 - Check if `.gitignore` includes `.story/snapshots/` (warn if missing -- snapshots should not be committed)
 - Write an initial handover documenting the setup decisions. Explicitly capture which gates were answered and what was chosen: surface, characteristics, stack, system shape, execution model, deployment, data model, domain complexity, auth model, sensitive domain, AI pattern/provider/processing (if applicable), design source. This handover is the source of truth for decisions; CLAUDE.md is the project description.
-- Setup complete. Continue with **Step 2: Load Context** in SKILL.md (already in your context). Execute all 6 steps -- the project now has data to load.
+
+Then briefly explain what the user can do now -- this is their first time using claudestory:
+
+"Your project is ready. Here's what you can do:
+- **`/story`** at the start of any session loads your full context automatically
+- **`/story auto`** runs autonomous mode -- I'll pick tickets, plan, review, implement, and commit in a loop
+- **`/story guided T-XXX`** walks through one ticket end-to-end with planning and code review
+- **`/story plan T-XXX`** helps plan a specific ticket before building"
+
+Then use `AskUserQuestion`:
+- question: "What would you like to do now?"
+- header: "Next"
+- options:
+  - "Start building the first ticket" -- jump into T-001 (or first unblocked ticket)
+  - "Start autonomous mode" -- run `/story auto` to work through tickets automatically
+  - "Review the roadmap" -- see all phases, tickets, and dependencies
+  - "I'm done for now" -- end session
+
+If "Start building": continue with **Step 2: Load Context** in SKILL.md (already in your context), then proceed directly to the first unblocked ticket.
+If "Start autonomous mode": read `autonomous-mode.md` in the same directory as this skill file and follow the autonomous mode instructions.
+If "Review the roadmap": call `claudestory_status` and present a detailed overview of all phases and tickets.
+If "I'm done for now": end the session cleanly.
 
 ---
 

@@ -272,6 +272,8 @@ options:
 - "None" -- skip automated review
 ```
 
+Note: this sets the top-level `reviewBackends`. If the config has per-stage overrides in `stages.PLAN_REVIEW.backends` or `stages.CODE_REVIEW.backends`, those take precedence. When displaying settings, check for per-stage overrides and show them if present.
+
 **Handover frequency:**
 ```
 AskUserQuestion: "Write a handover after every N tickets?"
@@ -284,15 +286,27 @@ options: "Every ticket", "Every 3 tickets (default)", "Every 5 tickets", "Manual
 claudestory config set-overrides --json '<constructed JSON>'
 ```
 
-Show a confirmation of what changed.
+**IMPORTANT:** The `--json` argument takes only the `recipeOverrides` object, NOT the full config. Top-level fields (version, project, type, language) are NOT settable via this command.
+```
+# Correct:
+claudestory config set-overrides --json '{"maxTicketsPerSession": 10}'
+
+# Correct (stages):
+claudestory config set-overrides --json '{"stages": {"VERIFY": {"enabled": true}}}'
+
+# WRONG -- do not include top-level fields:
+claudestory config set-overrides --json '{"version": 2, "project": "foo"}'
+```
+
+Show a confirmation of what changed, then ask if the user wants to change anything else or is done. If done, return to normal session.
 
 ### Config Schema Reference
 
-Do NOT search source code for this. The schema is:
+Do NOT search source code for this. The full config.json schema is shown below. Only the `recipeOverrides` section is settable via `config set-overrides`.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "schemaVersion": 1,
   "project": "string",
   "type": "string (npm, cargo, pip, etc.)",
@@ -305,7 +319,7 @@ Do NOT search source code for this. The schema is:
   "recipeOverrides": {
     "maxTicketsPerSession": "number (0 = unlimited, default: 5)",
     "compactThreshold": "string (high/medium/low, default: high)",
-    "reviewBackends": ["codex", "agent"],  // top-level default; per-stage backends override this
+    "reviewBackends": ["codex", "agent"],
     "handoverInterval": "number (default: 3)",
     "stages": {
       "WRITE_TESTS": {

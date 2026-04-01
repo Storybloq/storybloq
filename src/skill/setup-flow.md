@@ -131,9 +131,9 @@ After the user approves the phase and ticket structure, offer: **"Want me to ref
 
 If the user declines, skip to **1e. Execute on Approval** -- current behavior is preserved.
 
-If the user accepts, refine the proposal using the brief/PRD notes collected in step 1b:
+If the user accepts, refine the proposal. If a brief/PRD was found in step 1b, use those structured notes. If no brief exists (e.g., the user came through step 1c interview), infer descriptions from the interview answers and propose standard dependencies based on the tech stack.
 
-**Descriptions:** Extract specs from the brief into ticket descriptions -- entity fields, acceptance criteria, API contracts, business rules. Cap each description at 3-4 sentences. Keep them actionable, not exhaustive. The goal is "enough to implement without re-reading the brief."
+**Descriptions:** Extract specs from the brief into ticket descriptions -- entity fields, acceptance criteria, API contracts, business rules. If no brief, write descriptions based on the user's interview answers and common patterns for the chosen stack. Cap each description at 3-4 sentences. Keep them actionable, not exhaustive. The goal is "enough to implement without re-reading the brief."
 
 **Dependencies:** Infer `blockedBy` relationships from phase ordering and domain logic:
 - Schema/migration tickets block CRUD API tickets

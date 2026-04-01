@@ -375,9 +375,9 @@ After the user approves the proposal structure, use `AskUserQuestion` for refine
 - question: "Want me to refine these before creating?"
 - header: "Depth"
 - options:
-  - "Create as-is" -- create tickets now with just titles
+  - "Yes, refine + get a second opinion (Recommended)" -- I'll refine, then have an independent reviewer check my work
   - "Yes, refine them" -- I'll add descriptions, figure out dependencies, and flag oversized tickets
-  - "Yes, refine + get a second opinion" -- I'll refine, then have an independent reviewer check my work
+  - "Create as-is" -- create tickets now with just titles
 
 If "Create as-is" and no brief exists: warn "Note: tickets will have titles only -- you can add descriptions later."
 

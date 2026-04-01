@@ -181,9 +181,9 @@ describe("setup-skill", () => {
     const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
     // One entry point, not two separate prompts
     expect(content).toContain("Want me to refine these before creating");
-    expect(content).toContain("Create as-is");
+    expect(content).toContain("Yes, refine + get a second opinion (Recommended)");
     expect(content).toContain("Yes, refine them");
-    expect(content).toContain("Yes, refine + get a second opinion");
+    expect(content).toContain("Create as-is");
   });
 
   it("setup-flow.md has system shape and execution model as separate gates", async () => {

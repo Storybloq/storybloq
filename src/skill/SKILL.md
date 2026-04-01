@@ -99,7 +99,6 @@ Use `claudestory_recommend` for context-aware suggestions mixing tickets and iss
 Tip: You can also use these modes anytime:
   /story auto           I work through tickets autonomously -- plan, review, build, commit, loop
   /story guided T-XXX   One ticket end-to-end with planning and code review
-  /story plan T-XXX     Plan a ticket before building
   /story review T-XXX   Review code you already wrote
 ```
 

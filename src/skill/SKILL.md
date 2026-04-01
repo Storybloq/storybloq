@@ -292,7 +292,8 @@ Do NOT search source code for this. The schema is:
 
 ```json
 {
-  "version": 2,
+  "version": 1,
+  "schemaVersion": 1,
   "project": "string",
   "type": "string (npm, cargo, pip, etc.)",
   "language": "string",
@@ -302,9 +303,9 @@ Do NOT search source code for this. The schema is:
   },
   "recipe": "string (default: coding)",
   "recipeOverrides": {
-    "maxTicketsPerSession": "number (0 = unlimited, default: 3)",
+    "maxTicketsPerSession": "number (0 = unlimited, default: 5)",
     "compactThreshold": "string (high/medium/low, default: high)",
-    "reviewBackends": ["codex", "agent"],
+    "reviewBackends": ["codex", "agent"],  // top-level default; per-stage backends override this
     "handoverInterval": "number (default: 3)",
     "stages": {
       "WRITE_TESTS": {
@@ -325,6 +326,12 @@ Do NOT search source code for this. The schema is:
       "BUILD": {
         "enabled": "boolean",
         "command": "string (default: npm run build)"
+      },
+      "PLAN_REVIEW": {
+        "backends": ["codex", "agent"]
+      },
+      "CODE_REVIEW": {
+        "backends": ["codex", "agent"]
       },
       "LESSON_CAPTURE": { "enabled": "boolean" },
       "ISSUE_SWEEP": { "enabled": "boolean" }

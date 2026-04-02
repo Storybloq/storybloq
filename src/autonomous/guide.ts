@@ -898,7 +898,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       "# Autonomous Session Started",
       "",
       `You are now in autonomous mode. ${sessionDesc}${checkpointDesc}`,
-      "Do NOT stop to summarize. Do NOT ask the user. Pick a ticket or issue and start working immediately.",
+      "Do NOT stop to summarize. Do NOT ask the user. Do NOT cancel for context management — compaction is automatic. Pick a ticket or issue and start working immediately.",
       "",
       "## Ticket Candidates",
       "",
@@ -932,6 +932,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         "Do NOT ask the user for confirmation or approval.",
         "Do NOT stop or summarize between tickets — call autonomous_guide IMMEDIATELY.",
         "You are in autonomous mode — continue working until done.",
+        "NEVER cancel due to context size. Claude Story's hooks compact context automatically and preserve all session state.",
         ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
       ],
       transitionedFrom: "INIT",
@@ -1384,6 +1385,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
         "Do NOT stop or summarize. Pick the next ticket IMMEDIATELY.",
         "Do NOT ask the user for confirmation.",
         "You are in autonomous mode — continue working.",
+        "Context compacted successfully — all session state preserved. Continue working.",
       ],
     });
   }
@@ -1526,6 +1528,34 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     return guideError(new Error("Session already ended."));
   }
 
+  // T-178: Soft gate — reject context-motivated cancel in active auto sessions
+  const isAutoMode = info.state.mode === "auto" || !info.state.mode;
+  const hasTicketsRemaining = (info.state.config.maxTicketsPerSession === 0) ||
+    (info.state.completedTickets.length < info.state.config.maxTicketsPerSession);
+  const isWorkingState = !["SESSION_END", "HANDOVER", "COMPACT"].includes(info.state.state);
+
+  if (isAutoMode && hasTicketsRemaining && isWorkingState) {
+    return {
+      content: [{
+        type: "text",
+        text: [
+          "# Cancel Rejected — Session Still Active",
+          "",
+          `You have completed ${info.state.completedTickets.length} ticket(s) with more work remaining.`,
+          "Do NOT cancel an autonomous session due to context size.",
+          "If you need to manage context, Claude Code handles compaction automatically.",
+          "",
+          "Continue working by calling `claudestory_autonomous_guide` with:",
+          '```json',
+          `{ "sessionId": "${info.state.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+          '```',
+          "",
+          "To force-cancel (admin only), run: `claudestory session stop`",
+        ].join("\n"),
+      }],
+    };
+  }
+
   // ISS-024: recover any pending mutation before cancel
   await recoverPendingMutation(info.dir, info.state, root);
   // Re-read state after recovery
@@ -1630,12 +1660,20 @@ function guideResult(
     branch: state.git?.branch ?? null,
   };
 
+  // T-178: Inject global anti-cancel reminder for auto mode
+  const allReminders = [...(opts.reminders ?? [])];
+  if ((state.mode === "auto" || !state.mode) && currentState !== "SESSION_END") {
+    allReminders.push(
+      "NEVER cancel this session due to context size. Compaction is automatic — Claude Story preserves all session state across compactions via hooks.",
+    );
+  }
+
   const output: GuideOutput = {
     sessionId: state.sessionId,
     state: currentState,
     transitionedFrom: opts.transitionedFrom,
     instruction: opts.instruction,
-    reminders: opts.reminders ?? [],
+    reminders: allReminders,
     contextAdvice: "ok",
     sessionSummary: summary,
   };

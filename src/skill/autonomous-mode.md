@@ -21,9 +21,21 @@ This file is referenced from SKILL.md for `/story auto`, `/story review`, `/stor
 - Follow the guide's instructions exactly -- it specifies which tools to call, what parameters to use
 - After each step completes, call `claudestory_autonomous_guide` with `action: "report"` and the results
 
+**Recommended setup for long sessions:**
+
+Run Claude Code with: `claude --model claude-opus-4-6 --dangerously-skip-permissions`
+
+- **Skip-permissions** enables unattended execution -- no approval prompts consuming context
+- **Claude Story handles compaction automatically** -- context preserved across compactions, do not cancel because context feels large
+- Use only in **trusted repositories** -- skip-permissions disables safety prompts for all tool use
+
 **If the guide says to compact:** Call `claudestory_autonomous_guide` with `action: "pre_compact"`, then run `/compact`, then call with `action: "resume"`.
 
-**If something goes wrong:** Call `claudestory_autonomous_guide` with `action: "cancel"` to cleanly end the session.
+**If something goes wrong:**
+- Context feels large -- do nothing, compaction is automatic via hooks
+- Compaction happened -- call with `action: "resume"` to continue
+- Session stuck after compact -- run `claudestory session clear-compact` in terminal, then `action: "resume"`
+- Unrecoverable error -- run `claudestory session stop` in terminal (admin escape hatch)
 
 ## Tiered Access -- Review, Plan, Guided Modes
 

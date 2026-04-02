@@ -1,7 +1,7 @@
 {
   "name": "@anthropologies/claudestory",
   "version": "0.1.55",
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Cross-session context persistence for AI coding projects. Tracks tickets, issues, roadmap, and handovers so every session builds on the last.",
   "keywords": [
     "claudestory",

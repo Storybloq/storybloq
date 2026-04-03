@@ -2,6 +2,8 @@
 
 An agentic development framework. Track tickets, issues, and progress for your project in a `.story/` directory that AI tools read and write natively.
 
+**[claudestory.com](https://claudestory.com)** | **[Documentation](https://claudestory.com/cli)** | **[Privacy Policy](https://claudestory.com/privacy)**
+
 ## Installation
 
 ```bash
@@ -201,4 +203,4 @@ Everything else in `.story/` should be tracked.
 
 ## License
 
-MIT
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) -- free for personal and noncommercial use. For commercial licensing, contact shayegh@me.com.

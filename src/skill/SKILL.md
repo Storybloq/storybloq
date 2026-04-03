@@ -21,6 +21,8 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 - `/story export` -> export project for sharing. Ask the user whether to export the current phase or the full project, then call `claudestory_export` with either `phase` or `all` set
 - `/story status` -> quick status check (call `claudestory_status` MCP tool)
 - `/story settings` -> manage project settings (see Settings section below)
+- `/story design` -> evaluate frontend design (read `design/design.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
+- `/story design <platform>` -> evaluate for specific platform: web, ios, macos, android (read `design/design.md` in the same directory as this skill file)
 - `/story help` -> show all capabilities (read `reference.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
 
 If the user's intent doesn't match any of these, use the full context load.
@@ -132,6 +134,7 @@ Example: "Rules: integer cents for money, billing engine is pure logic, TDD for 
 Tip: You can also use these modes anytime:
   /story guided T-XXX   One ticket end-to-end with planning and code review
   /story review T-XXX   Review code you already wrote
+  /story design          Evaluate frontend against platform best practices
 ```
 
 Show this once or twice, then never again.
@@ -181,6 +184,8 @@ Don't duplicate what's already in the handover -- lessons are structured, tagged
 When working on a task and you encounter a bug, inconsistency, or improvement opportunity that is out of scope for the current ticket, create an issue using `claudestory issue create` (CLI) with a clear title, severity, and impact description. Don't fix it in the current task, don't ignore it -- log it. This keeps the issue tracker growing organically and ensures nothing discovered during work is lost.
 
 When starting work on a ticket, update its status to `inprogress`. When done, update to `complete` in the same commit as the code change.
+
+**Frontend design guidance:** When working on UI or frontend tickets, read `design/design.md` in the same directory as this skill file for design principles and platform-specific best practices. Follow its priority order (clarity > hierarchy > platform correctness > accessibility > state completeness) and load the relevant platform reference. This applies to any ticket involving components, layouts, styling, or visual design.
 
 ## Managing Tickets and Issues
 
@@ -361,3 +366,4 @@ Additional skill documentation, loaded on demand:
 - **`setup-flow.md`** -- Project detection and AI-Assisted Setup Flow (new project initialization)
 - **`autonomous-mode.md`** -- Autonomous mode, review, plan, and guided execution tiers
 - **`reference.md`** -- Full CLI command and MCP tool reference
+- **`design/design.md`** -- Frontend design evaluation and implementation guidance, with platform references in `design/references/`

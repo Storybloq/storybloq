@@ -14,6 +14,8 @@ This file is referenced from SKILL.md for `/story auto`, `/story review`, `/stor
 4. The guide advances through: PICK_TICKET -> PLAN -> PLAN_REVIEW -> IMPLEMENT -> CODE_REVIEW -> FINALIZE -> COMPLETE -> loop
 5. Continue until the guide returns SESSION_END
 
+**Frontend design:** If the current ticket involves UI, frontend, components, layouts, or styling, read `design/design.md` in the same directory as the skill file for design principles. Load the relevant platform reference from `design/references/`. Apply the priority order (clarity > hierarchy > platform correctness > accessibility > state completeness) during both planning and implementation.
+
 **Critical rules for autonomous mode:**
 - Do NOT use Claude Code's plan mode -- write plans as markdown files
 - Do NOT ask the user for confirmation or approval

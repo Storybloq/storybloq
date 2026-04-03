@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, rm, rename, unlink } from "node:fs/promises";
+import { mkdir, writeFile, readFile, readdir, copyFile, rm, rename, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -29,6 +29,52 @@ export function resolveSkillSourceDir(): string {
   throw new Error(
     `Cannot find bundled skill files. Checked:\n  ${bundledPath}\n  ${sourcePath}`,
   );
+}
+
+/**
+ * Recursively copies a directory tree from src to dest.
+ * Copies to a temp dir first, then atomically swaps to avoid partial installs.
+ * Uses withFileTypes to skip directories (cross-platform) and copyFile (binary-safe).
+ */
+export async function copyDirRecursive(srcDir: string, destDir: string): Promise<string[]> {
+  const tmpDir = destDir + ".tmp";
+  const bakDir = destDir + ".bak";
+  // Recover from a previous crash: if destDir is gone but bakDir exists, restore it
+  if (!existsSync(destDir) && existsSync(bakDir)) {
+    await rename(bakDir, destDir);
+  }
+  // Clean up any leftover temp/backup dirs
+  if (existsSync(tmpDir)) await rm(tmpDir, { recursive: true, force: true });
+  if (existsSync(bakDir)) await rm(bakDir, { recursive: true, force: true });
+  await mkdir(tmpDir, { recursive: true });
+  const entries = await readdir(srcDir, { withFileTypes: true, recursive: true });
+  const written: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    // parentPath (Node 20.12+) or path (Node 20.1-20.11) contains the parent directory
+    const parent = (entry as { parentPath?: string; path?: string }).parentPath
+      ?? (entry as { path?: string }).path ?? srcDir;
+    const relativePath = join(parent, entry.name).slice(srcDir.length + 1);
+    const srcPath = join(srcDir, relativePath);
+    const destPath = join(tmpDir, relativePath);
+    await mkdir(dirname(destPath), { recursive: true });
+    await copyFile(srcPath, destPath);
+    written.push(relativePath);
+  }
+  // Safe swap: back up old, rename new in, clean up backup
+  if (existsSync(destDir)) {
+    await rename(destDir, bakDir);
+  }
+  try {
+    await rename(tmpDir, destDir);
+  } catch (err) {
+    // Restore backup if rename fails
+    if (existsSync(bakDir)) await rename(bakDir, destDir).catch(() => {});
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+  await rm(bakDir, { recursive: true, force: true }).catch(() => {});
+  return written;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +359,20 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
       writtenFiles.push(filename);
     } else {
       missingFiles.push(filename);
+    }
+  }
+
+  // Copy design/ subdirectory (frontend design skill)
+  const designSrcDir = join(srcSkillDir, "design");
+  if (existsSync(designSrcDir)) {
+    const designDestDir = join(skillDir, "design");
+    try {
+      const designFiles = await copyDirRecursive(designSrcDir, designDestDir);
+      for (const f of designFiles) writtenFiles.push(`design/${f}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Warning: design skill copy failed: ${msg}\n`);
+      missingFiles.push("design/");
     }
   }
 

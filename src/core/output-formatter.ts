@@ -1297,6 +1297,20 @@ export function formatReference(
   }
 
   lines.push("");
+  lines.push("## /story design");
+  lines.push("");
+  lines.push("Evaluate frontend code against platform-specific design best practices.");
+  lines.push("");
+  lines.push("```");
+  lines.push("/story design                    # Auto-detect platform, evaluate frontend");
+  lines.push("/story design web                # Evaluate against web best practices");
+  lines.push("/story design ios                # Evaluate against iOS HIG");
+  lines.push("/story design macos              # Evaluate against macOS HIG");
+  lines.push("/story design android            # Evaluate against Material Design");
+  lines.push("```");
+  lines.push("");
+  lines.push("Creates issues automatically when claudestory MCP tools or CLI are available. Checks for existing design issues to avoid duplicates on repeated runs. Outputs markdown checklist as fallback when neither MCP nor CLI is available.");
+  lines.push("");
   lines.push("## Common Workflows");
   lines.push("");
   lines.push("### Session Start");

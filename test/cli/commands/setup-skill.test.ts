@@ -356,6 +356,44 @@ describe("setup-skill", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Frontend design skill
+  // -------------------------------------------------------------------------
+
+  it("design/design.md exists in src/skill/design/", () => {
+    expect(existsSync(join(PROJECT_ROOT, "src", "skill", "design", "design.md"))).toBe(true);
+  });
+
+  it("all platform reference files exist in src/skill/design/references/", () => {
+    for (const platform of ["web.md", "macos.md", "ios.md", "android.md"]) {
+      expect(
+        existsSync(join(PROJECT_ROOT, "src", "skill", "design", "references", platform)),
+        `Missing: design/references/${platform}`,
+      ).toBe(true);
+    }
+  });
+
+  it("SKILL.md argument handler routes /story design to design/design.md", async () => {
+    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    expect(content).toMatch(/`design\/design\.md` in the same directory as this skill file/);
+  });
+
+  it("design.md references all platform reference files", async () => {
+    const content = await readFile(
+      join(PROJECT_ROOT, "src", "skill", "design", "design.md"), "utf-8",
+    );
+    for (const platform of ["web.md", "macos.md", "ios.md", "android.md"]) {
+      expect(content).toContain(platform);
+    }
+  });
+
+  it("autonomous-mode.md includes frontend design guidance", async () => {
+    const content = await readFile(
+      join(PROJECT_ROOT, "src", "skill", "autonomous-mode.md"), "utf-8",
+    );
+    expect(content).toContain("design/design.md");
+  });
+
+  // -------------------------------------------------------------------------
   // Installer copies all support files
   // -------------------------------------------------------------------------
 
@@ -367,6 +405,88 @@ describe("setup-skill", () => {
     expect(tsContent).toContain('"setup-flow.md"');
     expect(tsContent).toContain('"autonomous-mode.md"');
     expect(tsContent).toContain('"reference.md"');
+  });
+
+  it("setup-skill.ts handles design directory with copyDirRecursive", async () => {
+    const tsContent = await readFile(
+      join(PROJECT_ROOT, "src", "cli", "commands", "setup-skill.ts"),
+      "utf-8",
+    );
+    expect(tsContent).toContain("copyDirRecursive");
+    expect(tsContent).toContain("designSrcDir");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// copyDirRecursive functional tests
+// ---------------------------------------------------------------------------
+
+describe("copyDirRecursive", () => {
+  let tempDir: string;
+  let srcDir: string;
+  let destDir: string;
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), `claudestory-copy-test-${randomUUID()}`);
+    srcDir = join(tempDir, "src");
+    destDir = join(tempDir, "dest");
+    // Create a source tree: file at root + file in subdirectory
+    await mkdir(join(srcDir, "references"), { recursive: true });
+    await writeFile(join(srcDir, "design.md"), "# Design", "utf-8");
+    await writeFile(join(srcDir, "references", "web.md"), "# Web", "utf-8");
+    await writeFile(join(srcDir, "references", "ios.md"), "# iOS", "utf-8");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("copies all files including nested subdirectories", async () => {
+    const { copyDirRecursive } = await import("../../../src/cli/commands/setup-skill.js");
+    const written = await copyDirRecursive(srcDir, destDir);
+    expect(written).toContain("design.md");
+    expect(written).toContain(join("references", "web.md"));
+    expect(written).toContain(join("references", "ios.md"));
+    expect(written.length).toBe(3);
+    // Verify files actually exist at destination
+    expect(existsSync(join(destDir, "design.md"))).toBe(true);
+    expect(existsSync(join(destDir, "references", "web.md"))).toBe(true);
+    expect(existsSync(join(destDir, "references", "ios.md"))).toBe(true);
+  });
+
+  it("does not include directory entries in the written list", async () => {
+    const { copyDirRecursive } = await import("../../../src/cli/commands/setup-skill.js");
+    const written = await copyDirRecursive(srcDir, destDir);
+    for (const entry of written) {
+      expect(entry).toMatch(/\.md$/);
+    }
+  });
+
+  it("replaces existing dest cleanly on reinstall (no stale files)", async () => {
+    const { copyDirRecursive } = await import("../../../src/cli/commands/setup-skill.js");
+    // First install
+    await mkdir(destDir, { recursive: true });
+    await writeFile(join(destDir, "stale-file.md"), "stale", "utf-8");
+    // Reinstall
+    await copyDirRecursive(srcDir, destDir);
+    expect(existsSync(join(destDir, "stale-file.md"))).toBe(false);
+    expect(existsSync(join(destDir, "design.md"))).toBe(true);
+    // No leftover temp/backup dirs
+    expect(existsSync(destDir + ".tmp")).toBe(false);
+    expect(existsSync(destDir + ".bak")).toBe(false);
+  });
+
+  it("recovers backup if destDir was lost from a previous crash", async () => {
+    const { copyDirRecursive } = await import("../../../src/cli/commands/setup-skill.js");
+    // Simulate crash: destDir gone, bakDir has the old install
+    const bakDir = destDir + ".bak";
+    await mkdir(bakDir, { recursive: true });
+    await writeFile(join(bakDir, "old.md"), "old", "utf-8");
+    // copyDirRecursive should restore bakDir to destDir first, then install new
+    await copyDirRecursive(srcDir, destDir);
+    expect(existsSync(join(destDir, "design.md"))).toBe(true);
+    expect(existsSync(destDir + ".bak")).toBe(false);
+    expect(existsSync(destDir + ".tmp")).toBe(false);
   });
 });
 

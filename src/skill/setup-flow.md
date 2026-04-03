@@ -570,6 +570,12 @@ Present a brief completion message and tell the user how to start:
 
 Keep it to 2-3 sentences. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work. No need for a manual.
 
+**Design evaluation hint** (show only when project surface is Web app, Mobile app, or Desktop app):
+
+Add one more line after the completion message: "Tip: Run `/story design` anytime to evaluate your frontend against [detected platform] best practices and generate improvement issues."
+
+Note: Use the actual command that invoked this flow (e.g., `/story design` for standalone, `/story:go design` for plugin).
+
 ---
 
 ## Appendix: Default Stack Recommendations

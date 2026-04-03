@@ -328,6 +328,20 @@ claudestory setup-skill
 - **claudestory_lesson_reinforce** (id) — Reinforce lesson — increment count and update lastValidated
 - **claudestory_selftest** — Integration smoke test — create/update/delete cycle
 
+## /story design
+
+Evaluate frontend code against platform-specific design best practices.
+
+```
+/story design                    # Auto-detect platform, evaluate frontend
+/story design web                # Evaluate against web best practices
+/story design ios                # Evaluate against iOS HIG
+/story design macos              # Evaluate against macOS HIG
+/story design android            # Evaluate against Material Design
+```
+
+Creates issues automatically when claudestory MCP tools or CLI are available. Checks for existing design issues to avoid duplicates on repeated runs. Outputs markdown checklist as fallback when neither MCP nor CLI is available.
+
 ## Common Workflows
 
 ### Session Start

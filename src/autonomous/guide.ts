@@ -41,6 +41,7 @@ import { buildRecap } from "../core/snapshot.js";
 import { nextTickets } from "../core/queries.js";
 import { recommend, type RecommendOptions } from "../core/recommend.js";
 import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./version-check.js";
+import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "./target-work.js";
 import {
   handleHandoverLatest,
   handleHandoverCreate,
@@ -97,6 +98,93 @@ function buildGuideRecommendOptions(root: string): RecommendOptions {
   } catch { /* no snapshots */ }
 
   return opts;
+}
+
+// ---------------------------------------------------------------------------
+// T-188: Shared helper for targeted resume paths (DRY across drift + clean)
+// ---------------------------------------------------------------------------
+
+async function buildTargetedResumeResult(
+  root: string,
+  state: FullSessionState,
+  dir: string,
+): Promise<{ instruction: string; stuck: boolean; allDone: boolean; candidatesText: string }> {
+  const remaining = getRemainingTargets(state);
+
+  // All targets completed -- not stuck, just done
+  if (remaining.length === 0) {
+    return { instruction: "", stuck: false, allDone: true, candidatesText: "" };
+  }
+
+  try {
+    const { state: ps } = await loadProject(root);
+    const { text: candidatesText, firstReady } = buildTargetedCandidatesText(remaining, ps);
+    if (!firstReady) {
+      return { instruction: "", stuck: true, allDone: false, candidatesText };
+    }
+    const precomputed = { text: candidatesText, firstReady };
+    return {
+      instruction: buildTargetedPickInstruction(remaining, ps, state.sessionId, precomputed),
+      stuck: false,
+      allDone: false,
+      candidatesText,
+    };
+  } catch (err) {
+    // Log the error for debuggability instead of swallowing silently
+    try {
+      appendEvent(dir, {
+        rev: state.revision,
+        type: "resume_load_error",
+        timestamp: new Date().toISOString(),
+        data: { error: err instanceof Error ? err.message : String(err) },
+      });
+    } catch { /* best-effort */ }
+    // Fail-safe: end session rather than sending agent to PICK_TICKET blind
+    const fallback = remaining.join(", ") + " (project state unavailable)";
+    return { instruction: "", stuck: true, allDone: false, candidatesText: fallback };
+  }
+}
+
+/**
+ * Shared dispatch for targeted resume paths (DRY across drift + clean).
+ * Checks stuck, routes to HANDOVER or PICK_TICKET with appropriate instruction.
+ */
+async function dispatchTargetedResume(
+  root: string,
+  state: FullSessionState,
+  dir: string,
+  headerLines: string[],
+): Promise<McpToolResult> {
+  const resumeResult = await buildTargetedResumeResult(root, state, dir);
+  if (resumeResult.allDone) {
+    return guideResult(state, "HANDOVER", {
+      instruction: [
+        `# Targeted Session Complete -- All ${state.targetWork.length} target(s) done`,
+        "",
+        "Write a session handover summarizing what was accomplished, decisions made, and what's next.",
+        "",
+        'Call `claudestory_autonomous_guide` with:',
+        "```json",
+        `{ "sessionId": "${state.sessionId}", "action": "report", "report": { "completedAction": "handover_written", "handoverContent": "..." } }`,
+        "```",
+      ].join("\n"),
+      reminders: [],
+    });
+  }
+  if (resumeResult.stuck) {
+    return guideResult(state, "HANDOVER", {
+      instruction: buildTargetedStuckHandover(resumeResult.candidatesText, state.sessionId),
+      reminders: [],
+    });
+  }
+  return guideResult(state, "PICK_TICKET", {
+    instruction: [...headerLines, "", resumeResult.instruction].join("\n"),
+    reminders: [
+      "Do NOT stop or summarize. Pick the next target IMMEDIATELY.",
+      "Do NOT ask the user for confirmation.",
+      "You are in targeted auto mode -- pick ONLY from the listed items.",
+    ],
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +421,10 @@ export async function handleAutonomousGuide(
 // ---------------------------------------------------------------------------
 
 async function handleGuideInner(root: string, args: GuideInput): Promise<McpToolResult> {
+  // T-188: targetWork is only valid on start action
+  if (args.targetWork?.length && args.action !== "start") {
+    return guideError(new Error(`targetWork is only valid with action "start". Got action "${args.action}".`));
+  }
   switch (args.action) {
     case "start":
       return handleStart(root, args);
@@ -423,12 +515,60 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     ));
   }
 
-  // Read recipe + config overrides from project
+  // T-188: Targeted mode validation (before session creation)
+  const rawTargetWork = args.targetWork ?? [];
+  let validatedTargetWork: string[] = [];
+  let skippedTargets: string[] = [];
+  let targetProjectState: Awaited<ReturnType<typeof loadProject>>["state"] | undefined;
+  if (rawTargetWork.length > 0) {
+    if (mode !== "auto") {
+      return guideError(new Error(
+        `Targeted mode requires auto mode. Cannot combine targetWork with mode "${mode}".`,
+      ));
+    }
+    // Validate all IDs exist
+    try {
+      ({ state: targetProjectState } = await loadProject(root));
+    } catch (err) {
+      return guideError(new Error(`Cannot validate targetWork: ${err instanceof Error ? err.message : "project load failed"}`));
+    }
+    const { TICKET_ID_REGEX, ISSUE_ID_REGEX } = await import("../models/types.js");
+    const invalidIds: string[] = [];
+    const alreadyDone: string[] = [];
+    for (const id of rawTargetWork) {
+      if (ISSUE_ID_REGEX.test(id)) {
+        const issue = targetProjectState.issues.find(i => i.id === id);
+        if (!issue) { invalidIds.push(id); continue; }
+        if (issue.status === "resolved") { alreadyDone.push(id); continue; }
+      } else if (TICKET_ID_REGEX.test(id)) {
+        const ticket = targetProjectState.ticketByID(id);
+        if (!ticket) { invalidIds.push(id); continue; }
+        if (ticket.status === "complete") { alreadyDone.push(id); continue; }
+      } else {
+        invalidIds.push(id);
+      }
+    }
+    if (invalidIds.length > 0) {
+      return guideError(new Error(
+        `Invalid target IDs: ${invalidIds.join(", ")}. Use T-XXX for tickets or ISS-XXX for issues.`,
+      ));
+    }
+    validatedTargetWork = [...new Set(rawTargetWork.filter(id => !alreadyDone.includes(id)))];
+    skippedTargets = alreadyDone;
+    if (validatedTargetWork.length === 0) {
+      const doneMsg = alreadyDone.length > 0
+        ? ` (already done: ${alreadyDone.join(", ")})`
+        : "";
+      return guideError(new Error(`All target items are already complete${doneMsg}. Nothing to do.`));
+    }
+  }
+
+  // Read recipe + config overrides from project (reuse targetProjectState if available from T-188 validation)
   let recipe = "coding";
   let sessionConfig: SessionConfig = { mode };
   try {
-    const { state: projectState } = await loadProject(root);
-    const projectConfig = projectState.config as Record<string, unknown>;
+    const configState = targetProjectState ?? (await loadProject(root)).state;
+    const projectConfig = configState.config as Record<string, unknown>;
     if (typeof projectConfig.recipe === "string") recipe = projectConfig.recipe;
     if (projectConfig.recipeOverrides && typeof projectConfig.recipeOverrides === "object") {
       const overrides = projectConfig.recipeOverrides as Record<string, unknown>;
@@ -445,6 +585,11 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // Guided mode: force single ticket
   if (mode === "guided") {
     sessionConfig.maxTicketsPerSession = 1;
+  }
+
+  // T-188: Targeted mode: cap = target count (safety net; remaining-count is authoritative)
+  if (validatedTargetWork.length > 0) {
+    sessionConfig.maxTicketsPerSession = validatedTargetWork.length;
   }
 
   // Resolve recipe into frozen pipeline configuration
@@ -547,6 +692,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         },
         autoStash: autoStashRef,
       },
+      // T-188: Targeted auto mode
+      targetWork: validatedTargetWork,
       // T-128: Freeze resolved recipe for session lifetime (survives compact/resume)
       resolvedPipeline: resolvedRecipe.pipeline,
       resolvedPostComplete: resolvedRecipe.postComplete,
@@ -829,7 +976,57 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
     // --- Auto mode: full autonomous flow ---
 
-    // Get ticket candidates
+    // Update and write state (before building instruction -- need sessionId)
+    updated = refreshLease(updated);
+    const pressure = evaluatePressure(updated);
+    updated = { ...updated, contextPressure: { ...updated.contextPressure, level: pressure } };
+    const written = writeSessionSync(dir, updated);
+
+    appendEvent(dir, {
+      rev: written.revision,
+      type: "start",
+      timestamp: new Date().toISOString(),
+      data: { recipe, branch: written.git.branch, head: written.git.initHead, mode: "auto", ...(validatedTargetWork.length > 0 ? { targetWork: validatedTargetWork } : {}) },
+    });
+
+    const maxTickets = updated.config.maxTicketsPerSession;
+    const interval = updated.config.handoverInterval ?? 3;
+    const checkpointDesc = interval > 0
+      ? ` A checkpoint handover will be saved every ${interval} items.`
+      : "";
+
+    // T-188: Targeted mode builds a constrained candidate list
+    if (validatedTargetWork.length > 0) {
+      const targetedInstruction = buildTargetedPickInstruction(validatedTargetWork, projectState, updated.sessionId);
+
+      const skippedNote = skippedTargets.length > 0
+        ? `\n\n**Note:** Skipped ${skippedTargets.length} already-done item(s): ${skippedTargets.join(", ")}.`
+        : "";
+
+      const instruction = [
+        "# Targeted Autonomous Session Started",
+        "",
+        `You are in targeted auto mode. Working on ${validatedTargetWork.length} specific item(s) in order, then ending the session.${checkpointDesc}${skippedNote}`,
+        "Do NOT stop to summarize. Do NOT ask the user. Do NOT cancel for context management -- compaction is automatic.",
+        "",
+        targetedInstruction,
+      ].join("\n");
+
+      return guideResult(updated, "PICK_TICKET", {
+        instruction,
+        reminders: [
+          "Do NOT use Claude Code's plan mode -- write plans as markdown files.",
+          "Do NOT ask the user for confirmation or approval.",
+          "Do NOT stop or summarize between items -- call autonomous_guide IMMEDIATELY.",
+          "You are in targeted auto mode -- work ONLY on the listed items.",
+          "NEVER cancel due to context size. Claude Story's hooks compact context automatically and preserve all session state.",
+          ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
+        ],
+        transitionedFrom: "INIT",
+      });
+    }
+
+    // Standard auto mode: browse full roadmap
     const nextResult = nextTickets(projectState, 5);
     let candidatesText = "";
     if (nextResult.kind === "found") {
@@ -869,29 +1066,11 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       }
     }
 
-    // Update and write state
-    updated = refreshLease(updated);
-    const pressure = evaluatePressure(updated);
-    updated = { ...updated, contextPressure: { ...updated.contextPressure, level: pressure } };
-    const written = writeSessionSync(dir, updated);
-
-    appendEvent(dir, {
-      rev: written.revision,
-      type: "start",
-      timestamp: new Date().toISOString(),
-      data: { recipe, branch: written.git.branch, head: written.git.initHead, mode: "auto" },
-    });
-
     const topCandidate = nextResult.kind === "found" ? nextResult.candidates[0] : null;
 
-    const maxTickets = updated.config.maxTicketsPerSession;
-    const interval = updated.config.handoverInterval ?? 3;
     const sessionDesc = maxTickets > 0
       ? `Work continuously until all tickets are done or you reach ${maxTickets} tickets.`
       : "Work continuously until all tickets are done.";
-    const checkpointDesc = interval > 0
-      ? ` A checkpoint handover will be saved every ${interval} tickets.`
-      : "";
 
     const hasHighIssues = highIssues.length > 0;
     const instruction = [
@@ -1255,7 +1434,17 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     const driftPreamble = `**HEAD changed during compaction** (expected ${expectedHead.slice(0, 8)}, got ${headResult.data.hash.slice(0, 8)}). Review state invalidated.\n\n`;
 
     if (mapping.state === "PICK_TICKET") {
-      // Load candidates for PICK_TICKET
+      // T-188: Targeted mode -- show only remaining targets (with stuck check)
+      if (isTargetedMode(driftWritten)) {
+        const dispatched = await dispatchTargetedResume(root, driftWritten, info.dir, [
+          `# Resumed After Compact -- HEAD Mismatch (Targeted Mode)`,
+          "",
+          driftPreamble + "Pick the next target item.",
+        ]);
+        return dispatched;
+      }
+
+      // Standard auto mode -- load candidates
       let candidatesText = "No ticket candidates available.";
       let topCandidate: { ticket: { id: string; title: string } } | null = null;
       try {
@@ -1351,6 +1540,17 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
 
   // If resuming at PICK_TICKET, load candidates and give directive instructions
   if (resumeState === "PICK_TICKET") {
+    // T-188: Targeted mode -- show only remaining targets (with stuck check)
+    if (isTargetedMode(written)) {
+      const dispatched = await dispatchTargetedResume(root, written, info.dir, [
+        "# Resumed After Compact -- Continue Targeted Session",
+        "",
+        `${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) done so far. Context compacted. Pick the next target item immediately.`,
+      ]);
+      return dispatched;
+    }
+
+    // Standard auto mode
     let candidatesText = "No ticket candidates available.";
     let topCandidate: { ticket: { id: string; title: string } } | null = null;
     try {

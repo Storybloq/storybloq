@@ -39,6 +39,33 @@ Run Claude Code with: `claude --model claude-opus-4-6 --dangerously-skip-permiss
 - Session stuck after compact -- run `claudestory session clear-compact` in terminal, then `action: "resume"`
 - Unrecoverable error -- run `claudestory session stop` in terminal (admin escape hatch)
 
+## Targeted Mode
+
+`/story auto T-183 T-184 ISS-077 T-185` starts an autonomous session that works ONLY on the specified items, in order, then ends.
+
+**How it works:**
+
+1. Call `claudestory_autonomous_guide` with `{ "sessionId": null, "action": "start", "targetWork": ["T-183", "T-184", "ISS-077", "T-185"] }`
+2. The guide validates all IDs, filters out already-complete items, and presents only target items as candidates
+3. Session works through each item via the standard pipeline (T-XXX through PLAN, ISS-XXX through ISSUE_FIX)
+4. Session ends when all targets are done (or all remaining are blocked)
+
+**Behavior details:**
+- Session cap is auto-set to the number of targets
+- PICK_TICKET only shows target items -- the agent cannot pick non-target work
+- Array order is respected -- first unworked item is suggested
+- Blocked targets are warned about at start but included (completing earlier targets may unblock them)
+- Already-complete targets are filtered out at start with a warning
+- Invalid IDs cause a hard error before session creation
+- Compact/resume preserves targetWork -- the session continues where it left off
+- If all remaining targets are blocked by items outside the list, session ends with an explanation
+
+**Use when:**
+- Triaging a specific set of high-priority items
+- Breaking up work into focused sprints
+- Working through a dependency chain in order
+- Fixing a cascade of related issues
+
 ## Tiered Access -- Review, Plan, Guided Modes
 
 The autonomous guide supports four execution tiers. Same guide, same handlers, different entry/exit points.

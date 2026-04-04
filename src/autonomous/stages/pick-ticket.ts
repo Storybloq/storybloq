@@ -2,19 +2,63 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
 
 /**
- * PICK_TICKET stage — Claude selects the next ticket to work on.
+ * PICK_TICKET stage -- Claude selects the next ticket to work on.
  *
  * enter(): Candidate list + pick instruction (from handleStart or CompleteStage).
  * report(): Validate ticket exists and is open, advance to PLAN.
+ *
+ * T-188: When targetWork is non-empty, candidates are constrained to remaining targets.
  */
 export class PickTicketStage implements WorkflowStage {
   readonly id = "PICK_TICKET";
 
   async enter(ctx: StageContext): Promise<StageResult> {
-    // Initial enter — provide ticket candidates + high-severity issues (T-153)
     const { state: projectState } = await ctx.loadProject();
+
+    // T-188: Targeted mode -- constrain candidates to remaining targets
+    if (isTargetedMode(ctx.state)) {
+      const remaining = getRemainingTargets(ctx.state);
+      if (remaining.length === 0) {
+        return { action: "goto", target: "COMPLETE" };
+      }
+
+      // Use firstReady as the stuck indicator -- handles all cases:
+      // external blockers, mutual-blocking cycles, missing tickets, resolved issues
+      const { text: candidatesText, firstReady } = buildTargetedCandidatesText(remaining, projectState);
+      if (!firstReady) {
+        return {
+          action: "goto",
+          target: "HANDOVER",
+          result: {
+            instruction: buildTargetedStuckHandover(candidatesText, ctx.state.sessionId),
+            reminders: [],
+            transitionedFrom: "PICK_TICKET",
+          },
+        } as StageResult;
+      }
+
+      const precomputed = { text: candidatesText, firstReady };
+      const targetedInstruction = buildTargetedPickInstruction(remaining, projectState, ctx.state.sessionId, precomputed);
+      return {
+        instruction: [
+          "# Pick a Target Item",
+          "",
+          `${remaining.length} of ${ctx.state.targetWork.length} target(s) remaining.`,
+          "",
+          targetedInstruction,
+        ].join("\n"),
+        reminders: [
+          "Do NOT stop or summarize. Call autonomous_guide IMMEDIATELY to pick a target item.",
+          "Do NOT ask the user for confirmation.",
+          "You are in targeted auto mode -- pick ONLY from the listed items.",
+        ],
+      };
+    }
+
+    // Standard auto mode -- browse full roadmap
     const { nextTickets } = await import("../../core/queries.js");
     const candidates = nextTickets(projectState, 5);
 
@@ -95,6 +139,10 @@ export class PickTicketStage implements WorkflowStage {
       return { action: "retry", instruction: "report.ticketId or report.issueId is required." };
     }
 
+    // T-188: Enforce target list in targeted mode
+    const targetReject = this.enforceTargetList(ctx, ticketId);
+    if (targetReject) return targetReject;
+
     // Validate ticket
     const { state: projectState } = await ctx.loadProject();
     const ticket = projectState.ticketByID(ticketId);
@@ -150,13 +198,19 @@ export class PickTicketStage implements WorkflowStage {
 
   // T-153: Handle issue pick -- validate and route to ISSUE_FIX
   private async handleIssuePick(ctx: StageContext, issueId: string): Promise<StageAdvance> {
+    // T-188: Enforce target list in targeted mode
+    const targetReject = this.enforceTargetList(ctx, issueId);
+    if (targetReject) return targetReject;
+
     const { state: projectState } = await ctx.loadProject();
     const issue = projectState.issues.find(i => i.id === issueId);
 
     if (!issue) {
       return { action: "retry", instruction: `Issue ${issueId} not found. Pick a valid issue or ticket.` };
     }
-    if (issue.status !== "open") {
+    // T-188: Targeted mode allows inprogress issues (resume from prior session)
+    const targeted = isTargetedMode(ctx.state);
+    if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { action: "retry", instruction: `Issue ${issueId} is ${issue.status}. Pick an open issue.` };
     }
 
@@ -174,5 +228,18 @@ export class PickTicketStage implements WorkflowStage {
     });
 
     return { action: "goto", target: "ISSUE_FIX" };
+  }
+
+  // T-188: Shared target list enforcement for report() and handleIssuePick()
+  private enforceTargetList(ctx: StageContext, pickedId: string): StageAdvance | null {
+    if (!isTargetedMode(ctx.state)) return null;
+    const remaining = getRemainingTargets(ctx.state);
+    if (remaining.length === 0) {
+      return { action: "goto", target: "COMPLETE" };
+    }
+    if (!remaining.includes(pickedId)) {
+      return { action: "retry", instruction: `${pickedId} is not a remaining target. Pick from: ${remaining.join(", ")}.` };
+    }
+    return null;
   }
 }

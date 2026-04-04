@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import { join } from "node:path";
+import { TARGET_WORK_ID_REGEX } from "../autonomous/session-types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { loadProject } from "../core/project-loader.js";
@@ -712,6 +713,7 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]).describe("Action to perform"),
       mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
       ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
+      targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(50).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),
       report: z.object({
         completedAction: z.string().describe("What was completed"),
         ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),

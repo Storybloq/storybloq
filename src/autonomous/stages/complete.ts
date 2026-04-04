@@ -3,6 +3,7 @@ import type { GuideReportInput } from "../session-types.js";
 import { evaluatePressure } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
 import { findFirstPostComplete, type NextStageResult } from "./registry.js";
+import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
 
 /**
  * COMPLETE stage — Ticket completed, decide next action.
@@ -82,7 +83,11 @@ export class CompleteStage implements WorkflowStage {
     const { state: projectState } = await ctx.loadProject();
     let nextTarget: string;
 
-    if (maxTickets > 0 && totalWorkDone >= maxTickets) {
+    // T-188: Targeted mode -- remaining-count is authoritative termination
+    const targetedRemaining = isTargetedMode(ctx.state) ? getRemainingTargets(ctx.state) : null;
+    if (targetedRemaining !== null) {
+      nextTarget = targetedRemaining.length === 0 ? "HANDOVER" : "PICK_TICKET";
+    } else if (maxTickets > 0 && totalWorkDone >= maxTickets) {
       nextTarget = "HANDOVER";
     } else {
       // Check if more work available (tickets or issues)
@@ -108,12 +113,16 @@ export class CompleteStage implements WorkflowStage {
       // "exhausted" — no enabled postComplete stages.
       // Both: fall through to HANDOVER.
 
+      const handoverHeader = targetedRemaining !== null
+        ? `# Targeted Session Complete -- All ${ctx.state.targetWork.length} target(s) done`
+        : `# Session Complete — ${ticketsDone} ticket(s) and ${issuesDone} issue(s) done`;
+
       return {
         action: "goto",
         target: "HANDOVER",
         result: {
           instruction: [
-            `# Session Complete — ${ticketsDone} ticket(s) and ${issuesDone} issue(s) done`,
+            handoverHeader,
             "",
             "Write a session handover summarizing what was accomplished, decisions made, and what's next.",
             "",
@@ -126,7 +135,48 @@ export class CompleteStage implements WorkflowStage {
       } as StageAdvance;
     }
 
-    // Back to PICK_TICKET with fresh candidates
+    // T-188: Targeted mode -- show only remaining targets, check for stuck
+    if (targetedRemaining !== null) {
+      const { text: candidatesText, firstReady } = buildTargetedCandidatesText(targetedRemaining, projectState);
+
+      // All remaining targets stuck -- route to HANDOVER with explanation
+      if (!firstReady) {
+        return {
+          action: "goto",
+          target: "HANDOVER",
+          result: {
+            instruction: buildTargetedStuckHandover(candidatesText, ctx.state.sessionId),
+            reminders: [],
+            transitionedFrom: "COMPLETE",
+          },
+        } as StageAdvance;
+      }
+
+      const precomputed = { text: candidatesText, firstReady };
+      const targetedInstruction = buildTargetedPickInstruction(targetedRemaining, projectState, ctx.state.sessionId, precomputed);
+      return {
+        action: "goto",
+        target: "PICK_TICKET",
+        result: {
+          instruction: [
+            `# Item Complete -- Continuing (${ctx.state.targetWork.length - targetedRemaining.length}/${ctx.state.targetWork.length} targets done)`,
+            "",
+            "Do NOT stop. Do NOT ask the user. Continue immediately with the next target.",
+            "",
+            targetedInstruction,
+          ].join("\n"),
+          reminders: [
+            "Do NOT stop or summarize. Call autonomous_guide IMMEDIATELY to pick the next target.",
+            "Do NOT ask the user for confirmation.",
+            "You are in targeted auto mode -- pick ONLY from the listed items.",
+          ],
+          transitionedFrom: "COMPLETE",
+          contextAdvice: "ok",
+        },
+      };
+    }
+
+    // Standard auto mode -- back to PICK_TICKET with fresh candidates
     const candidates = nextTickets(projectState, 5);
     let candidatesText = "";
     if (candidates.kind === "found") {

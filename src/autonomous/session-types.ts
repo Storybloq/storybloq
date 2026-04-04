@@ -1,6 +1,9 @@
 import { realpathSync } from "node:fs";
 import { z } from "zod";
 
+/** Combined ticket + issue ID regex for targetWork validation. */
+export const TARGET_WORK_ID_REGEX = /^(T-\d+[a-z]?|ISS-\d+)$/;
+
 // ---------------------------------------------------------------------------
 // Workflow states from N-005 v5.1 state machine
 // ---------------------------------------------------------------------------
@@ -442,6 +445,9 @@ export const SessionStateSchema = z.object({
   }).nullable().default(null),
   pipelinePhase: z.enum(["ticket", "postComplete"]).default("ticket"),
 
+  // T-188: Targeted auto mode — constrains PICK_TICKET to specific items
+  targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(50).default([]),
+
   // T-124: Test stage baseline and retry tracking
   testBaseline: z.object({
     exitCode: z.number(),
@@ -502,6 +508,8 @@ export interface GuideInput {
   readonly mode?: SessionMode;
   /** Ticket ID for tiered modes (review, plan, guided). */
   readonly ticketId?: string;
+  /** T-188: Target work items for targeted auto mode. Array of T-XXX and ISS-XXX IDs. */
+  readonly targetWork?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------

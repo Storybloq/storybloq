@@ -13,6 +13,7 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 
 - `/story` -> full context load (default, see Step 2 below)
 - `/story auto` -> start autonomous mode (read `autonomous-mode.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
+- `/story auto T-183 T-184 ISS-077` -> start targeted autonomous mode with ONLY those items in order (read `autonomous-mode.md`; pass the IDs as `targetWork` array in the start call)
 - `/story review T-XXX` -> start review mode for a ticket (read `autonomous-mode.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
 - `/story plan T-XXX` -> start plan mode for a ticket (read `autonomous-mode.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
 - `/story guided T-XXX` -> start guided mode for a ticket (read `autonomous-mode.md` in the same directory as this skill file; if not found, tell user to run `claudestory setup-skill`)
@@ -136,6 +137,7 @@ Tip: You can also use these modes anytime:
   /story guided T-XXX   One ticket end-to-end with planning and code review
   /story review T-XXX   Review code you already wrote
   /story design          Evaluate frontend against platform best practices
+  /story review-lenses   Run multi-lens review on current plan or diff
 ```
 
 Show this once or twice, then never again.
@@ -187,6 +189,8 @@ When working on a task and you encounter a bug, inconsistency, or improvement op
 When starting work on a ticket, update its status to `inprogress`. When done, update to `complete` in the same commit as the code change.
 
 **Frontend design guidance:** When working on UI or frontend tickets, read `design/design.md` in the same directory as this skill file for design principles and platform-specific best practices. Follow its priority order (clarity > hierarchy > platform correctness > accessibility > state completeness) and load the relevant platform reference. This applies to any ticket involving components, layouts, styling, or visual design.
+
+**Plan and code review:** Before implementing any plan, review it with the multi-lens review system. Read `review-lenses/review-lenses.md` in the same directory as this skill file and follow its workflow. This applies whether you used `/story plan`, native plan mode, or wrote the plan manually. The lens system runs 8 specialized reviewers in parallel (clean code, security, error handling, performance, API design, concurrency, test quality, accessibility) and synthesizes findings into a single verdict. After implementation, review the code diff the same way before committing.
 
 ## Managing Tickets and Issues
 

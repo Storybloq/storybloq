@@ -167,6 +167,33 @@ export async function gitDiffTreeNames(cwd: string, commitHash: string): Promise
 // Strict ref format: hex SHA (short or full) or HEAD. Rejects option injection (leading -)
 const SAFE_REF = /^[0-9a-f]{4,40}$/i;
 
+/** Check if `ancestor` is an ancestor of `descendant` (i.e., descendant is ahead). */
+export async function gitIsAncestor(
+  cwd: string, ancestor: string, descendant: string,
+): Promise<GitResult<boolean>> {
+  if (!SAFE_REF.test(ancestor) || !SAFE_REF.test(descendant)) {
+    return { ok: false, reason: "git_error", message: "invalid ref format" };
+  }
+  return new Promise((resolve) => {
+    execFile("git", ["merge-base", "--is-ancestor", ancestor, descendant],
+      { cwd, timeout: GIT_TIMEOUT },
+      (err) => {
+        if (!err) {
+          resolve({ ok: true, data: true });
+          return;
+        }
+        // Exit code 1 = not ancestor (valid result). Exit code is on .code (number) for process exits.
+        const code = (err as any).code;
+        if (code === 1) {
+          resolve({ ok: true, data: false });
+          return;
+        }
+        resolve({ ok: false, reason: "git_error", message: (err as Error).message });
+      },
+    );
+  });
+}
+
 /** Git log between two refs (oneline), capped at limit. Best-effort. */
 export async function gitLogRange(
   cwd: string,

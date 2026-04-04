@@ -21,10 +21,11 @@ vi.mock("../../src/autonomous/git-inspector.js", () => ({
   gitBlobHash: vi.fn().mockResolvedValue({ ok: false }),
   gitStash: vi.fn().mockResolvedValue({ ok: true }),
   gitStashPop: vi.fn().mockResolvedValue({ ok: true }),
+  gitIsAncestor: vi.fn().mockResolvedValue({ ok: true, data: false }),
 }));
 
 import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
-import { gitHead } from "../../src/autonomous/git-inspector.js";
+import { gitHead, gitIsAncestor } from "../../src/autonomous/git-inspector.js";
 import {
   createSession,
   writeSessionSync,
@@ -35,6 +36,7 @@ import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { writeResumeMarker } from "../../src/autonomous/resume-marker.js";
 
 const mockedGitHead = vi.mocked(gitHead);
+const mockedGitIsAncestor = vi.mocked(gitIsAncestor);
 
 let root: string;
 let sessionsDir: string;
@@ -96,6 +98,7 @@ beforeEach(() => {
   sessionsDir = join(root, ".story", "sessions");
   setupProject(root);
   mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+  mockedGitIsAncestor.mockResolvedValue({ ok: true, data: false });
 });
 
 afterEach(() => {
@@ -376,5 +379,75 @@ describe("T-183: resume marker cleanup", () => {
     });
 
     expect(existsSync(markerPath())).toBe(true);
+  });
+});
+
+describe("T-184: own-commit drift tolerance", () => {
+  it("own-commit drift resumes at preCompactState (no recovery)", async () => {
+    const session = createCompactSession(root, { preCompactState: "IMPLEMENT" });
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "own-commit-head" } });
+    mockedGitIsAncestor.mockResolvedValue({ ok: true, data: true }); // expectedHead is ancestor of actual
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const stateRaw = readFileSync(join(root, ".story", "sessions", session.sessionId, "state.json"), "utf-8");
+    const state = JSON.parse(stateRaw) as FullSessionState;
+    expect(state.state).toBe("IMPLEMENT"); // resumed at preCompactState, not recovered to PLAN
+    expect(state.git.expectedHead).toBe("own-commit-head"); // updated
+    expect(state.git.mergeBase).toBe("abc123"); // NOT changed (branch-off point preserved)
+  });
+
+  it("own-commit drift logs resumed event with ownCommit: true", async () => {
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "own-commit-head" } });
+    mockedGitIsAncestor.mockResolvedValue({ ok: true, data: true });
+
+    await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    const sessDir = join(root, ".story", "sessions", session.sessionId);
+    const { events } = readEvents(sessDir);
+    const resumed = events.filter(e => e.type === "resumed");
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0].data.ownCommit).toBe(true);
+    expect(resumed[0].data.headMatch).toBe(false);
+  });
+
+  it("non-ancestor drift triggers normal Branch B recovery", async () => {
+    const session = createCompactSession(root, { preCompactState: "IMPLEMENT" });
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "external-drift" } });
+    mockedGitIsAncestor.mockResolvedValue({ ok: true, data: false }); // not ancestor
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const stateRaw = readFileSync(join(root, ".story", "sessions", session.sessionId, "state.json"), "utf-8");
+    const state = JSON.parse(stateRaw) as FullSessionState;
+    expect(state.state).toBe("PLAN"); // IMPLEMENT maps to PLAN in RECOVERY_MAPPING
+  });
+
+  it("gitIsAncestor failure falls through to Branch B recovery (safe fallback)", async () => {
+    const session = createCompactSession(root, { preCompactState: "IMPLEMENT" });
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "drift-head" } });
+    mockedGitIsAncestor.mockResolvedValue({ ok: false, reason: "git_error", message: "git failed" });
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const stateRaw = readFileSync(join(root, ".story", "sessions", session.sessionId, "state.json"), "utf-8");
+    const state = JSON.parse(stateRaw) as FullSessionState;
+    expect(state.state).toBe("PLAN"); // fell through to Branch B recovery
   });
 });

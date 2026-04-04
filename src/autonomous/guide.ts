@@ -28,7 +28,7 @@ import {
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
 import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
-import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop } from "./git-inspector.js";
+import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
@@ -1397,8 +1397,17 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   }
 
   // Branch B: HEAD mismatch (drift during compaction)
+  let ownCommitDrift = false;
   if (expectedHead && headResult.data.hash !== expectedHead) {
-    // State-specific recovery routing
+    // T-184: Check if drift is session's own commit (expectedHead is ancestor of actual)
+    const ancestorCheck = await gitIsAncestor(root, expectedHead, headResult.data.hash);
+    if (ancestorCheck.ok && ancestorCheck.data) {
+      // Own commit -- fall through to Branch A with updated expectedHead
+      ownCommitDrift = true;
+    }
+  }
+  if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
+    // External drift or gitIsAncestor error -- existing recovery
     const mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
 
     const recoveryReviews = {
@@ -1536,7 +1545,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     });
   }
 
-  // Branch A: HEAD matches — normal resume
+  // Branch A: HEAD matches — normal resume (or own-commit drift from T-184)
   // ISS-036c: reset guideCallCount after compact to prevent false critical pressure
   const resumePressure = {
     ...info.state.contextPressure,
@@ -1553,6 +1562,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     resumeBlocked: false,
     guideCallCount: 0,
     contextPressure: { ...resumePressure, level: evaluatePressure({ ...info.state, guideCallCount: 0, contextPressure: resumePressure } as FullSessionState) },
+    // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point)
+    ...(ownCommitDrift ? { git: { ...info.state.git, expectedHead: headResult.data.hash } } : {}),
   });
   appendEvent(info.dir, {
     rev: written.revision,
@@ -1562,7 +1573,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       preCompactState: resumeState,
       compactionCount: written.contextPressure?.compactionCount ?? 0,
       ticketId: info.state.ticket?.id ?? null,
-      headMatch: true,
+      headMatch: !ownCommitDrift,
+      ownCommit: ownCommitDrift || undefined,
     },
   });
   removeResumeMarker(root);

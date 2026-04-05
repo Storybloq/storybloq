@@ -101,6 +101,7 @@ function registerDegradedTools(server: McpServer): void {
       degradedStatus.remove();
       degradedInit.remove();
       registerAllTools(server, result.root);
+      await startInboxWatcher(result.root, server);
     } catch (swapErr: unknown) {
       process.stderr.write(`claudestory: tool-swap failed after init: ${swapErr instanceof Error ? swapErr.message : String(swapErr)}\n`);
       // Re-register degraded tools so the server isn't completely toolless.

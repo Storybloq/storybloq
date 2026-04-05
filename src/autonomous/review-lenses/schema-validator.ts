@@ -78,6 +78,10 @@ export function validateFindings(
       continue;
     }
     const normalized = normalizeFields(item as Record<string, unknown>);
+    // Inject lens from parent when finding doesn't include it (ISS-092)
+    if (typeof normalized.lens !== "string" && typeof lensName === "string") {
+      normalized.lens = lensName;
+    }
     const reason = checkFinding(normalized, lensName);
     if (reason) {
       invalid.push({ raw: item, reason });

@@ -158,6 +158,27 @@ describe("schema validator", () => {
     expect(result.valid[0].recommendedImpact).toBe("non-blocking");
   });
 
+  it("injects lens from parent lensName when finding lacks lens field (ISS-092)", () => {
+    const { lens: _, ...noLens } = validFinding;
+    const result = validateFindings([noLens], "security");
+    expect(result.valid).toHaveLength(1);
+    expect(result.valid[0].lens).toBe("security");
+  });
+
+  it("does not inject lens when lensName is null and finding lacks lens field", () => {
+    const { lens: _, ...noLens } = validFinding;
+    const result = validateFindings([noLens], null);
+    expect(result.valid).toHaveLength(0);
+    expect(result.invalid).toHaveLength(1);
+    expect(result.invalid[0].reason).toBe("missing lens");
+  });
+
+  it("preserves finding's own lens even when lensName differs", () => {
+    const result = validateFindings([{ ...validFinding, lens: "clean-code" }], "security");
+    expect(result.valid).toHaveLength(1);
+    expect(result.valid[0].lens).toBe("clean-code");
+  });
+
   it("handles empty location string", () => {
     const { file: _, line: __, ...noFile } = validFinding;
     const withEmpty = { ...noFile, location: "" };

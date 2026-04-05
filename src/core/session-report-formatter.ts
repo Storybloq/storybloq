@@ -115,7 +115,11 @@ function buildTicketSection(state: FullSessionState): string {
     const risk = t.realizedRisk
       ? `${t.risk ?? "?"} → ${t.realizedRisk}`
       : (t.risk ?? "unknown");
-    lines.push(`- **${t.id}:** ${t.title} | risk: ${risk} | commit: \`${t.commitHash ?? "?"}\``);
+    const duration = t.startedAt && t.completedAt
+      ? formatDuration(t.startedAt, t.completedAt)
+      : null;
+    const durationPart = duration ? ` | duration: ${duration}` : "";
+    lines.push(`- **${t.id}:** ${t.title} | risk: ${risk}${durationPart} | commit: \`${t.commitHash ?? "?"}\``);
   }
   return lines.join("\n");
 }

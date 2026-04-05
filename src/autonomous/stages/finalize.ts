@@ -28,10 +28,11 @@ export class FinalizeStage implements WorkflowStage {
         "",
         "Code review passed. Time to commit.",
         "",
-        ctx.state.ticket ? `1. Update ticket ${ctx.state.ticket.id} status to "complete" in .story/` : "",
-        ctx.state.currentIssue ? `1. Ensure issue ${ctx.state.currentIssue.id} status is "resolved" in .story/issues/` : "",
-        "2. Stage only the files you created or modified for this work (code + .story/ changes). Do NOT use `git add -A` or `git add .`",
-        "3. Call me with completedAction: \"files_staged\"",
+        "1. Run `git reset` to clear the staging area (ensures no stale files from prior operations)",
+        ctx.state.ticket ? `2. Update ticket ${ctx.state.ticket.id} status to "complete" in .story/` : "",
+        ctx.state.currentIssue ? `2. Ensure issue ${ctx.state.currentIssue.id} status is "resolved" in .story/issues/` : "",
+        "3. Stage only the files you created or modified for this work (code + .story/ changes). Do NOT use `git add -A` or `git add .`",
+        "4. Call me with completedAction: \"files_staged\"",
       ].filter(Boolean).join("\n"),
       reminders: [
         ctx.state.currentIssue

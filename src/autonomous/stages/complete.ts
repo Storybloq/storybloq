@@ -80,7 +80,21 @@ export class CompleteStage implements WorkflowStage {
     }
 
     // ISS-084: Session cap uses totalWorkDone (tickets + issues). Cap takes precedence.
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      // Can't determine next work -- end session safely via HANDOVER
+      return {
+        action: "goto",
+        target: "HANDOVER",
+        result: {
+          instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Ending session -- write a handover noting the error.`,
+          reminders: [],
+          transitionedFrom: "COMPLETE",
+        },
+      } as StageAdvance;
+    }
     let nextTarget: string;
 
     // T-188: Targeted mode -- remaining-count is authoritative termination

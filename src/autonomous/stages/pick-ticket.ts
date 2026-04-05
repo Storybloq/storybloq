@@ -16,7 +16,15 @@ export class PickTicketStage implements WorkflowStage {
   readonly id = "PICK_TICKET";
 
   async enter(ctx: StageContext): Promise<StageResult> {
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      return {
+        action: "retry",
+        instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files for corruption, then call autonomous_guide with action "report" again.`,
+      } as StageAdvance;
+    }
 
     // T-188: Targeted mode -- constrain candidates to remaining targets
     if (isTargetedMode(ctx.state)) {
@@ -144,7 +152,12 @@ export class PickTicketStage implements WorkflowStage {
     if (targetReject) return targetReject;
 
     // Validate ticket
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files for corruption.` };
+    }
     const ticket = projectState.ticketByID(ticketId);
     if (!ticket) {
       return { action: "retry", instruction: `Ticket ${ticketId} not found. Pick a valid ticket.` };
@@ -203,7 +216,12 @@ export class PickTicketStage implements WorkflowStage {
     const targetReject = this.enforceTargetList(ctx, issueId);
     if (targetReject) return targetReject;
 
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files for corruption.` };
+    }
     const issue = projectState.issues.find(i => i.id === issueId);
 
     if (!issue) {

@@ -21,7 +21,33 @@ export class IssueFixStage implements WorkflowStage {
     }
 
     // Load full issue details from project state
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch {
+      // Fallback to minimal info from session state
+      return {
+        instruction: [
+          "# Fix Issue",
+          "",
+          `**${issue.id}**: ${issue.title} (severity: ${issue.severity})`,
+          "",
+          "(Warning: could not load full issue details from .story/ -- using session state.)",
+          "",
+          "Fix this issue, then update its status to \"resolved\" in `.story/issues/`.",
+          "Add a resolution description explaining the fix.",
+          "",
+          "When done, call `claudestory_autonomous_guide` with:",
+          '```json',
+          `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "issue_fixed" } }`,
+          '```',
+        ].join("\n"),
+        reminders: [
+          "Update the issue JSON: set status to \"resolved\", add resolution text, set resolvedDate.",
+          "Do NOT ask the user for confirmation.",
+        ],
+      };
+    }
     const fullIssue = projectState.issues.find(i => i.id === issue.id);
 
     const details = fullIssue
@@ -63,7 +89,12 @@ export class IssueFixStage implements WorkflowStage {
     }
 
     // Verify the issue was actually resolved in project state
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files for corruption, then report again.` };
+    }
     const current = projectState.issues.find(i => i.id === issue.id);
     if (!current || current.status !== "resolved") {
       return {

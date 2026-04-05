@@ -21,7 +21,13 @@ export class IssueSweepStage implements WorkflowStage {
   }
 
   async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
-    const { state: projectState } = await ctx.loadProject();
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch {
+      // Can't load issues -- skip sweep, proceed to HANDOVER
+      return { action: "goto", target: "HANDOVER" };
+    }
     const allIssues = projectState.issues.filter(i => i.status === "open");
 
     if (allIssues.length === 0) {
@@ -86,7 +92,12 @@ export class IssueSweepStage implements WorkflowStage {
     const current = sweep.current;
     if (current) {
       // Verify the issue was actually resolved in project state
-      const { state: verifyState } = await ctx.loadProject();
+      let verifyState;
+      try {
+        ({ state: verifyState } = await ctx.loadProject());
+      } catch (err) {
+        return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files, then report again.` };
+      }
       const currentIssue = verifyState.issues.find(i => i.id === current);
       if (currentIssue && currentIssue.status === "open") {
         return {
@@ -111,7 +122,17 @@ export class IssueSweepStage implements WorkflowStage {
       }
 
       // Load next issue details
-      const { state: projectState } = await ctx.loadProject();
+      let projectState;
+      try {
+        ({ state: projectState } = await ctx.loadProject());
+      } catch {
+        // Can't load details -- present with minimal info
+        return {
+          action: "retry",
+          instruction: `Issue ${next} is next. Fix it and report again. (Could not load full details from .story/.)`,
+          reminders: ["Set status to 'resolved' and add a resolution description."],
+        };
+      }
       const nextIssue = projectState.issues.find(i => i.id === next);
 
       return {

@@ -67,6 +67,10 @@ export function stopInboxWatcher(): void {
     watcher.close();
     watcher = null;
   }
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
 }
 
 // MARK: - Debounce

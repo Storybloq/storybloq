@@ -141,6 +141,15 @@ export function resolveRecipe(
     }
   }
 
+  // T-208: Validate ISSUE_FIX.enableCodeReview against resolved pipeline
+  if ((stages.ISSUE_FIX as Record<string, unknown> | undefined)?.enableCodeReview) {
+    if (pipeline.includes("VERIFY") || pipeline.includes("BUILD")) {
+      throw new Error(
+        "ISSUE_FIX.enableCodeReview is incompatible with VERIFY/BUILD in the pipeline (issue fixes use goto transitions, not pipeline walker)",
+      );
+    }
+  }
+
   // PostComplete pipeline
   const postComplete = raw.postComplete ? [...raw.postComplete] : [];
 

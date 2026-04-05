@@ -25,6 +25,10 @@ export class CodeReviewStage implements WorkflowStage {
     const risk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk ?? "low";
     const rounds = requiredRounds(risk as "low" | "medium" | "high");
     const mergeBase = ctx.state.git.mergeBase;
+    const isIssueFix = !!ctx.state.currentIssue;
+    const issueHeader = isIssueFix
+      ? `Issue Fix Code Review (${ctx.state.currentIssue!.id})`
+      : "Code Review";
 
     const diffCommand = mergeBase
       ? `\`git diff ${mergeBase}\``
@@ -37,7 +41,7 @@ export class CodeReviewStage implements WorkflowStage {
     if (reviewer === "lenses") {
       return {
         instruction: [
-          `# Multi-Lens Code Review — Round ${roundNum} of ${rounds} minimum`,
+          `# Multi-Lens ${issueHeader} — Round ${roundNum} of ${rounds} minimum`,
           "",
           `Capture the diff with: ${diffCommand}`,
           "",
@@ -64,7 +68,7 @@ export class CodeReviewStage implements WorkflowStage {
 
     return {
       instruction: [
-        `# Code Review — Round ${roundNum} of ${rounds} minimum`,
+        `# ${issueHeader} — Round ${roundNum} of ${rounds} minimum`,
         "",
         `Capture the diff with: ${diffCommand}`,
         "",
@@ -147,9 +151,13 @@ export class CodeReviewStage implements WorkflowStage {
       nextAction = "CODE_REVIEW";
     }
 
+    // T-208: Issue-fix context
+    const isIssueFix = !!ctx.state.currentIssue;
+
     // CODE_REVIEW → PLAN: full reset — both plan and code reviews cleared + lens cache + lens history
     // lensReviewHistory intentionally cleared: plan redirect means the approach changed fundamentally,
     // so previous findings are no longer relevant for the lessons feedback loop threshold calculation.
+    // T-208: Issue fixes have no plan stage — redirect to ISSUE_FIX with same reset semantics.
     if (nextAction === "PLAN") {
       clearCache(ctx.dir);
       ctx.writeState({
@@ -162,11 +170,14 @@ export class CodeReviewStage implements WorkflowStage {
         round: roundNum,
         verdict,
         findingCount: findings.length,
-        redirectedTo: "PLAN",
+        redirectedTo: isIssueFix ? "ISSUE_FIX" : "PLAN",
       });
 
       await ctx.fileDeferredFindings(findings, "code");
 
+      if (isIssueFix) {
+        return { action: "goto", target: "ISSUE_FIX" };
+      }
       return { action: "back", target: "PLAN", reason: "plan_redirect" };
     }
 
@@ -194,6 +205,10 @@ export class CodeReviewStage implements WorkflowStage {
     await ctx.fileDeferredFindings(findings, "code");
 
     if (nextAction === "IMPLEMENT") {
+      // T-208: Issue fixes route back to ISSUE_FIX instead of IMPLEMENT
+      if (isIssueFix) {
+        return { action: "goto", target: "ISSUE_FIX" };
+      }
       return { action: "back", target: "IMPLEMENT", reason: "request_changes" };
     }
 

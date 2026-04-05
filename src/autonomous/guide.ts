@@ -68,7 +68,7 @@ export const RECOVERY_MAPPING: Readonly<Record<string, { state: string; resetPla
   CODE_REVIEW:    { state: "PLAN",        resetPlan: true,  resetCode: true  },
   FINALIZE:       { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
   LESSON_CAPTURE: { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-  ISSUE_FIX:      { state: "PICK_TICKET", resetPlan: false, resetCode: false },
+  ISSUE_FIX:      { state: "ISSUE_FIX",   resetPlan: false, resetCode: false },  // T-208: self-recover to avoid dangling currentIssue
   ISSUE_SWEEP:    { state: "PICK_TICKET", resetPlan: false, resetCode: false },
 };
 
@@ -1440,7 +1440,12 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   }
   if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
     // External drift or gitIsAncestor error -- existing recovery
-    const mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
+    let mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
+
+    // T-208: Issue-aware drift override -- prevent CODE_REVIEW from drifting to PLAN when currentIssue is set
+    if (info.state.currentIssue && resumeState === "CODE_REVIEW") {
+      mapping = { state: "ISSUE_FIX", resetPlan: false, resetCode: true };
+    }
 
     const recoveryReviews = {
       plan: mapping.resetPlan ? [] : info.state.reviews.plan,
@@ -1568,6 +1573,31 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
         ].join("\n"),
         reminders: ["Re-implement and verify before re-submitting for code review."],
       });
+    }
+
+    // T-208: ISSUE_FIX drift dispatch -- call stage.enter() for issue-specific instruction
+    if (mapping.state === "ISSUE_FIX") {
+      const issueFixStage = getStage("ISSUE_FIX");
+      if (issueFixStage) {
+        const recipe = resolveRecipeFromState(driftWritten);
+        const ctx = new StageContext(root, info.dir, driftWritten, recipe);
+        const enterResult = await issueFixStage.enter(ctx);
+        if (isStageAdvance(enterResult)) {
+          return processAdvance(ctx, issueFixStage, enterResult);
+        }
+        return guideResult(ctx.state, "ISSUE_FIX", {
+          instruction: [
+            "# Resumed After Compact — HEAD Mismatch",
+            "",
+            `${driftPreamble}Recovered to **ISSUE_FIX**. Re-fix the issue and mark resolved.`,
+            "",
+            "---",
+            "",
+            enterResult.instruction,
+          ].join("\n"),
+          reminders: enterResult.reminders ?? [],
+        });
+      }
     }
 
     // Fallback for unmapped states

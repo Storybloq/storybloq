@@ -11,7 +11,8 @@
     "BUILD": { "enabled": false, "command": "npm run build" },
     "VERIFY": { "enabled": false, "startCommand": "npm run dev", "readinessUrl": "http://localhost:3000", "endpoints": [] },
     "LESSON_CAPTURE": { "enabled": false },
-    "ISSUE_SWEEP": { "enabled": false }
+    "ISSUE_SWEEP": { "enabled": false },
+    "ISSUE_FIX": { "enableCodeReview": false }
   },
   "dirtyFileHandling": "block",
   "defaults": {

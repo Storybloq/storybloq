@@ -21,7 +21,49 @@ import { gitDiffCachedNames, gitHead, gitDiffTreeNames } from "../git-inspector.
 export class FinalizeStage implements WorkflowStage {
   readonly id = "FINALIZE";
 
-  async enter(ctx: StageContext): Promise<StageResult> {
+  async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
+    // ISS-031: Already committed (re-entry guard)
+    if (ctx.state.finalizeCheckpoint === "committed") {
+      return { action: "advance" };
+    }
+
+    // ISS-105/ISS-106: Detect pre-existing commit before instructing staging.
+    // Agents in the issue-fix pipeline typically commit before reporting back,
+    // so HEAD has already advanced. Skip the staging ceremony entirely.
+    const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
+    if (previousHead) {
+      const headResult = await gitHead(ctx.root);
+      if (headResult.ok && headResult.data.hash !== previousHead) {
+        // HEAD advanced -- validate and fast-forward to handleCommit
+        const treeResult = await gitDiffTreeNames(ctx.root, headResult.data.hash);
+        const ticketId = ctx.state.ticket?.id;
+        if (ticketId) {
+          const ticketPath = `.story/tickets/${ticketId}.json`;
+          if (treeResult.ok && !treeResult.data.includes(ticketPath)) {
+            // Commit exists but missing ticket file -- fall through to staging instruction
+          } else {
+            ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
+            return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
+          }
+        }
+        const issueId = ctx.state.currentIssue?.id;
+        if (issueId) {
+          const issuePath = `.story/issues/${issueId}.json`;
+          if (treeResult.ok && !treeResult.data.includes(issuePath)) {
+            // Commit exists but missing issue file -- fall through to staging instruction
+          } else {
+            ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
+            return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
+          }
+        }
+        // No ticket or issue to validate -- accept the commit as-is
+        if (!ticketId && !issueId) {
+          ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
+          return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
+        }
+      }
+    }
+
     return {
       instruction: [
         "# Finalize",

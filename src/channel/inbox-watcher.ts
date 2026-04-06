@@ -83,6 +83,7 @@ export function stopInboxWatcher(): void {
     clearInterval(pollInterval);
     pollInterval = null;
   }
+  permissionRetryCount.clear();
 }
 
 // MARK: - Debounce
@@ -257,6 +258,7 @@ async function processEventFile(inboxPath: string, filename: string, server: Mcp
         process.stderr.write(`claudestory: rename-back failed for ${filename}, quarantining: ${renameMsg}\n`);
         permissionRetryCount.delete(filename);
         await moveToFailed(inboxPath, processingFilename, filename);
+        return;
       }
       process.stderr.write(`claudestory: permission notification failed (attempt ${retries}/${MAX_PERMISSION_RETRIES}), keeping for retry: ${msg}\n`);
       return;

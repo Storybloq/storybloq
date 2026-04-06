@@ -376,10 +376,9 @@ describe("ProjectState", () => {
         makeTicket({ id: "T-003", status: "open", parentTicket: "T-001" }),
       ];
       const state = makeState({ tickets });
-      // All tickets count includes umbrella
-      expect(state.totalTicketCount).toBe(3);
-      expect(state.completeTicketCount).toBe(2);
-      // Leaf counts exclude umbrella T-001
+      // All counts now use leaf tickets only (exclude umbrella T-001)
+      expect(state.totalTicketCount).toBe(2);
+      expect(state.completeTicketCount).toBe(1);
       expect(state.leafTicketCount).toBe(2);
       expect(state.completeLeafTicketCount).toBe(1);
     });

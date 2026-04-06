@@ -150,15 +150,17 @@ async function processInbox(inboxPath: string, server: McpServer): Promise<void>
     .filter((f) => f.endsWith(".json") && !f.startsWith("."))
     .sort(); // Process in timestamp order
 
-  // Backpressure: skip if inbox is overloaded
+  // Backpressure: process bounded subset to drain gradually instead of stalling
+  const batch = eventFiles.length > MAX_INBOX_DEPTH
+    ? eventFiles.slice(0, MAX_INBOX_DEPTH)
+    : eventFiles;
   if (eventFiles.length > MAX_INBOX_DEPTH) {
     process.stderr.write(
-      `claudestory: channel inbox has ${eventFiles.length} files (max ${MAX_INBOX_DEPTH}), skipping until consumer catches up\n`,
+      `claudestory: channel inbox has ${eventFiles.length} files, processing first ${MAX_INBOX_DEPTH}\n`,
     );
-    return;
   }
 
-  for (const filename of eventFiles) {
+  for (const filename of batch) {
     await processEventFile(inboxPath, filename, server);
   }
 
@@ -190,7 +192,9 @@ async function processEventFile(inboxPath: string, filename: string, server: Mcp
   try {
     raw = await readFile(processingPath, "utf-8");
   } catch {
-    return; // File may have been deleted between rename and readFile
+    // Move to .failed to prevent stranding as .processing until restart
+    await moveToFailed(inboxPath, `${filename}.processing`, filename);
+    return;
   }
 
   // Step 3: Parse and validate immediately (no intermediate routing)

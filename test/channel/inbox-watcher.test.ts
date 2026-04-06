@@ -140,7 +140,7 @@ describe("inbox-watcher", () => {
     expect(firstContent).toContain("T-001");
   });
 
-  it("skips processing when inbox exceeds max depth", async () => {
+  it("processes bounded subset when inbox exceeds max depth", async () => {
     await mkdir(inboxPath, { recursive: true });
     // Write 51 valid event files (exceeds MAX_INBOX_DEPTH of 50)
     const promises: Promise<string>[] = [];
@@ -153,12 +153,12 @@ describe("inbox-watcher", () => {
     const mock = createMockServer();
     await startInboxWatcher(root, mock as any);
 
-    // Should NOT have processed any events (backpressure)
-    expect(mock.notifications).toHaveLength(0);
+    // Should have processed the first 50 events (bounded subset)
+    expect(mock.notifications).toHaveLength(50);
 
-    // Files should still be there
+    // 1 file should remain unprocessed
     const remaining = await readdir(inboxPath);
-    expect(remaining.filter((f) => f.endsWith(".json")).length).toBe(51);
+    expect(remaining.filter((f) => f.endsWith(".json")).length).toBe(1);
   });
 
   it("handles notification failure gracefully", async () => {

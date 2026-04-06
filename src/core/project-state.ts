@@ -157,11 +157,11 @@ export class ProjectState {
     this.lessonsByID = lByID;
 
     // Step 7: Counts
-    this.totalTicketCount = input.tickets.length;
-    this.openTicketCount = input.tickets.filter(
+    this.totalTicketCount = this.leafTickets.length;
+    this.openTicketCount = this.leafTickets.filter(
       (t) => t.status !== "complete",
     ).length;
-    this.completeTicketCount = input.tickets.filter(
+    this.completeTicketCount = this.leafTickets.filter(
       (t) => t.status === "complete",
     ).length;
     this.openIssueCount = input.issues.filter(

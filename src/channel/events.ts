@@ -25,6 +25,11 @@ const PriorityChangedPayload = z.object({
   newOrder: z.number().int(),
 });
 
+const PermissionResponsePayload = z.object({
+  requestId: z.string().regex(/^[a-zA-Z0-9]{5}$/),
+  behavior: z.enum(["approve", "deny"]),
+});
+
 export const ChannelEventSchema = z.discriminatedUnion("event", [
   z.object({
     event: z.literal("ticket_requested"),
@@ -50,6 +55,11 @@ export const ChannelEventSchema = z.discriminatedUnion("event", [
     event: z.literal("priority_changed"),
     timestamp: z.string(),
     payload: PriorityChangedPayload,
+  }),
+  z.object({
+    event: z.literal("permission_response"),
+    timestamp: z.string(),
+    payload: PermissionResponsePayload,
   }),
 ]);
 
@@ -91,6 +101,8 @@ export function formatChannelContent(event: ChannelEvent): string {
     }
     case "priority_changed":
       return `User changed priority of ticket ${event.payload.ticketId} to order ${event.payload.newOrder}.`;
+    case "permission_response":
+      return `Permission response for request ${event.payload.requestId}: ${event.payload.behavior}.`;
   }
 }
 
@@ -110,6 +122,10 @@ export function formatChannelMeta(event: ChannelEvent): Record<string, string> {
     case "priority_changed":
       meta.ticketId = event.payload.ticketId;
       meta.newOrder = String(event.payload.newOrder);
+      break;
+    case "permission_response":
+      meta.requestId = event.payload.requestId;
+      meta.behavior = event.payload.behavior;
       break;
   }
   return meta;

@@ -181,6 +181,33 @@ describe("inbox-watcher", () => {
     expect(remaining.filter((f) => f.endsWith(".json"))).toHaveLength(0);
   });
 
+  it("routes permission_response to notifications/claude/channel/permission", async () => {
+    await mkdir(inboxPath, { recursive: true });
+    await writeEvent(inboxPath, "permission_response", { requestId: "aBc12", behavior: "approve" }, "2026-04-05T10:00:00.000Z");
+
+    const mock = createMockServer();
+    await startInboxWatcher(root, mock as any);
+
+    expect(mock.notifications).toHaveLength(1);
+    // Permission responses must use the permission-specific notification method
+    expect(mock.notifications[0].method).toBe("notifications/claude/channel/permission");
+    // Params should include requestId and behavior directly
+    const params = mock.notifications[0].params as any;
+    expect(params.requestId).toBe("aBc12");
+    expect(params.behavior).toBe("approve");
+  });
+
+  it("routes regular events to notifications/claude/channel", async () => {
+    await mkdir(inboxPath, { recursive: true });
+    await writeEvent(inboxPath, "ticket_requested", { ticketId: "T-001" }, "2026-04-05T10:00:00.000Z");
+
+    const mock = createMockServer();
+    await startInboxWatcher(root, mock as any);
+
+    expect(mock.notifications).toHaveLength(1);
+    expect(mock.notifications[0].method).toBe("notifications/claude/channel");
+  });
+
   it("trims .failed/ directory beyond max", async () => {
     await mkdir(inboxPath, { recursive: true });
     const failedDir = join(inboxPath, ".failed");

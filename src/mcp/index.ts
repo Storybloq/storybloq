@@ -140,7 +140,10 @@ async function main(): Promise<void> {
         ? "Start with claudestory_status for a project overview, then claudestory_ticket_next for the highest-priority work, then claudestory_handover_latest for session context."
         : "No .story/ project found. Use claudestory_init to initialize a new project, or navigate to a directory with .story/.",
       capabilities: {
-        experimental: { "claude/channel": {} },
+        experimental: {
+          "claude/channel": {},
+          "claude/channel/permission": {},
+        },
       },
     },
   );

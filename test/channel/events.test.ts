@@ -67,6 +67,47 @@ describe("ChannelEventSchema", () => {
     }
   });
 
+  it("parses permission_response event", () => {
+    const data = {
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      payload: { requestId: "aBc12", behavior: "approve" },
+    };
+    const result = ChannelEventSchema.safeParse(data);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.event).toBe("permission_response");
+      expect(result.data.payload).toEqual({ requestId: "aBc12", behavior: "approve" });
+    }
+  });
+
+  it("parses permission_response with deny behavior", () => {
+    const result = ChannelEventSchema.safeParse({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      payload: { requestId: "xYz99", behavior: "deny" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects permission_response with invalid requestId format", () => {
+    const result = ChannelEventSchema.safeParse({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      payload: { requestId: "toolong123", behavior: "approve" },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects permission_response with invalid behavior", () => {
+    const result = ChannelEventSchema.safeParse({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00.000Z",
+      payload: { requestId: "aBc12", behavior: "maybe" },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects unknown event type", () => {
     const result = ChannelEventSchema.safeParse({
       event: "unknown_event",
@@ -138,6 +179,40 @@ describe("isValidInboxFilename", () => {
 
   it("rejects empty string", () => {
     expect(isValidInboxFilename("")).toBe(false);
+  });
+});
+
+describe("formatChannelContent -- permission_response", () => {
+  it("formats permission_response approve", () => {
+    const content = formatChannelContent({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00Z",
+      payload: { requestId: "aBc12", behavior: "approve" },
+    } as any);
+    expect(content).toContain("aBc12");
+    expect(content).toContain("approve");
+  });
+
+  it("formats permission_response deny", () => {
+    const content = formatChannelContent({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00Z",
+      payload: { requestId: "xYz99", behavior: "deny" },
+    } as any);
+    expect(content).toContain("deny");
+  });
+});
+
+describe("formatChannelMeta -- permission_response", () => {
+  it("includes requestId and behavior", () => {
+    const meta = formatChannelMeta({
+      event: "permission_response",
+      timestamp: "2026-04-05T10:00:00Z",
+      payload: { requestId: "aBc12", behavior: "approve" },
+    } as any);
+    expect(meta.event).toBe("permission_response");
+    expect(meta.requestId).toBe("aBc12");
+    expect(meta.behavior).toBe("approve");
   });
 });
 

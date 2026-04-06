@@ -169,19 +169,34 @@ async function processEventFile(inboxPath: string, filename: string, server: Mcp
   const event = result.data;
 
   // Step 4: Format and send channel notification
-  const content = formatChannelContent(event);
-  const meta = formatChannelMeta(event);
-
   try {
-    await server.server.sendNotification({
-      method: "notifications/claude/channel" as any,
-      params: { content, meta },
-    });
+    if (event.event === "permission_response") {
+      // Permission responses use a dedicated notification method with direct params
+      await server.server.sendNotification({
+        method: "notifications/claude/channel/permission" as any,
+        params: {
+          requestId: event.payload.requestId,
+          behavior: event.payload.behavior,
+        },
+      });
+    } else {
+      const content = formatChannelContent(event);
+      const meta = formatChannelMeta(event);
+      await server.server.sendNotification({
+        method: "notifications/claude/channel" as any,
+        params: { content, meta },
+      });
+    }
     process.stderr.write(`claudestory: sent channel event ${event.event}\n`);
   } catch (err: unknown) {
-    // Channel notifications may fail if channels are not available (gated, no OAuth, etc.)
-    // This is expected -- log and continue. The event is still consumed.
     const msg = err instanceof Error ? err.message : String(err);
+    if (event.event === "permission_response") {
+      // Permission verdicts must not be silently dropped. Leave file for retry.
+      process.stderr.write(`claudestory: permission notification failed, keeping file for retry: ${msg}\n`);
+      return;
+    }
+    // Other channel notifications may fail if channels are not available (gated, no OAuth, etc.)
+    // This is expected -- log and continue. The event is still consumed.
     process.stderr.write(`claudestory: channel notification failed (expected if channels unavailable): ${msg}\n`);
   }
 

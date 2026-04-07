@@ -70,20 +70,20 @@ describe("ISS-063: FINALIZE idempotent checkpoint", () => {
 
   afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
 
-  it("repeated files_staged at 'staged' checkpoint returns pre-commit instruction", async () => {
+  it("repeated files_staged at 'staged' checkpoint returns commit instruction", async () => {
     const state = makeState({ finalizeCheckpoint: "staged" });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const advance = await stage.report(ctx, { completedAction: "files_staged" });
     expect(advance.action).toBe("retry");
-    expect(advance.instruction).toContain("pre-commit");
+    expect(advance.instruction).toContain("commit_done");
   });
 
-  it("repeated files_staged at 'staged_override' returns pre-commit instruction", async () => {
+  it("repeated files_staged at 'staged_override' returns commit instruction", async () => {
     const state = makeState({ finalizeCheckpoint: "staged_override" });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const advance = await stage.report(ctx, { completedAction: "files_staged" });
     expect(advance.action).toBe("retry");
-    expect(advance.instruction).toContain("pre-commit");
+    expect(advance.instruction).toContain("commit_done");
   });
 });
 

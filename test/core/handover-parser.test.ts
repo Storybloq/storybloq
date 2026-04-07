@@ -6,6 +6,7 @@ import {
   listHandovers,
   readHandover,
   extractHandoverDate,
+  extractHandoverTitle,
 } from "../../src/core/handover-parser.js";
 import type { LoadWarning } from "../../src/core/errors.js";
 
@@ -82,5 +83,27 @@ describe("extractHandoverDate", () => {
   it("returns null for non-conforming filename", () => {
     expect(extractHandoverDate("notes.md")).toBeNull();
     expect(extractHandoverDate("session-2026-03-15.md")).toBeNull();
+  });
+});
+
+describe("extractHandoverTitle", () => {
+  it("strips date prefix and extension, converts hyphens to spaces", () => {
+    expect(extractHandoverTitle("2026-03-15-01-session-handover.md")).toBe("01 session handover");
+  });
+
+  it("handles filenames without sequence number", () => {
+    expect(extractHandoverTitle("2026-03-15-session-title.md")).toBe("session title");
+  });
+
+  it("returns full filename (minus .md) for non-conforming names", () => {
+    expect(extractHandoverTitle("notes.md")).toBe("notes");
+  });
+
+  it("handles auto-session suffix", () => {
+    expect(extractHandoverTitle("2026-04-06-12-auto-session.md")).toBe("12 auto session");
+  });
+
+  it("returns empty string for date-only filename", () => {
+    expect(extractHandoverTitle("2026-03-15.md")).toBe("");
   });
 });

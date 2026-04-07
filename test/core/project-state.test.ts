@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { type PhaseStatus } from "../../src/core/project-state.js";
-import { makeTicket, makeIssue, makeNote, makeState, makePhase, makeRoadmap } from "./test-factories.js";
+import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makePhase, makeRoadmap } from "./test-factories.js";
 
 // --- Tests ---
 
@@ -376,10 +376,9 @@ describe("ProjectState", () => {
         makeTicket({ id: "T-003", status: "open", parentTicket: "T-001" }),
       ];
       const state = makeState({ tickets });
-      // All tickets count includes umbrella
-      expect(state.totalTicketCount).toBe(3);
-      expect(state.completeTicketCount).toBe(2);
-      // Leaf counts exclude umbrella T-001
+      // All counts now use leaf tickets only (exclude umbrella T-001)
+      expect(state.totalTicketCount).toBe(2);
+      expect(state.completeTicketCount).toBe(1);
       expect(state.leafTicketCount).toBe(2);
       expect(state.completeLeafTicketCount).toBe(1);
     });
@@ -392,20 +391,21 @@ describe("ProjectState", () => {
       expect(state.openTicketCount).toBe(1);
     });
 
-    it("computes openIssueCount correctly", () => {
+    it("computes activeIssueCount correctly (open + inprogress, excludes resolved)", () => {
       const issues = [
         makeIssue({ id: "ISS-001", status: "open" }),
         makeIssue({ id: "ISS-002", status: "resolved" }),
         makeIssue({ id: "ISS-003", status: "open" }),
+        makeIssue({ id: "ISS-004", status: "inprogress" }),
       ];
       const state = makeState({ issues });
-      expect(state.openIssueCount).toBe(2);
+      expect(state.activeIssueCount).toBe(3);
     });
 
-    it("computes issuesBySeverity for open issues only", () => {
+    it("computes issuesBySeverity for active issues (excludes resolved)", () => {
       const issues = [
         makeIssue({ id: "ISS-001", status: "open", severity: "high" }),
-        makeIssue({ id: "ISS-002", status: "open", severity: "high" }),
+        makeIssue({ id: "ISS-002", status: "inprogress", severity: "high" }),
         makeIssue({ id: "ISS-003", status: "resolved", severity: "high" }),
         makeIssue({ id: "ISS-004", status: "open", severity: "low" }),
       ];
@@ -481,7 +481,7 @@ describe("ProjectState", () => {
     it("handles empty inputs", () => {
       const state = makeState();
       expect(state.totalTicketCount).toBe(0);
-      expect(state.openIssueCount).toBe(0);
+      expect(state.activeIssueCount).toBe(0);
       expect(state.leafTickets).toEqual([]);
       expect(state.umbrellaIDs.size).toBe(0);
       expect(state.blockedCount).toBe(0);
@@ -499,6 +499,52 @@ describe("ProjectState", () => {
       const second = makeIssue({ id: "ISS-001", title: "Second" });
       const state = makeState({ issues: [first, second] });
       expect(state.issueByID("ISS-001")?.title).toBe("Second");
+    });
+  });
+
+  describe("lessonTags", () => {
+    it("returns deduplicated sorted tags from all lessons", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: ["testing", "architecture"] }),
+        makeLesson({ id: "L-002", tags: ["testing", "performance"] }),
+        makeLesson({ id: "L-003", tags: ["security"] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["architecture", "performance", "security", "testing"]);
+    });
+
+    it("returns empty array when no lessons", () => {
+      const state = makeState();
+      expect(state.lessonTags).toEqual([]);
+    });
+
+    it("returns empty array when lessons have no tags", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: [] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual([]);
+    });
+
+    it("handles lessons with null/undefined tags gracefully", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: ["valid"] }),
+        // Force null tags to simulate malformed data bypassing schema validation
+        makeLesson({ id: "L-002", tags: null as unknown as string[] }),
+        makeLesson({ id: "L-003", tags: undefined as unknown as string[] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["valid"]);
+    });
+
+    it("handles mix of empty and populated tags", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: [] }),
+        makeLesson({ id: "L-002", tags: ["arch", "testing"] }),
+        makeLesson({ id: "L-003", tags: [] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["arch", "testing"]);
     });
   });
 

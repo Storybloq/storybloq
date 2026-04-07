@@ -121,7 +121,7 @@ export function formatStatus(
     completeTickets: state.completeLeafTicketCount,
     openTickets: state.leafTicketCount - state.completeLeafTicketCount,
     blockedTickets: state.blockedCount,
-    openIssues: state.openIssueCount,
+    openIssues: state.activeIssueCount,
     activeNotes: state.activeNoteCount,
     archivedNotes: state.archivedNoteCount,
     activeLessons: state.activeLessonCount,
@@ -145,7 +145,7 @@ export function formatStatus(
     `# ${escapeMarkdownInline(state.config.project)}`,
     "",
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
-    `Issues: ${state.openIssueCount} open`,
+    `Issues: ${state.activeIssueCount} open`,
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
     `Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`,
     `Handovers: ${state.handoverFilenames.length}`,
@@ -776,13 +776,20 @@ export function formatRecap(
     lines.push("No snapshot found. Run `claudestory snapshot` to enable session diffs.");
     lines.push("");
     lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`);
-    lines.push(`Issues: ${state.openIssueCount} open`);
+    lines.push(`Issues: ${state.activeIssueCount} open`);
   } else {
     lines.push(`# ${escapeMarkdownInline(state.config.project)} — Recap`);
     lines.push("");
     lines.push(`Since snapshot: ${recap.snapshot.createdAt}`);
     if (recap.partial) {
       lines.push("**Note:** Snapshot was taken from a project with integrity warnings. Diff may be incomplete.");
+    }
+    if (recap.staleness) {
+      if (recap.staleness.status === "diverged") {
+        lines.push("**Warning:** Snapshot commit is not an ancestor of current HEAD (history diverged; possible rebase, force-push, or branch switch).");
+      } else if (recap.staleness.status === "behind" && recap.staleness.commitsBehind) {
+        lines.push(`**Warning:** Snapshot is ${recap.staleness.commitsBehind} commit(s) behind HEAD -- context may be stale.`);
+      }
     }
 
     const changes = recap.changes!;
@@ -1104,7 +1111,7 @@ function formatFullExport(
   lines.push(`# ${escapeMarkdownInline(state.config.project)} — Full Export`);
   lines.push("");
   lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
-  lines.push(`Issues: ${state.openIssueCount} open`);
+  lines.push(`Issues: ${state.activeIssueCount} open`);
   lines.push(`Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`);
   lines.push(`Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`);
 

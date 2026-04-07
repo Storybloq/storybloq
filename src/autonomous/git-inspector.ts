@@ -217,6 +217,34 @@ export async function gitLogRange(
   );
 }
 
+/** Lightweight HEAD hash only (no branch resolution), 3s timeout. */
+export async function gitHeadHash(cwd: string): Promise<GitResult<string>> {
+  return new Promise((resolve) => {
+    execFile("git", ["rev-parse", "HEAD"], { cwd, timeout: 3000 }, (err, stdout) => {
+      if (err) {
+        const message = (err as any).stderr?.trim() || (err as Error).message || "unknown git error";
+        resolve({ ok: false, reason: "git_error", message });
+        return;
+      }
+      resolve({ ok: true, data: stdout.trim() });
+    });
+  });
+}
+
+/** Count commits reachable from `toSha` but not from `fromSha`. Validates refs via SAFE_REF. */
+export async function gitCommitDistance(
+  cwd: string, fromSha: string, toSha: string,
+): Promise<GitResult<number>> {
+  if (!SAFE_REF.test(fromSha) || !SAFE_REF.test(toSha)) {
+    return { ok: false, reason: "git_error", message: "invalid ref format" };
+  }
+  return git(cwd, ["rev-list", "--count", `${fromSha}..${toSha}`], (out) => {
+    const n = parseInt(out.trim(), 10);
+    if (Number.isNaN(n)) throw new Error(`unexpected rev-list output: ${out}`);
+    return n;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

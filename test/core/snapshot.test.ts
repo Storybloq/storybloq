@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtemp, rm, readdir, writeFile, mkdir } from "node:fs/promises";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { mkdtemp, rm, readdir, writeFile, mkdir, readFile as fsReadFile } from "node:fs/promises";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectState } from "../../src/core/project-state.js";
@@ -415,27 +416,27 @@ describe("snapshot", () => {
   });
 
   describe("buildRecap", () => {
-    it("returns null changes when no snapshot", () => {
+    it("returns null changes when no snapshot", async () => {
       const state = makeState();
-      const recap = buildRecap(state, null);
+      const recap = await buildRecap(state, null, "/tmp");
       expect(recap.snapshot).toBeNull();
       expect(recap.changes).toBeNull();
       expect(recap.partial).toBe(false);
     });
 
-    it("includes suggested actions even without snapshot", () => {
+    it("includes suggested actions even without snapshot", async () => {
       const state = makeState({
         tickets: [makeTicket({ id: "T-001", phase: "p1", status: "open" })],
         issues: [makeIssue({ id: "ISS-001", severity: "critical" })],
         roadmap: makeRoadmap([makePhase({ id: "p1" })]),
       });
-      const recap = buildRecap(state, null);
+      const recap = await buildRecap(state, null, "/tmp");
       expect(recap.suggestedActions.nextTicket).not.toBeNull();
       expect(recap.suggestedActions.nextTicket!.id).toBe("T-001");
       expect(recap.suggestedActions.highSeverityIssues).toHaveLength(1);
     });
 
-    it("sets partial=true when snapshot had warnings", () => {
+    it("sets partial=true when snapshot had warnings", async () => {
       const state = makeState();
       const snapshotInfo = {
         snapshot: {
@@ -450,11 +451,11 @@ describe("snapshot", () => {
         },
         filename: "2026-03-20T00-00-00-000.json",
       };
-      const recap = buildRecap(state, snapshotInfo);
+      const recap = await buildRecap(state, snapshotInfo, "/tmp");
       expect(recap.partial).toBe(true);
     });
 
-    it("sets partial=false when snapshot had no warnings", () => {
+    it("sets partial=false when snapshot had no warnings", async () => {
       const state = makeState();
       const snapshotInfo = {
         snapshot: {
@@ -468,11 +469,11 @@ describe("snapshot", () => {
         },
         filename: "2026-03-20T00-00-00-000.json",
       };
-      const recap = buildRecap(state, snapshotInfo);
+      const recap = await buildRecap(state, snapshotInfo, "/tmp");
       expect(recap.partial).toBe(false);
     });
 
-    it("populates changes when snapshot exists", () => {
+    it("populates changes when snapshot exists", async () => {
       const currentState = makeState({
         tickets: [makeTicket({ id: "T-001", phase: "p1", status: "complete" })],
         roadmap: makeRoadmap([makePhase({ id: "p1" })]),
@@ -489,7 +490,7 @@ describe("snapshot", () => {
         },
         filename: "2026-03-20T00-00-00-000.json",
       };
-      const recap = buildRecap(currentState, snapshotInfo);
+      const recap = await buildRecap(currentState, snapshotInfo, "/tmp");
       expect(recap.changes).not.toBeNull();
       expect(recap.changes!.tickets.statusChanged).toHaveLength(1);
       expect(recap.changes!.phases.statusChanged).toHaveLength(1);
@@ -580,7 +581,7 @@ describe("snapshot", () => {
       expect(parsed.notes).toEqual([]);
     });
 
-    it("filters high severity issues for suggested actions", () => {
+    it("filters high severity issues for suggested actions", async () => {
       const state = makeState({
         issues: [
           makeIssue({ id: "ISS-001", severity: "critical" }),
@@ -590,12 +591,177 @@ describe("snapshot", () => {
           makeIssue({ id: "ISS-005", severity: "high", status: "resolved" }),
         ],
       });
-      const recap = buildRecap(state, null);
+      const recap = await buildRecap(state, null, "/tmp");
       // Only critical + high, excluding resolved
       expect(recap.suggestedActions.highSeverityIssues).toHaveLength(2);
       const ids = recap.suggestedActions.highSeverityIssues.map((i) => i.id);
       expect(ids).toContain("ISS-001");
       expect(ids).toContain("ISS-003");
+    });
+
+    it("omits staleness when snapshot lacks gitHead", async () => {
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+          // no gitHead field
+        },
+        filename: "2026-03-20T00-00-00-000.json",
+      };
+      const recap = await buildRecap(state, snapshotInfo, "/tmp/fake");
+      expect(recap.staleness).toBeUndefined();
+    });
+
+    it("omits staleness when git is unavailable at recap time", async () => {
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+          gitHead: "abc1234abc1234abc1234abc1234abc1234abc134",
+        },
+        filename: "2026-03-20T00-00-00-000.json",
+      };
+      // Non-git directory -> gitHeadHash fails -> no staleness
+      const recap = await buildRecap(state, snapshotInfo, "/tmp");
+      expect(recap.staleness).toBeUndefined();
+    });
+  });
+
+  describe("saveSnapshot gitHead", () => {
+    it("stores gitHead in snapshot when in a git repo", async () => {
+      const dir = await setupProject();
+      // Initialize a git repo in the temp dir so gitHeadHash succeeds
+      execSync("git init && git config user.email test@test.com && git config user.name Test && git add . && git commit -m init", { cwd: dir, stdio: "pipe" });
+      const loadResult = await loadProject(dir);
+
+      const result = await saveSnapshot(dir, loadResult);
+      const content = await fsReadFile(
+        join(dir, ".story", "snapshots", result.filename),
+        "utf-8",
+      );
+      const parsed = JSON.parse(content);
+      // gitHead should be a 40-char hex SHA
+      expect(parsed.gitHead).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it("parses old snapshot without gitHead field", () => {
+      const oldSnapshot = {
+        version: 1,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        project: "test",
+        config: minimalConfig,
+        roadmap: emptyRoadmap,
+        tickets: [],
+        issues: [],
+        // no gitHead field
+      };
+      const parsed = SnapshotV1Schema.parse(oldSnapshot);
+      expect(parsed.gitHead).toBeUndefined();
+    });
+  });
+
+  describe("buildRecap staleness", () => {
+    async function setupGitProject(): Promise<string> {
+      const dir = await setupProject();
+      execSync(
+        "git init && git config user.email test@test.com && git config user.name Test && git add . && git commit -m init",
+        { cwd: dir, stdio: "pipe" },
+      );
+      return dir;
+    }
+
+    function getHead(dir: string): string {
+      return execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf-8" }).trim();
+    }
+
+    it("omits staleness when snapshot SHA equals current HEAD (equal-SHA)", async () => {
+      const dir = await setupGitProject();
+      const sha = getHead(dir);
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+          gitHead: sha,
+        },
+        filename: "2026-03-20T00-00-00-000.json",
+      };
+      const recap = await buildRecap(state, snapshotInfo, dir);
+      expect(recap.staleness).toBeUndefined();
+    });
+
+    it("reports behind status when HEAD is ahead of snapshot", async () => {
+      const dir = await setupGitProject();
+      const snapshotSha = getHead(dir);
+      // Add two more commits
+      execSync("git commit --allow-empty -m 'second'", { cwd: dir, stdio: "pipe" });
+      execSync("git commit --allow-empty -m 'third'", { cwd: dir, stdio: "pipe" });
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+          gitHead: snapshotSha,
+        },
+        filename: "2026-03-20T00-00-00-000.json",
+      };
+      const recap = await buildRecap(state, snapshotInfo, dir);
+      expect(recap.staleness).toBeDefined();
+      expect(recap.staleness!.status).toBe("behind");
+      expect(recap.staleness!.commitsBehind).toBe(2);
+      expect(recap.staleness!.snapshotSha).toBe(snapshotSha);
+    });
+
+    it("reports diverged status when histories diverge", async () => {
+      const dir = await setupGitProject();
+      // Create a commit on a branch, then reset main to a different lineage
+      execSync("git commit --allow-empty -m 'commit-a'", { cwd: dir, stdio: "pipe" });
+      const snapshotSha = getHead(dir);
+      // Reset main back to init and create a different commit (diverged history)
+      execSync("git reset --hard HEAD~1", { cwd: dir, stdio: "pipe" });
+      execSync("git commit --allow-empty -m 'commit-b-diverged'", { cwd: dir, stdio: "pipe" });
+      // Now snapshotSha (commit-a) is NOT an ancestor of HEAD (commit-b-diverged)
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+          gitHead: snapshotSha,
+        },
+        filename: "2026-03-20T00-00-00-000.json",
+      };
+      const recap = await buildRecap(state, snapshotInfo, dir);
+      expect(recap.staleness).toBeDefined();
+      expect(recap.staleness!.status).toBe("diverged");
+      expect(recap.staleness!.snapshotSha).toBe(snapshotSha);
+      expect(recap.staleness!.commitsBehind).toBeUndefined();
     });
   });
 });

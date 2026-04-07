@@ -17,7 +17,7 @@ export class PlanReviewStage implements WorkflowStage {
     const backends = ctx.state.config.reviewBackends;
     const existingReviews = ctx.state.reviews.plan;
     const roundNum = existingReviews.length + 1;
-    const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable);
+    const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const risk = ctx.state.ticket?.risk ?? "low";
     const minRounds = requiredRounds(risk as "low" | "medium" | "high");
 
@@ -84,7 +84,7 @@ export class PlanReviewStage implements WorkflowStage {
     const roundNum = planReviews.length + 1;
     const findings = report.findings ?? [];
     const backends = ctx.state.config.reviewBackends;
-    const computedReviewer = nextReviewer(planReviews, backends, ctx.state.codexUnavailable);
+    const computedReviewer = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     // ISS-102: Use actual reviewer from report, infer from notes, or fall back to computed
     const reviewerBackend = report.reviewer
       ?? (computedReviewer === "codex" && report.notes && /codex\b.*\b(unavail|limit|failed|down|error|usage)/i.test(report.notes) ? "agent" : null)
@@ -102,8 +102,9 @@ export class PlanReviewStage implements WorkflowStage {
     });
 
     // ISS-098: Detect codex unavailability from agent notes
-    if (!ctx.state.codexUnavailable && report.notes && /codex\b.*\b(unavail|limit|failed|down|error|usage)/i.test(report.notes)) {
-      ctx.writeState({ codexUnavailable: true });
+    // ISS-110: Store timestamp instead of just boolean for TTL-based expiry
+    if (report.notes && /codex\b.*\b(unavail|limit|failed|down|error|usage)/i.test(report.notes)) {
+      ctx.writeState({ codexUnavailable: true, codexUnavailableSince: new Date().toISOString() });
     }
 
     const risk = ctx.state.ticket?.risk ?? "low";
@@ -219,7 +220,7 @@ export class PlanReviewStage implements WorkflowStage {
     }
 
     // Stay in PLAN_REVIEW — next round
-    const nextReviewerName = nextReviewer(planReviews, backends, ctx.state.codexUnavailable);
+    const nextReviewerName = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     return {
       action: "retry",
       instruction: [

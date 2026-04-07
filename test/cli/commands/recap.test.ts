@@ -90,18 +90,18 @@ describe("recap command", () => {
 });
 
 describe("formatRecap", () => {
-  it("MD shows suggested actions section", () => {
+  it("MD shows suggested actions section", async () => {
     const state = makeState({
       tickets: [makeTicket({ id: "T-001", phase: "p1" })],
       roadmap: makeRoadmap([makePhase({ id: "p1" })]),
     });
-    const recap = buildRecap(state, null);
+    const recap = await buildRecap(state, null, "/tmp");
     const md = formatRecap(recap, state, "md");
     expect(md).toContain("## Suggested Actions");
     expect(md).toContain("T-001");
   });
 
-  it("MD shows changes when present", () => {
+  it("MD shows changes when present", async () => {
     const currentState = makeState({
       tickets: [makeTicket({ id: "T-001", phase: "p1", status: "complete" })],
       roadmap: makeRoadmap([makePhase({ id: "p1" })]),
@@ -118,14 +118,14 @@ describe("formatRecap", () => {
       },
       filename: "snap.json",
     };
-    const recap = buildRecap(currentState, snapshotInfo);
+    const recap = await buildRecap(currentState, snapshotInfo, "/tmp");
     const md = formatRecap(recap, currentState, "md");
     expect(md).toContain("Since snapshot:");
     expect(md).toContain("open → complete");
     expect(md).toContain("Phase Transitions");
   });
 
-  it("MD shows partial warning when snapshot had warnings", () => {
+  it("MD shows partial warning when snapshot had warnings", async () => {
     const state = makeState();
     const snapshotInfo = {
       snapshot: {
@@ -140,26 +140,26 @@ describe("formatRecap", () => {
       },
       filename: "snap.json",
     };
-    const recap = buildRecap(state, snapshotInfo);
+    const recap = await buildRecap(state, snapshotInfo, "/tmp");
     const md = formatRecap(recap, state, "md");
     expect(md).toContain("integrity warnings");
   });
 
-  it("MD shows high severity issues in actions", () => {
+  it("MD shows high severity issues in actions", async () => {
     const state = makeState({
       issues: [
         makeIssue({ id: "ISS-001", severity: "critical", title: "Crash" }),
       ],
     });
-    const recap = buildRecap(state, null);
+    const recap = await buildRecap(state, null, "/tmp");
     const md = formatRecap(recap, state, "md");
     expect(md).toContain("critical issue");
     expect(md).toContain("Crash");
   });
 
-  it("JSON envelope matches RecapResult shape", () => {
+  it("JSON envelope matches RecapResult shape", async () => {
     const state = makeState();
-    const recap = buildRecap(state, null);
+    const recap = await buildRecap(state, null, "/tmp");
     const json = formatRecap(recap, state, "json");
     const parsed = JSON.parse(json);
     expect(parsed.data).toHaveProperty("snapshot");

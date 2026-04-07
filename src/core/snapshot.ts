@@ -19,6 +19,7 @@ import { type LoadWarning } from "./errors.js";
 import { phasesWithStatus, nextTicket, isBlockerCleared } from "./queries.js";
 import type { LoadResult } from "./project-loader.js";
 import { atomicWrite, guardPath } from "./project-loader.js";
+import { gitHeadHash, gitIsAncestor, gitCommitDistance } from "../autonomous/git-inspector.js";
 
 // --- Snapshot Schema ---
 
@@ -40,6 +41,7 @@ export const SnapshotV1Schema = z.object({
   lessons: z.array(LessonSchema).optional().default([]),
   handoverFilenames: z.array(z.string()).optional().default([]),
   warnings: z.array(LoadWarningSchema).optional(),
+  gitHead: z.string().optional(),
 });
 
 export type SnapshotV1 = z.infer<typeof SnapshotV1Schema>;
@@ -87,6 +89,12 @@ export async function saveSnapshot(
         }
       : {}),
   };
+
+  // Resolve git HEAD SHA (best-effort, 3s timeout)
+  const headResult = await gitHeadHash(absRoot);
+  if (headResult.ok) {
+    snapshot.gitHead = headResult.data;
+  }
 
   const json = JSON.stringify(snapshot, null, 2) + "\n";
   const targetPath = join(snapshotsDir, filename);
@@ -214,6 +222,13 @@ export interface SnapshotDiff {
   };
 }
 
+export interface RecapStaleness {
+  status: "behind" | "diverged";
+  snapshotSha: string;
+  currentSha: string;
+  commitsBehind?: number; // only present when status is "behind"
+}
+
 export interface RecapResult {
   snapshot: { filename: string; createdAt: string } | null;
   changes: SnapshotDiff | null;
@@ -223,6 +238,7 @@ export interface RecapResult {
     recentlyClearedBlockers: string[];
   };
   partial: boolean;
+  staleness?: RecapStaleness;
 }
 
 /**
@@ -432,10 +448,11 @@ export function diffStates(
 /**
  * Builds a full RecapResult: diff + suggested actions.
  */
-export function buildRecap(
+export async function buildRecap(
   currentState: ProjectState,
   snapshotInfo: { snapshot: SnapshotV1; filename: string } | null,
-): RecapResult {
+  root: string,
+): Promise<RecapResult> {
   // Suggested actions (always computed, even without snapshot)
   const next = nextTicket(currentState);
   const nextTicketAction =
@@ -482,6 +499,39 @@ export function buildRecap(
   // Recently cleared blockers (in diff)
   const recentlyClearedBlockers = changes.blockers.cleared;
 
+  // Git staleness detection (T-132)
+  let staleness: RecapStaleness | undefined;
+  if (snapshot.gitHead) {
+    const currentHeadResult = await gitHeadHash(root);
+    if (currentHeadResult.ok) {
+      const snapshotSha = snapshot.gitHead;
+      const currentSha = currentHeadResult.data;
+
+      if (snapshotSha !== currentSha) {
+        const ancestorResult = await gitIsAncestor(root, snapshotSha, currentSha);
+        if (ancestorResult.ok && ancestorResult.data) {
+          // Snapshot is an ancestor of HEAD -- count commits behind
+          const distResult = await gitCommitDistance(root, snapshotSha, currentSha);
+          if (distResult.ok) {
+            staleness = {
+              status: "behind",
+              snapshotSha,
+              currentSha,
+              commitsBehind: distResult.data,
+            };
+          }
+          // If distResult fails, omit staleness entirely for consistent degradation
+        } else if (ancestorResult.ok && !ancestorResult.data) {
+          // Not an ancestor -- history diverged
+          staleness = { status: "diverged", snapshotSha, currentSha };
+        }
+        // If ancestorResult is not ok (git error), omit staleness silently
+      }
+      // If same SHA, omit staleness (snapshot is current)
+    }
+    // If gitHeadHash fails (not a repo, git unavailable), omit staleness silently
+  }
+
   return {
     snapshot: { filename, createdAt: snapshot.createdAt },
     changes,
@@ -491,6 +541,7 @@ export function buildRecap(
       recentlyClearedBlockers,
     },
     partial: (snapshot.warnings ?? []).length > 0,
+    ...(staleness ? { staleness } : {}),
   };
 }
 

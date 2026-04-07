@@ -41,12 +41,13 @@ export class ProjectState {
   readonly totalTicketCount: number;
   readonly openTicketCount: number;
   readonly completeTicketCount: number;
-  readonly openIssueCount: number;
+  readonly activeIssueCount: number;
   readonly issuesBySeverity: ReadonlyMap<IssueSeverity, number>;
   readonly activeNoteCount: number;
   readonly archivedNoteCount: number;
   readonly activeLessonCount: number;
   readonly deprecatedLessonCount: number;
+  readonly lessonTags: readonly string[];
 
   constructor(input: {
     tickets: Ticket[];
@@ -157,20 +158,20 @@ export class ProjectState {
     this.lessonsByID = lByID;
 
     // Step 7: Counts
-    this.totalTicketCount = input.tickets.length;
-    this.openTicketCount = input.tickets.filter(
+    this.totalTicketCount = this.leafTickets.length;
+    this.openTicketCount = this.leafTickets.filter(
       (t) => t.status !== "complete",
     ).length;
-    this.completeTicketCount = input.tickets.filter(
+    this.completeTicketCount = this.leafTickets.filter(
       (t) => t.status === "complete",
     ).length;
-    this.openIssueCount = input.issues.filter(
-      (i) => i.status === "open",
+    this.activeIssueCount = input.issues.filter(
+      (i) => i.status !== "resolved",
     ).length;
 
     const bySev = new Map<IssueSeverity, number>();
     for (const i of input.issues) {
-      if (i.status === "open") {
+      if (i.status !== "resolved") {
         bySev.set(i.severity, (bySev.get(i.severity) ?? 0) + 1);
       }
     }
@@ -189,6 +190,8 @@ export class ProjectState {
     this.deprecatedLessonCount = this.lessons.filter(
       (l) => l.status === "deprecated" || l.status === "superseded",
     ).length;
+
+    this.lessonTags = [...new Set(this.lessons.flatMap((l) => l.tags ?? []))].sort();
   }
 
   // --- Query Methods ---

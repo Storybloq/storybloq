@@ -87,3 +87,27 @@ export function extractHandoverDate(filename: string): string | null {
   const match = filename.match(HANDOVER_DATE_REGEX);
   return match ? match[0] : null;
 }
+
+/**
+ * Extracts the human-readable title from a handover filename.
+ * Strips `.md` extension and YYYY-MM-DD date prefix, converts remaining
+ * hyphens to spaces, and trims whitespace. Mirrors Swift parseHandoverFilename.
+ */
+export function extractHandoverTitle(filename: string): string {
+  let name = filename;
+  if (name.endsWith(".md")) {
+    name = name.slice(0, -3);
+  }
+
+  if (HANDOVER_DATE_REGEX.test(name)) {
+    // Strip YYYY-MM-DD prefix (10 chars)
+    let title = name.slice(10);
+    // Strip leading hyphen separator
+    if (title.startsWith("-")) {
+      title = title.slice(1);
+    }
+    return title.replace(/-/g, " ").trim();
+  }
+
+  return name;
+}

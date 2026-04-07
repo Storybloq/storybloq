@@ -250,3 +250,36 @@ describe("ISS-098: nextReviewer with codexUnavailable", () => {
     expect(nextReviewer([], ["codex", "agent"], undefined)).toBe("codex");
   });
 });
+
+// ---------------------------------------------------------------------------
+// ISS-110: codexUnavailableSince timestamp-based TTL
+// ---------------------------------------------------------------------------
+
+describe("ISS-110: codexUnavailableSince TTL", () => {
+  it("filters codex when timestamp is recent", async () => {
+    const { nextReviewer, isCodexUnavailable } = await import("../../../src/autonomous/review-depth.js");
+    const recent = new Date().toISOString();
+    expect(isCodexUnavailable(recent)).toBe(true);
+    expect(nextReviewer([], ["codex", "agent"], undefined, recent)).toBe("agent");
+  });
+
+  it("does not filter codex when timestamp is expired (>10 min)", async () => {
+    const { nextReviewer, isCodexUnavailable } = await import("../../../src/autonomous/review-depth.js");
+    const expired = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    expect(isCodexUnavailable(expired)).toBe(false);
+    expect(nextReviewer([], ["codex", "agent"], undefined, expired)).toBe("codex");
+  });
+
+  it("returns false for undefined or invalid timestamps", async () => {
+    const { isCodexUnavailable } = await import("../../../src/autonomous/review-depth.js");
+    expect(isCodexUnavailable(undefined)).toBe(false);
+    expect(isCodexUnavailable("not-a-date")).toBe(false);
+  });
+
+  it("prefers timestamp over boolean when both present", async () => {
+    const { nextReviewer } = await import("../../../src/autonomous/review-depth.js");
+    // Boolean says unavailable, but timestamp is expired -> codex is available
+    const expired = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    expect(nextReviewer([], ["codex", "agent"], true, expired)).toBe("codex");
+  });
+});

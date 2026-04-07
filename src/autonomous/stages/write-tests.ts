@@ -79,9 +79,10 @@ export class WriteTestsStage implements WorkflowStage {
     const exitMatch = notes.match(EXIT_CODE_REGEX);
     const exitCode = exitMatch ? parseInt(exitMatch[1]!, 10) : -1;
 
-    // Parse fail count
+    // Parse fail count. When all tests pass, vitest omits the fail line entirely.
+    // Treat missing fail count as 0 when exit code is 0 (runner succeeded, no failures to report).
     const failMatch = notes.match(FAIL_COUNT_REGEX);
-    const currentFailCount = failMatch ? parseInt(failMatch[1]!, 10) : -1;
+    const currentFailCount = failMatch ? parseInt(failMatch[1]!, 10) : (exitCode === 0 ? 0 : -1);
 
     // Get baseline
     const baseline = ctx.state.testBaseline;

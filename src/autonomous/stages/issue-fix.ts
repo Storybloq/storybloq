@@ -104,6 +104,12 @@ export class IssueFixStage implements WorkflowStage {
       };
     }
 
+    // T-208: Optional code review for issue fixes
+    const enableCodeReview = !!(ctx.recipe.stages.ISSUE_FIX as Record<string, unknown> | undefined)?.enableCodeReview;
+    if (enableCodeReview) {
+      return { action: "goto", target: "CODE_REVIEW" };
+    }
+
     // Issue resolved -- route to FINALIZE for commit
     return {
       action: "goto",

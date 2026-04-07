@@ -20,6 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
 import { registerAllTools } from "./tools.js";
 import { initProject } from "../core/init.js";
+import { startInboxWatcher, stopInboxWatcher } from "../channel/inbox-watcher.js";
 
 const ENV_VAR = "CLAUDESTORY_PROJECT_ROOT";
 const CONFIG_PATH = ".story/config.json";
@@ -108,6 +109,13 @@ function registerDegradedTools(server: McpServer): void {
       return { content: [{ type: "text" as const, text: `Initialized .story/ project "${args.name}" at ${result.root}\n\nWarning: tool registration failed. Restart the MCP server for full tool access.` }] };
     }
 
+    // Start inbox watcher separately -- failure here should not roll back tools.
+    try {
+      await startInboxWatcher(result.root, server);
+    } catch (watchErr: unknown) {
+      process.stderr.write(`claudestory: inbox watcher failed after init: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}\n`);
+    }
+
     process.stderr.write(`claudestory: initialized at ${result.root}\n`);
 
     const lines = [
@@ -131,16 +139,27 @@ async function main(): Promise<void> {
       instructions: root
         ? "Start with claudestory_status for a project overview, then claudestory_ticket_next for the highest-priority work, then claudestory_handover_latest for session context."
         : "No .story/ project found. Use claudestory_init to initialize a new project, or navigate to a directory with .story/.",
+      capabilities: {
+        experimental: {
+          "claude/channel": {},
+          "claude/channel/permission": {},
+        },
+      },
     },
   );
 
   if (root) {
     registerAllTools(server, root);
+    await startInboxWatcher(root, server);
     process.stderr.write(`claudestory MCP server running (root: ${root})\n`);
   } else {
     registerDegradedTools(server);
     process.stderr.write("claudestory MCP server running (no project — claudestory_init available)\n");
   }
+
+  // Graceful shutdown: stop inbox watcher on process exit
+  process.on("SIGINT", () => { stopInboxWatcher(); process.exit(0); });
+  process.on("SIGTERM", () => { stopInboxWatcher(); process.exit(0); });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

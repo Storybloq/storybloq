@@ -61,16 +61,36 @@ export function requiredRounds(risk: RiskLevel): number {
 }
 
 /**
+ * ISS-110: Check codex unavailability with a 10-minute TTL.
+ * Returns true if codex was marked unavailable within the last 10 minutes.
+ */
+const CODEX_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export function isCodexUnavailable(
+  codexUnavailableSince?: string,
+): boolean {
+  if (!codexUnavailableSince) return false;
+  const since = new Date(codexUnavailableSince).getTime();
+  if (Number.isNaN(since)) return false;
+  return Date.now() - since < CODEX_CACHE_TTL_MS;
+}
+
+/**
  * Select the next reviewer backend, alternating for mixed-reviewer requirement.
  * ISS-098: When codexUnavailable is true, filter "codex" from backends to avoid
  * wasting ~30s per round discovering it's down.
+ * ISS-110: Uses timestamp-based TTL instead of session-scoped boolean.
  */
 export function nextReviewer(
   previousRounds: readonly ReviewRecord[],
   backends: readonly string[],
   codexUnavailable?: boolean,
+  codexUnavailableSince?: string,
 ): string {
-  const effective = codexUnavailable
+  const unavailable = codexUnavailableSince
+    ? isCodexUnavailable(codexUnavailableSince)
+    : !!codexUnavailable;
+  const effective = unavailable
     ? backends.filter((b) => b !== "codex")
     : backends;
   if (effective.length === 0) return "agent";

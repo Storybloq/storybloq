@@ -140,7 +140,7 @@ describe("inbox-watcher", () => {
     expect(firstContent).toContain("T-001");
   });
 
-  it("processes bounded subset when inbox exceeds max depth", async () => {
+  it("drains all files when inbox exceeds max depth", async () => {
     await mkdir(inboxPath, { recursive: true });
     // Write 51 valid event files (exceeds MAX_INBOX_DEPTH of 50)
     const promises: Promise<string>[] = [];
@@ -153,17 +153,17 @@ describe("inbox-watcher", () => {
     const mock = createMockServer();
     await startInboxWatcher(root, mock as any);
 
-    // Should have processed the first 50 events (bounded subset)
-    expect(mock.notifications).toHaveLength(50);
+    // Should have processed all 51 events across 2 batches (50 + 1)
+    expect(mock.notifications).toHaveLength(51);
 
-    // 1 file should remain unprocessed
+    // No files should remain
     const remaining = await readdir(inboxPath);
-    expect(remaining.filter((f) => f.endsWith(".json")).length).toBe(1);
+    expect(remaining.filter((f) => f.endsWith(".json")).length).toBe(0);
   });
 
-  it("handles notification failure gracefully", async () => {
+  it("retries non-permission events on notification failure", async () => {
     await mkdir(inboxPath, { recursive: true });
-    await writeEvent(inboxPath, "ticket_requested", { ticketId: "T-001" }, "2026-04-05T10:00:00.000Z");
+    await writeEvent(inboxPath, "ticket_requested", { ticketId: "T-001" }, new Date().toISOString());
 
     // Create a mock that throws on sendNotification
     const mock = {
@@ -176,9 +176,35 @@ describe("inbox-watcher", () => {
 
     await startInboxWatcher(root, mock as any);
 
-    // Event file should still be consumed even if notification fails
+    // Event file should be renamed back to .json for retry (not consumed)
     const remaining = await readdir(inboxPath);
-    expect(remaining.filter((f) => f.endsWith(".json"))).toHaveLength(0);
+    expect(remaining.filter((f) => f.endsWith(".json"))).toHaveLength(1);
+  });
+
+  it("quarantines expired non-permission events on notification failure", async () => {
+    await mkdir(inboxPath, { recursive: true });
+    // Event with timestamp >60s ago
+    const expired = new Date(Date.now() - 120_000).toISOString();
+    await writeEvent(inboxPath, "ticket_requested", { ticketId: "T-001" }, expired);
+
+    const mock = {
+      server: {
+        sendNotification: async () => {
+          throw new Error("Channel unavailable");
+        },
+      },
+    };
+
+    await startInboxWatcher(root, mock as any);
+
+    // Expired event should be moved to .failed, not left for retry
+    const remaining = await readdir(inboxPath);
+    const jsonFiles = remaining.filter((f) => f.endsWith(".json"));
+    expect(jsonFiles).toHaveLength(0);
+    // Should be in .failed directory
+    const failedDir = join(inboxPath, ".failed");
+    const failed = await readdir(failedDir);
+    expect(failed.length).toBe(1);
   });
 
   it("routes permission_response to notifications/claude/channel/permission", async () => {

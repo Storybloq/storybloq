@@ -16,9 +16,12 @@ const MAX_INBOX_DEPTH = 50;
 const MAX_FAILED_FILES = 20;
 const DEBOUNCE_MS = 100;
 const MAX_PERMISSION_RETRIES = 15;
+const MAX_EVENT_RETRIES = 30;
+const EVENT_EXPIRY_MS = 60_000; // 60s -- drop events older than this
 
 let watcher: FSWatcher | null = null;
 const permissionRetryCount = new Map<string, number>();
+const eventRetryCount = new Map<string, number>();
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -138,30 +141,37 @@ async function recoverStaleProcessingFiles(inboxPath: string): Promise<void> {
 // MARK: - Inbox Processing
 
 async function processInbox(inboxPath: string, server: McpServer): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(inboxPath);
-  } catch {
-    return; // Directory may not exist yet
-  }
+  // Loop to drain all pending files, processing in batches of MAX_INBOX_DEPTH.
+  // Re-reads the directory after each batch since files are renamed/deleted during processing.
+  while (true) {
+    let entries: string[];
+    try {
+      entries = await readdir(inboxPath);
+    } catch {
+      return; // Directory may not exist yet
+    }
 
-  // Filter to valid JSON files (exclude .failed/ directory and hidden files)
-  const eventFiles = entries
-    .filter((f) => f.endsWith(".json") && !f.startsWith("."))
-    .sort(); // Process in timestamp order
+    // Filter to valid JSON files (exclude .failed/ directory and hidden files)
+    const eventFiles = entries
+      .filter((f) => f.endsWith(".json") && !f.startsWith("."))
+      .sort(); // Process in timestamp order
 
-  // Backpressure: process bounded subset to drain gradually instead of stalling
-  const batch = eventFiles.length > MAX_INBOX_DEPTH
-    ? eventFiles.slice(0, MAX_INBOX_DEPTH)
-    : eventFiles;
-  if (eventFiles.length > MAX_INBOX_DEPTH) {
-    process.stderr.write(
-      `claudestory: channel inbox has ${eventFiles.length} files, processing first ${MAX_INBOX_DEPTH}\n`,
-    );
-  }
+    if (eventFiles.length === 0) break;
 
-  for (const filename of batch) {
-    await processEventFile(inboxPath, filename, server);
+    // Backpressure: process bounded subset per iteration
+    const batch = eventFiles.slice(0, MAX_INBOX_DEPTH);
+    if (eventFiles.length > MAX_INBOX_DEPTH) {
+      process.stderr.write(
+        `claudestory: channel inbox has ${eventFiles.length} files, processing batch of ${MAX_INBOX_DEPTH}\n`,
+      );
+    }
+
+    for (const filename of batch) {
+      await processEventFile(inboxPath, filename, server);
+    }
+
+    // If we processed fewer than MAX_INBOX_DEPTH, we've drained everything
+    if (eventFiles.length <= MAX_INBOX_DEPTH) break;
   }
 
   // Housekeeping: trim .failed/ directory
@@ -241,6 +251,7 @@ async function processEventFile(inboxPath: string, filename: string, server: Mcp
     process.stderr.write(`claudestory: sent channel event ${event.event}\n`);
     // Clear retry tracking on success
     permissionRetryCount.delete(filename);
+    eventRetryCount.delete(filename);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (event.event === "permission_response") {
@@ -267,9 +278,34 @@ async function processEventFile(inboxPath: string, filename: string, server: Mcp
       process.stderr.write(`claudestory: permission notification failed (attempt ${retries}/${MAX_PERMISSION_RETRIES}), keeping for retry: ${msg}\n`);
       return;
     }
-    // Other channel notifications may fail if channels are not available (gated, no OAuth, etc.)
-    // This is expected -- log and continue. The event is still consumed.
-    process.stderr.write(`claudestory: channel notification failed (expected if channels unavailable): ${msg}\n`);
+    // Non-permission events (ticket_requested, pause/resume/cancel_session, priority_changed)
+    // have no PTY fallback via channel path -- retry with time-based expiry.
+    const eventAge = Date.now() - new Date(event.timestamp).getTime();
+    if (eventAge > EVENT_EXPIRY_MS) {
+      process.stderr.write(`claudestory: channel event ${event.event} expired after ${Math.round(eventAge / 1000)}s, quarantining: ${msg}\n`);
+      eventRetryCount.delete(filename);
+      await moveToFailed(inboxPath, processingFilename, filename);
+      return;
+    }
+    const retries = (eventRetryCount.get(filename) ?? 0) + 1;
+    eventRetryCount.set(filename, retries);
+    if (retries >= MAX_EVENT_RETRIES) {
+      process.stderr.write(`claudestory: channel event ${event.event} failed after ${retries} retries, quarantining: ${msg}\n`);
+      eventRetryCount.delete(filename);
+      await moveToFailed(inboxPath, processingFilename, filename);
+      return;
+    }
+    try {
+      await rename(processingPath, filePath);
+    } catch (renameErr: unknown) {
+      const renameMsg = renameErr instanceof Error ? renameErr.message : String(renameErr);
+      process.stderr.write(`claudestory: rename-back failed for ${filename}, quarantining: ${renameMsg}\n`);
+      eventRetryCount.delete(filename);
+      await moveToFailed(inboxPath, processingFilename, filename);
+      return;
+    }
+    process.stderr.write(`claudestory: channel event ${event.event} failed (attempt ${retries}/${MAX_EVENT_RETRIES}), keeping for retry: ${msg}\n`);
+    return;
   }
 
   // Step 5: Delete consumed event file (.processing)

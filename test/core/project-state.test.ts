@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { type PhaseStatus } from "../../src/core/project-state.js";
-import { makeTicket, makeIssue, makeNote, makeState, makePhase, makeRoadmap } from "./test-factories.js";
+import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makePhase, makeRoadmap } from "./test-factories.js";
 
 // --- Tests ---
 
@@ -499,6 +499,31 @@ describe("ProjectState", () => {
       const second = makeIssue({ id: "ISS-001", title: "Second" });
       const state = makeState({ issues: [first, second] });
       expect(state.issueByID("ISS-001")?.title).toBe("Second");
+    });
+  });
+
+  describe("lessonTags", () => {
+    it("returns deduplicated sorted tags from all lessons", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: ["testing", "architecture"] }),
+        makeLesson({ id: "L-002", tags: ["testing", "performance"] }),
+        makeLesson({ id: "L-003", tags: ["security"] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["architecture", "performance", "security", "testing"]);
+    });
+
+    it("returns empty array when no lessons", () => {
+      const state = makeState();
+      expect(state.lessonTags).toEqual([]);
+    });
+
+    it("returns empty array when lessons have no tags", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: [] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual([]);
     });
   });
 

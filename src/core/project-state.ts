@@ -47,6 +47,7 @@ export class ProjectState {
   readonly archivedNoteCount: number;
   readonly activeLessonCount: number;
   readonly deprecatedLessonCount: number;
+  readonly lessonTags: readonly string[];
 
   constructor(input: {
     tickets: Ticket[];
@@ -189,6 +190,8 @@ export class ProjectState {
     this.deprecatedLessonCount = this.lessons.filter(
       (l) => l.status === "deprecated" || l.status === "superseded",
     ).length;
+
+    this.lessonTags = [...new Set(this.lessons.flatMap((l) => l.tags))].sort();
   }
 
   // --- Query Methods ---

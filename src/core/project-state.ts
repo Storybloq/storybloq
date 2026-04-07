@@ -191,7 +191,7 @@ export class ProjectState {
       (l) => l.status === "deprecated" || l.status === "superseded",
     ).length;
 
-    this.lessonTags = [...new Set(this.lessons.flatMap((l) => l.tags))].sort();
+    this.lessonTags = [...new Set(this.lessons.flatMap((l) => l.tags ?? []))].sort();
   }
 
   // --- Query Methods ---

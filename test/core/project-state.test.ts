@@ -525,6 +525,27 @@ describe("ProjectState", () => {
       const state = makeState({ lessons });
       expect(state.lessonTags).toEqual([]);
     });
+
+    it("handles lessons with null/undefined tags gracefully", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: ["valid"] }),
+        // Force null tags to simulate malformed data bypassing schema validation
+        makeLesson({ id: "L-002", tags: null as unknown as string[] }),
+        makeLesson({ id: "L-003", tags: undefined as unknown as string[] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["valid"]);
+    });
+
+    it("handles mix of empty and populated tags", () => {
+      const lessons = [
+        makeLesson({ id: "L-001", tags: [] }),
+        makeLesson({ id: "L-002", tags: ["arch", "testing"] }),
+        makeLesson({ id: "L-003", tags: [] }),
+      ];
+      const state = makeState({ lessons });
+      expect(state.lessonTags).toEqual(["arch", "testing"]);
+    });
   });
 
   describe("isEmptyScaffold", () => {

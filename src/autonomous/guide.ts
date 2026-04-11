@@ -1348,6 +1348,24 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   const currentState = state.state as WorkflowState;
   const report = args.report;
 
+  // ISS-377: COMPACT is a valid transient state but has no registered pipeline
+  // stage, so runPipelineStage would throw "Stage COMPACT is not registered".
+  // Split by compactPending to point callers at the correct recovery path.
+  // Strict (not forgiving) so caller bugs surface instead of silent auto-route.
+  if (currentState === "COMPACT" && !state.compactPending) {
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state but compactPending is false (stale compact). ` +
+      `Run "claudestory session clear-compact ${args.sessionId}" to recover.`,
+    ));
+  }
+  if (currentState === "COMPACT") {
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state. ` +
+      `Call action: "resume" before reporting completion, or run ` +
+      `"claudestory session stop ${args.sessionId}" if the session is stuck.`,
+    ));
+  }
+
   // Fail-closed: reject reports on sessions with inconsistent compactPending (ISS-032)
   if (state.compactPending && currentState !== "COMPACT") {
     return guideError(new Error(

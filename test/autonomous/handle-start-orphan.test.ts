@@ -324,7 +324,11 @@ describe("T-250 auto-supersede finished orphan sessions", () => {
     const audit = events.find((e) => e.type === "auto_superseded");
     expect(audit).toBeDefined();
     expect(audit!.data).toMatchObject({ reason: "finished_orphan", targetWork: ["ISS-101"] });
-    expect(typeof (audit!.data as { leaseExpiredMinutesAgo?: unknown }).leaseExpiredMinutesAgo).toBe("number");
+    // ISS-389: typeof NaN === "number", so the previous assertion was weaker
+    // than it looked. Use Number.isFinite to actually reject NaN/Infinity.
+    expect(
+      Number.isFinite((audit!.data as { leaseExpiredMinutesAgo?: unknown }).leaseExpiredMinutesAgo),
+    ).toBe(true);
 
     // Stderr diagnostic line
     const all = stderrWrites.join("");
@@ -534,7 +538,8 @@ describe("T-250 auto-supersede finished orphan sessions", () => {
     const data = audit!.data as { reason: string; targetWork: string[]; leaseExpiredMinutesAgo: number };
     expect(data.reason).toBe("finished_orphan");
     expect(data.targetWork).toEqual(["ISS-1200", "T-1200"]);
-    expect(typeof data.leaseExpiredMinutesAgo).toBe("number");
+    // ISS-389: Number.isFinite over typeof to actually reject NaN/Infinity.
+    expect(Number.isFinite(data.leaseExpiredMinutesAgo)).toBe(true);
   });
 
   // 12. Schema round-trip: readSession parses the new enum cleanly.

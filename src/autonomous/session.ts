@@ -8,6 +8,8 @@ import {
   unlinkSync,
   existsSync,
   rmSync,
+  statSync,
+  truncateSync,
 } from "node:fs";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
@@ -166,6 +168,40 @@ export function appendEvent(dir: string, event: EventEntry): void {
     writeFileSync(path, line, { flag: "a", encoding: "utf-8" });
   } catch {
     // Best-effort — events.log is supplementary
+  }
+}
+
+/**
+ * Append an event to events.log, then write session state atomically.
+ * If the state write throws, the events.log is truncated back to its
+ * pre-append size so audit log and state remain consistent (all-or-nothing).
+ * Throws if either step fails.
+ */
+export function writeSessionWithEvent(
+  dir: string,
+  nextState: FullSessionState,
+  event: EventEntry,
+): FullSessionState {
+  const path = eventsPath(dir);
+  let sizeBefore = 0;
+  try {
+    sizeBefore = statSync(path).size;
+  } catch (err) {
+    // Only treat missing file as size 0. Re-throw any other stat error so
+    // rollback never guesses and accidentally truncates existing audit history.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+  const line = JSON.stringify(event) + "\n";
+  writeFileSync(path, line, { flag: "a", encoding: "utf-8" });
+  try {
+    return writeSessionSync(dir, nextState);
+  } catch (err) {
+    try {
+      truncateSync(path, sizeBefore);
+    } catch {
+      // best-effort — events.log may have been deleted or is unwritable
+    }
+    throw err;
   }
 }
 

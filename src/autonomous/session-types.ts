@@ -367,7 +367,10 @@ export const SessionStateSchema = z.object({
   resumeBlocked: z.boolean().default(false),
 
   // Session termination
-  terminationReason: z.enum(["normal", "cancelled", "admin_recovery"]).nullable().default(null),
+  terminationReason: z
+    .enum(["normal", "cancelled", "admin_recovery", "auto_superseded_finished_orphan"])
+    .nullable()
+    .default(null),
 
   // ISS-037: Deferred finding tracking
   filedDeferrals: z.array(z.object({

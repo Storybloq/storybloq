@@ -2501,7 +2501,181 @@ export function registerSessionCommand(yargs: Argv): Argv {
             }
           },
         )
-        .demandCommand(1, "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact, stop")
+        .command(
+          "list",
+          "List sessions on disk (admin)",
+          (y2) =>
+            y2
+              .option("status", {
+                type: "string",
+                describe: "Filter by status",
+                choices: ["active", "completed", "superseded", "all"] as const,
+                default: "all",
+              })
+              .option("format", {
+                type: "string",
+                describe: "Output format",
+                choices: ["text", "json"] as const,
+                default: "text",
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionList } = await import("./commands/session.js");
+            try {
+              const result = await handleSessionList(root, {
+                status: argv.status as "active" | "completed" | "superseded" | "all",
+                format: argv.format as "text" | "json",
+              });
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "show <sessionId>",
+          "Show details of a session (admin)",
+          (y2) =>
+            y2
+              .positional("sessionId", {
+                type: "string",
+                describe: "Session ID or unique prefix",
+                demandOption: true,
+              })
+              .option("format", {
+                type: "string",
+                describe: "Output format",
+                choices: ["text", "json"] as const,
+                default: "text",
+              })
+              .option("events", {
+                type: "number",
+                describe: "Number of recent events to include (non-negative integer)",
+                default: 10,
+              })
+              .check((argv) => {
+                const n = argv.events as number;
+                if (!Number.isInteger(n) || n < 0) {
+                  throw new Error("--events must be a non-negative integer");
+                }
+                return true;
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionShow } = await import("./commands/session.js");
+            try {
+              const result = await handleSessionShow(root, argv.sessionId as string, {
+                format: argv.format as "text" | "json",
+                events: argv.events as number,
+              });
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "repair [sessionId]",
+          "Supersede orphaned sessions (admin)",
+          (y2) =>
+            y2
+              .positional("sessionId", {
+                type: "string",
+                describe: "Session ID or unique prefix (optional — scans for orphans if omitted)",
+              })
+              .option("dry-run", {
+                type: "boolean",
+                describe: "Report candidates without writing",
+                default: false,
+              })
+              .option("all", {
+                type: "boolean",
+                describe: "Include stale sessions that don't match the finished-orphan signature",
+                default: false,
+              })
+              .option("yes", {
+                type: "boolean",
+                describe: "Skip interactive confirmation",
+                default: false,
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionRepair } = await import("./commands/session.js");
+            try {
+              const result = await handleSessionRepair(root, {
+                selector: argv.sessionId as string | undefined,
+                dryRun: argv["dry-run"] as boolean,
+                all: argv.all as boolean,
+                yes: argv.yes as boolean,
+                stdin: process.stdin,
+                stdout: process.stdout,
+              });
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "delete <sessionId>",
+          "Delete a session directory (admin, destructive)",
+          (y2) =>
+            y2
+              .positional("sessionId", {
+                type: "string",
+                describe: "Session ID or unique prefix",
+                demandOption: true,
+              })
+              .option("yes", {
+                type: "boolean",
+                describe: "Required: confirm destructive removal",
+                default: false,
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionDelete } = await import("./commands/session.js");
+            try {
+              const result = await handleSessionDelete(root, argv.sessionId as string, {
+                yes: argv.yes as boolean,
+              });
+              process.stdout.write(result + "\n");
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .demandCommand(
+          1,
+          "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact, stop, list, show, repair, delete",
+        )
         .strict(),
     () => {},
   );

@@ -29,11 +29,11 @@ import {
   readSession,
   type ActiveSessionInfo,
 } from "./session.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../models/types.js";
+import { isFinishedOrphan } from "./orphan-detector.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
 import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
-import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor, gitHeadHash } from "./git-inspector.js";
+import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
@@ -482,91 +482,6 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
 // ---------------------------------------------------------------------------
 // T-250 — auto-supersede verifiably-finished orphan sessions
 // ---------------------------------------------------------------------------
-
-const ORPHAN_LEASE_BUFFER_MS = 60 * 60 * 1000; // 60-minute debris buffer
-
-/**
- * Return true only when the state describes a targeted auto session whose
- * work is verifiably finished on disk AND whose recorded commits are reachable
- * from the current HEAD. Fails closed on any uncertainty.
- */
-async function isFinishedOrphan(
-  state: FullSessionState,
-  dir: string,
-  root: string,
-): Promise<boolean> {
-  // Scope gate: ticket plan explicitly targets "targeted auto sessions".
-  // Any other mode (review/plan/guided) must never be silently superseded.
-  if (state.mode !== "auto") return false;
-  if (!state.targetWork || state.targetWork.length === 0) return false;
-
-  const expiresAtRaw = state.lease?.expiresAt;
-  const expiresAtMs = expiresAtRaw ? new Date(expiresAtRaw).getTime() : NaN;
-  if (!Number.isFinite(expiresAtMs)) return false;
-  if (Date.now() - expiresAtMs < ORPHAN_LEASE_BUFFER_MS) return false;
-
-  let projectState: Awaited<ReturnType<typeof loadProject>>["state"];
-  try {
-    ({ state: projectState } = await loadProject(root));
-  } catch {
-    return false;
-  }
-
-  // gitIsAncestor validates refs with SAFE_REF, which rejects literal "HEAD".
-  const headResult = await gitHeadHash(root);
-  if (!headResult.ok) return false;
-  const headSha = headResult.data;
-
-  // events.log is the only per-issue authority. Fail closed on any corruption:
-  // a malformed line or a commit event with non-string fields means we cannot
-  // trust the audit log, so we must not silently supersede.
-  const issueCommits = new Map<string, string[]>();
-  const { events, malformedCount } = readEvents(dir);
-  if (malformedCount > 0) return false;
-  for (const ev of events) {
-    if (ev.type !== "commit") continue;
-    // readEvents() admits entries with no data field; treat any non-object
-    // data on a commit event as corruption and fail closed.
-    if (!ev.data || typeof ev.data !== "object") return false;
-    const data = ev.data as { commitHash?: unknown; issueId?: unknown; ticketId?: unknown };
-    const hasIssue = "issueId" in data && data.issueId !== undefined;
-    const hasTicket = "ticketId" in data && data.ticketId !== undefined;
-    // Commit events that claim to be issue-scoped must have string commitHash+issueId.
-    if (hasIssue) {
-      if (typeof data.commitHash !== "string" || typeof data.issueId !== "string") return false;
-      const list = issueCommits.get(data.issueId) ?? [];
-      list.push(data.commitHash);
-      issueCommits.set(data.issueId, list);
-    } else if (hasTicket) {
-      // Ticket commit events use completedTickets as authority; only validate shape.
-      if (typeof data.commitHash !== "string" || typeof data.ticketId !== "string") return false;
-    }
-  }
-
-  for (const id of state.targetWork) {
-    if (ISSUE_ID_REGEX.test(id)) {
-      const issue = projectState.issues.find((i) => i.id === id);
-      if (!issue || issue.status !== "resolved") return false;
-      const hashes = issueCommits.get(id) ?? [];
-      if (hashes.length === 0) return false;
-      for (const hash of hashes) {
-        const anc = await gitIsAncestor(root, hash, headSha);
-        if (!anc.ok || !anc.data) return false;
-      }
-    } else if (TICKET_ID_REGEX.test(id)) {
-      const ticket = projectState.ticketByID(id);
-      if (!ticket || ticket.status !== "complete") return false;
-      const entry = state.completedTickets.find((t) => t.id === id);
-      if (!entry || !entry.commitHash) return false;
-      const anc = await gitIsAncestor(root, entry.commitHash, headSha);
-      if (!anc.ok || !anc.data) return false;
-    } else {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 /**
  * Check whether `info` looks like a finished orphan and, if so, mark it

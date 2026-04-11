@@ -21,6 +21,7 @@ import {
   type SessionState,
   type EventEntry,
 } from "./session-types.js";
+import { isContainedSessionDir } from "./session-selector.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -320,6 +321,8 @@ export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
     if (!entry.isDirectory()) continue;
 
     const dir = join(sessDir, entry.name);
+    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    if (!isContainedSessionDir(root, dir)) continue;
     const session = readSession(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
@@ -381,6 +384,8 @@ export function findStaleSessions(root: string): ActiveSessionInfo[] {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(sessDir, entry.name);
+    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    if (!isContainedSessionDir(root, dir)) continue;
     const session = readSession(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
@@ -496,6 +501,8 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(sessDir, entry.name);
+    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    if (!isContainedSessionDir(root, dir)) continue;
     const session = readSession(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
@@ -517,6 +524,54 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
   }
 
   return best;
+}
+
+/**
+ * T-251: Enumerate every session on disk (regardless of status). Used by the
+ * `session list` CLI. Applies the same containment guard as the other
+ * enumerators so symlink-named escapes are invisible to users.
+ *
+ * Corrupt entries are skipped silently — `session show` and `session repair`
+ * surface them individually when called with an explicit selector.
+ */
+export function listAllSessions(root: string): ActiveSessionInfo[] {
+  const sessDir = sessionsRoot(root);
+  let entries: ReturnType<typeof readdirSync>;
+  try {
+    entries = readdirSync(sessDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+
+  const results: ActiveSessionInfo[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === ".lock") continue;
+    const dir = join(sessDir, entry.name);
+    if (!isContainedSessionDir(root, dir)) continue;
+    const session = readSession(dir);
+    if (!session) continue;
+    results.push({ state: session, dir });
+  }
+  return results;
+}
+
+/**
+ * T-251: Remove a session directory. Belt + suspenders: the caller has
+ * already validated via resolveSessionSelector, but this asserts containment
+ * a second time so an attacker who slipped past the resolver still cannot
+ * delete arbitrary directories.
+ */
+export function deleteSessionDir(root: string, sessionId: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+    throw new Error(`deleteSessionDir: invalid session ID "${sessionId}"`);
+  }
+  const dir = sessionDir(root, sessionId);
+  if (!isContainedSessionDir(root, dir)) {
+    throw new Error(`deleteSessionDir: ${sessionId} resolves outside sessionsRoot`);
+  }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

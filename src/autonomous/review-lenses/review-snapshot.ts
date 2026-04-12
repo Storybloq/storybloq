@@ -499,12 +499,23 @@ export function writeReviewSnapshotInto(
 
 // ── Reader ────────────────────────────────────────────────────────
 
-export function readReviewSnapshotManifest(
+/**
+ * Parse-only manifest load. Returns both the parsed, cross-checked manifest
+ * and the raw `manifest.json` bytes that produced the parse so callers can
+ * verify an expected sha256 against exactly those bytes (avoiding a TOCTOU
+ * re-read). Used by `verifyLensFinding` in the digest-verified bootstrap
+ * and by `readReviewSnapshotManifest` itself.
+ */
+export function readReviewSnapshotManifestWithBytes(
   projectRoot: string,
   sessionId: string,
   reviewId: string,
-  expectedManifestSha256?: string,
-): ReviewSnapshotManifest {
+): {
+  manifest: ReviewSnapshotManifest;
+  manifestBytes: Buffer;
+  paths: CanonicalPaths;
+  realFinalDir: string;
+} {
   assertValidSessionId(sessionId);
   assertValidReviewId(reviewId);
 
@@ -596,6 +607,18 @@ export function readReviewSnapshotManifest(
       );
     }
   }
+
+  return { manifest, manifestBytes, paths, realFinalDir };
+}
+
+export function readReviewSnapshotManifest(
+  projectRoot: string,
+  sessionId: string,
+  reviewId: string,
+  expectedManifestSha256?: string,
+): ReviewSnapshotManifest {
+  const { manifest, manifestBytes, paths, realFinalDir } =
+    readReviewSnapshotManifestWithBytes(projectRoot, sessionId, reviewId);
 
   if (expectedManifestSha256 !== undefined) {
     const actualSha = createHash("sha256")
@@ -801,3 +824,17 @@ export function archiveReviewSnapshot(
 // statSync is imported for potential future use; referenced to avoid
 // an unused-import lint error in this module.
 void statSync;
+
+// ── Internal helper re-exports (consumed by verification.ts / T-255) ──
+//
+// `verification.ts` (T-255) needs the exact same lexical path validator
+// and destination-chain symlink guard that this module uses when writing
+// and reading snapshots. Re-exporting them under an underscore-prefixed
+// name signals "internal to the review-lenses subtree, not part of the
+// stable public API" while ensuring writer and verifier share a single
+// source of truth. These MUST NOT be re-exported from
+// `review-lenses/index.ts` — sibling modules import them directly.
+export {
+  assertValidManifestPath as _assertValidManifestPath,
+  assertNoSymlinkAncestors as _assertNoSymlinkAncestors,
+};

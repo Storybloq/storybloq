@@ -55,6 +55,22 @@ export type {
   WriteReviewSnapshotResult,
   ArchiveReviewSnapshotResult,
 } from "./review-snapshot.js";
+export {
+  verifyLensFinding,
+  normalizeForVerification,
+  VERIFY_RECOVERY_WINDOW,
+  SnapshotIntegrityError,
+} from "./verification.js";
+export type {
+  VerifyResult,
+  VerifyPass,
+  VerifyFail,
+  VerifyFailDetails,
+  VerifyReasonCode,
+  VerifiedEvidence,
+  SnapshotContext,
+  SnapshotIntegrityCode,
+} from "./verification.js";
 
 export type {
   LensFinding,

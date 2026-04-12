@@ -99,6 +99,15 @@ describe("accumulateVerificationCounters", () => {
     expect(vc.lastTelemetryLine).toBe(3);
   });
 
+  it("missing telemetry file: returns silently, no state write", () => {
+    // No verification-telemetry.jsonl written to sessionDir
+    const ctx = makeCtx(sessionDir);
+    accumulateVerificationCounters(ctx as any);
+
+    // No verificationCounters should be written
+    expect(ctx.state.verificationCounters).toBeUndefined();
+  });
+
   it("empty telemetry file: no parse error, no state write", () => {
     writeFileSync(join(sessionDir, "verification-telemetry.jsonl"), "");
 

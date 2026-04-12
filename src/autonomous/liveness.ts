@@ -16,7 +16,7 @@ export function telemetryDirPath(sessionDir: string): string {
   return join(sessionDir, "telemetry");
 }
 
-export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number {
+export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | null {
   mkdirSync(tDir, { recursive: true });
   try { unlinkSync(join(tDir, "shutdown")); } catch { /* may not exist */ }
   const script = [
@@ -34,7 +34,7 @@ export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number {
     stdio: "ignore",
   });
   child.unref();
-  return child.pid!;
+  return child.pid ?? null;
 }
 
 export function killSidecar(pid: number | undefined | null): void {

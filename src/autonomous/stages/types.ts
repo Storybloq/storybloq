@@ -128,6 +128,7 @@ export class StageContext {
     const SEVERITY_MAP: Record<string, string> = { critical: "critical", major: "high", minor: "medium" };
     const filed = [...(this._state.filedDeferrals ?? [])];
     const remaining: typeof pending = [];
+    let newlyFiled = 0;
 
     for (const entry of pending) {
       try {
@@ -149,6 +150,7 @@ export class StageContext {
         }
         if (issueId) {
           filed.push({ fingerprint: entry.fingerprint, issueId });
+          newlyFiled++;
         } else {
           remaining.push(entry);
         }
@@ -157,7 +159,12 @@ export class StageContext {
       }
     }
 
-    this.writeState({ filedDeferrals: filed, pendingDeferrals: remaining } as Partial<FullSessionState>);
+    const prev = this._state.verificationCounters ?? { proposed: 0, verified: 0, rejected: 0, filed: 0, lastTelemetryLine: 0 };
+    this.writeState({
+      filedDeferrals: filed,
+      pendingDeferrals: remaining,
+      verificationCounters: { ...prev, filed: prev.filed + newlyFiled },
+    } as Partial<FullSessionState>);
     return remaining.length === 0;
   }
 

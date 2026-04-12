@@ -3,6 +3,7 @@ import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { requiredRounds, nextReviewer } from "../review-depth.js";
 import { clearCache } from "../review-lenses/cache.js";
+import { accumulateVerificationCounters } from "../review-lenses/verification-log.js";
 
 /**
  * CODE_REVIEW stage — independent reviewer evaluates the implementation.
@@ -196,6 +197,8 @@ export class CodeReviewStage implements WorkflowStage {
       if (updated) stateUpdate.lensReviewHistory = updated;
     }
     ctx.writeState(stateUpdate);
+
+    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: (u) => ctx.writeState(u as Partial<import("../session-types.js").FullSessionState>) });
 
     ctx.appendEvent("code_review", {
       round: roundNum,

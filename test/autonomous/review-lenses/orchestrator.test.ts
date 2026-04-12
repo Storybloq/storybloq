@@ -390,8 +390,10 @@ describe("handleSynthesize origin classification (T-192)", () => {
 
     expect(result.validatedFindings.length).toBe(1);
     expect(result.validatedFindings[0].origin).toBe("pre-existing");
-    expect(result.preExistingCount).toBe(1);
-    expect(result.preExistingFindings.length).toBe(1);
+    // T-257: Without sessionId, verification is skipped and preExistingFindings
+    // is suppressed (skip-path filing safety). Origin is still set on validatedFindings.
+    expect(result.preExistingCount).toBe(0);
+    expect(result.preExistingFindings.length).toBe(0);
   });
 
   it("classifies findings in files not in diff as pre-existing", () => {
@@ -409,7 +411,8 @@ describe("handleSynthesize origin classification (T-192)", () => {
     });
 
     expect(result.validatedFindings[0].origin).toBe("pre-existing");
-    expect(result.preExistingCount).toBe(1);
+    // T-257: preExisting suppressed on skip path (no sessionId)
+    expect(result.preExistingCount).toBe(0);
   });
 
   it("skips origin classification without diff/changedFiles (backward compat)", () => {
@@ -446,10 +449,10 @@ describe("handleSynthesize origin classification (T-192)", () => {
       projectRoot,
     });
 
-    // Both are pre-existing but suggestion is filtered
+    // Both are pre-existing but on skip path (no sessionId), preExistingFindings is empty
     expect(result.validatedFindings.length).toBe(2);
-    expect(result.preExistingFindings.length).toBe(1);
-    expect(result.preExistingFindings[0].severity).toBe("minor");
+    // T-257: Skip-path filing safety suppresses preExistingFindings
+    expect(result.preExistingFindings.length).toBe(0);
   });
 
   it("PLAN_REVIEW classifies all findings as introduced", () => {

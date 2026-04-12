@@ -91,6 +91,8 @@ export interface VerifyFail {
   /** -1 for finding-level failures (no_evidence). */
   readonly failedEvidenceIndex: number;
   readonly details: VerifyFailDetails;
+  readonly actualExcerpt?: string;
+  readonly actualHash?: string;
 }
 
 export type VerifyResult = VerifyPass | VerifyFail;
@@ -232,12 +234,16 @@ export function verifyLensFinding(
       throw outcome.error;
     }
     if (outcome.kind === "fail") {
-      return {
+      const base: VerifyFail = {
         pass: false,
         reasonCode: outcome.reasonCode,
         failedEvidenceIndex: i,
         details: outcome.details,
       };
+      if (outcome.actualExcerpt !== undefined) {
+        return { ...base, actualExcerpt: outcome.actualExcerpt, actualHash: outcome.actualHash };
+      }
+      return base;
     }
     verified.push(outcome.verified);
   }
@@ -248,14 +254,42 @@ export function verifyLensFinding(
 
 type EvidenceOutcome =
   | { kind: "pass"; verified: VerifiedEvidence }
-  | { kind: "fail"; reasonCode: VerifyReasonCode; details: VerifyFailDetails }
+  | { kind: "fail"; reasonCode: VerifyReasonCode; details: VerifyFailDetails; actualExcerpt?: string; actualHash?: string }
   | { kind: "integrity"; error: SnapshotIntegrityError };
 
 function failOutcome(
   reasonCode: VerifyReasonCode,
   details: VerifyFailDetails,
+  enrichment?: { actualExcerpt: string; actualHash: string },
 ): EvidenceOutcome {
+  if (enrichment) {
+    return { kind: "fail", reasonCode, details, actualExcerpt: enrichment.actualExcerpt, actualHash: enrichment.actualHash };
+  }
   return { kind: "fail", reasonCode, details };
+}
+
+function extractEnrichment(
+  normText: string,
+  lineStarts: number[],
+  startLine: number,
+  endLine: number,
+): { actualExcerpt: string; actualHash: string } {
+  const totalLines = lineStarts.length;
+  let fullExcerpt: string;
+  if (startLine < 1 || startLine > totalLines) {
+    fullExcerpt = normText;
+  } else {
+    const clampedEnd = Math.min(endLine, totalLines);
+    const startOff = lineStarts[startLine - 1] ?? 0;
+    const endOff = clampedEnd >= totalLines
+      ? normText.length
+      : (lineStarts[clampedEnd] ?? normText.length);
+    fullExcerpt = normText.slice(startOff, endOff);
+  }
+  return {
+    actualExcerpt: fullExcerpt.length > 500 ? fullExcerpt.slice(0, 500) : fullExcerpt,
+    actualHash: createHash("sha256").update(fullExcerpt).digest("hex"),
+  };
 }
 
 function integrityOutcome(
@@ -399,11 +433,15 @@ function verifyEvidenceItem(
     evidence.startLine < 1 ||
     evidence.endLine < evidence.startLine
   ) {
+    const normForEnrich = normalizeForVerification(rawBytes.toString("utf-8"));
     return failOutcome("line_out_of_range", {
       file: evidence.file,
       startLine: evidence.startLine,
       endLine: evidence.endLine,
       message: "range is structurally invalid",
+    }, {
+      actualExcerpt: normForEnrich.length > 500 ? normForEnrich.slice(0, 500) : normForEnrich,
+      actualHash: createHash("sha256").update(normForEnrich).digest("hex"),
     });
   }
 
@@ -430,7 +468,7 @@ function verifyEvidenceItem(
     return failOutcome("quote_mismatch", {
       file: evidence.file,
       message: "empty or whitespace-only evidence code",
-    });
+    }, extractEnrichment(normFile, lineStarts, evidence.startLine, evidence.endLine));
   }
 
   // ── Step 5 — search ────────────────────────────────────────────
@@ -489,7 +527,7 @@ function verifyEvidenceItem(
     message: staleRange
       ? `stale range (startLine ${evidence.startLine} > fileLineCount ${fileLineCount}) and quote not found in whole-file search`
       : `quote not found in ±${VERIFY_RECOVERY_WINDOW} line window around [${evidence.startLine}..${evidence.endLine}]`,
-  });
+  }, extractEnrichment(normFile, lineStarts, evidence.startLine, evidence.endLine));
 }
 
 /**

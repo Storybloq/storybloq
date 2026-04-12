@@ -781,6 +781,9 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     },
   }, async (args) => {
     try {
+      const sessionDir = args.sessionId
+        ? join(pinnedRoot, ".story", "sessions", args.sessionId)
+        : undefined;
       const result = handleSynthesize({
         stage: args.stage,
         lensResults: args.lensResults,
@@ -791,6 +794,8 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
           reviewId: args.reviewId ?? "unknown",
         },
         projectRoot: pinnedRoot,
+        sessionId: args.sessionId,
+        sessionDir,
         diff: args.diff,
         changedFiles: args.changedFiles,
       });

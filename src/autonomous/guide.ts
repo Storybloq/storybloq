@@ -2148,6 +2148,9 @@ function guideResult(
     `**Completed:** ${summary.completed.length > 0 ? summary.completed.join(", ") : "none"}`,
     `**Tickets done:** ${summary.completed.length}`,
     summary.branch ? `**Branch:** ${summary.branch}` : "",
+    state.verificationCounters
+      ? `**Verification:** ${state.verificationCounters.proposed} proposed, ${state.verificationCounters.verified} verified, ${state.verificationCounters.rejected} rejected, ${state.verificationCounters.filed} filed`
+      : "",
     output.reminders.length > 0 ? `\n**Reminders:**\n${output.reminders.map((r) => `- ${r}`).join("\n")}` : "",
   ].filter(Boolean);
 

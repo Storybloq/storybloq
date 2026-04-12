@@ -487,6 +487,15 @@ export const SessionStateSchema = z.object({
     reviewBackends: z.array(z.string()),
     handoverInterval: z.number().optional(),
   }).optional(),
+
+  // T-257: Verification counters (accumulated from telemetry JSONL)
+  verificationCounters: z.object({
+    proposed: z.number().default(0),
+    verified: z.number().default(0),
+    rejected: z.number().default(0),
+    filed: z.number().default(0),
+    lastTelemetryLine: z.number().default(0),
+  }).optional(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;

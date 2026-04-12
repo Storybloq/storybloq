@@ -72,6 +72,13 @@ export type {
   SnapshotIntegrityCode,
 } from "./verification.js";
 
+export {
+  appendRejection,
+  buildRejectionEntry,
+  accumulateVerificationCounters,
+} from "./verification-log.js";
+export type { RejectionEntry } from "./verification-log.js";
+
 export type {
   LensFinding,
   EvidenceItem,

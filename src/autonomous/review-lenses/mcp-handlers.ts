@@ -12,7 +12,7 @@
  * T-189
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareLensReview } from "./orchestrator.js";
 import { validateFindings } from "./schema-validator.js";
@@ -21,6 +21,12 @@ import { computeBlocking } from "./blocking-policy.js";
 import { parseDiffScope, classifyOrigin } from "./diff-scope.js";
 import { buildMergerPrompt, parseMergerResult } from "./merger.js";
 import { buildJudgePrompt } from "./judge.js";
+import {
+  verifyLensFinding,
+  SnapshotIntegrityError,
+} from "./verification.js";
+import type { SnapshotContext, VerifyFail } from "./verification.js";
+import { appendRejection, buildRejectionEntry } from "./verification-log.js";
 import type {
   BlockingPolicy,
   LensFinding,
@@ -177,6 +183,7 @@ export interface SynthesizeInput {
     readonly reviewId: string;
   };
   readonly sessionDir?: string;
+  readonly sessionId?: string;
   readonly projectRoot?: string;
   // T-192: Origin classification inputs
   readonly diff?: string;
@@ -194,6 +201,17 @@ export interface SynthesizeOutput {
   // T-192: Pre-existing findings identified by origin classification
   readonly preExistingFindings: readonly LensFinding[];
   readonly preExistingCount: number;
+  // T-257: Verification gate outputs
+  readonly verificationCounters: {
+    readonly proposed: number;
+    readonly verified: number;
+    readonly rejected: number;
+  };
+  readonly snapshotIntegrityFailure: boolean;
+  readonly verificationSkipped: boolean;
+  readonly logWriteFailures: number;
+  readonly verificationRuntimeErrors: number;
+  readonly telemetryWriteFailed: boolean;
 }
 
 export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
@@ -278,22 +296,117 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     }
   }
 
-  // T-192: Collect pre-existing findings for auto-filing (origin set during enrichment above)
-  const preExistingFindings = allFindings.filter(
+  // ── T-257: Verification gate ───────────────────────────────────
+  let verifiedFindings: LensFinding[] = allFindings;
+  let verifiedForFiling: LensFinding[] = [];
+  let rejectedCount = 0;
+  let snapshotIntegrityFailure = false;
+  let verificationSkipped = false;
+  let logWriteFailures = 0;
+  let verificationRuntimeErrors = 0;
+
+  if (input.projectRoot && input.sessionId) {
+    const ctx: SnapshotContext = {
+      projectRoot: input.projectRoot,
+      sessionId: input.sessionId,
+      reviewId: input.metadata.reviewId,
+    };
+
+    const verified: LensFinding[] = [];
+    const strictlyVerified: LensFinding[] = [];
+    const rejected: Array<{ finding: LensFinding; result: VerifyFail }> = [];
+
+    for (const finding of allFindings) {
+      try {
+        const result = verifyLensFinding(finding, ctx);
+        if (result.pass) {
+          verified.push(finding);
+          strictlyVerified.push(finding);
+        } else {
+          rejected.push({ finding, result });
+        }
+      } catch (err) {
+        if (err instanceof SnapshotIntegrityError) {
+          snapshotIntegrityFailure = true;
+          break;
+        }
+        verified.push(finding);
+        verificationRuntimeErrors++;
+      }
+    }
+
+    if (snapshotIntegrityFailure) {
+      verifiedFindings = allFindings;
+      verifiedForFiling = [];
+      rejectedCount = 0;
+    } else {
+      verifiedFindings = verified;
+      verifiedForFiling = strictlyVerified;
+      rejectedCount = rejected.length;
+    }
+
+    if (!snapshotIntegrityFailure && rejected.length > 0 && input.sessionDir) {
+      const stageLabel = stage === "CODE_REVIEW" ? "code-review" : "plan-review";
+      for (const { finding, result } of rejected) {
+        try {
+          const entry = buildRejectionEntry(finding, result, stageLabel);
+          if (!appendRejection(input.sessionDir, entry).ok) {
+            logWriteFailures++;
+          }
+        } catch {
+          logWriteFailures++;
+        }
+      }
+    }
+  } else {
+    verificationSkipped = true;
+  }
+
+  // T-192: Collect pre-existing findings from strictly-verified set only
+  const preExistingFindings = verifiedForFiling.filter(
     f => f.origin === "pre-existing" && f.severity !== "suggestion",
   );
 
   const lensMetadata = buildLensMetadata(lensesCompleted, lensesFailed, lensesInsufficientContext);
 
-  const mergerPrompt = buildMergerPrompt(allFindings, lensMetadata, stage);
+  const mergerPrompt = buildMergerPrompt(verifiedFindings, lensMetadata, stage);
 
-  // Note: Cache writes are handled by the orchestrator path (prepareLensReview),
-  // not the MCP path. The MCP path's cache key format would mismatch the orchestrator's
-  // buildCacheKey() format, producing cache entries that are never read.
+  // T-257: Verification counters
+  const verificationCounters = {
+    proposed: allFindings.length,
+    verified: (snapshotIntegrityFailure || verificationSkipped)
+      ? 0
+      : verifiedForFiling.length,
+    rejected: rejectedCount,
+  };
+
+  // T-257: Write telemetry artifact (best-effort)
+  let telemetryWriteFailed = false;
+  if (input.sessionDir) {
+    try {
+      const telemetryEntry = {
+        reviewId: input.metadata.reviewId,
+        proposed: verificationCounters.proposed,
+        verified: verificationCounters.verified,
+        rejected: verificationCounters.rejected,
+        snapshotIntegrityFailure,
+        verificationSkipped,
+        verificationRuntimeErrors,
+        logWriteFailures,
+        timestamp: new Date().toISOString(),
+      };
+      appendFileSync(
+        join(input.sessionDir, "verification-telemetry.jsonl"),
+        JSON.stringify(telemetryEntry) + "\n",
+      );
+    } catch {
+      telemetryWriteFailed = true;
+    }
+  }
 
   return {
     mergerPrompt,
-    validatedFindings: allFindings,
+    validatedFindings: verifiedFindings,
     lensesCompleted,
     lensesFailed,
     lensesInsufficientContext,
@@ -301,6 +414,12 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     droppedDetails: dropReasons.slice(0, 5),
     preExistingFindings,
     preExistingCount: preExistingFindings.length,
+    verificationCounters,
+    snapshotIntegrityFailure,
+    verificationSkipped,
+    logWriteFailures,
+    verificationRuntimeErrors,
+    telemetryWriteFailed,
   };
 }
 

@@ -2,6 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { requiredRounds, nextReviewer } from "../review-depth.js";
+import { accumulateVerificationCounters } from "../review-lenses/verification-log.js";
 
 /**
  * PLAN_REVIEW stage — independent reviewer evaluates the plan.
@@ -157,6 +158,8 @@ export class PlanReviewStage implements WorkflowStage {
       if (updated) stateUpdate.lensReviewHistory = updated;
     }
     ctx.writeState(stateUpdate);
+
+    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: (u) => ctx.writeState(u as Partial<import("../session-types.js").FullSessionState>) });
 
     ctx.appendEvent("plan_review", {
       round: roundNum,

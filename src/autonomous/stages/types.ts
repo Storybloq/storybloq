@@ -3,6 +3,7 @@ import type {
   GuideReportInput,
 } from "../session-types.js";
 import { writeSessionSync, appendEvent } from "../session.js";
+import { killSidecar, writeShutdownMarker } from "../liveness.js";
 import { loadProject } from "../../core/project-loader.js";
 import type { ProjectState } from "../../core/project-state.js";
 
@@ -99,6 +100,18 @@ export class StageContext {
     const merged = { ...this._state, ...updates } as FullSessionState;
     const written = writeSessionSync(this.dir, merged);
     this._state = written;
+    return written;
+  }
+
+  /**
+   * T-260: Terminal transition with sidecar cleanup.
+   * Persists state first, then kills sidecar and writes shutdown marker (best-effort).
+   */
+  finalizeSession(updates: Partial<FullSessionState>): FullSessionState {
+    const pidToKill = this._state.sidecarPid;
+    const written = this.writeState(updates);
+    try { killSidecar(pidToKill); } catch { /* best-effort */ }
+    try { writeShutdownMarker(this.dir); } catch { /* best-effort */ }
     return written;
   }
 

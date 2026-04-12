@@ -8,6 +8,8 @@ import { z } from "zod";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { TARGET_WORK_ID_REGEX } from "../autonomous/session-types.js";
+import { findActiveSessionMinimal, sessionDir } from "../autonomous/session.js";
+import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { handlePrepare, handleSynthesize, handleJudge } from "../autonomous/review-lenses/mcp-handlers.js";
 import { validateCachedFindings } from "../autonomous/review-lenses/schema-validator.js";
 import type { LensFinding } from "../autonomous/review-lenses/types.js";
@@ -118,6 +120,7 @@ export async function runMcpReadTool(
   pinnedRoot: string,
   handler: (ctx: CommandContext) => Promise<CommandResult> | CommandResult,
 ): Promise<McpToolResult> {
+  try { const s = findActiveSessionMinimal(pinnedRoot); if (s) touchLastMcpCallFile(sessionDir(pinnedRoot, s.sessionId)); } catch { /* best-effort */ }
   try {
     const { state, warnings } = await loadProject(pinnedRoot);
     const handoversDir = join(pinnedRoot, ".story", "handovers");
@@ -164,6 +167,7 @@ export async function runMcpWriteTool(
   pinnedRoot: string,
   handler: (root: string, format: "md") => Promise<CommandResult>,
 ): Promise<McpToolResult> {
+  try { const s = findActiveSessionMinimal(pinnedRoot); if (s) touchLastMcpCallFile(sessionDir(pinnedRoot, s.sessionId)); } catch { /* best-effort */ }
   try {
     const result = await handler(pinnedRoot, "md");
 
@@ -737,7 +741,10 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         notes: z.string().optional().describe("Free-text notes"),
       }).optional().describe("Report data (required for report action)"),
     },
-  }, (args) => handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]));
+  }, (args) => {
+    try { const sid = (args as Record<string, unknown>).sessionId as string | null; if (sid) touchLastMcpCallFile(sessionDir(pinnedRoot, sid)); } catch { /* best-effort */ }
+    return handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]);
+  });
 
   // ── T-189: Multi-lens review MCP tools ─────────────────────
 

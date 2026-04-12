@@ -199,7 +199,7 @@ export class PlanReviewStage implements WorkflowStage {
     if (nextAction === "IMPLEMENT") {
       // T-135: Plan mode exits after plan review approval
       if (ctx.state.mode === "plan") {
-        ctx.writeState({
+        ctx.finalizeSession({
           status: "completed" as const,
           terminationReason: "normal" as const,
         });

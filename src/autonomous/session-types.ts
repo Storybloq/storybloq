@@ -120,6 +120,8 @@ export interface SessionState {
     readonly workspaceId?: string;
     readonly expiresAt: string;
   };
+  // T-260: Liveness infrastructure
+  readonly sidecarPid?: number | null;
   // T-259: Telemetry substrate fields
   readonly substage?: string | null;
   readonly substageStartedAt?: string | null;
@@ -564,6 +566,9 @@ export const SessionStateSchema = z.object({
     filed: z.number().default(0),
     lastTelemetryLine: z.number().default(0),
   }).optional(),
+
+  // T-260: Liveness infrastructure
+  sidecarPid: z.number().nullish(),
 
   // T-259: Telemetry substrate fields (all nullish for wire + state compat)
   substage: z.string().nullish(),

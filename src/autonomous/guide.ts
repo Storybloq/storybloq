@@ -33,6 +33,14 @@ import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
 import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
+import {
+  spawnAliveSidecar,
+  killSidecar,
+  writeShutdownMarker,
+  computeBinaryFingerprint,
+  captureClaudeCodeSessionId,
+  telemetryDirPath,
+} from "./liveness.js";
 import { gitHead, gitHeadHash, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
@@ -529,6 +537,8 @@ async function trySupersedeFinishedOrphan(
         },
       },
     );
+    // T-260: Cross-process finalization (marker only, no PID kill)
+    writeShutdownMarker(info.dir);
   } catch {
     return null;
   }
@@ -638,6 +648,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     const current = readSession(stale.dir);
     if (!current || current.status !== "active") continue;
     writeSessionSync(stale.dir, { ...current, status: "superseded" as const });
+    writeShutdownMarker(stale.dir);
   }
 
   // ISS-076: Version mismatch advisory
@@ -746,6 +757,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // Create session — wrapped in try/finally for cleanup on failure
   const session = createSession(root, recipe, wsId, sessionConfig);
   const dir = sessionDir(root, session.sessionId);
+  let sidecarPid: number | undefined;
 
   try {
     // Check git state
@@ -944,6 +956,19 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       }
     }
 
+    // T-260: Liveness infrastructure
+    const fp = computeBinaryFingerprint();
+    const ccSessionId = captureClaudeCodeSessionId();
+    try {
+      sidecarPid = spawnAliveSidecar(telemetryDirPath(dir));
+    } catch { /* best-effort */ }
+    updated = {
+      ...updated,
+      binaryFingerprint: fp,
+      claudeCodeSessionId: ccSessionId,
+      sidecarPid: sidecarPid ?? null,
+    };
+
     // Load context
     const { state: projectState, warnings } = await loadProject(root);
     const handoversDir = join(root, ".story", "handovers");
@@ -988,6 +1013,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     if (mode !== "auto" && args.ticketId) {
       const ticket = projectState.ticketByID(args.ticketId);
       if (!ticket) {
+        killSidecar(sidecarPid); writeShutdownMarker(dir);
         deleteSession(root, session.sessionId);
         return guideError(new Error(`Ticket ${args.ticketId} not found.`));
       }
@@ -996,10 +1022,12 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       if (mode !== "review") {
         // review mode allows any ticket status — user already has code
         if (ticket.status === "complete") {
+          killSidecar(sidecarPid); writeShutdownMarker(dir);
           deleteSession(root, session.sessionId);
           return guideError(new Error(`Ticket ${args.ticketId} is already complete.`));
         }
         if (projectState.isBlocked(ticket)) {
+          killSidecar(sidecarPid); writeShutdownMarker(dir);
           deleteSession(root, session.sessionId);
           return guideError(new Error(`Ticket ${args.ticketId} is blocked by: ${ticket.blockedBy.join(", ")}.`));
         }
@@ -1014,6 +1042,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           // Block only if claiming session exists, is active, and lease is not expired
           // TOCTOU: cooperative check — filesystem-based concurrency, sufficient for this use case
           if (claimingSession && claimingSession.state.status === "active" && !isLeaseExpired(claimingSession.state)) {
+            killSidecar(sidecarPid); writeShutdownMarker(dir);
             deleteSession(root, session.sessionId);
             return guideError(new Error(
               `Ticket ${args.ticketId} is claimed by active session ${claimId}. ` +
@@ -1264,6 +1293,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
   } catch (err) {
     // Cleanup on failure
+    killSidecar(sidecarPid); writeShutdownMarker(dir);
     deleteSession(root, session.sessionId);
     throw err;
   }
@@ -1565,6 +1595,14 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       ownCommitDrift = true;
     }
   }
+  // T-260: Spawn new sidecar for resumed session (old sidecar died with previous process)
+  let resumeSidecarPid: number | null = null;
+  try {
+    resumeSidecarPid = spawnAliveSidecar(telemetryDirPath(info.dir));
+  } catch { /* best-effort */ }
+
+  try {
+
   if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
     // External drift or gitIsAncestor error -- existing recovery
     let mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
@@ -1598,6 +1636,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       guideCallCount: 0,
       contextPressure: { ...info.state.contextPressure, guideCallCount: 0, compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1 },
       git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash },
+      sidecarPid: resumeSidecarPid,
     });
 
     appendEvent(info.dir, {
@@ -1753,6 +1792,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     contextPressure: { ...resumePressure, level: evaluatePressure({ ...info.state, guideCallCount: 0, contextPressure: resumePressure } as FullSessionState) },
     // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point)
     ...(ownCommitDrift ? { git: { ...info.state.git, expectedHead: headResult.data.hash } } : {}),
+    sidecarPid: resumeSidecarPid,
   });
   appendEvent(info.dir, {
     rev: written.revision,
@@ -1887,6 +1927,12 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
           "Call autonomous_guide after completing each step.",
         ],
   });
+
+  } catch (err) {
+    // T-260: Clean up sidecar if resume fails after spawn
+    try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2044,6 +2090,9 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     resumeBlocked: false,
     ticket: undefined,
   });
+  // T-260: Same-process finalization (after state write succeeds)
+  try { killSidecar(cancelInfo.state.sidecarPid); } catch { /* best-effort */ }
+  try { writeShutdownMarker(cancelInfo.dir); } catch { /* best-effort */ }
 
   appendEvent(cancelInfo.dir, {
     rev: written.revision,

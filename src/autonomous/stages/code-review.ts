@@ -219,7 +219,7 @@ export class CodeReviewStage implements WorkflowStage {
     if (nextAction === "FINALIZE") {
       // T-135: Review mode exits after code review approval
       if (ctx.state.mode === "review") {
-        ctx.writeState({
+        ctx.finalizeSession({
           status: "completed" as const,
           terminationReason: "normal" as const,
         });

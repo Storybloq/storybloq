@@ -6,7 +6,8 @@ import {
   type StatusPayload,
 } from "../../autonomous/session-types.js";
 import { buildActivePayload, buildInactivePayload } from "../../autonomous/status-payload.js";
-import { findActiveSessionMinimal } from "../../autonomous/session.js";
+import { findActiveSessionMinimal, sessionDir } from "../../autonomous/session.js";
+import { readLastMcpCall, readAliveTimestamp } from "../../autonomous/liveness.js";
 
 // ---------------------------------------------------------------------------
 // Stdin reading — silent version (no throws, no validation)
@@ -54,8 +55,11 @@ function inactivePayload(): StatusPayload {
   return buildInactivePayload();
 }
 
-function activePayload(session: Parameters<typeof buildActivePayload>[0]): StatusPayload {
-  return buildActivePayload(session);
+function activePayload(session: Parameters<typeof buildActivePayload>[0], root: string): StatusPayload {
+  const sDir = sessionDir(root, session.sessionId);
+  const lastMcpCall = readLastMcpCall(sDir);
+  const aliveTs = readAliveTimestamp(sDir);
+  return buildActivePayload(session, { lastMcpCall, alive: aliveTs !== null });
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +118,7 @@ export async function handleHookStatus(): Promise<void> {
       const root = discoverProjectRoot();
       if (root) {
         const session = findActiveSessionMinimal(root);
-        const payload = session ? activePayload(session) : inactivePayload();
+        const payload = session ? activePayload(session, root) : inactivePayload();
         writeStatus(root, payload);
       }
       process.exit(0);
@@ -155,7 +159,7 @@ export async function handleHookStatus(): Promise<void> {
 
     // Scan for active session
     const session = findActiveSessionMinimal(root);
-    const payload = session ? activePayload(session) : inactivePayload();
+    const payload = session ? activePayload(session, root) : inactivePayload();
     writeStatus(root, payload);
   } catch {
     // Catch-all — never crash

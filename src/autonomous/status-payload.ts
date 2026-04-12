@@ -6,7 +6,10 @@ import {
   type StatusPayloadInactive,
 } from "./session-types.js";
 
-export function buildActivePayload(session: SessionState): StatusPayloadActive {
+export function buildActivePayload(
+  session: SessionState,
+  telemetry?: { lastMcpCall?: string | null; alive?: boolean | null },
+): StatusPayloadActive {
   return {
     schemaVersion: CURRENT_STATUS_SCHEMA_VERSION,
     sessionActive: true,
@@ -31,8 +34,8 @@ export function buildActivePayload(session: SessionState): StatusPayloadActive {
     runningSubprocesses: session.runningSubprocesses ?? null,
     lastReviewVerdict: session.lastReviewVerdict ?? null,
     recentDeferrals: session.recentDeferrals ?? null,
-    alive: session.alive ?? null,
-    lastMcpCall: session.lastMcpCall ?? null,
+    alive: telemetry?.alive ?? session.alive ?? null,
+    lastMcpCall: telemetry?.lastMcpCall ?? session.lastMcpCall ?? null,
     healthState: session.healthState ?? null,
   };
 }

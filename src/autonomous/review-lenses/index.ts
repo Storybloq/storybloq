@@ -56,12 +56,15 @@ export type {
   ArchiveReviewSnapshotResult,
 } from "./review-snapshot.js";
 export {
+  loadSnapshot,
   verifyLensFinding,
+  verifyLensFindingPreloaded,
   normalizeForVerification,
   VERIFY_RECOVERY_WINDOW,
   SnapshotIntegrityError,
 } from "./verification.js";
 export type {
+  PreloadedSnapshot,
   VerifyResult,
   VerifyPass,
   VerifyFail,

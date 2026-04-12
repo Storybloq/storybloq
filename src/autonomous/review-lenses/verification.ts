@@ -136,63 +136,23 @@ export class SnapshotIntegrityError extends Error {
   }
 }
 
-// ── Public helpers ──────────────────────────────────────────────────
+// ── Preloaded snapshot ──────────────────────────────────────────────
 
-/**
- * Narrow normalization used by both the snapshot file and evidence.code
- * at verification time. Applies the minimal variance absorption needed
- * for quote matching:
- * - CRLF and lone CR → LF.
- * - Per-line trim of trailing whitespace (`\t`, space, `\v`, `\f`, `\r`).
- *
- * Does NOT collapse interior whitespace, does NOT strip blank lines, and
- * does NOT normalize indentation. Tab-vs-space indent mismatches produce
- * `quote_mismatch` in the gate.
- */
-export function normalizeForVerification(input: string): string {
-  // Convert all line endings to LF first, then trim trailing whitespace
-  // per-line. Using split/join keeps blank lines intact.
-  const lfOnly = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return lfOnly
-    .split("\n")
-    .map((line) => line.replace(/[ \t\v\f]+$/g, ""))
-    .join("\n");
+export interface PreloadedSnapshot {
+  readonly snapshotDir: string;
+  readonly byPath: ReadonlyMap<string, ReviewSnapshotManifestFileEntry>;
 }
 
-// ── Public API ──────────────────────────────────────────────────────
-
 /**
- * Run the 7-step verification procedure on every evidence entry in
- * `finding` against the immutable snapshot identified by `ctx`.
+ * Load and trust-bootstrap the snapshot manifest once, returning a
+ * `PreloadedSnapshot` that can be passed to `verifyLensFindingPreloaded`
+ * for each finding. This avoids re-reading the manifest from disk per
+ * finding in a verification loop.
+ *
+ * Throws `SnapshotIntegrityError` on manifest load failure or digest
+ * mismatch (same semantics as the inline load in `verifyLensFinding`).
  */
-export function verifyLensFinding(
-  finding: LensFinding,
-  ctx: SnapshotContext,
-): VerifyResult {
-  // Step 0 — no_evidence gate.
-  if (finding.evidence.length === 0) {
-    return {
-      pass: false,
-      reasonCode: "no_evidence",
-      failedEvidenceIndex: -1,
-      details: { message: "finding has zero evidence entries" },
-    };
-  }
-
-  // Step 0b — load + trust-bootstrap the manifest via the T-254 reader.
-  // We use the parse-only `readReviewSnapshotManifestWithBytes` variant
-  // because the digest-verified path in `readReviewSnapshotManifest`
-  // walks every payload file, and any per-file fault there (symlink,
-  // ENOENT, sha256 mismatch) would surface as "manifest_load_failed"
-  // and swallow the specific per-evidence outcome the gate owes its
-  // caller. Per-payload integrity is enforced inside the per-evidence
-  // Step 2 loop instead.
-  //
-  // When `ctx.expectedManifestSha256` is provided we verify the manifest
-  // digest against the SAME buffer the reader just parsed from — the
-  // reader returns `manifestBytes` alongside the parsed object, so parse
-  // and digest check are bound to one read and there is no TOCTOU window
-  // where manifest.json could be swapped between the two.
+export function loadSnapshot(ctx: SnapshotContext): PreloadedSnapshot {
   let manifest;
   let manifestBytes: Buffer;
   try {
@@ -224,12 +184,60 @@ export function verifyLensFinding(
   const byPath = new Map<string, ReviewSnapshotManifestFileEntry>();
   for (const entry of manifest.files) byPath.set(entry.path, entry);
 
-  // Steps 1–7 outer loop — first failure short-circuits with
+  return { snapshotDir, byPath };
+}
+
+// ── Public helpers ──────────────────────────────────────────────────
+
+/**
+ * Narrow normalization used by both the snapshot file and evidence.code
+ * at verification time. Applies the minimal variance absorption needed
+ * for quote matching:
+ * - CRLF and lone CR → LF.
+ * - Per-line trim of trailing whitespace (`\t`, space, `\v`, `\f`, `\r`).
+ *
+ * Does NOT collapse interior whitespace, does NOT strip blank lines, and
+ * does NOT normalize indentation. Tab-vs-space indent mismatches produce
+ * `quote_mismatch` in the gate.
+ */
+export function normalizeForVerification(input: string): string {
+  // Convert all line endings to LF first, then trim trailing whitespace
+  // per-line. Using split/join keeps blank lines intact.
+  const lfOnly = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return lfOnly
+    .split("\n")
+    .map((line) => line.replace(/[ \t\v\f]+$/g, ""))
+    .join("\n");
+}
+
+// ── Public API ──────────────────────────────────────────────────────
+
+/**
+ * Run the 7-step verification procedure on every evidence entry in
+ * `finding` against a preloaded snapshot. Use `loadSnapshot` to obtain
+ * the `PreloadedSnapshot`, then call this for each finding to avoid
+ * re-reading the manifest from disk per finding.
+ */
+export function verifyLensFindingPreloaded(
+  finding: LensFinding,
+  snapshot: PreloadedSnapshot,
+): VerifyResult {
+  // Step 0 -- no_evidence gate.
+  if (finding.evidence.length === 0) {
+    return {
+      pass: false,
+      reasonCode: "no_evidence",
+      failedEvidenceIndex: -1,
+      details: { message: "finding has zero evidence entries" },
+    };
+  }
+
+  // Steps 1-7 outer loop -- first failure short-circuits with
   // failedEvidenceIndex = i. Integrity outcomes throw.
   const verified: VerifiedEvidence[] = [];
   for (let i = 0; i < finding.evidence.length; i++) {
     const item = finding.evidence[i] as EvidenceItem;
-    const outcome = verifyEvidenceItem(item, snapshotDir, byPath);
+    const outcome = verifyEvidenceItem(item, snapshot.snapshotDir, snapshot.byPath);
     if (outcome.kind === "integrity") {
       throw outcome.error;
     }
@@ -248,6 +256,20 @@ export function verifyLensFinding(
     verified.push(outcome.verified);
   }
   return { pass: true, verifiedEvidence: verified };
+}
+
+/**
+ * Convenience wrapper: loads the snapshot and verifies a single finding.
+ * For verifying multiple findings against the same snapshot, use
+ * `loadSnapshot` + `verifyLensFindingPreloaded` to avoid re-reading
+ * the manifest from disk per finding.
+ */
+export function verifyLensFinding(
+  finding: LensFinding,
+  ctx: SnapshotContext,
+): VerifyResult {
+  const snapshot = loadSnapshot(ctx);
+  return verifyLensFindingPreloaded(finding, snapshot);
 }
 
 // ── Internal helpers (not exported from the barrel) ─────────────────

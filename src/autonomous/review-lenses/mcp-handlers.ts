@@ -22,7 +22,8 @@ import { parseDiffScope, classifyOrigin } from "./diff-scope.js";
 import { buildMergerPrompt, parseMergerResult } from "./merger.js";
 import { buildJudgePrompt } from "./judge.js";
 import {
-  verifyLensFinding,
+  loadSnapshot,
+  verifyLensFindingPreloaded,
   SnapshotIntegrityError,
 } from "./verification.js";
 import type { SnapshotContext, VerifyFail } from "./verification.js";
@@ -316,22 +317,36 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     const strictlyVerified: LensFinding[] = [];
     const rejected: Array<{ finding: LensFinding; result: VerifyFail }> = [];
 
-    for (const finding of allFindings) {
-      try {
-        const result = verifyLensFinding(finding, ctx);
-        if (result.pass) {
+    // Load the snapshot manifest once, not per finding (ISS-395).
+    let snapshot;
+    try {
+      snapshot = loadSnapshot(ctx);
+    } catch (err) {
+      if (err instanceof SnapshotIntegrityError) {
+        snapshotIntegrityFailure = true;
+      } else {
+        throw err;
+      }
+    }
+
+    if (!snapshotIntegrityFailure) {
+      for (const finding of allFindings) {
+        try {
+          const result = verifyLensFindingPreloaded(finding, snapshot!);
+          if (result.pass) {
+            verified.push(finding);
+            strictlyVerified.push(finding);
+          } else {
+            rejected.push({ finding, result });
+          }
+        } catch (err) {
+          if (err instanceof SnapshotIntegrityError) {
+            snapshotIntegrityFailure = true;
+            break;
+          }
           verified.push(finding);
-          strictlyVerified.push(finding);
-        } else {
-          rejected.push({ finding, result });
+          verificationRuntimeErrors++;
         }
-      } catch (err) {
-        if (err instanceof SnapshotIntegrityError) {
-          snapshotIntegrityFailure = true;
-          break;
-        }
-        verified.push(finding);
-        verificationRuntimeErrors++;
       }
     }
 

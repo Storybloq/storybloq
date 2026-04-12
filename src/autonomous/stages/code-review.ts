@@ -243,7 +243,7 @@ export class CodeReviewStage implements WorkflowStage {
     }
     ctx.writeState(stateUpdate);
 
-    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: (u) => ctx.writeState(u as Partial<import("../session-types.js").FullSessionState>) });
+    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: ctx.writeState.bind(ctx) });
 
     ctx.appendEvent("code_review", {
       round: roundNum,

@@ -88,7 +88,7 @@ export function buildRejectionEntry(
 export function accumulateVerificationCounters(ctx: {
   sessionDir: string;
   state: { verificationCounters?: VerificationCounters };
-  writeState: (updates: Record<string, unknown>) => unknown;
+  writeState: (updates: { verificationCounters: VerificationCounters }) => unknown;
 }): void {
   const telemetryPath = join(ctx.sessionDir, "verification-telemetry.jsonl");
   let raw: string;

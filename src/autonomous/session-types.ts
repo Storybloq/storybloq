@@ -607,6 +607,7 @@ export const SessionStateSchema = z.object({
   alive: z.boolean().nullish(),
   lastMcpCall: z.string().nullish(),
   healthState: z.string().nullish(),
+  currentReviewStartedAt: z.string().nullish(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;

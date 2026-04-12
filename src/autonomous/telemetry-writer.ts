@@ -53,7 +53,7 @@ export function resetTruncationCount(): void {
 
 // Single-writer invariant is enforced by session lease. This lock protects
 // against rare overlap during lease expiry, orphan recovery, or operator error.
-function withTelemLock<T>(sessionDir: string, fn: () => T): T | undefined {
+export function withTelemLock<T>(sessionDir: string, fn: () => T): T | undefined {
   const tDir = telemetryDirPath(sessionDir);
   mkdirSync(tDir, { recursive: true });
   let release: (() => void) | undefined;

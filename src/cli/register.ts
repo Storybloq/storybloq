@@ -2672,9 +2672,73 @@ export function registerSessionCommand(yargs: Argv): Argv {
             }
           },
         )
+        .command(
+          "health [sessionId]",
+          "Derive and display session health state",
+          (y2) =>
+            y2.positional("sessionId", {
+              type: "string",
+              describe: "Session ID (optional -- uses active session if omitted)",
+            }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionHealth } = await import("./commands/session-health.js");
+            try {
+              await handleSessionHealth(root, argv.sessionId as string | undefined);
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
+        .command(
+          "watch [sessionId]",
+          "Stream session health state changes",
+          (y2) =>
+            y2
+              .positional("sessionId", {
+                type: "string",
+                describe: "Session ID (optional -- uses active session if omitted)",
+              })
+              .option("events", {
+                type: "boolean",
+                describe: "Emit raw JSON events (one per line)",
+                default: false,
+              })
+              .option("quiet", {
+                type: "boolean",
+                describe: "Only emit on health state transitions",
+                default: false,
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { handleSessionWatch } = await import("./commands/session-watch.js");
+            try {
+              await handleSessionWatch(root, argv.sessionId as string | undefined, {
+                events: argv.events as boolean,
+                quiet: argv.quiet as boolean,
+              });
+            } catch (err: unknown) {
+              process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+              process.exitCode = 1;
+            }
+          },
+        )
         .demandCommand(
           1,
-          "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact, stop, list, show, repair, delete",
+          "Specify a session subcommand: compact-prepare, resume-prompt, clear-compact, stop, list, show, repair, delete, health, watch",
         )
         .strict(),
     () => {},

@@ -337,20 +337,14 @@ function integrityOutcome(
   };
 }
 
-/**
- * Verify a single evidence entry against the snapshot. Returns a tagged
- * union that the outer loop unwraps into the public `VerifyResult`. Any
- * `integrity` outcome escalates to a thrown `SnapshotIntegrityError` in
- * the outer loop.
- */
-function verifyEvidenceItem(
+// ── ISS-399: Sub-step helpers for verifyEvidenceItem ─────────
+
+/** Steps 1-2: path canonicalization + manifest lookup + resolve. */
+function verifyPathAndLookup(
   evidence: EvidenceItem,
   snapshotDir: string,
   byPath: ReadonlyMap<string, ReviewSnapshotManifestFileEntry>,
-  snapshotDirReal?: string,
-): EvidenceOutcome {
-  // ── Step 1 — path canonicalization ─────────────────────────────
-  // 1a. Lexical contract.
+): EvidenceOutcome | { kind: "resolved"; entry: ReviewSnapshotManifestFileEntry; resolved: string } {
   try {
     _assertValidManifestPath(evidence.file, `evidence path`);
   } catch (err) {
@@ -360,7 +354,6 @@ function verifyEvidenceItem(
     });
   }
 
-  // ── Step 2 — manifest lookup + payload integrity verification ──
   const entry = byPath.get(evidence.file);
   if (!entry) {
     return failOutcome("file_not_snapshotted", {
@@ -369,22 +362,17 @@ function verifyEvidenceItem(
     });
   }
 
-  // Resolve payload location under the snapshot directory.
   const resolved = resolve(snapshotDir, evidence.file);
   const snapshotDirWithSep = snapshotDir.endsWith(sep)
     ? snapshotDir
     : snapshotDir + sep;
-  if (
-    !resolved.startsWith(snapshotDirWithSep) &&
-    resolved !== snapshotDir
-  ) {
+  if (!resolved.startsWith(snapshotDirWithSep) && resolved !== snapshotDir) {
     return failOutcome("invalid_path", {
       file: evidence.file,
       message: `resolved path escapes snapshot root: ${resolved}`,
     });
   }
 
-  // 1b. Destination-chain symlink guard (covers pre-leaf symlinks).
   try {
     _assertNoSymlinkAncestors(resolved, snapshotDir);
   } catch (err) {
@@ -395,7 +383,17 @@ function verifyEvidenceItem(
     );
   }
 
-  // Leaf lstat — catches symlink-at-use-time even if the walker didn't.
+  return { kind: "resolved", entry, resolved };
+}
+
+/** Payload integrity: lstat, symlink guard, realpath containment, byte + sha256 check. */
+function verifyPayloadIntegrity(
+  file: string,
+  resolved: string,
+  entry: ReviewSnapshotManifestFileEntry,
+  snapshotDir: string,
+  snapshotDirReal?: string,
+): EvidenceOutcome | { kind: "verified"; rawBytes: Buffer } {
   let lst;
   try {
     lst = lstatSync(resolved);
@@ -403,28 +401,22 @@ function verifyEvidenceItem(
     const e = err as NodeJS.ErrnoException;
     if (e.code === "ENOENT") {
       return failOutcome("snapshot_corrupt", {
-        file: evidence.file,
-        message: `payload missing on disk: ${evidence.file}`,
+        file,
+        message: `payload missing on disk: ${file}`,
       });
     }
     throw err;
   }
   if (lst.isSymbolicLink()) {
-    return integrityOutcome(
-      "payload_symlink",
-      `payload is a symlink: ${resolved}`,
-      evidence.file,
-    );
+    return integrityOutcome("payload_symlink", `payload is a symlink: ${resolved}`, file);
   }
   if (!lst.isFile()) {
     return failOutcome("snapshot_corrupt", {
-      file: evidence.file,
-      message: `payload is not a regular file: ${evidence.file}`,
+      file,
+      message: `payload is not a regular file: ${file}`,
     });
   }
 
-  // Realpath containment (unreachable on standard single-mount-namespace filesystems).
-  // Use cached snapshotDirReal when available (ISS-394); fall back to live call.
   let dirReal: string;
   if (snapshotDirReal !== undefined) {
     dirReal = snapshotDirReal;
@@ -435,37 +427,29 @@ function verifyEvidenceItem(
       return integrityOutcome(
         "payload_escapes_snapshot",
         `cannot resolve snapshot root realpath: ${(err as Error).message}`,
-        evidence.file,
+        file,
       );
     }
   }
-  const snapshotDirRealWithSep = dirReal.endsWith(sep)
-    ? dirReal
-    : dirReal + sep;
+  const snapshotDirRealWithSep = dirReal.endsWith(sep) ? dirReal : dirReal + sep;
   let realResolved: string;
   try {
     realResolved = realpathSync(resolved);
   } catch (err) {
     return integrityOutcome(
       "payload_escapes_snapshot",
-      `cannot resolve payload realpath for ${evidence.file}: ${(err as Error).message}`,
-      evidence.file,
+      `cannot resolve payload realpath for ${file}: ${(err as Error).message}`,
+      file,
     );
   }
-  if (
-    !realResolved.startsWith(snapshotDirRealWithSep) &&
-    realResolved !== dirReal
-  ) {
+  if (!realResolved.startsWith(snapshotDirRealWithSep) && realResolved !== dirReal) {
     return integrityOutcome(
       "payload_escapes_snapshot",
       `payload realpath ${realResolved} escapes snapshot root ${dirReal}`,
-      evidence.file,
+      file,
     );
   }
 
-  // Payload integrity verification — byte length first, then sha256.
-  // Post-write tampering (chmod-then-overwrite, same-length substitution,
-  // atomic-rename swap) all hit here and escalate to an integrity error.
   const rawBytes = readFileSync(realResolved);
   if (rawBytes.length !== entry.bytes) {
     return integrityOutcome(
@@ -483,8 +467,14 @@ function verifyEvidenceItem(
     );
   }
 
-  // ── Step 3 — strict range sanity ───────────────────────────────
-  // 3a. Structurally invalid → immediate line_out_of_range.
+  return { kind: "verified", rawBytes };
+}
+
+/** Steps 3-6: range validation, normalize, windowed search, decide. */
+function matchQuoteInFile(
+  evidence: EvidenceItem,
+  rawBytes: Buffer,
+): EvidenceOutcome {
   if (
     !Number.isInteger(evidence.startLine) ||
     !Number.isInteger(evidence.endLine) ||
@@ -503,24 +493,17 @@ function verifyEvidenceItem(
     });
   }
 
-  // ── Step 4 — normalize file + quote ────────────────────────────
   const fileText = rawBytes.toString("utf-8");
   const normFile = normalizeForVerification(fileText);
   const normCode = normalizeForVerification(evidence.code);
 
-  // Build the line-offset index on normFile.
   const lineStarts: number[] = [0];
   for (let i = 0; i < normFile.length; i++) {
     if (normFile.charCodeAt(i) === 10) lineStarts.push(i + 1);
   }
-  // lineStarts.length counts the phantom empty final line for \n-terminated files.
   const fileLineCount = lineStarts.length;
-
-  // 3b. Stale range — startLine past EOF. Whole-file search fallback.
   const staleRange = evidence.startLine > fileLineCount;
 
-  // Whitespace-only / empty quote guard (applied to the normalized quote
-  // so blank-line matches cannot sneak through).
   const strippedQuote = normCode.replace(/[\s\n]/g, "");
   if (strippedQuote.length === 0) {
     return failOutcome("quote_mismatch", {
@@ -529,7 +512,6 @@ function verifyEvidenceItem(
     }, extractEnrichment(normFile, lineStarts, evidence.startLine, evidence.endLine));
   }
 
-  // ── Step 5 — search ────────────────────────────────────────────
   let searchStart: number;
   let searchEnd: number;
   if (!staleRange) {
@@ -546,17 +528,10 @@ function verifyEvidenceItem(
     searchEnd = normFile.length;
   }
 
-  // cap=2 — we only need to distinguish 0, 1, and >=2 hits to decide
-  // pass / ambiguous_match. Once two hits are collected the scan stops.
   const hits = findAllHitsBounded(normFile, normCode, searchStart, searchEnd, 2);
 
-  // ── Step 6 — decide ────────────────────────────────────────────
   if (hits.length === 1) {
-    const matched = mapOffsetToLineRange(
-      hits[0] as number,
-      normCode.length,
-      lineStarts,
-    );
+    const matched = mapOffsetToLineRange(hits[0] as number, normCode.length, lineStarts);
     return {
       kind: "pass",
       verified: {
@@ -577,7 +552,6 @@ function verifyEvidenceItem(
       message: `quote matched ${hits.length} times in search window`,
     });
   }
-  // hits.length === 0
   return failOutcome(staleRange ? "line_out_of_range" : "quote_mismatch", {
     file: evidence.file,
     startLine: evidence.startLine,
@@ -586,6 +560,35 @@ function verifyEvidenceItem(
       ? `stale range (startLine ${evidence.startLine} > fileLineCount ${fileLineCount}) and quote not found in whole-file search`
       : `quote not found in ±${VERIFY_RECOVERY_WINDOW} line window around [${evidence.startLine}..${evidence.endLine}]`,
   }, extractEnrichment(normFile, lineStarts, evidence.startLine, evidence.endLine));
+}
+
+/**
+ * Verify a single evidence entry against the snapshot. Returns a tagged
+ * union that the outer loop unwraps into the public `VerifyResult`. Any
+ * `integrity` outcome escalates to a thrown `SnapshotIntegrityError` in
+ * the outer loop.
+ *
+ * ISS-399: Decomposed into verifyPathAndLookup, verifyPayloadIntegrity,
+ * and matchQuoteInFile sub-step helpers.
+ */
+function verifyEvidenceItem(
+  evidence: EvidenceItem,
+  snapshotDir: string,
+  byPath: ReadonlyMap<string, ReviewSnapshotManifestFileEntry>,
+  snapshotDirReal?: string,
+): EvidenceOutcome {
+  // Steps 1-2: path canonicalization + manifest lookup
+  const lookup = verifyPathAndLookup(evidence, snapshotDir, byPath);
+  if (lookup.kind !== "resolved") return lookup;
+
+  // Payload integrity: lstat, symlink, realpath, hash
+  const integrity = verifyPayloadIntegrity(
+    evidence.file, lookup.resolved, lookup.entry, snapshotDir, snapshotDirReal,
+  );
+  if (integrity.kind !== "verified") return integrity;
+
+  // Steps 3-6: range check, normalize, search, decide
+  return matchQuoteInFile(evidence, integrity.rawBytes);
 }
 
 /**

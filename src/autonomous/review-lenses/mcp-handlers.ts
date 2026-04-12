@@ -168,6 +168,124 @@ function buildLensMetadata(
   }));
 }
 
+// ── Verification gate helper (ISS-398) ──────────────────────
+
+interface VerificationGateInput {
+  readonly projectRoot?: string;
+  readonly sessionId?: string;
+  readonly reviewId: string;
+  readonly sessionDir?: string;
+  readonly stage: ReviewStage;
+}
+
+interface VerificationGateResult {
+  verifiedFindings: LensFinding[];
+  verifiedForFiling: LensFinding[];
+  rejectedCount: number;
+  snapshotIntegrityFailure: boolean;
+  verificationSkipped: boolean;
+  logWriteFailures: number;
+  verificationRuntimeErrors: number;
+}
+
+function runVerificationGate(
+  allFindings: LensFinding[],
+  opts: VerificationGateInput,
+): VerificationGateResult {
+  if (!opts.projectRoot || !opts.sessionId) {
+    return {
+      verifiedFindings: allFindings,
+      verifiedForFiling: [],
+      rejectedCount: 0,
+      snapshotIntegrityFailure: false,
+      verificationSkipped: true,
+      logWriteFailures: 0,
+      verificationRuntimeErrors: 0,
+    };
+  }
+
+  const ctx: SnapshotContext = {
+    projectRoot: opts.projectRoot,
+    sessionId: opts.sessionId,
+    reviewId: opts.reviewId,
+  };
+
+  const verified: LensFinding[] = [];
+  const strictlyVerified: LensFinding[] = [];
+  const rejected: Array<{ finding: LensFinding; result: VerifyFail }> = [];
+  let snapshotIntegrityFailure = false;
+  let verificationRuntimeErrors = 0;
+  let logWriteFailures = 0;
+
+  let snapshot;
+  try {
+    snapshot = loadSnapshot(ctx);
+  } catch (err) {
+    if (err instanceof SnapshotIntegrityError) {
+      snapshotIntegrityFailure = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (!snapshotIntegrityFailure) {
+    for (const finding of allFindings) {
+      try {
+        const result = verifyLensFindingPreloaded(finding, snapshot!);
+        if (result.pass) {
+          verified.push(finding);
+          strictlyVerified.push(finding);
+        } else {
+          rejected.push({ finding, result });
+        }
+      } catch (err) {
+        if (err instanceof SnapshotIntegrityError) {
+          snapshotIntegrityFailure = true;
+          break;
+        }
+        verified.push(finding);
+        verificationRuntimeErrors++;
+      }
+    }
+  }
+
+  if (snapshotIntegrityFailure) {
+    return {
+      verifiedFindings: allFindings,
+      verifiedForFiling: [],
+      rejectedCount: 0,
+      snapshotIntegrityFailure: true,
+      verificationSkipped: false,
+      logWriteFailures: 0,
+      verificationRuntimeErrors,
+    };
+  }
+
+  if (rejected.length > 0 && opts.sessionDir) {
+    const stageLabel = opts.stage === "CODE_REVIEW" ? "code-review" : "plan-review";
+    for (const { finding, result } of rejected) {
+      try {
+        const entry = buildRejectionEntry(finding, result, stageLabel);
+        if (!appendRejection(opts.sessionDir, entry).ok) {
+          logWriteFailures++;
+        }
+      } catch {
+        logWriteFailures++;
+      }
+    }
+  }
+
+  return {
+    verifiedFindings: verified,
+    verifiedForFiling: strictlyVerified,
+    rejectedCount: rejected.length,
+    snapshotIntegrityFailure: false,
+    verificationSkipped: false,
+    logWriteFailures,
+    verificationRuntimeErrors,
+  };
+}
+
 // ── Synthesize ────────────────────────────────────────────────
 
 export interface SynthesizeInput {
@@ -297,85 +415,23 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     }
   }
 
-  // ── T-257: Verification gate ───────────────────────────────────
-  let verifiedFindings: LensFinding[] = allFindings;
-  let verifiedForFiling: LensFinding[] = [];
-  let rejectedCount = 0;
-  let snapshotIntegrityFailure = false;
-  let verificationSkipped = false;
-  let logWriteFailures = 0;
-  let verificationRuntimeErrors = 0;
-
-  if (input.projectRoot && input.sessionId) {
-    const ctx: SnapshotContext = {
-      projectRoot: input.projectRoot,
-      sessionId: input.sessionId,
-      reviewId: input.metadata.reviewId,
-    };
-
-    const verified: LensFinding[] = [];
-    const strictlyVerified: LensFinding[] = [];
-    const rejected: Array<{ finding: LensFinding; result: VerifyFail }> = [];
-
-    // Load the snapshot manifest once, not per finding (ISS-395).
-    let snapshot;
-    try {
-      snapshot = loadSnapshot(ctx);
-    } catch (err) {
-      if (err instanceof SnapshotIntegrityError) {
-        snapshotIntegrityFailure = true;
-      } else {
-        throw err;
-      }
-    }
-
-    if (!snapshotIntegrityFailure) {
-      for (const finding of allFindings) {
-        try {
-          const result = verifyLensFindingPreloaded(finding, snapshot!);
-          if (result.pass) {
-            verified.push(finding);
-            strictlyVerified.push(finding);
-          } else {
-            rejected.push({ finding, result });
-          }
-        } catch (err) {
-          if (err instanceof SnapshotIntegrityError) {
-            snapshotIntegrityFailure = true;
-            break;
-          }
-          verified.push(finding);
-          verificationRuntimeErrors++;
-        }
-      }
-    }
-
-    if (snapshotIntegrityFailure) {
-      verifiedFindings = allFindings;
-      verifiedForFiling = [];
-      rejectedCount = 0;
-    } else {
-      verifiedFindings = verified;
-      verifiedForFiling = strictlyVerified;
-      rejectedCount = rejected.length;
-    }
-
-    if (!snapshotIntegrityFailure && rejected.length > 0 && input.sessionDir) {
-      const stageLabel = stage === "CODE_REVIEW" ? "code-review" : "plan-review";
-      for (const { finding, result } of rejected) {
-        try {
-          const entry = buildRejectionEntry(finding, result, stageLabel);
-          if (!appendRejection(input.sessionDir, entry).ok) {
-            logWriteFailures++;
-          }
-        } catch {
-          logWriteFailures++;
-        }
-      }
-    }
-  } else {
-    verificationSkipped = true;
-  }
+  // ── T-257: Verification gate (ISS-398: extracted helper) ────────
+  const gate = runVerificationGate(allFindings, {
+    projectRoot: input.projectRoot,
+    sessionId: input.sessionId,
+    reviewId: input.metadata.reviewId,
+    sessionDir: input.sessionDir,
+    stage,
+  });
+  const {
+    verifiedFindings,
+    verifiedForFiling,
+    rejectedCount,
+    snapshotIntegrityFailure,
+    verificationSkipped,
+    logWriteFailures,
+    verificationRuntimeErrors,
+  } = gate;
 
   // T-192: Collect pre-existing findings from strictly-verified set only
   const preExistingFindings = verifiedForFiling.filter(

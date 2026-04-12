@@ -156,6 +156,8 @@ export interface SessionState {
   readonly alive?: boolean | null;
   readonly lastMcpCall?: string | null;
   readonly healthState?: string | null;
+  // T-271: Queue progress
+  readonly targetWork?: ReadonlyArray<string> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +215,13 @@ export interface StatusPayloadActive {
   readonly alive: boolean | null;
   readonly lastMcpCall: string | null;
   readonly healthState: string | null;
+  // T-271: Queue progress
+  readonly targetWork: readonly string[] | null;
+  readonly currentIssue: {
+    readonly id: string;
+    readonly title: string;
+    readonly severity: string;
+  } | null;
   readonly lastWrittenBy?: "hook" | "guide";
 }
 

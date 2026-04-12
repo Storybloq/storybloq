@@ -41,6 +41,11 @@ export function buildActivePayload(
     alive: telemetry?.alive ?? session.alive ?? null,
     lastMcpCall: telemetry?.lastMcpCall ?? session.lastMcpCall ?? null,
     healthState: session.healthState ?? null,
+    // T-271: Queue progress
+    targetWork: (session.targetWork?.length ?? 0) > 0 ? [...session.targetWork!] : null,
+    currentIssue: session.currentIssue
+      ? { id: session.currentIssue.id, title: session.currentIssue.title, severity: session.currentIssue.severity }
+      : null,
   };
 }
 

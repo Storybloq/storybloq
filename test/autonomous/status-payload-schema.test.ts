@@ -121,6 +121,55 @@ describe("StatusPayload schema foundation (T-259)", () => {
       expect(payload.lastMcpCall).toBeNull();
       expect(payload.healthState).toBeNull();
     });
+
+    // T-271: targetWork + currentIssue in status payload
+    it("includes targetWork when session has targeted work items", () => {
+      const session = makeFullSessionState();
+      (session as Record<string, unknown>).targetWork = ["T-042", "T-043", "ISS-010"];
+      const payload = buildActivePayload(session);
+      expect(payload.targetWork).toEqual(["T-042", "T-043", "ISS-010"]);
+    });
+
+    it("sets targetWork to null when session has no targets", () => {
+      const session = makeFullSessionState();
+      const payload = buildActivePayload(session);
+      expect(payload.targetWork).toBeNull();
+    });
+
+    it("sets targetWork to null when session has empty target array", () => {
+      const session = makeFullSessionState();
+      (session as Record<string, unknown>).targetWork = [];
+      const payload = buildActivePayload(session);
+      expect(payload.targetWork).toBeNull();
+    });
+
+    it("includes currentIssue when session is working on an issue", () => {
+      const session = makeFullSessionState();
+      (session as Record<string, unknown>).currentIssue = {
+        id: "ISS-010",
+        title: "Flaky test in auth module",
+        severity: "high",
+      };
+      const payload = buildActivePayload(session);
+      expect(payload.currentIssue).toEqual({
+        id: "ISS-010",
+        title: "Flaky test in auth module",
+        severity: "high",
+      });
+    });
+
+    it("sets currentIssue to null when session has no current issue", () => {
+      const session = makeFullSessionState();
+      const payload = buildActivePayload(session);
+      expect(payload.currentIssue).toBeNull();
+    });
+
+    it("sets currentIssue to null when session.currentIssue is explicitly null", () => {
+      const session = makeFullSessionState();
+      (session as Record<string, unknown>).currentIssue = null;
+      const payload = buildActivePayload(session);
+      expect(payload.currentIssue).toBeNull();
+    });
   });
 
   describe("buildInactivePayload", () => {

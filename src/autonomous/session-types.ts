@@ -91,6 +91,17 @@ export function deriveWorkspaceId(projectRoot: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared inline types (ISS-489: extract to avoid duplication)
+// ---------------------------------------------------------------------------
+
+/** Shape of currentIssue in both SessionState and StatusPayloadActive. */
+export interface CurrentIssueRef {
+  readonly id: string;
+  readonly title: string;
+  readonly severity: string;
+}
+
+// ---------------------------------------------------------------------------
 // Session state — minimal shape that hook-status reads from state.json
 // ---------------------------------------------------------------------------
 
@@ -104,11 +115,7 @@ export interface SessionState {
     readonly title: string;
     readonly risk?: string;
   };
-  readonly currentIssue?: {
-    readonly id: string;
-    readonly title: string;
-    readonly severity: string;
-  } | null;
+  readonly currentIssue?: CurrentIssueRef | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string }>;
   readonly contextPressure?: {
     readonly level: string;
@@ -217,11 +224,7 @@ export interface StatusPayloadActive {
   readonly healthState: string | null;
   // T-271: Queue progress
   readonly targetWork: readonly string[] | null;
-  readonly currentIssue: {
-    readonly id: string;
-    readonly title: string;
-    readonly severity: string;
-  } | null;
+  readonly currentIssue: CurrentIssueRef | null;
   readonly lastWrittenBy?: "hook" | "guide";
 }
 

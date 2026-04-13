@@ -43,7 +43,8 @@ export function buildActivePayload(
     lastMcpCall: telemetry?.lastMcpCall ?? session.lastMcpCall ?? null,
     healthState: telemetry?.healthState ?? session.healthState ?? null,
     // T-271: Queue progress
-    targetWork: (session.targetWork?.length ?? 0) > 0 ? [...session.targetWork!] : null,
+    // ISS-490: Use optional chaining instead of non-null assertion.
+    targetWork: session.targetWork?.length ? [...session.targetWork] : null,
     currentIssue: session.currentIssue
       ? { id: session.currentIssue.id, title: session.currentIssue.title, severity: session.currentIssue.severity }
       : null,

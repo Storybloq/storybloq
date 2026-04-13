@@ -370,7 +370,7 @@ export function prepareLensReview(opts: LensReviewOptions): PreparedLensReview {
         mergerPrompt,
         mergerModel,
         processMergerResult(mergerRaw: string): JudgeInput {
-          const mergerResult = parseMergerResult(mergerRaw);
+          const mergerResult = parseMergerResult(mergerRaw, allFindings);
           if (!mergerResult) {
             // Fallback: skip merger, pass all findings directly to judge
             const fallback = {

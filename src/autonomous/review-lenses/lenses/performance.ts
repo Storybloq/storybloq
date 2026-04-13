@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "performance-v1";
+export const LENS_VERSION = "performance-v2";
 
 const CODE_REVIEW = `You are a Performance reviewer. You find patterns that cause measurable performance degradation at realistic scale -- not micro-optimizations. Focus on user-perceived latency, memory consumption, and database load. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -51,7 +51,13 @@ Use Read to trace whether a database call inside a function is actually called i
 
 - 0.9-1.0: N+1 with traceable loop, demonstrable unbounded query, provable O(n^2).
 - 0.7-0.8: Likely issue but depends on data volume or call frequency you can't fully verify.
-- 0.6-0.7: Pattern could be a problem at scale but current usage may be small.`;
+- 0.6-0.7: Pattern could be a problem at scale but current usage may be small.
+
+## Evidence for performance findings
+
+- N+1 queries: cite the loop body containing the query call. If the query is in a called function, cite both the loop and the function.
+- Sync I/O in hot paths: cite the synchronous call site.
+- Memory leaks: cite the subscription/listener registration site without cleanup.`;
 
 const PLAN_REVIEW = `You are a Performance reviewer evaluating an implementation plan. You assess whether the proposed design will perform at realistic scale. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

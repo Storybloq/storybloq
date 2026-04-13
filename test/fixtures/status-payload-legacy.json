@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sessionActive": true,
+  "sessionId": "abc-123",
+  "state": "IMPLEMENT",
+  "ticket": "T-001",
+  "ticketTitle": "Setup project",
+  "risk": "low",
+  "claudeStatus": "working",
+  "observedAt": "2026-04-05T08:00:00Z",
+  "lastGuideCall": "2026-04-05T07:55:00Z",
+  "completedThisSession": ["T-000"],
+  "contextPressure": "low",
+  "branch": "main",
+  "source": "hook"
+}

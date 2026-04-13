@@ -245,6 +245,50 @@ export async function gitCommitDistance(
   });
 }
 
+/** Resolve a hash (short or full) to its full 40-char SHA via rev-parse --verify. */
+export async function gitResolveCommit(
+  cwd: string, hash: string,
+): Promise<GitResult<string>> {
+  if (!SAFE_REF.test(hash)) {
+    return { ok: false, reason: "git_error", message: "invalid ref format" };
+  }
+  return new Promise((resolve) => {
+    execFile("git", ["rev-parse", "--verify", `${hash}^{commit}`],
+      { cwd, timeout: GIT_TIMEOUT },
+      (err, stdout, stderr) => {
+        if (err) {
+          const message = stderr?.trim() || (err as Error).message || "unknown git error";
+          resolve({ ok: false, reason: "git_error", message });
+          return;
+        }
+        resolve({ ok: true, data: stdout.trim() });
+      },
+    );
+  });
+}
+
+/**
+ * List commits on the direct ancestry path between `from` and `to` that
+ * modified `path`. Uses `rev-list --ancestry-path` to exclude merged-in
+ * side-branch commits. The `path` is wrapped in `:(literal)` to neutralize
+ * pathspec magic regardless of caller discipline.
+ */
+export async function gitRevListAncestryPath(
+  cwd: string, from: string, to: string, path: string,
+): Promise<GitResult<string[]>> {
+  if (!SAFE_REF.test(from) || !SAFE_REF.test(to)) {
+    return { ok: false, reason: "git_error", message: "invalid ref format" };
+  }
+  if (!path || path.startsWith("-") || path.startsWith(":")) {
+    return { ok: false, reason: "git_error", message: "invalid path" };
+  }
+  return git(
+    cwd,
+    ["rev-list", "--ancestry-path", "--reverse", `${from}..${to}`, "--", `:(literal)${path}`],
+    (out) => out.split("\n").map((l) => l.trim()).filter((l) => l.length === 40),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

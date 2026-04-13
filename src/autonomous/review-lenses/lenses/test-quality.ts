@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "test-quality-v1";
+export const LENS_VERSION = "test-quality-v2";
 
 const CODE_REVIEW = `You are a Test Quality reviewer. You find patterns that reduce test reliability, coverage, and signal. Good tests catch real bugs; bad tests create false confidence. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -52,7 +52,13 @@ Use Read to check if a tested function has uncovered edge cases. Use Grep to fin
 
 - 0.9-1.0: Provably missing assertion, demonstrable flaky pattern, confirmed no test file exists.
 - 0.7-0.8: Likely issue but behavior may be tested indirectly.
-- 0.6-0.7: Possible gap depending on test strategy not visible in the diff.`;
+- 0.6-0.7: Possible gap depending on test strategy not visible in the diff.
+
+## Evidence for test-quality findings
+
+- Missing test coverage: cite the source function definition that lacks tests. Do NOT cite the absent test file.
+- Missing assertions: cite the test body that has no expect/assert.
+- Over-mocking: cite the mock setup that replaces the dependency under test.`;
 
 const PLAN_REVIEW = `You are a Test Quality reviewer evaluating an implementation plan. You assess testability and test strategy adequacy. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

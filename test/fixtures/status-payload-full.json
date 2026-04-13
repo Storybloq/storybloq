@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "sessionActive": true,
+  "sessionId": "e1536ebc-746a-42ba-b41e-f037cb4c880b",
+  "state": "CODE_REVIEW",
+  "ticket": "T-042",
+  "ticketTitle": "Add telemetry substrate",
+  "risk": "medium",
+  "claudeStatus": "working",
+  "observedAt": "2026-04-11T10:00:00Z",
+  "lastGuideCall": "2026-04-11T09:58:00Z",
+  "completedThisSession": ["T-040", "T-041"],
+  "contextPressure": "low",
+  "branch": "telemetry-substrate",
+  "source": "hook",
+  "substage": "CODE_REVIEW:lens:2",
+  "substageStartedAt": "2026-04-11T09:55:00Z",
+  "pendingInstruction": "Run multi-lens review round 2",
+  "pendingInstructionSetAt": "2026-04-11T09:55:01Z",
+  "claudeCodeSessionId": "5567fb78-277f-4443-b8f4-f121fec357ce",
+  "binaryFingerprint": {
+    "mtime": "2026-04-11T08:00:00Z",
+    "sha256": "abc123def456"
+  },
+  "runningSubprocesses": [
+    {
+      "pid": 12345,
+      "category": "build",
+      "startedAt": "2026-04-11T09:50:00Z",
+      "stage": "CODE_REVIEW"
+    }
+  ],
+  "lastReviewVerdict": {
+    "stage": "CODE_REVIEW",
+    "round": 2,
+    "verdict": "approve",
+    "findingCount": 17,
+    "criticalCount": 0,
+    "majorCount": 6,
+    "suggestionCount": 4,
+    "durationMs": 45000,
+    "summary": "All non-blocking"
+  },
+  "recentDeferrals": {
+    "total": 3,
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 0
+  },
+  "alive": true,
+  "lastMcpCall": "2026-04-11T09:58:00Z",
+  "healthState": "healthy"
+}

@@ -40,6 +40,49 @@ Ticket: ${vars.ticketDescription}
 Project rules: ${vars.projectRules}
 Changed files: ${vars.fileManifest}
 
+## Finding shape
+
+Each finding object must include at least these fields:
+
+{ "lens": "${vars.lensName}",
+  "lensVersion": "${vars.lensVersion}",
+  "severity": "critical" | "major" | "minor" | "suggestion",
+  "recommendedImpact": "blocker" | "needs-revision" | "non-blocking",
+  "category": "string",
+  "description": "string",
+  "file": "src/foo.ts" | null,
+  "line": 42 | null,
+  "evidence": [{ "file": "src/foo.ts", "startLine": 40, "endLine": 45, "code": "literal excerpt" }],
+  "suggestedFix": "string" | null,
+  "confidence": 0.0-1.0,
+  "assumptions": "string" | null,
+  "requiresMoreContext": false }
+
+${vars.reviewStage === "CODE_REVIEW" ? `## Evidence contract
+
+Every finding MUST include an \`evidence\` array with at least one item. Each item:
+
+- \`file\`: manifest-relative path from the "Changed files" list above (e.g. \`src/foo.ts\`). Do NOT use diff prefixes like \`a/\` or \`b/\`.
+- \`startLine\`: 1-indexed line number where the evidence begins
+- \`endLine\`: 1-indexed line number where the evidence ends (inclusive)
+- \`code\`: the LITERAL code excerpt from the file -- exact bytes, no reformatting, no ellipsis, no paraphrasing
+
+Evidence points at the code the finding is ABOUT, not code that should exist but doesn't.
+
+For absence-based findings ("missing validation", "no error handling"), cite the present site where the gap manifests -- the function that should validate, the call that should be wrapped in try/catch.
+
+For multi-site findings (TOCTOU, cross-file inconsistency), include one evidence item per site.
+
+A downstream verification gate compares your quotes byte-for-byte against the reviewed snapshot. Findings with non-literal quotes will be rejected.` : `## Evidence contract
+
+Every finding MUST include an \`evidence\` array with at least one item. Each item:
+
+- \`file\`: either a source file path from the "Changed files" list (when the finding concerns existing code), or \`plan/<ticket-id>\` (e.g. \`plan/T-100\`) when the finding is purely about plan text.
+- \`startLine\` / \`endLine\`: 1-indexed, inclusive. For plan-text-only findings, use 1/1.
+- \`code\`: a literal excerpt from either the plan text or the referenced source file
+
+Plan-stage evidence is best-effort -- quote the plan section or existing code that the finding concerns. Precision improves downstream triage but is not machine-verified at this stage.`}
+
 ## Known false positives for this project
 
 ${vars.knownFalsePositives || "(none)"}

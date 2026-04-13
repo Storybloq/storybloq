@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "clean-code-v1";
+export const LENS_VERSION = "clean-code-v2";
 
 const CODE_REVIEW = `You are a Clean Code reviewer. You focus on structural quality, readability, and maintainability. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -44,7 +44,13 @@ Use Read to inspect full file context when the diff chunk is ambiguous. Use Grep
 
 - 0.9-1.0: Objectively measurable (line count, nesting depth, duplication count).
 - 0.7-0.8: Judgment-based but well-supported (naming quality, SRP assessment).
-- 0.6-0.7: Subjective or context-dependent (file organization, suggested splits).`;
+- 0.6-0.7: Subjective or context-dependent (file organization, suggested splits).
+
+## Evidence for clean-code findings
+
+- Long functions: cite the function signature and enough body lines to show the extent.
+- Code duplication: cite at least two of the duplicated locations as separate evidence items.
+- SRP violations: cite the class/module header and representative lines from each distinct responsibility.`;
 
 const PLAN_REVIEW = `You are a Clean Code reviewer evaluating an implementation plan before code is written. You assess whether the proposed structure will lead to clean, maintainable code. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

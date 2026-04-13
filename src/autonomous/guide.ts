@@ -13,6 +13,7 @@ import {
   createSession,
   deleteSession,
   writeSessionSync,
+  writeSessionWithEvent,
   appendEvent,
   refreshLease,
   isLeaseExpired,
@@ -24,15 +25,28 @@ import {
   type SessionConfig,
   prepareForCompact,
   findResumableSession,
+  readEvents,
+  readSession,
+  type ActiveSessionInfo,
 } from "./session.js";
+import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./orphan-detector.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
 import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
-import { gitHead, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
+import {
+  spawnAliveSidecar,
+  killSidecar,
+  writeShutdownMarker,
+  computeBinaryFingerprint,
+  captureClaudeCodeSessionId,
+  telemetryDirPath,
+} from "./liveness.js";
+import { gitHead, gitHeadHash, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
 import "./stages/index.js"; // Register all extracted stages
+import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer } from "./telemetry-writer.js";
 
 import { loadProject } from "../core/project-loader.js";
 import { buildLessonDigest } from "../core/lessons.js";
@@ -42,6 +56,7 @@ import { nextTickets } from "../core/queries.js";
 import { recommend, type RecommendOptions } from "../core/recommend.js";
 import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./version-check.js";
 import { writeResumeMarker, removeResumeMarker } from "./resume-marker.js";
+import { refreshStatusForSession, isSessionActiveForStatus } from "./status-writer.js";
 import { formatCompactReport } from "../core/session-report-formatter.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "./target-work.js";
 import {
@@ -49,6 +64,25 @@ import {
   handleHandoverCreate,
 } from "../cli/commands/handover.js";
 import type { CommandContext } from "../cli/types.js";
+
+// ---------------------------------------------------------------------------
+// Guide-side write + status refresh wrapper
+// ---------------------------------------------------------------------------
+
+type RefreshMode = "always" | "if-active" | "never";
+
+function writeSessionAndRefresh(
+  root: string,
+  dir: string,
+  state: FullSessionState,
+  mode: RefreshMode = "if-active",
+): FullSessionState {
+  const written = writeSessionSync(dir, state);
+  if (mode === "never") return written;
+  if (mode === "if-active" && !isSessionActiveForStatus(written)) return written;
+  try { refreshStatusForSession(root, dir, written, "guide"); } catch { /* best-effort */ }
+  return written;
+}
 
 // ---------------------------------------------------------------------------
 // Recovery mapping — exported for test completeness checks (ISS-040)
@@ -234,7 +268,7 @@ async function recoverPendingMutation(
       }
     } catch { /* best-effort -- leave marker cleared regardless */ }
     const cleared = { ...state, pendingProjectMutation: null };
-    return writeSessionSync(dir, cleared);
+    return writeSessionAndRefresh(root, dir, cleared, "if-active");
   }
 
   if (m.type !== "ticket_update") return state;
@@ -269,7 +303,7 @@ async function recoverPendingMutation(
           timestamp: new Date().toISOString(),
           data: { targetId, expected: expectedCurrent, actual: ticket.status, transitionId: m.transitionId },
         });
-        writeSessionSync(dir, { ...state, pendingProjectMutation: null });
+        writeSessionAndRefresh(root, dir, { ...state, pendingProjectMutation: null } as FullSessionState, "if-active");
       }
     });
   } catch {
@@ -298,7 +332,7 @@ async function recoverPendingMutation(
     }
   }
 
-  return writeSessionSync(dir, cleared as FullSessionState);
+  return writeSessionAndRefresh(root, dir, cleared as FullSessionState, "if-active");
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +369,7 @@ async function fileDeferredFindings(
   }
 
   // Persist pending entries first (crash-safe: survives before drain attempt)
-  const persisted = writeSessionSync(dir, { ...state, pendingDeferrals: pending } as FullSessionState);
+  const persisted = writeSessionAndRefresh(root, dir, { ...state, pendingDeferrals: pending } as FullSessionState, "if-active");
   let updated = await drainPendingDeferrals(root, dir, persisted);
   return updated;
 }
@@ -385,7 +419,7 @@ async function drainPendingDeferrals(
   }
 
   const updated = { ...state, filedDeferrals: filed, pendingDeferrals: remaining };
-  return writeSessionSync(dir, updated as FullSessionState);
+  return writeSessionAndRefresh(root, dir, updated as FullSessionState, "if-active");
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +509,75 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
 }
 
 // ---------------------------------------------------------------------------
+// T-250 — auto-supersede verifiably-finished orphan sessions
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether `info` looks like a finished orphan and, if so, mark it
+ * `superseded` with the rich `auto_superseded_finished_orphan` reason. Emits
+ * an audit event and a stderr diagnostic line. Returns the written state on
+ * success, or null when the check fails or the write raced another caller.
+ */
+async function trySupersedeFinishedOrphan(
+  info: ActiveSessionInfo,
+  root: string,
+  ctx?: OrphanCheckContext,
+): Promise<FullSessionState | null> {
+  const ok = await isFinishedOrphan(info.state, info.dir, root, ctx);
+  if (!ok) return null;
+
+  // ISS-382: explicit narrowing on lease.expiresAt. isOrphanCandidate (called
+  // inside isFinishedOrphan) already guarantees a finite expiresAt here, but
+  // re-validating locally keeps this site robust to upstream refactors.
+  const expiresAtRaw = info.state.lease?.expiresAt;
+  const expiresAtMs = expiresAtRaw ? new Date(expiresAtRaw).getTime() : NaN;
+  if (!Number.isFinite(expiresAtMs)) return null;
+  const leaseExpiredMinutesAgo = Math.round((Date.now() - expiresAtMs) / 60000);
+
+  // Atomic audit+state write: appends the auto_superseded event with the
+  // prospective post-write revision, then writeSessionSync increments to
+  // that revision. If the state write throws, events.log is rolled back
+  // to pre-append size so the pair is all-or-nothing.
+  let written: FullSessionState;
+  try {
+    written = writeSessionWithEvent(
+      info.dir,
+      {
+        ...info.state,
+        status: "superseded" as const,
+        terminationReason: "auto_superseded_finished_orphan" as const,
+      },
+      {
+        rev: info.state.revision + 1,
+        type: "auto_superseded",
+        timestamp: new Date().toISOString(),
+        data: {
+          reason: "finished_orphan",
+          targetWork: [...info.state.targetWork],
+          leaseExpiredMinutesAgo,
+        },
+      },
+    );
+    // T-260: Cross-process finalization (marker only, no PID kill)
+    writeShutdownMarker(info.dir);
+  } catch {
+    return null;
+  }
+
+  process.stderr.write(
+    "[T-250] auto-superseded finished-orphan session " +
+      info.state.sessionId +
+      " targets=" +
+      info.state.targetWork.join(",") +
+      " leaseExpiredMinutesAgo=" +
+      leaseExpiredMinutesAgo +
+      "\n",
+  );
+
+  return written;
+}
+
+// ---------------------------------------------------------------------------
 // start — INIT + LOAD_CONTEXT → PICK_TICKET
 // ---------------------------------------------------------------------------
 
@@ -517,20 +620,56 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   if (!existing) {
     const resumable = findResumableSession(root);
     if (resumable) {
-      const sid = resumable.info.state.sessionId;
-      const preparedAt = resumable.info.state.compactPreparedAt ? new Date(resumable.info.state.compactPreparedAt).getTime() : 0;
-      return guideError(new Error(
-        `${resumable.stale ? "Stale c" : "C"}ompacted session ${sid} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, lease expired but not resumed).\n` +
-        `- To resume: call action "resume" with sessionId "${sid}"\n` +
-        `- To abandon: run "claudestory session stop ${sid}"`,
-      ));
+      // T-250: finished-orphan auto-supersede — silently reclaim the slot if
+      // every targeted work item is verifiably complete on disk and every
+      // recorded commit is already in HEAD.
+      const superseded = await trySupersedeFinishedOrphan(resumable.info, root);
+      if (!superseded) {
+        const sid = resumable.info.state.sessionId;
+        const preparedAt = resumable.info.state.compactPreparedAt ? new Date(resumable.info.state.compactPreparedAt).getTime() : 0;
+        return guideError(new Error(
+          `${resumable.stale ? "Stale c" : "C"}ompacted session ${sid} found (prepared ${Math.round((Date.now() - preparedAt) / 60000)} minutes ago, lease expired but not resumed).\n` +
+          `- To resume: call action "resume" with sessionId "${sid}"\n` +
+          `- To abandon: run "claudestory session stop ${sid}"`,
+        ));
+      }
     }
   }
 
   // Supersede any stale sessions (findActiveSessionFull filters these out, so scan separately)
+  // T-250: two-pass loop. First pass runs the finished-orphan check and writes
+  // the rich terminationReason. Second pass re-reads state via readSession to
+  // avoid clobbering that reason with a pre-supersede snapshot when the
+  // generic fallback runs on entries the orphan pass left alone.
+  // ISS-383: hoist loadProject + git rev-parse out of the per-session loop.
+  // The cheap isOrphanCandidate precheck filters out sessions that can't
+  // possibly be finished orphans (wrong mode, no targetWork, lease still
+  // fresh) so we only pay the load cost when at least one candidate exists.
   const staleSessions = findStaleSessions(root);
+  let staleOrphanCtx: OrphanCheckContext | undefined;
+  if (staleSessions.some((s) => isOrphanCandidate(s.state))) {
+    try {
+      const { state: projectState } = await loadProject(root);
+      const headResult = await gitHeadHash(root);
+      if (headResult.ok) {
+        staleOrphanCtx = { projectState, headSha: headResult.data };
+      }
+    } catch {
+      // Fall through with undefined ctx — trySupersedeFinishedOrphan will
+      // load on demand per session, matching pre-ISS-383 behavior.
+    }
+  }
+  const autoSupersededIds = new Set<string>();
   for (const stale of staleSessions) {
-    writeSessionSync(stale.dir, { ...stale.state, status: "superseded" as const });
+    const result = await trySupersedeFinishedOrphan(stale, root, staleOrphanCtx);
+    if (result) autoSupersededIds.add(stale.state.sessionId);
+  }
+  for (const stale of staleSessions) {
+    if (autoSupersededIds.has(stale.state.sessionId)) continue;
+    const current = readSession(stale.dir);
+    if (!current || current.status !== "active") continue;
+    writeSessionAndRefresh(root, stale.dir, { ...current, status: "superseded" as const } as FullSessionState, "always");
+    writeShutdownMarker(stale.dir);
   }
 
   // ISS-076: Version mismatch advisory
@@ -639,12 +778,23 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // Create session — wrapped in try/finally for cleanup on failure
   const session = createSession(root, recipe, wsId, sessionConfig);
   const dir = sessionDir(root, session.sessionId);
+  let sidecarPid: number | undefined;
+
+  // ISS-412: Cleanup helper for early-exit error paths.
+  // Handles sidecar teardown when spawned, plus session directory removal.
+  const abortSession = (): void => {
+    if (sidecarPid !== undefined) {
+      killSidecar(sidecarPid);
+      writeShutdownMarker(dir);
+    }
+    deleteSession(root, session.sessionId);
+  };
 
   try {
     // Check git state
     const headResult = await gitHead(root);
     if (!headResult.ok) {
-      deleteSession(root, session.sessionId);
+      abortSession();
       return guideError(new Error("This directory is not a git repository or git is not available. Autonomous mode requires git."));
     }
 
@@ -652,7 +802,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     if (mode !== "review") {
       const stagedResult = await gitDiffCachedNames(root);
       if (stagedResult.ok && stagedResult.data.length > 0) {
-        deleteSession(root, session.sessionId);
+        abortSession();
         return guideError(new Error(
           `Cannot start: ${stagedResult.data.length} staged file(s). Unstage with \`git restore --staged .\` or commit them first, then call start again.\n\nStaged: ${stagedResult.data.join(", ")}`,
         ));
@@ -693,7 +843,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         const stashMessage = `claudestory-auto-${session.sessionId}`;
         const stashResult = await gitStash(root, stashMessage);
         if (!stashResult.ok) {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(
             `Cannot auto-stash dirty files: ${stashResult.message}. ` +
             `Stash or commit changes manually, then call start again.`,
@@ -703,7 +853,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         autoStashRef = { ref: stashResult.data, stashedAt: new Date().toISOString() };
       } else {
         // "block" (default) — existing behavior
-        deleteSession(root, session.sessionId);
+        abortSession();
         const dirtyFiles = Object.keys(dirtyTracked).join(", ");
         return guideError(new Error(
           `Cannot start: ${Object.keys(dirtyTracked).length} dirty tracked file(s): ${dirtyFiles}. ` +
@@ -761,14 +911,14 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       const effectiveWriteCmd = writeTestsCommand ?? testStageCommand ?? "npm test";
       const effectiveTestCmd = testStageCommand ?? "npm test";
       if (testEnabled && writeTestsEnabled && effectiveWriteCmd !== effectiveTestCmd) {
-        deleteSession(root, session.sessionId);
+        abortSession();
         return guideError(new Error(
           `WRITE_TESTS and TEST stages use different commands ("${effectiveWriteCmd}" vs "${effectiveTestCmd}"). ` +
           `They share a single test baseline, so commands must match. Use the same command for both or disable one.`,
         ));
       }
       if (!testCommand) {
-        deleteSession(root, session.sessionId);
+        abortSession();
         return guideError(new Error("TEST/WRITE_TESTS stage is enabled but no test command is configured. Set stages.TEST.command or stages.WRITE_TESTS.command in config.json recipeOverrides or the recipe file."));
       }
       // Capture baseline
@@ -797,7 +947,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
         // T-139: WRITE_TESTS requires parseable baseline — fail fast if not available
         if (writeTestsEnabled && failCount < 0) {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(
             "WRITE_TESTS stage is enabled but test baseline could not parse fail counts from test output. " +
             "Configure a test reporter that outputs pass/fail counts, or disable WRITE_TESTS.",
@@ -806,7 +956,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       } catch {
         // Non-blocking for TEST-only. But WRITE_TESTS requires baseline.
         if (writeTestsEnabled) {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(
             "WRITE_TESTS stage is enabled but test baseline capture failed. Ensure the test command runs successfully.",
           ));
@@ -820,22 +970,35 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       const startCmd = (verifyConfig.startCommand as string | undefined) ?? "npm run dev";
       const readinessUrl = verifyConfig.readinessUrl as string | undefined;
       if (!startCmd.trim()) {
-        deleteSession(root, session.sessionId);
+        abortSession();
         return guideError(new Error("VERIFY stage is enabled but stages.VERIFY.startCommand is empty."));
       }
       if (readinessUrl) {
         try {
           const parsed = new URL(readinessUrl);
           if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
-            deleteSession(root, session.sessionId);
+            abortSession();
             return guideError(new Error(`VERIFY stage readinessUrl must be localhost. Got: "${readinessUrl}".`));
           }
         } catch {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(`VERIFY stage readinessUrl is not a valid URL: "${readinessUrl}".`));
         }
       }
     }
+
+    // T-260: Liveness infrastructure
+    const fp = computeBinaryFingerprint();
+    const ccSessionId = captureClaudeCodeSessionId();
+    try {
+      sidecarPid = spawnAliveSidecar(telemetryDirPath(dir));
+    } catch { /* best-effort */ }
+    updated = {
+      ...updated,
+      binaryFingerprint: fp,
+      claudeCodeSessionId: ccSessionId,
+      sidecarPid: sidecarPid ?? null,
+    };
 
     // Load context
     const { state: projectState, warnings } = await loadProject(root);
@@ -881,7 +1044,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     if (mode !== "auto" && args.ticketId) {
       const ticket = projectState.ticketByID(args.ticketId);
       if (!ticket) {
-        deleteSession(root, session.sessionId);
+        abortSession();
         return guideError(new Error(`Ticket ${args.ticketId} not found.`));
       }
 
@@ -889,11 +1052,11 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       if (mode !== "review") {
         // review mode allows any ticket status — user already has code
         if (ticket.status === "complete") {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(`Ticket ${args.ticketId} is already complete.`));
         }
         if (projectState.isBlocked(ticket)) {
-          deleteSession(root, session.sessionId);
+          abortSession();
           return guideError(new Error(`Ticket ${args.ticketId} is blocked by: ${ticket.blockedBy.join(", ")}.`));
         }
       }
@@ -907,7 +1070,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           // Block only if claiming session exists, is active, and lease is not expired
           // TOCTOU: cooperative check — filesystem-based concurrency, sufficient for this use case
           if (claimingSession && claimingSession.state.status === "active" && !isLeaseExpired(claimingSession.state)) {
-            deleteSession(root, session.sessionId);
+            abortSession();
             return guideError(new Error(
               `Ticket ${args.ticketId} is claimed by active session ${claimId}. ` +
               `Wait for it to finish or stop it with "claudestory session stop ${claimId}".`,
@@ -943,7 +1106,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       updated = refreshLease(updated);
       const pressure = evaluatePressure(updated);
       updated = { ...updated, contextPressure: { ...updated.contextPressure, level: pressure } };
-      const written = writeSessionSync(dir, updated);
+      const written = writeSessionAndRefresh(root, dir, updated, "never");
 
       appendEvent(dir, {
         rev: written.revision,
@@ -951,6 +1114,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         timestamp: new Date().toISOString(),
         data: { recipe, branch: written.git.branch, head: written.git.initHead, mode, ticketId: args.ticketId },
       });
+      emitTelemetry(dir, "session_start", "guide", { recipe, branch: written.git.branch, mode, ticketId: args.ticketId });
 
       const modeLabels: Record<string, string> = {
         review: "Review Mode",
@@ -1018,7 +1182,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     updated = refreshLease(updated);
     const pressure = evaluatePressure(updated);
     updated = { ...updated, contextPressure: { ...updated.contextPressure, level: pressure } };
-    const written = writeSessionSync(dir, updated);
+    const written = writeSessionAndRefresh(root, dir, updated, "if-active");
 
     appendEvent(dir, {
       rev: written.revision,
@@ -1026,6 +1190,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       timestamp: new Date().toISOString(),
       data: { recipe, branch: written.git.branch, head: written.git.initHead, mode: "auto", ...(validatedTargetWork.length > 0 ? { targetWork: validatedTargetWork } : {}) },
     });
+    emitTelemetry(dir, "session_start", "guide", { recipe, branch: written.git.branch, mode: "auto" });
 
     const maxTickets = updated.config.maxTicketsPerSession;
     const interval = updated.config.handoverInterval ?? 3;
@@ -1157,7 +1322,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
   } catch (err) {
     // Cleanup on failure
-    deleteSession(root, session.sessionId);
+    abortSession();
     throw err;
   }
 }
@@ -1267,6 +1432,7 @@ async function processAdvance(
       assertTransition(currentStage.id as WorkflowState, nextStage.id as WorkflowState);
       ctx.writeState({ state: nextStage.id, previousState: currentStage.id });
       ctx.appendEvent("transition", { from: currentStage.id, to: nextStage.id });
+      writeCheckpoint(ctx.dir, nextStage.id, ctx.state as unknown as Record<string, unknown>, ctx.state.revision);
       const enterResult = "result" in advance && advance.result
         ? advance.result
         : await nextStage.enter(ctx);
@@ -1295,6 +1461,7 @@ async function processAdvance(
       assertTransition(currentStage.id as WorkflowState, target as WorkflowState);
       ctx.writeState({ state: target, previousState: currentStage.id });
       ctx.appendEvent("transition", { from: currentStage.id, to: target, action: advance.action });
+      writeCheckpoint(ctx.dir, target, ctx.state as unknown as Record<string, unknown>, ctx.state.revision);
       const enterResult = "result" in advance && advance.result
         ? advance.result
         : await targetStage.enter(ctx);
@@ -1347,6 +1514,24 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
 
   const currentState = state.state as WorkflowState;
   const report = args.report;
+
+  // ISS-377: COMPACT is a valid transient state but has no registered pipeline
+  // stage, so runPipelineStage would throw "Stage COMPACT is not registered".
+  // Split by compactPending to point callers at the correct recovery path.
+  // Strict (not forgiving) so caller bugs surface instead of silent auto-route.
+  if (currentState === "COMPACT" && !state.compactPending) {
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state but compactPending is false (stale compact). ` +
+      `Run "claudestory session clear-compact ${args.sessionId}" to recover.`,
+    ));
+  }
+  if (currentState === "COMPACT") {
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state. ` +
+      `Call action: "resume" before reporting completion, or run ` +
+      `"claudestory session stop ${args.sessionId}" if the session is stuck.`,
+    ));
+  }
 
   // Fail-closed: reject reports on sessions with inconsistent compactPending (ISS-032)
   if (state.compactPending && currentState !== "COMPACT") {
@@ -1414,10 +1599,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // Note: missing expectedHead with working git → skip validation (Branch A, backward compat)
   if (!headResult.ok) {
     // Keep compactPending — session must remain discoverable
-    const blockedState = writeSessionSync(info.dir, {
+    const blockedState = writeSessionAndRefresh(root, info.dir, {
       ...refreshLease(info.state),
       resumeBlocked: true,
-    });
+    } as FullSessionState, "always");
     appendEvent(info.dir, {
       rev: blockedState.revision,
       type: "resume_blocked",
@@ -1440,6 +1625,14 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       ownCommitDrift = true;
     }
   }
+  // T-260: Spawn new sidecar for resumed session (old sidecar died with previous process)
+  let resumeSidecarPid: number | null = null;
+  try {
+    resumeSidecarPid = spawnAliveSidecar(telemetryDirPath(info.dir));
+  } catch { /* best-effort */ }
+
+  try {
+
   if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
     // External drift or gitIsAncestor error -- existing recovery
     let mapping = RECOVERY_MAPPING[resumeState] ?? { state: "PICK_TICKET", resetPlan: false, resetCode: false };
@@ -1458,7 +1651,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       ? { ...info.state.ticket, realizedRisk: undefined, lastPlanHash: undefined }
       : undefined;
 
-    const driftWritten = writeSessionSync(info.dir, {
+    const driftWritten = writeSessionAndRefresh(root, info.dir, {
       ...refreshLease(info.state),
       state: mapping.state,
       previousState: "COMPACT",
@@ -1473,7 +1666,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       guideCallCount: 0,
       contextPressure: { ...info.state.contextPressure, guideCallCount: 0, compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1 },
       git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash },
-    });
+      sidecarPid: resumeSidecarPid,
+    } as FullSessionState, "always");
 
     appendEvent(info.dir, {
       rev: driftWritten.revision,
@@ -1616,7 +1810,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     guideCallCount: 0,
     compactionCount: (info.state.contextPressure?.compactionCount ?? 0) + 1,
   };
-  const written = writeSessionSync(info.dir, {
+  const written = writeSessionAndRefresh(root, info.dir, {
     ...refreshLease(info.state),
     state: resumeState,
     preCompactState: null,
@@ -1628,7 +1822,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     contextPressure: { ...resumePressure, level: evaluatePressure({ ...info.state, guideCallCount: 0, contextPressure: resumePressure } as FullSessionState) },
     // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point)
     ...(ownCommitDrift ? { git: { ...info.state.git, expectedHead: headResult.data.hash } } : {}),
-  });
+    sidecarPid: resumeSidecarPid,
+  } as FullSessionState, "always");
   appendEvent(info.dir, {
     rev: written.revision,
     type: "resumed",
@@ -1640,6 +1835,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       headMatch: !ownCommitDrift,
       ownCommit: ownCommitDrift || undefined,
     },
+  });
+  emitTelemetry(info.dir, "session_resumed", "guide", {
+    preCompactState: resumeState,
+    compactionCount: written.contextPressure?.compactionCount ?? 0,
   });
   removeResumeMarker(root);
 
@@ -1762,6 +1961,12 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
           "Call autonomous_guide after completing each step.",
         ],
   });
+
+  } catch (err) {
+    // T-260: Clean up sidecar if resume fails after spawn
+    try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1908,7 +2113,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     if (!popResult.ok) stashPopFailed = true;
   }
 
-  const written = writeSessionSync(cancelInfo.dir, {
+  const written = writeSessionAndRefresh(root, cancelInfo.dir, {
     ...cancelInfo.state,
     state: "SESSION_END",
     previousState: cancelInfo.state.state,
@@ -1918,7 +2123,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     compactPreparedAt: null,
     resumeBlocked: false,
     ticket: undefined,
-  });
+  } as FullSessionState, "always");
+  // T-260: Same-process finalization (after state write succeeds)
+  try { killSidecar(cancelInfo.state.sidecarPid); } catch { /* best-effort */ }
+  try { writeShutdownMarker(cancelInfo.dir); } catch { /* best-effort */ }
 
   appendEvent(cancelInfo.dir, {
     rev: written.revision,
@@ -1931,6 +2139,21 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
       ticketConflict,
       stashPopFailed,
     },
+  });
+  postStateWrite(cancelInfo.dir, {
+    event: {
+      type: "session_cancelled",
+      layer: "guide",
+      data: {
+        previousState: cancelInfo.state.state,
+        reason: "cancelled",
+        ticketId: ticketId ?? null,
+        ticketReleased,
+        ticketConflict,
+        stashPopFailed,
+      },
+    },
+    ended: { reason: "cancelled" },
   });
 
   // T-183: Clean resume marker
@@ -1963,6 +2186,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
 
 /** Validate transition + write state atomically. Returns the written state with updated revision. */
 function transitionAndWrite(
+  root: string,
   dir: string,
   state: FullSessionState,
   to: WorkflowState,
@@ -1972,7 +2196,25 @@ function transitionAndWrite(
     assertTransition(from, to);
   }
   const updated = { ...state, state: to, previousState: from };
-  return writeSessionSync(dir, updated);
+  return writeSessionAndRefresh(root, dir, updated, "always");
+}
+
+// ---------------------------------------------------------------------------
+// T-262: Telemetry helpers -- called AFTER state persistence completes
+// ---------------------------------------------------------------------------
+
+function emitTelemetry(dir: string, type: string, layer: TelemetryLayer, data: Record<string, unknown>): void {
+  writeEvent(dir, { ts: new Date().toISOString(), layer, type, data });
+}
+
+function postStateWrite(dir: string, opts: {
+  event?: { type: string; layer: TelemetryLayer; data: Record<string, unknown> };
+  checkpoint?: { stage: string; state: Record<string, unknown>; revision: number };
+  ended?: { reason: string };
+}): void {
+  if (opts.event) emitTelemetry(dir, opts.event.type, opts.event.layer, opts.event.data);
+  if (opts.checkpoint) writeCheckpoint(dir, opts.checkpoint.stage, opts.checkpoint.state as Record<string, unknown>, opts.checkpoint.revision);
+  if (opts.ended) markEnded(dir, opts.ended.reason);
 }
 
 function guideResult(
@@ -2023,6 +2265,9 @@ function guideResult(
     `**Completed:** ${summary.completed.length > 0 ? summary.completed.join(", ") : "none"}`,
     `**Tickets done:** ${summary.completed.length}`,
     summary.branch ? `**Branch:** ${summary.branch}` : "",
+    state.verificationCounters
+      ? `**Verification:** ${state.verificationCounters.proposed} proposed, ${state.verificationCounters.verified} verified, ${state.verificationCounters.rejected} rejected, ${state.verificationCounters.filed} filed`
+      : "",
     output.reminders.length > 0 ? `\n**Reminders:**\n${output.reminders.map((r) => `- ${r}`).join("\n")}` : "",
   ].filter(Boolean);
 

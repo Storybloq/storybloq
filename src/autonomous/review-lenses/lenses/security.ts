@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "security-v1";
+export const LENS_VERSION = "security-v2";
 
 const CODE_REVIEW = `You are a Security reviewer. You think like an attacker -- trace data flow from untrusted input to sensitive operations. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -84,7 +84,15 @@ IMPORTANT: Use EXACTLY these category strings for the corresponding finding type
 For every finding, populate:
 - inputSource: Where untrusted data enters. Null only if the issue is structural.
 - sink: Where data reaches a sensitive operation. Null only if structural.
-- assumptions: What you're assuming about the data flow that you couldn't fully verify.`;
+- assumptions: What you're assuming about the data flow that you couldn't fully verify.
+
+## Evidence for security findings
+
+- Injection/XSS/SSRF: cite the sink (where untrusted data reaches sensitive operation) as primary evidence. Add inputSource site as second evidence item if in the diff.
+- Hardcoded secrets: cite the line containing the secret.
+- Auth bypass: cite the endpoint handler missing auth middleware.
+- TOCTOU: cite both the check site and the guarded action site as separate evidence items.
+- Absence findings ("missing rate limiting"): cite the endpoint handler that should have rate limiting.`;
 
 const PLAN_REVIEW = `You are a Security reviewer evaluating an implementation plan before code is written. You assess whether the proposed design has security gaps, missing threat mitigations, or data exposure risks. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

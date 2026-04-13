@@ -9,6 +9,19 @@
 
 export type ReviewStage = "CODE_REVIEW" | "PLAN_REVIEW";
 
+// ── Evidence item (one verifiable code excerpt per site) ──────
+//
+// Each finding must ship at least one EvidenceItem. A lens authors it by
+// quoting literal code from the reviewed snapshot. Lines are 1-indexed and
+// inclusive on both ends. Multi-site findings carry one item per site so
+// T-255 can verify each excerpt against the snapshot independently.
+export interface EvidenceItem {
+  readonly file: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly code: string;
+}
+
 // ── Lens finding (output by each lens agent) ───────────────────
 
 export interface LensFinding {
@@ -23,10 +36,17 @@ export interface LensFinding {
 
   // Content
   readonly description: string;
+  /** @deprecated retained for the filing path and dedupe key through T-257; derive from evidence[0] once Sub 5 lands */
   readonly file: string | null;
+  /** @deprecated retained for the filing path and dedupe key through T-257; derive from evidence[0] once Sub 5 lands */
   readonly line: number | null;
-  readonly evidence: string | null;
+  // Runtime invariant (enforced by Zod in finding-schema.ts): non-empty array.
+  readonly evidence: readonly EvidenceItem[];
   readonly suggestedFix: string | null;
+
+  // Bridge markers (validator-owned; see finding-schema.ts + schema-validator.ts)
+  readonly legacySynthesizedEvidence?: boolean;
+  readonly legacyUnlocated?: boolean;
 
   // Confidence & assumptions
   readonly confidence: number;

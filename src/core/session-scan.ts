@@ -6,6 +6,7 @@
  */
 import { readdirSync, readFileSync, type Dirent } from "node:fs";
 import { join } from "node:path";
+import { isContainedSessionDir } from "../autonomous/session-selector.js";
 
 export interface ActiveSessionSummary {
   readonly sessionId: string;
@@ -32,6 +33,8 @@ export function scanActiveSessions(root: string): readonly ActiveSessionSummary[
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // T-251: drop symlink-escape entries before any filesystem read.
+    if (!isContainedSessionDir(root, join(sessDir, entry.name))) continue;
     const statePath = join(sessDir, entry.name, "state.json");
     let raw: string;
     try {

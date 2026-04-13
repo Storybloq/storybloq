@@ -91,6 +91,17 @@ export function deriveWorkspaceId(projectRoot: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared inline types (ISS-489: extract to avoid duplication)
+// ---------------------------------------------------------------------------
+
+/** Shape of currentIssue in both SessionState and StatusPayloadActive. */
+export interface CurrentIssueRef {
+  readonly id: string;
+  readonly title: string;
+  readonly severity: string;
+}
+
+// ---------------------------------------------------------------------------
 // Session state — minimal shape that hook-status reads from state.json
 // ---------------------------------------------------------------------------
 
@@ -104,12 +115,9 @@ export interface SessionState {
     readonly title: string;
     readonly risk?: string;
   };
-  readonly currentIssue?: {
-    readonly id: string;
-    readonly title: string;
-    readonly severity: string;
-  } | null;
+  readonly currentIssue?: CurrentIssueRef | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string }>;
+  readonly resolvedIssues?: ReadonlyArray<string>;
   readonly contextPressure?: {
     readonly level: string;
   };
@@ -120,6 +128,44 @@ export interface SessionState {
     readonly workspaceId?: string;
     readonly expiresAt: string;
   };
+  // T-260: Liveness infrastructure
+  readonly sidecarPid?: number | null;
+  // T-259: Telemetry substrate fields
+  readonly substage?: string | null;
+  readonly substageStartedAt?: string | null;
+  readonly pendingInstruction?: string | null;
+  readonly pendingInstructionSetAt?: string | null;
+  readonly claudeCodeSessionId?: string | null;
+  readonly binaryFingerprint?: { readonly mtime: string; readonly sha256: string } | null;
+  readonly runningSubprocesses?: ReadonlyArray<{
+    readonly pid: number;
+    readonly category: string;
+    readonly startedAt: string;
+    readonly stage: string;
+  }> | null;
+  readonly lastReviewVerdict?: {
+    readonly stage: string;
+    readonly round: number;
+    readonly verdict: string;
+    readonly findingCount: number;
+    readonly criticalCount: number;
+    readonly majorCount: number;
+    readonly suggestionCount: number;
+    readonly durationMs: number;
+    readonly summary: string;
+  } | null;
+  readonly recentDeferrals?: {
+    readonly total: number;
+    readonly critical: number;
+    readonly high: number;
+    readonly medium: number;
+    readonly low: number;
+  } | null;
+  readonly alive?: boolean | null;
+  readonly lastMcpCall?: string | null;
+  readonly healthState?: string | null;
+  // T-271: Queue progress
+  readonly targetWork?: ReadonlyArray<string> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,12 +189,51 @@ export interface StatusPayloadActive {
   readonly contextPressure: string;
   readonly branch: string | null;
   readonly source: "hook";
+  // T-259: Telemetry substrate fields
+  readonly substage: string | null;
+  readonly substageStartedAt: string | null;
+  readonly pendingInstruction: string | null;
+  readonly pendingInstructionSetAt: string | null;
+  readonly claudeCodeSessionId: string | null;
+  readonly binaryFingerprint: { readonly mtime: string; readonly sha256: string } | null;
+  readonly runningSubprocesses: ReadonlyArray<{
+    readonly pid: number;
+    readonly category: string;
+    readonly startedAt: string;
+    readonly stage: string;
+  }> | null;
+  readonly lastReviewVerdict: {
+    readonly stage: string;
+    readonly round: number;
+    readonly verdict: string;
+    readonly findingCount: number;
+    readonly criticalCount: number;
+    readonly majorCount: number;
+    readonly suggestionCount: number;
+    readonly durationMs: number;
+    readonly summary: string;
+  } | null;
+  readonly recentDeferrals: {
+    readonly total: number;
+    readonly critical: number;
+    readonly high: number;
+    readonly medium: number;
+    readonly low: number;
+  } | null;
+  readonly alive: boolean | null;
+  readonly lastMcpCall: string | null;
+  readonly healthState: string | null;
+  // T-271: Queue progress
+  readonly targetWork: readonly string[] | null;
+  readonly currentIssue: CurrentIssueRef | null;
+  readonly lastWrittenBy?: "hook" | "guide";
 }
 
 export interface StatusPayloadInactive {
   readonly schemaVersion: typeof CURRENT_STATUS_SCHEMA_VERSION;
   readonly sessionActive: false;
   readonly source: "hook";
+  readonly lastWrittenBy?: "hook" | "guide";
 }
 
 export type StatusPayload = StatusPayloadActive | StatusPayloadInactive;
@@ -367,7 +452,10 @@ export const SessionStateSchema = z.object({
   resumeBlocked: z.boolean().default(false),
 
   // Session termination
-  terminationReason: z.enum(["normal", "cancelled", "admin_recovery"]).nullable().default(null),
+  terminationReason: z
+    .enum(["normal", "cancelled", "admin_recovery", "auto_superseded_finished_orphan"])
+    .nullable()
+    .default(null),
 
   // ISS-037: Deferred finding tracking
   filedDeferrals: z.array(z.object({
@@ -457,7 +545,7 @@ export const SessionStateSchema = z.object({
   pipelinePhase: z.enum(["ticket", "postComplete"]).default("ticket"),
 
   // T-188: Targeted auto mode — constrains PICK_TICKET to specific items
-  targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(50).default([]),
+  targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).default([]),
 
   // T-124: Test stage baseline and retry tracking
   testBaseline: z.object({
@@ -484,9 +572,63 @@ export const SessionStateSchema = z.object({
     reviewBackends: z.array(z.string()),
     handoverInterval: z.number().optional(),
   }).optional(),
+
+  // T-257: Verification counters (accumulated from telemetry JSONL)
+  verificationCounters: z.object({
+    proposed: z.number().default(0),
+    verified: z.number().default(0),
+    rejected: z.number().default(0),
+    filed: z.number().default(0),
+    lastTelemetryLine: z.number().default(0),
+  }).optional(),
+
+  // T-260: Liveness infrastructure
+  sidecarPid: z.number().nullish(),
+
+  // T-259: Telemetry substrate fields (all nullish for wire + state compat)
+  substage: z.string().nullish(),
+  substageStartedAt: z.string().nullish(),
+  pendingInstruction: z.string().nullish(),
+  pendingInstructionSetAt: z.string().nullish(),
+  claudeCodeSessionId: z.string().nullish(),
+  binaryFingerprint: z.object({
+    mtime: z.string(),
+    sha256: z.string(),
+  }).nullish(),
+  runningSubprocesses: z.array(z.object({
+    pid: z.number(),
+    category: z.string(),
+    startedAt: z.string(),
+    stage: z.string(),
+  })).nullish(),
+  lastReviewVerdict: z.object({
+    stage: z.string(),
+    round: z.number(),
+    verdict: z.string(),
+    findingCount: z.number(),
+    criticalCount: z.number(),
+    majorCount: z.number(),
+    suggestionCount: z.number(),
+    durationMs: z.number(),
+    summary: z.string(),
+  }).nullish(),
+  recentDeferrals: z.object({
+    total: z.number(),
+    critical: z.number(),
+    high: z.number(),
+    medium: z.number(),
+    low: z.number(),
+  }).nullish(),
+  alive: z.boolean().nullish(),
+  lastMcpCall: z.string().nullish(),
+  healthState: z.string().nullish(),
+  currentReviewStartedAt: z.string().nullish(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
+
+/** ISS-400: Named type for verification counters, derived from the Zod schema. */
+export type VerificationCounters = NonNullable<FullSessionState["verificationCounters"]>;
 
 // ---------------------------------------------------------------------------
 // Guide input (from MCP tool call)

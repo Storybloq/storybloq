@@ -1,6 +1,6 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames } from "../git-inspector.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath } from "../git-inspector.js";
 
 /**
  * FINALIZE stage — 3-checkpoint sub-machine for staging, pre-commit, and commit.
@@ -339,20 +339,83 @@ export class FinalizeStage implements WorkflowStage {
       return { action: "retry", instruction: "Missing commitHash in report. Call me again with the commit hash." };
     }
 
-    // Validate commitHash matches actual HEAD and is a new commit (ISS-033)
+    // ISS-378: Accept any new session-scoped commit on the ancestry path between
+    // initHead and HEAD that touches the expected ticket/issue artifact. The fast
+    // path preserves prior behavior for the normal flow (reported hash matches
+    // HEAD); the slow path adds drift tolerance for orphan resume.
     const headResult = await gitHead(ctx.root);
-    const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
-    // ISS-051: Support short hashes — prefix match, then normalize to full 40-char SHA
-    const fullHead = headResult.ok ? headResult.data.hash : null;
-    if (!fullHead || (!fullHead.startsWith(commitHash) && commitHash !== fullHead)) {
+    if (!headResult.ok) {
       return {
         action: "retry",
-        instruction: `Commit hash mismatch: reported ${commitHash} but HEAD is ${fullHead ?? "unknown"}. Verify the commit succeeded and report the correct hash.`,
+        instruction: `Cannot resolve HEAD (git error: ${headResult.message ?? "unknown"}). Verify the commit succeeded and report again.`,
       };
     }
-    const normalizedHash = fullHead; // Always store full 40-char SHA
+    const fullHead = headResult.data.hash;
+    const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
+    const initHead = ctx.state.git.initHead;
+    const reportedHash = commitHash.toLowerCase();
+
+    let normalizedHash: string;
+
+    if (fullHead === reportedHash || fullHead.startsWith(reportedHash)) {
+      normalizedHash = fullHead;
+    } else {
+      const resolvedResult = await gitResolveCommit(ctx.root, reportedHash);
+      if (!resolvedResult.ok) {
+        return {
+          action: "retry",
+          instruction: `Commit hash ${commitHash} does not exist in the repository. Verify the commit succeeded and report the correct hash.`,
+        };
+      }
+      normalizedHash = resolvedResult.data;
+
+      const ticketId = ctx.state.ticket?.id;
+      const issueId = ctx.state.currentIssue?.id;
+      const expectedPath = ticketId
+        ? `.story/tickets/${ticketId}.json`
+        : issueId
+        ? `.story/issues/${issueId}.json`
+        : null;
+      if (!expectedPath) {
+        return {
+          action: "retry",
+          instruction: `Commit hash mismatch: reported ${commitHash} but HEAD is ${fullHead}. Verify the commit succeeded and report the correct hash.`,
+        };
+      }
+      if (!initHead) {
+        return {
+          action: "retry",
+          instruction: `Commit hash mismatch: reported ${commitHash} but HEAD is ${fullHead} and no session baseline is available. Verify the commit succeeded and report the correct hash.`,
+        };
+      }
+
+      const candidatesResult = await gitRevListAncestryPath(ctx.root, initHead, fullHead, expectedPath);
+      if (!candidatesResult.ok) {
+        return {
+          action: "retry",
+          instruction: `Cannot enumerate candidate commits for ${expectedPath} (git error: ${candidatesResult.message ?? "unknown"}). Verify the commit succeeded and report again.`,
+        };
+      }
+      const candidates = candidatesResult.data;
+      if (candidates.length === 0) {
+        return {
+          action: "retry",
+          instruction: `No commit on the session ancestry path touched ${expectedPath}. ` +
+            `Ensure the ${ticketId ? "ticket" : "issue"} file update is included in a commit between the session baseline and HEAD, then report the commit hash.`,
+        };
+      }
+      if (!candidates.includes(normalizedHash)) {
+        return {
+          action: "retry",
+          instruction: `Commit ${commitHash} is not a session work commit for ${expectedPath}. ` +
+            `It is either outside the session range (baseline ${initHead.slice(0, 7)}..HEAD ${fullHead.slice(0, 7)}), on a merged-in side branch, or does not modify the expected file. ` +
+            `Report the actual work commit.`,
+        };
+      }
+    }
+
     if (previousHead && normalizedHash === previousHead) {
-      return { action: "retry", instruction: `No new commit detected: HEAD (${normalizedHash}) has not changed. Create a commit first, then report the new hash.` };
+      return { action: "retry", instruction: `No new commit detected: reported hash ${normalizedHash.slice(0, 7)} equals session baseline. Create a commit first, then report the new hash.` };
     }
 
     // ISS-084: Issue-fix mode -- record resolved issue, route through COMPLETE
@@ -366,8 +429,8 @@ export class FinalizeStage implements WorkflowStage {
         ticketStartedAt: null,
         git: {
           ...ctx.state.git,
-          mergeBase: normalizedHash,
-          expectedHead: normalizedHash,
+          mergeBase: fullHead,
+          expectedHead: fullHead,
         },
       });
 
@@ -398,8 +461,8 @@ export class FinalizeStage implements WorkflowStage {
       ticketStartedAt: null,
       git: {
         ...ctx.state.git,
-        mergeBase: normalizedHash,
-        expectedHead: normalizedHash,
+        mergeBase: fullHead,
+        expectedHead: fullHead,
       },
     });
 

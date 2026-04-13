@@ -11,7 +11,9 @@ const baseFinding: LensFinding = {
   description: "SQL injection via unparameterized query",
   file: "src/api/users.ts",
   line: 87,
-  evidence: null,
+  evidence: [
+    { file: "src/api/users.ts", startLine: 87, endLine: 87, code: "db.query(`SELECT * FROM users WHERE id = ${req.params.id}`)" },
+  ],
   suggestedFix: null,
   confidence: 0.95,
   assumptions: null,

@@ -1,14 +1,16 @@
-import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import { STORY_GITIGNORE_ENTRIES } from "../../core/init.js";
 import {
-  deriveClaudeStatus,
-  CURRENT_STATUS_SCHEMA_VERSION,
-  type SessionState,
   type StatusPayload,
 } from "../../autonomous/session-types.js";
-import { findActiveSessionMinimal } from "../../autonomous/session.js";
+import { buildActivePayload, buildInactivePayload } from "../../autonomous/status-payload.js";
+import { findActiveSessionMinimal, sessionDir } from "../../autonomous/session.js";
+import { readLastMcpCall, readAliveTimestamp } from "../../autonomous/liveness.js";
+import { readSubprocessSummaries } from "../../autonomous/subprocess-registry.js";
+import { writeStatusFile } from "../../autonomous/status-writer.js";
+import { collectProbes, reduceHealthState } from "../../autonomous/health-model.js";
 
 // ---------------------------------------------------------------------------
 // Stdin reading — silent version (no throws, no validation)
@@ -29,50 +31,26 @@ async function readStdinSilent(): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Atomic write (sync) — silent, never throws
-// ---------------------------------------------------------------------------
-
-function atomicWriteSync(targetPath: string, content: string): boolean {
-  const tmp = `${targetPath}.${process.pid}.tmp`;
-  try {
-    writeFileSync(tmp, content, "utf-8");
-    renameSync(tmp, targetPath);
-    return true;
-  } catch {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      /* ignore cleanup errors */
-    }
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Status payloads
 // ---------------------------------------------------------------------------
 
 function inactivePayload(): StatusPayload {
-  return { schemaVersion: CURRENT_STATUS_SCHEMA_VERSION, sessionActive: false, source: "hook" };
+  return buildInactivePayload();
 }
 
-function activePayload(session: SessionState): StatusPayload {
-  return {
-    schemaVersion: CURRENT_STATUS_SCHEMA_VERSION,
-    sessionActive: true,
-    sessionId: session.sessionId,
-    state: session.state,
-    ticket: session.ticket?.id ?? null,
-    ticketTitle: session.ticket?.title ?? null,
-    risk: session.ticket?.risk ?? null,
-    claudeStatus: deriveClaudeStatus(session.state, session.waitingForRetry),
-    observedAt: new Date().toISOString(),
-    lastGuideCall: session.lastGuideCall ?? null,
-    completedThisSession: session.completedTickets?.map((t) => t.id) ?? [],
-    contextPressure: session.contextPressure?.level ?? "unknown",
-    branch: session.git?.branch ?? null,
-    source: "hook",
-  };
+function activePayload(session: Parameters<typeof buildActivePayload>[0], root: string): StatusPayload {
+  const sDir = sessionDir(root, session.sessionId);
+  const lastMcpCall = readLastMcpCall(sDir);
+  const aliveTs = readAliveTimestamp(sDir);
+  const subprocesses = readSubprocessSummaries(sDir);
+  const probes = collectProbes(sDir);
+  const healthState = reduceHealthState(probes);
+  return buildActivePayload(session, {
+    lastMcpCall,
+    alive: aliveTs !== null,
+    runningSubprocesses: subprocesses.length > 0 ? subprocesses : null,
+    healthState,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -109,9 +87,8 @@ function ensureGitignore(root: string): void {
 
 function writeStatus(root: string, payload: StatusPayload): void {
   ensureGitignore(root);
-  const statusPath = join(root, ".story", "status.json");
-  const content = JSON.stringify(payload, null, 2) + "\n";
-  atomicWriteSync(statusPath, content);
+  const withWriter = { ...payload, lastWrittenBy: "hook" as const };
+  writeStatusFile(root, withWriter as StatusPayload);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +108,7 @@ export async function handleHookStatus(): Promise<void> {
       const root = discoverProjectRoot();
       if (root) {
         const session = findActiveSessionMinimal(root);
-        const payload = session ? activePayload(session) : inactivePayload();
+        const payload = session ? activePayload(session, root) : inactivePayload();
         writeStatus(root, payload);
       }
       process.exit(0);
@@ -172,7 +149,7 @@ export async function handleHookStatus(): Promise<void> {
 
     // Scan for active session
     const session = findActiveSessionMinimal(root);
-    const payload = session ? activePayload(session) : inactivePayload();
+    const payload = session ? activePayload(session, root) : inactivePayload();
     writeStatus(root, payload);
   } catch {
     // Catch-all — never crash

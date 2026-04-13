@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "error-handling-v1";
+export const LENS_VERSION = "error-handling-v2";
 
 const CODE_REVIEW = `You are an Error Handling reviewer. You ensure failures are anticipated, caught, communicated, and recovered from -- not silently swallowed or left to crash the process. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -47,7 +47,14 @@ Use Read to check if a function's caller handles the error. Use Read to check ts
 
 - 0.9-1.0: Clearly missing try/catch on I/O, demonstrably empty catch block, obvious null access on external data.
 - 0.7-0.8: Error propagation gap that depends on caller behavior you can partially verify.
-- 0.6-0.7: Judgment call -- code might be okay if upstream guarantees hold. Set requiresMoreContext: true.`;
+- 0.6-0.7: Judgment call -- code might be okay if upstream guarantees hold. Set requiresMoreContext: true.
+
+## Evidence for error-handling findings
+
+- Missing try/catch: cite the I/O call that should be wrapped.
+- Swallowed errors: cite the catch block.
+- Missing null checks: cite the property access on external data.
+- Missing cleanup: cite the resource acquisition without matching finally/cleanup.`;
 
 const PLAN_REVIEW = `You are an Error Handling reviewer evaluating an implementation plan. You assess whether the plan accounts for failure scenarios, not just the happy path. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

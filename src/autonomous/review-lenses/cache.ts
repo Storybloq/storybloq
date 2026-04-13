@@ -10,9 +10,25 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { LensFinding, ReviewStage } from "./types.js";
-import { validateFindings } from "./schema-validator.js";
+import { validateCachedFindings } from "./schema-validator.js";
 
 const CACHE_DIR = "lens-cache";
+
+// CDX-19 cache invalidation observability. Counter is module-local and
+// monotonically increasing across the process lifetime (operators read it
+// via `getCacheMetrics()`; `resetCacheMetrics()` is test-only).
+interface CacheMetrics {
+  cache_validation_skip_total: number;
+}
+const cacheMetrics: CacheMetrics = { cache_validation_skip_total: 0 };
+
+export function getCacheMetrics(): Readonly<CacheMetrics> {
+  return { ...cacheMetrics };
+}
+
+export function resetCacheMetrics(): void {
+  cacheMetrics.cache_validation_skip_total = 0;
+}
 
 interface CacheEntry {
   readonly findings: readonly LensFinding[];
@@ -55,8 +71,27 @@ export function getFromCache(
     if (!Array.isArray(entry.findings)) return null;
     // Empty findings is a valid cache hit (lens found nothing wrong)
     if (entry.findings.length === 0) return [];
-    // Re-validate cached findings (schema may have evolved since write)
-    const { valid } = validateFindings(entry.findings as unknown[], null);
+    // CDX-19 invalidation contract: run cached findings through the
+    // cached-input validator (Zod only). Skip invalid findings (incrementing
+    // the metric + emitting a structured warn per skip); do NOT rewrite the
+    // cache file; return the surviving valid findings unchanged.
+    const { valid, invalid } = validateCachedFindings(entry.findings as unknown[]);
+    for (const inv of invalid) {
+      cacheMetrics.cache_validation_skip_total += 1;
+      try {
+        // eslint-disable-next-line no-console
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "cache_validation_skip",
+            cacheKey,
+            reason: inv.reason,
+          }),
+        );
+      } catch {
+        // Swallow logger errors -- metric already incremented.
+      }
+    }
     return valid.length > 0 ? valid : null;
   } catch {
     return null;

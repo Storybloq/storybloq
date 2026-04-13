@@ -12,7 +12,9 @@ const baseFinding: LensFinding = {
   description: "SQL injection",
   file: "src/api.ts",
   line: 10,
-  evidence: null,
+  evidence: [
+    { file: "src/api.ts", startLine: 10, endLine: 10, code: "db.query(req.params.id)" },
+  ],
   suggestedFix: null,
   confidence: 0.9,
   assumptions: null,

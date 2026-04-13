@@ -3,6 +3,9 @@ import type {
   GuideReportInput,
 } from "../session-types.js";
 import { writeSessionSync, appendEvent } from "../session.js";
+import { killSidecar, writeShutdownMarker } from "../liveness.js";
+import { writeEvent, markEnded } from "../telemetry-writer.js";
+import { refreshStatusForSession } from "../status-writer.js";
 import { loadProject } from "../../core/project-loader.js";
 import type { ProjectState } from "../../core/project-state.js";
 
@@ -95,21 +98,53 @@ export class StageContext {
    * Write state updates atomically. Returns the written state with incremented revision.
    * Updates the internal snapshot so subsequent reads via `this.state` are consistent.
    */
-  writeState(updates: Partial<FullSessionState>): FullSessionState {
+  writeState(updates: Partial<FullSessionState>, opts?: { refreshStatus?: boolean }): FullSessionState {
     const merged = { ...this._state, ...updates } as FullSessionState;
     const written = writeSessionSync(this.dir, merged);
     this._state = written;
+    if (opts?.refreshStatus) {
+      try { refreshStatusForSession(this.root, this.dir, written, "guide"); } catch { /* best-effort */ }
+    }
     return written;
   }
 
-  /** Append a supplementary event to events.log. */
+  /**
+   * T-260: Terminal transition with sidecar cleanup.
+   * Persists state first, then kills sidecar and writes shutdown marker (best-effort).
+   */
+  finalizeSession(updates: Partial<FullSessionState>, terminalData?: Record<string, unknown>): FullSessionState {
+    const pidToKill = this._state.sidecarPid;
+    const written = this.writeState(updates);
+    try { killSidecar(pidToKill); } catch { /* best-effort */ }
+    try { writeShutdownMarker(this.dir); } catch { /* best-effort */ }
+    const reason = (updates as Record<string, unknown>).terminationReason as string ?? "normal";
+    writeEvent(this.dir, {
+      ts: new Date().toISOString(),
+      layer: "guide",
+      type: "session_end",
+      data: {
+        reason,
+        ticketsCompleted: written.completedTickets?.length ?? 0,
+        issuesResolved: (written.resolvedIssues as unknown[] | undefined)?.length ?? 0,
+        ...terminalData,
+      },
+    });
+    markEnded(this.dir, reason);
+    return written;
+  }
+
+  /** Append a supplementary event to events.log and mirror to events.jsonl. */
   appendEvent(type: string, data: Record<string, unknown>): void {
+    const ts = new Date().toISOString();
     appendEvent(this.dir, {
       rev: this._state.revision,
       type,
-      timestamp: new Date().toISOString(),
+      timestamp: ts,
       data,
     });
+    if (type !== "session_end" && type !== "session_cancelled") {
+      writeEvent(this.dir, { ts, layer: "guide", type, data });
+    }
   }
 
   /** Load the .story/ project state (tickets, issues, roadmap). */
@@ -128,6 +163,7 @@ export class StageContext {
     const SEVERITY_MAP: Record<string, string> = { critical: "critical", major: "high", minor: "medium" };
     const filed = [...(this._state.filedDeferrals ?? [])];
     const remaining: typeof pending = [];
+    let newlyFiled = 0;
 
     for (const entry of pending) {
       try {
@@ -149,6 +185,7 @@ export class StageContext {
         }
         if (issueId) {
           filed.push({ fingerprint: entry.fingerprint, issueId });
+          newlyFiled++;
         } else {
           remaining.push(entry);
         }
@@ -157,7 +194,12 @@ export class StageContext {
       }
     }
 
-    this.writeState({ filedDeferrals: filed, pendingDeferrals: remaining } as Partial<FullSessionState>);
+    const prev = this._state.verificationCounters ?? { proposed: 0, verified: 0, rejected: 0, filed: 0, lastTelemetryLine: 0 };
+    this.writeState({
+      filedDeferrals: filed,
+      pendingDeferrals: remaining,
+      verificationCounters: { ...prev, filed: prev.filed + newlyFiled },
+    } as Partial<FullSessionState>);
     return remaining.length === 0;
   }
 

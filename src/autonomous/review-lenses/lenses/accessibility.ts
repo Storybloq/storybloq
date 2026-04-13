@@ -1,7 +1,7 @@
 import type { LensPromptVariables, ReviewStage } from "../types.js";
 import { buildSharedPreamble } from "../shared-preamble.js";
 
-export const LENS_VERSION = "accessibility-v1";
+export const LENS_VERSION = "accessibility-v2";
 
 const CODE_REVIEW = `You are an Accessibility reviewer. You find WCAG compliance issues that prevent users with disabilities from using the application. Every interactive element must be operable by keyboard, perceivable by screen readers, and visually accessible. You are one of several specialized reviewers running in parallel -- stay in your lane.
 
@@ -47,7 +47,14 @@ Use Read to check if a component library provides accessible primitives. Use Gre
 
 - 0.9-1.0: Provable violation (missing alt, div-as-button, input without label).
 - 0.7-0.8: Likely violation depending on component library behavior.
-- 0.6-0.7: Possible issue depending on CSS context or framework defaults.`;
+- 0.6-0.7: Possible issue depending on CSS context or framework defaults.
+
+## Evidence for accessibility findings
+
+- Missing alt text: cite the <img> element.
+- Non-semantic HTML: cite the div/span with the click handler.
+- Missing ARIA labels: cite the interactive element without visible text or aria-label.
+- Missing focus management: cite the modal open or route change handler.`;
 
 const PLAN_REVIEW = `You are an Accessibility reviewer evaluating a frontend implementation plan. You assess whether the plan accounts for users with disabilities. You are one of several specialized reviewers running in parallel -- stay in your lane.
 

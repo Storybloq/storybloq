@@ -18,6 +18,7 @@ import {
   type ActiveSessionInfo,
 } from "../../autonomous/session.js";
 import { WORKFLOW_STATES } from "../../autonomous/session-types.js";
+import { writeShutdownMarker } from "../../autonomous/liveness.js";
 import { loadProject } from "../../core/project-loader.js";
 import { writeResumeMarker, removeResumeMarker } from "../../autonomous/resume-marker.js";
 
@@ -186,6 +187,7 @@ export async function handleSessionClearCompact(root: string, sessionId?: string
       compactPreparedAt: null,
       resumeBlocked: false,
     });
+    writeShutdownMarker(info.dir);
 
     appendEvent(info.dir, {
       rev: written.revision,
@@ -268,6 +270,8 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
       resumeFromRevision: null,
       ticket: undefined,
     });
+    // T-260: Cross-process finalization (marker only, no PID kill)
+    writeShutdownMarker(info.dir);
 
     appendEvent(info.dir, {
       rev: written.revision,

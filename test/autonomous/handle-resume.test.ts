@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
-import { rmSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -101,8 +101,8 @@ beforeEach(() => {
   mockedGitIsAncestor.mockResolvedValue({ ok: true, data: false });
 });
 
-afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   vi.restoreAllMocks();
 });
 

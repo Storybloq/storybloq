@@ -12,7 +12,7 @@
  * T-189
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { prepareLensReview } from "./orchestrator.js";
 import { validateFindings } from "./schema-validator.js";
@@ -21,6 +21,13 @@ import { computeBlocking } from "./blocking-policy.js";
 import { parseDiffScope, classifyOrigin } from "./diff-scope.js";
 import { buildMergerPrompt, parseMergerResult } from "./merger.js";
 import { buildJudgePrompt } from "./judge.js";
+import {
+  loadSnapshot,
+  verifyLensFindingPreloaded,
+  SnapshotIntegrityError,
+} from "./verification.js";
+import type { SnapshotContext, VerifyFail } from "./verification.js";
+import { appendRejection, buildRejectionEntry } from "./verification-log.js";
 import type {
   BlockingPolicy,
   LensFinding,
@@ -161,6 +168,124 @@ function buildLensMetadata(
   }));
 }
 
+// ── Verification gate helper (ISS-398) ──────────────────────
+
+interface VerificationGateInput {
+  readonly projectRoot?: string;
+  readonly sessionId?: string;
+  readonly reviewId: string;
+  readonly sessionDir?: string;
+  readonly stage: ReviewStage;
+}
+
+interface VerificationGateResult {
+  verifiedFindings: LensFinding[];
+  verifiedForFiling: LensFinding[];
+  rejectedCount: number;
+  snapshotIntegrityFailure: boolean;
+  verificationSkipped: boolean;
+  logWriteFailures: number;
+  verificationRuntimeErrors: number;
+}
+
+function runVerificationGate(
+  allFindings: LensFinding[],
+  opts: VerificationGateInput,
+): VerificationGateResult {
+  if (!opts.projectRoot || !opts.sessionId) {
+    return {
+      verifiedFindings: allFindings,
+      verifiedForFiling: [],
+      rejectedCount: 0,
+      snapshotIntegrityFailure: false,
+      verificationSkipped: true,
+      logWriteFailures: 0,
+      verificationRuntimeErrors: 0,
+    };
+  }
+
+  const ctx: SnapshotContext = {
+    projectRoot: opts.projectRoot,
+    sessionId: opts.sessionId,
+    reviewId: opts.reviewId,
+  };
+
+  const verified: LensFinding[] = [];
+  const strictlyVerified: LensFinding[] = [];
+  const rejected: Array<{ finding: LensFinding; result: VerifyFail }> = [];
+  let snapshotIntegrityFailure = false;
+  let verificationRuntimeErrors = 0;
+  let logWriteFailures = 0;
+
+  let snapshot;
+  try {
+    snapshot = loadSnapshot(ctx);
+  } catch (err) {
+    if (err instanceof SnapshotIntegrityError) {
+      snapshotIntegrityFailure = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (!snapshotIntegrityFailure) {
+    for (const finding of allFindings) {
+      try {
+        const result = verifyLensFindingPreloaded(finding, snapshot!);
+        if (result.pass) {
+          verified.push(finding);
+          strictlyVerified.push(finding);
+        } else {
+          rejected.push({ finding, result });
+        }
+      } catch (err) {
+        if (err instanceof SnapshotIntegrityError) {
+          snapshotIntegrityFailure = true;
+          break;
+        }
+        verified.push(finding);
+        verificationRuntimeErrors++;
+      }
+    }
+  }
+
+  if (snapshotIntegrityFailure) {
+    return {
+      verifiedFindings: allFindings,
+      verifiedForFiling: [],
+      rejectedCount: 0,
+      snapshotIntegrityFailure: true,
+      verificationSkipped: false,
+      logWriteFailures: 0,
+      verificationRuntimeErrors,
+    };
+  }
+
+  if (rejected.length > 0 && opts.sessionDir) {
+    const stageLabel = opts.stage === "CODE_REVIEW" ? "code-review" : "plan-review";
+    for (const { finding, result } of rejected) {
+      try {
+        const entry = buildRejectionEntry(finding, result, stageLabel);
+        if (!appendRejection(opts.sessionDir, entry).ok) {
+          logWriteFailures++;
+        }
+      } catch {
+        logWriteFailures++;
+      }
+    }
+  }
+
+  return {
+    verifiedFindings: verified,
+    verifiedForFiling: strictlyVerified,
+    rejectedCount: rejected.length,
+    snapshotIntegrityFailure: false,
+    verificationSkipped: false,
+    logWriteFailures,
+    verificationRuntimeErrors,
+  };
+}
+
 // ── Synthesize ────────────────────────────────────────────────
 
 export interface SynthesizeInput {
@@ -177,6 +302,7 @@ export interface SynthesizeInput {
     readonly reviewId: string;
   };
   readonly sessionDir?: string;
+  readonly sessionId?: string;
   readonly projectRoot?: string;
   // T-192: Origin classification inputs
   readonly diff?: string;
@@ -194,6 +320,17 @@ export interface SynthesizeOutput {
   // T-192: Pre-existing findings identified by origin classification
   readonly preExistingFindings: readonly LensFinding[];
   readonly preExistingCount: number;
+  // T-257: Verification gate outputs
+  readonly verificationCounters: {
+    readonly proposed: number;
+    readonly verified: number;
+    readonly rejected: number;
+  };
+  readonly snapshotIntegrityFailure: boolean;
+  readonly verificationSkipped: boolean;
+  readonly logWriteFailures: number;
+  readonly verificationRuntimeErrors: number;
+  readonly telemetryWriteFailed: boolean;
 }
 
 export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
@@ -278,22 +415,69 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     }
   }
 
-  // T-192: Collect pre-existing findings for auto-filing (origin set during enrichment above)
-  const preExistingFindings = allFindings.filter(
+  // ── T-257: Verification gate (ISS-398: extracted helper) ────────
+  const gate = runVerificationGate(allFindings, {
+    projectRoot: input.projectRoot,
+    sessionId: input.sessionId,
+    reviewId: input.metadata.reviewId,
+    sessionDir: input.sessionDir,
+    stage,
+  });
+  const {
+    verifiedFindings,
+    verifiedForFiling,
+    rejectedCount,
+    snapshotIntegrityFailure,
+    verificationSkipped,
+    logWriteFailures,
+    verificationRuntimeErrors,
+  } = gate;
+
+  // T-192: Collect pre-existing findings from strictly-verified set only
+  const preExistingFindings = verifiedForFiling.filter(
     f => f.origin === "pre-existing" && f.severity !== "suggestion",
   );
 
   const lensMetadata = buildLensMetadata(lensesCompleted, lensesFailed, lensesInsufficientContext);
 
-  const mergerPrompt = buildMergerPrompt(allFindings, lensMetadata, stage);
+  const mergerPrompt = buildMergerPrompt(verifiedFindings, lensMetadata, stage);
 
-  // Note: Cache writes are handled by the orchestrator path (prepareLensReview),
-  // not the MCP path. The MCP path's cache key format would mismatch the orchestrator's
-  // buildCacheKey() format, producing cache entries that are never read.
+  // T-257: Verification counters
+  const verificationCounters = {
+    proposed: allFindings.length,
+    verified: (snapshotIntegrityFailure || verificationSkipped)
+      ? 0
+      : verifiedForFiling.length,
+    rejected: rejectedCount,
+  };
+
+  // T-257: Write telemetry artifact (best-effort)
+  let telemetryWriteFailed = false;
+  if (input.sessionDir) {
+    try {
+      const telemetryEntry = {
+        reviewId: input.metadata.reviewId,
+        proposed: verificationCounters.proposed,
+        verified: verificationCounters.verified,
+        rejected: verificationCounters.rejected,
+        snapshotIntegrityFailure,
+        verificationSkipped,
+        verificationRuntimeErrors,
+        logWriteFailures,
+        timestamp: new Date().toISOString(),
+      };
+      appendFileSync(
+        join(input.sessionDir, "verification-telemetry.jsonl"),
+        JSON.stringify(telemetryEntry) + "\n",
+      );
+    } catch {
+      telemetryWriteFailed = true;
+    }
+  }
 
   return {
     mergerPrompt,
-    validatedFindings: allFindings,
+    validatedFindings: verifiedFindings,
     lensesCompleted,
     lensesFailed,
     lensesInsufficientContext,
@@ -301,6 +485,12 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     droppedDetails: dropReasons.slice(0, 5),
     preExistingFindings,
     preExistingCount: preExistingFindings.length,
+    verificationCounters,
+    snapshotIntegrityFailure,
+    verificationSkipped,
+    logWriteFailures,
+    verificationRuntimeErrors,
+    telemetryWriteFailed,
   };
 }
 
@@ -320,6 +510,10 @@ export interface JudgeInput {
   readonly lensesFailed: readonly string[];
   readonly lensesInsufficientContext: readonly string[];
   readonly lensesSkipped: readonly string[];
+  // CDX-13: pre-merger source set for source-authoritative marker restoration
+  // inside `parseMergerResult`. Callers pass the `validatedFindings` field
+  // returned from `handleSynthesize`.
+  readonly sourceFindings?: readonly LensFinding[];
 }
 
 export interface JudgeOutput {
@@ -329,7 +523,10 @@ export interface JudgeOutput {
 }
 
 export function handleJudge(input: JudgeInput): JudgeOutput {
-  const mergerResult = parseMergerResult(input.mergerResultRaw);
+  const mergerResult = parseMergerResult(
+    input.mergerResultRaw,
+    input.sourceFindings ?? [],
+  );
   // isPartial: true if any core lens failed OR returned insufficient-context
   const isPartial = CORE_LENSES.some((l) =>
     input.lensesFailed.includes(l) || input.lensesInsufficientContext.includes(l),

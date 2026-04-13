@@ -1,14 +1,47 @@
 /**
  * MCP tool registration and shared pipeline for claudestory tools.
  *
- * 30 tools (20 read + 10 write). Read tools use a shared pipeline:
+ * 32 tools (20 read + 12 write). Read tools use a shared pipeline:
  *   loadProject(root) → build CommandContext → call handler → classify result
  */
 import { z } from "zod";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { TARGET_WORK_ID_REGEX } from "../autonomous/session-types.js";
+import { findActiveSessionMinimal, readSession, sessionDir, isLeaseExpired } from "../autonomous/session.js";
+import { touchLastMcpCallFile } from "../autonomous/liveness.js";
+
+// ISS-407: Cache active session dir to avoid O(n) directory scan on every MCP call.
+// Expires after 30s -- long enough to amortize hot-path calls, short enough
+// to detect session transitions within a reasonable window.
+const _SESSION_CACHE_TTL_MS = 30_000;
+let _cachedSessionDir: string | null = null;
+let _cachedSessionAt = 0;
+
+function touchMcpLiveness(pinnedRoot: string): void {
+  const now = Date.now();
+  if (_cachedSessionDir && now - _cachedSessionAt < _SESSION_CACHE_TTL_MS) {
+    touchLastMcpCallFile(_cachedSessionDir);
+    return;
+  }
+  const s = findActiveSessionMinimal(pinnedRoot);
+  if (s) {
+    _cachedSessionDir = sessionDir(pinnedRoot, s.sessionId);
+    _cachedSessionAt = now;
+    touchLastMcpCallFile(_cachedSessionDir);
+  } else {
+    _cachedSessionDir = null;
+  }
+}
+import {
+  SUBPROCESS_CATEGORIES,
+  sanitizeCmd,
+  registerSubprocess,
+  unregisterSubprocess,
+} from "../autonomous/subprocess-registry.js";
 import { handlePrepare, handleSynthesize, handleJudge } from "../autonomous/review-lenses/mcp-handlers.js";
+import { validateCachedFindings } from "../autonomous/review-lenses/schema-validator.js";
+import type { LensFinding } from "../autonomous/review-lenses/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { loadProject } from "../core/project-loader.js";
@@ -116,6 +149,7 @@ export async function runMcpReadTool(
   pinnedRoot: string,
   handler: (ctx: CommandContext) => Promise<CommandResult> | CommandResult,
 ): Promise<McpToolResult> {
+  try { touchMcpLiveness(pinnedRoot); } catch { /* best-effort */ }
   try {
     const { state, warnings } = await loadProject(pinnedRoot);
     const handoversDir = join(pinnedRoot, ".story", "handovers");
@@ -162,6 +196,7 @@ export async function runMcpWriteTool(
   pinnedRoot: string,
   handler: (root: string, format: "md") => Promise<CommandResult>,
 ): Promise<McpToolResult> {
+  try { touchMcpLiveness(pinnedRoot); } catch { /* best-effort */ }
   try {
     const result = await handler(pinnedRoot, "md");
 
@@ -706,6 +741,60 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     }
   });
 
+  // --- Subprocess registry (T-261) ---
+
+  server.registerTool("claudestory_register_subprocess", {
+    description: "Register a running subprocess so monitors can distinguish slow builds from hung agents. Writes a per-PID file under the session's telemetry directory.",
+    inputSchema: {
+      pid: z.number().int().positive().describe("Process ID of the subprocess"),
+      cmd: z.string().describe("Command that was run (will be sanitized to executable basename)"),
+      category: z.enum(SUBPROCESS_CATEGORIES).describe("Subprocess category"),
+      sessionId: z.string().uuid().describe("Session ID to register against"),
+    },
+  }, (args) => {
+    try {
+      const sDir = sessionDir(pinnedRoot, args.sessionId);
+      const session = readSession(sDir);
+      if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
+      if (session.status !== "active") return { content: [{ type: "text" as const, text: `Error: session status is "${session.status}", not "active"` }], isError: true };
+      if (isLeaseExpired(session)) return { content: [{ type: "text" as const, text: "Error: session lease has expired" }], isError: true };
+      if (session.state === "SESSION_END") return { content: [{ type: "text" as const, text: "Error: session is in terminal SESSION_END state" }], isError: true };
+
+      const stage = session.state ?? "unknown";
+      registerSubprocess(sDir, {
+        pid: args.pid,
+        cmd: sanitizeCmd(args.cmd),
+        category: args.category,
+        startedAt: new Date().toISOString(),
+        stage,
+      });
+      return { content: [{ type: "text" as const, text: `Registered subprocess ${args.pid} (${args.category}) for session ${args.sessionId}` }] };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Error registering subprocess: ${msg}` }], isError: true };
+    }
+  });
+
+  server.registerTool("claudestory_unregister_subprocess", {
+    description: "Unregister a subprocess after it completes. Idempotent -- no error if the PID was already unregistered. Relaxed validation: works even on expired/terminal sessions to allow cleanup.",
+    inputSchema: {
+      pid: z.number().int().positive().describe("Process ID to unregister"),
+      sessionId: z.string().uuid().describe("Session ID the subprocess was registered against"),
+    },
+  }, (args) => {
+    try {
+      const sDir = sessionDir(pinnedRoot, args.sessionId);
+      const session = readSession(sDir);
+      if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
+
+      unregisterSubprocess(sDir, args.pid);
+      return { content: [{ type: "text" as const, text: `Unregistered subprocess ${args.pid} from session ${args.sessionId}` }] };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: "text" as const, text: `Error unregistering subprocess: ${msg}` }], isError: true };
+    }
+  });
+
   // --- Autonomous guide ---
 
   server.registerTool("claudestory_autonomous_guide", {
@@ -715,7 +804,7 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
       action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]).describe("Action to perform"),
       mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
       ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
-      targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(50).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),
+      targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),
       report: z.object({
         completedAction: z.string().describe("What was completed"),
         ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),
@@ -735,7 +824,10 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         notes: z.string().optional().describe("Free-text notes"),
       }).optional().describe("Report data (required for report action)"),
     },
-  }, (args) => handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]));
+  }, (args) => {
+    try { const sid = (args as Record<string, unknown>).sessionId as string | null; if (sid) touchLastMcpCallFile(sessionDir(pinnedRoot, sid)); } catch { /* best-effort */ }
+    return handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]);
+  });
 
   // ── T-189: Multi-lens review MCP tools ─────────────────────
 
@@ -779,6 +871,9 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
     },
   }, async (args) => {
     try {
+      const sessionDir = args.sessionId
+        ? join(pinnedRoot, ".story", "sessions", args.sessionId)
+        : undefined;
       const result = handleSynthesize({
         stage: args.stage,
         lensResults: args.lensResults,
@@ -789,6 +884,8 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
           reviewId: args.reviewId ?? "unknown",
         },
         projectRoot: pinnedRoot,
+        sessionId: args.sessionId,
+        sessionDir,
         diff: args.diff,
         changedFiles: args.changedFiles,
       });
@@ -870,9 +967,22 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         important: z.number(),
         newCode: z.string(),
       })).optional().describe("Prior round verdicts for convergence tracking"),
+      sourceFindings: z.array(z.unknown()).optional().describe(
+        "Pre-merger validated findings from the synthesize step (`validatedFindings`). Used to restore validator-owned markers that were stripped from the merger LLM's output. CDX-13.",
+      ),
     },
   }, (args) => {
     try {
+      // CDX-R1-05: validate sourceFindings at the MCP boundary before
+      // handing them to restoreSourceMarkers. Malformed caller input (null
+      // entries, missing issueKey/evidence, wrong types) would otherwise
+      // throw deep inside restoration and get swallowed by parseMergerResult's
+      // outer try/catch, silently degrading the whole merger parse to the
+      // null fallback path and disabling CDX-13 restoration. Invalid entries
+      // are dropped; valid ones are passed through unchanged.
+      const { valid: validatedSources } = validateCachedFindings(
+        args.sourceFindings ?? [],
+      );
       const result = handleJudge({
         mergerResultRaw: args.mergerResultRaw,
         stage: args.stage,
@@ -881,6 +991,7 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
         lensesInsufficientContext: args.lensesInsufficientContext ?? [],
         lensesSkipped: args.lensesSkipped ?? [],
         convergenceHistory: args.convergenceHistory,
+        sourceFindings: validatedSources as readonly LensFinding[],
       });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {

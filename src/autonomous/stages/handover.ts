@@ -70,8 +70,8 @@ export class HandoverStage implements WorkflowStage {
     await ctx.drainDeferrals();
     const hasUnfiled = (ctx.state.pendingDeferrals ?? []).length > 0;
 
-    // End session
-    ctx.writeState({
+    // End session (T-260: finalize kills sidecar + writes shutdown marker)
+    ctx.finalizeSession({
       state: "SESSION_END",
       previousState: "HANDOVER",
       status: "completed" as const,

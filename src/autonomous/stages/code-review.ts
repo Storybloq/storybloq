@@ -3,6 +3,8 @@ import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { requiredRounds, nextReviewer } from "../review-depth.js";
 import { clearCache } from "../review-lenses/cache.js";
+import { accumulateVerificationCounters } from "../review-lenses/verification-log.js";
+import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, type ReviewVerdictArtifact } from "../review-verdict.js";
 
 /**
  * CODE_REVIEW stage — independent reviewer evaluates the implementation.
@@ -36,6 +38,10 @@ export class CodeReviewStage implements WorkflowStage {
     const diffReminder = mergeBase
       ? `Run: git diff ${mergeBase} — pass FULL output to reviewer.`
       : "Run: git diff HEAD + git ls-files --others --exclude-standard — pass FULL output to reviewer.";
+
+    if (!ctx.state.currentReviewStartedAt) {
+      ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
+    }
 
     // Lenses backend: multi-lens parallel review
     if (reviewer === "lenses") {
@@ -152,19 +158,57 @@ export class CodeReviewStage implements WorkflowStage {
       nextAction = "CODE_REVIEW";
     }
 
+    // T-263: Build and write review verdict artifact
+    const target = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
+    const criticalCount = findings.filter((f) => f.severity === "critical").length;
+    const majorCount = findings.filter((f) => f.severity === "major").length;
+    const minorCount = findings.filter((f) => f.severity === "minor").length;
+    const suggestionCount = findings.filter((f) => f.severity === "suggestion").length;
+    const startedAt = ctx.state.currentReviewStartedAt;
+    const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
+    const durationMs = Number.isFinite(startedMs) ? Math.max(0, Date.now() - startedMs) : 0;
+    const summary = report.notes || `Code review ${verdict}: ${findings.length} finding(s) (${criticalCount} critical, ${majorCount} major)`;
+    const artifact: ReviewVerdictArtifact = {
+      target,
+      stage: "code",
+      round: roundNum,
+      reviewer: reviewerBackend,
+      verdict,
+      findingsCount: findings.length,
+      severityCounts: { critical: criticalCount, major: majorCount, minor: minorCount, suggestion: suggestionCount },
+      startedAt: startedAt ?? new Date().toISOString(),
+      durationMs,
+      summary,
+      findings,
+      timestamp: new Date().toISOString(),
+    };
+    const writeResult = writeReviewVerdict(ctx.dir, artifact);
+
+    if (writeResult.status === "skipped") {
+      return { action: "retry", instruction: "Review artifact write failed (lock contention or I/O error). Re-report your review verdict." };
+    }
+
+    let tier1Verdict = buildTier1Verdict(artifact);
+    if (writeResult.status === "exists") {
+      const recovered = readReviewVerdict(ctx.dir, writeResult.contentHash);
+      if (!recovered) {
+        return { action: "retry", instruction: "Review artifact recovery failed (content mismatch). Re-report your review verdict." };
+      }
+      tier1Verdict = buildTier1Verdict(recovered);
+    }
+
     // T-208: Issue-fix context
     const isIssueFix = !!ctx.state.currentIssue;
 
-    // CODE_REVIEW → PLAN: full reset — both plan and code reviews cleared + lens cache + lens history
-    // lensReviewHistory intentionally cleared: plan redirect means the approach changed fundamentally,
-    // so previous findings are no longer relevant for the lessons feedback loop threshold calculation.
-    // T-208: Issue fixes have no plan stage — redirect to ISSUE_FIX with same reset semantics.
+    // CODE_REVIEW -> PLAN: full reset with verdict artifact
     if (nextAction === "PLAN") {
       clearCache(ctx.dir);
       ctx.writeState({
         reviews: { plan: [], code: [] },
         lensReviewHistory: [],
         ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk: undefined } : ctx.state.ticket,
+        lastReviewVerdict: tier1Verdict,
+        currentReviewStartedAt: null,
       });
 
       ctx.appendEvent("code_review", {
@@ -185,6 +229,8 @@ export class CodeReviewStage implements WorkflowStage {
     // Normal transitions + T-181 lens history (single atomic write)
     const stateUpdate: Record<string, unknown> = {
       reviews: { ...ctx.state.reviews, code: codeReviews },
+      lastReviewVerdict: tier1Verdict,
+      currentReviewStartedAt: null,
     };
     if (reviewerBackend === "lenses" && findings.length > 0) {
       const updated = buildLensHistoryUpdate(
@@ -196,6 +242,8 @@ export class CodeReviewStage implements WorkflowStage {
       if (updated) stateUpdate.lensReviewHistory = updated;
     }
     ctx.writeState(stateUpdate);
+
+    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: ctx.writeState.bind(ctx) });
 
     ctx.appendEvent("code_review", {
       round: roundNum,
@@ -216,7 +264,7 @@ export class CodeReviewStage implements WorkflowStage {
     if (nextAction === "FINALIZE") {
       // T-135: Review mode exits after code review approval
       if (ctx.state.mode === "review") {
-        ctx.writeState({
+        ctx.finalizeSession({
           status: "completed" as const,
           terminationReason: "normal" as const,
         });

@@ -65,6 +65,12 @@ export function runSecretsGate(
     }
   }
 
+  // T-253: build one EvidenceItem per redacted file. File/line stay null so
+  // `enforceLocationInvariant` passes trivially (producer-array path with
+  // null legacy components). T-255 exempts the
+  // (lens="orchestrator", category="hardcoded-secrets") pair from
+  // substring/line verification because the redacted placeholder cannot be
+  // matched against the pre-redaction snapshot.
   const metaFinding: LensFinding | null = secretsFound
     ? {
         lens: "orchestrator",
@@ -76,7 +82,12 @@ export function runSecretsGate(
           "Detected potential secrets in diff. Lines redacted before passing to review lenses.",
         file: null,
         line: null,
-        evidence: `Files with detected secrets: ${Array.from(redactedLines.keys()).join(", ")}`,
+        evidence: Array.from(redactedLines.keys()).map((filePath) => ({
+          file: filePath,
+          startLine: 1,
+          endLine: 1,
+          code: "[REDACTED -- potential secret]",
+        })),
         suggestedFix: "Remove secrets from source code. Use environment variables or a secrets manager.",
         confidence: 0.9,
         assumptions: null,

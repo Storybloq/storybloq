@@ -242,8 +242,9 @@ describe("inbox-watcher", () => {
 
     // Write an event after the second start to verify it's functional
     await writeEvent(inboxPath, "pause_session", {}, "2026-04-05T10:00:00.000Z");
-    // Give the fs watcher a moment to trigger
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // ISS-444: Increase timeout from 300ms to 1000ms to avoid flaky failures
+    // when FSWatcher is slow to process under CI load.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // The event should be processed by the second watcher
     const remaining = await readdir(inboxPath);

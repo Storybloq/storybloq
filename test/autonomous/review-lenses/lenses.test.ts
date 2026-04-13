@@ -60,7 +60,7 @@ describe("lens prompt builders", () => {
     const vars = {
       ...baseVars,
       lensName: "security",
-      lensVersion: "security-v1",
+      lensVersion: "security-v2",
       scannerFindings: "CVE-2024-1234: lodash prototype pollution",
     };
     const prompt = buildLensPrompt("security", "CODE_REVIEW", vars);
@@ -71,7 +71,7 @@ describe("lens prompt builders", () => {
     const vars = {
       ...baseVars,
       lensName: "performance",
-      lensVersion: "performance-v1",
+      lensVersion: "performance-v2",
       hotPaths: "src/engine/**, src/billing/**",
     };
     const prompt = buildLensPrompt("performance", "CODE_REVIEW", vars);
@@ -90,7 +90,7 @@ describe("lens prompt builders", () => {
         const vars = {
           ...baseVars,
           lensName: lens,
-          lensVersion: `${lens}-v1`,
+          lensVersion: `${lens}-v2`,
           reviewStage: stage,
           artifactType: (stage === "CODE_REVIEW" ? "diff" : "plan") as "diff" | "plan",
           scannerFindings: "",
@@ -103,11 +103,114 @@ describe("lens prompt builders", () => {
     }
   });
 
+  // ── T-256: Evidence contract & version v2 ──────────────────────
+
+  for (const lens of ALL_LENSES) {
+    it(`${lens} version is v2`, () => {
+      expect(getLensVersion(lens)).toBe(`${lens}-v2`);
+    });
+  }
+
+  for (const lens of ALL_LENSES) {
+    it(`${lens} CODE_REVIEW prompt contains strict evidence contract`, () => {
+      const vars = {
+        ...baseVars,
+        lensName: lens,
+        lensVersion: getLensVersion(lens),
+        reviewStage: "CODE_REVIEW" as const,
+        artifactType: "diff" as const,
+        scannerFindings: "",
+        hotPaths: "",
+      };
+      const prompt = buildLensPrompt(lens, "CODE_REVIEW", vars);
+      expect(prompt).toContain("## Evidence contract");
+      expect(prompt).toContain("verification gate");
+      expect(prompt).toContain("## Finding shape");
+    });
+
+    it(`${lens} PLAN_REVIEW prompt contains best-effort evidence contract`, () => {
+      const vars = {
+        ...baseVars,
+        lensName: lens,
+        lensVersion: getLensVersion(lens),
+        reviewStage: "PLAN_REVIEW" as const,
+        artifactType: "plan" as const,
+        scannerFindings: "",
+        hotPaths: "",
+      };
+      const prompt = buildLensPrompt(lens, "PLAN_REVIEW", vars);
+      expect(prompt).toContain("## Evidence contract");
+      expect(prompt).toContain("best-effort");
+      expect(prompt).not.toContain("verification gate");
+      expect(prompt).toContain("## Finding shape");
+    });
+  }
+
+  const lensesWithSpecificEvidence: LensName[] = [
+    "security",
+    "concurrency",
+    "error-handling",
+    "test-quality",
+    "performance",
+    "clean-code",
+    "api-design",
+    "accessibility",
+  ];
+  for (const lens of lensesWithSpecificEvidence) {
+    it(`${lens} CODE_REVIEW has lens-specific evidence section`, () => {
+      const vars = {
+        ...baseVars,
+        lensName: lens,
+        lensVersion: getLensVersion(lens),
+        reviewStage: "CODE_REVIEW" as const,
+        artifactType: "diff" as const,
+        scannerFindings: "",
+        hotPaths: "",
+      };
+      const prompt = buildLensPrompt(lens, "CODE_REVIEW", vars);
+      expect(prompt).toContain(`Evidence for ${lens}`);
+    });
+  }
+
+  it("finding shape includes lens and lensVersion fields", () => {
+    const vars = {
+      ...baseVars,
+      lensName: "security",
+      lensVersion: "security-v2",
+      reviewStage: "CODE_REVIEW" as const,
+      artifactType: "diff" as const,
+    };
+    const prompt = buildLensPrompt("security", "CODE_REVIEW", vars);
+    expect(prompt).toContain('"lens": "security"');
+    expect(prompt).toContain('"lensVersion": "security-v2"');
+  });
+
+  it("PLAN_REVIEW evidence contract documents plan/<ticket-id> placeholder", () => {
+    const vars = {
+      ...baseVars,
+      reviewStage: "PLAN_REVIEW" as const,
+      artifactType: "plan" as const,
+    };
+    const prompt = buildLensPrompt("clean-code", "PLAN_REVIEW", vars);
+    expect(prompt).toContain("plan/<ticket-id>");
+    expect(prompt).toContain("plan/T-100");
+  });
+
+  it("evidence contract prohibits diff prefixes", () => {
+    const vars = {
+      ...baseVars,
+      reviewStage: "CODE_REVIEW" as const,
+      artifactType: "diff" as const,
+    };
+    const prompt = buildLensPrompt("clean-code", "CODE_REVIEW", vars);
+    expect(prompt).toMatch(/[Dd]o NOT use diff prefixes/);
+  });
+
   it("security prompt handles empty scannerFindings without outputting 'undefined'", () => {
     const vars = {
       ...baseVars,
       lensName: "security",
-      lensVersion: "security-v1",
+      lensVersion: "security-v2",
       scannerFindings: undefined as unknown as string,
     };
     const prompt = buildLensPrompt("security", "CODE_REVIEW", vars);

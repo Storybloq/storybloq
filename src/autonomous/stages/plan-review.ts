@@ -2,6 +2,8 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { requiredRounds, nextReviewer } from "../review-depth.js";
+import { accumulateVerificationCounters } from "../review-lenses/verification-log.js";
+import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, type ReviewVerdictArtifact } from "../review-verdict.js";
 
 /**
  * PLAN_REVIEW stage — independent reviewer evaluates the plan.
@@ -20,6 +22,10 @@ export class PlanReviewStage implements WorkflowStage {
     const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const risk = ctx.state.ticket?.risk ?? "low";
     const minRounds = requiredRounds(risk as "low" | "medium" | "high");
+
+    if (!ctx.state.currentReviewStartedAt) {
+      ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
+    }
 
     // Lenses backend: multi-lens parallel plan review
     if (reviewer === "lenses") {
@@ -120,6 +126,45 @@ export class PlanReviewStage implements WorkflowStage {
       return { action: "retry", instruction: "Contradictory review payload: verdict is 'approve' but critical/major findings are present. Re-run the review or correct the verdict." };
     }
 
+    // T-263: Build and write review verdict artifact
+    const target = ctx.state.ticket?.id ?? "unknown";
+    const criticalCount = findings.filter((f) => f.severity === "critical").length;
+    const majorCount = findings.filter((f) => f.severity === "major").length;
+    const minorCount = findings.filter((f) => f.severity === "minor").length;
+    const suggestionCount = findings.filter((f) => f.severity === "suggestion").length;
+    const startedAt = ctx.state.currentReviewStartedAt;
+    const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
+    const durationMs = Number.isFinite(startedMs) ? Math.max(0, Date.now() - startedMs) : 0;
+    const summary = report.notes || `Plan review ${verdict}: ${findings.length} finding(s) (${criticalCount} critical, ${majorCount} major)`;
+    const artifact: ReviewVerdictArtifact = {
+      target,
+      stage: "plan",
+      round: roundNum,
+      reviewer: reviewerBackend,
+      verdict,
+      findingsCount: findings.length,
+      severityCounts: { critical: criticalCount, major: majorCount, minor: minorCount, suggestion: suggestionCount },
+      startedAt: startedAt ?? new Date().toISOString(),
+      durationMs,
+      summary,
+      findings,
+      timestamp: new Date().toISOString(),
+    };
+    const writeResult = writeReviewVerdict(ctx.dir, artifact);
+
+    if (writeResult.status === "skipped") {
+      return { action: "retry", instruction: "Review artifact write failed (lock contention or I/O error). Re-report your review verdict." };
+    }
+
+    let tier1Verdict = buildTier1Verdict(artifact);
+    if (writeResult.status === "exists") {
+      const recovered = readReviewVerdict(ctx.dir, writeResult.contentHash);
+      if (!recovered) {
+        return { action: "retry", instruction: "Review artifact recovery failed (content mismatch). Re-report your review verdict." };
+      }
+      tier1Verdict = buildTier1Verdict(recovered);
+    }
+
     // ISS-035: explicit verdict routing
     const isRevise = verdict === "revise" || verdict === "request_changes";
     const isReject = verdict === "reject";
@@ -128,7 +173,7 @@ export class PlanReviewStage implements WorkflowStage {
     if (isReject) {
       nextAction = "PLAN";
     } else if (isRevise) {
-      // ISS-048: Revise stays in PLAN_REVIEW — agent already fixed inline, just re-review
+      // ISS-048: Revise stays in PLAN_REVIEW -- agent already fixed inline, just re-review
       nextAction = "PLAN_REVIEW";
     } else if (verdict === "approve" || (!hasCriticalOrMajor && roundNum >= minRounds)) {
       nextAction = "IMPLEMENT";
@@ -146,6 +191,8 @@ export class PlanReviewStage implements WorkflowStage {
     // T-181: lens history merged into single atomic write
     const stateUpdate: Record<string, unknown> = {
       reviews: reviewsForWrite,
+      lastReviewVerdict: tier1Verdict,
+      currentReviewStartedAt: null,
     };
     if (reviewerBackend === "lenses" && findings.length > 0) {
       const updated = buildLensHistoryUpdate(
@@ -157,6 +204,8 @@ export class PlanReviewStage implements WorkflowStage {
       if (updated) stateUpdate.lensReviewHistory = updated;
     }
     ctx.writeState(stateUpdate);
+
+    accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: ctx.writeState.bind(ctx) });
 
     ctx.appendEvent("plan_review", {
       round: roundNum,
@@ -196,7 +245,7 @@ export class PlanReviewStage implements WorkflowStage {
     if (nextAction === "IMPLEMENT") {
       // T-135: Plan mode exits after plan review approval
       if (ctx.state.mode === "plan") {
-        ctx.writeState({
+        ctx.finalizeSession({
           status: "completed" as const,
           terminationReason: "normal" as const,
         });

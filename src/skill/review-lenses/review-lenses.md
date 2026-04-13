@@ -109,6 +109,7 @@ Call `claudestory_review_lenses_judge` with:
 ```json
 {
   "mergerResultRaw": "<raw JSON from merger agent>",
+  "sourceFindings": "<validatedFindings array from the synthesize step>",
   "lensesCompleted": ["clean-code", "security", "error-handling"],
   "lensesFailed": [],
   "lensesInsufficientContext": [],
@@ -118,6 +119,8 @@ Call `claudestory_review_lenses_judge` with:
   ]
 }
 ```
+
+Pass `validatedFindings` from the synthesize step as `sourceFindings`. The tool uses it to restore validator-owned evidence markers the merger LLM may have dropped (CDX-13).
 
 The tool returns `judgePrompt` with verdict calibration rules and convergence guidance.
 

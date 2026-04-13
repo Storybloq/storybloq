@@ -62,7 +62,7 @@ export function reduceHealthState(probes: ProbeSnapshot): HealthState {
     alive === true &&
     notEnded === true &&
     mcpResponsive === true &&
-    guideAdvancing === true &&
+    guideAdvancing !== false &&
     subprocessAlive !== false &&
     dialogClear !== false &&
     binaryFresh !== false
@@ -86,11 +86,11 @@ export function reduceHealthState(probes: ProbeSnapshot): HealthState {
     return "zombie";
   }
 
-  // stalled: mcp responsive but nothing else moving
+  // stalled: mcp responsive but guide confirmed not advancing (null = unknown, not stalled)
   if (
     mcpResponsive === true &&
     subprocessAlive !== true &&
-    guideAdvancing !== true
+    guideAdvancing === false
   ) {
     return "stalled";
   }
@@ -98,8 +98,9 @@ export function reduceHealthState(probes: ProbeSnapshot): HealthState {
   // waiting-on-dialog: explicit false (not null)
   if (dialogClear === false) return "waiting-on-dialog";
 
-  // telemetry-stale: binary drifted (explicit false)
-  if (binaryFresh === false) return "telemetry-stale";
+  // telemetry-stale: binary drifted AND no other active signals
+  // If MCP is responsive or subprocess alive, the session is working despite binary drift
+  if (binaryFresh === false && mcpResponsive !== true && subprocessAlive !== true) return "telemetry-stale";
 
   // waiting-on-build: subprocess running but guide not advancing
   if (subprocessAlive === true && guideAdvancing !== true) return "waiting-on-build";

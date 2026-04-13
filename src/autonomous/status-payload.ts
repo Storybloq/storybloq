@@ -26,7 +26,10 @@ export function buildActivePayload(
     claudeStatus: deriveClaudeStatus(session.state, session.waitingForRetry),
     observedAt: new Date().toISOString(),
     lastGuideCall: session.lastGuideCall ?? null,
-    completedThisSession: session.completedTickets?.map((t) => t.id) ?? [],
+    completedThisSession: [
+      ...(session.completedTickets?.map((t) => t.id) ?? []),
+      ...(session.resolvedIssues ?? []),
+    ],
     contextPressure: session.contextPressure?.level ?? "unknown",
     branch: session.git?.branch ?? null,
     source: "hook",

@@ -117,6 +117,7 @@ export interface SessionState {
   };
   readonly currentIssue?: CurrentIssueRef | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string }>;
+  readonly resolvedIssues?: ReadonlyArray<string>;
   readonly contextPressure?: {
     readonly level: string;
   };

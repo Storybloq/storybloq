@@ -34,6 +34,7 @@ import {
 } from "../../src/autonomous/session.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { writeResumeMarker } from "../../src/autonomous/resume-marker.js";
+import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 const mockedGitHead = vi.mocked(gitHead);
 const mockedGitIsAncestor = vi.mocked(gitIsAncestor);
@@ -102,6 +103,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  killSidecarsInRoot(root);
   await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   vi.restoreAllMocks();
 });

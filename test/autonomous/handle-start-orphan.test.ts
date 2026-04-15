@@ -24,6 +24,7 @@ import {
   writeSessionSync,
 } from "../../src/autonomous/session.js";
 import { deriveWorkspaceId, type FullSessionState } from "../../src/autonomous/session-types.js";
+import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
@@ -286,6 +287,7 @@ afterEach(() => {
   process.stderr.write = originalStderrWrite;
   while (createdRoots.length) {
     const dir = createdRoots.pop()!;
+    killSidecarsInRoot(dir);
     rmSync(dir, { recursive: true, force: true });
   }
   vi.restoreAllMocks();

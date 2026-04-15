@@ -33,6 +33,7 @@ import {
   prepareForCompact,
 } from "../../src/autonomous/session.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
+import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 const mockedGitHead = vi.mocked(gitHead);
 const mockedGitIsAncestor = vi.mocked(gitIsAncestor);
@@ -95,6 +96,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  killSidecarsInRoot(root);
   rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
 });

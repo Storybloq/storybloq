@@ -7,6 +7,25 @@ description: Track tickets, issues, and progress for your project. Load project 
 
 claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` directory so every AI coding session builds on the last instead of starting from zero.
 
+## Step 0.5: Active session guard (runs BEFORE argument routing)
+
+This guard runs on EVERY `/story` invocation regardless of subcommand (`/story`, `/story auto`, `/story review`, `/story plan`, `/story guided`, `/story handover`, `/story snapshot`, `/story export`, `/story design`, `/story review-lenses`, `/story settings`, `/story help`, `/story status`, etc.). It MUST complete before ANY other action in this invocation.
+
+**Whitelist semantics (not blacklist).** While the guard is unresolved, the ONLY actions permitted are: (a) the guard's own `claudestory_status` call as defined in step 1 below, (b) reading the surfaced session metadata, and (c) the guard's `AskUserQuestion` flow. NO other MCP call, file write, file read, or skill-file dispatch is permitted -- this includes `claudestory_handover_create`, `claudestory_snapshot`, `claudestory_export`, `claudestory_ticket_create`, `claudestory_ticket_update`, `claudestory_issue_*`, `claudestory_note_*`, `claudestory_autonomous_guide` with any action other than the user-authorized `resume` / `cancel`, and any read or write inside `.story/sessions/<active-sessionId>/`. Subcommand-specific dispatch (to `autonomous-mode.md`, `design/design.md`, `review-lenses/review-lenses.md`, `setup-flow.md`, `reference.md`, etc.) is also blocked. The guard is a hard gate, not a soft warning.
+
+1. Call `claudestory_status` once. If the output contains a `## Active Sessions` heading, OR any subsequent guide call in this invocation fails with an "existing session" / "resumable session" error, you must STOP and surface the situation to the user:
+   - Extract for each surfaced session: the **full `sessionId`** (required for every guide call), plus state, mode, and ticket (if any). Derive the displayed token `<T>` from the full `sessionId` per the Step 3 definition. If `claudestory_status` exposes only a truncated/rendered ID and no way to recover the full `sessionId` for a surfaced session (and the guide-error fallback in Step 3 also does not name a full `sessionId`), STOP. Do NOT offer Resume or Cancel. Tell the user: "A session appears to be active but its full `sessionId` cannot be recovered from the skill's tools. Please inspect `.story/sessions/` or run `claudestory session list` before retrying."
+   - Render one **Active Autonomous Session** block per session (format defined in Step 3).
+   - End with the session-aware `AskUserQuestion` defined in Step 3.
+   - Until the user chooses, no other action is permitted (see whitelist semantics above).
+   - Do NOT write any file under `.story/sessions/<active-sessionId>/`. That directory is owned by the running instance and any cross-instance write races with the owner.
+
+2. If there are no active sessions AND no subsequent "existing/resumable session" errors from any MCP call in this invocation, proceed to the "How to Handle Arguments" routing table and the rest of the normal flow. Reuse the `claudestory_status` response from this step when Step 2 asks for it; do NOT call `claudestory_status` again in the same invocation **except** in the Step 3 guide-error augmentation path explicitly described there.
+
+3. **Re-trigger rule for `start`.** Any later `claudestory_autonomous_guide` call with `action: "start"` in the SAME `/story` invocation MUST re-run Step 0.5 from the top first, regardless of any prior user choices in this invocation. The guard's prior resolution authorizes only the specific Resume/Cancel/Other branch chosen at that moment; it never authorizes starting a new autonomous session later.
+
+This guard has precedence over every "do not ask the user" rule elsewhere in this skill file and in `autonomous-mode.md`. Foreign-session resume or cancel ALWAYS requires explicit user confirmation through `AskUserQuestion`.
+
 ## How to Handle Arguments
 
 `/story` is one smart command. Parse the user's intent from context:
@@ -87,6 +106,18 @@ After `claudestory_status` returns, check in order:
 
 After loading context, present a summary with two parts: a conversational intro (2-3 sentences catching the user up), then structured tables showing actionable data.
 
+**IF Step 0.5 surfaced any active session, see the "Active session variant" at the end of this section -- it REPLACES the normal summary. Do NOT render Ready to Work, Decisions Pending, Open Issues, Key Rules, or the First session guide in that case.**
+
+**Session token definition.** Throughout this section and in `autonomous-mode.md`, the symbol `<T>` (or `<T1>`, `<T2>`, ...) refers to the **session token**: the shortest prefix of a session's full `sessionId` that is unique among all sessions surfaced by the current guard invocation. Start with `min(8, len(sessionId))` characters; if any two surfaced sessions share that same prefix, extend the displayed prefix for ALL sessions in this invocation until every token is distinct. The full `sessionId` always satisfies uniqueness and is the ultimate fallback.
+
+All guide calls (`action: "resume"`, `action: "cancel"`) MUST pass the full `sessionId`, not `<T>`. The token exists so the user can type a short readable confirmation; the agent resolves the token back to the full `sessionId` by matching it against the surfaced session list before calling the guide.
+
+If the guard fired via a guide error path, apply these rules in order:
+
+1. If the error names exactly ONE blocking full `sessionId`, use that full `sessionId` directly as the sole session token and render `Resume <full-sessionId>` / `Cancel <full-sessionId>` from the error. Do NOT depend on `claudestory_status` for this path -- the blocking session may be stale or resumable and absent from the status scan while still being what the guide error refers to.
+2. Optionally, re-call `claudestory_status` to augment the banner with state/ticket/mode details. If the status response includes the same sessionId, use the enriched info for the banner; if not, render the banner with only the sessionId and the error's description.
+3. If the error does NOT name a resolvable full `sessionId` AND `claudestory_status` returns no matching session, STOP. Do NOT offer any Resume or Cancel action in that state. Tell the user: "A session appears to block this action but cannot be safely identified. Please inspect `.story/sessions/` or run `claudestory session list` before retrying."
+
 **Part 1: Conversational intro (2-3 sentences)**
 
 Open with the project name and progress. Mention what the last session accomplished in one sentence. Note anything important (no git repo, open issues, blockers). Keep it brief -- the tables carry the detail.
@@ -154,6 +185,60 @@ End with `AskUserQuestion`:
 - (Other always available for free-text input)
 
 Autonomous mode is last -- most users want to collaborate, not hand off control.
+
+**Active session variant (REPLACES the normal summary when Step 0.5 surfaced any active session):**
+
+Render ONLY:
+
+1. The conversational intro (2-3 sentences). Do NOT reference Ready to Work or recommend a ticket.
+2. One Active Autonomous Session banner per surfaced session, in this format:
+
+```
+## Active Autonomous Session
+Session `<T>` is running in <state> state, ticket <ticketId>: <title> (or "no ticket").
+```
+
+   (Where `<T>` is the session token defined at the top of Step 3.)
+
+3. The session-aware `AskUserQuestion` described below.
+
+Do NOT render Ready to Work, Decisions Pending, Open Issues, Key Rules, or the First session guide in this variant. If the user wants a specific non-session ticket, they will name it via the free-form "Other" option.
+
+**AskUserQuestion -- single active session** (let `<T>` = that session's token, typically 8 characters since the single-session case is always unique):
+
+- "Monitor -- read-only, don't interfere (Recommended)"
+  -> READ-ONLY PAUSE (no guide calls unless the nested follow-up question below selects Resume or Cancel). Re-render the Active Autonomous Session banner only. Do NOT show Ready to Work. Do NOT call the guide. Do NOT write to the session's directory. End with a follow-up `AskUserQuestion` whose options are exactly: "Resume `<T>`", "Cancel `<T>`", and "Back" (returns to the previous question without action). The guard remains in force on any subsequent `/story` invocation.
+- "Resume `<T>` -- take over (only safe if the owning instance is gone)"
+  -> call `claudestory_autonomous_guide` with `action: "resume"` and the full `sessionId` that `<T>` resolves to. The guide arbitrates the lease and will fail if another instance still holds it. This selection IS the explicit user authorization that `autonomous-mode.md`'s recovery instructions require FOR THAT SPECIFIC `sessionId` ONLY.
+- "Cancel `<T>` -- destructive"
+  -> Ask the user to type `cancel <T>` to confirm. **Match rules:** trim leading/trailing whitespace, then require an exact lowercase match of the literal string `cancel <T>` where `<T>` matches the displayed token character-for-character (case-sensitive). Any other input -- including `Cancel <T>`, `cancel  <T>` (extra whitespace inside), `cancel <full-sessionId>` when the displayed token was a prefix, or `back` -- aborts the cancel flow and returns to the guard's top-level question without calling the guide. On a matching confirmation, call the guide with `action: "cancel"` and the full `sessionId` that `<T>` resolves to. Only after the cancel succeeds may the agent proceed to normal `/story` flow.
+- (Other always available) -- user may type a specific ticket ID to work on. If they do:
+  - Treat the named ticket as explicitly user-chosen.
+  - Proceed with a **collaborative single-ticket flow**: read the ticket via `claudestory_ticket_get`, discuss, and work on it directly with the user in this session.
+  - Do NOT call `claudestory_autonomous_guide` with `action: "start"` as part of accepting this branch. Starting a new autonomous session while another is live defeats the guard. If the user later asks to "go autonomous on this ticket" mid-flow, the re-trigger rule in Step 0.5 item 3 applies: re-run Step 0.5 from the top before any `action: "start"` call.
+  - Do NOT write to any `.story/sessions/<active-sessionId>/` directory. Normal project-level writes (tickets, issues, code) are fine.
+  - Do NOT auto-pick or auto-suggest a ticket; act only on the name the user typed.
+
+**AskUserQuestion -- multiple active sessions** (tokens `<T1>`, `<T2>`, ... -- each token is the shortest prefix unique across this guard invocation):
+
+Render one banner per session, then ask a single `AskUserQuestion` with one Resume option and one Cancel option per session:
+
+- "Monitor -- read-only, don't interfere (Recommended)"
+  -> Same READ-ONLY PAUSE as the single-session case, but the nested follow-up question offers "Resume `<T1>`", "Cancel `<T1>`", "Resume `<T2>`", "Cancel `<T2>`", ..., "Back".
+- "Resume `<T1>`" / "Resume `<T2>`" / ...
+  -> Each targets exactly the named session; call the guide with `action: "resume"` and the full `sessionId` that the token resolves to. Authorization is scoped to that `sessionId` ONLY.
+- "Cancel `<T1>`" / "Cancel `<T2>`" / ...
+  -> Each targets exactly the named session. Require typed `cancel <Ti>` confirmation before calling `action: "cancel"` with the matching full `sessionId`. The same match rules apply as single-session Cancel (trim outer whitespace, exact lowercase match of `cancel <Ti>` with `<Ti>` matching its displayed token character-for-character; any deviation aborts without a guide call).
+- (Other) -- free-form. User may type a non-session ticket ID to work on. Same rules as the single-session "Other" branch: collaborative single-ticket flow, no new autonomous-session start as part of accepting this branch, no writes to any active-session directory. Any later `action: "start"` request triggers the Step 0.5 re-trigger rule (item 3).
+
+**Post-action behavior depends on the action type (Resume vs Cancel):**
+
+- After a successful `Resume <Ti>`: do NOT re-run Step 0.5 as a prerequisite to continuing INTO that resumed session. The user's selection authorizes that specific full `sessionId` **only for the duration of driving that resumed session**. Hand off to `autonomous-mode.md` and drive the resumed session through its normal pipeline. **Deterministic re-entry rules (apply in either branch):**
+  1. If a later guide call in the resumed flow surfaces a DIFFERENT blocking `sessionId` via the guide-error path, Step 0.5 re-fires immediately for that new session.
+  2. If the resumed session ends, completes, errors out, or otherwise yields control back to general `/story` flow in the same invocation -- AND/OR if the agent is asked to perform any non-resume action against this project (other tickets, snapshots, handovers, exports, settings, design, lenses, help, status, or starting a new autonomous session) -- re-run Step 0.5 from the top BEFORE acting. This is unconditional in BOTH the single-session and multi-session branches; do not guess whether other sessions still exist. Authorization for the just-resumed `sessionId` does not extend to anything else.
+- After a successful `Cancel <Ti>`: re-run Step 0.5 from the top before returning to normal `/story` flow. If other active or resumable sessions remain, stay in the Active session variant and render it again with the updated session list. Only proceed to the normal summary once Step 0.5 surfaces zero active sessions and zero guide-error paths.
+
+Never auto-select. Never skip the question. Never write to any active session's directory until one of these choices is made.
 
 ## Session Lifecycle
 

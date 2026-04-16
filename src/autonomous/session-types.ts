@@ -4,6 +4,15 @@ import { z } from "zod";
 /** Combined ticket + issue ID regex for targetWork validation. */
 export const TARGET_WORK_ID_REGEX = /^(T-\d+[a-z]?|ISS-\d+)$/;
 
+/**
+ * ISS-556: Canonical dispositions for lens-review findings.
+ * Used at the MCP input boundary AND in the persisted SessionStateSchema so
+ * the write and read paths enforce the same vocabulary. Adding a value here
+ * automatically widens both sides — no second file to update.
+ */
+export const LENS_FINDING_DISPOSITIONS = ["open", "addressed", "contested", "deferred"] as const;
+export type LensFindingDisposition = typeof LENS_FINDING_DISPOSITIONS[number];
+
 // ---------------------------------------------------------------------------
 // Workflow states from N-005 v5.1 state machine
 // ---------------------------------------------------------------------------
@@ -533,7 +542,7 @@ export const SessionStateSchema = z.object({
     lens: z.string(),
     category: z.string(),
     severity: z.string(),
-    disposition: z.enum(["open", "addressed", "contested", "deferred"]),
+    disposition: z.enum(LENS_FINDING_DISPOSITIONS),
     description: z.string(),
     dismissReason: z.string().optional(),
     timestamp: z.string(),

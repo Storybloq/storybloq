@@ -145,6 +145,78 @@ export function readSession(dir: string): FullSessionState | null {
   return result.data;
 }
 
+/**
+ * ISS-556: Like readSession but recovers from ONE specific corruption:
+ * lensReviewHistory entries whose `disposition` is outside the enum.
+ *
+ * Rationale: before the write-side fix, a single bad disposition value on
+ * disk wedged every subsequent readSession call. Historical metadata should
+ * not make a live session unreachable via MCP. Callers on MCP hot paths route
+ * through this helper; CLI/admin paths keep strict readSession so operators
+ * see corruption in diagnostic tools.
+ *
+ * Strict-parse failure on ANY other field (missing required field, null
+ * entry, wrong shape anywhere) still returns null. Recovery only triggers
+ * when EVERY zod issue points at `lensReviewHistory[N].disposition`.
+ * Does NOT mutate state.json; emits one warning line to stderr per recovery.
+ */
+export function readSessionResilient(dir: string): FullSessionState | null {
+  const path = statePath(dir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  const strict = SessionStateSchema.safeParse(parsed);
+  if (strict.success) return strict.data;
+
+  // Inspect zod issues: recover only if EVERY issue is specifically an
+  // "invalid enum value" at lensReviewHistory[<idx>].disposition. Any other
+  // failure (missing field, null/wrong type, unrelated path) → null. This
+  // prevents silent recovery when the corruption is structural rather than
+  // just an out-of-vocab enum string.
+  const badIndices = new Set<number>();
+  for (const issue of strict.error.issues) {
+    const p = issue.path;
+    const isDispositionPath =
+      p.length === 3 &&
+      p[0] === "lensReviewHistory" &&
+      typeof p[1] === "number" &&
+      p[2] === "disposition";
+    const isInvalidEnumValue = issue.code === "invalid_enum_value";
+    if (isDispositionPath && isInvalidEnumValue) {
+      badIndices.add(p[1] as number);
+    } else {
+      return null;
+    }
+  }
+  if (badIndices.size === 0) return null;
+
+  const candidate = parsed as Record<string, unknown>;
+  const history = Array.isArray(candidate.lensReviewHistory)
+    ? candidate.lensReviewHistory
+    : [];
+  const cleaned = history.filter((_, idx) => !badIndices.has(idx));
+  const retry = SessionStateSchema.safeParse({ ...candidate, lensReviewHistory: cleaned });
+  if (!retry.success) return null;
+
+  const dropped = badIndices.size;
+  process.stderr.write(
+    `[claudestory] readSessionResilient: dropped ${dropped} lensReviewHistory ` +
+      `entr${dropped === 1 ? "y" : "ies"} with invalid disposition in ${dir}\n`,
+  );
+  return retry.data;
+}
+
 /** Write session state atomically (write tmp, rename). Increments revision. Returns the written state. */
 export function writeSessionSync(dir: string, state: FullSessionState): FullSessionState {
   const path = statePath(dir);
@@ -323,7 +395,8 @@ export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
     const dir = join(sessDir, entry.name);
     // T-251: containment guard — reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    const session = readSession(dir);
+    // ISS-556: hot MCP path — tolerate historical lensReviewHistory disposition corruption.
+    const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
 
@@ -386,7 +459,8 @@ export function findStaleSessions(root: string): ActiveSessionInfo[] {
     const dir = join(sessDir, entry.name);
     // T-251: containment guard — reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    const session = readSession(dir);
+    // ISS-556: hot MCP path (handleStart supersede loop) — tolerate disposition corruption.
+    const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
     if (session.lease?.workspaceId && session.lease.workspaceId !== workspaceId) continue;
@@ -403,7 +477,10 @@ export function findStaleSessions(root: string): ActiveSessionInfo[] {
 export function findSessionById(root: string, sessionId: string): ActiveSessionInfo | null {
   const dir = sessionDir(root, sessionId);
   if (!existsSync(dir)) return null;
-  const state = readSession(dir);
+  // ISS-556: hot MCP path (all report/resume/cancel handlers) — must tolerate
+  // historical lensReviewHistory disposition corruption or the session
+  // appears "not reachable via MCP" and autonomous mode cannot progress.
+  const state = readSessionResilient(dir);
   if (!state) return null;
   return { state, dir };
 }
@@ -503,7 +580,8 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
     const dir = join(sessDir, entry.name);
     // T-251: containment guard — reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    const session = readSession(dir);
+    // ISS-556: hot MCP path (compact hook resume discovery) — tolerate disposition corruption.
+    const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
     if (!session.compactPending) continue;

@@ -7,8 +7,8 @@
 import { z } from "zod";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { TARGET_WORK_ID_REGEX } from "../autonomous/session-types.js";
-import { findActiveSessionMinimal, readSession, sessionDir, isLeaseExpired } from "../autonomous/session.js";
+import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS } from "../autonomous/session-types.js";
+import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 
 // ISS-407: Cache active session dir to avoid O(n) directory scan on every MCP call.
@@ -754,7 +754,9 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
   }, (args) => {
     try {
       const sDir = sessionDir(pinnedRoot, args.sessionId);
-      const session = readSession(sDir);
+      // ISS-556: resilient read — subprocess registration must not be wedged
+      // by historical lensReviewHistory disposition corruption.
+      const session = readSessionResilient(sDir);
       if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
       if (session.status !== "active") return { content: [{ type: "text" as const, text: `Error: session status is "${session.status}", not "active"` }], isError: true };
       if (isLeaseExpired(session)) return { content: [{ type: "text" as const, text: "Error: session lease has expired" }], isError: true };
@@ -784,7 +786,9 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
   }, (args) => {
     try {
       const sDir = sessionDir(pinnedRoot, args.sessionId);
-      const session = readSession(sDir);
+      // ISS-556: resilient read — cleanup must work even when the session's
+      // lensReviewHistory has historical disposition corruption.
+      const session = readSessionResilient(sDir);
       if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
 
       unregisterSubprocess(sDir, args.pid);
@@ -817,7 +821,10 @@ export function registerAllTools(server: McpServer, pinnedRoot: string): void {
           severity: z.string(),
           category: z.string(),
           description: z.string(),
-          disposition: z.string(),
+          // ISS-556: must match the enum persisted by SessionStateSchema.
+          // Without this, a single invalid value wedges readSession for the
+          // entire session.
+          disposition: z.enum(LENS_FINDING_DISPOSITIONS),
         })).optional().describe("Review findings"),
         reviewerSessionId: z.string().optional().describe("Codex session ID"),
         reviewer: z.string().optional().describe("Actual reviewer backend used (e.g. 'agent' when codex was unavailable)"),

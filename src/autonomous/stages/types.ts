@@ -1,6 +1,8 @@
-import type {
-  FullSessionState,
-  GuideReportInput,
+import {
+  LENS_FINDING_DISPOSITIONS,
+  type FullSessionState,
+  type GuideReportInput,
+  type LensFindingDisposition,
 } from "../session-types.js";
 import { writeSessionSync, appendEvent } from "../session.js";
 import { killSidecar, writeShutdownMarker } from "../liveness.js";
@@ -294,7 +296,12 @@ export function buildLensHistoryUpdate(
       lens: typeof (f as Record<string, unknown>).lens === "string" && (f as Record<string, unknown>).lens !== "" ? (f as Record<string, unknown>).lens as string : "unknown",
       category: f.category,
       severity: f.severity,
-      disposition: f.disposition ?? "open",
+      // ISS-556: normalize unknown/undefined dispositions to "open" so a
+      // non-MCP caller (test, future CLI path) cannot produce a state.json
+      // that fails strict SessionStateSchema parsing.
+      disposition: (LENS_FINDING_DISPOSITIONS as readonly string[]).includes(f.disposition ?? "")
+        ? (f.disposition as LensFindingDisposition)
+        : ("open" as LensFindingDisposition),
       description: f.description,
       timestamp: new Date().toISOString(),
     }))

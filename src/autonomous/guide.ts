@@ -27,6 +27,7 @@ import {
   findResumableSession,
   readEvents,
   readSession,
+  readSessionResilient,
   type ActiveSessionInfo,
 } from "./session.js";
 import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./orphan-detector.js";
@@ -313,9 +314,12 @@ async function recoverPendingMutation(
 
   // Conflict detected — marker cleared, no postMutation applied
   if (conflict) {
-    // Re-read the state we just wrote (with cleared marker)
-    const { readSession } = await import("./session.js");
-    return readSession(dir) ?? state;
+    // Re-read the state we just wrote (with cleared marker).
+    // ISS-556: this is called from handleAutonomousGuide — the exact function
+    // whose incident motivated this fix. Use resilient read so historical
+    // lensReviewHistory disposition corruption does not wedge the handler.
+    const { readSessionResilient } = await import("./session.js");
+    return readSessionResilient(dir) ?? state;
   }
 
   // Apply postMutation if present and session not already in target state
@@ -666,7 +670,10 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   }
   for (const stale of staleSessions) {
     if (autoSupersededIds.has(stale.state.sessionId)) continue;
-    const current = readSession(stale.dir);
+    // ISS-556: MCP-facing stale-session cleanup. A single peer session with
+    // historical lensReviewHistory disposition corruption must not block
+    // supersede — use resilient read.
+    const current = readSessionResilient(stale.dir);
     if (!current || current.status !== "active") continue;
     writeSessionAndRefresh(root, stale.dir, { ...current, status: "superseded" as const } as FullSessionState, "always");
     writeShutdownMarker(stale.dir);

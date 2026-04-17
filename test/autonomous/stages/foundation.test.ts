@@ -403,7 +403,8 @@ describe("resolveRecipe", () => {
     const recipe = resolveRecipe("nonexistent-recipe");
     expect(recipe.id).toBe("nonexistent-recipe");
     expect(recipe.pipeline).toContain("PICK_TICKET");
-    expect(recipe.defaults.maxTicketsPerSession).toBe(3);
+    // Default is 0 (unlimited); see DEFAULT_DEFAULTS in recipes/loader.ts.
+    expect(recipe.defaults.maxTicketsPerSession).toBe(0);
   });
 
   it("preserves recipe stages config", () => {

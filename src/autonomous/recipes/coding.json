@@ -16,7 +16,7 @@
   },
   "dirtyFileHandling": "block",
   "defaults": {
-    "maxTicketsPerSession": 5,
+    "maxTicketsPerSession": 0,
     "compactThreshold": "high",
     "reviewBackends": ["lenses", "codex", "agent"],
     "handoverInterval": 3

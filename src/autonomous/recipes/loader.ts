@@ -32,7 +32,10 @@ const DEFAULT_PIPELINE: readonly string[] = [
 ];
 
 const DEFAULT_DEFAULTS = {
-  maxTicketsPerSession: 3,
+  // 0 = unlimited. Autonomous mode will keep picking tickets until the
+  // explicit targetWork list is empty (targeted mode) or there is no
+  // unblocked work left (open-ended mode).
+  maxTicketsPerSession: 0,
   compactThreshold: "high" as const,
   reviewBackends: ["codex", "agent"] as readonly string[],
 };

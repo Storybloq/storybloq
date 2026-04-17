@@ -46,7 +46,7 @@ If none found (empty or near-empty directory) -> skip to **1c. New Project -- In
 
 Before diving into analysis, briefly introduce storybloq to the user:
 
-"Claude Story tracks your project's roadmap, tickets, issues, and session handovers in a `.story/` directory. Every Claude Code session starts by reading this context, so you never re-explain your project from scratch. Sessions build on each other: decisions, blockers, and lessons carry forward automatically. I'll analyze your project and propose a structure. You can adjust everything before I create anything."
+"Storybloq tracks your project's roadmap, tickets, issues, and session handovers in a `.story/` directory. Every Claude Code session starts by reading this context, so you never re-explain your project from scratch. Sessions build on each other: decisions, blockers, and lessons carry forward automatically. I'll analyze your project and propose a structure. You can adjust everything before I create anything."
 
 Keep it to 3-4 sentences. Not a sales pitch, just enough that the user knows what they're opting into and that they're in control.
 

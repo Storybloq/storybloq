@@ -1,7 +1,7 @@
 # Session Priming Comparison: MCP vs Manual File Reading
 
 **Date:** 2026-03-21
-**Project:** claudestory (82 leaf tickets, 20 handovers, 9 issues, 10 phases)
+**Project:** storybloq (82 leaf tickets, 20 handovers, 9 issues, 10 phases)
 **Claude Code:** v2.1.81, Opus 4.6 (1M context)
 
 ---
@@ -109,9 +109,9 @@ The gap isn't in the tools — it's in the **orchestration**. A Claude Code skil
 ## Proposed Solution: Claude Code Skill
 
 A `/prime` skill that:
-1. Calls `claudestory_status` (MCP) — project overview
-2. Calls `claudestory_recap` (MCP) — session diff + suggested actions
-3. Calls `claudestory_handover_latest` (MCP) — latest session context
+1. Calls `storybloq_status` (MCP) — project overview
+2. Calls `storybloq_recap` (MCP) — session diff + suggested actions
+3. Calls `storybloq_handover_latest` (MCP) — latest session context
 4. Reads RULES.md — development constraints
 5. Reads WORK_STRATEGIES.md — lessons learned
 6. Runs `git log --oneline -10` — recent commits

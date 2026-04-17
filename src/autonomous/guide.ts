@@ -1229,7 +1229,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           "Do NOT ask the user for confirmation or approval.",
           "Do NOT stop or summarize between items -- call autonomous_guide IMMEDIATELY.",
           "You are in targeted auto mode -- work ONLY on the listed items.",
-          "NEVER cancel due to context size. Claude Story's hooks compact context automatically and preserve all session state.",
+          "NEVER cancel due to context size. Storybloq's hooks compact context automatically and preserve all session state.",
           ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
         ],
         transitionedFrom: "INIT",
@@ -1321,7 +1321,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         "Do NOT ask the user for confirmation or approval.",
         "Do NOT stop or summarize between tickets — call autonomous_guide IMMEDIATELY.",
         "You are in autonomous mode — continue working until done.",
-        "NEVER cancel due to context size. Claude Story's hooks compact context automatically and preserve all session state.",
+        "NEVER cancel due to context size. Storybloq's hooks compact context automatically and preserve all session state.",
         ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
       ],
       transitionedFrom: "INIT",
@@ -2246,7 +2246,7 @@ function guideResult(
   const allReminders = [...(opts.reminders ?? [])];
   if ((state.mode === "auto" || !state.mode) && currentState !== "SESSION_END") {
     allReminders.push(
-      "NEVER cancel this session due to context size. Compaction is automatic — Claude Story preserves all session state across compactions via hooks.",
+      "NEVER cancel this session due to context size. Compaction is automatic — Storybloq preserves all session state across compactions via hooks.",
     );
   }
 

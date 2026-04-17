@@ -38,7 +38,7 @@ Concretely, authorization is scoped per full `sessionId`. The UI displays a **se
 Run Claude Code with: `claude --model claude-opus-4-6 --dangerously-skip-permissions`
 
 - **Skip-permissions** enables unattended execution -- no approval prompts consuming context
-- **Claude Story handles compaction automatically** -- context preserved across compactions, do not cancel because context feels large
+- **Storybloq handles compaction automatically** -- context preserved across compactions, do not cancel because context feels large
 - Use only in **trusted repositories** -- skip-permissions disables safety prompts for all tool use
 
 **Precondition for the recovery bullets below:** Every recovery bullet below requires SKILL.md Step 0.5 authorization for the specific full `sessionId` it operates on. Authorization comes exclusively from the user selecting `Resume <T>` or `Cancel <T>` in the guard's `AskUserQuestion`, where `<T>` is the session token (SKILL.md Step 3 definition) that resolves to exactly that full `sessionId`. There is no implicit originator path -- a Claude Code instance cannot authorize itself based on a belief that it started the session, because that belief is not verifiable across restarts, compactions, or parallel instances. Authorization is scoped per full `sessionId`: authorizing resume for one `sessionId` does NOT authorize resume for any other `sessionId`. **Each bullet below restates this gate inline so post-compact re-reads cannot lose the chain-of-reasoning.**

@@ -1,13 +1,13 @@
-# claudestory
+# storybloq
 
 An agentic development framework. Track tickets, issues, and progress for your project in a `.story/` directory that AI tools read and write natively.
 
-**[claudestory.com](https://claudestory.com)** | **[Documentation](https://claudestory.com/cli)** | **[Privacy Policy](https://claudestory.com/privacy)**
+**[storybloq.com](https://storybloq.com)** | **[Documentation](https://storybloq.com/cli)** | **[Privacy Policy](https://storybloq.com/privacy)**
 
 ## Installation
 
 ```bash
-npm install -g @anthropologies/claudestory
+npm install -g @storybloq/storybloq
 ```
 
 Requires Node.js 20+.
@@ -16,16 +16,16 @@ Requires Node.js 20+.
 
 ```bash
 # Initialize in your project
-claudestory init --name "my-project"
+storybloq init --name "my-project"
 
 # See project state
-claudestory status
+storybloq status
 
 # What should I work on next?
-claudestory ticket next
+storybloq ticket next
 
 # Check for data integrity issues
-claudestory validate
+storybloq validate
 ```
 
 ## CLI Commands
@@ -36,59 +36,59 @@ All commands support `--format json|md` (default: `md`).
 
 | Command | Description |
 |---------|-------------|
-| `claudestory init [--name] [--force]` | Scaffold `.story/` directory |
-| `claudestory status` | Project summary with phase statuses |
-| `claudestory validate` | Reference integrity + schema checks |
+| `storybloq init [--name] [--force]` | Scaffold `.story/` directory |
+| `storybloq status` | Project summary with phase statuses |
+| `storybloq validate` | Reference integrity + schema checks |
 
 ### Phases
 
 | Command | Description |
 |---------|-------------|
-| `claudestory phase list` | All phases with derived status |
-| `claudestory phase current` | First non-complete phase |
-| `claudestory phase tickets --phase <id>` | Leaf tickets for a phase |
-| `claudestory phase create --id --name --label --description [--summary] --after/--at-start` | Create phase |
-| `claudestory phase rename <id> [--name] [--label] [--description] [--summary]` | Update phase metadata |
-| `claudestory phase move <id> --after/--at-start` | Reorder phase |
-| `claudestory phase delete <id> [--reassign <target>]` | Delete phase |
+| `storybloq phase list` | All phases with derived status |
+| `storybloq phase current` | First non-complete phase |
+| `storybloq phase tickets --phase <id>` | Leaf tickets for a phase |
+| `storybloq phase create --id --name --label --description [--summary] --after/--at-start` | Create phase |
+| `storybloq phase rename <id> [--name] [--label] [--description] [--summary]` | Update phase metadata |
+| `storybloq phase move <id> --after/--at-start` | Reorder phase |
+| `storybloq phase delete <id> [--reassign <target>]` | Delete phase |
 
 ### Tickets
 
 | Command | Description |
 |---------|-------------|
-| `claudestory ticket list [--status] [--phase] [--type]` | List leaf tickets |
-| `claudestory ticket get <id>` | Ticket detail |
-| `claudestory ticket next` | Highest-priority unblocked ticket |
-| `claudestory ticket blocked` | All blocked tickets |
-| `claudestory ticket create --title --type --phase [--description] [--blocked-by] [--parent-ticket]` | Create ticket |
-| `claudestory ticket update <id> [--status] [--title] [--phase] [--order] ...` | Update ticket |
-| `claudestory ticket delete <id> [--force]` | Delete ticket |
+| `storybloq ticket list [--status] [--phase] [--type]` | List leaf tickets |
+| `storybloq ticket get <id>` | Ticket detail |
+| `storybloq ticket next` | Highest-priority unblocked ticket |
+| `storybloq ticket blocked` | All blocked tickets |
+| `storybloq ticket create --title --type --phase [--description] [--blocked-by] [--parent-ticket]` | Create ticket |
+| `storybloq ticket update <id> [--status] [--title] [--phase] [--order] ...` | Update ticket |
+| `storybloq ticket delete <id> [--force]` | Delete ticket |
 
 ### Issues
 
 | Command | Description |
 |---------|-------------|
-| `claudestory issue list [--status] [--severity]` | List issues |
-| `claudestory issue get <id>` | Issue detail |
-| `claudestory issue create --title --severity --impact [--components] [--related-tickets] [--location]` | Create issue |
-| `claudestory issue update <id> [--status] [--title] [--severity] ...` | Update issue |
-| `claudestory issue delete <id>` | Delete issue |
+| `storybloq issue list [--status] [--severity]` | List issues |
+| `storybloq issue get <id>` | Issue detail |
+| `storybloq issue create --title --severity --impact [--components] [--related-tickets] [--location]` | Create issue |
+| `storybloq issue update <id> [--status] [--title] [--severity] ...` | Update issue |
+| `storybloq issue delete <id>` | Delete issue |
 
 ### Handovers
 
 | Command | Description |
 |---------|-------------|
-| `claudestory handover list` | List handover filenames (newest first) |
-| `claudestory handover latest` | Content of most recent handover |
-| `claudestory handover get <filename>` | Content of specific handover |
+| `storybloq handover list` | List handover filenames (newest first) |
+| `storybloq handover latest` | Content of most recent handover |
+| `storybloq handover get <filename>` | Content of specific handover |
 
 ### Blockers
 
 | Command | Description |
 |---------|-------------|
-| `claudestory blocker list` | List all blockers with dates |
-| `claudestory blocker add --name [--note]` | Add a blocker |
-| `claudestory blocker clear <name> [--note]` | Clear an active blocker |
+| `storybloq blocker list` | List all blockers with dates |
+| `storybloq blocker add --name [--note]` | Add a blocker |
+| `storybloq blocker clear <name> [--note]` | Clear an active blocker |
 
 ## MCP Server
 
@@ -97,8 +97,8 @@ The MCP server provides 19 tools for Claude Code integration. It imports the sam
 ### Setup with Claude Code
 
 ```bash
-npm install -g @anthropologies/claudestory
-claude mcp add claudestory -s user -- claudestory --mcp
+npm install -g @storybloq/storybloq
+claude mcp add storybloq -s user -- storybloq --mcp
 ```
 
 Two commands: install globally, register as MCP server. Works in every project that has a `.story/` directory. The MCP server auto-discovers the project root by walking up from the working directory.
@@ -107,24 +107,24 @@ Two commands: install globally, register as MCP server. Works in every project t
 
 | Tool | Description |
 |------|-------------|
-| `claudestory_status` | Project summary |
-| `claudestory_phase_list` | All phases with status |
-| `claudestory_phase_current` | Current phase |
-| `claudestory_phase_tickets` | Tickets for a phase |
-| `claudestory_ticket_list` | List tickets (filterable) |
-| `claudestory_ticket_get` | Get ticket by ID |
-| `claudestory_ticket_next` | Priority ticket |
-| `claudestory_ticket_blocked` | Blocked tickets |
-| `claudestory_issue_list` | List issues (filterable) |
-| `claudestory_issue_get` | Get issue by ID |
-| `claudestory_handover_list` | List handovers |
-| `claudestory_handover_latest` | Latest handover |
-| `claudestory_handover_get` | Specific handover |
-| `claudestory_blocker_list` | List blockers |
-| `claudestory_validate` | Integrity checks |
-| `claudestory_recap` | Session diff + suggested actions |
-| `claudestory_snapshot` | Save state for session diffs |
-| `claudestory_export` | Self-contained project document |
+| `storybloq_status` | Project summary |
+| `storybloq_phase_list` | All phases with status |
+| `storybloq_phase_current` | Current phase |
+| `storybloq_phase_tickets` | Tickets for a phase |
+| `storybloq_ticket_list` | List tickets (filterable) |
+| `storybloq_ticket_get` | Get ticket by ID |
+| `storybloq_ticket_next` | Priority ticket |
+| `storybloq_ticket_blocked` | Blocked tickets |
+| `storybloq_issue_list` | List issues (filterable) |
+| `storybloq_issue_get` | Get issue by ID |
+| `storybloq_handover_list` | List handovers |
+| `storybloq_handover_latest` | Latest handover |
+| `storybloq_handover_get` | Specific handover |
+| `storybloq_blocker_list` | List blockers |
+| `storybloq_validate` | Integrity checks |
+| `storybloq_recap` | Session diff + suggested actions |
+| `storybloq_snapshot` | Save state for session diffs |
+| `storybloq_export` | Self-contained project document |
 
 ## Session Lifecycle
 
@@ -134,14 +134,14 @@ Auto-inject project recap at session start — shows what changed since last sna
 
 ```bash
 #!/bin/bash
-claudestory recap --format md 2>/dev/null
+storybloq recap --format md 2>/dev/null
 ```
 
 ### PreCompact Hook (auto-snapshot)
 
-`setup-skill` configures a PreCompact hook that runs `claudestory snapshot --quiet` before context compaction. This ensures `recap` always shows changes since the last compaction — no manual snapshots needed.
+`setup-skill` configures a PreCompact hook that runs `storybloq snapshot --quiet` before context compaction. This ensures `recap` always shows changes since the last compaction — no manual snapshots needed.
 
-Installed automatically by `setup-skill`. To skip: `claudestory setup-skill --skip-hooks`.
+Installed automatically by `setup-skill`. To skip: `storybloq setup-skill --skip-hooks`.
 
 Manual configuration (add to `~/.claude/settings.json`):
 
@@ -154,7 +154,7 @@ Manual configuration (add to `~/.claude/settings.json`):
         "hooks": [
           {
             "type": "command",
-            "command": "claudestory snapshot --quiet"
+            "command": "storybloq snapshot --quiet"
           }
         ]
       }
@@ -168,7 +168,7 @@ Manual configuration (add to `~/.claude/settings.json`):
 Save a snapshot before ending your session so the next `recap` can show diffs:
 
 ```bash
-claudestory snapshot
+storybloq snapshot
 ```
 
 ### Export
@@ -176,15 +176,15 @@ claudestory snapshot
 Generate a self-contained document for sharing:
 
 ```bash
-claudestory export --phase p5b          # single phase
-claudestory export --all                # entire project
-claudestory export --all --format json  # structured JSON
+storybloq export --phase p5b          # single phase
+storybloq export --all                # entire project
+storybloq export --all --format json  # structured JSON
 ```
 
 ## Library Usage
 
 ```typescript
-import { loadProject, ProjectState } from "@anthropologies/claudestory";
+import { loadProject, ProjectState } from "@storybloq/storybloq";
 
 const { state, warnings } = await loadProject("/path/to/project");
 console.log(state.tickets.length); // all tickets

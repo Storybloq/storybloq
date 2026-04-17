@@ -11,7 +11,12 @@ claudestory tracks tickets, issues, roadmap, and handovers in a `.story/` direct
 
 This guard runs on EVERY `/story` invocation regardless of subcommand (`/story`, `/story auto`, `/story review`, `/story plan`, `/story guided`, `/story handover`, `/story snapshot`, `/story export`, `/story design`, `/story review-lenses`, `/story settings`, `/story help`, `/story status`, etc.). It MUST complete before ANY other action in this invocation.
 
-**Whitelist semantics (not blacklist).** While the guard is unresolved, the ONLY actions permitted are: (a) the guard's own `claudestory_status` call as defined in step 1 below, (b) reading the surfaced session metadata, and (c) the guard's `AskUserQuestion` flow. NO other MCP call, file write, file read, or skill-file dispatch is permitted -- this includes `claudestory_handover_create`, `claudestory_snapshot`, `claudestory_export`, `claudestory_ticket_create`, `claudestory_ticket_update`, `claudestory_issue_*`, `claudestory_note_*`, `claudestory_autonomous_guide` with any action other than the user-authorized `resume` / `cancel`, and any read or write inside `.story/sessions/<active-sessionId>/`. Subcommand-specific dispatch (to `autonomous-mode.md`, `design/design.md`, `review-lenses/review-lenses.md`, `setup-flow.md`, `reference.md`, etc.) is also blocked. The guard is a hard gate, not a soft warning.
+**Guard prelude: force-surface deferred MCP tools.** Before running step 1 of this guard, make a single `ToolSearch` call with `query: "claudestory"` (max_results: 20). On Claude Code desktop/web, `claudestory_*` tool schemas are deferred — without this prelude the subsequent `claudestory_status` call in step 1 is not dispatchable. The prelude is explicitly part of the guard, not a separate pre-guard step; it satisfies the whitelist below.
+
+- If `ToolSearch` itself is not available or returns an error on this harness, SKIP the prelude and continue to step 1. Do NOT treat a missing `ToolSearch` tool as evidence that MCP is unavailable — step 1's `claudestory_status` call will either succeed (MCP already surfaced) or its failure will route the skill to the Step 0 setup/CLI-fallback path below.
+- The prelude is idempotent: on terminal CLI sessions where `claudestory_*` tools are already in the base list, it simply returns the same tool set.
+
+**Whitelist semantics (not blacklist).** While the guard is unresolved, the ONLY actions permitted are: (a) the guard's `ToolSearch` prelude described above, (b) the guard's own `claudestory_status` call as defined in step 1 below, (c) reading the surfaced session metadata, and (d) the guard's `AskUserQuestion` flow. NO other MCP call, file write, file read, or skill-file dispatch is permitted -- this includes `claudestory_handover_create`, `claudestory_snapshot`, `claudestory_export`, `claudestory_ticket_create`, `claudestory_ticket_update`, `claudestory_issue_*`, `claudestory_note_*`, `claudestory_autonomous_guide` with any action other than the user-authorized `resume` / `cancel`, and any read or write inside `.story/sessions/<active-sessionId>/`. Subcommand-specific dispatch (to `autonomous-mode.md`, `design/design.md`, `review-lenses/review-lenses.md`, `setup-flow.md`, `reference.md`, etc.) is also blocked. The guard is a hard gate, not a soft warning.
 
 1. Call `claudestory_status` once. If the output contains a `## Active Sessions` heading, OR any subsequent guide call in this invocation fails with an "existing session" / "resumable session" error, you must STOP and surface the situation to the user:
    - Extract for each surfaced session: the **full `sessionId`** (required for every guide call), plus state, mode, and ticket (if any). Derive the displayed token `<T>` from the full `sessionId` per the Step 3 definition. If `claudestory_status` exposes only a truncated/rendered ID and no way to recover the full `sessionId` for a surfaced session (and the guide-error fallback in Step 3 also does not name a full `sessionId`), STOP. Do NOT offer Resume or Cancel. Tell the user: "A session appears to be active but its full `sessionId` cannot be recovered from the skill's tools. Please inspect `.story/sessions/` or run `claudestory session list` before retrying."
@@ -49,9 +54,13 @@ If the user's intent doesn't match any of these, use the full context load.
 
 ## Step 0: Check Setup
 
-Check if the claudestory MCP tools are available by looking for `claudestory_status` in your available tools.
+Check if the claudestory MCP tools are available.
 
-**If MCP tools ARE available** -> proceed to Step 1.
+**Deferred tools note (Claude Code app).** Claude Code desktop/web may register MCP tools at session start but defer exposing their full schemas to your tool list until you explicitly request them. A naive "look for `claudestory_status` in available tools" check fails on a cold session even when the MCP server is healthy and connected, routing the skill to the CLI fallback unnecessarily. The Step 0.5 guard prelude above (the `ToolSearch` call) has already force-surfaced any deferred tools by this point, so this step only needs to check the current tool list:
+
+1. **Check for claudestory MCP tools in your tool list.** If any `claudestory_*` tools (for example `claudestory_status`) are present, MCP is available -- proceed to Step 1.
+2. **If no `claudestory_*` tools are present**, try a second `ToolSearch` call with `query: "claudestory"` (max_results: 20) as a safety net in case the guard prelude was skipped or failed silently. If the response lists any `claudestory_*` tools, proceed to Step 1.
+3. **If `ToolSearch` is unavailable on this harness OR returned no matches**, MCP is genuinely unavailable -- continue with the setup/fallback path below. Missing `ToolSearch` is never by itself evidence that MCP is broken; it just means the harness exposes tools differently.
 
 **If MCP tools are NOT available:**
 

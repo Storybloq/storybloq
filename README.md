@@ -1,8 +1,31 @@
-# storybloq
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/logo.png" width="120" alt="Storybloq logo" />
+</p>
 
-Cross-session context persistence for AI coding. A file convention, a CLI, an MCP server, and a Claude Code skill that together turn every coding session into a building block instead of a reset.
+<h1 align="center">storybloq</h1>
 
-**[storybloq.com](https://storybloq.com)** · **[Mac app](https://storybloq.com/mac)** · **[Review lenses](https://github.com/Storybloq/lenses)** · **[Privacy](https://storybloq.com/privacy)**
+<p align="center">
+  <strong>Cross-session context persistence for AI coding.</strong><br />
+  A file convention, a CLI, an MCP server, and a Claude Code skill that together turn every coding session into a building block instead of a reset.
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@storybloq/storybloq"><img src="https://img.shields.io/npm/v/@storybloq/storybloq?color=333&label=npm" alt="npm version" /></a>
+  <a href="https://github.com/Storybloq/storybloq/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-PolyForm--NC%201.0-blue" alt="License" /></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A520-brightgreen" alt="Node" />
+  <img src="https://img.shields.io/badge/claude%20code-compatible-orange" alt="Claude Code compatible" />
+</p>
+
+<p align="center">
+  <a href="https://storybloq.com">storybloq.com</a> ·
+  <a href="https://storybloq.com/mac">Mac app</a> ·
+  <a href="https://github.com/Storybloq/lenses">Review lenses</a> ·
+  <a href="https://storybloq.com/privacy">Privacy</a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/hero.png" alt="Storybloq Mac app showing a live project sidebar alongside a Claude Code terminal" />
+</p>
 
 ---
 
@@ -75,6 +98,10 @@ That scaffolds:
 
 Commit everything except `.story/snapshots/`.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/board.png" alt="Ticket board showing phases, tickets, and in-progress work" />
+</p>
+
 ## Daily use
 
 Inside Claude Code:
@@ -85,6 +112,10 @@ Inside Claude Code:
 - **`/story handover`** - writes a session handover capturing decisions, blockers, and next steps.
 
 Outside Claude Code, the same state is one `storybloq` invocation away.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/autonomous.png" alt="Autonomous mode running a ticket through plan, implement, test, review" />
+</p>
 
 ## CLI reference
 
@@ -179,6 +210,10 @@ The server imports the same TypeScript modules as the CLI directly, so there's n
 `storybloq_review_lenses_prepare` · `storybloq_review_lenses_judge` · `storybloq_review_lenses_synthesize` orchestrate the multi-lens review loop (requires [@storybloq/lenses](https://github.com/Storybloq/lenses)).
 
 `storybloq_session_report` · `storybloq_register_subprocess` · `storybloq_unregister_subprocess` surface session health to the Mac app.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/handover.png" alt="Handover timeline with AI-summarized date groups" />
+</p>
 
 ## Hooks
 

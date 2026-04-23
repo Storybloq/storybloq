@@ -1,9 +1,36 @@
 import { mkdir, writeFile, readFile, readdir, copyFile, rm, rename, unlink } from "node:fs/promises";
 import { existsSync, accessSync, readdirSync, constants as fsConstants } from "node:fs";
-import { join, dirname, basename, delimiter as pathDelimiter } from "node:path";
+import { join, dirname, delimiter as pathDelimiter } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+import {
+  PRECOMPACT_SUBCOMMAND,
+  SESSIONSTART_SUBCOMMAND,
+  STOP_SUBCOMMAND,
+  STORYBLOQ_LEGACY_BASENAMES,
+  formatHookCommand,
+  migrateLegacyHookVariants,
+  parseHookCommand,
+  sweepLegacyHooks,
+  type HookEntry,
+  type MatcherGroup,
+} from "../../core/hook-migration.js";
+
+// Re-exported for external callers and test imports that still reach for
+// these symbols through setup-skill.
+export {
+  PRECOMPACT_SUBCOMMAND,
+  SESSIONSTART_SUBCOMMAND,
+  STOP_SUBCOMMAND,
+  STORYBLOQ_LEGACY_BASENAMES,
+  formatHookCommand,
+  migrateLegacyHookVariants,
+  parseHookCommand,
+  sweepLegacyHooks,
+};
+export type { HookEntry, MatcherGroup };
 
 function log(msg: string): void {
   process.stdout.write(msg + "\n");
@@ -80,10 +107,14 @@ export async function copyDirRecursive(srcDir: string, destDir: string): Promise
 // ---------------------------------------------------------------------------
 // Hook registration (ISS-032: hook-driven compaction)
 // ---------------------------------------------------------------------------
+//
+// Subcommand constants, STORYBLOQ_LEGACY_BASENAMES, formatHookCommand,
+// parseHookCommand, migrateLegacyHookVariants, and sweepLegacyHooks
+// live in `../../core/hook-migration.ts` and are re-exported above.
+//
+// Kept here: registerHook and its three hook-type wrappers, removeHook,
+// the legacy snapshot-command literal, and the binary resolver.
 
-const PRECOMPACT_SUBCOMMAND = "session compact-prepare";
-const SESSIONSTART_SUBCOMMAND = "session resume-prompt";
-const STOP_SUBCOMMAND = "hook-status";
 const LEGACY_PRECOMPACT_HOOK_COMMAND = "storybloq snapshot --quiet";
 
 // ---------------------------------------------------------------------------
@@ -185,80 +216,6 @@ function candidatePaths(): string[] {
     join(home, ".asdf", "shims", "storybloq"),
   );
   return list;
-}
-
-/**
- * Formats a hook command string: `<quotedBin> <subcommand>`.
- *
- * POSIX: single-quote-wraps binPath when it contains a space, tab, or shell
- * metachar, escaping inner `'` as `'\''`; returns as-is otherwise for
- * readability.
- *
- * Windows: always double-quote-wraps binPath and escapes embedded `"` as
- * `""`. Inside cmd.exe double quotes, `&|<>()^!` are not interpreted as
- * operators, so unconditional quoting covers every metachar without a
- * separate detection heuristic.
- */
-export function formatHookCommand(binPath: string, subcommand: string): string {
-  if (process.platform === "win32") {
-    const escaped = binPath.replace(/"/g, '""');
-    return `"${escaped}" ${subcommand}`;
-  }
-  // POSIX: only quote when we have to (readability).
-  const posixUnsafe = /[\s$`"'\\|&;<>()*?[\]{}~#!]/;
-  if (!posixUnsafe.test(binPath)) {
-    return `${binPath} ${subcommand}`;
-  }
-  const escaped = binPath.replace(/'/g, "'\\''");
-  return `'${escaped}' ${subcommand}`;
-}
-
-/**
- * Parses the executable token from a hook command string.
- *
- * Returns the basename (without `.exe`/`.cmd`/`.bat` on Windows) and the
- * remaining argument text after the token, or `null` if parsing fails.
- * Used by `migrateLegacyHookVariants` to decide whether a registered hook
- * actually invokes `storybloq`.
- */
-function parseHookCommand(command: string): { binBasename: string; rest: string } | null {
-  const trimmed = command.trim();
-  if (trimmed.length === 0) return null;
-  let token: string;
-  let rest: string;
-  if (trimmed.startsWith("'")) {
-    const close = trimmed.indexOf("'", 1);
-    if (close < 0) return null;
-    token = trimmed.slice(1, close);
-    rest = trimmed.slice(close + 1);
-  } else if (trimmed.startsWith('"')) {
-    const close = trimmed.indexOf('"', 1);
-    if (close < 0) return null;
-    token = trimmed.slice(1, close);
-    rest = trimmed.slice(close + 1);
-  } else {
-    const space = trimmed.search(/\s/);
-    if (space < 0) { token = trimmed; rest = ""; }
-    else { token = trimmed.slice(0, space); rest = trimmed.slice(space); }
-  }
-  if (/[|&;<>`$()]/.test(token)) return null;
-  let base = basename(token);
-  if (process.platform === "win32") {
-    base = base.replace(/\.(exe|cmd|bat|com)$/i, "");
-  }
-  return { binBasename: base, rest: rest.trim() };
-}
-
-interface HookEntry {
-  type: string;
-  command?: string;
-  [key: string]: unknown;
-}
-
-interface MatcherGroup {
-  matcher?: string;
-  hooks?: unknown[];
-  [key: string]: unknown;
 }
 
 /**
@@ -419,83 +376,6 @@ export async function registerStopHook(
   const bin = binPath ?? resolveStorybloqBin() ?? "storybloq";
   const command = formatHookCommand(bin, STOP_SUBCOMMAND);
   return registerHook("Stop", { type: "command", command, async: true }, settingsPath);
-}
-
-/**
- * Removes hook entries whose executable basename is `storybloq` and whose
- * argument tail matches `subcommand` exactly — but are not equal to the
- * freshly-generated `newCommand`. Preserves idempotency (exact matches stay)
- * and leaves unrelated user hooks alone (other tools, extra flags, wrappers).
- *
- * ISS-560: lets setup-skill replace stale bare `storybloq` and stale
- * absolute-path entries from prior Node versions without touching anything
- * the user added manually.
- */
-export async function migrateLegacyHookVariants(
-  hookType: string,
-  subcommand: string,
-  newCommand: string,
-  settingsPath?: string,
-): Promise<number> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
-  if (!existsSync(path)) return 0;
-
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf-8");
-  } catch {
-    return 0;
-  }
-
-  let settings: Record<string, unknown>;
-  try {
-    settings = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return 0;
-  } catch {
-    return 0;
-  }
-
-  if (!("hooks" in settings) || typeof settings.hooks !== "object" || settings.hooks === null) return 0;
-  const hooks = settings.hooks as Record<string, unknown>;
-  if (!(hookType in hooks) || !Array.isArray(hooks[hookType])) return 0;
-
-  const hookArray = hooks[hookType] as unknown[];
-  let removedCount = 0;
-
-  for (const group of hookArray) {
-    if (typeof group !== "object" || group === null) continue;
-    const g = group as MatcherGroup;
-    if (!Array.isArray(g.hooks)) continue;
-    const before = g.hooks.length;
-    g.hooks = g.hooks.filter((entry) => {
-      if (typeof entry !== "object" || entry === null) return true;
-      const e = entry as HookEntry;
-      if (e.type !== "command" || typeof e.command !== "string") return true;
-      const cmd = e.command.trim();
-      if (cmd === newCommand.trim()) return true;
-      const parsed = parseHookCommand(cmd);
-      if (parsed === null) return true;
-      if (parsed.binBasename !== "storybloq") return true;
-      if (parsed.rest !== subcommand) return true;
-      return false;
-    });
-    removedCount += before - g.hooks.length;
-  }
-
-  if (removedCount === 0) return 0;
-
-  const tmpPath = `${path}.${process.pid}.tmp`;
-  try {
-    const dir = dirname(path);
-    await mkdir(dir, { recursive: true });
-    await writeFile(tmpPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-    await rename(tmpPath, path);
-  } catch {
-    try { await unlink(tmpPath); } catch { /* ignore */ }
-    return 0;
-  }
-
-  return removedCount;
 }
 
 /**

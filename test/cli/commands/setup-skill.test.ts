@@ -1087,4 +1087,257 @@ describe("migrateLegacyHookVariants", () => {
     expect(count).toBe(0);
     expect(await remainingCommands("PreCompact")).toEqual([cmd]);
   });
+
+  // ISS-589 / claudestory legacy-basename variants
+
+  it("removes bare claudestory command", async () => {
+    await seed("PreCompact", ["claudestory session compact-prepare"]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(1);
+    expect(await remainingCommands("PreCompact")).toEqual([]);
+  });
+
+  it("removes absolute claudestory path that no longer matches", async () => {
+    await seed("PreCompact", ["/Users/amir/.nvm/versions/node/v22.18.0/bin/claudestory session compact-prepare"]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(1);
+  });
+
+  it("removes quoted claudestory path with space (POSIX only)", async () => {
+    if (process.platform === "win32") return;
+    const cmd = "'/path with space/claudestory' session compact-prepare";
+    await seed("PreCompact", [cmd]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(1);
+  });
+
+  it("preserves claudestory with extra flag (rest !== subcommand)", async () => {
+    const cmd = "claudestory session compact-prepare --user-override";
+    await seed("PreCompact", [cmd]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(0);
+    expect(await remainingCommands("PreCompact")).toEqual([cmd]);
+  });
+
+  it("removes mixed storybloq + claudestory entries in one pass", async () => {
+    await seed("PreCompact", [
+      "storybloq session compact-prepare",
+      "/old/v20/bin/claudestory session compact-prepare",
+      "/other/bin/mytool session compact-prepare",
+    ]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(2);
+    expect(await remainingCommands("PreCompact")).toEqual(["/other/bin/mytool session compact-prepare"]);
+  });
+
+  it("leaves non-storybloq non-claudestory entries untouched", async () => {
+    await seed("PreCompact", [
+      "/other/bin/anothertool session compact-prepare",
+      "some-wrapper --flag session compact-prepare",
+    ]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(0);
+    expect((await remainingCommands("PreCompact")).length).toBe(2);
+  });
+
+  it("idempotent: second run with already-migrated settings is a no-op returning 0", async () => {
+    await seed("PreCompact", ["claudestory session compact-prepare"]);
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const first = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(first).toBe(1);
+    const second = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(second).toBe(0);
+  });
+
+  it("handles empty hooks object (no PreCompact key present)", async () => {
+    await writeFile(settingsPath, JSON.stringify({ hooks: {} }, null, 2), "utf-8");
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(0);
+  });
+
+  it("handles malformed hook entries (null, non-object, missing command) without throwing", async () => {
+    await writeFile(settingsPath, JSON.stringify({
+      hooks: {
+        PreCompact: [
+          { matcher: "", hooks: [null, "bad", { type: "command" }, { type: "other" }, 42] },
+          { matcher: "other", hooks: [{ type: "command", command: "claudestory session compact-prepare" }] },
+        ],
+      },
+    }, null, 2), "utf-8");
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(1);
+  });
+
+  it("returns 0 cleanly when settings.json does not exist", async () => {
+    await rm(settingsPath, { force: true });
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(0);
+  });
+
+  it("returns 0 when settings.json has invalid JSON (does not overwrite)", async () => {
+    const original = "{ not valid json }";
+    await writeFile(settingsPath, original, "utf-8");
+    const { migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(0);
+    const content = await readFile(settingsPath, "utf-8");
+    expect(content).toBe(original);
+  });
+
+  it("parses apostrophe-escaped path matching formatHookCommand output (round-trip)", async () => {
+    if (process.platform === "win32") return;
+    const { formatHookCommand, migrateLegacyHookVariants } = await import("../../../src/cli/commands/setup-skill.js");
+    // formatHookCommand produces `'<escaped>' <subcommand>` with `'\''`
+    // sequences for literal apostrophes; parseHookCommand must round-trip
+    // so the migration can match its own output.
+    const cmd = formatHookCommand("/weird'path/claudestory", "session compact-prepare");
+    await seed("PreCompact", [cmd]);
+    const count = await migrateLegacyHookVariants(
+      "PreCompact",
+      "session compact-prepare",
+      "/new/bin/storybloq session compact-prepare",
+      settingsPath,
+    );
+    expect(count).toBe(1);
+    expect(await remainingCommands("PreCompact")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sweepLegacyHooks (ISS-590)
+// ---------------------------------------------------------------------------
+
+describe("sweepLegacyHooks", () => {
+  let tempDir: string;
+  let settingsPath: string;
+  const FAKE_BIN = "/new/bin/storybloq";
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), `storybloq-sweep-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+    settingsPath = join(tempDir, "settings.json");
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("returns total migrations across PreCompact + SessionStart + Stop", async () => {
+    await writeFile(settingsPath, JSON.stringify({
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [
+          { type: "command", command: "claudestory session compact-prepare" },
+        ]}],
+        SessionStart: [{ matcher: "compact", hooks: [
+          { type: "command", command: "/old/bin/claudestory session resume-prompt" },
+        ]}],
+        Stop: [{ matcher: "", hooks: [
+          { type: "command", command: "claudestory hook-status", async: true },
+        ]}],
+      },
+    }, null, 2), "utf-8");
+    const { sweepLegacyHooks } = await import("../../../src/cli/commands/setup-skill.js");
+    const total = await sweepLegacyHooks(FAKE_BIN, settingsPath);
+    expect(total).toBe(3);
+  });
+
+  it("returns 0 when no legacy entries present anywhere", async () => {
+    await writeFile(settingsPath, JSON.stringify({
+      hooks: {
+        PreCompact: [{ matcher: "", hooks: [
+          { type: "command", command: "/new/bin/storybloq session compact-prepare" },
+        ]}],
+      },
+    }, null, 2), "utf-8");
+    const { sweepLegacyHooks } = await import("../../../src/cli/commands/setup-skill.js");
+    const total = await sweepLegacyHooks(FAKE_BIN, settingsPath);
+    expect(total).toBe(0);
+  });
+
+  it("continues even if one hook type has malformed entries", async () => {
+    await writeFile(settingsPath, JSON.stringify({
+      hooks: {
+        PreCompact: "not-an-array",  // malformed
+        SessionStart: [{ matcher: "compact", hooks: [
+          { type: "command", command: "claudestory session resume-prompt" },
+        ]}],
+        Stop: [{ matcher: "", hooks: [
+          { type: "command", command: "claudestory hook-status", async: true },
+        ]}],
+      },
+    }, null, 2), "utf-8");
+    const { sweepLegacyHooks } = await import("../../../src/cli/commands/setup-skill.js");
+    const total = await sweepLegacyHooks(FAKE_BIN, settingsPath);
+    // Malformed PreCompact yields 0; SessionStart + Stop each contribute 1.
+    expect(total).toBe(2);
+  });
 });

@@ -10,27 +10,9 @@ if (!process.argv.includes("--mcp")) {
   await import("../mcp/index.js");
 }
 
-/**
- * ISS-570 G1 + G3: before dispatching a command, silently auto-refresh
- * the /story skill dir if the CLI version has changed (G3), and kick off
- * a background npm-registry check so the next invocation has fresh
- * update-available data (G1 banner prints on process exit below).
- */
-async function preCommandHousekeeping(version: string): Promise<void> {
-  if (!version || version === "0.0.0-dev") return;
-  try {
-    const { autoRefreshSkillIfStale } = await import("../core/skill-version-marker.js");
-    await autoRefreshSkillIfStale(version);
-  } catch {
-    // Best-effort; never block the user's command.
-  }
-  try {
-    const { refreshUpdateCacheInBackground } = await import("../core/update-check.js");
-    refreshUpdateCacheInBackground();
-  } catch {
-    // Best-effort.
-  }
-}
+// preCommandHousekeeping lives in ./housekeeping.ts so its behavior can be
+// exercised by tests without triggering the top-level `runCli()` execution
+// in this module.
 
 /**
  * ISS-570 G1: one-line stderr banner when a newer @storybloq/storybloq
@@ -83,6 +65,7 @@ async function runCli(): Promise<void> {
 
   // ISS-570: silent skill-dir refresh if the CLI version changed + schedule
   // a background update check so the next invocation's banner is fresh.
+  const { preCommandHousekeeping } = await import("./housekeeping.js");
   await preCommandHousekeeping(version);
 
   class HandledError extends Error {

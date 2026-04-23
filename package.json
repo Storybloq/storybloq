@@ -1,6 +1,6 @@
 {
   "name": "@storybloq/storybloq",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "An agentic development framework. Track tickets, issues, and progress for your project so every session builds on the last.",
   "homepage": "https://storybloq.com",

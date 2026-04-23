@@ -76,13 +76,69 @@ export async function autoRefreshSkillIfStale(runningVersion: string): Promise<b
   if (!isSkillStale(runningVersion)) return false;
 
   try {
-    const { copyDirRecursive, resolveSkillSourceDir } = await import("../cli/commands/setup-skill.js");
+    const { copyDirRecursive, resolveSkillSourceDir, resolveStorybloqBin } =
+      await import("../cli/commands/setup-skill.js");
     const src = resolveSkillSourceDir();
     await copyDirRecursive(src, skillDir());
     writeSkillMarker(runningVersion);
     process.stderr.write(
       `storybloq: refreshed /story skill files at ~/.claude/skills/story/ to match CLI v${runningVersion}\n`,
     );
+
+    // ISS-590: migrate stale legacy-basename hook entries (for example
+    // claudestory-named hooks left behind after migrating from
+    // @anthropologies/claudestory).
+    //
+    // Ordering matters for safety:
+    //   1. countLegacyHooks (non-mutating) detects whether migration
+    //      work is needed. If zero legacy entries, do nothing. This
+    //      preserves the user's intent when they have no hooks by
+    //      choice (skill-only install, deliberately removed hooks).
+    //   2. Register canonical storybloq hooks FIRST. Each registerXHook
+    //      is idempotent (returns "exists" if the exact command is
+    //      already present). If any registration fails partway, the
+    //      original legacy entries are still in place, so the user
+    //      still has working hooks.
+    //   3. Sweep legacy entries LAST. The worst case is a partial
+    //      sweep that leaves a stale legacy entry alongside the
+    //      canonical we just added. Visible noise, but still working
+    //      hooks, not "no hooks at all".
+    //
+    // Best-effort: if the storybloq bin cannot be resolved there is
+    // nothing to re-register against, and any failure logs but does
+    // not block the refresh.
+    const bin = resolveStorybloqBin();
+    if (bin !== null) {
+      try {
+        const { countLegacyHooks, sweepLegacyHooks } = await import("./hook-migration.js");
+        const counts = await countLegacyHooks(bin);
+        const totalLegacy = counts.PreCompact + counts.SessionStart + counts.Stop;
+        if (totalLegacy > 0) {
+          // Register canonical hooks only for the hook types that had
+          // legacy entries. Users who intentionally removed or disabled
+          // specific hook types must keep those absent even during a
+          // migration of another type.
+          const { registerPreCompactHook, registerSessionStartHook, registerStopHook } =
+            await import("../cli/commands/setup-skill.js");
+          if (counts.PreCompact > 0) await registerPreCompactHook(undefined, bin);
+          if (counts.SessionStart > 0) await registerSessionStartHook(undefined, bin);
+          if (counts.Stop > 0) await registerStopHook(undefined, bin);
+          const swept = await sweepLegacyHooks(bin);
+          if (swept > 0) {
+            process.stderr.write(
+              `storybloq: swept ${swept} legacy hook entr${swept === 1 ? "y" : "ies"} on version advance\n`,
+            );
+          }
+        }
+      } catch (sweepErr: unknown) {
+        const sweepMsg = sweepErr instanceof Error ? sweepErr.message : String(sweepErr);
+        process.stderr.write(
+          `storybloq: legacy hook sweep or register failed (non-fatal): ${sweepMsg}\n` +
+          `  Run 'storybloq setup-skill' manually to retry.\n`,
+        );
+      }
+    }
+
     return true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -51,7 +51,7 @@ npm install -g @storybloq/storybloq@latest
 storybloq setup-skill
 ```
 
-Requires Node.js 20+ and Claude Code.
+Requires Node.js 20+ and Claude Code. Package lives on npm at [**@storybloq/storybloq**](https://www.npmjs.com/package/@storybloq/storybloq); releases are tagged on this repo at [github.com/Storybloq/storybloq/releases](https://github.com/Storybloq/storybloq/releases).
 
 `setup-skill` installs the `/story` skill globally to `~/.claude/skills/story/`, registers this package as an MCP server, and configures a PreCompact hook that auto-snapshots state before context compaction. Re-running it is safe.
 

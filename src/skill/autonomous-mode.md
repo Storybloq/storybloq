@@ -30,6 +30,7 @@ Concretely, authorization is scoped per full `sessionId`. The UI displays a **se
 - Do NOT use Claude Code's plan mode -- write plans as markdown files
 - Do NOT ask the user for confirmation or approval during the normal pipeline. (Exception: the active-session guard above always asks.)
 - Do NOT stop or summarize between tickets -- call the guide IMMEDIATELY
+- Do NOT wrap autonomous execution in Claude Code's `/loop` skill, `ScheduleWakeup`, or `CronCreate`. The state machine IS the loop: PICK_TICKET -> PLAN -> ... -> COMPLETE -> PICK_TICKET. "Continue immediately" means advance on THIS turn, not schedule a future wakeup. The scheduler tools persist across compactions independent of conversation state, so a `ScheduleWakeup` chain will self-perpetuate through compact/resume and keep burning prompt cache + compute; the user has no natural interrupt point because each turn looks like "just one more small close." The only correct pacing is the guide's `report` -> next-action cadence. See ISS-588 for the observed failure mode.
 - Follow the guide's instructions exactly -- it specifies which tools to call, what parameters to use
 - After each step completes, call `storybloq_autonomous_guide` with `action: "report"` and the results
 

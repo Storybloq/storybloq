@@ -467,7 +467,7 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     process.stderr.write(`Error: ${message}\n`);
-    process.stderr.write("This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq\n");
+    process.stderr.write("This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq@latest\n");
     process.exitCode = 1;
     return;
   }
@@ -531,7 +531,7 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
   log(`  ${writtenFiles.join(" + ")} written`);
   if (missingFiles.length > 0) {
     process.stderr.write(`Warning: support file(s) not found in source: ${missingFiles.join(", ")}\n`);
-    process.stderr.write("  This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq\n");
+    process.stderr.write("  This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq@latest\n");
   }
 
   // Attempt MCP registration — requires both `storybloq` and `claude` in PATH.
@@ -573,7 +573,7 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
     log("");
     log("MCP registration skipped — `storybloq` not found in PATH.");
     log("Install globally first, then register MCP:");
-    log("  npm install -g @storybloq/storybloq");
+    log("  npm install -g @storybloq/storybloq@latest");
     log("  claude mcp add storybloq -s user -- storybloq --mcp");
   }
 
@@ -644,7 +644,7 @@ export async function handleSetupSkill(options: SetupSkillOptions = {}): Promise
     log("");
     log("Hook registration skipped — `storybloq` binary not found.");
     log("Install globally first, then re-run setup-skill:");
-    log("  npm install -g @storybloq/storybloq");
+    log("  npm install -g @storybloq/storybloq@latest");
     log("  storybloq setup-skill");
   }
 

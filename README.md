@@ -24,13 +24,31 @@ Every project gets a `.story/` directory of JSON and markdown files. Tickets, is
 ## Install
 
 ```bash
-npm install -g @storybloq/storybloq
+npm install -g @storybloq/storybloq@latest
 storybloq setup-skill
 ```
 
 Requires Node.js 20+ and Claude Code.
 
 `setup-skill` installs the `/story` skill globally to `~/.claude/skills/story/`, registers this package as an MCP server, and configures a PreCompact hook that auto-snapshots state before context compaction. Re-running it is safe.
+
+## Upgrading
+
+```bash
+npm install -g @storybloq/storybloq@latest
+storybloq setup-skill
+```
+
+Same two commands as a fresh install — `@latest` pulls the newest version, and re-running `setup-skill` refreshes the `/story` skill files, re-registers the MCP server, and sweeps any stale hook entries from prior installs.
+
+You'll usually see a one-line banner on the next `storybloq` invocation whenever a newer version is on npm:
+
+```
+storybloq v1.2.0 is available (you have v1.1.6).
+Update: npm install -g @storybloq/storybloq@latest
+```
+
+The CLI also silently refreshes the skill dir and migrates any legacy hook entries (for example, from the pre-rename `@anthropologies/claudestory` package) on the first run after an upgrade — no manual cleanup needed.
 
 Alternative install via the Claude Code plugin system: see [Storybloq/plugin-archive](https://github.com/Storybloq/plugin-archive) (legacy path; `setup-skill` is the recommended install).
 

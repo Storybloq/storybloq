@@ -68,14 +68,14 @@ Check if the storybloq MCP tools are available.
 2. If NOT installed:
    - Check `node --version` and `npm --version` -- both must be available
    - If Node.js is missing, tell the user to install Node.js 20+ first
-   - Otherwise, with user permission, run: `npm install -g @storybloq/storybloq`
+   - Otherwise, with user permission, run: `npm install -g @storybloq/storybloq@latest`
    - Then run: `claude mcp add storybloq -s user -- storybloq --mcp`
    - Tell the user to restart Claude Code and run `/story` again
 3. If CLI IS installed but MCP not registered:
    - With user permission, run: `claude mcp add storybloq -s user -- storybloq --mcp`
    - Tell the user to restart Claude Code and run `/story` again
 
-**Important:** Always use `npm install -g`, never `npx`, for the CLI. The MCP server needs the global binary.
+**Important:** Always use `npm install -g` (pinned to `@latest`), never `npx`, for the CLI. The MCP server and the configured hooks call `storybloq` as a global binary; going through `npx` per invocation would add cold-start latency on every hook fire (PreCompact, SessionStart, Stop).
 
 **If MCP tools are unavailable and user doesn't want to set up**, fall back to CLI mode:
 - Run `storybloq status` via Bash

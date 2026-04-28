@@ -327,7 +327,7 @@ git commit -m "T-001: scaffold Next.js"
 ## Related projects
 
 - **[@storybloq/lenses](https://github.com/Storybloq/lenses)** - multi-lens code review MCP server. 8 specialized reviewers run in parallel and return structured verdicts.
-- **[Storybloq for Mac](https://storybloq.com/mac)** - native macOS app that watches `.story/` and updates live while Claude works. Coming soon to the Mac App Store.
+- **[Storybloq for Mac](https://apps.apple.com/us/app/storybloq/id6761348691)** - native macOS app that watches `.story/` and updates live while Claude works. Free on the Mac App Store.
 
 ## Contributing
 

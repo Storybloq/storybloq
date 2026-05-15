@@ -2,7 +2,7 @@
 /**
  * storybloq MCP server entry point.
  *
- * Provides 30 tools for querying and modifying .story/ project state.
+ * Provides MCP tools for querying and modifying .story/ project state.
  * Uses direct handler imports — no subprocess spawning.
  * Stdio transport: reads JSON-RPC from stdin, writes to stdout.
  * All diagnostic output goes to stderr.
@@ -106,7 +106,7 @@ function registerDegradedTools(server: McpServer): void {
       registerAllTools(server, result.root);
       // Explicit tool-list-changed notification after the full swap. Each
       // underlying registerTool / remove call already emits its own
-      // notification, but firing 43 notifications in rapid succession can
+      // notification, but firing 49 notifications in rapid succession can
       // cause some MCP clients (notably Claude Code app) to miss the
       // coalesced final state. One final explicit notification is a
       // belt-and-suspenders signal that the tool list is now complete
@@ -140,7 +140,7 @@ function registerDegradedTools(server: McpServer): void {
     if (result.warnings.length > 0) {
       lines.push(`Warnings: ${result.warnings.join("; ")}`);
     }
-    lines.push("", "All 43 storybloq tools are now registered. If your MCP client still only shows storybloq_init + storybloq_status, the tool-list-changed notification was missed -- either retry the first post-init tool call (some clients refetch on error) or restart the MCP client. Use storybloq_phase_create to add phases and storybloq_ticket_create to add tickets.");
+    lines.push("", "All 49 storybloq tools are now registered. If your MCP client still only shows storybloq_init + storybloq_status, the tool-list-changed notification was missed -- either retry the first post-init tool call (some clients refetch on error) or restart the MCP client. Use storybloq_phase_create to add phases and storybloq_ticket_create to add tickets.");
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   });
 }

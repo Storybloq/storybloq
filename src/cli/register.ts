@@ -22,6 +22,7 @@ import {
   readStdinContent,
   CliValidationError,
 } from "./helpers.js";
+import { parseMetadataValue } from "./commands/metadata.js";
 import { formatError, ExitCode } from "../core/output-formatter.js";
 
 // Handler imports — read handlers
@@ -42,6 +43,9 @@ import {
   handleTicketBlocked,
   handleTicketCreate,
   handleTicketUpdate,
+  handleTicketMetaGet,
+  handleTicketMetaSet,
+  handleTicketMetaUnset,
   handleTicketDelete,
 } from "./commands/ticket.js";
 import {
@@ -49,6 +53,9 @@ import {
   handleIssueGet,
   handleIssueCreate,
   handleIssueUpdate,
+  handleIssueMetaGet,
+  handleIssueMetaSet,
+  handleIssueMetaUnset,
   handleIssueDelete,
 } from "./commands/issue.js";
 import {
@@ -765,6 +772,100 @@ export function registerTicketCommand(yargs: Argv): Argv {
           },
         )
         .command(
+          "meta <operation> <id> [path] [value]",
+          "Get, set, or unset custom ticket metadata",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("operation", {
+                  type: "string",
+                  demandOption: true,
+                  choices: ["get", "set", "unset"],
+                  describe: "Metadata operation",
+                })
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Ticket ID (e.g. T-001)",
+                })
+                .positional("path", {
+                  type: "string",
+                  describe: "Custom metadata path, using dot notation for nested values",
+                })
+                .positional("value", {
+                  type: "string",
+                  describe: "JSON value for set; wrap strings in quotes",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseTicketId(argv.id as string);
+            const operation = argv.operation as string;
+
+            if (operation === "get") {
+              await runReadCommand(format, (ctx) =>
+                handleTicketMetaGet(id, argv.path as string | undefined, ctx),
+              );
+              return;
+            }
+
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError(
+                  "not_found",
+                  "No .story/ project found.",
+                  format,
+                ),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            try {
+              const path = argv.path as string | undefined;
+              if (!path) {
+                throw new CliValidationError("invalid_input", "Metadata path is required");
+              }
+              const rawValue = argv.value as string | undefined;
+              if (operation === "set" && rawValue === undefined) {
+                throw new CliValidationError("invalid_input", "Metadata value is required for set");
+              }
+              const result = operation === "set"
+                ? await handleTicketMetaSet(
+                  id,
+                  path,
+                  parseMetadataValue(rawValue!),
+                  format,
+                  root,
+                )
+                : await handleTicketMetaUnset(id, path, format, root);
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import(
+                "../core/errors.js"
+              );
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message =
+                err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
           "delete <id>",
           "Delete a ticket",
           (y2) =>
@@ -792,7 +893,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
         )
         .demandCommand(
           1,
-          "Specify a ticket subcommand: list, get, next, blocked, create, update, delete",
+          "Specify a ticket subcommand: list, get, next, blocked, create, update, meta, delete",
         )
         .strict(),
     () => {},
@@ -1105,6 +1206,100 @@ export function registerIssueCommand(yargs: Argv): Argv {
           },
         )
         .command(
+          "meta <operation> <id> [path] [value]",
+          "Get, set, or unset custom issue metadata",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("operation", {
+                  type: "string",
+                  demandOption: true,
+                  choices: ["get", "set", "unset"],
+                  describe: "Metadata operation",
+                })
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Issue ID (e.g. ISS-001)",
+                })
+                .positional("path", {
+                  type: "string",
+                  describe: "Custom metadata path, using dot notation for nested values",
+                })
+                .positional("value", {
+                  type: "string",
+                  describe: "JSON value for set; wrap strings in quotes",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const id = parseIssueId(argv.id as string);
+            const operation = argv.operation as string;
+
+            if (operation === "get") {
+              await runReadCommand(format, (ctx) =>
+                handleIssueMetaGet(id, argv.path as string | undefined, ctx),
+              );
+              return;
+            }
+
+            const root = (
+              await import("../core/project-root-discovery.js")
+            ).discoverProjectRoot();
+            if (!root) {
+              writeOutput(
+                formatError(
+                  "not_found",
+                  "No .story/ project found.",
+                  format,
+                ),
+              );
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+
+            try {
+              const path = argv.path as string | undefined;
+              if (!path) {
+                throw new CliValidationError("invalid_input", "Metadata path is required");
+              }
+              const rawValue = argv.value as string | undefined;
+              if (operation === "set" && rawValue === undefined) {
+                throw new CliValidationError("invalid_input", "Metadata value is required for set");
+              }
+              const result = operation === "set"
+                ? await handleIssueMetaSet(
+                  id,
+                  path,
+                  parseMetadataValue(rawValue!),
+                  format,
+                  root,
+                )
+                : await handleIssueMetaUnset(id, path, format, root);
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import(
+                "../core/errors.js"
+              );
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message =
+                err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
           "delete <id>",
           "Delete an issue",
           (y2) =>
@@ -1125,7 +1320,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
         )
         .demandCommand(
           1,
-          "Specify an issue subcommand: list, get, create, update, delete",
+          "Specify an issue subcommand: list, get, create, update, meta, delete",
         )
         .strict(),
     () => {},

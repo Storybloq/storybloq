@@ -58,6 +58,13 @@ Update a ticket
 storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
 ```
 
+### ticket meta
+Get, set, or unset custom passthrough metadata on a ticket
+
+```
+storybloq ticket meta get|set|unset <id> [path] [value] [--format json|md]
+```
+
 ### ticket delete
 Delete a ticket
 
@@ -91,6 +98,13 @@ Update an issue
 
 ```
 storybloq issue update <id> [--status <s>] [--title <t>] [--severity <sev>] [--impact <i>] [--resolution <r>] [--components <c>] [--related-tickets <ids>] [--location <locs>] [--order <n>] [--phase <p>] [--format json|md]
+```
+
+### issue meta
+Get, set, or unset custom passthrough metadata on an issue
+
+```
+storybloq issue meta get|set|unset <id> [path] [value] [--format json|md]
 ```
 
 ### issue delete
@@ -311,10 +325,12 @@ storybloq setup-skill [--skip-hooks]
 - **storybloq_phase_tickets** (phaseId) — Leaf tickets for a specific phase
 - **storybloq_ticket_list** (status?, phase?, type?) — List leaf tickets with optional filters
 - **storybloq_ticket_get** (id) — Get a ticket by ID
+- **storybloq_ticket_meta_get** (id, path?) — Get custom passthrough metadata from a ticket
 - **storybloq_ticket_next** (count?) — Highest-priority unblocked ticket(s)
 - **storybloq_ticket_blocked** — All blocked tickets with dependencies
 - **storybloq_issue_list** (status?, severity?, component?) — List issues with optional filters
 - **storybloq_issue_get** (id) — Get an issue by ID
+- **storybloq_issue_meta_get** (id, path?) — Get custom passthrough metadata from an issue
 - **storybloq_handover_list** — List handover filenames (newest first)
 - **storybloq_handover_latest** — Content of most recent handover
 - **storybloq_handover_get** (filename) — Content of a specific handover
@@ -331,8 +347,12 @@ storybloq setup-skill [--skip-hooks]
 - **storybloq_note_update** (id, content?, title?, tags?, status?) — Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?) — Create ticket
 - **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?) — Update ticket
+- **storybloq_ticket_meta_set** (id, path, value) — Set custom passthrough metadata on a ticket
+- **storybloq_ticket_meta_unset** (id, path) — Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue
 - **storybloq_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, order?, phase?) — Update issue
+- **storybloq_issue_meta_set** (id, path, value) — Set custom passthrough metadata on an issue
+- **storybloq_issue_meta_unset** (id, path) — Unset custom passthrough metadata from an issue
 - **storybloq_phase_create** (id, name, label, description, summary?, after?, atStart?) — Create phase in roadmap
 - **storybloq_lesson_list** (status?, tag?, source?) — List lessons
 - **storybloq_lesson_get** (id) — Get lesson by ID

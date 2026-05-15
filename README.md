@@ -40,7 +40,7 @@ The real cost isn't wasted setup time. It's repeated mistakes, relitigated desig
 Every project gets a `.story/` directory of JSON and markdown files. Tickets, issues, roadmap phases, session handovers, and lessons learned all live there, tracked by git, readable by any AI.
 
 - **CLI:** `storybloq` - inspect and mutate `.story/` from the terminal.
-- **MCP server:** 43 tools Claude Code and Codex can call directly, no subprocess spawning.
+- **MCP server:** 49 tools Claude Code and Codex can call directly, no subprocess spawning.
 - **Skill:** `/story` in Claude Code or `$story` in Codex loads project state at the start of every session.
 - **Mac app:** native sidebar that watches `.story/` and updates live while your AI client works (separate product, free on the App Store).
 
@@ -154,6 +154,7 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 | `storybloq ticket blocked` | All currently blocked tickets |
 | `storybloq ticket create --title --type --phase [--description] [--blocked-by] [--parent-ticket]` | Create |
 | `storybloq ticket update <id> [--status] [--title] [--phase] [--order] ...` | Update |
+| `storybloq ticket meta get\|set\|unset <id> [path] [value]` | Manage custom passthrough metadata |
 | `storybloq ticket delete <id> [--force]` | Delete |
 
 ### Issues
@@ -164,6 +165,7 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 | `storybloq issue get <id>` | Issue detail |
 | `storybloq issue create --title --severity --impact [--components] [--related-tickets] [--location]` | Create |
 | `storybloq issue update <id> [--status] [--title] [--severity] ...` | Update |
+| `storybloq issue meta get\|set\|unset <id> [path] [value]` | Manage custom passthrough metadata |
 | `storybloq issue delete <id>` | Delete |
 
 ### Notes and lessons
@@ -195,15 +197,15 @@ codex mcp add storybloq --env STORYBLOQ_CLIENT=codex -- storybloq --mcp
 
 The server imports the same TypeScript modules as the CLI directly, so there's no subprocess overhead. It auto-discovers the project root by walking up from the working directory to the nearest `.story/` parent.
 
-**43 tools** grouped by responsibility:
+**49 tools** grouped by responsibility:
 
 ### Read (no side effects)
 
-`storybloq_status` · `storybloq_phase_list` · `storybloq_phase_current` · `storybloq_phase_tickets` · `storybloq_ticket_list` · `storybloq_ticket_get` · `storybloq_ticket_next` · `storybloq_ticket_blocked` · `storybloq_issue_list` · `storybloq_issue_get` · `storybloq_note_list` · `storybloq_note_get` · `storybloq_lesson_list` · `storybloq_lesson_get` · `storybloq_lesson_digest` · `storybloq_handover_list` · `storybloq_handover_latest` · `storybloq_handover_get` · `storybloq_blocker_list` · `storybloq_validate` · `storybloq_recap` · `storybloq_recommend` · `storybloq_export` · `storybloq_selftest`
+`storybloq_status` · `storybloq_phase_list` · `storybloq_phase_current` · `storybloq_phase_tickets` · `storybloq_ticket_list` · `storybloq_ticket_get` · `storybloq_ticket_meta_get` · `storybloq_ticket_next` · `storybloq_ticket_blocked` · `storybloq_issue_list` · `storybloq_issue_get` · `storybloq_issue_meta_get` · `storybloq_note_list` · `storybloq_note_get` · `storybloq_lesson_list` · `storybloq_lesson_get` · `storybloq_lesson_digest` · `storybloq_handover_list` · `storybloq_handover_latest` · `storybloq_handover_get` · `storybloq_blocker_list` · `storybloq_validate` · `storybloq_recap` · `storybloq_recommend` · `storybloq_export` · `storybloq_selftest`
 
 ### Write (mutate `.story/`)
 
-`storybloq_snapshot` · `storybloq_handover_create` · `storybloq_ticket_create` · `storybloq_ticket_update` · `storybloq_issue_create` · `storybloq_issue_update` · `storybloq_note_create` · `storybloq_note_update` · `storybloq_lesson_create` · `storybloq_lesson_update` · `storybloq_lesson_reinforce` · `storybloq_phase_create`
+`storybloq_snapshot` · `storybloq_handover_create` · `storybloq_ticket_create` · `storybloq_ticket_update` · `storybloq_ticket_meta_set` · `storybloq_ticket_meta_unset` · `storybloq_issue_create` · `storybloq_issue_update` · `storybloq_issue_meta_set` · `storybloq_issue_meta_unset` · `storybloq_note_create` · `storybloq_note_update` · `storybloq_lesson_create` · `storybloq_lesson_update` · `storybloq_lesson_reinforce` · `storybloq_phase_create`
 
 ### Autonomous mode + review + observability
 
@@ -302,6 +304,8 @@ Full type definitions ship with the package (`exports.types`).
 ```
 
 Each record is its own file. IDs are sequential within type (`T-001`, `T-002`, ...). Relationships are single-canonical-owner: a ticket's `blockedBy` field points at blocker tickets, and the reverse (who-blocks-me) is derived by scanning.
+
+Ticket and issue records preserve unknown JSON fields. Use `storybloq ticket meta` and `storybloq issue meta` to read or mutate those custom passthrough fields without touching core Storybloq fields. Values are JSON, and dot paths address nested objects, for example `storybloq ticket meta set T-001 integration.linear '"ABC-123"'`.
 
 ## Example workflow
 

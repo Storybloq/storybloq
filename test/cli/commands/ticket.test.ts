@@ -9,11 +9,15 @@ import {
   handleTicketBlocked,
   handleTicketCreate,
   handleTicketUpdate,
+  handleTicketMetaGet,
+  handleTicketMetaSet,
+  handleTicketMetaUnset,
   handleTicketDelete,
 } from "../../../src/cli/commands/ticket.js";
 import { ExitCode } from "../../../src/core/output-formatter.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
+import { loadProject } from "../../../src/core/project-loader.js";
 import { makeState, makeTicket, makeRoadmap, makePhase } from "../../core/test-factories.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 
@@ -409,6 +413,98 @@ describe("handleTicketUpdate", () => {
     await expect(
       handleTicketUpdate("T-001", { type: "invalid" }, "md", dir),
     ).rejects.toThrow("Unknown ticket type");
+  });
+});
+
+describe("handleTicketMeta", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  async function setupProject(dir: string) {
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "Original", type: "task", phase: "p0", description: "orig desc", blockedBy: [], parentTicket: null },
+      "md", dir,
+    );
+  }
+
+  async function loadCtx(dir: string, format: "md" | "json" = "json"): Promise<CommandContext> {
+    const { state, warnings } = await loadProject(dir);
+    return {
+      state,
+      warnings,
+      root: dir,
+      handoversDir: join(dir, ".story", "handovers"),
+      format,
+    };
+  }
+
+  it("sets and gets custom metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    const setResult = await handleTicketMetaSet("T-001", "labels", ["frontend", "qa"], "json", dir);
+    expect(JSON.parse(setResult.output).data.labels).toEqual(["frontend", "qa"]);
+
+    const getResult = handleTicketMetaGet("T-001", "labels", await loadCtx(dir));
+    expect(JSON.parse(getResult.output).data).toEqual(["frontend", "qa"]);
+  });
+
+  it("sets nested custom metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    await handleTicketMetaSet("T-001", "integrations.linearIssue", "ABC-123", "json", dir);
+    const getResult = handleTicketMetaGet("T-001", "integrations", await loadCtx(dir));
+    expect(JSON.parse(getResult.output).data).toEqual({ linearIssue: "ABC-123" });
+  });
+
+  it("returns all custom metadata without core fields", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    await handleTicketMetaSet("T-001", "priority", "high", "json", dir);
+    const getResult = handleTicketMetaGet("T-001", undefined, await loadCtx(dir));
+    const metadata = JSON.parse(getResult.output).data;
+    expect(metadata).toEqual({ priority: "high" });
+    expect(metadata.title).toBeUndefined();
+    expect(metadata.status).toBeUndefined();
+  });
+
+  it("unsets custom metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    await handleTicketMetaSet("T-001", "integrations.linearIssue", "ABC-123", "json", dir);
+    const unsetResult = await handleTicketMetaUnset("T-001", "integrations.linearIssue", "json", dir);
+    expect(JSON.parse(unsetResult.output).data.integrations).toEqual({});
+  });
+
+  it("rejects protected core fields", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    await expect(
+      handleTicketMetaSet("T-001", "status", "complete", "json", dir),
+    ).rejects.toThrow(CliValidationError);
+  });
+
+  it("returns not_found for missing metadata path", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-meta-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+
+    const result = handleTicketMetaGet("T-001", "missing", await loadCtx(dir));
+    expect(result.exitCode).toBe(ExitCode.USER_ERROR);
+    expect(result.output).toContain("not_found");
   });
 });
 

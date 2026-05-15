@@ -7,11 +7,15 @@ import {
   handleIssueGet,
   handleIssueCreate,
   handleIssueUpdate,
+  handleIssueMetaGet,
+  handleIssueMetaSet,
+  handleIssueMetaUnset,
   handleIssueDelete,
 } from "../../../src/cli/commands/issue.js";
 import { ExitCode } from "../../../src/core/output-formatter.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
+import { loadProject } from "../../../src/core/project-loader.js";
 import { makeState, makeIssue } from "../../core/test-factories.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 
@@ -358,6 +362,75 @@ describe("handleIssueUpdate", () => {
     await expect(
       handleIssueUpdate("ISS-001", { phase: "nonexistent" }, "md", dir),
     ).rejects.toThrow("not found in roadmap");
+  });
+});
+
+describe("handleIssueMeta", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  async function setupIssue(dir: string) {
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "Original Bug", severity: "high", impact: "broken", components: ["core"], relatedTickets: [], location: [] },
+      "md", dir,
+    );
+  }
+
+  async function loadCtx(dir: string, format: "md" | "json" = "json"): Promise<CommandContext> {
+    const { state, warnings } = await loadProject(dir);
+    return {
+      state,
+      warnings,
+      root: dir,
+      handoversDir: join(dir, ".story", "handovers"),
+      format,
+    };
+  }
+
+  it("sets and gets custom issue metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-meta-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+
+    const setResult = await handleIssueMetaSet("ISS-001", "source", "customer-report", "json", dir);
+    expect(JSON.parse(setResult.output).data.source).toBe("customer-report");
+
+    const getResult = handleIssueMetaGet("ISS-001", "source", await loadCtx(dir));
+    expect(JSON.parse(getResult.output).data).toBe("customer-report");
+  });
+
+  it("sets nested issue metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-meta-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+
+    await handleIssueMetaSet("ISS-001", "integrations.external.id", "BUG-123", "json", dir);
+    const getResult = handleIssueMetaGet("ISS-001", "integrations", await loadCtx(dir));
+    expect(JSON.parse(getResult.output).data).toEqual({ external: { id: "BUG-123" } });
+  });
+
+  it("unsets custom issue metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-meta-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+
+    await handleIssueMetaSet("ISS-001", "source", "customer-report", "json", dir);
+    const unsetResult = await handleIssueMetaUnset("ISS-001", "source", "json", dir);
+    expect(JSON.parse(unsetResult.output).data.source).toBeUndefined();
+  });
+
+  it("rejects protected issue fields", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-meta-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+
+    await expect(
+      handleIssueMetaSet("ISS-001", "severity", "low", "json", dir),
+    ).rejects.toThrow(CliValidationError);
   });
 });
 

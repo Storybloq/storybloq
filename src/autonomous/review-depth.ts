@@ -72,6 +72,37 @@ export function requiredRounds(risk: RiskLevel): number {
   }
 }
 
+/** Numeric rank of a risk level (low=0, medium=1, high=2). */
+export function riskRank(risk: RiskLevel): number {
+  return RISK_LEVELS.indexOf(risk);
+}
+
+/**
+ * Opt-in risk gate for review stages. Returns true when a review stage should
+ * be skipped because the effective risk is strictly below the configured
+ * threshold `skipIfRiskBelow` (a stages.<STAGE>.skipIfRiskBelow config value).
+ *
+ * Anything that is not a canonical risk level — including undefined — disables
+ * the gate, so the default (no config) never skips. A "low" threshold also
+ * never skips: nothing ranks below the floor, which prevents a misconfigured
+ * value from silently disabling review.
+ */
+export function shouldSkipForRisk(risk: RiskLevel, skipIfRiskBelow?: unknown): boolean {
+  if (typeof skipIfRiskBelow !== "string") return false;
+  if (!(RISK_LEVELS as readonly string[]).includes(skipIfRiskBelow)) return false;
+  return riskRank(risk) < riskRank(skipIfRiskBelow as RiskLevel);
+}
+
+/**
+ * True when any changed path matches a sensitive pattern (auth, security,
+ * migration, config, middleware, dotenv). Used to guarantee a risk-gated skip
+ * never bypasses review of a sensitive change — including newly-created
+ * (untracked) files that the diff-based realizedRisk measurement cannot see.
+ */
+export function hasSensitivePath(files: readonly string[]): boolean {
+  return files.some((f) => SENSITIVE_PATTERNS.some((p) => p.test(f)));
+}
+
 /**
  * ISS-110: Check codex unavailability with a 10-minute TTL.
  * Returns true if codex was marked unavailable within the last 10 minutes.

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
+import { normalizeRiskLevel, requiredRounds, nextReviewer, shouldSkipForRisk } from "../review-depth.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -195,6 +195,16 @@ export class PlanStage implements WorkflowStage {
     const roundNum = existingPlanReviews.length + 1;
     const reviewer = nextReviewer(existingPlanReviews, backends);
     const minRounds = requiredRounds(risk);
+
+    // Opt-in: when PLAN_REVIEW is risk-gated below this ticket's risk, return a
+    // bare advance so the walker enters PLAN_REVIEW and its enter() performs the
+    // skip (PLAN → PLAN_REVIEW → IMPLEMENT are all legal edges). Precomputing the
+    // PLAN_REVIEW instruction here would bypass that enter(). With no gate
+    // configured this is a no-op and the precomputed dispatch below is unchanged.
+    const planReviewCfg = ctx.recipe.stages?.PLAN_REVIEW as Record<string, unknown> | undefined;
+    if (shouldSkipForRisk(risk, planReviewCfg?.skipIfRiskBelow)) {
+      return { action: "advance" };
+    }
 
     const nativeCodex = shouldUseNativeCodexReview(reviewer, ctx.state.config);
     const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";

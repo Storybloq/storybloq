@@ -3,8 +3,9 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
-import { requiredRounds, nextReviewer } from "../review-depth.js";
+import { requiredRounds, nextReviewer, normalizeRiskLevel, shouldSkipForRisk, hasSensitivePath } from "../review-depth.js";
 import { effectiveCodeReviewMaxRounds } from "../session-diagnostics.js";
+import { gitDiffNames, gitUntrackedNames } from "../git-inspector.js";
 import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
@@ -28,7 +29,21 @@ import {
 export class CodeReviewStage implements WorkflowStage {
   readonly id = "CODE_REVIEW";
 
-  async enter(ctx: StageContext): Promise<StageResult> {
+  /**
+   * Fail-closed sensitive-path check for the code-review skip. Returns true only
+   * when the full changed-file set (tracked diff vs base + untracked new files)
+   * is known AND contains no sensitive path. Any git-introspection failure
+   * returns false so an unmeasurable change is reviewed rather than skipped.
+   */
+  private async changedPathsSafeToSkip(ctx: StageContext, mergeBase: string): Promise<boolean> {
+    const tracked = await gitDiffNames(ctx.root, mergeBase);
+    if (!tracked.ok) return false;
+    const untracked = await gitUntrackedNames(ctx.root);
+    if (!untracked.ok) return false;
+    return !hasSensitivePath([...tracked.data, ...untracked.data]);
+  }
+
+  async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
     const backends = reviewBackendsForClient(ctx.state.config);
     const codeReviews = ctx.state.reviews.code;
     const roundNum = codeReviews.length + 1;
@@ -37,6 +52,28 @@ export class CodeReviewStage implements WorkflowStage {
     const rounds = requiredRounds(risk as "low" | "medium" | "high");
     const mergeBase = ctx.state.git.mergeBase;
     const isIssueFix = !!ctx.state.currentIssue;
+
+    // Opt-in risk gate (stages.CODE_REVIEW.skipIfRiskBelow): skip code review for
+    // a below-threshold change by advancing straight to the next stage
+    // (CODE_REVIEW → FINALIZE is a legal transition). This runs against
+    // realizedRisk, which already escalates tracked sensitive paths (assessRisk
+    // SENSITIVE_PATTERNS). Guards, all fail-closed:
+    //  - never in "review" mode (terminal at code-review approval; see report()),
+    //  - never for issue-fix reviews (they route back through ISSUE_FIX),
+    //  - require a merge base so risk was actually measured from a diff, and
+    //  - never skip a change touching a sensitive path — including newly-created
+    //    (untracked) files that the diff-based realizedRisk cannot see.
+    const codeReviewCfg = ctx.recipe.stages?.CODE_REVIEW as Record<string, unknown> | undefined;
+    if (
+      !isIssueFix &&
+      ctx.state.mode !== "review" &&
+      mergeBase &&
+      shouldSkipForRisk(normalizeRiskLevel(risk), codeReviewCfg?.skipIfRiskBelow) &&
+      await this.changedPathsSafeToSkip(ctx, mergeBase)
+    ) {
+      ctx.appendEvent("code_review_skipped", { risk, skipIfRiskBelow: codeReviewCfg?.skipIfRiskBelow });
+      return { action: "advance" };
+    }
     const issueHeader = isIssueFix
       ? `Issue Fix Code Review (${displayIdOf(ctx.state.currentIssue!)})`
       : "Code Review";

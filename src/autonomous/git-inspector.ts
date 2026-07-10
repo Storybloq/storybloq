@@ -82,6 +82,13 @@ export async function gitDiffNames(cwd: string, base: string): Promise<GitResult
   );
 }
 
+/** Get list of untracked (new, not-ignored) file names. */
+export async function gitUntrackedNames(cwd: string): Promise<GitResult<string[]>> {
+  return git(cwd, ["ls-files", "--others", "--exclude-standard"], (out) =>
+    out.split("\n").filter((l) => l.length > 0),
+  );
+}
+
 /** Get blob hash for a file in the working tree. */
 export async function gitBlobHash(cwd: string, file: string): Promise<GitResult<string>> {
   return git(cwd, ["hash-object", file], (out) => out.trim());

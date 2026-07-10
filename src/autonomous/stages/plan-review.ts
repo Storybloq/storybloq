@@ -2,7 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
-import { requiredRounds, nextReviewer } from "../review-depth.js";
+import { requiredRounds, nextReviewer, normalizeRiskLevel, shouldSkipForRisk } from "../review-depth.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
@@ -23,13 +23,29 @@ import {
 export class PlanReviewStage implements WorkflowStage {
   readonly id = "PLAN_REVIEW";
 
-  async enter(ctx: StageContext): Promise<StageResult> {
+  async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
     const backends = reviewBackendsForClient(ctx.state.config);
     const existingReviews = ctx.state.reviews.plan;
     const roundNum = existingReviews.length + 1;
     const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const risk = ctx.state.ticket?.risk ?? "low";
     const minRounds = requiredRounds(risk as "low" | "medium" | "high");
+
+    // Opt-in risk gate (stages.PLAN_REVIEW.skipIfRiskBelow): skip plan review
+    // for a below-threshold ticket by advancing straight to the next stage
+    // (PLAN_REVIEW → IMPLEMENT / WRITE_TESTS are legal transitions). Plan-time
+    // risk has no diff to measure, so this evaluates the ticket's risk seed. The
+    // PLAN stage declines to precompute this instruction when the gate is
+    // configured, so enter() actually runs and can perform the skip. Because
+    // plan-time risk cannot see the diff, projects with sensitive paths should
+    // rely on CODE_REVIEW's gate (or a per-ticket risk seed) rather than this.
+    // Never skip in "plan" mode: that mode is terminal at plan-review approval
+    // (handled in report()), and skipping enter() would bypass its SESSION_END.
+    const planReviewCfg = ctx.recipe.stages?.PLAN_REVIEW as Record<string, unknown> | undefined;
+    if (ctx.state.mode !== "plan" && shouldSkipForRisk(normalizeRiskLevel(ctx.state.ticket?.risk), planReviewCfg?.skipIfRiskBelow)) {
+      ctx.appendEvent("plan_review_skipped", { risk, skipIfRiskBelow: planReviewCfg?.skipIfRiskBelow });
+      return { action: "advance" };
+    }
 
     if (!ctx.state.currentReviewStartedAt) {
       ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });

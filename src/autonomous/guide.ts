@@ -34,7 +34,7 @@ import {
 import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./orphan-detector.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure } from "./context-pressure.js";
-import { assessRisk, requiredRounds, nextReviewer } from "./review-depth.js";
+import { normalizeRiskLevel, requiredRounds, nextReviewer } from "./review-depth.js";
 import {
   spawnAliveSidecar,
   killSidecar,
@@ -1203,7 +1203,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           id: ticket.id,
           displayId: ticketResolution.displayId,
           title: ticket.title,
-          risk: assessRisk(ticket).risk,
+          risk: normalizeRiskLevel(ticket.risk),
           claimed: true,
         },
       };

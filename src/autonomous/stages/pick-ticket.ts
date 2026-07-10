@@ -7,6 +7,7 @@ import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, build
 import { detectBranchAffinity, checkAffinityMismatch, buildAffinityAnnotation, buildMismatchHandoverInstruction, createTicketBranch, refreshGitWorkingState } from "../branch-affinity.js";
 import { canClaim, buildClaim } from "../../core/claims.js";
 import { gitUserEmail } from "../git-inspector.js";
+import { normalizeRiskLevel } from "../review-depth.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { storybloqClientProfile } from "../client-profile.js";
 
@@ -281,7 +282,7 @@ export class PickTicketStage implements WorkflowStage {
 
     // Stage field updates (persisted atomically with state transition by processAdvance)
     ctx.updateDraft({
-      ticket: { id: ticket.id, displayId: ticket.displayId, title: ticket.title, claimed: true },
+      ticket: { id: ticket.id, displayId: ticket.displayId, title: ticket.title, risk: normalizeRiskLevel(ticket.risk), claimed: true },
       reviews: { plan: [], code: [] },
       finalizeCheckpoint: null,
       landingDecision: null,

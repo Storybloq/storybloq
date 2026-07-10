@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { assessRisk, requiredRounds, nextReviewer } from "../review-depth.js";
+import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -113,8 +113,12 @@ export class PlanStage implements WorkflowStage {
       return { action: "retry", instruction: "Plan has not changed since the last review. Address the review findings, then revise the plan and call me again." };
     }
 
-    // Compute initial risk
-    const risk = assessRisk(undefined, undefined);
+    // Initial (plan-time) risk. There is no diff yet, so it cannot be measured
+    // from change size — carry the ticket's risk seed (author-assigned at
+    // creation, defaulted to "low" at PICK). This drives the PLAN_REVIEW minimum
+    // round count via requiredRounds(). The realized, diff-measured risk is
+    // computed later in IMPLEMENT and stored as ticket.realizedRisk.
+    const risk = normalizeRiskLevel(ctx.state.ticket?.risk);
 
     // Update ticket to inprogress in .story/ with session ownership (ISS-024/ISS-027)
     let claimFailed = false;

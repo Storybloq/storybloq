@@ -512,4 +512,28 @@ describe("PickTicketStage", () => {
     // State should have ticket set
     expect(ctx.state.ticket?.id).toBe("T-001");
   });
+
+  it("seeds the session ticket risk from the ticket's risk field (auto pick path)", async () => {
+    writeFileSync(join(testRoot, ".story", "tickets", "T-001.json"), JSON.stringify({
+      id: "T-001", title: "Test ticket", description: "Build something", type: "task",
+      status: "open", phase: null, order: 10, createdDate: "2026-01-01",
+      completedDate: null, blockedBy: [], risk: "high",
+    }), "utf-8");
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const advance = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-001" });
+    expect(advance.action).toBe("advance");
+    expect(ctx.state.ticket?.risk).toBe("high");
+  });
+
+  it("defaults the session ticket risk to low when the ticket has no risk field", async () => {
+    writeFileSync(join(testRoot, ".story", "tickets", "T-001.json"), JSON.stringify({
+      id: "T-001", title: "Test ticket", description: "Build something", type: "task",
+      status: "open", phase: null, order: 10, createdDate: "2026-01-01",
+      completedDate: null, blockedBy: [],
+    }), "utf-8");
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const advance = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-001" });
+    expect(advance.action).toBe("advance");
+    expect(ctx.state.ticket?.risk).toBe("low");
+  });
 });

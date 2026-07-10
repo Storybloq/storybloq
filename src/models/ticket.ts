@@ -40,6 +40,10 @@ export const TicketSchema = z
     displayId: z.string().optional(),
     previousDisplayIds: z.array(z.string()).optional(),
     lifecycle: z.enum(LIFECYCLE_VALUES).optional(),
+    // Optional author-assignable risk seed. Consumed by the autonomous
+    // pipeline to scale PLAN_REVIEW depth (requiredRounds) and to gate the
+    // opt-in risk-based review skipping. Absent → treated as "low".
+    risk: z.enum(["low", "medium", "high"]).optional(),
     rank: z.string().optional(),
     createdAt: z.string().optional(),
     deletedAt: z.string().optional(),

@@ -19,6 +19,18 @@ const SENSITIVE_PATTERNS = [
 
 export type RiskLevel = "low" | "medium" | "high";
 
+/** Canonical risk levels, ordered lowest → highest. */
+export const RISK_LEVELS = ["low", "medium", "high"] as const;
+
+/**
+ * Coerce an arbitrary value into a valid RiskLevel, defaulting to "low".
+ * Used to read an optional, author-assignable ticket.risk seed (or any
+ * externally-sourced risk string) without trusting its shape.
+ */
+export function normalizeRiskLevel(value?: string | null): RiskLevel {
+  return value === "medium" || value === "high" ? value : "low";
+}
+
 /**
  * Assess risk from diff stats and optionally file paths.
  * <50 lines = low, 50-200 = medium, >200 = high.

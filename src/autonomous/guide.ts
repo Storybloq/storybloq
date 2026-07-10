@@ -2349,12 +2349,25 @@ function guideResult(
     branch: state.git?.branch ?? null,
   };
 
-  // T-178: Inject global anti-cancel reminder for auto mode
+  // T-178: Inject global anti-cancel reminder for auto mode.
+  // ISS-034: make it pressure-aware. Once the evaluated level reaches the
+  // actionable tier, the flat "compaction is automatic" line is misleading — on a
+  // large context window native auto-compact may not fire for a long time, and
+  // Storybloq now rotates the session at the next completed ticket instead. Tell
+  // the model the accurate thing so it neither cancels mid-work nor believes
+  // nothing will change.
   const allReminders = [...(opts.reminders ?? [])];
   if ((state.mode === "auto" || !state.mode) && currentState !== "SESSION_END") {
-    allReminders.push(
-      "NEVER cancel this session due to context size. Compaction is automatic — Storybloq preserves all session state across compactions via hooks.",
-    );
+    const level = state.contextPressure?.level ?? "low";
+    if (level === "high" || level === "critical") {
+      allReminders.push(
+        `Context pressure is ${level}. Storybloq will rotate this session at the next completed ticket to reset context — keep working through the current item; do not cancel or compact manually.`,
+      );
+    } else {
+      allReminders.push(
+        "NEVER cancel this session due to context size. Compaction is automatic — Storybloq preserves all session state across compactions via hooks.",
+      );
+    }
   }
 
   const output: GuideOutput = {

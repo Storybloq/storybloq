@@ -1,6 +1,6 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { evaluatePressure } from "../context-pressure.js";
+import { evaluatePressure, pressureMeetsThreshold } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
 import { findFirstPostComplete, type NextStageResult } from "./registry.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
@@ -94,6 +94,24 @@ export class CompleteStage implements WorkflowStage {
       }
     }
 
+    // ISS-034: context-pressure enforcement. COMPLETE is the one clean rotation
+    // boundary -- ticket committed, working tree clean, no partial work. When the
+    // evaluated pressure has reached the configured compactThreshold, rotate the
+    // session here (write a handover and end) instead of picking more work into a
+    // degrading context window. This is the ONLY place compactThreshold changes
+    // behavior; before this it merely labeled contextPressure.level for display.
+    // Rotation never overrides a decision that was already going to HANDOVER, and
+    // only fires when there is more work we would otherwise have continued into.
+    if (nextTarget === "PICK_TICKET" && pressureMeetsThreshold(pressure, ctx.state.config.compactThreshold)) {
+      ctx.appendEvent("pressure_rotation", {
+        level: pressure,
+        compactThreshold: ctx.state.config.compactThreshold,
+        ticketsDone,
+        issuesDone,
+      });
+      return this.buildHandoverResult(ctx, targetedRemaining, ticketsDone, issuesDone, { pressureRotation: true });
+    }
+
     if (nextTarget === "HANDOVER") {
       return this.buildHandoverResult(ctx, targetedRemaining, ticketsDone, issuesDone);
     }
@@ -157,6 +175,7 @@ export class CompleteStage implements WorkflowStage {
     targetedRemaining: string[] | null,
     ticketsDone: number,
     issuesDone: number,
+    opts?: { pressureRotation?: boolean },
   ): StageAdvance {
     // Check postComplete pipeline before going to HANDOVER
     const postComplete = ctx.state.resolvedPostComplete ?? ctx.recipe.postComplete;
@@ -166,9 +185,21 @@ export class CompleteStage implements WorkflowStage {
       return { action: "goto", target: postResult.stage.id };
     }
 
-    const handoverHeader = targetedRemaining !== null
-      ? `# Targeted Session Complete -- All ${ctx.state.targetWork.length} target(s) done`
-      : `# Session Complete -- ${ticketsDone} ticket(s) and ${issuesDone} issue(s) done`;
+    const pressureRotation = opts?.pressureRotation ?? false;
+    const level = ctx.state.contextPressure?.level ?? "high";
+
+    const handoverHeader = pressureRotation
+      ? `# Session Rotating -- context pressure ${level} (${ticketsDone} ticket(s), ${issuesDone} issue(s) done)`
+      : targetedRemaining !== null
+        ? `# Targeted Session Complete -- All ${ctx.state.targetWork.length} target(s) done`
+        : `# Session Complete -- ${ticketsDone} ticket(s) and ${issuesDone} issue(s) done`;
+
+    const rotationNote = pressureRotation
+      ? [
+          "",
+          `Context pressure has reached your configured \`compactThreshold\` (**${ctx.state.config.compactThreshold}**). There is more work available, but rather than continue into a degrading context window the session is rotating now, at a clean boundary -- the ticket is committed and the tree is clean. Write a handover so the next session resumes this work with a fresh context.`,
+        ]
+      : [];
 
     return {
       action: "goto",
@@ -176,6 +207,7 @@ export class CompleteStage implements WorkflowStage {
       result: {
         instruction: [
           handoverHeader,
+          ...rotationNote,
           "",
           "Write a session handover summarizing what was accomplished, decisions made, and what's next.",
           "",

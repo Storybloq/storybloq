@@ -13,12 +13,17 @@ interface Limits { calls: number; tickets: number; bytes: number; }
  * "medium" = aggressive — compact earlier.
  *
  * Default tier ("high") thresholds:
- * | Level    | Condition                              | Action           |
- * |----------|----------------------------------------|------------------|
- * | low      | <30 calls, <3 tickets, <150KB events   | Continue         |
- * | medium   | 30+ calls OR 3+ tickets OR >150KB      | Evaluate         |
- * | high     | 60+ calls OR 5+ tickets OR >800KB      | (logged only)    |
- * | critical | >90 calls OR 8+ tickets OR >1.5MB      | (logged only)    |
+ * | Level    | Condition                              | Action                    |
+ * |----------|----------------------------------------|---------------------------|
+ * | low      | <30 calls, <3 tickets, <150KB events   | Continue                  |
+ * | medium   | 30+ calls OR 3+ tickets OR >150KB      | Continue                  |
+ * | high     | 60+ calls OR 5+ tickets OR >800KB      | Rotate at next COMPLETE   |
+ * | critical | >90 calls OR 8+ tickets OR >1.5MB      | Rotate at next COMPLETE   |
+ *
+ * The Action column is enforced by pressureMeetsThreshold() below: the COMPLETE
+ * stage rotates the session (routes to HANDOVER instead of PICK_TICKET) once the
+ * evaluated level reaches the configured compactThreshold. Before ISS-034
+ * enforcement the level was computed and displayed but never acted upon.
  */
 const THRESHOLDS: Record<string, { critical: Limits; high: Limits; medium: Limits }> = {
   critical: {
@@ -57,4 +62,39 @@ export function evaluatePressure(state: FullSessionState): PressureLevel {
   if (calls >= t.high.calls || tickets >= t.high.tickets || eventsBytes > t.high.bytes) return "high";
   if (calls >= t.medium.calls || tickets >= t.medium.tickets || eventsBytes > t.medium.bytes) return "medium";
   return "low";
+}
+
+// ---------------------------------------------------------------------------
+// Pressure enforcement (ISS-034)
+// ---------------------------------------------------------------------------
+
+/** Ordinal ranking of pressure levels: low (0) -> critical (3). */
+export const PRESSURE_ORDER: Record<PressureLevel, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+/**
+ * Rank of a configured compactThreshold. The valid tier values are the
+ * THRESHOLDS keys ("medium" | "high" | "critical"); anything else -- including
+ * an unset value or the legacy/undocumented "low" -- falls back to "high", so
+ * the comparison stays consistent with evaluatePressure()'s own
+ * `THRESHOLDS[tier] ?? THRESHOLDS["high"]` fallback.
+ */
+const COMPACT_THRESHOLD_RANK: Record<string, number> = {
+  medium: PRESSURE_ORDER.medium,
+  high: PRESSURE_ORDER.high,
+  critical: PRESSURE_ORDER.critical,
+};
+
+/**
+ * Whether the evaluated pressure level has reached (>=) the configured
+ * compactThreshold, i.e. the session should rotate at the next clean boundary.
+ * Pure comparison -- the caller decides what to do when it returns true.
+ */
+export function pressureMeetsThreshold(level: PressureLevel, compactThreshold: string | undefined): boolean {
+  const thresholdRank = COMPACT_THRESHOLD_RANK[compactThreshold ?? ""] ?? PRESSURE_ORDER.high;
+  return PRESSURE_ORDER[level] >= thresholdRank;
 }

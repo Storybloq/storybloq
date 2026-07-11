@@ -797,3 +797,211 @@ describe("T-184: own-commit drift tolerance", () => {
     expect(state.state).toBe("PLAN"); // fell through to Branch B recovery
   });
 });
+
+describe("driver session id re-stamp on resume", () => {
+  // The Claude Code session id is captured at handleStart. A storybloq session
+  // outlives a single Claude Code session (context rotation, crash recovery,
+  // machine switch), so a resume can be driven by a DIFFERENT Claude Code
+  // session. These tests pin that resume refreshes claudeCodeSessionId to the
+  // live env, so telemetry never points at a dead driver session.
+  const ENV_KEY = "CLAUDE_CODE_SESSION_ID";
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    savedEnv = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = savedEnv;
+    }
+  });
+
+  // Inject the "start" driver id the way handleStart would have stamped it.
+  // v1.6.0 ownership guards treat a LIVE COMPACT lease stamped by a different
+  // Claude session as foreign (anti-theft), so the re-stamp fires only on the
+  // legitimate rotation paths: an expired lease (old driver dead — the normal
+  // rotation case) or an explicit user-confirmed takeover.
+  function seedStartSessionId(
+    sessionId: string,
+    startId: string,
+    opts: { expireLease?: boolean } = {},
+  ): void {
+    const dir = join(sessionsDir, sessionId);
+    const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as FullSessionState;
+    writeSessionSync(dir, {
+      ...state,
+      claudeCodeSessionId: startId,
+      ...(opts.expireLease
+        ? { lease: { ...state.lease, expiresAt: new Date(Date.now() - 60_000).toISOString() } }
+        : {}),
+    });
+  }
+
+  it("Branch A: re-stamps claudeCodeSessionId to the live env id on clean resume (expired lease)", async () => {
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    seedStartSessionId(session.sessionId, "start-cc-session", { expireLease: true });
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+    process.env[ENV_KEY] = "resume-cc-session-A";
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const state = JSON.parse(
+      readFileSync(join(sessionsDir, session.sessionId, "state.json"), "utf-8"),
+    ) as FullSessionState;
+    expect(state.state).toBe("PLAN");
+    expect(state.claudeCodeSessionId).toBe("resume-cc-session-A");
+  });
+
+  it("Branch B: re-stamps claudeCodeSessionId to the live env id on drift recovery (explicit takeover)", async () => {
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    seedStartSessionId(session.sessionId, "start-cc-session");
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "drifted-head" } });
+    process.env[ENV_KEY] = "resume-cc-session-B";
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+      takeover: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const state = JSON.parse(
+      readFileSync(join(sessionsDir, session.sessionId, "state.json"), "utf-8"),
+    ) as FullSessionState;
+    expect(state.state).toBe("PLAN"); // drift recovery ran
+    expect(state.claudeCodeSessionId).toBe("resume-cc-session-B");
+  });
+
+  it("Branch C (git unavailable): the blocked-state write still re-stamps with the rebound owner", async () => {
+    // Branch C rebinds ownerTask and refreshes the lease even though the
+    // resume is blocked — leaving the old Claude driver id in place would
+    // publish new ownership with a dead driver (curation review, PR #24).
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    seedStartSessionId(session.sessionId, "start-cc-session", { expireLease: true });
+    mockedGitHead.mockResolvedValue({ ok: false } as never);
+    process.env[ENV_KEY] = "resume-cc-session-D";
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBe(true); // resume itself is blocked (Branch C)
+    const state = JSON.parse(
+      readFileSync(join(sessionsDir, session.sessionId, "state.json"), "utf-8"),
+    ) as FullSessionState;
+    expect(state.resumeBlocked).toBe(true);
+    expect(state.claudeCodeSessionId).toBe("resume-cc-session-D");
+  });
+
+  it("refuses resume (and does not re-stamp) when a LIVE lease belongs to a different Claude session", async () => {
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    seedStartSessionId(session.sessionId, "start-cc-session");
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+    process.env[ENV_KEY] = "resume-cc-session-C";
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBe(true);
+    const state = JSON.parse(
+      readFileSync(join(sessionsDir, session.sessionId, "state.json"), "utf-8"),
+    ) as FullSessionState;
+    expect(state.claudeCodeSessionId).toBe("start-cc-session");
+  });
+
+  it("preserves the existing claudeCodeSessionId when no live env id is present", async () => {
+    const session = createCompactSession(root, { preCompactState: "PLAN" });
+    seedStartSessionId(session.sessionId, "start-cc-session");
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+    delete process.env[ENV_KEY];
+
+    const result = await handleAutonomousGuide(root, {
+      action: "resume",
+      sessionId: session.sessionId,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const state = JSON.parse(
+      readFileSync(join(sessionsDir, session.sessionId, "state.json"), "utf-8"),
+    ) as FullSessionState;
+    // No live env → must not wipe a valid prior id to null.
+    expect(state.claudeCodeSessionId).toBe("start-cc-session");
+  });
+
+  // Fork (T-1218/C4): the driver stamp is coupled to the EFFECTIVE owner, not
+  // just the live env. A non-Claude takeover must CLEAR a stale Claude driver id
+  // so liveness never points at a dead Claude session, and a Claude rebind must
+  // stamp the rebound owner's id even when the env id is absent.
+  it("Codex takeover CLEARS a stale claudeCodeSessionId (non-Claude owner)", async () => {
+    const savedClient = process.env.STORYBLOQ_CLIENT;
+    process.env.STORYBLOQ_CLIENT = "codex";
+    try {
+      const session = createCompactSession(root, { preCompactState: "IMPLEMENT" });
+      const dir = join(sessionsDir, session.sessionId);
+      // Live foreign Codex lease + a stale Claude driver id left over from before.
+      writeSessionSync(dir, {
+        ...session,
+        ownerTask: { client: "codex", id: "dead-task", boundAt: "2026-07-09T00:00:00Z" },
+        claudeCodeSessionId: "stale-claude-session",
+      });
+      mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+      // A live env id must NOT resurrect the driver stamp on a Codex takeover.
+      process.env[ENV_KEY] = "resume-cc-should-be-ignored";
+
+      const result = await handleAutonomousGuide(root, {
+        action: "resume",
+        sessionId: session.sessionId,
+        clientTaskId: "replacement-task",
+        takeover: true,
+      });
+
+      expect(result.isError).toBeFalsy();
+      const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as FullSessionState;
+      expect(state.ownerTask).toMatchObject({ client: "codex", id: "replacement-task" });
+      // The stale Claude driver id is cleared, not kept and not swapped for env.
+      expect(state.claudeCodeSessionId ?? null).toBeNull();
+    } finally {
+      if (savedClient === undefined) delete process.env.STORYBLOQ_CLIENT;
+      else process.env.STORYBLOQ_CLIENT = savedClient;
+    }
+  });
+
+  it("Claude rebind on an expired lease stamps the rebound owner id even with NO env id", async () => {
+    const savedClient = process.env.STORYBLOQ_CLIENT;
+    process.env.STORYBLOQ_CLIENT = "claude";
+    try {
+      const session = createCompactSession(root, { preCompactState: "PLAN" });
+      const dir = join(sessionsDir, session.sessionId);
+      // Old driver id + expired lease → the resuming Claude task adopts ownership.
+      seedStartSessionId(session.sessionId, "start-cc-session", { expireLease: true });
+      mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "abc123" } });
+      // Crucially NO live env id: the old code path (env-only re-stamp) would
+      // preserve "start-cc-session"; the fork stamps the rebound owner task id.
+      delete process.env[ENV_KEY];
+
+      const result = await handleAutonomousGuide(root, {
+        action: "resume",
+        sessionId: session.sessionId,
+        clientTaskId: "new-claude-session",
+      });
+
+      expect(result.isError).toBeFalsy();
+      const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as FullSessionState;
+      expect(state.ownerTask).toMatchObject({ client: "claude", id: "new-claude-session" });
+      expect(state.claudeCodeSessionId).toBe("new-claude-session");
+    } finally {
+      if (savedClient === undefined) delete process.env.STORYBLOQ_CLIENT;
+      else process.env.STORYBLOQ_CLIENT = savedClient;
+    }
+  });
+});

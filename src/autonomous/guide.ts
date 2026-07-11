@@ -1829,6 +1829,23 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ));
   }
 
+  const resumeCcSessionId = captureClaudeCodeSessionId();
+  // Keep the driver stamp coupled to the EFFECTIVE owner: a Claude owner stamps
+  // its session id (ownerTask.id IS the Claude session id); a non-Claude owner
+  // (e.g. a Codex takeover) must CLEAR a stale Claude driver id so liveness
+  // heuristics never point at a dead driver; with no owner task at all (legacy
+  // sessions), fall back to the live env id.
+  const restampDriverPatch = (
+    owner: { client: string; id: string } | null | undefined,
+  ): { claudeCodeSessionId?: string | null } =>
+    owner?.client === "claude"
+      ? { claudeCodeSessionId: owner.id }
+      : owner
+        ? { claudeCodeSessionId: null }
+        : resumeCcSessionId
+          ? { claudeCodeSessionId: resumeCcSessionId }
+          : {};
+
   // ISS-032: 3-branch HEAD validation
   const headResult = await gitHead(root);
   const expectedHead = info.state.git.expectedHead;
@@ -1841,6 +1858,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       ...refreshLease(info.state),
       resumeBlocked: true,
       ownerTask: reboundOwnerTask,
+      // Branch C rebinds ownership and refreshes the lease even though the
+      // resume itself is blocked — the driver stamp must move with it, or
+      // status.json publishes new ownership with a dead Claude driver id.
+      ...restampDriverPatch(reboundOwnerTask),
     } as FullSessionState, "always");
     appendEvent(info.dir, {
       rev: blockedState.revision,
@@ -1869,6 +1890,15 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   try {
     resumeSidecarPid = spawnAliveSidecar(telemetryDirPath(info.dir));
   } catch { /* best-effort */ }
+
+  // Re-stamp the driving Claude Code session id. A resume can run under a
+  // different Claude Code session than the one that started this storybloq
+  // session (context rotation, crash recovery, machine switch), so the id
+  // captured at handleStart goes stale. Refresh it here — like the sidecar
+  // above — so telemetry (status.json.claudeCodeSessionId) points at the
+  // process now driving the session. Only overwrite when a live env id is
+  // present, to avoid wiping a valid id when resume runs outside a Claude
+  // Code env (captureClaudeCodeSessionId() → null).
 
   try {
 
@@ -1908,6 +1938,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash },
       sidecarPid: resumeSidecarPid,
       ownerTask: reboundOwnerTask,
+      ...restampDriverPatch(reboundOwnerTask),
     } as FullSessionState, "always");
 
     appendEvent(info.dir, {
@@ -2076,6 +2107,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ...(ownCommitDrift ? { git: { ...info.state.git, expectedHead: headResult.data.hash } } : {}),
     sidecarPid: resumeSidecarPid,
     ownerTask: reboundOwnerTask,
+    ...restampDriverPatch(reboundOwnerTask),
   } as FullSessionState, "always");
   appendEvent(info.dir, {
     rev: written.revision,

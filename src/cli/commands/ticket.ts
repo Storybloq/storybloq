@@ -24,8 +24,10 @@ import {
 import {
   TICKET_STATUSES,
   TICKET_TYPES,
+  TICKET_RISK_LEVELS,
   type TicketStatus,
   type TicketType,
+  type TicketRisk,
 } from "../../models/types.js";
 import type { Ticket } from "../../models/ticket.js";
 import {
@@ -52,6 +54,7 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "status",
   "phase",
   "order",
+  "risk",
   "createdDate",
   "completedDate",
   "blockedBy",
@@ -292,6 +295,7 @@ export async function handleTicketCreate(
     description: string;
     blockedBy: string[];
     parentTicket: string | null;
+    risk?: string;
   },
   format: string,
   root: string,
@@ -300,6 +304,12 @@ export async function handleTicketCreate(
     throw new CliValidationError(
       "invalid_input",
       `Unknown ticket type "${args.type}": must be one of ${TICKET_TYPES.join(", ")}`,
+    );
+  }
+  if (args.risk !== undefined && !TICKET_RISK_LEVELS.includes(args.risk as TicketRisk)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Unknown ticket risk "${args.risk}": must be one of ${TICKET_RISK_LEVELS.join(", ")}`,
     );
   }
 
@@ -343,6 +353,7 @@ export async function handleTicketCreate(
       completedDate: null,
       blockedBy: resolvedBlockedBy,
       parentTicket: resolvedParent,
+      ...(args.risk !== undefined && { risk: args.risk as TicketRisk }),
     };
 
     validatePostWriteState(ticket, state, true);
@@ -369,6 +380,7 @@ export async function handleTicketUpdate(
     blockedBy?: string[];
     crossNodeBlockedBy?: string[] | null;
     parentTicket?: string | null;
+    risk?: string;
   },
   format: string,
   root: string,
@@ -383,6 +395,12 @@ export async function handleTicketUpdate(
     throw new CliValidationError(
       "invalid_input",
       `Unknown ticket type "${updates.type}": must be one of ${TICKET_TYPES.join(", ")}`,
+    );
+  }
+  if (updates.risk !== undefined && !TICKET_RISK_LEVELS.includes(updates.risk as TicketRisk)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Unknown ticket risk "${updates.risk}": must be one of ${TICKET_RISK_LEVELS.join(", ")}`,
     );
   }
 
@@ -431,6 +449,7 @@ export async function handleTicketUpdate(
       ...(resolvedBlockedBy !== undefined && { blockedBy: resolvedBlockedBy }),
       ...(updates.crossNodeBlockedBy !== undefined && { crossNodeBlockedBy: updates.crossNodeBlockedBy ?? undefined }),
       ...(updates.parentTicket !== undefined && { parentTicket: resolvedParent }),
+      ...(updates.risk !== undefined && { risk: updates.risk as TicketRisk }),
       ...statusChanges,
     };
 

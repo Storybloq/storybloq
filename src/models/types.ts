@@ -37,6 +37,12 @@ export type TicketStatus = (typeof TICKET_STATUSES)[number];
 export const TICKET_TYPES = ["task", "feature", "chore"] as const;
 export type TicketType = (typeof TICKET_TYPES)[number];
 
+// Author-assignable risk seed. Canonical levels, ordered lowest → highest.
+// Consumed by the autonomous pipeline to scale review depth and to gate the
+// opt-in risk-based review skipping (see autonomous/review-depth.ts).
+export const TICKET_RISK_LEVELS = ["low", "medium", "high"] as const;
+export type TicketRisk = (typeof TICKET_RISK_LEVELS)[number];
+
 // --- Issue enums ---
 
 export const ISSUE_STATUSES = ["open", "inprogress", "resolved"] as const;

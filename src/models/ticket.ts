@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   TICKET_STATUSES,
   TICKET_TYPES,
+  TICKET_RISK_LEVELS,
   LIFECYCLE_VALUES,
   DateSchema,
   TimestampSchema,
@@ -42,8 +43,9 @@ export const TicketSchema = z
     lifecycle: z.enum(LIFECYCLE_VALUES).optional(),
     // Optional author-assignable risk seed. Consumed by the autonomous
     // pipeline to scale PLAN_REVIEW depth (requiredRounds) and to gate the
-    // opt-in risk-based review skipping. Absent → treated as "low".
-    risk: z.enum(["low", "medium", "high"]).optional(),
+    // opt-in risk-based review skipping. Absent → review depth defaults to
+    // "low" (one round) but a skip gate NEVER fires (unclassified is not low).
+    risk: z.enum(TICKET_RISK_LEVELS).optional(),
     rank: z.string().optional(),
     createdAt: z.string().optional(),
     deletedAt: z.string().optional(),

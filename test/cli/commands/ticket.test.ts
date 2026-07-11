@@ -323,6 +323,44 @@ describe("handleTicketCreate", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.data.createdDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
+
+  it("persists a valid risk seed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-create-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await handleTicketCreate(
+      { title: "Risky", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, risk: "high" },
+      "json", dir,
+    );
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.risk).toBe("high");
+    const raw = await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8");
+    expect(JSON.parse(raw).risk).toBe("high");
+  });
+
+  it("omits risk when unset (never stamps a default)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-create-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "No risk", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+      "md", dir,
+    );
+    const raw = await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8");
+    expect(JSON.parse(raw).risk).toBeUndefined();
+  });
+
+  it("rejects an invalid risk value", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-create-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await expect(
+      handleTicketCreate(
+        { title: "Bad", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, risk: "banana" },
+        "md", dir,
+      ),
+    ).rejects.toThrow("Unknown ticket risk");
+  });
 });
 
 describe("handleTicketUpdate", () => {
@@ -461,6 +499,37 @@ describe("handleTicketUpdate", () => {
     await expect(
       handleTicketUpdate("T-001", { type: "invalid" }, "md", dir),
     ).rejects.toThrow("Unknown ticket type");
+  });
+
+  it("updates the risk seed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    const result = await handleTicketUpdate("T-001", { risk: "medium" }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.risk).toBe("medium");
+    const raw = await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8");
+    expect(JSON.parse(raw).risk).toBe("medium");
+  });
+
+  it("rejects an invalid risk value on update", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    await expect(
+      handleTicketUpdate("T-001", { risk: "banana" }, "md", dir),
+    ).rejects.toThrow("Unknown ticket risk");
+  });
+
+  it("leaves an unset risk untouched on unrelated updates", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    // Seed a risk, then update only the title — risk must survive unchanged.
+    await handleTicketUpdate("T-001", { risk: "high" }, "md", dir);
+    const result = await handleTicketUpdate("T-001", { title: "Renamed" }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.risk).toBe("high");
   });
 });
 

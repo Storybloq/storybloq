@@ -443,11 +443,13 @@ Do NOT search source code for this. The full config.json schema is shown below. 
         "command": "string (default: npm run build)"
       },
       "PLAN_REVIEW": {
-        "backends": ["codex", "agent"]
+        "backends": ["codex", "agent"],
+        "skipIfRiskBelow": "low|medium|high (opt-in; skips the stage when the ticket's EXPLICIT risk seed ranks strictly below the floor; an unclassified ticket never skips)"
       },
       "CODE_REVIEW": {
         "backends": ["codex", "agent"],
-        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds))"
+        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds))",
+        "skipIfRiskBelow": "low|medium|high (opt-in; requires a MEASURED realized risk below the floor, a fully tracked change set with no untracked files, and no sensitive paths; anything unmeasured reviews)"
       },
       "LESSON_CAPTURE": { "enabled": "boolean" },
       "ISSUE_SWEEP": { "enabled": "boolean" }

@@ -48,14 +48,14 @@ storybloq ticket blocked [--format json|md]
 Create a new ticket
 
 ```
-storybloq ticket create --title <t> --type <type> [--phase <p>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
+storybloq ticket create --title <t> --type <type> [--phase <p>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--risk <low|medium|high>] [--format json|md]
 ```
 
 ### ticket update
 Update a ticket
 
 ```
-storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
+storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--risk <low|medium|high>] [--format json|md]
 ```
 
 ### ticket meta
@@ -529,8 +529,8 @@ The tools below are registered in full mode (inside a .story/ project).
 - **storybloq_note_get** (id) — Get note by ID
 - **storybloq_note_create** (content, title?, tags?) — Create note
 - **storybloq_note_update** (id, content?, title?, tags?, status?) — Update note
-- **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?) — Create ticket
-- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?) — Update ticket
+- **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?, risk?) — Create ticket. risk seed drives review depth/skip gates; unset = never skip
+- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, risk?) — Update ticket. risk seed drives review depth/skip gates; unset = never skip
 - **storybloq_ticket_meta_set** (id, path, value) — Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path) — Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, phase?) — Create issue

@@ -1019,6 +1019,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Parent ticket ID (makes this a sub-ticket)",
                 })
+                .option("risk", {
+                  type: "string",
+                  describe: "Risk seed (low|medium|high) — drives review depth and review-skip gates",
+                })
                 .conflicts("description", "stdin"),
             )),
           async (argv) => {
@@ -1059,6 +1063,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   ),
                   parentTicket:
                     argv["parent-ticket"] === "" ? null : (argv["parent-ticket"] as string | undefined) ?? null,
+                  risk: argv.risk as string | undefined,
                 },
                 format,
                 eff.root,
@@ -1139,6 +1144,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Parent ticket ID",
                 })
+                .option("risk", {
+                  type: "string",
+                  describe: "Risk seed (low|medium|high) — drives review depth and review-skip gates",
+                })
                 .option("node", {
                   type: "string",
                   describe: "Node name (orchestrator only)",
@@ -1196,6 +1205,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                     : undefined,
                   crossNodeBlockedBy,
                   parentTicket: argv["parent-ticket"] === "" ? null : argv["parent-ticket"] as string | undefined,
+                  risk: argv.risk as string | undefined,
                 },
                 format,
                 eff.root,

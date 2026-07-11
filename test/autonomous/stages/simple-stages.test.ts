@@ -129,14 +129,31 @@ describe("ImplementStage", () => {
     expect("result" in advance).toBe(false);
   });
 
-  it("report() updates ticket with realizedRisk", async () => {
+  it("report() leaves realizedRisk ABSENT when the diff cannot be measured (fail-closed)", async () => {
+    // Adapted with the explicit-risk hardening: gitDiffStat fails in this
+    // harness (no real repo history), and a failed measurement must not
+    // fabricate a realizedRisk from the seed — an absent value means
+    // "unmeasured" and the CODE_REVIEW skip gate reviews instead of skipping.
     const state = makeState({
       state: "IMPLEMENT",
       ticket: { id: "T-001", title: "Test", claimed: true, risk: "low" },
     });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     await stage.report(ctx, { completedAction: "implementation_done" });
-    expect(ctx.state.ticket?.realizedRisk).toBeDefined();
+    expect(ctx.state.ticket?.realizedRisk).toBeUndefined();
+  });
+
+  it("report() CLEARS a stale realizedRisk when re-measurement fails (fix-wave round)", async () => {
+    // After CODE_REVIEW -> IMPLEMENT the ticket carries the previous round's
+    // measurement; a failed re-measurement must not leave it in place or the
+    // skip gate could act on an outdated value.
+    const state = makeState({
+      state: "IMPLEMENT",
+      ticket: { id: "T-001", title: "Test", claimed: true, risk: "low", realizedRisk: "low" },
+    });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
+    await stage.report(ctx, { completedAction: "implementation_done" });
+    expect(ctx.state.ticket?.realizedRisk).toBeUndefined();
   });
 });
 
@@ -525,7 +542,11 @@ describe("PickTicketStage", () => {
     expect(ctx.state.ticket?.risk).toBe("high");
   });
 
-  it("defaults the session ticket risk to low when the ticket has no risk field", async () => {
+  it("leaves the session ticket risk UNSET when the ticket has no risk field", async () => {
+    // Fork hardening (T-1218/C1): PICK no longer stamps a default "low" risk on
+    // an unseeded ticket. A stamped "low" would let a risk-skip gate silently
+    // drop review of an unclassified change; the strict reader keeps risk absent
+    // (explicitRiskLevel(undefined) ?? undefined) so the skip gate stays disabled.
     writeFileSync(join(testRoot, ".story", "tickets", "T-001.json"), JSON.stringify({
       id: "T-001", title: "Test ticket", description: "Build something", type: "task",
       status: "open", phase: null, order: 10, createdDate: "2026-01-01",
@@ -534,6 +555,6 @@ describe("PickTicketStage", () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
     const advance = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-001" });
     expect(advance.action).toBe("advance");
-    expect(ctx.state.ticket?.risk).toBe("low");
+    expect(ctx.state.ticket?.risk).toBeUndefined();
   });
 });

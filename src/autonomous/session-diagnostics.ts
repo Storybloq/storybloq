@@ -1,4 +1,4 @@
-import { requiredRounds, type RiskLevel } from "./review-depth.js";
+import { requiredRounds, effectiveSkipRisk, type RiskLevel } from "./review-depth.js";
 import type { EventEntry, FullSessionState } from "./session-types.js";
 
 export const DEFAULT_CODE_REVIEW_MAX_ROUNDS = 12;
@@ -92,7 +92,7 @@ export function analyzeSessionDiagnostics(
     ?? lastCodeReview?.unresolvedCriticalCount
     ?? null;
   const lastMajorCount = lastReviewVerdict?.majorCount ?? lastCodeReview?.majorCount ?? null;
-  const risk = state.ticket?.realizedRisk ?? state.ticket?.risk ?? "low";
+  const risk = effectiveSkipRisk(state.ticket?.risk, state.ticket?.realizedRisk) ?? "low";
   const maxReviewRounds = effectiveCodeReviewMaxRounds(risk, state.resolvedStages);
   const codeReviewRounds = codeReviews.length;
   const codeReviewBacktracks = countCodeReviewBacktracks(events.events);

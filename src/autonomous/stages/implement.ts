@@ -44,8 +44,12 @@ export class ImplementStage implements WorkflowStage {
       return { action: "goto", target: "COMPLETE" };
     }
 
-    // Risk recomputation from actual diff
-    let realizedRisk = ctx.state.ticket?.risk ?? "low";
+    // Risk recomputation from actual diff. realizedRisk is persisted ONLY when
+    // it was actually measured: defaulting to the seed (or "low") on a failed
+    // gitDiffStat would fabricate an explicit measurement out of nothing and
+    // let the CODE_REVIEW skip gate act on it. Absent realizedRisk means
+    // "unmeasured" and the gate reviews (fail-closed).
+    let realizedRisk: string | undefined;
     const mergeBase = ctx.state.git.mergeBase;
     if (mergeBase) {
       const diffResult = await gitDiffStat(ctx.root, mergeBase);
@@ -55,9 +59,14 @@ export class ImplementStage implements WorkflowStage {
       }
     }
 
-    // Stage field updates (persisted atomically with state transition by processAdvance)
+    // Stage field updates (persisted atomically with state transition by
+    // processAdvance). realizedRisk is assigned UNCONDITIONALLY: on a repeated
+    // implement round (CODE_REVIEW → IMPLEMENT fix wave) a failed re-measurement
+    // must CLEAR a stale prior measurement, not let the gate skip on it.
     ctx.updateDraft({
-      ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk } : ctx.state.ticket,
+      ticket: ctx.state.ticket
+        ? { ...ctx.state.ticket, realizedRisk }
+        : ctx.state.ticket,
     });
 
     // T-139: Return plain advance — let the next stage's enter() provide its own instruction.

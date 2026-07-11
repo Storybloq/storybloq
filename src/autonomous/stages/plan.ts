@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { normalizeRiskLevel, requiredRounds, nextReviewer, shouldSkipForRisk } from "../review-depth.js";
+import { normalizeRiskLevel, explicitRiskLevel, requiredRounds, nextReviewer, shouldSkipForRisk } from "../review-depth.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -115,10 +115,15 @@ export class PlanStage implements WorkflowStage {
 
     // Initial (plan-time) risk. There is no diff yet, so it cannot be measured
     // from change size — carry the ticket's risk seed (author-assigned at
-    // creation, defaulted to "low" at PICK). This drives the PLAN_REVIEW minimum
-    // round count via requiredRounds(). The realized, diff-measured risk is
-    // computed later in IMPLEMENT and stored as ticket.realizedRisk.
-    const risk = normalizeRiskLevel(ctx.state.ticket?.risk);
+    // creation; an absent seed stays absent and never satisfies a skip gate).
+    // depthRisk drives ONLY the PLAN_REVIEW minimum round count via
+    // requiredRounds(); the realized, diff-measured risk is computed later in
+    // IMPLEMENT and stored as ticket.realizedRisk.
+    // depthRisk drives ONLY the round-count display/minimum (more rounds never
+    // hurt). The PERSISTED seed stays explicit-or-absent below — writing the
+    // normalized "low" back into session state was the third stamping site that
+    // let an unclassified ticket satisfy skipIfRiskBelow (Codex R2 finding 1).
+    const depthRisk = normalizeRiskLevel(ctx.state.ticket?.risk);
 
     // Update ticket to inprogress in .story/ with session ownership (ISS-024/ISS-027)
     let claimFailed = false;
@@ -186,7 +191,9 @@ export class PlanStage implements WorkflowStage {
 
     // Stage field updates (persisted atomically with state transition by processAdvance)
     ctx.updateDraft({
-      ticket: ctx.state.ticket ? { ...ctx.state.ticket, risk, lastPlanHash: planHash } : ctx.state.ticket,
+      ticket: ctx.state.ticket
+        ? { ...ctx.state.ticket, risk: explicitRiskLevel(ctx.state.ticket.risk) ?? undefined, lastPlanHash: planHash }
+        : ctx.state.ticket,
     });
 
     // Produce PLAN_REVIEW instruction (advance with result for hybrid dispatch)
@@ -194,7 +201,7 @@ export class PlanStage implements WorkflowStage {
     const existingPlanReviews = ctx.state.reviews.plan;
     const roundNum = existingPlanReviews.length + 1;
     const reviewer = nextReviewer(existingPlanReviews, backends);
-    const minRounds = requiredRounds(risk);
+    const minRounds = requiredRounds(depthRisk);
 
     // Opt-in: when PLAN_REVIEW is risk-gated below this ticket's risk, return a
     // bare advance so the walker enters PLAN_REVIEW and its enter() performs the
@@ -202,7 +209,8 @@ export class PlanStage implements WorkflowStage {
     // PLAN_REVIEW instruction here would bypass that enter(). With no gate
     // configured this is a no-op and the precomputed dispatch below is unchanged.
     const planReviewCfg = ctx.recipe.stages?.PLAN_REVIEW as Record<string, unknown> | undefined;
-    if (shouldSkipForRisk(risk, planReviewCfg?.skipIfRiskBelow)) {
+    const explicitSeed = explicitRiskLevel(ctx.state.ticket?.risk);
+    if (explicitSeed !== null && shouldSkipForRisk(explicitSeed, planReviewCfg?.skipIfRiskBelow)) {
       return { action: "advance" };
     }
 

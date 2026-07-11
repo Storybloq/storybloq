@@ -3,7 +3,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
-import { requiredRounds, nextReviewer, normalizeRiskLevel, shouldSkipForRisk, hasSensitivePath } from "../review-depth.js";
+import { requiredRounds, nextReviewer, effectiveSkipRisk, explicitRiskLevel, shouldSkipForRisk, hasSensitivePath } from "../review-depth.js";
 import { effectiveCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { gitDiffNames, gitUntrackedNames } from "../git-inspector.js";
 import { clearCache } from "../lens-harness/cache.js";
@@ -40,7 +40,11 @@ export class CodeReviewStage implements WorkflowStage {
     if (!tracked.ok) return false;
     const untracked = await gitUntrackedNames(ctx.root);
     if (!untracked.ok) return false;
-    return !hasSensitivePath([...tracked.data, ...untracked.data]);
+    // Untracked files are invisible to the diff-based size measurement
+    // (git diff --numstat), so ANY untracked file makes the realized risk
+    // unmeasurable — review instead of skipping, regardless of sensitivity.
+    if (untracked.data.length > 0) return false;
+    return !hasSensitivePath(tracked.data);
   }
 
   async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
@@ -48,8 +52,12 @@ export class CodeReviewStage implements WorkflowStage {
     const codeReviews = ctx.state.reviews.code;
     const roundNum = codeReviews.length + 1;
     const reviewer = nextReviewer(codeReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
-    const risk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk ?? "low";
-    const rounds = requiredRounds(risk as "low" | "medium" | "high");
+    // Effective risk is the MAX of the explicit ticket seed and the realized
+    // (diff-measured) risk — a high-risk ticket with a small diff must never
+    // downgrade. null = unclassified (skip gate disabled; depth defaults low).
+    const explicitRisk = effectiveSkipRisk(ctx.state.ticket?.risk, ctx.state.ticket?.realizedRisk);
+    const risk = explicitRisk ?? "low";
+    const rounds = requiredRounds(risk);
     const mergeBase = ctx.state.git.mergeBase;
     const isIssueFix = !!ctx.state.currentIssue;
 
@@ -68,7 +76,12 @@ export class CodeReviewStage implements WorkflowStage {
       !isIssueFix &&
       ctx.state.mode !== "review" &&
       mergeBase &&
-      shouldSkipForRisk(normalizeRiskLevel(risk), codeReviewCfg?.skipIfRiskBelow) &&
+      // The skip decision must rest on a MEASURED risk: a seed alone proves
+      // nothing about the diff, and IMPLEMENT leaves realizedRisk absent when
+      // measurement failed (fail-closed).
+      explicitRiskLevel(ctx.state.ticket?.realizedRisk) !== null &&
+      explicitRisk !== null &&
+      shouldSkipForRisk(explicitRisk, codeReviewCfg?.skipIfRiskBelow) &&
       await this.changedPathsSafeToSkip(ctx, mergeBase)
     ) {
       ctx.appendEvent("code_review_skipped", { risk, skipIfRiskBelow: codeReviewCfg?.skipIfRiskBelow });
@@ -250,8 +263,8 @@ export class CodeReviewStage implements WorkflowStage {
       ctx.writeState({ codexUnavailable: true, codexUnavailableSince: new Date().toISOString() });
     }
 
-    const risk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk ?? "low";
-    const minRounds = requiredRounds(risk as "low" | "medium" | "high");
+    const risk = effectiveSkipRisk(ctx.state.ticket?.risk, ctx.state.ticket?.realizedRisk) ?? "low";
+    const minRounds = requiredRounds(risk);
     const maxReviewRounds = effectiveCodeReviewMaxRounds(risk, ctx.recipe.stages);
     // ISS-073: Only count unresolved findings (open/contested) as contradictory with approve
     const hasCriticalOrMajor = findings.some(

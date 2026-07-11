@@ -158,7 +158,11 @@ describe("PLAN carries the ticket risk seed into review depth", () => {
     }
   });
 
-  it("defaults an unseeded ticket to low → 1 plan-review round (unchanged behavior)", async () => {
+  it("keeps an unseeded ticket UNCLASSIFIED while depth defaults to 1 round", async () => {
+    // Adapted 2026-07-11 (Codex R2 finding 1): the old behavior persisted the
+    // normalized "low" back into session state, which made an unclassified
+    // ticket satisfy skipIfRiskBelow. Depth still defaults to low (1 round),
+    // but the PERSISTED seed stays absent so skip gates can never fire on it.
     writeStoryProject(testRoot, baseTicket);
     const state = makeState({ ticket: { id: "T-001", title: "Test ticket", claimed: true } });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
@@ -166,7 +170,7 @@ describe("PLAN carries the ticket risk seed into review depth", () => {
     const advance = await plan.report(ctx, { completedAction: "plan_written" });
 
     expect(advance.action).toBe("advance");
-    expect(ctx.state.ticket?.risk).toBe("low");
+    expect(ctx.state.ticket?.risk).toBeUndefined();
     if (advance.action === "advance" && "result" in advance && advance.result) {
       expect(advance.result.instruction).toContain("of 1 minimum");
     } else {

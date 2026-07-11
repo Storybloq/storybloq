@@ -225,6 +225,27 @@ describe("CODE_REVIEW.enter() risk gate", () => {
     expect("instruction" in result).toBe(true);
   });
 
+  it("does NOT skip on an explicit low SEED when the realized risk was never measured (fail-closed)", async () => {
+    // A seed alone proves nothing about the diff; IMPLEMENT leaves
+    // realizedRisk absent when gitDiffStat failed.
+    const base = initGitRepo(testRoot);
+    const state = makeState({ state: "CODE_REVIEW", git: gitAt(base), ticket: { id: "T-001", title: "T", claimed: true, risk: "low" } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ CODE_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await stage.enter(ctx);
+    expect("instruction" in result).toBe(true);
+  });
+
+  it("does NOT skip when ANY untracked file is present, even a non-sensitive one", async () => {
+    // Untracked files are invisible to git diff --numstat, so the realized
+    // risk is unmeasurable regardless of path sensitivity.
+    const base = initGitRepo(testRoot);
+    writeFileSync(join(testRoot, "harmless-helper.ts"), "export const x = 1;\n", "utf-8"); // untracked, NOT sensitive
+    const state = makeState({ state: "CODE_REVIEW", git: gitAt(base), ticket: { id: "T-001", title: "T", claimed: true, realizedRisk: "low" } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ CODE_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await stage.enter(ctx);
+    expect("instruction" in result).toBe(true);
+  });
+
   it("skipIfRiskBelow 'medium' + realizedRisk high → runs the review", async () => {
     const state = makeState({ state: "CODE_REVIEW", ticket: { id: "T-001", title: "T", claimed: true, realizedRisk: "high" } });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ CODE_REVIEW: { skipIfRiskBelow: "medium" } }));
@@ -304,6 +325,63 @@ describe("PLAN_REVIEW.enter() risk gate", () => {
   });
 });
 
+describe("fork hardening: skip gate fires only on explicit risk", () => {
+  let testRoot: string;
+  let sessionDir: string;
+  const codeReview = new CodeReviewStage();
+  const planReview = new PlanReviewStage();
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(tmpdir(), "fork-gate-"));
+    sessionDir = join(testRoot, ".story", "sessions", SESSION_ID);
+    mkdirSync(sessionDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  // (a) An UNCLASSIFIED ticket (risk absent) must never be skipped, even with a
+  // clean sensitive-free tree that would otherwise satisfy the CODE_REVIEW gate,
+  // and with the seed-only PLAN_REVIEW gate. null risk disables both gates.
+  it("(a) unclassified ticket → CODE_REVIEW is NOT skipped (clean tree, gate configured)", async () => {
+    const base = initGitRepo(testRoot);
+    const state = makeState({ state: "CODE_REVIEW", git: gitAt(base), ticket: { id: "T-001", title: "T", claimed: true } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ CODE_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await codeReview.enter(ctx);
+    expect("instruction" in result).toBe(true);
+  });
+
+  it("(a) unclassified ticket → PLAN_REVIEW is NOT skipped (gate configured)", async () => {
+    const state = makeState({ state: "PLAN_REVIEW", ticket: { id: "T-001", title: "T", claimed: true } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ PLAN_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await planReview.enter(ctx);
+    expect("instruction" in result).toBe(true);
+  });
+
+  // (b) A high seed must survive a low realized risk: CODE_REVIEW runs AND its
+  // depth reflects the high seed (requiredRounds("high") === 3), never the diff.
+  it("(b) seed high + realized low → CODE_REVIEW runs with 3-round depth", async () => {
+    const state = makeState({ state: "CODE_REVIEW", ticket: { id: "T-001", title: "T", claimed: true, risk: "high", realizedRisk: "low" } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ CODE_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await codeReview.enter(ctx);
+    if ("instruction" in result) {
+      expect(result.instruction).toContain("of 3 minimum");
+    } else {
+      throw new Error("expected a StageResult with an instruction (review not skipped)");
+    }
+  });
+
+  // (c) The intended skip still works: an explicit "low" seed below a "medium"
+  // floor skips PLAN_REVIEW (existing behavior preserved by the strict readers).
+  it("(c) explicit low seed below floor → PLAN_REVIEW is skipped (advance)", async () => {
+    const state = makeState({ state: "PLAN_REVIEW", ticket: { id: "T-001", title: "T", claimed: true, risk: "low" } });
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe({ PLAN_REVIEW: { skipIfRiskBelow: "medium" } }));
+    const result = await planReview.enter(ctx);
+    expect("action" in result && result.action).toBe("advance");
+  });
+});
+
 describe("PLAN.report() defers precompute so PLAN_REVIEW.enter() can skip", () => {
   let testRoot: string;
   let sessionDir: string;
@@ -335,6 +413,22 @@ describe("PLAN.report() defers precompute so PLAN_REVIEW.enter() can skip", () =
     const advance = await plan.report(ctx, { completedAction: "plan_written" });
     expect(advance.action).toBe("advance");
     expect("result" in advance && advance.result).toBeTruthy();
+  });
+
+  it("E2E (Codex R2-1): unseeded ticket through plan.report → PLAN_REVIEW.enter does NOT skip", async () => {
+    // Regression chain: plan.report used to write the normalized "low" back
+    // into session state, so PLAN_REVIEW.enter saw an explicit low and skipped.
+    const state = makeState({ ticket: { id: "T-001", title: "T", claimed: true } });
+    const recipe = makeRecipe({ PLAN_REVIEW: { skipIfRiskBelow: "medium" } });
+    const ctx = new StageContext(testRoot, sessionDir, state, recipe);
+    const planAdvance = await plan.report(ctx, { completedAction: "plan_written" });
+    expect(planAdvance.action).toBe("advance");
+    expect(ctx.state.ticket?.risk).toBeUndefined();
+
+    const reviewCtx = new StageContext(testRoot, sessionDir, ctx.state, recipe);
+    const enter = await new PlanReviewStage().enter(reviewCtx);
+    // A skip is a bare advance; NOT skipping yields the review instruction.
+    expect("instruction" in enter && (enter as { instruction?: string }).instruction).toBeTruthy();
   });
 
   it("no gate → keeps the precompute (unchanged behavior)", async () => {

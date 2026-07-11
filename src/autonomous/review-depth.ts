@@ -32,6 +32,34 @@ export function normalizeRiskLevel(value?: string | null): RiskLevel {
 }
 
 /**
+ * Strict counterpart of normalizeRiskLevel for SKIP decisions: returns the
+ * value only when it is an explicit canonical risk level, and null otherwise.
+ * An unclassified ticket must never be treated as "low" by a risk gate —
+ * defaulting-to-low is safe for review DEPTH (more rounds never hurt) but
+ * unsafe for review SKIPPING (a missing label would silently drop review).
+ */
+export function explicitRiskLevel(value?: string | null): RiskLevel | null {
+  return value === "low" || value === "medium" || value === "high" ? value : null;
+}
+
+/**
+ * Effective risk for a skip decision: the MAXIMUM of the explicit ticket seed
+ * and the explicit realized (diff-measured) risk. Returns null when neither is
+ * explicitly classified — callers must treat null as "never skip". A high seed
+ * can therefore never be downgraded by a small diff, and vice versa.
+ */
+export function effectiveSkipRisk(
+  seed?: string | null,
+  realized?: string | null,
+): RiskLevel | null {
+  const s = explicitRiskLevel(seed);
+  const r = explicitRiskLevel(realized);
+  if (s === null && r === null) return null;
+  const rank = Math.max(s === null ? -1 : riskRank(s), r === null ? -1 : riskRank(r));
+  return RISK_LEVELS[rank] ?? null;
+}
+
+/**
  * Assess risk from diff stats and optionally file paths.
  * <50 lines = low, 50-200 = medium, >200 = high.
  * Sensitive paths escalate one level.

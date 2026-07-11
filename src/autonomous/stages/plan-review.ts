@@ -2,7 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
-import { requiredRounds, nextReviewer, normalizeRiskLevel, shouldSkipForRisk } from "../review-depth.js";
+import { requiredRounds, nextReviewer, explicitRiskLevel, shouldSkipForRisk } from "../review-depth.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
@@ -42,8 +42,9 @@ export class PlanReviewStage implements WorkflowStage {
     // Never skip in "plan" mode: that mode is terminal at plan-review approval
     // (handled in report()), and skipping enter() would bypass its SESSION_END.
     const planReviewCfg = ctx.recipe.stages?.PLAN_REVIEW as Record<string, unknown> | undefined;
-    if (ctx.state.mode !== "plan" && shouldSkipForRisk(normalizeRiskLevel(ctx.state.ticket?.risk), planReviewCfg?.skipIfRiskBelow)) {
-      ctx.appendEvent("plan_review_skipped", { risk, skipIfRiskBelow: planReviewCfg?.skipIfRiskBelow });
+    const explicitSeed = explicitRiskLevel(ctx.state.ticket?.risk);
+    if (ctx.state.mode !== "plan" && explicitSeed !== null && shouldSkipForRisk(explicitSeed, planReviewCfg?.skipIfRiskBelow)) {
+      ctx.appendEvent("plan_review_skipped", { risk: explicitSeed, skipIfRiskBelow: planReviewCfg?.skipIfRiskBelow });
       return { action: "advance" };
     }
 

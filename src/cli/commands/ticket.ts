@@ -30,7 +30,6 @@ import {
 import type { Ticket } from "../../models/ticket.js";
 import {
   todayISO,
-  normalizeArrayOption,
   CliValidationError,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";

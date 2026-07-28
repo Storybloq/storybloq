@@ -33,7 +33,6 @@ import {
 } from "../../core/issue-source-ref.js";
 import {
   todayISO,
-  normalizeArrayOption,
   CliValidationError,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";

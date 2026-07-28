@@ -74,6 +74,7 @@ import {
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import { ExitCode } from "../../core/output-formatter.js";
 import { writeOutput } from "../run.js";
+import { arrayOptions } from "../array-options.js";
 
 type BusFormat = "md" | "json";
 
@@ -1417,7 +1418,7 @@ export function registerBusCommand(yargs: Argv): Argv {
       .command(
         "send",
         "Send a Bus message or reply",
-        (y2) => formatOption(identityOptions(y2)
+        (y2) => formatOption(arrayOptions(identityOptions(y2)
           .option("thread", { type: "string", describe: "Existing thread id for a reply" })
           .option("thread-kind", { type: "string", choices: ["issue_notice", "question", "coordination", "patch_request"] as const })
           .option("predecessor-thread", { type: "string", describe: "Resolved predecessor thread id" })
@@ -1430,8 +1431,17 @@ export function registerBusCommand(yargs: Argv): Argv {
           .option("issue", { type: "string" })
           .option("ticket", { type: "string" })
           .option("commit", { type: "string" })
-          .option("ci-run", { type: "string" })
-          .option("file", { type: "string", array: true })),
+          .option("ci-run", { type: "string" }),
+          {
+            // A Bus file ref is a path, where a comma is legal, and blanks must
+            // still reach the Bus schema rather than vanishing here.
+            file: {
+              comma: "literal",
+              empty: "preserve",
+              trim: "never",
+              describe: "File path referenced by this message",
+            },
+          })),
         async (argv) => {
           const format = formatValue(argv.format);
           const legacyTo = argv.to as string | undefined;

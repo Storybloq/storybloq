@@ -36,6 +36,7 @@ async function runCli(): Promise<void> {
   const { hideBin } = await import("yargs/helpers");
   const { ExitCode, formatError } = await import("../core/output-formatter.js");
   const { writeOutput } = await import("./run.js");
+  const { takeArrayOptionError, resetArrayOptionError } = await import("./array-options.js");
   const {
     registerInitCommand,
     registerBusCommand,
@@ -120,6 +121,18 @@ async function runCli(): Promise<void> {
     .demandCommand(1, "Specify a command. Run with --help for available commands.")
     .help()
     .fail((msg, err) => {
+      // Array-option policies run in yargs coerce callbacks. yargs wraps whatever
+      // they throw in its own YError, discarding the class and its code, so an
+      // `err instanceof CliValidationError` test here would never match and the
+      // rethrow below would report user input as io_error. takeArrayOptionError
+      // recovers the original by message. Scoped to array options only: every
+      // other error class, including plain Errors from .check(), keeps its path.
+      const arrayOptionError = err ? takeArrayOptionError(msg ?? "") : null;
+      if (arrayOptionError) {
+        writeOutput(formatError(arrayOptionError.code, arrayOptionError.message, errorFormat));
+        process.exitCode = ExitCode.USER_ERROR;
+        throw new HandledError();
+      }
       if (err) throw err;
       writeOutput(formatError("invalid_input", msg ?? "Unknown error", errorFormat));
       process.exitCode = ExitCode.USER_ERROR;
@@ -172,9 +185,14 @@ async function runCli(): Promise<void> {
   }
 
   try {
+    // Bound the array-option error slot to this parse: clear before so no stale
+    // entry can be matched, and after so nothing outlives the parse that set it.
+    resetArrayOptionError();
     await cli.parseAsync().catch(handleUnexpectedError);
   } catch (err: unknown) {
     handleUnexpectedError(err);
+  } finally {
+    resetArrayOptionError();
   }
 
   // ISS-570 G1: banner is the last thing the CLI does, after the command's

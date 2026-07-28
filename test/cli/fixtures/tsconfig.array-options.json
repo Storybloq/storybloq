@@ -1,0 +1,20 @@
+{
+  "//": "Focused typecheck for array-options-types.fixture.ts (ISS-886). Mirrors the",
+  "//strict": "root tsconfig's strictness so the fixture is judged under production rules,",
+  "//scope": "but scopes the program to the fixture so unrelated pre-existing type errors",
+  "//scope2": "elsewhere in the repo cannot mask or manufacture a result here.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": false,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["array-options-types.fixture.ts"]
+}

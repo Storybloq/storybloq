@@ -80,12 +80,6 @@ export function todayISO(): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Normalizes array options: filters out empty/whitespace-only entries. */
-export function normalizeArrayOption(arr: string[] | undefined): string[] {
-  if (!arr) return [];
-  return arr.filter((s) => s.trim() !== "");
-}
-
 /** Adds --format option to a yargs command builder. */
 export function addFormatOption<T>(y: Argv<T>): Argv<T & { format: string }> {
   return y.option("format", {
@@ -179,9 +173,14 @@ export function parseLessonId(raw: string): string {
 }
 
 /**
- * Normalizes tag values from CLI input.
- * Non-string items are silently filtered (intentional: yargs produces [true] for bare --tags).
- * MCP callers are pre-validated by Zod z.array(z.string()), so non-strings never reach here from MCP.
+ * Normalizes tag values.
+ * Non-string items are filtered rather than rejected. CLI callers no longer
+ * produce them: array options register as type "string" and are coerced by
+ * src/cli/array-options.ts, which rejects a non-string outright. MCP callers are
+ * pre-validated by Zod z.array(z.string()). So this filter is now only a
+ * backstop, not the tag path's data-loss risk it once was (ISS-886: under the
+ * previous type "array" registration, `--tags 2026` parsed as a NUMBER and was
+ * silently dropped here).
  * Filters non-strings,
  * trims, lowercases, replaces spaces with hyphens, strips invalid chars,
  * collapses hyphens, deduplicates, and filters empties.

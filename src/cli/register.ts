@@ -17,12 +17,33 @@ import {
   parseIssueId,
   parseNoteId,
   parseLessonId,
-  normalizeArrayOption,
   normalizeTags,
   readStdinContent,
   resolveCliNodeRoot,
   CliValidationError,
 } from "./helpers.js";
+import { arrayOptions, arrayPositional } from "./array-options.js";
+
+// Shared comma/empty/trim/emptyAfterSplit combinations. See array-options.ts for
+// what each axis means and ISS-886 for why they are declared per registration.
+/** Newly comma-enabled list of atomic values. */
+const SPLIT_LIST = {
+  comma: "split",
+  empty: "drop",
+  trim: "segments",
+  emptyAfterSplit: "reject",
+} as const;
+/** Already split commas before ISS-886: trims every value and clears on a lone separator. */
+const LEGACY_SPLIT_LIST = {
+  comma: "split",
+  empty: "drop",
+  trim: "always",
+  emptyAfterSplit: "drop",
+} as const;
+/** Payload value where a comma is legal; blank entries were already dropped. */
+const LITERAL_DROP_BLANK = { comma: "literal", empty: "drop", trim: "never" } as const;
+/** Payload value where a comma is legal and a blank must still reach validation. */
+const LITERAL_KEEP_BLANK = { comma: "literal", empty: "preserve", trim: "never" } as const;
 import { parseMetadataValue } from "./commands/metadata.js";
 import { formatError, formatLedgerIntegrity, ExitCode } from "../core/output-formatter.js";
 import { discoverIntegrityRoot, scanLedgerIntegrity } from "../core/ledger-integrity.js";
@@ -1032,7 +1053,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
           "Create a new ticket",
           (y2) =>
             addNodeOption(addFormatOption(
-              y2
+              arrayOptions(y2
                 .option("title", {
                   type: "string",
                   demandOption: true,
@@ -1055,17 +1076,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe: "Read description from stdin",
                 })
-                .option("blocked-by", {
-                  type: "string",
-                  array: true,
-                  describe: "IDs of blocking tickets",
-                })
                 .option("parent-ticket", {
                   type: "string",
                   describe: "Parent ticket ID (makes this a sub-ticket)",
                 })
                 .conflicts("description", "stdin"),
-            )),
+              { "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
+            ))),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const orchRoot = (
@@ -1099,8 +1116,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: argv.type as string,
                   phase: argv.phase === "" ? null : (argv.phase as string | undefined) ?? null,
                   description,
-                  blockedBy: normalizeArrayOption(
-                    argv["blocked-by"] as string[] | undefined,
+                  blockedBy: (
+                    argv["blocked-by"] as string[] | undefined ?? []
                   ),
                   parentTicket:
                     argv["parent-ticket"] === "" ? null : (argv["parent-ticket"] as string | undefined) ?? null,
@@ -1136,7 +1153,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
           "Update a ticket",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("id", {
                   type: "string",
                   demandOption: true,
@@ -1170,16 +1187,6 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe: "Read description from stdin",
                 })
-                .option("blocked-by", {
-                  type: "string",
-                  array: true,
-                  describe: "IDs of blocking tickets",
-                })
-                .option("cross-node-blocked-by", {
-                  type: "string",
-                  array: true,
-                  describe: "Cross-node blocking refs (e.g. engine:T-001). Null string clears.",
-                })
                 .option("parent-ticket", {
                   type: "string",
                   describe: "Parent ticket ID",
@@ -1189,7 +1196,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   describe: "Node name (orchestrator only)",
                 })
                 .conflicts("description", "stdin"),
-            ),
+              {
+                "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
+                "cross-node-blocked-by": {
+                  ...LEGACY_SPLIT_LIST,
+                  describe: "Cross-node blocking refs (e.g. engine:T-001). Bare flag clears.",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1218,15 +1232,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
               if (argv.stdin) {
                 description = await readStdinContent();
               }
+              // Splitting and trimming now happen at parse time, but the presence
+              // conversion must stay: handleTicketUpdate treats null as "remove the
+              // field" while an empty array would persist crossNodeBlockedBy: [].
               const rawCrossNode = argv["cross-node-blocked-by"] as string[] | undefined;
-              let crossNodeBlockedBy: string[] | null | undefined;
-              if (rawCrossNode) {
-                const flat = normalizeArrayOption(rawCrossNode)
-                  ?.flatMap((v) => v.split(","))
-                  .map((v) => v.trim())
-                  .filter(Boolean);
-                crossNodeBlockedBy = flat && flat.length > 0 ? flat : null;
-              }
+              const crossNodeBlockedBy: string[] | null | undefined =
+                rawCrossNode === undefined
+                  ? undefined
+                  : rawCrossNode.length > 0 ? rawCrossNode : null;
               const result = await handleTicketUpdate(
                 id,
                 {
@@ -1236,9 +1249,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
                   order: argv.order as number | undefined,
                   description,
-                  blockedBy: argv["blocked-by"]
-                    ? normalizeArrayOption(argv["blocked-by"] as string[])
-                    : undefined,
+                  blockedBy: argv["blocked-by"] as string[] | undefined,
                   crossNodeBlockedBy,
                   parentTicket: argv["parent-ticket"] === "" ? null : argv["parent-ticket"] as string | undefined,
                 },
@@ -1627,7 +1638,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
           "Create a new issue",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .option("title", {
                   type: "string",
                   demandOption: true,
@@ -1650,26 +1661,6 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Phase ID",
                 })
-                .option("components", {
-                  type: "string",
-                  array: true,
-                  describe: "Affected components",
-                })
-                .option("related-tickets", {
-                  type: "string",
-                  array: true,
-                  describe: "Related ticket IDs",
-                })
-                .option("location", {
-                  type: "string",
-                  array: true,
-                  describe: "File locations",
-                })
-                .option("source-ref", {
-                  type: "string",
-                  array: true,
-                  describe: "Structured source reference as a JSON object",
-                })
                 .option("dedupe-key", {
                   type: "string",
                   describe: "Idempotency key for reviewer or automation retries",
@@ -1685,7 +1676,16 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   }
                   return true;
                 }),
-            ),
+              {
+                components: { ...SPLIT_LIST, describe: "Affected components" },
+                "related-tickets": { ...SPLIT_LIST, describe: "Related ticket IDs" },
+                location: { ...LITERAL_DROP_BLANK, describe: "File locations" },
+                "source-ref": {
+                  ...LITERAL_KEEP_BLANK,
+                  describe: "Source reference as a JSON object",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -1712,15 +1712,9 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   title: argv.title as string,
                   severity: argv.severity as string,
                   impact,
-                  components: normalizeArrayOption(
-                    argv.components as string[] | undefined,
-                  ),
-                  relatedTickets: normalizeArrayOption(
-                    argv["related-tickets"] as string[] | undefined,
-                  ),
-                  location: normalizeArrayOption(
-                    argv.location as string[] | undefined,
-                  ),
+                  components: (argv.components as string[] | undefined) ?? [],
+                  relatedTickets: (argv["related-tickets"] as string[] | undefined) ?? [],
+                  location: (argv.location as string[] | undefined) ?? [],
                   sourceRefs: parseIssueSourceRefs(argv["source-ref"] as string[] | undefined),
                   dedupeKey: argv["dedupe-key"] as string | undefined,
                   createdBy: argv["created-by"] as string | undefined,
@@ -1757,7 +1751,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
           "Update an issue",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("id", {
                   type: "string",
                   demandOption: true,
@@ -1787,26 +1781,6 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Resolution description",
                 })
-                .option("components", {
-                  type: "string",
-                  array: true,
-                  describe: "Affected components",
-                })
-                .option("related-tickets", {
-                  type: "string",
-                  array: true,
-                  describe: "Related ticket IDs",
-                })
-                .option("location", {
-                  type: "string",
-                  array: true,
-                  describe: "File locations",
-                })
-                .option("source-ref", {
-                  type: "string",
-                  array: true,
-                  describe: "Replacement structured source reference as a JSON object",
-                })
                 .option("order", {
                   type: "number",
                   describe: "New sort order",
@@ -1816,7 +1790,16 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   describe: "New phase ID",
                 })
                 .conflicts("impact", "stdin"),
-            ),
+              {
+                components: { ...SPLIT_LIST, describe: "Affected components" },
+                "related-tickets": { ...SPLIT_LIST, describe: "Related ticket IDs" },
+                location: { ...LITERAL_DROP_BLANK, describe: "File locations" },
+                "source-ref": {
+                  ...LITERAL_KEEP_BLANK,
+                  describe: "Replacement source ref (JSON object)",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseIssueId(argv.id as string);
@@ -1850,15 +1833,9 @@ export function registerIssueCommand(yargs: Argv): Argv {
                     argv.resolution === ""
                       ? null
                       : (argv.resolution as string | undefined),
-                  components: argv.components
-                    ? normalizeArrayOption(argv.components as string[])
-                    : undefined,
-                  relatedTickets: argv["related-tickets"]
-                    ? normalizeArrayOption(argv["related-tickets"] as string[])
-                    : undefined,
-                  location: argv.location
-                    ? normalizeArrayOption(argv.location as string[])
-                    : undefined,
+                  components: argv.components as string[] | undefined,
+                  relatedTickets: argv["related-tickets"] as string[] | undefined,
+                  location: argv.location as string[] | undefined,
                   sourceRefs: parseIssueSourceRefs(argv["source-ref"] as string[] | undefined),
                   order: argv.order as number | undefined,
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
@@ -2590,7 +2567,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
           "Create a note",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .option("content", {
                   type: "string",
                   describe: "Note content",
@@ -2598,10 +2575,6 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 .option("title", {
                   type: "string",
                   describe: "Note title",
-                })
-                .option("tags", {
-                  type: "array",
-                  describe: "Tags for the note",
                 })
                 .option("stdin", {
                   type: "boolean",
@@ -2616,7 +2589,8 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   }
                   return true;
                 }),
-            ),
+              { tags: { ...SPLIT_LIST, describe: "Tags for the note" } },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -2671,7 +2645,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
           "Update a note",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("id", {
                   type: "string",
                   demandOption: true,
@@ -2684,10 +2658,6 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 .option("title", {
                   type: "string",
                   describe: "New title",
-                })
-                .option("tags", {
-                  type: "array",
-                  describe: "New tags (replaces existing)",
                 })
                 .option("clear-tags", {
                   type: "boolean",
@@ -2704,7 +2674,14 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 })
                 .conflicts("content", "stdin")
                 .conflicts("tags", "clear-tags"),
-            ),
+              {
+                tags: {
+                  ...SPLIT_LIST,
+                  describe: "New tags (replaces existing)",
+                  requireValue: "Use --clear-tags to clear tags.",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseNoteId(argv.id as string);
@@ -2846,12 +2823,16 @@ export function registerDispatchCommand(yargs: Argv): Argv {
     "dispatch [ids..]",
     "Dispatch work to Agent View background sessions",
     (y) =>
-      addFormatOption(y)
-        .positional("ids", {
-          type: "string",
-          array: true,
-          describe: "Ticket/issue IDs to dispatch (T-XXX, ISS-XXX)",
-        })
+      // empty: "preserve" so a supplied blank or separator-only positional still
+      // reaches the handler and is reported as an invalid ID, rather than
+      // collapsing to [] and silently taking the recommendation branch.
+      arrayPositional(addFormatOption(y), "ids", {
+        comma: "split",
+        empty: "preserve",
+        trim: "segments",
+        emptyAfterSplit: "drop",
+        describe: "Ticket/issue IDs to dispatch (T-XXX, ISS-XXX)",
+      })
         .option("recommend", {
           type: "boolean",
           default: false,
@@ -2976,7 +2957,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
           "Create a lesson",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .option("title", {
                   type: "string",
                   demandOption: true,
@@ -2997,10 +2978,6 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   choices: [...LESSON_SOURCES],
                   describe: "Lesson source",
                 })
-                .option("tags", {
-                  type: "array",
-                  describe: "Tags for the lesson",
-                })
                 .option("supersedes", {
                   type: "string",
                   describe: "ID of lesson this supersedes",
@@ -3018,7 +2995,8 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   }
                   return true;
                 }),
-            ),
+              { tags: { ...SPLIT_LIST, describe: "Tags for the lesson" } },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -3076,7 +3054,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
           "Update a lesson",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("id", {
                   type: "string",
                   demandOption: true,
@@ -3094,10 +3072,6 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New context",
                 })
-                .option("tags", {
-                  type: "array",
-                  describe: "New tags (replaces existing)",
-                })
                 .option("clear-tags", {
                   type: "boolean",
                   describe: "Clear all tags",
@@ -3113,7 +3087,14 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 })
                 .conflicts("content", "stdin")
                 .conflicts("tags", "clear-tags"),
-            ),
+              {
+                tags: {
+                  ...SPLIT_LIST,
+                  describe: "New tags (replaces existing)",
+                  requireValue: "Use --clear-tags to clear tags.",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseLessonId(argv.id as string);
@@ -3301,7 +3282,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
           "Add a node to orchestrator config",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("name", {
                   type: "string",
                   demandOption: true,
@@ -3327,18 +3308,15 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 .option("summary", {
                   type: "string",
                   describe: "One-line status summary",
-                })
-                .option("depends-on", {
-                  type: "string",
-                  array: true,
-                  describe: "Node names this depends on",
-                })
-                .option("link", {
-                  type: "string",
-                  array: true,
-                  describe: "Runtime link (format: node or node:via_description)",
                 }),
-            ),
+              {
+                "depends-on": { ...LEGACY_SPLIT_LIST, describe: "Node names this depends on" },
+                link: {
+                  ...LITERAL_KEEP_BLANK,
+                  describe: "Runtime link (node or node:via_desc)",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -3363,10 +3341,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   role: argv.role as string | undefined,
                   kind: argv.kind as string | undefined,
                   summary: argv.summary as string | undefined,
-                  dependsOn: normalizeArrayOption(argv["depends-on"] as string[] | undefined)
-                    ?.flatMap((v) => v.split(","))
-                    .map((v) => v.trim())
-                    .filter(Boolean),
+                  dependsOn: argv["depends-on"] as string[] | undefined,
                   links,
                 },
                 format,
@@ -3459,7 +3434,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
           "Update an existing node's metadata",
           (y2) =>
             addFormatOption(
-              y2
+              arrayOptions(y2
                 .positional("name", {
                   type: "string",
                   demandOption: true,
@@ -3485,27 +3460,24 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New status summary",
                 })
-                .option("depends-on", {
-                  type: "string",
-                  array: true,
-                  describe: "Replace dependsOn list",
-                })
                 .option("clear-depends-on", {
                   type: "boolean",
                   default: false,
                   describe: "Clear all dependencies",
-                })
-                .option("link", {
-                  type: "string",
-                  array: true,
-                  describe: "Replace links (format: node or node:via_description)",
                 })
                 .option("clear-links", {
                   type: "boolean",
                   default: false,
                   describe: "Clear all runtime links",
                 }),
-            ),
+              {
+                "depends-on": { ...LEGACY_SPLIT_LIST, describe: "Replace dependsOn list" },
+                link: {
+                  ...LITERAL_KEEP_BLANK,
+                  describe: "Replace links (node or node:via_desc)",
+                },
+              },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -3530,12 +3502,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   role: argv.role as string | undefined,
                   kind: argv.kind as string | undefined,
                   summary: argv.summary as string | undefined,
-                  dependsOn: argv["depends-on"]
-                    ? normalizeArrayOption(argv["depends-on"] as string[])
-                        ?.flatMap((v) => v.split(","))
-                        .map((v) => v.trim())
-                        .filter(Boolean)
-                    : undefined,
+                  dependsOn: argv["depends-on"] as string[] | undefined,
                   clearDependsOn: argv["clear-depends-on"] as boolean,
                   links,
                   clearLinks: argv["clear-links"] as boolean,

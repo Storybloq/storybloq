@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { releaseSessionClaim } from "../../core/claims.js";
+import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
@@ -65,11 +67,14 @@ export class PlanStage implements WorkflowStage {
           const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
           await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
             const ticket = ps.ticketByID(ticketId);
-            if (ticket && (ticket as Record<string, unknown>).claimedBySession === ctx.state.sessionId) {
-              // ISS-759/ISS-652: delete the claim keys rather than writing
-              // explicit nulls, so a released ticket carries no residual state.
-              const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-              await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, ctx.root);
+            if (ticket) {
+              // T-442: never delete a claim this session cannot prove is its own.
+              const { released, ticket: next } = releaseSessionClaim(
+                ticket,
+                ctx.state.sessionId,
+                (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined,
+              );
+              if (released) await writeTicketUnlocked(next, ctx.root);
             }
           });
         } catch { /* best-effort */ }
@@ -120,6 +125,9 @@ export class PlanStage implements WorkflowStage {
 
     // Update ticket to inprogress in .story/ with session ownership (ISS-024/ISS-027)
     let claimFailed = false;
+    // T-442: the epoch minted here is the ONLY proof of what this session
+    // actually owns. Every later guide call reconciles the ledger against it.
+    let mintedEpoch: ClaimEpoch | undefined;
     if (ctx.state.ticket) {
       try {
         const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
@@ -145,10 +153,27 @@ export class PlanStage implements WorkflowStage {
           }
           const updated = { ...ticket, status: "inprogress" as const, claimedBySession: ctx.state.sessionId, ...(draftClaim ? { claim: draftClaim } : {}) };
           await writeTicketUnlocked(updated, ctx.root);
+          // Recorded from the values actually written, not from the draft, so a
+          // pre-existing same-user claim that was left in place is captured as
+          // it stands on disk rather than as what we intended to write.
+          mintedEpoch = {
+            ticketId: updated.id,
+            sessionId: ctx.state.sessionId,
+            user: updated.claim ? updated.claim.user : null,
+            branch: updated.claim ? updated.claim.branch : null,
+            since: updated.claim ? updated.claim.since : null,
+            establishedAt: new Date().toISOString(),
+          };
         });
       } catch {
         // Best-effort — don't block plan review if ticket update fails
       }
+      // Persisted immediately rather than at the stage advance below. A crash in
+      // between would otherwise leave a session that OWNS the ticket but carries
+      // no epoch, and an epoch-less session is not reconciled at all -- exactly
+      // the fail-open T-442 exists to close. The window is not zero: acquisition
+      // is not yet a full five-step transaction (ISS-896).
+      if (mintedEpoch) ctx.writeState({ claimEpoch: mintedEpoch } as Partial<typeof ctx.state>);
     }
 
     if (claimFailed) {
@@ -160,7 +185,7 @@ export class PlanStage implements WorkflowStage {
       // the ticket, then send the walker back to PICK_TICKET. The goto target
       // is NOT free-form: assertTransition validates it against the state
       // machine, so PLAN's row in TRANSITIONS must list PICK_TICKET (ISS-767).
-      ctx.updateDraft({ ticket: undefined, pendingTicketClaim: undefined } as Partial<typeof ctx.state>);
+      ctx.updateDraft({ ticket: undefined, pendingTicketClaim: undefined, claimEpoch: undefined } as Partial<typeof ctx.state>);
       return {
         action: "goto",
         target: "PICK_TICKET",
@@ -185,7 +210,12 @@ export class PlanStage implements WorkflowStage {
     // Stage field updates (persisted atomically with state transition by processAdvance)
     ctx.updateDraft({
       ticket: ctx.state.ticket ? { ...ctx.state.ticket, risk, lastPlanHash: planHash } : ctx.state.ticket,
-    });
+      // Only overwrite on a fresh mint. A re-entered PLAN (revise loop) short-
+      // circuits the claim write when the ticket is already ours, and clobbering
+      // the epoch with undefined there would disarm reconciliation for the rest
+      // of the session.
+      ...(mintedEpoch ? { claimEpoch: mintedEpoch } : {}),
+    } as Partial<typeof ctx.state>);
 
     // Produce PLAN_REVIEW instruction (advance with result for hybrid dispatch)
     const backends = reviewBackendsForClient(ctx.state.config);

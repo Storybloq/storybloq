@@ -389,7 +389,20 @@ describe("handleTicketUpdate", () => {
     raw.claimedBySession = "sess-abc";
     await writeFile(ticketPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
 
-    await handleTicketUpdate("T-001", { status: "complete" }, "json", dir);
+    // T-442: the fixture has no git identity, so ownership of alice@test.com's
+    // claim cannot be proven and the completion is now refused rather than
+    // silently taking the ticket from whoever holds it. Real single-user projects
+    // are unaffected -- the claim's user comes from gitUserEmail at claim time, so
+    // it matches. `--force` is the documented administrative bypass.
+    await expect(
+      handleTicketUpdate("T-001", { status: "complete" }, "json", dir),
+    ).rejects.toThrow(/cannot prove ownership/);
+
+    const untouched = JSON.parse(await readFile(ticketPath, "utf-8"));
+    expect(untouched.status).toBe("open");
+    expect(untouched.claim).toBeDefined();
+
+    await handleTicketUpdate("T-001", { status: "complete" }, "json", dir, true);
 
     const disk = JSON.parse(await readFile(ticketPath, "utf-8"));
     expect(disk.status).toBe("complete");

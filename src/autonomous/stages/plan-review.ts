@@ -1,3 +1,5 @@
+import { releaseSessionClaim } from "../../core/claims.js";
+import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
@@ -122,11 +124,14 @@ export class PlanReviewStage implements WorkflowStage {
           const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
           await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
             const ticket = ps.ticketByID(ticketId);
-            if (ticket && (ticket as Record<string, unknown>).claimedBySession === ctx.state.sessionId) {
-              // ISS-759/ISS-652: delete the claim keys rather than writing
-              // explicit nulls, so a released ticket carries no residual state.
-              const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-              await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, ctx.root);
+            if (ticket) {
+              // T-442: never delete a claim this session cannot prove is its own.
+              const { released, ticket: next } = releaseSessionClaim(
+                ticket,
+                ctx.state.sessionId,
+                (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined,
+              );
+              if (released) await writeTicketUnlocked(next, ctx.root);
             }
           });
         } catch { /* best-effort */ }

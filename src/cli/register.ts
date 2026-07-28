@@ -1195,6 +1195,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Node name (orchestrator only)",
                 })
+                .option("force", {
+                  type: "boolean",
+                  default: false,
+                  describe: "Complete a claimed ticket without proving ownership (T-442)",
+                })
                 .conflicts("description", "stdin"),
               {
                 "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
@@ -1255,6 +1260,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 },
                 format,
                 eff.root,
+                argv.force as boolean,
               );
               writeOutput(result.output);
               process.exitCode = result.exitCode ?? ExitCode.OK;

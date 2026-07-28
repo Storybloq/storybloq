@@ -1,6 +1,7 @@
 import type { Claim } from "../models/types.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Recommendation } from "./recommend.js";
+import type { ClaimEpoch } from "../autonomous/claim-reconciliation.js";
 
 export interface CanClaimResult {
   allowed: boolean;
@@ -41,15 +42,184 @@ export function isClaimStale(
   return ageHours > thresholdHours;
 }
 
-export function clearClaimOnComplete(ticket: Ticket): Ticket {
-  // ISS-759: gate on key PRESENCE, not truthiness. A completed ticket carrying
-  // claimedBySession: null (the pre-ISS-652 release shape) must still have the
-  // key deleted rather than surviving as an explicit null on disk.
-  if (ticket.status === "complete" && (("claim" in ticket) || ("claimedBySession" in ticket))) {
-    const { claim: _, claimedBySession: _claimedBySession, ...rest } = ticket;
-    return rest as Ticket;
+/** Autonomous ownership means a NON-NULL session uuid, not merely a present key. */
+function sessionOwnerOf(ticket: Ticket): string | null {
+  const value = (ticket as Record<string, unknown>).claimedBySession;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function stripClaimKeys(ticket: Ticket): Ticket {
+  const { claim: _claim, claimedBySession: _session, ...rest } = ticket;
+  return rest as Ticket;
+}
+
+/**
+ * Exact match between a ticket's `claim` and the epoch that recorded it.
+ *
+ * A null-user epoch records that no claim key existed at acquisition, so it
+ * matches only a ticket where the key is still ABSENT -- an explicitly present
+ * `null` is a different ledger state (ISS-759 gates on key presence, not
+ * truthiness). Such an epoch must also carry null branch and since; a partially
+ * populated one is malformed and can never prove ownership.
+ */
+function claimMatchesEpoch(ticket: Ticket, epoch: ClaimEpoch): boolean {
+  if (epoch.user === null) {
+    if (epoch.branch !== null || epoch.since !== null) return false;
+    return !("claim" in ticket);
   }
-  return ticket;
+  const claim = ticket.claim;
+  if (!claim) return false;
+  return claim.user === epoch.user && claim.branch === epoch.branch && claim.since === epoch.since;
+}
+
+/**
+ * Releases a claim only when the caller provably owns BOTH ownership fields
+ * (T-442). Six sites released claims before this existed, and every one of them
+ * accepted `claimedBySession === sessionId` and then deleted BOTH keys. In the
+ * reachable split state `{ claimedBySession: A, claim.user: B }` -- produced
+ * whenever the merge driver hands `claim.user` to B without touching A's stamp --
+ * session A therefore destroyed B's winning claim. Three of those sites (the
+ * skip_ticket paths in plan.ts, plan-review.ts, code-review.ts) checked only the
+ * stamp and were never hardened by ISS-778/ISS-816 at all.
+ *
+ * There is deliberately no bare-ticket fallback. A ticket carrying no claim
+ * material has no provable owner, so reopening it is not an ownership-preserving
+ * operation; those route to recovery or an explicit administrative force path.
+ */
+export function releaseClaimIfOwned(
+  ticket: Ticket,
+  epoch: ClaimEpoch,
+): { released: boolean; ticket: Ticket } {
+  if (ticket.id !== epoch.ticketId) return { released: false, ticket };
+
+  if (sessionOwnerOf(ticket) !== epoch.sessionId) return { released: false, ticket };
+
+  if (!claimMatchesEpoch(ticket, epoch)) return { released: false, ticket };
+
+  // ISS-759/ISS-652: delete the keys rather than writing explicit nulls, so a
+  // released ticket carries no residual state.
+  return { released: true, ticket: { ...stripClaimKeys(ticket), status: "open" as const } };
+}
+
+/**
+ * Session-side release used by the skip/abandon paths (T-442).
+ *
+ * With an epoch this is exactly `releaseClaimIfOwned`: both ownership fields must
+ * match, so the split state `{ claimedBySession: us, claim.user: them }` is left
+ * alone instead of having the other user's winning claim deleted.
+ *
+ * Without an epoch -- a session that started before T-442, or one that never
+ * reached PLAN -- there is no proof to check against, and this deliberately keeps
+ * the pre-T-442 behavior (stamp matches, both keys go). Narrowing it here would
+ * regress ISS-759's guarantee that a released ticket carries no residual claim
+ * keys, and the residual exposure is bounded: releasing only returns the ticket
+ * to `open`, claims are advisory, and the severe half of ISS-784 -- completing a
+ * ticket out from under its holder -- is guarded by clearClaimOnComplete
+ * regardless of epoch. Epoch-less sessions drain out as sessions turn over.
+ */
+export function releaseSessionClaim(
+  ticket: Ticket,
+  sessionId: string,
+  epoch?: ClaimEpoch | null,
+): { released: boolean; ticket: Ticket } {
+  if (epoch) return releaseClaimIfOwned(ticket, epoch);
+
+  if (sessionOwnerOf(ticket) !== sessionId) return { released: false, ticket };
+
+  return { released: true, ticket: { ...stripClaimKeys(ticket), status: "open" as const } };
+}
+
+export interface CompletionGuardOptions {
+  /** Git identity of the caller, or null when it could not be resolved. */
+  readonly completingUser: string | null;
+  /** Epochs held by local sessions with status "active" that target this ticket. */
+  readonly activeEpochs?: readonly ClaimEpoch[];
+  /** Status to restore when a completion is rejected. */
+  readonly previousStatus?: Ticket["status"];
+  /**
+   * Administrative bypass (`--force`). Expressed as an explicit flag rather than
+   * as a maximally-permissive options object, because the two-field rule now
+   * REJECTS on an empty epoch set: a permissive-looking object would have been
+   * indistinguishable from "discovery found nothing", which must fail closed.
+   */
+  readonly authorized?: boolean;
+}
+
+/**
+ * Strips a completed ticket's claim, refusing when the caller cannot prove the
+ * claim is theirs (T-442, the ISS-784 regression point).
+ *
+ * Rejection is total rather than "complete but keep the claim": completing the
+ * ticket is itself the harm to the session still working on it, and a claim left
+ * on a complete ticket manufactures the invalid `claim_on_complete` state
+ * team-doctor reports.
+ *
+ * The matrix splits on BOTH fields, because an email match alone would let an
+ * autonomous ticket bypass the completion transaction, while a claim-only CLI
+ * ticket has no session state to transact in.
+ */
+export function clearClaimOnComplete(
+  ticket: Ticket,
+  options?: CompletionGuardOptions,
+): { rejected: boolean; ticket: Ticket } {
+  if (ticket.status !== "complete") return { rejected: false, ticket };
+  if (options?.authorized) {
+    const hadKeys = ("claim" in ticket) || ("claimedBySession" in ticket);
+    return { rejected: false, ticket: hadKeys ? stripClaimKeys(ticket) : ticket };
+  }
+
+  const hasClaim = ticket.claim != null;
+  const hasAnyKey = ("claim" in ticket) || ("claimedBySession" in ticket);
+
+  // Legacy: nothing to authorize against. Residual keys are still stripped so a
+  // present-but-null claimedBySession does not survive on disk (ISS-759).
+  if (!hasClaim && sessionOwnerOf(ticket) === null) {
+    return { rejected: false, ticket: hasAnyKey ? stripClaimKeys(ticket) : ticket };
+  }
+
+  const reject = () => ({
+    rejected: true,
+    ticket: { ...ticket, status: options?.previousStatus ?? ("inprogress" as const) },
+  });
+
+  if (hasClaim) {
+    // Unresolvable identity counts as unproven, not as permission.
+    if (!options || options.completingUser === null) return reject();
+    if (ticket.claim!.user !== options.completingUser) return reject();
+  }
+
+  // The two ownership fields are INDEPENDENT, so a matching email proves only the
+  // `claim` half. A non-null `claimedBySession` names an autonomous session that
+  // may still be mid-flight, and email cannot separate two sessions running under
+  // one repo's git config. Clearing that stamp therefore requires a positively
+  // matching epoch from a live local session -- not merely the absence of a
+  // conflicting one, which is what an empty veto set would have meant.
+  //
+  // Consequence: an ORPHANED stamp left by a crashed session no longer completes
+  // silently. That is the intended reading -- the anomaly is surfaced and cleared
+  // with the explicit administrative bypass. See ISS-895 for positive caller
+  // identity, which would let this authorize without a live session.
+  const stampOwner = sessionOwnerOf(ticket);
+  if (stampOwner !== null) {
+    const epochs = options?.activeEpochs;
+    if (!epochs || epochs.length === 0) return reject();
+    const proven = epochs.some((epoch) =>
+      epoch.ticketId === ticket.id &&
+      epoch.sessionId === stampOwner &&
+      claimMatchesEpoch(ticket, epoch),
+    );
+    if (!proven) return reject();
+  }
+
+  // Any OTHER active session targeting this ticket vetoes the completion, even
+  // when the stamp above checked out: a second live claimant means the ledger is
+  // contested and completing would resolve that contest by force.
+  for (const epoch of options?.activeEpochs ?? []) {
+    if (epoch.ticketId !== ticket.id) continue;
+    if (epoch.sessionId !== stampOwner) return reject();
+  }
+
+  return { rejected: false, ticket: stripClaimKeys(ticket) };
 }
 
 // Claimed-by-others items are downranked far below unclaimed work but never

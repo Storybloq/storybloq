@@ -3,7 +3,13 @@ import { nextTicket, nextTickets, blockedTickets } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { resolveAndNormalizeTicketRef, RefResolutionError } from "../../core/ref-normalization.js";
-import { clearClaimOnComplete, buildClaim, canClaim } from "../../core/claims.js";
+import {
+  clearClaimOnComplete,
+  buildClaim,
+  canClaim,
+  type CompletionGuardOptions,
+} from "../../core/claims.js";
+import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { validateProject } from "../../core/validation.js";
 import { ProjectState } from "../../core/project-state.js";
 import {
@@ -357,6 +363,58 @@ export async function handleTicketCreate(
   return { output: `Created ticket ${displayIdOf(createdTicket)}: ${createdTicket.title}` };
 }
 
+/**
+ * Assembles the identity a completion is authorized against (T-442).
+ *
+ * `completingUser` comes from git; the veto set comes from the LOCAL active
+ * session record. Neither is read off the ticket: `claimedBySession` there names
+ * the current ledger winner, not the caller, so deriving the owner from it would
+ * be circular. `--force` is the administrative bypass, expressed as a fully
+ * permissive guard rather than a branch around it, so there is one code path.
+ */
+async function resolveCompletionGuard(
+  root: string,
+  ticket: Ticket,
+  force: boolean,
+): Promise<CompletionGuardOptions> {
+  if (force) {
+    return { completingUser: ticket.claim?.user ?? null, activeEpochs: [], authorized: true };
+  }
+
+  let completingUser: string | null = null;
+  try {
+    const { gitUserEmail } = await import("../../autonomous/git-inspector.js");
+    completingUser = await gitUserEmail(root);
+  } catch {
+    // Identity unavailable counts as unproven, not as permission.
+  }
+
+  const activeEpochs: ClaimEpoch[] = [];
+  try {
+    const { findActiveSessionFull } = await import("../../autonomous/session.js");
+    const active = findActiveSessionFull(root);
+    // Only status "active" records veto. Archived and superseded ones retain a
+    // stale epoch for the ticket forever, and scanning them would block every
+    // later legitimate claimant.
+    const epoch = active && active.state.status === "active"
+      ? (active.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined
+      : undefined;
+    if (epoch) activeEpochs.push(epoch);
+  } catch (err) {
+    // An unreadable or malformed session store is NOT proof that no session is
+    // running. Treating it as an empty veto set would let a completion clear a
+    // live session's claim on email evidence alone, which is the exact ISS-784
+    // harm. Fail closed and require the explicit administrative bypass.
+    throw new CliValidationError(
+      "invalid_input",
+      `Cannot verify ticket ownership: local session state could not be read (${err instanceof Error ? err.message : String(err)}). ` +
+      "Re-run with --force to complete anyway.",
+    );
+  }
+
+  return { completingUser, activeEpochs };
+}
+
 export async function handleTicketUpdate(
   id: string,
   updates: {
@@ -372,6 +430,7 @@ export async function handleTicketUpdate(
   },
   format: string,
   root: string,
+  force = false,
 ): Promise<CommandResult> {
   assertUpdateHasFields(
     updates,
@@ -439,7 +498,24 @@ export async function handleTicketUpdate(
       ...statusChanges,
     };
 
-    const finalTicket = clearClaimOnComplete(ticket);
+    // T-442 / ISS-784: a completion must not clear a claim the caller cannot prove
+    // is theirs. Identity comes from git and from the LOCAL active session record,
+    // never from the ticket being updated -- that value identifies the current
+    // ledger winner, so using it to authorize would authorize the very party it is
+    // meant to exclude.
+    const guard = await resolveCompletionGuard(root, ticket, force);
+    const completion = clearClaimOnComplete(ticket, guard);
+    if (completion.rejected) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Cannot complete ${displayIdOf(ticket)}: it is claimed by ` +
+          `${ticket.claim?.user ?? "another session"} and this caller cannot prove ownership` +
+          (guard.completingUser === null ? " (git user.email is not configured)" : "") +
+          `. Completing it would take the ticket from a session still working on it. ` +
+          `If that is intended, re-run with --force.`,
+      );
+    }
+    const finalTicket = completion.ticket;
     validatePostWriteState(finalTicket, state, false);
     await writeTicketUnlocked(finalTicket, root);
     updatedTicket = finalTicket;

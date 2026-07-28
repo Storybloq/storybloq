@@ -10,7 +10,9 @@ import {
   type SessionSummary,
   type ContextAdvice,
   type WorkflowState,
+  type SessionState,
 } from "./session-types.js";
+import { reconcileSessionReality, isClaimLost, describeClaimLoss } from "./claim-preflight.js";
 import {
   createSession,
   deleteSession,
@@ -309,6 +311,47 @@ async function dispatchTargetedResume(
 // ---------------------------------------------------------------------------
 // Pending mutation recovery (ISS-024)
 // ---------------------------------------------------------------------------
+
+/**
+ * T-442 claim preflight. Runs BEFORE recoverPendingMutation at the entry points
+ * that can advance a session, because recovery replays a mutation prepared while
+ * the session still believed it held the claim; replaying first would let a
+ * session that has already lost the ticket write to it one more time.
+ *
+ * Only `report` and `resume` are gated. `pre_compact` and `cancel` must always
+ * succeed -- refusing to cancel a session that lost its claim would strand it --
+ * and their safety comes from releaseClaimIfOwned refusing to strip a claim the
+ * session cannot prove is its own.
+ */
+async function claimPreflightBlock(
+  root: string,
+  state: FullSessionState,
+): Promise<McpToolResult | null> {
+  let result;
+  try {
+    result = await reconcileSessionReality(state as unknown as SessionState, {
+      loadTicket: async (ticketId) => {
+        const { state: projectState } = await loadProject(root, { strict: false });
+        return projectState.ticketByID(ticketId) ?? null;
+      },
+    });
+  } catch {
+    // A loader failure is not evidence of a lost claim. Reconciliation already
+    // fails closed on an unreadable TICKET; an unreadable PROJECT is a different
+    // fault and must not masquerade as a claim conflict.
+    return null;
+  }
+
+  if (!isClaimLost(result)) return null;
+
+  const ticketId = state.ticket?.displayId ?? state.ticket?.id ?? result.epoch?.ticketId ?? "unknown";
+  return guideError(new Error(
+    `Claim lost on ${ticketId}: ${describeClaimLoss(result)}. ` +
+    "This session can no longer prove it owns the ticket, so it will not advance or complete it (ISS-784). " +
+    `Write a handover, then cancel this session with { "sessionId": "${state.sessionId}", "action": "cancel" } ` +
+    "and start a new session to pick different work.",
+  ));
+}
 
 /**
  * Recover from a pending project mutation (crash between project write and session clear).
@@ -1668,6 +1711,10 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   );
   let state = adoption.adopted ? adoption.state : refreshLease(adoption.state);
 
+  // T-442: reconcile before recovery, so a lost claim cannot be written to once more.
+  const reportBlock = await claimPreflightBlock(root, state);
+  if (reportBlock) return reportBlock;
+
   // ISS-024: recover any pending mutation before processing
   state = await recoverPendingMutation(info.dir, state, root);
 
@@ -1834,6 +1881,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
           ? "legacy_claude_match"
           : "explicit_takeover"
     : null;
+
+  // T-442: reconcile before recovery, so a lost claim cannot be written to once more.
+  const resumeBlock = await claimPreflightBlock(root, info.state);
+  if (resumeBlock) return resumeBlock;
 
   // ISS-024: recover any pending mutation before processing
   const recoveredState = await recoverPendingMutation(info.dir, info.state, root);

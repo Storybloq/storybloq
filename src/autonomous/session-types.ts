@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { z } from "zod";
 import { CLIENT_TASK_ID_PATTERN, type OwnerTask } from "./client-profile.js";
 import { CROCKFORD_CLASS } from "../models/types.js";
+import type { ClaimEpoch } from "./claim-reconciliation.js";
 
 /** Combined ticket + issue ID regex for targetWork validation (sequential + canonical). ISS-703: canonical char class derived from CROCKFORD_CLASS. */
 export const TARGET_WORK_ID_REGEX = new RegExp(`^(T-\\d+[a-z]?|ISS-\\d+|t-${CROCKFORD_CLASS}{16}|i-${CROCKFORD_CLASS}{16})$`);
@@ -181,6 +182,13 @@ export interface SessionState {
     readonly risk?: string;
   };
   readonly currentIssue?: CurrentIssueRef | null;
+  /**
+   * T-442: proof of what this session actually claimed, minted at PLAN from the
+   * values written to the ticket. Reconciliation compares the ledger against
+   * this on every later guide call; absent means a pre-T-442 session, which
+   * reconciles to a no-op rather than to a conflict.
+   */
+  readonly claimEpoch?: ClaimEpoch | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string; readonly displayId?: string }>;
   readonly resolvedIssues?: ReadonlyArray<string>;
   readonly resolvedIssueDisplayIds?: Readonly<Record<string, string>>;

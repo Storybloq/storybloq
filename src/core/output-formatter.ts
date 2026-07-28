@@ -9,7 +9,7 @@ import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
-import type { ValidationResult } from "./validation.js";
+import type { ValidationResult, ValidationFinding, ValidationLevel } from "./validation.js";
 import type { LedgerIntegrityResult } from "./ledger-integrity.js";
 import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
@@ -739,11 +739,41 @@ export function formatBlockedTickets(
   return lines.join("\n");
 }
 
+/** Findings listed per group before the remainder is summarized (ISS-890). */
+export const VALIDATION_GROUP_LIST_LIMIT = 10;
+
+const VALIDATION_LEVEL_ORDER = { error: 0, warning: 1, info: 2 } as const;
+
+const VALIDATION_LEVEL_PREFIX = { error: "ERROR", warning: "WARN", info: "INFO" } as const;
+
+/**
+ * Orders finding groups so the specific sits above the systemic (ISS-890).
+ *
+ * Level first, so an error is never below a warning. Within a level, SMALLEST
+ * group first: a finding that occurs three times is a specific defect you go and
+ * fix, while one that occurs ninety-two times is a pattern you triage as a batch,
+ * and reading it line by line tells you nothing the count did not. Sorting by
+ * count rather than by code keeps that true whichever code happens to be the bulk
+ * one in a given project. Ties break on code so the output is deterministic.
+ */
+function compareValidationGroups(
+  a: { level: ValidationLevel; code: string; findings: ValidationFinding[] },
+  b: { level: ValidationLevel; code: string; findings: ValidationFinding[] },
+): number {
+  const byLevel = VALIDATION_LEVEL_ORDER[a.level] - VALIDATION_LEVEL_ORDER[b.level];
+  if (byLevel !== 0) return byLevel;
+  const byCount = a.findings.length - b.findings.length;
+  if (byCount !== 0) return byCount;
+  return a.code.localeCompare(b.code);
+}
+
 export function formatValidation(
   result: ValidationResult,
   format: OutputFormat,
 ): string {
   if (format === "json") {
+    // Always complete: grouping and the per-group list limit below are a reading
+    // aid for humans, never a filter on what the data says.
     return JSON.stringify(successEnvelope(result), null, 2);
   }
 
@@ -753,11 +783,36 @@ export function formatValidation(
   ];
 
   if (result.findings.length > 0) {
-    lines.push("");
-    for (const f of result.findings) {
-      const prefix = f.level === "error" ? "ERROR" : f.level === "warning" ? "WARN" : "INFO";
-      const entity = f.entity ? `[${escapeMarkdownInline(f.entity)}] ` : "";
-      lines.push(`${prefix}: ${entity}${escapeMarkdownInline(f.message)}`);
+    // Grouped by code rather than printed flat (ISS-890). A flat list makes a
+    // handful of actionable findings visually indistinguishable from a hundred
+    // lines of accumulated drift, so the actionable ones stop being read.
+    const groups = new Map<string, { level: ValidationLevel; code: string; findings: ValidationFinding[] }>();
+    for (const finding of result.findings) {
+      const key = `${finding.level}:${finding.code}`;
+      const group = groups.get(key);
+      if (group) group.findings.push(finding);
+      else groups.set(key, { level: finding.level, code: finding.code, findings: [finding] });
+    }
+
+    for (const group of [...groups.values()].sort(compareValidationGroups)) {
+      const prefix = VALIDATION_LEVEL_PREFIX[group.level];
+      const count = group.findings.length;
+      lines.push("");
+      lines.push(`## ${group.code} -- ${count} ${count === 1 ? "finding" : "findings"}`);
+
+      // Errors are never abbreviated: they are what makes validation fail, so
+      // every one has to be readable without a second command.
+      const limit = group.level === "error" ? count : VALIDATION_GROUP_LIST_LIMIT;
+      for (const finding of group.findings.slice(0, limit)) {
+        const entity = finding.entity ? `[${escapeMarkdownInline(finding.entity)}] ` : "";
+        lines.push(`${prefix}: ${entity}${escapeMarkdownInline(finding.message)}`);
+      }
+      const hidden = count - Math.min(count, limit);
+      if (hidden > 0) {
+        // Stated, never silent: an abbreviated group says exactly how much it is
+        // holding back and where the rest is.
+        lines.push(`... and ${hidden} more. Run \`storybloq validate --format json\` for the full list.`);
+      }
     }
   }
 

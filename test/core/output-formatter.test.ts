@@ -15,6 +15,7 @@ import {
   formatIssue,
   formatIssueList,
   formatValidation,
+  VALIDATION_GROUP_LIST_LIMIT,
   formatBlockerList,
   formatError,
   formatInitResult,
@@ -23,7 +24,7 @@ import {
 import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 import type { NextTicketOutcome, NextTicketsOutcome } from "../../src/core/queries.js";
 import type { RecommendResult } from "../../src/core/recommend.js";
-import type { ValidationResult } from "../../src/core/validation.js";
+import type { ValidationResult, ValidationFinding } from "../../src/core/validation.js";
 
 describe("envelopes", () => {
   it("successEnvelope wraps data with version 1", () => {
@@ -525,6 +526,134 @@ describe("formatValidation", () => {
     const result: ValidationResult = { valid: true, errorCount: 0, warningCount: 0, infoCount: 0, findings: [] };
     const json = formatValidation(result, "json");
     expect(() => JSON.parse(json)).not.toThrow();
+  });
+
+  describe("grouping (ISS-890)", () => {
+    const finding = (
+      level: ValidationFinding["level"],
+      code: string,
+      n: number,
+    ): ValidationFinding[] =>
+      Array.from({ length: n }, (_, i) => ({
+        level,
+        code,
+        message: `${code} occurrence ${i + 1}`,
+        entity: `E-${i + 1}`,
+      }));
+
+    const build = (findings: ValidationFinding[]): ValidationResult => ({
+      valid: !findings.some((f) => f.level === "error"),
+      errorCount: findings.filter((f) => f.level === "error").length,
+      warningCount: findings.filter((f) => f.level === "warning").length,
+      infoCount: findings.filter((f) => f.level === "info").length,
+      findings,
+    });
+
+    const headings = (md: string): string[] =>
+      md.split("\n").filter((l) => l.startsWith("## "));
+
+    it("groups findings by code with a count on each heading", () => {
+      const md = formatValidation(
+        build([...finding("warning", "orphan_issue", 2), ...finding("warning", "blocked_by_deleted", 1)]),
+        "md",
+      );
+      expect(md).toContain("## blocked_by_deleted -- 1 finding");
+      expect(md).toContain("## orphan_issue -- 2 findings");
+    });
+
+    it("puts the specific above the systemic: smallest group first within a level", () => {
+      // The reported defect: three real blocked_by_deleted warnings were
+      // indistinguishable from ninety-two orphan_issue ones in a flat list.
+      const md = formatValidation(
+        build([
+          ...finding("warning", "orphan_issue", 92),
+          ...finding("warning", "blocked_by_deleted", 3),
+          ...finding("warning", "source_ref_changed_at_head", 5),
+        ]),
+        "md",
+      );
+      expect(headings(md)).toEqual([
+        "## blocked_by_deleted -- 3 findings",
+        "## source_ref_changed_at_head -- 5 findings",
+        "## orphan_issue -- 92 findings",
+      ]);
+    });
+
+    it("keeps errors above warnings above info regardless of group size", () => {
+      const md = formatValidation(
+        build([
+          ...finding("info", "duplicate_order", 1),
+          ...finding("warning", "orphan_issue", 1),
+          ...finding("error", "duplicate_ticket_id", 40),
+        ]),
+        "md",
+      );
+      expect(headings(md)).toEqual([
+        "## duplicate_ticket_id -- 40 findings",
+        "## orphan_issue -- 1 finding",
+        "## duplicate_order -- 1 finding",
+      ]);
+    });
+
+    it("breaks ties on code so the output is deterministic", () => {
+      const md = formatValidation(
+        build([...finding("warning", "zzz_last", 2), ...finding("warning", "aaa_first", 2)]),
+        "md",
+      );
+      expect(headings(md)).toEqual([
+        "## aaa_first -- 2 findings",
+        "## zzz_last -- 2 findings",
+      ]);
+    });
+
+    it("abbreviates a large group and says exactly how much it held back", () => {
+      const md = formatValidation(build(finding("warning", "orphan_issue", 92)), "md");
+      const listed = md.split("\n").filter((l) => l.startsWith("WARN:"));
+      expect(listed).toHaveLength(VALIDATION_GROUP_LIST_LIMIT);
+      expect(md).toContain("... and 82 more.");
+      // Never a silent cap: the remainder line names where the rest lives.
+      expect(md).toContain("storybloq validate --format json");
+    });
+
+    it("never abbreviates errors, which are what make validation fail", () => {
+      const md = formatValidation(build(finding("error", "duplicate_ticket_id", 40)), "md");
+      expect(md.split("\n").filter((l) => l.startsWith("ERROR:"))).toHaveLength(40);
+      expect(md).not.toContain("more. Run");
+    });
+
+    it("adds no remainder line when a group fits", () => {
+      const md = formatValidation(
+        build(finding("warning", "orphan_issue", VALIDATION_GROUP_LIST_LIMIT)),
+        "md",
+      );
+      expect(md.split("\n").filter((l) => l.startsWith("WARN:"))).toHaveLength(
+        VALIDATION_GROUP_LIST_LIMIT,
+      );
+      expect(md).not.toContain("more. Run");
+    });
+
+    it("leaves JSON complete and ungrouped, so machine consumers lose nothing", () => {
+      // The grouping and the limit are a reading aid for humans, never a filter
+      // on what the data says.
+      const findings = finding("warning", "orphan_issue", 92);
+      const parsed = JSON.parse(formatValidation(build(findings), "json")) as {
+        data: { findings: ValidationFinding[] };
+      };
+      expect(parsed.data.findings).toHaveLength(92);
+      expect(parsed.data.findings).toEqual(findings);
+    });
+
+    it("still names entities and levels on each listed line", () => {
+      const md = formatValidation(
+        build([
+          { level: "error", code: "self_ref_parent", message: "T-001 is its own parent.", entity: "T-001" },
+          { level: "info", code: "duplicate_order", message: "Two tickets share order 10.", entity: null },
+        ]),
+        "md",
+      );
+      expect(md).toContain("ERROR: [T-001] T-001 is its own parent.");
+      expect(md).toContain("INFO: Two tickets share order 10.");
+    });
   });
 });
 

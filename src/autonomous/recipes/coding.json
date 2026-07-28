@@ -15,7 +15,7 @@
     "ISSUE_FIX": { "enableCodeReview": false }
   },
   "dirtyFileHandling": "block",
-  "branchStrategy": "none",
+  "branchStrategy": "current",
   "defaults": {
     "maxTicketsPerSession": 0,
     "compactThreshold": "high",

@@ -32,7 +32,13 @@ export function getRemainingTargets(state: FullSessionState): string[] {
   if ((state.targetWork?.length ?? 0) === 0) return [];
   const doneTickets = new Set((state.completedTickets ?? []).map(t => t.id));
   const doneIssues = new Set(state.resolvedIssues ?? []);
-  return (state.targetWork ?? []).filter(id => !doneTickets.has(id) && !doneIssues.has(id));
+  // T-328: a skipped target is finished as far as this session is concerned.
+  // Without this, "skip" in a single-item targeted queue would re-offer the
+  // same item forever and the escape would not be an escape.
+  const skipped = new Set(state.skippedTargets ?? []);
+  return (state.targetWork ?? []).filter(
+    id => !doneTickets.has(id) && !doneIssues.has(id) && !skipped.has(id),
+  );
 }
 
 // ---------------------------------------------------------------------------

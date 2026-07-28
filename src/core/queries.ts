@@ -143,6 +143,13 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
 export function nextTickets(
   state: ProjectState,
   count: number,
+  /**
+   * T-328: ids to leave out of consideration entirely (a session's skipped
+   * items). Applied BEFORE ranking and truncation -- filtering the returned
+   * candidates instead would let a session that skipped the top of the list
+   * look like it had no work while eligible lower-ranked tickets remained.
+   */
+  excludeIds: ReadonlySet<string> = new Set(),
 ): NextTicketsOutcome {
   const effectiveCount = Math.max(1, count);
   const phases = state.roadmap.phases;
@@ -165,7 +172,9 @@ export function nextTickets(
 
     allPhasesComplete = false;
 
-    const incompleteLeaves = leaves.filter((t) => t.status !== "complete");
+    const incompleteLeaves = leaves
+      .filter((t) => t.status !== "complete")
+      .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)));
     const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t));
 
     if (unblocked.length === 0) {

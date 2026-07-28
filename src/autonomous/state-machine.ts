@@ -7,7 +7,7 @@ import type { WorkflowState } from "./session-types.js";
 const TRANSITIONS: Record<WorkflowState, readonly (WorkflowState | "*")[]> = {
   INIT:          ["PICK_TICKET"],         // start does INIT + LOAD_CONTEXT internally
   LOAD_CONTEXT:  ["PICK_TICKET"],         // internal (never seen by Claude)
-  PICK_TICKET:   ["PLAN", "ISSUE_FIX", "COMPLETE", "SESSION_END", "HANDOVER"],  // COMPLETE for ISS-075 (nothing left to do); HANDOVER for T-328 branch mismatch
+  PICK_TICKET:   ["PLAN", "ISSUE_FIX", "COMPLETE", "SESSION_END", "HANDOVER", "PICK_TICKET"],  // COMPLETE for ISS-075 (nothing left to do); HANDOVER for T-328 branch mismatch; self for T-328 skip_ticket, which re-enters to rebuild the candidate list without the skipped item
   PLAN:          ["PLAN_REVIEW", "HANDOVER", "PICK_TICKET"],  // HANDOVER for skip_ticket; PICK_TICKET for ISS-759/ISS-767 claim-lost re-pick
   PLAN_REVIEW:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "PLAN_REVIEW", "SESSION_END", "HANDOVER"],   // approve → IMPLEMENT/WRITE_TESTS, reject → PLAN, stay for next round; SESSION_END for tiered exit; HANDOVER for skip_ticket
   IMPLEMENT:     ["CODE_REVIEW", "TEST", "COMPLETE"],  // TEST when test stage enabled, COMPLETE for no-op tickets (ISS-069)

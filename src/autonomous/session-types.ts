@@ -705,7 +705,33 @@ export const SessionStateSchema = z.object({
   resolvedRecipeId: z.string().optional(),
   resolvedStages: z.record(z.record(z.unknown())).optional(),
   resolvedDirtyFileHandling: z.string().optional(),
-  resolvedBranchStrategy: z.enum(["none", "per-ticket"]).default("none"),
+  // T-328: this gates every session read through safeParse, so it accepts the
+  // full input set (including the legacy "none") and transforms to canonical.
+  // An un-widened enum here would not drop the field -- it would make a session
+  // that persisted a newer value unreadable.
+  resolvedBranchStrategy: z.enum(["current", "per-ticket", "main", "none"])
+    .default("current")
+    .transform((v) => (v === "none" ? "current" : v)),
+
+  // T-328: an open branch-mismatch episode. Persisted so the offer, its bounded
+  // failure count, and any write-ahead branch attempt all survive compaction
+  // and resume. Null whenever no episode is open.
+  pendingMismatch: z.object({
+    targetId: z.string(),
+    targetKind: z.enum(["ticket", "issue"]),
+    branch: z.string(),
+    controlFailures: z.number().default(0),
+    attempt: z.object({
+      name: z.string(),
+      baseOid: z.string(),
+      status: z.literal("planned"),
+    }).nullable().default(null),
+  }).nullable().default(null),
+
+  // T-328: items skipped at PICK_TICKET. Excluded from targeted remaining-work
+  // AND from untargeted candidate generation, so a skip is not undone by the
+  // next pass re-offering the same item.
+  skippedTargets: z.array(z.string()).default([]),
   resolvedDefaults: z.object({
     maxTicketsPerSession: z.number(),
     compactThreshold: z.string(),

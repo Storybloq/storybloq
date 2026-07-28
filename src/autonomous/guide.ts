@@ -48,6 +48,7 @@ import {
   captureClaudeCodeSessionId,
   telemetryDirPath,
 } from "./liveness.js";
+import { parseBranchStrategy, parseBranchStrategyOrDefault } from "./branch-strategy.js";
 import { gitHead, gitHeadHash, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
@@ -887,7 +888,10 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       if (Array.isArray(overrides.reviewBackends)) sessionConfig.reviewBackends = overrides.reviewBackends as string[];
       if (Array.isArray(overrides.codexReviewBackends)) sessionConfig.codexReviewBackends = overrides.codexReviewBackends as string[];
       if (typeof overrides.handoverInterval === "number") sessionConfig.handoverInterval = overrides.handoverInterval;
-      if (overrides.branchStrategy === "none" || overrides.branchStrategy === "per-ticket") sessionConfig.branchStrategy = overrides.branchStrategy;
+      // T-328: one parser instead of a hand-maintained value list, so a new
+      // strategy cannot be accepted everywhere except here.
+      const parsedStrategy = parseBranchStrategy(overrides.branchStrategy);
+      if (parsedStrategy) sessionConfig.branchStrategy = parsedStrategy;
       if (overrides.stages && typeof overrides.stages === "object") {
         sessionConfig.stageOverrides = overrides.stages as Record<string, Record<string, unknown>>;
       }
@@ -1516,7 +1520,7 @@ function resolveRecipeFromState(state: FullSessionState): import("./stages/types
     postComplete: state.resolvedPostComplete ?? [],
     stages: state.resolvedStages ?? {},
     dirtyFileHandling: state.resolvedDirtyFileHandling ?? "block",
-    branchStrategy: (state.resolvedBranchStrategy ?? "none") as "none" | "per-ticket",
+    branchStrategy: parseBranchStrategyOrDefault(state.resolvedBranchStrategy),
     defaults: state.resolvedDefaults ?? {
       maxTicketsPerSession: state.config.maxTicketsPerSession,
       compactThreshold: state.config.compactThreshold,

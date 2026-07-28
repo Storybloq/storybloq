@@ -149,17 +149,46 @@ current git branch contains a ticket or issue ID (e.g. `story/T-012-rebrand`).
 - If the branch contains multiple IDs (ambiguous), a warning is shown but no blocking
   occurs.
 
-**If mismatch blocking triggers, tell the user:**
-> This branch is scoped to {id}. The session will end with a handover.
-> To work on other tickets:
-> - Switch to `main` and run `/story auto` from there
-> - Use targeted mode: `/story auto T-XXX` (skips the branch check)
-> - Set `branchStrategy: "per-ticket"` in config (auto-creates branches per ticket)
+**If you pick a different ticket, the guide offers three escapes.** The first mismatch is a
+retry, not the end of the session. Report exactly one of:
 
-**When branchStrategy is "per-ticket":**
-The guide creates a new branch per ticket automatically. The mismatch check is skipped
-because each ticket gets its own branch.
+| Report | What the guide does |
+|---|---|
+| `{ "completedAction": "new_branch_from_main" }` | Resolves main, creates this item's branch from it, and proceeds with the pick. The guide runs git itself; you do not run any command. |
+| `{ "completedAction": "skip_ticket" }` | Records the item as skipped for this session and returns to the pick stage. It will not be offered again. |
+| `{ "completedAction": "end_session" }` | Ends the session with a handover, the pre-existing behavior. |
+
+You may also simply pick one of the ids the branch is scoped to.
+
+Each of these acts on the pending item only. Send no id, or the id matching it; a different
+id is rejected rather than silently ignored. Re-reporting the same mismatched pick, or
+failing to resolve the mismatch repeatedly, ends the session with a handover.
+
+## branchStrategy
+
+Set under `recipeOverrides` in `.story/config.json`.
+
+| Value | Behavior |
+|---|---|
+| `"current"` (default) | Work on whatever branch is checked out. Branch affinity guards against contaminating a feature branch. |
+| `"per-ticket"` | Create a branch per item automatically (`story/` for tickets, `fix/` for issues). The mismatch check is skipped, since each item gets its own branch. |
+| `"main"` | Switch to main before working. The mismatch check is skipped for the same reason. |
+| `"none"` | Deprecated spelling of `"current"`. Still accepted so existing configs keep working; never written by the CLI. |
+
+**What `"main"` resolves to.** The local branch named `main`, falling back to `master` when
+no local `main` exists. It is main-preferred, not default-branch-aware: a repository that
+keeps a vestigial `main` while `master` is its real default gets `main`. Resolution is
+local-only, with no fetch and no fast-forward, so a stale local `main` is used as-is.
+
+**Where branches are cut from.** These deliberately differ:
+
+- `new_branch_from_main` always bases the new branch on the resolved local main. Its whole
+  purpose is to get off a branch whose history you do not want.
+- `per-ticket` bases branches on the session's starting commit, which is the behavior that
+  shipped. Changing it to main is an open decision, not an oversight: someone who starts a
+  session from a release or integration branch today gets ticket branches rooted there, and
+  moving them silently would relocate their work.
 
 **Targeted mode (`/story auto T-XXX ISS-YYY`):**
 Branch affinity is skipped entirely. The targetWork list constrains picks regardless of
-branch name.
+branch name, so no mismatch episode can arise.

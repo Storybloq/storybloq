@@ -43,7 +43,7 @@ function makeRecipe(overrides?: Partial<ResolvedRecipe>): ResolvedRecipe {
     id: "coding",
     pipeline: ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
     postComplete: [], stages: {}, dirtyFileHandling: "block",
-    branchStrategy: "none",
+    branchStrategy: "current",
     defaults: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["agent"] },
     ...overrides,
   };
@@ -107,7 +107,7 @@ afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
 // ---------------------------------------------------------------------------
 
 describe("mismatch blocking in PickTicketStage.report()", () => {
-  it("routes to HANDOVER when pick does not match branch entity", async () => {
+  it("offers escapes on the first mismatch, then routes to HANDOVER on the second", async () => {
     setupProject(testRoot, {
       tickets: [
         { id: "T-100", title: "Branch ticket", status: "open", phase: "p1" },
@@ -120,12 +120,20 @@ describe("mismatch blocking in PickTicketStage.report()", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const stage = new PickTicketStage();
 
-    const result = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-200" } as any);
+    // T-328: the first mismatch is an offer, not a dead end. The mismatch is
+    // still surfaced with both ids; what changed is that the session survives it.
+    const first = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-200" } as any);
 
-    expect(result).toHaveProperty("action", "goto");
-    expect(result).toHaveProperty("target", "HANDOVER");
-    expect((result as any).result.instruction).toContain("T-100");
-    expect((result as any).result.instruction).toContain("T-200");
+    expect(first).toHaveProperty("action", "retry");
+    expect((first as any).instruction).toContain("T-100");
+    expect((first as any).instruction).toContain("T-200");
+
+    // Ignoring the offer and re-reporting the same blocked pick lands on the
+    // pre-T-328 behavior, so the terminal route stays covered.
+    const second = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: "T-200" } as any);
+
+    expect(second).toHaveProperty("action", "goto");
+    expect(second).toHaveProperty("target", "HANDOVER");
   });
 
   it("allows pick when it matches branch entity", async () => {
@@ -201,10 +209,12 @@ describe("mismatch blocking in PickTicketStage.report()", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const stage = new PickTicketStage();
 
-    const result = await stage.report(ctx, { completedAction: "issue_picked", issueId: "ISS-050" } as any);
+    const first = await stage.report(ctx, { completedAction: "issue_picked", issueId: "ISS-050" } as any);
+    expect(first).toHaveProperty("action", "retry");
 
-    expect(result).toHaveProperty("action", "goto");
-    expect(result).toHaveProperty("target", "HANDOVER");
+    const second = await stage.report(ctx, { completedAction: "issue_picked", issueId: "ISS-050" } as any);
+    expect(second).toHaveProperty("action", "goto");
+    expect(second).toHaveProperty("target", "HANDOVER");
   });
 });
 
@@ -259,12 +269,16 @@ describe("team-shaped picks in PickTicketStage.report()", () => {
     const ctx = new StageContext(testRoot, sessionDir, makeAffinityState(), makeRecipe());
     const stage = new PickTicketStage();
 
-    const result = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: CANONICAL_B } as any);
+    const first = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: CANONICAL_B } as any);
 
-    expect(result).toHaveProperty("action", "goto");
-    expect(result).toHaveProperty("target", "HANDOVER");
-    expect((result as any).result.instruction).toContain("T-500");
-    expect((result as any).result.instruction).toContain("T-401");
+    // ISS-752: the display labels must survive the move to an offer.
+    expect(first).toHaveProperty("action", "retry");
+    expect((first as any).instruction).toContain("T-500");
+    expect((first as any).instruction).toContain("T-401");
+
+    const second = await stage.report(ctx, { completedAction: "ticket_picked", ticketId: CANONICAL_B } as any);
+    expect(second).toHaveProperty("action", "goto");
+    expect(second).toHaveProperty("target", "HANDOVER");
   });
 
   it("advances when a previousDisplayId matches the branch entity", async () => {
@@ -336,12 +350,15 @@ describe("team-shaped picks in PickTicketStage.report()", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const stage = new PickTicketStage();
 
-    const result = await stage.report(ctx, { completedAction: "issue_picked", issueId: ISSUE_CANONICAL_B } as any);
+    const first = await stage.report(ctx, { completedAction: "issue_picked", issueId: ISSUE_CANONICAL_B } as any);
 
-    expect(result).toHaveProperty("action", "goto");
-    expect(result).toHaveProperty("target", "HANDOVER");
-    expect((result as any).result.instruction).toContain("ISS-060");
-    expect((result as any).result.instruction).toContain("ISS-050");
+    expect(first).toHaveProperty("action", "retry");
+    expect((first as any).instruction).toContain("ISS-060");
+    expect((first as any).instruction).toContain("ISS-050");
+
+    const second = await stage.report(ctx, { completedAction: "issue_picked", issueId: ISSUE_CANONICAL_B } as any);
+    expect(second).toHaveProperty("action", "goto");
+    expect(second).toHaveProperty("target", "HANDOVER");
   });
 });
 
@@ -405,9 +422,9 @@ describe("annotation in PickTicketStage.enter()", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveRecipe branchStrategy propagation", () => {
-  it("defaults to 'none' when not specified", () => {
+  it("defaults to the canonical 'current' when not specified", () => {
     const recipe = resolveRecipe("coding");
-    expect(recipe.branchStrategy).toBe("none");
+    expect(recipe.branchStrategy).toBe("current");
   });
 
   it("project override wins over recipe default", () => {
@@ -415,9 +432,9 @@ describe("resolveRecipe branchStrategy propagation", () => {
     expect(recipe.branchStrategy).toBe("per-ticket");
   });
 
-  it("recipe default is 'none' in coding.json", () => {
+  it("resolves the recipe default to a canonical value, whatever coding.json spells it", () => {
     const recipe = resolveRecipe("coding", {});
-    expect(recipe.branchStrategy).toBe("none");
+    expect(recipe.branchStrategy).toBe("current");
   });
 });
 

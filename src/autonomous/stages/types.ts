@@ -48,13 +48,15 @@ export function isStageAdvance(value: StageResult | StageAdvance): value is Stag
 // Resolved recipe — frozen pipeline + config for a session
 // ---------------------------------------------------------------------------
 
+import type { BranchStrategy } from "../branch-strategy.js";
+
 export interface ResolvedRecipe {
   readonly id: string;
   readonly pipeline: readonly string[];
   readonly postComplete: readonly string[];
   readonly stages: Readonly<Record<string, Record<string, unknown>>>;
   readonly dirtyFileHandling: string;
-  readonly branchStrategy: "none" | "per-ticket";
+  readonly branchStrategy: BranchStrategy;
   readonly defaults: {
     readonly maxTicketsPerSession: number;
     readonly compactThreshold: string;

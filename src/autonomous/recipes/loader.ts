@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ResolvedRecipe } from "../stages/types.js";
+import { parseBranchStrategy, parseBranchStrategyOrDefault } from "../branch-strategy.js";
 
 // ---------------------------------------------------------------------------
 // Recipe schema (raw JSON shape)
@@ -14,7 +15,7 @@ interface RawRecipe {
   postComplete?: readonly string[];
   stages?: Record<string, Record<string, unknown>>;
   dirtyFileHandling?: string;
-  branchStrategy?: "none" | "per-ticket";
+  branchStrategy?: string;
   defaults?: {
     maxTicketsPerSession?: number;
     compactThreshold?: string;
@@ -78,7 +79,7 @@ export function resolveRecipe(
     reviewBackends?: string[];
     codexReviewBackends?: string[];
     stages?: Record<string, Record<string, unknown>>;
-    branchStrategy?: "none" | "per-ticket";
+    branchStrategy?: string;
   },
 ): ResolvedRecipe {
   let raw: RawRecipe;
@@ -184,7 +185,10 @@ export function resolveRecipe(
     postComplete,
     stages,
     dirtyFileHandling: raw.dirtyFileHandling ?? "block",
-    branchStrategy: projectOverrides?.branchStrategy ?? raw.branchStrategy ?? "none",
+    // T-328: normalize here rather than trusting either source. Both the
+    // project override and the recipe JSON can carry the legacy "none".
+    branchStrategy: parseBranchStrategy(projectOverrides?.branchStrategy)
+      ?? parseBranchStrategyOrDefault(raw.branchStrategy),
     defaults,
   };
 }

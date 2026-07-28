@@ -78,7 +78,10 @@ export const ConfigSchema = z
       codexReviewBackends: z.array(z.string()).optional(),
       handoverInterval: z.number().min(0).optional(),
       stages: z.record(z.record(z.unknown())).optional(),
-      branchStrategy: z.enum(["none", "per-ticket"]).optional(),
+      // T-328: accepted-input set, not the canonical set. The legacy "none" is
+      // still valid in any config written before this ticket; it normalizes to
+      // "current" when the recipe is resolved.
+      branchStrategy: z.enum(["current", "per-ticket", "main", "none"]).optional(),
       maxParallelAgents: z.number().min(1).max(8).optional(),
     }).optional(),
     nodes: z.record(z.string(), z.unknown()).optional(),

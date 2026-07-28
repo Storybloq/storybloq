@@ -4,12 +4,30 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 import { isDeleted } from "../../core/project-state.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
-import { detectBranchAffinity, checkAffinityMismatch, buildAffinityAnnotation, buildMismatchHandoverInstruction, createTicketBranch, refreshGitWorkingState } from "../branch-affinity.js";
+import {
+  detectBranchAffinity, checkAffinityMismatch, buildAffinityAnnotation,
+  buildMismatchHandoverInstruction, buildMismatchOfferInstruction,
+  applyBranchStrategy, performNewBranchFromMain, MAX_MISMATCH_CONTROL_FAILURES,
+  type BranchAffinity, type BranchTarget, type PendingMismatch,
+} from "../branch-affinity.js";
 import { canClaim, buildClaim } from "../../core/claims.js";
 import { gitUserEmail } from "../git-inspector.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
+import type { Ticket } from "../../models/ticket.js";
+import type { Issue } from "../../models/issue.js";
+
+/**
+ * T-328: revalidating a pending target has three outcomes, not two. Folding a
+ * transient read failure into "rejected" would clear the episode and reset its
+ * failure budget, so repeated ledger-read failures could only ever be stopped
+ * by the generic retry counter.
+ */
+type RevalidationResult<T> =
+  | { kind: "ok"; item: T }
+  | { kind: "rejected"; advance: StageAdvance }
+  | { kind: "transient"; message: string };
 
 /**
  * PICK_TICKET stage -- Claude selects the next ticket to work on.
@@ -75,7 +93,9 @@ export class PickTicketStage implements WorkflowStage {
 
     // Standard auto mode -- browse full roadmap
     const { nextTickets } = await import("../../core/queries.js");
-    const candidates = nextTickets(projectState, 5);
+    // T-328: a skipped item must not come straight back on the next pass.
+    const skipped = new Set(ctx.state.skippedTargets ?? []);
+    const candidates = nextTickets(projectState, 5, skipped);
 
     let candidatesText = "";
     if (candidates.kind === "found") {
@@ -92,7 +112,9 @@ export class PickTicketStage implements WorkflowStage {
     }
 
     // ISS-084: Surface ALL open issues (severity affects display order, not work-remaining check)
-    const allOpenIssues = projectState.activeIssues.filter(i => i.status === "open");
+    const allOpenIssues = projectState.activeIssues.filter(
+      i => i.status === "open" && !skipped.has(i.id) && !(i.displayId && skipped.has(i.displayId)),
+    );
     const highIssues = allOpenIssues.filter(i => i.severity === "critical" || i.severity === "high");
     const otherIssues = allOpenIssues.filter(i => i.severity !== "critical" && i.severity !== "high");
     let issuesText = "";
@@ -150,6 +172,13 @@ export class PickTicketStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // T-328: pending control actions dispatch FIRST, so an open mismatch
+    // episode can always be closed. If they ran after the ordinary pick path an
+    // episode could become a trap: the only way out would be the generic retry
+    // exhaustion, which is not a decision anyone made.
+    const control = await this.handlePendingMismatchAction(ctx, report);
+    if (control) return control;
+
     // T-153: Accept issueId for issue-fix flow
     const issueId = report.issueId;
     if (issueId) {
@@ -194,30 +223,6 @@ export class PickTicketStage implements WorkflowStage {
     const targetReject = this.enforceTargetMembership(ctx, ticket.id, ticketLabel);
     if (targetReject) return targetReject;
 
-    // T-328 + ISS-752: Branch affinity mismatch blocking against the resolved item's full id set
-    // Skip when: targeted mode (already handled above), or per-ticket branching (Part 2)
-    if (!isTargetedMode(ctx.state) && ctx.state.resolvedBranchStrategy !== "per-ticket") {
-      const affinity = detectBranchAffinity(ctx.state.git?.branch ?? null);
-      const pickedIds = [ticket.id, ticket.displayId, ...(ticket.previousDisplayIds ?? [])].filter((v): v is string => Boolean(v));
-      const mismatch = checkAffinityMismatch(affinity, pickedIds, ticketLabel);
-      if (mismatch.blocked) {
-        return {
-          action: "goto",
-          target: "HANDOVER",
-          result: {
-            instruction: buildMismatchHandoverInstruction(
-              affinity,
-              ticketLabel,
-              ctx.state.sessionId,
-              storybloqClientProfile().storyCommand,
-            ),
-            reminders: [],
-            transitionedFrom: "PICK_TICKET",
-          },
-        };
-      }
-    }
-
     if (projectState.isBlocked(ticket)) {
       return { action: "retry", instruction: `Ticket ${ticketLabel} is blocked. Pick an unblocked ticket.` };
     }
@@ -241,36 +246,28 @@ export class PickTicketStage implements WorkflowStage {
       }
     }
 
-    // T-328 Part 2: Per-ticket branch creation
-    if (ctx.state.resolvedBranchStrategy === "per-ticket") {
-      const headResult = await import("../git-inspector.js").then(m => m.gitHead(ctx.root));
-      if (!headResult.ok || headResult.data.branch === null) {
-        return { action: "retry", instruction: `branchStrategy is "per-ticket" but ${!headResult.ok ? "git is unavailable" : "HEAD is detached"}. Switch to a branch or set branchStrategy to "none".` };
-      }
-      const result = await createTicketBranch(
-        ctx.root,
-        ctx.state.git ?? { branch: null, mergeBase: null },
-        { id: ticket.id, displayId: ticket.displayId, title: ticket.title },
-        "story",
-      );
-      if (!result.ok) {
-        return { action: "retry", instruction: `Branch creation failed: ${result.message}. Fix the issue and retry.` };
-      }
-      if (result.data.created || result.data.branchName !== ctx.state.git?.branch) {
-        const refreshed = await refreshGitWorkingState(ctx.root);
-        if (!refreshed) {
-          return { action: "retry", instruction: `Branch "${result.data.branchName}" was checked out but git state refresh failed. Run \`git status\` and retry.` };
-        }
-        ctx.updateDraft({
-          git: {
-            ...ctx.state.git,
-            branch: refreshed.branch,
-            expectedHead: refreshed.expectedHead,
-            baseline: refreshed.baseline,
-          },
-        });
-      }
-    }
+    // T-328: affinity runs AFTER the eligibility gates above. It opens a
+    // persisted episode and offers a branch-creating escape, so an ineligible
+    // pick must not be able to start one.
+    const mismatch = this.checkMismatch(ctx, {
+      canonicalId: ticket.id,
+      displayId: ticket.displayId,
+      title: ticket.title,
+      kind: "ticket",
+      allIds: [ticket.id, ticket.displayId, ...(ticket.previousDisplayIds ?? [])]
+        .filter((v): v is string => Boolean(v)),
+      label: ticketLabel,
+    });
+    if (mismatch) return mismatch;
+
+    // T-328: branch strategy is the last thing that touches git.
+    const applied = await this.applyStrategy(ctx, {
+      canonicalId: ticket.id,
+      displayId: ticket.displayId,
+      title: ticket.title,
+      kind: "ticket",
+    });
+    if (applied) return applied;
 
     // Clean up stale plan from previous ticket (ISS-029)
     const planPath = join(ctx.dir, "plan.md");
@@ -354,65 +351,32 @@ export class PickTicketStage implements WorkflowStage {
     const targetReject = this.enforceTargetMembership(ctx, issue.id, issueLabel);
     if (targetReject) return targetReject;
 
-    // T-328 + ISS-752: Branch affinity mismatch blocking against the resolved item's full id set
-    if (!isTargetedMode(ctx.state) && ctx.state.resolvedBranchStrategy !== "per-ticket") {
-      const affinity = detectBranchAffinity(ctx.state.git?.branch ?? null);
-      const pickedIds = [issue.id, issue.displayId, ...(issue.previousDisplayIds ?? [])].filter((v): v is string => Boolean(v));
-      const mismatch = checkAffinityMismatch(affinity, pickedIds, issueLabel);
-      if (mismatch.blocked) {
-        return {
-          action: "goto",
-          target: "HANDOVER",
-          result: {
-            instruction: buildMismatchHandoverInstruction(
-              affinity,
-              issueLabel,
-              ctx.state.sessionId,
-              storybloqClientProfile().storyCommand,
-            ),
-            reminders: [],
-            transitionedFrom: "PICK_TICKET",
-          },
-        };
-      }
-    }
-
     // T-188: Targeted mode allows inprogress issues (resume from prior session)
     const targeted = isTargetedMode(ctx.state);
     if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { action: "retry", instruction: `Issue ${issueLabel} is ${issue.status}. Pick an open issue.` };
     }
 
-    // T-328 Part 2: Per-ticket branch creation for issues
-    if (ctx.state.resolvedBranchStrategy === "per-ticket") {
-      const headResult = await import("../git-inspector.js").then(m => m.gitHead(ctx.root));
-      if (!headResult.ok || headResult.data.branch === null) {
-        return { action: "retry", instruction: `branchStrategy is "per-ticket" but ${!headResult.ok ? "git is unavailable" : "HEAD is detached"}. Switch to a branch or set branchStrategy to "none".` };
-      }
-      const result = await createTicketBranch(
-        ctx.root,
-        ctx.state.git ?? { branch: null, mergeBase: null },
-        { id: issue.id, displayId: issue.displayId, title: issue.title },
-        "fix",
-      );
-      if (!result.ok) {
-        return { action: "retry", instruction: `Branch creation failed: ${result.message}. Fix the issue and retry.` };
-      }
-      if (result.data.created || result.data.branchName !== ctx.state.git?.branch) {
-        const refreshed = await refreshGitWorkingState(ctx.root);
-        if (!refreshed) {
-          return { action: "retry", instruction: `Branch "${result.data.branchName}" was checked out but git state refresh failed. Run \`git status\` and retry.` };
-        }
-        ctx.updateDraft({
-          git: {
-            ...ctx.state.git,
-            branch: refreshed.branch,
-            expectedHead: refreshed.expectedHead,
-            baseline: refreshed.baseline,
-          },
-        });
-      }
-    }
+    // T-328: same order as the ticket path -- eligibility, then affinity, then
+    // the strategy that actually moves the repository.
+    const mismatch = this.checkMismatch(ctx, {
+      canonicalId: issue.id,
+      displayId: issue.displayId,
+      title: issue.title,
+      kind: "issue",
+      allIds: [issue.id, issue.displayId, ...(issue.previousDisplayIds ?? [])]
+        .filter((v): v is string => Boolean(v)),
+      label: issueLabel,
+    });
+    if (mismatch) return mismatch;
+
+    const applied = await this.applyStrategy(ctx, {
+      canonicalId: issue.id,
+      displayId: issue.displayId,
+      title: issue.title,
+      kind: "issue",
+    });
+    if (applied) return applied;
 
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)
@@ -436,6 +400,349 @@ export class PickTicketStage implements WorkflowStage {
     });
 
     return { action: "goto", target: "ISSUE_FIX" };
+  }
+
+  // -------------------------------------------------------------------------
+  // T-328: branch-mismatch episodes
+  // -------------------------------------------------------------------------
+
+  /**
+   * The affinity gate. Returns null when the pick is fine.
+   *
+   * The first unresolved mismatch in an episode offers escapes; while an
+   * episode is already open, any further unresolved mismatch is terminal
+   * regardless of which item or branch produced it. Keying on the (item,
+   * branch) pair instead would let a caller alternate ids or rename the branch
+   * and collect a fresh offer forever.
+   */
+  private checkMismatch(
+    ctx: StageContext,
+    target: BranchTarget & { allIds: string[]; label: string },
+  ): StageAdvance | null {
+    const strategy = ctx.state.resolvedBranchStrategy;
+    // Targeted mode constrains picks already; "main" and "per-ticket" have
+    // decided the branch, so there is nothing for affinity to arbitrate. Any
+    // episode still open is stale here too, for the same reason as below.
+    if (isTargetedMode(ctx.state) || strategy === "per-ticket" || strategy === "main") {
+      if (ctx.state.pendingMismatch) ctx.writeState({ pendingMismatch: null });
+      return null;
+    }
+
+    const affinity = detectBranchAffinity(ctx.state.git?.branch ?? null);
+    const mismatch = checkAffinityMismatch(affinity, target.allIds, target.label);
+    if (!mismatch.blocked) {
+      // An open episode resolved by simply picking a matching item. Clearing it
+      // here matters: a stale record would make the NEXT unrelated mismatch
+      // terminal instead of offering, and would leave control actions pointing
+      // at an item this session already moved past.
+      if (ctx.state.pendingMismatch) ctx.writeState({ pendingMismatch: null });
+      return null;
+    }
+
+    const open = ctx.state.pendingMismatch ?? null;
+    if (open) return this.endEpisode(ctx, affinity, target.label);
+
+    ctx.writeState({
+      pendingMismatch: {
+        targetId: target.canonicalId,
+        targetKind: target.kind,
+        branch: affinity.branch ?? "",
+        controlFailures: 0,
+        attempt: null,
+      },
+    });
+    return {
+      action: "retry",
+      instruction: buildMismatchOfferInstruction(affinity, target.label, ctx.state.sessionId),
+    };
+  }
+
+  /** Terminal route: unchanged from the pre-T-328 behavior. */
+  private endEpisode(ctx: StageContext, affinity: BranchAffinity, label: string): StageAdvance {
+    ctx.writeState({ pendingMismatch: null });
+    return {
+      action: "goto",
+      target: "HANDOVER",
+      result: {
+        instruction: buildMismatchHandoverInstruction(
+          affinity,
+          label,
+          ctx.state.sessionId,
+          storybloqClientProfile().storyCommand,
+        ),
+        reminders: [],
+        transitionedFrom: "PICK_TICKET",
+      },
+    };
+  }
+
+  /**
+   * Handle `new_branch_from_main`, `skip_ticket`, and `end_session` while an
+   * episode is open. Returns null when the report is not one of those, so the
+   * ordinary pick path runs untouched.
+   */
+  private async handlePendingMismatchAction(
+    ctx: StageContext,
+    report: GuideReportInput,
+  ): Promise<StageAdvance | null> {
+    const action = report.completedAction;
+    if (action !== "new_branch_from_main" && action !== "skip_ticket" && action !== "end_session") {
+      return null;
+    }
+
+    const open = ctx.state.pendingMismatch ?? null;
+    if (!open) {
+      return {
+        action: "retry",
+        instruction: `"${action}" is only valid while a branch mismatch is pending. Report a ticket or issue pick instead.`,
+      };
+    }
+
+    const identity = this.validatePendingIdentity(open, report);
+    if (identity) return this.controlFailure(ctx, open, identity);
+
+    if (action === "end_session") {
+      const affinity = detectBranchAffinity(open.branch);
+      return this.endEpisode(ctx, affinity, open.targetId);
+    }
+
+    if (action === "skip_ticket") {
+      const skipped = [...(ctx.state.skippedTargets ?? [])];
+      if (!skipped.includes(open.targetId)) skipped.push(open.targetId);
+      ctx.writeState({ skippedTargets: skipped, pendingMismatch: null });
+      return { action: "goto", target: "PICK_TICKET" };
+    }
+
+    return this.handleNewBranchFromMain(ctx, open);
+  }
+
+  /**
+   * A report may carry no id, or the id matching the pending target. Anything
+   * else is rejected rather than ignored: silently accepting a mismatched id
+   * would let a confused caller believe it had skipped or rebranched something
+   * it had not.
+   */
+  private validatePendingIdentity(open: PendingMismatch, report: GuideReportInput): string | null {
+    const { ticketId, issueId } = report;
+    if (ticketId && issueId) return "Sending both ticketId and issueId is ambiguous. Send at most one, and it must match the pending item.";
+    const supplied = ticketId ?? issueId;
+    if (!supplied) return null;
+    const suppliedKind = ticketId ? "ticket" : "issue";
+    if (suppliedKind !== open.targetKind) {
+      return `The pending mismatch is for a ${open.targetKind} (${open.targetId}); a ${suppliedKind}Id was sent instead.`;
+    }
+    if (supplied !== open.targetId) {
+      return `The pending mismatch is for ${open.targetId}, not ${supplied}.`;
+    }
+    return null;
+  }
+
+  /**
+   * Count a recoverable failure against the episode's own bound.
+   *
+   * Every retry also increments the generic stuckRetryCount, whose threshold of
+   * 5 bypasses the cancel gate. Left unbounded, repeated control failures would
+   * end the episode through that generic path rather than through this one.
+   */
+  private controlFailure(ctx: StageContext, open: PendingMismatch, message: string): StageAdvance {
+    const failures = (open.controlFailures ?? 0) + 1;
+    if (failures >= MAX_MISMATCH_CONTROL_FAILURES) {
+      const affinity = detectBranchAffinity(open.branch);
+      ctx.writeState({ pendingMismatch: null });
+      return {
+        action: "goto",
+        target: "HANDOVER",
+        result: {
+          instruction: [
+            buildMismatchHandoverInstruction(
+              affinity,
+              open.targetId,
+              ctx.state.sessionId,
+              storybloqClientProfile().storyCommand,
+            ),
+            "",
+            `Resolving the mismatch failed ${failures} times. Last failure: ${message}`,
+          ].join("\n"),
+          reminders: [],
+          transitionedFrom: "PICK_TICKET",
+        },
+      };
+    }
+    ctx.writeState({ pendingMismatch: { ...open, controlFailures: failures } });
+    return { action: "retry", instruction: message };
+  }
+
+  /**
+   * Revalidate, then branch fresh from main and proceed with the pending pick.
+   *
+   * Revalidation is not optional: the offer can be a compaction old and the
+   * ledger is shared, so the target may have been completed, blocked, deleted,
+   * or claimed since. A stale pending record must never reach git.
+   */
+  private async handleNewBranchFromMain(ctx: StageContext, open: PendingMismatch): Promise<StageAdvance> {
+    if (open.targetKind === "issue") {
+      const revalidated = await this.revalidateIssue(ctx, open.targetId);
+      if (revalidated.kind === "transient") {
+        return this.controlFailure(ctx, open, revalidated.message);
+      }
+      if (revalidated.kind === "rejected") {
+        ctx.writeState({ pendingMismatch: null });
+        return revalidated.advance;
+      }
+      const branched = await this.branchFromMain(ctx, open, {
+        canonicalId: revalidated.item.id,
+        displayId: revalidated.item.displayId,
+        title: revalidated.item.title,
+        kind: "issue",
+      });
+      if (branched) return branched;
+      return this.handleIssuePick(ctx, open.targetId);
+    }
+
+    const revalidated = await this.revalidateTicket(ctx, open.targetId);
+    if (revalidated.kind === "transient") {
+      return this.controlFailure(ctx, open, revalidated.message);
+    }
+    if (revalidated.kind === "rejected") {
+      ctx.writeState({ pendingMismatch: null });
+      return revalidated.advance;
+    }
+    const branched = await this.branchFromMain(ctx, open, {
+      canonicalId: revalidated.item.id,
+      displayId: revalidated.item.displayId,
+      title: revalidated.item.title,
+      kind: "ticket",
+    });
+    if (branched) return branched;
+    return this.report(ctx, { completedAction: "ticket_picked", ticketId: open.targetId });
+  }
+
+  /** Returns a StageAdvance on failure, or null once the branch is in place. */
+  private async branchFromMain(
+    ctx: StageContext,
+    open: PendingMismatch,
+    target: BranchTarget,
+  ): Promise<StageAdvance | null> {
+    let recorded = open.attempt;
+    const outcome = await performNewBranchFromMain(ctx.root, target, recorded, (attempt) => {
+      recorded = attempt;
+      // Write-ahead: on disk before git runs, so a crash in between leaves a
+      // recoverable record rather than an orphan branch nobody can identify.
+      ctx.writeState({ pendingMismatch: { ...open, attempt } });
+    });
+
+    if (!outcome.ok) {
+      const carried: PendingMismatch = { ...open, attempt: outcome.attempt ?? recorded };
+      // Both retryable and non-retryable outcomes go through the bounded
+      // counter. A non-retryable conflict returned as a bare retry would repeat
+      // forever until the generic stuckRetryCount bypass fired, which is
+      // exactly the escape hatch this episode is supposed to make unnecessary.
+      return this.controlFailure(ctx, carried, outcome.message);
+    }
+
+    ctx.writeState({
+      pendingMismatch: null,
+      git: {
+        ...ctx.state.git,
+        branch: outcome.refreshed.branch,
+        expectedHead: outcome.refreshed.expectedHead,
+        baseline: outcome.refreshed.baseline,
+      },
+    });
+    return null;
+  }
+
+  private async revalidateTicket(
+    ctx: StageContext,
+    canonicalId: string,
+  ): Promise<RevalidationResult<Ticket>> {
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      // Transient: the ledger could not be READ. That says nothing about the
+      // target's eligibility, so the episode stays open and the failure counts
+      // against its bound instead of resetting it.
+      return { kind: "transient", message: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}.` };
+    }
+    const resolved = projectState.resolveTicketRef(canonicalId);
+    if (resolved.kind !== "found") {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${canonicalId} is no longer resolvable. Pick a different item.` } };
+    }
+    const ticket = resolved.item;
+    const label = displayIdOf(ticket);
+    if (isDeleted(ticket)) {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${label} was deleted while the branch mismatch was pending. Pick a different item.` } };
+    }
+    const membership = this.enforceTargetMembership(ctx, ticket.id, label);
+    if (membership) return { kind: "rejected", advance: membership };
+    if (projectState.isBlocked(ticket)) {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${label} became blocked while the branch mismatch was pending. Pick an unblocked item.` } };
+    }
+    if (ticket.status !== "open") {
+      const claim = (ticket as Record<string, unknown>).claimedBySession;
+      if (!(ticket.status === "inprogress" && claim === ctx.state.sessionId)) {
+        return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${label} is now ${ticket.status}. Pick an open item.` } };
+      }
+    }
+    const email = await gitUserEmail(ctx.root);
+    if (ticket.claim) {
+      const claimResult = canClaim(ticket, email ?? "", ctx.state.git?.branch ?? "unknown");
+      if (!claimResult.allowed) {
+        return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${label} was claimed by ${claimResult.claimedBy} while the branch mismatch was pending. Pick a different item.` } };
+      }
+    }
+    return { kind: "ok", item: ticket };
+  }
+
+  private async revalidateIssue(
+    ctx: StageContext,
+    canonicalId: string,
+  ): Promise<RevalidationResult<Issue>> {
+    let projectState;
+    try {
+      ({ state: projectState } = await ctx.loadProject());
+    } catch (err) {
+      return { kind: "transient", message: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}.` };
+    }
+    const resolved = projectState.resolveIssueRef(canonicalId);
+    if (resolved.kind !== "found") {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Issue ${canonicalId} is no longer resolvable. Pick a different item.` } };
+    }
+    const issue = resolved.item;
+    const label = displayIdOf(issue);
+    if (isDeleted(issue)) {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Issue ${label} was deleted while the branch mismatch was pending. Pick a different item.` } };
+    }
+    const membership = this.enforceTargetMembership(ctx, issue.id, label);
+    if (membership) return { kind: "rejected", advance: membership };
+    const targeted = isTargetedMode(ctx.state);
+    if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
+      return { kind: "rejected", advance: { action: "retry", instruction: `Issue ${label} is now ${issue.status}. Pick an open item.` } };
+    }
+    return { kind: "ok", item: issue };
+  }
+
+  /** Apply the configured branch strategy. Returns a retry, or null on success. */
+  private async applyStrategy(ctx: StageContext, target: BranchTarget): Promise<StageAdvance | null> {
+    const outcome = await applyBranchStrategy(
+      ctx.root,
+      ctx.state.resolvedBranchStrategy ?? "current",
+      ctx.state.git,
+      target,
+    );
+    if (!outcome.ok) return { action: "retry", instruction: outcome.message };
+    if (outcome.refreshed) {
+      ctx.updateDraft({
+        git: {
+          ...ctx.state.git,
+          branch: outcome.refreshed.branch,
+          expectedHead: outcome.refreshed.expectedHead,
+          baseline: outcome.refreshed.baseline,
+        },
+      });
+    }
+    return null;
   }
 
   // T-188 (split for ISS-759): remaining-empty check runs BEFORE resolution

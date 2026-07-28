@@ -336,6 +336,36 @@ export async function gitCheckRefFormat(cwd: string, refName: string): Promise<G
   });
 }
 
+/**
+ * T-328: resolve what `branchStrategy: "main"` means in this repository.
+ *
+ * The contract is main-PREFERRED, not default-branch-aware: `main` if it exists
+ * locally, else `master`. A repo that keeps a vestigial `main` while `master` is
+ * its real default gets `main`. That is a deliberate simplification over reading
+ * `refs/remotes/<remote>/HEAD`, and it is why the config value is spelled
+ * "main" rather than "trunk".
+ *
+ * Resolution is local-only: no fetch, no remote probe, no fast-forward. A stale
+ * local `main` is used as-is.
+ */
+export async function resolveMainBranch(cwd: string): Promise<GitResult<string>> {
+  for (const candidate of ["main", "master"]) {
+    const exists = await gitBranchExists(cwd, candidate);
+    if (!exists.ok) return exists as GitResult<string>;
+    if (exists.data) return { ok: true, data: candidate };
+  }
+  return {
+    ok: false,
+    reason: "git_error",
+    message: "Neither a local \"main\" nor a local \"master\" branch exists",
+  };
+}
+
+/** Resolve a ref to its commit OID. */
+export async function gitRevParse(cwd: string, ref: string): Promise<GitResult<string>> {
+  return git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`], (out) => out.trim());
+}
+
 export async function gitUserEmail(cwd: string): Promise<string | null> {
   const result = await git(cwd, ["config", "user.email"], (out) => out.trim());
   return result.ok && result.data ? result.data : null;

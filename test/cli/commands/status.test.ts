@@ -156,7 +156,10 @@ describe("formatStatus with active sessions (ISS-023)", () => {
       compactPending: true,
     };
     const parsed = JSON.parse(formatStatus(state, "json", [], [compact]));
-    expect(parsed.data.activeSessions).toBeUndefined();
+    // ISS-891: empty rather than absent. A COMPACT session is reported ONLY under
+    // resumableSessions, and activeSessions says so explicitly instead of leaving
+    // the reader to infer it from a missing key.
+    expect(parsed.data.activeSessions).toEqual([]);
     expect(parsed.data.resumableSessions).toHaveLength(1);
     expect(parsed.data.resumableSessions[0].sessionId).toBe("compact-session-id");
 
@@ -166,11 +169,68 @@ describe("formatStatus with active sessions (ISS-023)", () => {
     expect(markdown).not.toContain("compact-session-id");
   });
 
-  it("omits activeSessions key from JSON when no sessions", () => {
+  it("emits both session arrays empty rather than omitting them (ISS-891)", () => {
+    // Contract change. Omission made "no sessions" and "server too old to report
+    // sessions" the same observation, so a consumer had to fail closed and
+    // re-verify through the CLI. Presence is now the capability signal; the
+    // contents are the answer.
     const state = makeState();
-    const output = formatStatus(state, "json", []);
-    const parsed = JSON.parse(output);
-    expect(parsed.data.activeSessions).toBeUndefined();
+    const parsed = JSON.parse(formatStatus(state, "json", []));
+    expect(parsed.data.activeSessions).toEqual([]);
+    expect(parsed.data.resumableSessions).toEqual([]);
+    expect(Object.keys(parsed.data)).toContain("activeSessions");
+    expect(Object.keys(parsed.data)).toContain("resumableSessions");
+  });
+
+  it("emits both session arrays empty on an orchestrator too (ISS-891)", () => {
+    // The active-session guard reads status without knowing the project type, so
+    // the federated path has to carry the same contract or the guard is back to
+    // fail-closed on orchestrators.
+    const parsed = JSON.parse(
+      formatFederatedStatus(sampleFedState, orchestratorConfig, "json", []),
+    );
+    expect(parsed.data.activeSessions).toEqual([]);
+    expect(parsed.data.resumableSessions).toEqual([]);
+  });
+
+  it("still reports sessions when they exist, on both paths (ISS-891)", () => {
+    // Guards the opposite failure: hardcoding the empty arrays. BOTH arrays carry
+    // a distinct session on BOTH paths, because feeding only one of them leaves
+    // the other satisfied by a hardcoded [] and proves nothing about it.
+    const active: ActiveSessionSummary = {
+      sessionId: "sess-active",
+      state: "IMPLEMENT",
+      mode: "auto",
+      ticketId: "T-030",
+      ticketTitle: "Active",
+    };
+    const resumable: ActiveSessionSummary = {
+      sessionId: "sess-resumable",
+      state: "COMPACT",
+      mode: "auto",
+      ticketId: "T-031",
+      ticketTitle: "Resumable",
+      leaseState: "expired",
+      compactPending: true,
+    };
+
+    const plain = JSON.parse(formatStatus(makeState(), "json", [active], [resumable]));
+    expect(plain.data.activeSessions.map((s: ActiveSessionSummary) => s.sessionId)).toEqual([
+      "sess-active",
+    ]);
+    expect(plain.data.resumableSessions.map((s: ActiveSessionSummary) => s.sessionId)).toEqual([
+      "sess-resumable",
+    ]);
+
+    const federated = JSON.parse(
+      formatFederatedStatus(sampleFedState, orchestratorConfig, "json", [active], [resumable]),
+    );
+    expect(federated.data.activeSessions.map((s: ActiveSessionSummary) => s.sessionId)).toEqual([
+      "sess-active",
+    ]);
+    expect(federated.data.resumableSessions.map((s: ActiveSessionSummary) => s.sessionId)).toEqual([
+      "sess-resumable",
+    ]);
   });
 });
 

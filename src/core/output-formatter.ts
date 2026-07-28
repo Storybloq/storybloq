@@ -282,8 +282,13 @@ export function formatStatus(
       status: p.status,
       leafCount: p.leafCount,
     })),
-    ...(activeSessions.length > 0 ? { activeSessions } : {}),
-    ...(resumableSessions.length > 0 ? { resumableSessions } : {}),
+    // ISS-891: always present, empty when there are none. Omitting them made
+    // "no sessions" and "server too old to report sessions" the same observation,
+    // so every consumer -- the skill's active-session guard most of all -- had to
+    // fail closed and re-verify through the CLI. Presence is now the capability
+    // signal and the contents are the answer.
+    activeSessions,
+    resumableSessions,
     ...(bus ? { bus } : {}),
     ...(limitStops.length > 0 ? { limitStops } : {}),
   };
@@ -372,8 +377,13 @@ export function formatFederatedStatus(
     federation: { ...fedState, nodes: sanitizedNodes },
     project: config.project,
     type: config.type,
-    ...(activeSessions.length > 0 ? { activeSessions } : {}),
-    ...(resumableSessions.length > 0 ? { resumableSessions } : {}),
+    // ISS-891: always present, empty when there are none. Omitting them made
+    // "no sessions" and "server too old to report sessions" the same observation,
+    // so every consumer -- the skill's active-session guard most of all -- had to
+    // fail closed and re-verify through the CLI. Presence is now the capability
+    // signal and the contents are the answer.
+    activeSessions,
+    resumableSessions,
     ...(bus ? { bus } : {}),
     ...(limitStops.length > 0 ? { limitStops } : {}),
   };

@@ -1,16 +1,16 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 import { initProject } from "../../src/core/init.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { initializeBus, joinEndpoint } from "../../src/bus/index.js";
 import { createBusFixture, type BusFixture } from "../bus/helpers.js";
+import { toolSchema } from "./tool-schema-helpers.js";
 
 interface RegisteredTool {
-  config: { inputSchema?: z.ZodRawShape };
+  config: { inputSchema?: unknown };
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
@@ -31,7 +31,7 @@ function captureTools(root: string): Map<string, RegisteredTool> {
 }
 
 function parsedArgs(tool: RegisteredTool, input: Record<string, unknown>): Record<string, unknown> {
-  return tool.config.inputSchema ? z.object(tool.config.inputSchema).parse(input) : input;
+  return toolSchema(tool.config.inputSchema).parse(input) as Record<string, unknown>;
 }
 
 const roots: string[] = [];

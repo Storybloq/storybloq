@@ -25,6 +25,7 @@ import {
   todayISO,
   normalizeTags,
   CliValidationError,
+  assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 
@@ -187,6 +188,7 @@ export async function handleNoteUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  assertUpdateHasFields(updates, "note", "content, title, tags, clearTags, status");
   if (updates.content !== undefined && !updates.content.trim()) {
     throw new CliValidationError("invalid_input", "Note content cannot be empty");
   }

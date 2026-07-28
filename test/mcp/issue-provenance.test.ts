@@ -2,12 +2,12 @@ import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { z } from "zod";
 import { registerAllTools } from "../../src/mcp/tools.js";
+import { toolSchema } from "./tool-schema-helpers.js";
 import { initProject } from "../../src/core/init.js";
 
 interface RegisteredTool {
-  config: { inputSchema: z.ZodRawShape };
+  config: { inputSchema: unknown };
   handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>;
 }
 
@@ -39,7 +39,7 @@ describe("issue provenance through registered MCP tools", () => {
 
     const tool = captureTools(root).get("storybloq_issue_create");
     if (!tool) throw new Error("storybloq_issue_create was not registered");
-    const schema = z.object(tool.config.inputSchema);
+    const schema = toolSchema(tool.config.inputSchema);
     const args = schema.parse({
       title: "MCP finding",
       severity: "high",
@@ -78,7 +78,7 @@ describe("issue provenance through registered MCP tools", () => {
 
     const tool = captureTools(root).get("storybloq_review_lenses_synthesize");
     if (!tool) throw new Error("storybloq_review_lenses_synthesize was not registered");
-    const schema = z.object(tool.config.inputSchema);
+    const schema = toolSchema(tool.config.inputSchema);
     const empty = { status: "ok", findings: [], error: null, notes: null };
     const finding = {
       id: "eh-1",
@@ -168,7 +168,7 @@ describe("issue provenance through registered MCP tools", () => {
 
     const tool = captureTools(root).get("storybloq_review_lenses_synthesize");
     if (!tool) throw new Error("storybloq_review_lenses_synthesize was not registered");
-    const schema = z.object(tool.config.inputSchema);
+    const schema = toolSchema(tool.config.inputSchema);
     const empty = { status: "ok", findings: [], error: null, notes: null };
     const finding = {
       id: "eh-symlink",
@@ -217,7 +217,7 @@ describe("issue provenance through registered MCP tools", () => {
     await initProject(root, { name: "issues" });
     const tool = captureTools(root).get("storybloq_issue_create");
     if (!tool) throw new Error("storybloq_issue_create was not registered");
-    const schema = z.object(tool.config.inputSchema);
+    const schema = toolSchema(tool.config.inputSchema);
 
     expect(() => schema.parse({
       title: "Unsafe",

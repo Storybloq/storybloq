@@ -20,6 +20,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
 import { registerAllTools } from "./tools.js";
+import { withStrictToolSchemas } from "./strict-schemas.js";
 import { initProject } from "../core/init.js";
 import { startInboxWatcher, stopInboxWatcher } from "../channel/inbox-watcher.js";
 
@@ -68,7 +69,12 @@ function tryDiscoverRoot(): string | null {
  * Provides storybloq_init to bootstrap a project, then dynamically
  * swaps to the full tool set via registerAllTools.
  */
-function registerDegradedTools(server: McpServer): void {
+function registerDegradedTools(rawServer: McpServer): void {
+  // ISS-892: the degraded surface gets the same strict-argument shim as the full
+  // one. storybloq_init writes to disk, so a dropped unknown key here has the
+  // same consequence it has anywhere else.
+  const server = withStrictToolSchemas(rawServer);
+
   const degradedStatus = server.registerTool("storybloq_status", {
     description: "Project summary — returns guidance if no .story/ project found",
     inputSchema: {

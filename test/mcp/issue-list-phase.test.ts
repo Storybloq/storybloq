@@ -13,11 +13,12 @@ import { mkdtemp, rm, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerAllTools } from "../../src/mcp/tools.js";
+import { toolArgumentNames } from "./tool-schema-helpers.js";
 
 const FIXTURES_DIR = join(import.meta.dirname, "..", "fixtures", "valid", "basic");
 
 interface RegisteredTool {
-  config: { inputSchema: Record<string, unknown> };
+  config: { inputSchema: unknown };
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ text: string }>;
     isError?: boolean;
@@ -62,7 +63,7 @@ describe("storybloq_issue_list phase filter through the registered tool (ISS-739
 
   it("declares phase in the inputSchema", async () => {
     const root = await setupProject();
-    expect(Object.keys(issueListTool(root).config.inputSchema)).toContain("phase");
+    expect(toolArgumentNames(issueListTool(root).config.inputSchema)).toContain("phase");
   });
 
   it("forwards phase to the handler: only issues in that phase come back", async () => {

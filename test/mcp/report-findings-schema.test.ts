@@ -11,18 +11,19 @@ import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { buildLensHistoryUpdate } from "../../src/autonomous/stages/types.js";
+import { toolSchema } from "./tool-schema-helpers.js";
 
 function captureGuideSchema(): z.ZodTypeAny {
-  const tools = new Map<string, { inputSchema: z.ZodRawShape }>();
+  const tools = new Map<string, { inputSchema: unknown }>();
   const server = {
-    registerTool: (name: string, config: { inputSchema: z.ZodRawShape }) => {
+    registerTool: (name: string, config: { inputSchema: unknown }) => {
       tools.set(name, config);
     },
   } as unknown as Parameters<typeof registerAllTools>[0];
   registerAllTools(server, "/tmp/iss717-test-root");
   const guide = tools.get("storybloq_autonomous_guide");
   if (!guide) throw new Error("storybloq_autonomous_guide was not registered");
-  return z.object(guide.inputSchema);
+  return toolSchema(guide.inputSchema);
 }
 
 const SCHEMA = captureGuideSchema();

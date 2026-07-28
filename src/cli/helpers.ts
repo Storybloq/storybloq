@@ -80,6 +80,36 @@ export function todayISO(): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * Rejects an update that carries nothing to change (ISS-892).
+ *
+ * `storybloq ticket update T-001` with no other flag, and the MCP equivalent,
+ * reported "Updated ticket T-001" at exit 0 while writing a byte-identical file.
+ * The same thing happens when a caller passes a field name the tool does not
+ * implement, since the unknown key is dropped and what reaches the handler is a
+ * bare id. An agent reading that success proceeds on a ledger that never moved.
+ *
+ * A value counts as supplied when it is neither `undefined` nor `false`. `false`
+ * is excluded because the only booleans in these update sets are clear-flags
+ * (`clearTags`, `clearDependsOn`, `clearLinks`) which yargs defaults to `false`,
+ * so an unset one arrives defined but asks for nothing. `null` DOES count: it is
+ * how a caller clears `phase`, `parentTicket`, or `resolution`.
+ */
+export function assertUpdateHasFields(
+  updates: Record<string, unknown>,
+  entity: string,
+  fieldHint: string,
+): void {
+  const supplied = Object.values(updates).some((v) => v !== undefined && v !== false);
+  if (!supplied) {
+    throw new CliValidationError(
+      "invalid_input",
+      `No fields to update on this ${entity}. Supply at least one of: ${fieldHint}. ` +
+        "If you passed a field and still see this, the name was not recognized.",
+    );
+  }
+}
+
 /** Adds --format option to a yargs command builder. */
 export function addFormatOption<T>(y: Argv<T>): Argv<T & { format: string }> {
   return y.option("format", {

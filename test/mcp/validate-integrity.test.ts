@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { initProject } from "../../src/core/init.js";
+import { toolArgumentNames } from "./tool-schema-helpers.js";
 
 interface RegisteredTool {
-  config: { inputSchema?: Record<string, unknown> };
+  config: { inputSchema?: unknown };
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ text: string }>;
     isError?: boolean;
@@ -42,7 +43,7 @@ describe("storybloq_validate integrity preflight through MCP", () => {
 
     const tool = captureTools(root).get("storybloq_validate");
     if (!tool) throw new Error("storybloq_validate was not registered");
-    expect(Object.keys(tool.config.inputSchema ?? {})).toContain("integrityOnly");
+    expect(toolArgumentNames(tool.config.inputSchema)).toContain("integrityOnly");
 
     const result = await tool.handler({ format: "json" });
     const parsed = JSON.parse(result.content[0]!.text);

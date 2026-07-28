@@ -34,6 +34,7 @@ import {
 import {
   todayISO,
   CliValidationError,
+  assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
@@ -391,6 +392,11 @@ export async function handleIssueUpdate(
   format: string,
   root: string,
 ): Promise<CommandResult> {
+  assertUpdateHasFields(
+    updates,
+    "issue",
+    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase",
+  );
   if (updates.status && !ISSUE_STATUSES.includes(updates.status as IssueStatus)) {
     throw new CliValidationError(
       "invalid_input",

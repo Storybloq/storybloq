@@ -31,6 +31,7 @@ import type { Ticket } from "../../models/ticket.js";
 import {
   todayISO,
   CliValidationError,
+  assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
@@ -372,6 +373,11 @@ export async function handleTicketUpdate(
   format: string,
   root: string,
 ): Promise<CommandResult> {
+  assertUpdateHasFields(
+    updates,
+    "ticket",
+    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket",
+  );
   if (updates.status && !TICKET_STATUSES.includes(updates.status as TicketStatus)) {
     throw new CliValidationError(
       "invalid_input",

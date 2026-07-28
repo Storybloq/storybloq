@@ -32,6 +32,7 @@ import {
   todayISO,
   normalizeTags,
   CliValidationError,
+  assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 
@@ -261,6 +262,7 @@ export async function handleLessonUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  assertUpdateHasFields(updates, "lesson", "title, content, context, tags, clearTags, status");
   if (updates.title !== undefined && !updates.title.trim()) {
     throw new CliValidationError("invalid_input", "Lesson title cannot be empty");
   }

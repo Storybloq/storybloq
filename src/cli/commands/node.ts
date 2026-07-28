@@ -13,6 +13,7 @@ import {
 } from "../../models/federation-config.js";
 import type { Config } from "../../models/config.js";
 import type { OutputFormat } from "../../models/types.js";
+import { assertUpdateHasFields } from "../helpers.js";
 import {
   formatError,
   successEnvelope,
@@ -360,6 +361,13 @@ export async function handleNodeUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
+  // Without this, a bare `node update <name>` printed `Updated node "x" ()` --
+  // an empty change list -- at exit 0 with the config untouched (ISS-892).
+  assertUpdateHasFields(
+    opts as unknown as Record<string, unknown>,
+    "node",
+    "path, stack, role, kind, summary, dependsOn, clearDependsOn, links, clearLinks",
+  );
   if (opts.path) {
     const pathResult = resolveAndValidatePath(opts.path, root);
     if (!pathResult.ok) {

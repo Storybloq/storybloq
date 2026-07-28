@@ -18,6 +18,7 @@ import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
 import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
+import { withStrictToolSchemas } from "./strict-schemas.js";
 
 // ISS-407: Cache active session dir to avoid O(n) directory scan on every MCP call.
 // Expires after 30s -- long enough to amortize hot-path calls, short enough
@@ -303,7 +304,13 @@ function resolveEffectiveRootForWrite(pinnedRoot: string, nodeName?: string): { 
   return { root: resolved.root };
 }
 
-export function registerAllTools(server: McpServer, pinnedRoot: string): void {
+export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void {
+  // ISS-892: every registration below goes through the strict shim, so an
+  // argument the tool does not implement is an error naming the key rather than a
+  // silently dropped one. Shadowing the parameter is deliberate: there is no
+  // unshimmed `server` left in scope to reach for by accident.
+  const server = withStrictToolSchemas(rawServer);
+
   // D6: the five Bus tools always register for a full project (degraded no-project
   // mode keeps its two-tool surface elsewhere). When Bus is disabled or the
   // runtime is not initialized, the handlers return setup guidance pointing at

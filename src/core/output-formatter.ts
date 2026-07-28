@@ -1125,9 +1125,18 @@ export function formatRecap(
     }
     if (recap.staleness) {
       if (recap.staleness.status === "diverged") {
+        // Genuinely anomalous: the snapshot's commit is no longer in history, so
+        // the diff below may compare against work that no longer exists. Keeps the
+        // Warning prefix.
         lines.push("**Warning:** Snapshot commit is not an ancestor of current HEAD (history diverged; possible rebase, force-push, or branch switch).");
-      } else if (recap.staleness.status === "behind" && recap.staleness.commitsBehind) {
-        lines.push(`**Warning:** Snapshot is ${recap.staleness.commitsBehind} commit(s) behind HEAD -- context may be stale.`);
+      } else if (recap.staleness.status === "behind" && (recap.staleness.commitsBehind ?? 0) > 0) {
+        // ISS-889: being behind HEAD is the ORDINARY state of a snapshot -- you
+        // take one, then you keep working. Labelling routine progress a warning
+        // teaches readers to skip the prefix, which costs the diverged case above
+        // the attention it actually needs. Stated as the plain fact it is; the
+        // count is there for anyone who wants to judge how stale that is.
+        const commits = recap.staleness.commitsBehind ?? 0;
+        lines.push(`Snapshot is ${commits} commit${commits === 1 ? "" : "s"} behind HEAD.`);
       }
     }
 

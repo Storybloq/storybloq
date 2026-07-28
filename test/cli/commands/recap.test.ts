@@ -16,7 +16,7 @@ import {
   minimalConfig,
   emptyRoadmap,
 } from "../../core/test-factories.js";
-import { buildRecap } from "../../../src/core/snapshot.js";
+import { buildRecap, type RecapStaleness } from "../../../src/core/snapshot.js";
 
 describe("recap command", () => {
   const tmpDirs: string[] = [];
@@ -155,6 +155,68 @@ describe("formatRecap", () => {
     const md = formatRecap(recap, state, "md");
     expect(md).toContain("critical issue");
     expect(md).toContain("Crash");
+  });
+
+  describe("staleness wording (ISS-889)", () => {
+    // formatRecap is fed a RecapResult directly: buildRecap would need a real git
+    // repo with a specific commit distance, and the defect is purely in rendering.
+    const withStaleness = async (staleness: RecapStaleness) => {
+      const state = makeState();
+      const snapshotInfo = {
+        snapshot: {
+          version: 1 as const,
+          createdAt: new Date().toISOString(),
+          project: "test",
+          config: minimalConfig,
+          roadmap: emptyRoadmap,
+          tickets: [],
+          issues: [],
+        },
+        filename: "snap.json",
+      };
+      const recap = await buildRecap(state, snapshotInfo, "/tmp");
+      return formatRecap({ ...recap, staleness }, state, "md");
+    };
+
+    const behind = (commitsBehind: number): RecapStaleness => ({
+      status: "behind",
+      snapshotSha: "aaaaaaa",
+      currentSha: "bbbbbbb",
+      commitsBehind,
+    });
+
+    it("states being behind HEAD as a fact, not a warning", async () => {
+      // Being behind is what happens whenever you take a snapshot and keep
+      // working. Phrasing it as a warning trains readers to skip the prefix.
+      const md = await withStaleness(behind(3));
+      expect(md).toContain("Snapshot is 3 commits behind HEAD.");
+      expect(md).not.toContain("**Warning:** Snapshot is");
+      expect(md).not.toContain("context may be stale");
+    });
+
+    it("uses the singular for one commit", async () => {
+      const md = await withStaleness(behind(1));
+      expect(md).toContain("Snapshot is 1 commit behind HEAD.");
+      expect(md).not.toContain("1 commits");
+    });
+
+    it("still warns when history diverged, which is not routine", async () => {
+      // The whole point of demoting the routine case: this one keeps its signal.
+      const md = await withStaleness({
+        status: "diverged",
+        snapshotSha: "aaaaaaa",
+        currentSha: "bbbbbbb",
+      });
+      expect(md).toContain("**Warning:**");
+      expect(md).toContain("history diverged");
+    });
+
+    it("says nothing about staleness when the snapshot is current", async () => {
+      const state = makeState();
+      const recap = await buildRecap(state, null, "/tmp");
+      expect(recap.staleness).toBeUndefined();
+      expect(formatRecap(recap, state, "md")).not.toContain("behind HEAD");
+    });
   });
 
   it("JSON envelope matches RecapResult shape", async () => {

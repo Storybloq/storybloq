@@ -15,6 +15,7 @@ import { handleNodeList } from "../cli/commands/node.js";
 import { resolveNodePath } from "../federation/resolver.js";
 import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS } from "../autonomous/session-types.js";
 import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
+import { evaluateSessionGuard } from "../core/session-guard.js";
 import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
@@ -388,6 +389,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_blocker_list", {
     description: "All roadmap blockers with dates and status",
   }, () => runMcpReadTool(pinnedRoot, handleBlockerList));
+
+  registerSessionGuardTool(server, pinnedRoot);
 
   server.registerTool("storybloq_validate", {
     description: "Reference integrity + schema checks. The integrity preflight works even when critical JSON prevents normal project loading.",
@@ -1495,4 +1498,53 @@ function writeFiledPreexisting(sessionDir: string, keys: Set<string>): void {
   } catch {
     // Best-effort; dedup may miss on next round but no data loss
   }
+}
+
+
+/**
+ * `storybloq_session_guard` (T-446).
+ *
+ * Registered in BOTH the full tool set and degraded mode. Degraded mode is the
+ * no-project case, which is exactly where the skill runs its Step 0.5 guard
+ * first; a tools.ts-only registration would leave it unavailable there.
+ *
+ * Read-only: it reads each session's `state.json` under `.story/sessions/` and
+ * nothing else. It never loads the ledger, which is the point -- this replaces a
+ * full `storybloq_status` payload on every invocation.
+ */
+export function registerSessionGuardTool(server: McpServer, root: string) {
+  return server.registerTool("storybloq_session_guard", {
+    description:
+      "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/ (no ledger load). Returns a per-session verdict plus an overallAction, which is null when more than one session bears: the source procedure supplies a rule per session and none for combining them, so every verdict is returned and no aggregate action is defined (ISS-898).",
+    inputSchema: {
+      // Deliberately looser than `storybloq_autonomous_guide`, which pins the
+      // same field to CLIENT_TASK_ID_PATTERN. A schema regex rejects the CALL,
+      // and the sentence this tool transcribes says the opposite: "Missing or
+      // malformed identity never blocks the legacy workflow, but it cannot
+      // prove same-task ownership." A malformed id must therefore produce a
+      // verdict with `identityUnavailable: true`, not an argument error that
+      // leaves the caller with no verdict at all. `normalizeClientTaskId`
+      // already applies the pattern and yields null, so the check moves inward
+      // rather than disappearing. The guide keeps the strict schema because it
+      // MUTATES ownership; this tool only advises.
+      clientTaskId: z
+        .string()
+        .optional()
+        .describe("The caller's client task id. Omit it to inherit the client's environment identity (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID); the verdict reports identityUnavailable only when nothing supplies an id, environment included. A malformed id is treated as no identity rather than rejected, because missing or malformed identity never blocks the legacy workflow."),
+    },
+  }, (args) => {
+    // Forwarded unchanged. The evaluator resolves `explicit ?? environment`,
+    // matching `currentClientTaskId`, so an MCP caller CANNOT assert
+    // "identity unavailable" over a populated environment variable -- omission
+    // inherits it. That is deliberate: the guide the tool transcribes resolves
+    // its caller the same way ("Claude's inherited session id remains supported
+    // when the field is omitted"), and a boundary that could force the identity
+    // off would be a new capability, not a transcription of Step 0.5.
+    const verdict = evaluateSessionGuard(root, {
+      clientTaskId: args.clientTaskId,
+    });
+    return Promise.resolve({
+      content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }],
+    });
+  });
 }

@@ -962,7 +962,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   const skillContent = await readFile(join(srcSkillDir, "SKILL.md"), "utf-8");
   await writeFile(join(skillDir, "SKILL.md"), skillContent, "utf-8");
 
-  const supportFiles = ["setup-flow.md", "autonomous-mode.md", "reference.md", "federation-setup.md", "orchestrator-mode.md", "bus-mode.md"];
+  const supportFiles = ["setup-flow.md", "autonomous-mode.md", "reference.md", "federation-setup.md", "orchestrator-mode.md", "bus-mode.md", "session-guard-fallback.md"];
   const writtenFiles = ["SKILL.md"];
   const missingFiles: string[] = [];
   for (const filename of supportFiles) {
@@ -1173,6 +1173,9 @@ export const CODEX_READ_ONLY_APPROVAL_TOOLS = [
   "storybloq_recommend",
   "storybloq_export",
   "storybloq_session_report",
+  // T-446: read-only, runs on every invocation as part of Step 0.5. Without it
+  // Codex prompts for approval before the guard on every single session.
+  "storybloq_session_guard",
   "storybloq_bus_poll",
   "storybloq_bus_thread_get",
   "storybloq_node_list",

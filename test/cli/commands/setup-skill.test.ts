@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -187,15 +187,399 @@ describe("setup-skill", () => {
     expect(content).toContain("ask one concise free-form question");
     expect(content).toContain("do not render a numbered or bulleted option list");
     expect(content).toContain("A same-owner COMPACT continuation is automatic");
-    expect(content).toContain("never call or offer `resume`");
+    // T-446 moved the per-relationship rules out of SKILL.md and into the
+    // generated `session-guard-fallback.md`, which the guard tool and the legacy
+    // path both derive from one fixture. The sentence still has to exist
+    // somewhere a model can read; it is just no longer paid for on every
+    // invocation.
+    const fallback = await readFile(join(PROJECT_ROOT, "src", "skill", "session-guard-fallback.md"), "utf-8");
+    expect(fallback).toContain("never call or offer `resume`");
+  });
+
+  it("reconciles the guard verdict against Step 2's separate status observation", async () => {
+    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    const step2 = content.slice(content.indexOf("## Step 2: Load Context"), content.indexOf("## Step 2b"));
+    // The guard scans `.story/sessions/` and Step 2 reads status: two
+    // observations with a gap. A session starting in that gap leaves a stale
+    // `free` reading as permission to work beside a live one.
+    expect(step2, "Step 2 never reconciles the two observations").toMatch(/Reconcile it against the guard verdict/i);
+    expect(step2).toMatch(/two separate observations/i);
+    expect(step2).toMatch(/if they DIFFER, call `storybloq_session_guard` once more/i);
+    expect(step2).toMatch(/act on that NEW verdict/i);
+    // Ids alone are not the classification inputs: a session can keep its id
+    // while its owner, state, lease, or population changes underneath a verdict.
+    expect(step2, "reconciliation compares ids rather than what the verdict was computed from").toMatch(
+      /per-session FINGERPRINT, not just ids/i,
+    );
+    // `sourceDir` is what SELECTS the survivor, so leaving it out lets the
+    // surviving record change while every other component matches.
+    expect(step2, "the fingerprint omits the field that chose the survivor").toMatch(
+      /the surviving record's `sourceDir`/i,
+    );
+    expect(step2).toMatch(/it is what\s+CHOSE the survivor/i);
+    expect(step2).toMatch(/On the typed-guard path it must match/i);
+    expect(step2, "no rule for a legacy payload carrying no sourceDir").toMatch(
+      /Omit it only for a legacy mode A payload/i,
+    );
+    for (const field of ["`state`", "`compactPending`", "`leaseState`", "`ownerTask`"]) {
+      expect(step2, `fingerprint omits ${field}`).toContain(field);
+    }
+    // And the retry must not walk back into Step 2 for a third observation.
+    expect(step2).toMatch(/do NOT restart Step 2 and do NOT call `storybloq_status` again/i);
+    expect(step2).toMatch(/once per INVOCATION and cannot be reset/i);
+    expect(step2, "the fingerprint omits sessionId or population").toMatch(/`sessionId`/);
+    expect(step2).toMatch(/which population it is in/i);
+    // The guard's sessions are deduplicated and raw status is not; comparing
+    // them directly reports a difference for every duplicate, twice, and ends
+    // the invocation as unverifiable -- a fail-closed rule nothing supports.
+    // The payload has to BE structured, or none of the above can be performed:
+    // the default response is Markdown and step 1b reads array fields. Asserted
+    // against the Step 2 slice, since the string appears elsewhere in the file.
+    expect(step2, "Step 2 requests Markdown, from which no fingerprint can be built").toMatch(
+      /call `storybloq_status` with `\{ "format": "json" \}`/,
+    );
+    expect(step2).toMatch(/JSON is required, not a preference/i);
+    expect(step2).toMatch(/Retain this exact payload/i);
+    // ...but "required" is scoped, not universal. Mode A may legitimately hold a
+    // MARKDOWN payload from the older-server branch, and a blanket JSON
+    // requirement dead-ends it: it has no arrays to fingerprint and is forbidden
+    // from calling status again.
+    expect(step2, "Step 2 has no branch for a Markdown-only mode A payload").toMatch(
+      /mode A with a MARKDOWN payload/i,
+    );
+    expect(step2).toMatch(/SKIP step 1b entirely/i);
+    // And skipping must be justified by the single observation, not waved through.
+    expect(step2).toMatch(/exactly ONE, classifying and loading context from the same response/i);
+    expect(step2).toMatch(/no second status call is permitted here/i);
+    expect(step2, "the reconciliation rules do not say which paths they bind").toMatch(
+      /mandatory for the typed-guard path and for JSON-capable mode A/i,
+    );
+
+    expect(step2, "reconciliation does not deduplicate the status side first").toMatch(
+      /apply the SAME deduplication the guard applied/i,
+    );
+    // The ALGORITHM, not the intent: "same survivor" is unactionable on the
+    // normal path, where the fallback file that documents it may not be read.
+    expect(step2, "Step 2 names no survivor rule a reader could apply").toMatch(
+      /take `activeSessions` first and `resumableSessions` second/i,
+    );
+    expect(step2).toMatch(/order by `sourceDir`/i);
+    expect(step2).toMatch(/keep the FIRST record for each full\s+`sessionId`/i);
+    expect(step2, "no rule for an older payload without sourceDir").toMatch(
+      /`sourceDir` is unavailable[\s\S]{0,120}keep the server's order/i,
+    );
+
+    // And the re-trigger rule must carry the same contract, not the superseded
+    // set-comparison-and-restart wording.
+    const guardSection = content.slice(content.indexOf("## Step 0.5"), content.indexOf("## How to Handle Arguments"));
+    const retrigger = guardSection.slice(guardSection.indexOf("Re-trigger rule for the Step 2 reconciliation"));
+    const bounded = retrigger.slice(0, retrigger.indexOf("Re-trigger rule for start"));
+    expect(bounded).toMatch(/classification FINGERPRINT/i);
+    expect(bounded).toMatch(/status payload ALREADY HELD/i);
+    expect(bounded, "the re-trigger rule still restarts argument routing").not.toMatch(
+      /argument routing restarts/i,
+    );
+    expect(bounded).toMatch(/Argument routing does not restart/i);
+    expect(bounded).toMatch(/cannot be reset/i);
+    expect(step2, "no terminal branch for repeated churn").toMatch(/still does not match[\s\S]{0,120}unverifiable/i);
+    expect(step2).toMatch(/storybloq session list/);
+    // Mode A holds a payload already and must not observe a third time.
+    expect(step2).toMatch(/reuse it and do not call again/i);
+
+    // And the rescan has to be authorized, or Step 2 prescribes a call the
+    // whitelist forbids -- the same prescribed-and-forbidden shape as ISS-900.
+    const guard = content.slice(content.indexOf("## Step 0.5"), content.indexOf("## How to Handle Arguments"));
+    expect(guard, "the second guard call is prescribed but not authorized").toMatch(
+      /Re-trigger rule for the Step 2 reconciliation/i,
+    );
+    expect(guard).toMatch(/ownership counts as unresolved again/i);
+    expect(guard).toMatch(/the only rescan authorized here/i);
   });
 
   it("SKILL.md defines task-aware continuation and foreign-task relay", async () => {
     const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
     expect(content).toContain('`storybloq_status` with `{ "format": "json" }`');
-    expect(content).toContain("Same owner, non-COMPACT");
-    expect(content).toContain("Same owner, COMPACT");
-    expect(content).toContain("Different live owner");
+
+    // T-446: SKILL.md now calls `storybloq_session_guard` and acts on the
+    // verdict instead of walking a prose matrix. Every action in the union must
+    // still be handled, or a verdict the tool can return has no instruction
+    // attached to it.
+    expect(content).toContain("storybloq_session_guard");
+
+    /**
+     * The tool-absent branch requires that a TARGETED discovery call for the
+     * guard already failed. If the prelude only ever targets `storybloq_status`,
+     * a client whose broad discovery truncated the guard away can neither call
+     * it nor discover it, so mode A is unreachable and every invocation stops
+     * before argument routing.
+     */
+    const prelude = content.slice(content.indexOf("**Guard prelude"), content.indexOf("**Whitelist semantics"));
+    expect(prelude.length, "could not locate the guard prelude").toBeGreaterThan(200);
+    expect(prelude).toMatch(/query: "storybloq_session_guard"/);
+    // Both required tools, not just the guard: deleting the status lookup would
+    // otherwise stay green and break mode A, which needs `storybloq_status`.
+    expect(prelude).toMatch(/query: "storybloq_status"/);
+    expect(prelude).toMatch(/before concluding anything about MCP availability or declaring the guard absent/i);
+
+    // Bounded to each action's OWN bullet in the "Act on `overallAction`" list.
+    // A whole-file substring search passes as long as the word appears anywhere,
+    // so it cannot see an action whose instruction drifted or went missing.
+    const sectionStart = content.indexOf("2. Act on `overallAction`");
+    const sectionEnd = content.indexOf("**If `storybloq_session_guard` is confirmed absent**");
+    // Both markers asserted before slicing: a missing marker silently yields an
+    // empty or whole-file slice, and every bullet assertion below would then be
+    // testing something other than the section it names.
+    expect(sectionStart, "no `Act on overallAction` heading in SKILL.md").toBeGreaterThan(-1);
+    expect(sectionEnd, "no tool-absent marker to bound the section").toBeGreaterThan(sectionStart);
+    const actOn = content.slice(sectionStart, sectionEnd);
+
+    const bulletFor = (action: string): string => {
+      const start = actOn.indexOf(`**\`${action}\`**`);
+      expect(start, `SKILL.md has no bullet for overallAction \`${action}\``).toBeGreaterThan(-1);
+      const rest = actOn.slice(start);
+      const next = rest.slice(1).search(/\n\s*- \*\*/);
+      return next === -1 ? rest : rest.slice(0, next + 1);
+    };
+
+    // SKILL.md's procedures are maintained independently of the generated
+    // fallback, so they get the SAME completeness bar: every call parameter,
+    // condition, confirmation, menu option, and negative branch. A subset check
+    // would let a dropped `clientTaskId` or a missing stop-branch ship.
+    const REQUIRED: Record<string, RegExp[]> = {
+      free: [/nothing is running/i, /continue to argument routing/i],
+      continue: [
+        /do not show an Active Autonomous Session banner/i,
+        /do not ask for Resume/i,
+        /process owner replies such as `Ratify T-020` directly/i,
+      ],
+      "auto-resume": [
+        /full `sessionId`/,
+        /`action: "resume"`/,
+        /`clientTaskId`/,
+        /do not ask for another confirmation/i,
+        // U4 emits this with no identity. Unconditionally demanding the field
+        // leaves that reader inventing a value instead of resuming without
+        // binding, which is what the prose actually preserves.
+        // Coupled to identity resolution in both directions. Independent
+        // matches would pass on wording that always omits the field, or always
+        // passes it while mentioning omission in unrelated prose.
+        /`clientTaskId` when a task id resolved/i,
+        /if identity is unavailable, omit `clientTaskId`/i,
+        // Field-specific: an unqualified "without binding" reads as a claim
+        // about ownership as a whole, and `claudeCodeSessionId` is the half
+        // that is not covered by it.
+        /without binding a new `ownerTask`/i,
+      ],
+      "monitor-only": [
+        // TWO UX cells share this action name. An unconditional foreign-task
+        // instruction hands an ownerless session a flow built entirely around
+        // an owner task that does not exist.
+        /BRANCH ON `relationship` first/i,
+        /for `foreign-live`, render ordinary\s+foreign-task UX/i,
+        /for `unowned-legacy` there is NO owner task/i,
+        /offer only Monitor\s+or work here on something else/i,
+        /do not name an owner, do not offer Open task, do not relay/i,
+        /do not mention recovery/i,
+        /explicitly asks/i,
+        /recoveryRequiresExplicitRequest/,
+        /resumePermittedByProse/,
+        /requiresTakeover/,
+        // The names alone are not the rule. Swapping `&&` for `||` leaves every
+        // individual name matching while authorizing takeover on ONE true flag.
+        /recoveryRequiresExplicitRequest\s*&&\s*resumePermittedByProse\s*&&\s*requiresTakeover/,
+        /confirm the recorded owner task is gone/i,
+        /full `sessionId`/,
+        /current `clientTaskId`/,
+        /`takeover: true`/,
+        /explain why recovery is unavailable and stop/i,
+      ],
+      "offer-recovery": [
+        /Resume here, End session, or Back/,
+        /only after explicit selection/i,
+        /full `sessionId`/,
+        /typed cancellation flow/i,
+        // U5 emits this action with NO identity, so the procedure must be
+        // conditional in both directions rather than declaring the action
+        // identity-only. An earlier draft did the latter and contradicted the
+        // classifier.
+        /`clientTaskId` when a task id resolved/i,
+        /if identity is unavailable, omit `clientTaskId`/i,
+        // Field-specific, because the two ownership representations behave
+        // differently: `ownerTask` is preserved, and the legacy field is not.
+        // "Nothing rebinds" alone was compatible with two false readings -- that
+        // the session ends up unowned, and that nothing is written at all.
+        /no new `ownerTask` is bound/i,
+        /any `ownerTask` already recorded is preserved/i,
+        /`claudeCodeSessionId`/,
+        /derives `claudeCodeSessionId` from (?:an existing )?`ownerTask`/i,
+        // The codex half must be stated as CLEARING: the measured behavior
+        // removes an existing legacy id there.
+        /CLEARS? the field for a codex owner|CLEARED for a codex owner/i,
+        /ISS-898 case 3/,
+      ],
+      // Broad, not lease-only: the guard also emits this for an unknown workflow
+      // state, and the fallback policies route missing populations here too.
+      unverifiable: [
+        /state, lease, identity, or reported session population/i,
+        /`storybloq session list`/,
+        /do not guess/i,
+        /do not offer Resume/i,
+      ],
+    };
+
+    // The action set must come from the canonical matrix, not from this file: a
+    // hand-maintained list cannot notice a seventh action being added to the
+    // union and returned by the classifier, which is the same false-guardrail
+    // shape that hid an unregistered pre-ownership gate.
+    const matrix = JSON.parse(
+      readFileSync(join(PROJECT_ROOT, "test", "fixtures", "session-guard-matrix.json"), "utf-8"),
+    ) as { actions: { id: string; fallbackOnly?: boolean }[] };
+    const expectedActions = matrix.actions.filter((a) => !a.fallbackOnly).map((a) => a.id).sort();
+    expect(
+      Object.keys(REQUIRED).sort(),
+      "SKILL.md action coverage is out of step with the canonical action list",
+    ).toEqual(expectedActions);
+
+    for (const [action, patterns] of Object.entries(REQUIRED)) {
+      const bullet = bulletFor(action);
+      for (const pattern of patterns) {
+        expect(bullet, `SKILL.md \`${action}\` bullet is missing ${String(pattern)}`).toMatch(pattern);
+      }
+    }
+
+    // Negatives, bounded to the two bullets that describe post-resume ownership.
+    // Accurate field-specific prose can sit beside a blanket sentence that
+    // contradicts it, and only a negative catches that pairing. "Not mirrored"
+    // and "leaves the field alone" are the specific wordings this round
+    // disproved: the measured behavior DELETES an existing legacy id for a codex
+    // owner.
+    // The null branch must state the conflict without resolving it. "Report
+    // then act" is the wording that made the earlier text unsatisfiable: a
+    // reader holding `continue` and `monitor-only` cannot do both.
+    {
+      const nullBullet = bulletFor("overallAction: null");
+      expect(nullBullet).toMatch(/no rule for combining them/i);
+      expect(nullBullet, "does not name the hazard of letting the permissive verdict win").toMatch(/ISS-554/);
+      expect(nullBullet, "does not defer the decision").toMatch(/ISS-898/);
+      expect(nullBullet, "still instructs per-verdict execution").not.toMatch(/before acting on any/i);
+      expect(nullBullet, "still instructs per-verdict execution").not.toMatch(/act on it directly/i);
+      expect(nullBullet, "still instructs per-verdict execution").not.toMatch(/follow the per-session rules/i);
+
+      // The branch must say what happens after the report. Step 0.5 completes
+      // before argument routing, so silence here is not neutrality: the reader
+      // either dispatches or does not, and whichever they do becomes the de
+      // facto resolution. T-446 states the choice and names it for what it is.
+      expect(nullBullet, "does not say what happens after the report").toMatch(/the invocation ends after the report/i);
+      expect(nullBullet, "does not say dispatch is withheld").toMatch(/dispatching no subcommand/i);
+      expect(nullBullet, "does not admit what the invocation-level behavior amounts to").toMatch(
+        /behaves like the refuse-to-act resolution/i,
+      );
+      expect(nullBullet, "does not defer the permanent rule").toMatch(/ISS-898/);
+      // And it must not be mistaken for a decision about the sessions.
+      expect(nullBullet).toMatch(/no session is ended, cancelled, or altered/i);
+      // Temporary, and WHY. Without both, the branch can decay into a permanent
+      // unexplained refusal that still satisfies every assertion above.
+      expect(nullBullet, "does not mark the invocation-level behavior temporary").toMatch(/it is temporary/i);
+      expect(nullBullet, "does not preserve why refusal was selected").toMatch(
+        /dispatching would require an answer\s+the source does not supply/i,
+      );
+    }
+
+    for (const action of ["auto-resume", "offer-recovery"]) {
+      const bullet = bulletFor(action);
+      for (const forbidden of [/is not mirrored/i, /leaves the field alone/i, /ownership is untouched/i]) {
+        expect(bullet, `\`${action}\` bullet contains disproven wording ${forbidden}`).not.toMatch(forbidden);
+      }
+      // Unqualified "without binding" reads as a claim about ownership as a
+      // whole, which is the half that is false.
+      expect(bullet, `\`${action}\` bullet has an unqualified "without binding"`).not.toMatch(
+        /without binding(?! a new `ownerTask`)/i,
+      );
+    }
+
+    /**
+     * The null branch gets the same bounded treatment. It is the load-bearing
+     * one: it is what stops a multi-session verdict from being resolved by a
+     * rescan, which would silently pick a winner the guard deliberately refused
+     * to pick. A whole-file substring search cannot see that instruction drift.
+     */
+    /**
+     * The whitelist exception, asserted. Step 0.5's whitelist forbids every file
+     * read while ownership is unresolved, and both fallback branches execute in
+     * exactly that window -- so without a named exception a compliant reader has
+     * to stop instead of following the branch. Removing it, dropping one of its
+     * two conditions, or widening it to arbitrary reads would otherwise leave
+     * these tests green while the fallback contract became unreachable or unsafe.
+     */
+    const whitelist = content.slice(content.indexOf("**Whitelist semantics"), content.indexOf("1. Call `storybloq_session_guard`"));
+    expect(whitelist.length, "could not locate the whitelist paragraph").toBeGreaterThan(200);
+    expect(whitelist).toMatch(/One READ of the installed `session-guard-fallback\.md`/);
+    expect(whitelist, "the exception must name BOTH cases that need it").toMatch(/`overallAction: null`/);
+    expect(whitelist).toMatch(/`storybloq_session_guard` confirmed absent/);
+    // The older-server path inside mode A needs its own narrow exception.
+    expect(whitelist).toMatch(/ONE Markdown `storybloq_status` call/);
+    // Scoped: mode A only, and only after the JSON call failed for FORMAT
+    // reasons. Widening it to other modes or other failures would otherwise pass.
+    expect(whitelist).toMatch(/mode A only/i);
+    expect(whitelist).toMatch(/only after the JSON call has failed because that format is unavailable/i);
+    expect(whitelist).toMatch(/an execution error is not that case/i);
+
+    // The exception that makes step 2's failure route executable. Without it the
+    // same paragraph forbids the CLI calls and file reads that route requires,
+    // so a compliant reader stops -- the fail-closed behavior this ticket
+    // reverted, reached through the whitelist instead of through the prelude.
+    expect(whitelist, "whitelist does not authorize the Step 0 route step 2 prescribes").toMatch(
+      /if a DISCOVERED `storybloq_session_guard` call fails[\s\S]{0,320}execution-failure rule\*\* in Step 0 and the CLI context procedure it enters are permitted/i,
+    );
+    expect(whitelist, "the exception is not scoped to those failures alone").toMatch(/no other branch gains it/i);
+    // Exactly TWO branches, both execution failures of a Step 0.5 tool call. The
+    // mode A status call is the second: mode A is entered only because the guard
+    // was absent, so without this it is prescribed a route the same paragraph
+    // forbids, and dead-ends.
+    expect(whitelist, "the whitelist does not authorize mode A's status-failure route").toMatch(
+      /scoped to exactly two branches[\s\S]{0,320}mode A `storybloq_status` call fails to execute/i,
+    );
+    // And a call that SUCCEEDS while reporting a problem is not one of them.
+    expect(whitelist).toMatch(/does NOT cover a status call that SUCCEEDS/i);
+    // The authorized route must reach somewhere executable. The setup cases
+    // cover a missing CLI and an unregistered MCP; a registered tool that errors
+    // is neither, so the rule has to skip them and enter the CLI procedure.
+    const step0Section = content.slice(content.indexOf("## Step 0:"), content.indexOf("## Step 1:"));
+    expect(step0Section).toMatch(/skip the presence test[\s\S]{0,120}setup cases/i);
+    expect(step0Section).toMatch(/go directly to the \*\*CLI context procedure\*\*/i);
+    expect(step0Section, "the CLI procedure is not reachable from the failure route").toMatch(
+      /execution-failure rule sends you here/i,
+    );
+    expect(step0Section).toMatch(/storybloq status/);
+    // Only the OUTCOME is historical. Calling the new direct-to-CLI route "the
+    // route this skill has always taken" misstates the executable contract and
+    // contradicts ISS-900, which records why the old route dead-ends.
+    const guardText = content.slice(content.indexOf("## Step 0.5"), content.indexOf("## How to Handle Arguments"));
+    expect(guardText, "the failure branch does not distinguish outcome from route").toMatch(
+      /preserves the fail-open OUTCOME[\s\S]{0,160}different ROUTE/i,
+    );
+    expect(guardText, "the new route is described as the historical one").not.toMatch(
+      /route this skill has always taken|same route it always has/i,
+    );
+    expect(whitelist, "the exception does not name the issue that owns the policy").toMatch(/ISS-900/);
+    // And the general prohibition survives beside it.
+    expect(whitelist).toMatch(/No other file read\/write, ledger mutation, subcommand dispatch/);
+
+    const nullBullet = bulletFor("overallAction: null");
+    expect(nullBullet).toMatch(/more than one session bears/i);
+    expect(nullBullet).toMatch(/supplies no rule for combining them/i);
+    expect(nullBullet).toMatch(/session-guard-fallback\.md/);
+    expect(nullBullet).toMatch(/mode B/i);
+    // Act on the array already in hand, and do not go back to the filesystem.
+    expect(nullBullet).toMatch(/`sessions` array you already have/i);
+    expect(nullBullet).toMatch(/do not call `storybloq_session_guard` or `storybloq_status` again/i);
+
+    // The relationship rules themselves live in the generated file.
+    const fallback = await readFile(join(PROJECT_ROOT, "src", "skill", "session-guard-fallback.md"), "utf-8");
+    expect(fallback).toContain("Same owner, non-COMPACT");
+    expect(fallback).toContain("Same owner, COMPACT");
+    expect(fallback).toContain("Different live owner");
+
     expect(content).toContain("codex_app__send_message_to_thread");
     expect(content).toContain("the user's exact message");
     expect(content).toContain("Sent to T-020's running task.");

@@ -1,0 +1,731 @@
+{
+  "$comment": "T-446 canonical session-guard matrix. Single source of truth for the classifier tests AND the generated src/skill/session-guard-fallback.md. Every row carries the SKILL.md sentence it transcribes; a row that cannot cite one does not belong here. See .story/sessions/*/plan.md section 3. That citation requirement scopes to the ownership rows, the state gate, and the actions. It does NOT cover `populationInvariantRules`: the prose has no sentence about a record contradicting its own array, so those rows carry `basis: \"observed-classifier\"` with a unique `classifierGateId` and a parity-tested domain instead of a `source`. A row with neither a citation nor that constrained basis does not belong in this file.",
+  "identityAvailable": [
+    {
+      "id": "1",
+      "description": "same ownerTask, non-COMPACT, live",
+      "source": "Same owner, non-COMPACT: this is the current autonomous task, not a foreign session. Do not show an Active Autonomous Session banner and do not ask for Resume.",
+      "input": {
+        "owner": "same",
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "same-owner",
+        "action": "continue",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "2",
+      "description": "same ownerTask, COMPACT, live",
+      "source": "Same owner, COMPACT: call `storybloq_autonomous_guide` automatically with the full `sessionId`, `action: \"resume\"`, and `clientTaskId`, then continue the pipeline. Do not ask for another confirmation.",
+      "input": {
+        "owner": "same",
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "same-owner",
+        "action": "auto-resume",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": true
+      }
+    },
+    {
+      "id": "3",
+      "description": "different ownerTask, non-COMPACT, live (ISS-848)",
+      "source": "Different live owner, non-COMPACT: never call or offer `resume`. Follow the foreign-task UX in Step 3.",
+      "input": {
+        "owner": "different",
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "foreign-live",
+        "action": "monitor-only",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "4",
+      "description": "different ownerTask, COMPACT, live",
+      "source": "Different live owner, COMPACT: do not resume automatically. Prefer Open task or Monitor. If the user explicitly asks to recover here, confirm that the recorded owner task is gone, then call `resume` once with the full `sessionId`, current `clientTaskId`, and `takeover: true`.",
+      "input": {
+        "owner": "different",
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "foreign-live",
+        "action": "monitor-only",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": true,
+        "recoveryRequiresExplicitRequest": true,
+        "bindsOwner": true
+      }
+    },
+    {
+      "id": "5",
+      "description": "no ownerTask, non-COMPACT, live",
+      "source": "Live legacy session without `ownerTask`, non-COMPACT: ownership cannot be verified. Offer only Monitor or work here on something else.",
+      "input": {
+        "owner": "none",
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "unowned-legacy",
+        "action": "monitor-only",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "6",
+      "description": "no ownerTask, COMPACT, live (migration path)",
+      "source": "Live legacy session without `ownerTask`, COMPACT: call `resume` with the full `sessionId` and current `clientTaskId`; this migration recovery binds the current task.",
+      "input": {
+        "owner": "none",
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "unowned-legacy",
+        "action": "auto-resume",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": true
+      }
+    },
+    {
+      "id": "7",
+      "description": "COMPACT + compactPending, lease EXPIRED",
+      "source": "Expired COMPACT session: offer Resume here, End session, or Back. Resume only after explicit selection, passing the full `sessionId` and current `clientTaskId`; successful recovery rebinds ownership.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "expired"
+      },
+      "verdict": {
+        "relationship": "expired-compact",
+        "action": "offer-recovery",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": true,
+        "bindsOwner": true
+      }
+    },
+    {
+      "id": "7b-missing",
+      "description": "COMPACT + compactPending, lease MISSING (undetermined, not expired)",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "missing"
+      },
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "7b-invalid",
+      "description": "COMPACT + compactPending, lease INVALID (undetermined, not expired)",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "invalid"
+      },
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    }
+  ],
+  "identityUnavailable": [
+    {
+      "id": "U1",
+      "description": "any ownerTask, non-COMPACT, live, caller has no identity",
+      "source": "Missing or malformed identity never blocks the legacy workflow, but it cannot prove same-task ownership. / Different live owner, non-COMPACT: never call or offer `resume`. Follow the foreign-task UX in Step 3.",
+      "input": {
+        "owner": "any-owner",
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "foreign-live",
+        "action": "monitor-only",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "U2",
+      "description": "any ownerTask, COMPACT, live, caller has no identity -- the ONLY row where resumable and resumePermittedByProse differ (ISS-898)",
+      "source": "Different live owner, COMPACT: do not resume automatically. Prefer Open task or Monitor. / If the user explicitly asks to recover here, confirm that the recorded owner task is gone, then call `resume` once with the full `sessionId`, current `clientTaskId`, and `takeover: true`. / Missing or malformed identity never blocks the legacy workflow, but it cannot prove same-task ownership.",
+      "input": {
+        "owner": "any-owner",
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "foreign-live",
+        "action": "monitor-only",
+        "resumable": false,
+        "resumePermittedByProse": true,
+        "requiresTakeover": true,
+        "recoveryRequiresExplicitRequest": true,
+        "bindsOwner": false
+      },
+      "note": "The prose does not condition the takeover offer on the CALLER having an identity, but `takeover: true` binds the recovering caller, so the guide rejects the call without one. This is the only row where `resumable` and `resumePermittedByProse` differ. T-446 records both facts in the verdict -- the capability the prose grants and the acceptance the server withholds -- and does NOT resolve the representation: the offer is still advertised. It does, however, stop the call: the prescribed `clientTaskId` cannot be formed here, so the procedure reports that and stops before any confirmation, which is observably a client-side refusal and is the execution half of ISS-898 case 2, taken deliberately. What ISS-898 case 2 still owns is whether this row should advertise the capability at all."
+    },
+    {
+      "id": "U3",
+      "description": "no ownerTask, non-COMPACT, live, caller has no identity",
+      "source": "Live legacy session without `ownerTask`, non-COMPACT: ownership cannot be verified. Offer only Monitor or work here on something else.",
+      "input": {
+        "owner": "none",
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "unowned-legacy",
+        "action": "monitor-only",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "U4",
+      "description": "no ownerTask, COMPACT, live, caller has no identity",
+      "source": "Live legacy session without `ownerTask`, COMPACT: call `resume` with the full `sessionId` and current `clientTaskId`; this migration recovery binds the current task. If task identity is unavailable, the guide preserves legacy resume behavior without binding.",
+      "input": {
+        "owner": "none",
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "live"
+      },
+      "verdict": {
+        "relationship": "unowned-legacy",
+        "action": "auto-resume",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "U5",
+      "description": "ownerTask present OR absent, COMPACT, compactPending, expired lease, caller has no identity -- offer preserved, no new `ownerTask` bound, any `ownerTask` already recorded preserved",
+      "source": "Expired COMPACT session: offer Resume here, End session, or Back. Resume only after explicit selection, passing the full `sessionId` and current `clientTaskId`; successful recovery rebinds ownership. End session enters the typed cancellation flow. / Missing or malformed identity never blocks the legacy workflow, but it cannot prove same-task ownership. Task identity is accidental-concurrency protection, not a security boundary; when identity is unavailable, guide ownership checks preserve the legacy fail-open behavior.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "expired"
+      },
+      "verdict": {
+        "relationship": "expired-compact",
+        "action": "offer-recovery",
+        "resumable": true,
+        "resumePermittedByProse": true,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": true,
+        "bindsOwner": false
+      },
+      "note": "The expired-COMPACT bullet describes recovery as passing the current `clientTaskId` and rebinding ownership, neither of which is possible here, and supplies no variant for it. What IS supported is that missing identity does not block the legacy workflow, so the offer stands; `bindsOwner` is false because there is no id to bind, not because a sentence grants an exception. The prose gap is filed as ISS-898 case 3. `resumable: true` is OBSERVED, not inferred: `test/autonomous/identity-free-expired-resume.test.ts` invokes the guide with no `clientTaskId` across the whole owner axis and asserts acceptance plus the exact post-resume ownership. `bindsOwner: false` is a statement about `ownerTask` ALONE: no new owner is bound and a recorded one survives, while the legacy `claudeCodeSessionId`, which this verdict cannot see (ISS-899), is DERIVED from `ownerTask` -- written for a claude owner, CLEARED for a codex owner, and preserved only when no owner exists."
+    },
+    {
+      "id": "U6-missing",
+      "description": "COMPACT + compactPending, lease MISSING, caller has no identity",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "missing"
+      },
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "U6-invalid",
+      "description": "COMPACT + compactPending, lease INVALID, caller has no identity",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "input": {
+        "owner": "any",
+        "compact": true,
+        "compactPending": true,
+        "leaseState": "invalid"
+      },
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    }
+  ],
+  "$noVerdictComment": "Rows 8 and 9. These configurations appear in NEITHER scanner array, so the guard never sees them. Carried explicitly as null so their absence is asserted rather than assumed.",
+  "noVerdict": [
+    {
+      "id": "8-expired",
+      "description": "COMPACT, compactPending FALSE, lease expired",
+      "reason": "activeSessions requires leaseState === live; resumableSessions requires compactPending === true",
+      "input": {
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "expired"
+      },
+      "verdict": null
+    },
+    {
+      "id": "8-missing",
+      "description": "COMPACT, compactPending FALSE, lease missing",
+      "reason": "Same omission. The scanner's membership rule is compactPending, not lease state, so every non-live lease behaves alike here.",
+      "input": {
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "missing"
+      },
+      "verdict": null
+    },
+    {
+      "id": "8-invalid",
+      "description": "COMPACT, compactPending FALSE, lease invalid",
+      "reason": "Same omission.",
+      "input": {
+        "compact": true,
+        "compactPending": false,
+        "leaseState": "invalid"
+      },
+      "verdict": null
+    },
+    {
+      "id": "9-expired",
+      "description": "non-COMPACT, lease expired",
+      "reason": "activeSessions requires leaseState === live; resumableSessions requires state === COMPACT",
+      "input": {
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "expired"
+      },
+      "verdict": null
+    },
+    {
+      "id": "9-missing",
+      "description": "non-COMPACT, lease missing",
+      "reason": "Same omission.",
+      "input": {
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "missing"
+      },
+      "verdict": null
+    },
+    {
+      "id": "9-invalid",
+      "description": "non-COMPACT, lease invalid",
+      "reason": "Same omission.",
+      "input": {
+        "compact": false,
+        "compactPending": false,
+        "leaseState": "invalid"
+      },
+      "verdict": null
+    }
+  ],
+  "$fallbackPoliciesComment": "Policies live here rather than as generator constants so each is asserted independently against its intended skill action. These are the rules the generated session-guard-fallback.md must carry verbatim.",
+  "fallbackPolicies": [
+    {
+      "id": "missing-arrays",
+      "rule": "A status payload lacking `activeSessions` or `resumableSessions` is NOT an empty array. An absent key means the server did not report that population -- it is an older-server or degraded-payload signal, and the answer is unknown, not \"nothing is running\". Stop and tell the user to run `storybloq session list`; never proceed as though the project were free.",
+      "expectedAction": "unverifiable"
+    },
+    {
+      "id": "json-status-unavailable",
+      "rule": "If JSON format is unavailable from an older server, call Markdown status once and treat a live non-COMPACT session as unverifiable legacy: Monitor or other work only.",
+      "expectedAction": "monitor-only"
+    },
+    {
+      "id": "json-status-compact",
+      "rule": "For a COMPACT session on an older server that cannot return JSON status, follow a SessionStart resume instruction only after the user asks to continue; the guide remains authoritative. This is the other half of the markdown-status sentence: the non-COMPACT half is `json-status-unavailable`, and without this half the older-server COMPACT path has no rule at all. It is deliberately NOT `offer-recovery`: the prose presents no menu and makes no unsolicited offer, it waits to be asked.",
+      "expectedAction": "sessionstart-on-request"
+    },
+    {
+      "id": "do-not-guess",
+      "rule": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "expectedAction": "unverifiable"
+    }
+  ],
+  "$entryModesComment": "The generated fallback file has two entry modes with DIFFERENT inputs. Mode B must not rescan: a second read is a fresh observation, and if it returns one bearing session the skill would silently resolve a multiplicity the guard declined to resolve.",
+  "entryModes": [
+    {
+      "id": "A",
+      "name": "tool absent",
+      "reachedWhen": "Both broad and targeted tool discovery fail to surface storybloq_session_guard, OR an explicit unknown-tool error -- AND storybloq_status is reachable. If no storybloq_* tool is reachable at all, this mode does not apply: its first instruction is a status call, so go to the Step 0 setup/CLI-fallback path instead.",
+      "input": "Call storybloq_status with {\"format\":\"json\"}, apply the deduplication rule below, then classify each surviving summary with the tables below. If that status call FAILS TO EXECUTE, rather than returning a payload, this mode has no input and stops: report the error and apply the **Step 0.5 execution-failure rule**, whose sole authoritative definition lives in Step 0 and is not restated or renamed here. Apply the **Step 0.5 execution-failure rule** in Step 0; that rule is authoritative and is not restated here. That is distinct from the older-server case below, where the call succeeds but the JSON format is unavailable, and distinct again from a payload that is missing an array (see Policies). When the call SUCCEEDS, retain the payload: the source says to reuse this status result during context loading, so it becomes Step 2's Project status result and no second `storybloq_status` call is made. A second call is a fresh observation of the filesystem taken AFTER the ownership decision, so the context you present could describe a different state than the one you classified. If the JSON format was unavailable and you classified from the single permitted MARKDOWN response instead, that response is still the payload you retain: reuse it as Step 2's Project status result and SKIP Step 2's reconciliation, because this path made ONE observation and reconciliation exists only to close the gap between two. Make no further status call either way.",
+      "mayCallStatus": true
+    },
+    {
+      "id": "B",
+      "name": "multi-session",
+      "reachedWhen": "The guard returned overallAction: null (more than one bearing session).",
+      "input": "Consume the sessions array already returned by the guard, without rescanning and without reclassifying. Report every session and its verdict, and report that the conflict between them is unresolved: the source prescribes an action per session and says nothing about combining them, so a permissive verdict standing beside a restrictive one settles nothing. Do not treat it as having settled it -- that is the ISS-554 shape, working beside a live foreign session. Letting the permissive verdict win, letting the restrictive one win, and refusing to act at all are three resolutions the source supports equally, which is to say not at all; choosing among them is ISS-898's decision.",
+      "mayCallStatus": false
+    }
+  ],
+  "$actionsComment": "Per-action procedures for `session-guard-fallback.md`. In mode A this is the EXECUTABLE contract -- it acts on a procedure only when aggregation yields exactly one session; under the `multiple` aggregate no procedure executes and these stay reference-only -- so each `instruction` must carry every load-bearing parameter and branch. In mode B these are REFERENCE definitions of what each verdict means, used to report the sessions; they are not an instruction to execute one while another session's verdict conflicts with it. `source` is held to the SAME provenance rule as the verdict rows: verbatim complete sentences from the frozen pre-T-446 document, asserted by test. The action NAMES are T-446's own vocabulary and appear nowhere in that document, which is exactly why they must not leak into `source`; where an action collapses several prose cells into one name, `note` says so.",
+  "actions": [
+    {
+      "id": "continue",
+      "instruction": "Your own task. Do not show an Active Autonomous Session banner and do not ask for Resume. Process owner replies such as `Ratify T-020` directly. One concise line such as `Continuing T-020 in IMPLEMENT` is enough.",
+      "source": "Same owner, non-COMPACT: this is the current autonomous task, not a foreign session. Do not show an Active Autonomous Session banner and do not ask for Resume. Process owner replies such as `Ratify T-020` directly. On a normal context load, one concise line such as `Continuing T-020 in IMPLEMENT` is enough.",
+      "note": "`continue` is T-446's name for this cell. The prose has no action vocabulary; it describes the situation and the response."
+    },
+    {
+      "id": "auto-resume",
+      "instruction": "Call `storybloq_autonomous_guide` with the full `sessionId`, `action: \"resume\"`, and `clientTaskId` when a task id resolved, then continue the pipeline. Do not ask for another confirmation. If identity is UNAVAILABLE, omit `clientTaskId` rather than inventing or nulling one: this reaches an ownerless legacy COMPACT session, where the guide preserves legacy resume behavior without binding a new `ownerTask`, and the verdict's `bindsOwner: false` says so. `bindsOwner` is about `ownerTask` alone; it makes no claim about `claudeCodeSessionId`.",
+      "source": "Same owner, COMPACT: call `storybloq_autonomous_guide` automatically with the full `sessionId`, `action: \"resume\"`, and `clientTaskId`, then continue the pipeline. Do not ask for another confirmation. / Live legacy session without `ownerTask`, COMPACT: call `resume` with the full `sessionId` and current `clientTaskId`; this migration recovery binds the current task. If task identity is unavailable, the guide preserves legacy resume behavior without binding.",
+      "note": "One action name for two prose cells that prescribe the same call: same-owner COMPACT and ownerless legacy COMPACT. They differ in whether the resume binds an `ownerTask`, which `bindsOwner` carries, and therefore in whether `clientTaskId` can be passed at all.",
+      "collapseJustification": "Two prose cells, same-owner COMPACT and ownerless legacy COMPACT, prescribing the SAME call with the same arguments. The instruction branches on the axis that actually differs -- whether an identity resolved, which decides if `clientTaskId` can be passed at all -- and `bindsOwner` carries the ownership consequence. Neither cell loses behavior the source grants it, which is what makes this collapse safe and the `monitor-only` one unsafe."
+    },
+    {
+      "id": "monitor-only",
+      "instruction": "BRANCH ON `relationship` FIRST; this one action name covers two different UX cells and they are not interchangeable. If `relationship` is `foreign-live`, render ordinary foreign-task UX: the owner task exists and can be named, opened, and relayed to. If `relationship` is `unowned-legacy`, there IS no owner task, so offer ONLY Monitor or work here on something else -- do not name an owner, do not offer Open task, do not relay, and do not describe the session as belonging to another task, because ownership is precisely what cannot be verified. In BOTH cases: do not mention recovery and do not ask about takeover. Recovery becomes reachable ONLY when the user explicitly asks for it AND `recoveryRequiresExplicitRequest && resumePermittedByProse && requiresTakeover` are all true. If one of those three is false, explain why recovery is unavailable and stop. When all three ARE true, CHECK CALLER IDENTITY BEFORE ANYTHING ELSE, and before asking the user to confirm anything: the prescribed call requires a CURRENT `clientTaskId`, and when identity is unavailable there is none. If there is no current `clientTaskId`: do NOT ask the user to confirm the recorded owner is gone, do not invent an id, do not pass null, and do not omit it -- omitting it makes the call mean something the source never describes, since takeover semantics are defined in terms of binding the current task. Report that the prose permits the request while the call it prescribes cannot be formed, and stop. Asking for a destructive-looking confirmation first and only then revealing that nothing can happen is the worse version of this. `resumable: false` corroborates that the guide would reject the call; it is not the reason for stopping. Only with a resolved current `clientTaskId`: confirm the recorded owner task is gone, then call `resume` once with the full `sessionId`, that `clientTaskId`, and `takeover: true`.",
+      "source": "Different live owner, non-COMPACT: never call or offer `resume`. Follow the foreign-task UX in Step 3. / Different live owner, COMPACT: do not resume automatically. Prefer Open task or Monitor. If the user explicitly asks to recover here, confirm that the recorded owner task is gone, then call `resume` once with the full `sessionId`, current `clientTaskId`, and `takeover: true`. / Live legacy session without `ownerTask`, non-COMPACT: ownership cannot be verified. Offer only Monitor or work here on something else.",
+      "note": "One action name for three prose cells, and the flags alone do NOT separate them. The flags settle whether RECOVERY is reachable (only the foreign-COMPACT cell sets `requiresTakeover` and `recoveryRequiresExplicitRequest`), but the UX cell is settled by `relationship`: the source gives foreign owners the Step 3 foreign-task UX and gives an ownerless legacy session `Offer only Monitor or work here on something else`, which has no owner to open or relay to. An earlier draft opened with an unconditional `Render ordinary foreign-task UX`, handing an ownerless session a flow built entirely around an owner task that does not exist. A second defect lived in the recovery branch: U2 sets all three prose flags true while `resumable` is false, so the branch was reachable and sent a reader to form a call out of a `clientTaskId` that does not exist. BE PLAIN ABOUT WHAT THIS COSTS. Stopping there is observably a CLIENT-SIDE REFUSAL, whatever the rationale, so T-446 has taken the execution-level half of ISS-898 case 2: the historically prescribed call is no longer issued for U2 and no server rejection is observed. That is a deliberate, recorded exception to this ticket's transcribe-do-not-fix rule, taken because the alternative is prescribing a call that cannot be formed. What ISS-898 case 2 still owns is the REPRESENTATION question: whether the offer should be withheld up front, and whether the verdict should mark the path unavailable rather than advertising a capability the caller cannot use.",
+      "collapseJustification": "NOT collapsed: the instruction branches on `relationship` because the two cells prescribe materially different UX. `foreign-live` has an owner task to name, open, and relay to; `unowned-legacy` has none, and the source gives it only Monitor or work elsewhere."
+    },
+    {
+      "id": "offer-recovery",
+      "instruction": "Offer Resume here, End session, or Back. Resume only after explicit selection, passing the full `sessionId` and `clientTaskId` when a task id resolved; successful recovery rebinds ownership, meaning it binds `ownerTask` to the recovering task. End session enters the typed cancellation flow. If identity is UNAVAILABLE, omit `clientTaskId` rather than inventing or nulling one: the guide accepts the call, and no new `ownerTask` is bound and any `ownerTask` already recorded is preserved. Ownership is not untouched at the field level: Recovery derives `claudeCodeSessionId` from an existing `ownerTask`: it writes a CLAUDE owner's id, CLEARS the field for a codex owner (the field is claude's), and preserves it only when no `ownerTask` exists. (ISS-898 case 3)",
+      "source": "Expired COMPACT session: offer Resume here, End session, or Back. Resume only after explicit selection, passing the full `sessionId` and current `clientTaskId`; successful recovery rebinds ownership. End session enters the typed cancellation flow.",
+      "note": "The expired-COMPACT bullet describes recovery only as passing the current `clientTaskId` and rebinding, and supplies no variant for a caller with no identity. The offer is preserved there because missing identity \"never blocks the legacy workflow\"; that the call then binds no new `ownerTask` is a consequence, not a documented rule. \"No new `ownerTask` is bound\" is deliberately not \"the session is unowned afterward\": this row's owner axis is `any`, and a session that already had an `ownerTask` keeps it. It is also not \"nothing is written\": recovery derives `claudeCodeSessionId` from an existing `ownerTask`: it writes a CLAUDE owner's id, CLEARS the field for a codex owner, and preserves it only when no `ownerTask` exists. `bindsOwner` is about `ownerTask` alone. Verified against the guide across that whole axis rather than inferred: see `test/autonomous/identity-free-expired-resume.test.ts`."
+    },
+    {
+      "id": "unverifiable",
+      "instruction": "The session's state, lease, identity, or reported session population could not be determined. Stop and tell the user to run `storybloq session list`. Do not guess and do not offer Resume.",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess. / Both arrays are always present and are empty when there are no sessions, so an EMPTY array means \"no sessions\" and a MISSING key means the server predates that contract; treat the missing case as unverifiable and fall back as below rather than reading it as \"none\".",
+      "note": "Two sentences, because the procedure names two dimensions: the do-not-guess rule covers state, lease, and identity; the empty-versus-missing array contract covers the reported session population."
+    },
+    {
+      "id": "free",
+      "instruction": "Nothing is running. Continue to argument routing.",
+      "source": "Both arrays are always present and are empty when there are no sessions, so an EMPTY array means \"no sessions\" and a MISSING key means the server predates that contract; treat the missing case as unverifiable and fall back as below rather than reading it as \"none\". / This guard runs on EVERY Storybloq invocation regardless of subcommand. It MUST complete before argument routing.",
+      "note": "The prose has no bullet for \"nothing is running\" because it never arises as an ownership case: with both arrays empty there is no session to compare, and the guard's own instruction is to complete and let argument routing proceed."
+    },
+    {
+      "id": "sessionstart-on-request",
+      "fallbackOnly": true,
+      "instruction": "Do not offer recovery and do not present a menu. Only after the user asks to continue, follow the SessionStart resume instruction; the guide remains authoritative. Reached only from the `json-status-compact` policy, never from a guard verdict: the guard emits no such action, because a server that can answer the guard can answer JSON status too.",
+      "source": "If JSON format is unavailable from an older server, call Markdown status once and treat a live non-COMPACT session as unverifiable legacy (Monitor or other work only). For a COMPACT session, follow a SessionStart resume instruction only after the user asks to continue; the guide remains authoritative.",
+      "note": "Fallback-only. The guard emits no such action, because a server that can answer `storybloq_session_guard` can answer JSON status too. It exists so Mode A retains the older-server COMPACT rule, which is otherwise lost with the prose it lived in."
+    }
+  ],
+  "$indeterminateStateComment": "Records whose workflow `state` is not one the state machine defines. The scanner substitutes \"unknown\" for an absent state and copies through whatever string is present, so an undetermined state is indistinguishable from a determined one at the ownership rows, every one of which branches on state === \"COMPACT\". This check runs first and is independent of who owns the session, which is why it is not a row on either ownership table. `validWorkflowStates` is the AUTHORITATIVE set and must stay exactly equal to WORKFLOW_STATES in src/autonomous/session-types.ts (asserted by test). Mode A needs the full set, not examples: with only S1 and S2 to go on, a reader meeting a third typo has no way to tell it is invalid and falls through to the ownership tables.",
+  "indeterminateState": [
+    {
+      "id": "S1",
+      "description": "live session, `state` absent (scanner substitutes \"unknown\"), any owner, any caller identity",
+      "state": "unknown",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    },
+    {
+      "id": "S2",
+      "description": "live session, `state` present but not a workflow state (for example \"IMPLEMNT\")",
+      "state": "IMPLEMNT",
+      "source": "If state, lease, or full identity still cannot be determined, stop and tell the user to run `storybloq session list`; do not guess.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      }
+    }
+  ],
+  "validWorkflowStates": [
+    "INIT",
+    "LOAD_CONTEXT",
+    "PICK_TICKET",
+    "PLAN",
+    "PLAN_REVIEW",
+    "IMPLEMENT",
+    "WRITE_TESTS",
+    "TEST",
+    "CODE_REVIEW",
+    "BUILD",
+    "VERIFY",
+    "FINALIZE",
+    "COMPACT",
+    "HANDOVER",
+    "COMPLETE",
+    "LESSON_CAPTURE",
+    "ISSUE_FIX",
+    "ISSUE_SWEEP",
+    "SESSION_END"
+  ],
+  "indeterminateStateRule": "Before classifying ownership, check the session's `state` against the valid set. If it is not in that set -- including the scanner's `\"unknown\"` substitute for an absent field, and any typo or unrecognized value -- the verdict is `indeterminate` / `unverifiable` with every capability false. Do not fall through to the ownership tables: every row there branches on `state === \"COMPACT\"`, so an unrecognized state would be read as a valid non-COMPACT one and could return `continue` for a session that actually needs COMPACT recovery.",
+  "$sourceProvenanceComment": "`source` on every row and every action is a VERBATIM excerpt of the guard contract as it stood BEFORE T-446, frozen at test/fixtures/skill-step-0.5-pre-t446.md. THREE regions of that document are quotable and nothing else is: Step 0.5 itself, the `Client task identity` paragraph it depends on, and the single do-not-guess SENTENCE in Step 3 (its paragraph's other rules, about rerunning the guard and inspecting a named session, are deliberately NOT quotable). It is checked there and not against the current SKILL.md, because T-446 deliberately moved those per-relationship sentences out of SKILL.md and into the generated fallback: checking against the generated file would be circular, since the fixture generates it. Formatting rules: `**` bold markers are dropped, ` / ` joins excerpts, each excerpt must be one or more COMPLETE consecutive sentences of a SINGLE region, and NO interpretation belongs here. Conclusions, consequences, and cross-references go in `note`. Quoting exactly is not the same as quoting something that applies: U5's note records a row where that distinction was missed twice. That citation requirement scopes to the ownership rows, the state gate, and the actions. It does NOT cover `populationInvariantRules`: the prose has no sentence about a record contradicting its own array, so those rows carry `basis: \"observed-classifier\"` with a unique `classifierGateId` and a parity-tested domain instead of a `source`. A row with neither a citation nor that constrained basis does not belong in this file.",
+  "dedupeRule": {
+    "id": "dedupe-by-session-id",
+    "rule": "Before classifying anything, collapse records that share a full `sessionId` to one. Read `activeSessions` first, then `resumableSessions`, and keep the first occurrence of each id. Order within each array by `sourceDir` when the payload carries it, and otherwise keep the order the server returned: mode A exists for servers old enough to lack the typed guard, and their status summaries may predate `sourceDir` entirely, so a rule that required it would leave those payloads with no executable order at all. Without this, one session recorded under two directories counts twice, and two bearing sessions have no aggregate rule at all -- so a duplicate would route you into the multi-session fallback for what this document counts as one session. The prose names no tiebreak; first-by-read-order is this file's deterministic choice, not a rule it found, and the dropped directory is reported rather than discarded silently (ISS-897). Reporting is CONDITIONAL on having directories to name: an older mode A payload may carry no `sourceDir`, and then there is no selector to report. In that case say that two records shared one `sessionId` and that their source directories are unavailable; do not fabricate a selector, and do not silently drop the collision unreported.",
+    "source": "Read both `activeSessions` and `resumableSessions`; deduplicate by full `sessionId`."
+  },
+  "terminalStateRule": {
+    "id": "terminal-session-end",
+    "state": "SESSION_END",
+    "rule": "`SESSION_END` is a VALID workflow state and never a BEARING one. The scanner drops it outright, so neither `activeSessions` nor `resumableSessions` can legitimately contain it, and a record carrying it did not come from a scan. Classify it `indeterminate` / `unverifiable` with every capability false, BEFORE consulting the ownership tables, and tell the user to run `storybloq session list`. Do not read its membership in the valid set below as permission to treat it as an ordinary non-COMPACT state: that path ends at `continue` for its owner, which is an actionable verdict for a session that has ENDED. The typed guard returns `unverifiable` here, and this rule exists so mode A reaches the same answer rather than the opposite one.",
+    "verdict": {
+      "relationship": "indeterminate",
+      "action": "unverifiable",
+      "resumable": false,
+      "resumePermittedByProse": false,
+      "requiresTakeover": false,
+      "recoveryRequiresExplicitRequest": false,
+      "bindsOwner": false
+    },
+    "classifierGateId": "terminal-session-end",
+    "basis": "observed-classifier",
+    "population": "both",
+    "input": {
+      "states": [
+        "SESSION_END"
+      ],
+      "compactPending": "any",
+      "leaseStates": "any"
+    },
+    "basisNote": "Same basis as the population invariants and registered the same way: the prose has no sentence about a terminal session appearing in either population, so this rule is transcribed from the `terminal-session-end` gate in `PRE_OWNERSHIP_GATES`. It is a transcription of OBSERVED behavior, not a citation, and its declared domain is parity-tested against that predicate across BOTH populations rather than asserted."
+  },
+  "$populationInvariantComment": "The gates `classifySessionGuard` applies BEFORE ownership, encoded so mode A applies them too. Each names a record whose own fields contradict the array it arrived in. These are NOT the `noVerdict` cells: those describe combinations the SCANNER never emits, and say nothing about what to do if one turns up anyway. A mode A reader who meets one and finds no rule falls through to the ownership tables and gets an actionable verdict for input the typed classifier rejects, which is the classifier/fallback divergence the SESSION_END rule was added to close, in its general form. Each rule's `input` is the gate's full predicate DOMAIN, and a rule fires wherever its domain holds -- but which rule a reader CITES for a record in several domains is settled by `gateOrder`, not by this list.",
+  "populationInvariantRules": [
+    {
+      "id": "active-lease-not-live",
+      "population": "activeSessions",
+      "violation": "lease state is not `live`",
+      "input": {
+        "states": "any",
+        "compactPending": "any",
+        "leaseStates": [
+          "expired",
+          "missing",
+          "invalid"
+        ]
+      },
+      "rule": "`activeSessions` means a LIVE lease. A record there whose lease is expired, missing, or invalid contradicts the population that carried it, so its liveness is not established and no ownership row applies.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      },
+      "classifierGateId": "active-lease-not-live",
+      "basis": "observed-classifier",
+      "basisNote": "Step 0.5 has no sentence about a record whose fields contradict the array carrying it, because the prose never contemplates one. This rule is transcribed from the gate of the same id in `PRE_OWNERSHIP_GATES` (`src/core/session-guard.ts`), and it is a transcription of OBSERVED behavior, not a citation. `input` states the gate's FULL domain rather than one example: `any` means the predicate does not read that field, so narrowing the production predicate to a sample fails the domain-equality test instead of passing it. It adds no policy the classifier does not already apply."
+    },
+    {
+      "id": "recovery-lease-live",
+      "population": "resumableSessions",
+      "violation": "lease state is `live`",
+      "input": {
+        "states": "any",
+        "compactPending": "any",
+        "leaseStates": [
+          "live"
+        ]
+      },
+      "rule": "`resumableSessions` means a NON-live lease. A live one there contradicts the population, and recovery against a lease that may still be held is the one thing this classification must never authorize.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      },
+      "classifierGateId": "recovery-lease-live",
+      "basis": "observed-classifier",
+      "basisNote": "Step 0.5 has no sentence about a record whose fields contradict the array carrying it, because the prose never contemplates one. This rule is transcribed from the gate of the same id in `PRE_OWNERSHIP_GATES` (`src/core/session-guard.ts`), and it is a transcription of OBSERVED behavior, not a citation. `input` states the gate's FULL domain rather than one example: `any` means the predicate does not read that field, so narrowing the production predicate to a sample fails the domain-equality test instead of passing it. It adds no policy the classifier does not already apply."
+    },
+    {
+      "id": "recovery-not-pending",
+      "population": "resumableSessions",
+      "violation": "`compactPending` is false",
+      "input": {
+        "states": "any",
+        "compactPending": [
+          false
+        ],
+        "leaseStates": "any"
+      },
+      "rule": "A recovery candidate must carry `compactPending`. Without it the scanner produces no verdict at all, so there is no rule to apply and none may be improvised from the expired-COMPACT row.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      },
+      "classifierGateId": "recovery-not-pending",
+      "basis": "observed-classifier",
+      "basisNote": "Step 0.5 has no sentence about a record whose fields contradict the array carrying it, because the prose never contemplates one. This rule is transcribed from the gate of the same id in `PRE_OWNERSHIP_GATES` (`src/core/session-guard.ts`), and it is a transcription of OBSERVED behavior, not a citation. `input` states the gate's FULL domain rather than one example: `any` means the predicate does not read that field, so narrowing the production predicate to a sample fails the domain-equality test instead of passing it. It adds no policy the classifier does not already apply."
+    },
+    {
+      "id": "recovery-not-compact",
+      "population": "resumableSessions",
+      "violation": "state is not `COMPACT`",
+      "input": {
+        "states": "any-except-COMPACT",
+        "compactPending": "any",
+        "leaseStates": "any"
+      },
+      "rule": "A recovery candidate must be in `COMPACT`. Anything else in that array is a record whose state and population disagree, and the expired-COMPACT row cannot be applied to it.",
+      "verdict": {
+        "relationship": "indeterminate",
+        "action": "unverifiable",
+        "resumable": false,
+        "resumePermittedByProse": false,
+        "requiresTakeover": false,
+        "recoveryRequiresExplicitRequest": false,
+        "bindsOwner": false
+      },
+      "classifierGateId": "recovery-not-compact",
+      "basis": "observed-classifier",
+      "basisNote": "Step 0.5 has no sentence about a record whose fields contradict the array carrying it, because the prose never contemplates one. This rule is transcribed from the gate of the same id in `PRE_OWNERSHIP_GATES` (`src/core/session-guard.ts`), and it is a transcription of OBSERVED behavior, not a citation. `input` states the gate's FULL domain rather than one example: `any` means the predicate does not read that field, so narrowing the production predicate to a sample fails the domain-equality test instead of passing it. It adds no policy the classifier does not already apply."
+    }
+  ],
+  "$aggregateComment": "How a reader who classified SEVERAL sessions turns them into one answer. Mode A needs this and did not have it: its input is a full status payload, so it classifies EVERY surviving summary, and nothing told it what to do holding two. The `overallAction: null` paragraph sat inside the mode B block, which a reader following \"read the one that applies\" never opens. That is the per-session divergence one level up: the tables decide each session, and the reader was left to combine them, whose only natural reading is act on the first or the most permissive -- exactly the ISS-554 shape. These entries transcribe the assembly in `classifySessionGuard`, which is the source for this question because the prose has no combining rule to transcribe.",
+  "aggregateRules": [
+    {
+      "id": "none",
+      "condition": "no session survives deduplication and every rule in Gate order",
+      "overallAction": "free",
+      "rule": "Nothing bears on this project, so the guard imposes nothing: proceed with the requested work. With no session verdict to constrain the invocation, there is nothing to weigh: proceed with the requested work.",
+      "provenance": "Step 0.5 constrains an invocation only when a session exists; with none, no row applies and no restriction is in force."
+    },
+    {
+      "id": "single",
+      "condition": "exactly one session survives deduplication and every rule in Gate order",
+      "overallAction": "<that session's own action>",
+      "rule": "The aggregate IS that session's verdict, unchanged. Apply its procedure from `Acting on a verdict` in full.",
+      "provenance": "Step 0.5 prescribes an action per session; with one session there is nothing to combine, so the per-session rule stands as the answer."
+    },
+    {
+      "id": "multiple",
+      "condition": "two or more sessions survive deduplication and every rule in Gate order",
+      "overallAction": null,
+      "rule": "There is NO aggregate. Report every session with its own verdict, state plainly that the conflict between them is unresolved, and select none of them. Do not act on the first, the most permissive, or the one matching your own task. A `continue` or `auto-resume` sitting beside a `monitor-only` is an unresolved hazard, not a permission. Deciding the rule is ISS-898.",
+      "provenance": "The prose evaluates sessions one at a time and supplies no ordering, suppression, or winner. The three available resolutions (permissive wins, restrictive wins, refuse to act) are equally unsupported, so the classifier reports no aggregate and this file invents none."
+    }
+  ],
+  "gateOrder": [
+    {
+      "id": "active-lease-not-live",
+      "documentedIn": "Population invariants"
+    },
+    {
+      "id": "recovery-lease-live",
+      "documentedIn": "Population invariants"
+    },
+    {
+      "id": "recovery-not-pending",
+      "documentedIn": "Population invariants"
+    },
+    {
+      "id": "terminal-session-end",
+      "documentedIn": "Terminal sessions"
+    },
+    {
+      "id": "unknown-workflow-state",
+      "documentedIn": "Undetermined session state"
+    },
+    {
+      "id": "recovery-not-compact",
+      "documentedIn": "Population invariants"
+    }
+  ],
+  "$gateOrderComment": "Evaluation order of every gate that runs before ownership, mirroring `PRE_OWNERSHIP_GATES`. It is published as its own ordered list because the gates are NOT contiguous by topic: `recovery-not-compact` runs AFTER the terminal and unknown-state gates, so no arrangement of the sections below can express the precedence. A record violating several gates stops at the FIRST one in this list, in both the tool and the legacy path; without this list a mode A reader meeting a `SESSION_END` record that also has a non-live active lease would cite whichever section it happened to read first and produce a different rationale than the tool.",
+  "unknownStateRule": {
+    "id": "unknown-workflow-state",
+    "basis": "observed-classifier",
+    "note": "The gate id for the state rule below, so every gate named in `gateOrder` resolves to a section that documents it."
+  }
+}

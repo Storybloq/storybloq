@@ -19,7 +19,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
-import { registerAllTools } from "./tools.js";
+import { registerAllTools, registerSessionGuardTool } from "./tools.js";
 import { withStrictToolSchemas } from "./strict-schemas.js";
 import { initProject } from "../core/init.js";
 import { startInboxWatcher, stopInboxWatcher } from "../channel/inbox-watcher.js";
@@ -68,8 +68,11 @@ function tryDiscoverRoot(): string | null {
  * Degraded-mode tools: registered when no .story/ project is found.
  * Provides storybloq_init to bootstrap a project, then dynamically
  * swaps to the full tool set via registerAllTools.
+ *
+ * `root` is injectable for tests only; production always passes nothing and the
+ * handlers resolve the cwd themselves, exactly as before.
  */
-function registerDegradedTools(rawServer: McpServer): void {
+export function registerDegradedTools(rawServer: McpServer, root?: string): void {
   // ISS-892: the degraded surface gets the same strict-argument shim as the full
   // one. storybloq_init writes to disk, so a dropped unknown key here has the
   // same consequence it has anywhere else.
@@ -95,6 +98,15 @@ function registerDegradedTools(rawServer: McpServer): void {
     }],
     isError: true,
   }));
+
+  // T-446: the session guard is available in degraded mode too. This is the
+  // no-project case, which is exactly where the skill runs Step 0.5 first.
+  //
+  // The handle is captured because `registerAllTools` registers the same name.
+  // Leaving this one in place makes the post-init swap throw on a duplicate
+  // registration, which lands in the catch below and re-registers the degraded
+  // surface -- stranding the user in degraded mode after a SUCCESSFUL init.
+  const degradedGuard = registerSessionGuardTool(server, root ?? process.cwd());
 
   const degradedInit = server.registerTool("storybloq_init", {
     description: "Initialize a new .story/ project in the current directory",
@@ -123,6 +135,7 @@ function registerDegradedTools(rawServer: McpServer): void {
     try {
       degradedStatus.remove();
       degradedInit.remove();
+      degradedGuard.remove();
       registerAllTools(server, result.root);
       // Explicit tool-list-changed notification after the full swap. Each
       // underlying registerTool / remove call already emits its own

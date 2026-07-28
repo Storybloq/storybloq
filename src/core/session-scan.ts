@@ -13,6 +13,21 @@ export type SessionLeaseState = "live" | "expired" | "missing" | "invalid";
 
 export interface ActiveSessionSummary {
   readonly sessionId: string;
+  /**
+   * The on-disk directory name (T-446).
+   *
+   * `sessionId` is file content, so it can differ from the directory it lives
+   * in. `resolveSessionSelector` resolves DIRECTORY names, which makes this the
+   * selector `storybloq session ...` prefers; guide and MCP calls still take
+   * `sessionId`. Rendering only one of the two hands an operator a selector that
+   * may not resolve.
+   *
+   * Not a guarantee of acceptance: this is copied verbatim from the directory
+   * entry and never validated, so a legacy or hand-created directory whose name
+   * fails the selector's own format check appears here and is still rejected.
+   * Treat it as the address to inspect, not as a promise the CLI will take it.
+   */
+  readonly sourceDir: string;
   readonly state: string;
   readonly mode: string;
   readonly ticketId: string | null;
@@ -103,6 +118,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
       : null;
     const summary: ActiveSessionSummary = {
       sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : entry.name,
+      sourceDir: entry.name,
       state: typeof parsed.state === "string" ? parsed.state : "unknown",
       mode: typeof parsed.mode === "string" ? parsed.mode : "auto",
       ticketId: typeof ticket?.id === "string" ? ticket.id : null,

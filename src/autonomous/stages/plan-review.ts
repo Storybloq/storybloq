@@ -3,6 +3,7 @@ import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
@@ -114,6 +115,13 @@ export class PlanReviewStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // ISS-904: the plan gate's escape when the FILING, not the plan, is the
+    // defect. Unlike skip_ticket below it advances the queue instead of ending
+    // the session, so a repeatedly-rejected item never needs a faked approve.
+    if (report.completedAction === PARK_ACTION) {
+      return parkCurrentTicket(ctx, report, "PLAN_REVIEW");
+    }
+
     if (report.completedAction === "skip_ticket") {
       const ticketId = ctx.state.ticket?.id ?? "unknown";
       const reason = report.notes ?? "Ticket cannot be completed in this session.";
@@ -285,10 +293,18 @@ export class PlanReviewStage implements WorkflowStage {
       : { ...ctx.state.reviews, plan: planReviews };
 
     // T-181: lens history merged into single atomic write
+    // ISS-904: count non-approving plan-gate rounds ACROSS rejects. A reject
+    // empties `reviews.plan`, so `roundNum` restarts at 1 and a reject loop is
+    // invisible to any counter derived from review history -- which is why three
+    // campaign parks had to be recognised by a human rather than by the gate.
+    const priorNonApprovals = ((ctx.state as Record<string, unknown>).planGateNonApprovals as number | undefined) ?? 0;
+    const nonApprovals = nextAction === "IMPLEMENT" ? 0 : priorNonApprovals + 1;
+
     const stateUpdate: Record<string, unknown> = {
       reviews: reviewsForWrite,
       lastReviewVerdict: tier1Verdict,
       currentReviewStartedAt: null,
+      planGateNonApprovals: nonApprovals,
     };
     if (reviewerBackend === "lenses" && findings.length > 0) {
       const updated = buildLensHistoryUpdate(
@@ -333,6 +349,7 @@ export class PlanReviewStage implements WorkflowStage {
           "Update the plan to address these findings, then call me with completedAction: \"plan_review_round\" and the new review verdict.",
           "",
           findingSummary,
+          ...parkHintLines(ctx.state.sessionId, nonApprovals),
         ].join("\n"),
         reminders: ["Update the plan file, then re-review. Do NOT rewrite from scratch."],
       };
@@ -376,6 +393,7 @@ export class PlanReviewStage implements WorkflowStage {
           : `Round ${roundNum} complete. Run round ${roundNum + 1} with **${nextReviewerName}**.`,
         "",
         "Report verdict and findings as before.",
+        ...parkHintLines(ctx.state.sessionId, nonApprovals),
       ].join("\n"),
       reminders: ["Address findings before re-reviewing."],
     };

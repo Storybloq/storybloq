@@ -4,6 +4,7 @@ import { releaseSessionClaim } from "../../core/claims.js";
 import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
 import {
   currentStorybloqClient,
@@ -48,6 +49,12 @@ export class PlanStage implements WorkflowStage {
         '```json',
         `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "plan_written" } }`,
         '```',
+        // ISS-904: a reject routes back here and clears reviews.plan, so this is
+        // the only place a repeated reject loop is visible to the agent.
+        ...parkHintLines(
+          ctx.state.sessionId,
+          ((ctx.state as Record<string, unknown>).planGateNonApprovals as number | undefined) ?? 0,
+        ),
       ].join("\n"),
       reminders: [
         "Write the plan as a markdown file -- do NOT use client-native plan mode.",
@@ -58,6 +65,13 @@ export class PlanStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, _report: GuideReportInput): Promise<StageAdvance> {
+    // ISS-904: park advances the queue past an item that is not workable AS
+    // FILED. skip_ticket below ends the session instead; the two are different
+    // outcomes and both are kept.
+    if (_report.completedAction === PARK_ACTION) {
+      return parkCurrentTicket(ctx, _report, "PLAN");
+    }
+
     if (_report.completedAction === "skip_ticket") {
       const ticketId = ctx.state.ticket?.id ?? "unknown";
       const reason = _report.notes ?? "Ticket cannot be completed in this session.";

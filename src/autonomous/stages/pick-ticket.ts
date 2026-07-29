@@ -287,6 +287,9 @@ export class PickTicketStage implements WorkflowStage {
         claimed: true,
       },
       reviews: { plan: [], code: [] },
+      // ISS-904: per-ticket, so a fresh pick never inherits the previous item's
+      // plan-gate history and mis-trigger the park hint on round one.
+      planGateNonApprovals: 0,
       finalizeCheckpoint: null,
       landingDecision: null,
       ticketStartedAt: new Date().toISOString(),

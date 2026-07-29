@@ -752,6 +752,13 @@ export const SessionStateSchema = z.object({
   // Stuck-detection: consecutive retry count for cancel gate bypass
   stuckRetryCount: z.number().default(0),
 
+  // ISS-904: plan-gate rounds for the CURRENT ticket that did not approve,
+  // counted across rejects. A reject clears `reviews.plan`, so round numbers
+  // restart at 1 and the reject loop -- the exact shape that produced three
+  // hand-recorded campaign parks -- is invisible to any counter derived from
+  // review history. Reset when a ticket is picked, parked, or approved.
+  planGateNonApprovals: z.number().default(0),
+
   // T-260: Liveness infrastructure
   sidecarPid: z.number().nullish(),
 

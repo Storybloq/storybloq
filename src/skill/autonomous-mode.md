@@ -79,6 +79,39 @@ Before any guide call that could start, resume, or cancel a session, run SKILL.m
 - Working through a dependency chain in order
 - Fixing a cascade of related issues
 
+## Parking an item at the plan gate
+
+Sometimes the plan gate keeps rejecting because the ITEM is defective, not the plan:
+an acceptance criterion that contradicts a stated constraint, a cited `file:line` that
+does not hold, or a scope item that cannot be sound in isolation from the others. A plan
+cannot be written around a contradiction, and an approve verdict must never be faked to
+escape one.
+
+From `PLAN` or `PLAN_REVIEW`, report:
+
+```json
+{ "completedAction": "park_item", "notes": "<the contradiction, specifically>" }
+```
+
+The guide releases the claim, records your reason on the item, returns it to `open`,
+and moves this session to the next item. The rest of a targeted queue is preserved.
+
+| | `park_item` | `skip_ticket` |
+|---|---|---|
+| Where | `PLAN`, `PLAN_REVIEW` | `PLAN`, `PLAN_REVIEW`, `CODE_REVIEW` |
+| Session | continues to the next item | ends with a handover |
+| Reason | required, written onto the item | optional, written into the handover |
+
+Notes:
+- The reason is mandatory. An unexplained park is indistinguishable from someone
+  releasing the claim by hand, which is what the guard machinery is there to catch.
+- After three plan-review rounds without approval the guide surfaces this option
+  itself, with the "this may be a filing defect" hypothesis attached.
+- Park only for a defect in the item. Ordinary review findings get addressed and
+  re-reviewed as usual.
+- If the claim moved to another session in the meantime, the guide writes nothing to
+  the item and tells you so; file the defect as an issue instead.
+
 ## Tiered Access -- Review, Plan, Guided Modes
 
 The autonomous guide supports four execution tiers. Same guide, same handlers, different entry/exit points.

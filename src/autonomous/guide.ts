@@ -12,7 +12,16 @@ import {
   type WorkflowState,
   type SessionState,
 } from "./session-types.js";
-import { reconcileSessionReality, isClaimLost, describeClaimLoss } from "./claim-preflight.js";
+import {
+  reconcileSessionReality,
+  isClaimLost,
+  describeClaimLoss,
+  parseClaimEpoch,
+  readTicketClaimState,
+  type ClaimPreflightResult,
+} from "./claim-preflight.js";
+import { reconcileClaim } from "./claim-reconciliation.js";
+import { releaseClaimIfOwned } from "../core/claims.js";
 import {
   createSession,
   deleteSession,
@@ -55,6 +64,7 @@ import { gitHead, gitHeadHash, gitStatus, gitMergeBase, gitDiffStat, gitDiffName
 import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
+import { PARK_ACTION, PARK_STAGES } from "./stages/park.js";
 import "./stages/index.js"; // Register all extracted stages
 import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer } from "./telemetry-writer.js";
 
@@ -326,13 +336,12 @@ async function dispatchTargetedResume(
  * and their safety comes from releaseClaimIfOwned refusing to strip a claim the
  * session cannot prove is its own.
  */
-async function claimPreflightBlock(
+async function reconcileClaimForGuide(
   root: string,
   state: FullSessionState,
-): Promise<McpToolResult | null> {
-  let result;
+): Promise<ClaimPreflightResult | null> {
   try {
-    result = await reconcileSessionReality(state as unknown as SessionState, {
+    return await reconcileSessionReality(state as unknown as SessionState, {
       loadTicket: async (ticketId) => {
         const { state: projectState } = await loadProject(root, { strict: false });
         return projectState.ticketByID(ticketId) ?? null;
@@ -344,8 +353,14 @@ async function claimPreflightBlock(
     // fault and must not masquerade as a claim conflict.
     return null;
   }
+}
 
-  if (!isClaimLost(result)) return null;
+async function claimPreflightBlock(
+  root: string,
+  state: FullSessionState,
+): Promise<McpToolResult | null> {
+  const result = await reconcileClaimForGuide(root, state);
+  if (!result || !isClaimLost(result)) return null;
 
   const ticketId = state.ticket?.displayId ?? state.ticket?.id ?? result.epoch?.ticketId ?? "unknown";
   return guideError(new Error(
@@ -354,6 +369,98 @@ async function claimPreflightBlock(
     `Write a handover, then cancel this session with { "sessionId": "${state.sessionId}", "action": "cancel" } ` +
     "and start a new session to pick different work.",
   ));
+}
+
+/**
+ * ISS-904: has this session lost the claim it recorded? Used by cancel for two
+ * separate decisions, and it is worth being explicit that they pull opposite
+ * ways.
+ *
+ * 1. It stands the T-178 soft gate DOWN. That gate refuses cancel for any
+ *    healthy auto-mode session with work remaining; a claim-lost session is not
+ *    healthy, and `claimPreflightBlock` tells it in as many words to "write a
+ *    handover, then cancel". The gate then refused that cancel and pointed back
+ *    at `report`, which is the claim-loss guard again -- a closed cycle whose
+ *    only exit was the admin CLI, dropping the rest of a targeted queue. The
+ *    intent was already recorded at the preflight, which leaves `cancel`
+ *    deliberately ungated because "refusing to cancel a session that lost its
+ *    claim would strand it"; the gate simply never learned about claim loss.
+ *
+ * 2. It makes cancel's own ledger writes MORE restrictive, not less. Letting a
+ *    claim-lost session through the gate would otherwise hand it two writes it
+ *    has no right to: replaying a pending ticket mutation, and a claim release
+ *    gated on the `claimedBySession` stamp with no epoch proof. Both are
+ *    suppressed below, so the widened cancel path cannot become an ISS-784
+ *    bypass. Ending the session must never mean writing on the way out.
+ */
+type CancelClaimPosture =
+  /** No epoch key at all: a pre-T-442 session. The legacy release applies. */
+  | "no-epoch"
+  /** Epoch present and still reconciles as ours. Epoch-proven release applies. */
+  | "held"
+  /**
+   * Ownership is not provable: suppresses every ledger write. NOTE this alone
+   * does NOT stand the soft cancel gate down -- that decision is state-aware and
+   * uses the pipeline's own reconciliation, because from FINALIZE onward a
+   * session's authorized completion looks identical to a foreign one.
+   */
+  | "lost"
+  /**
+   * Cannot be determined: a present-but-malformed epoch, an unreadable project,
+   * or a session that has moved off the ticket its epoch names. Suppresses every
+   * ledger write, but does NOT stand the gate down -- an indeterminate reading
+   * is not evidence that a healthy session should be allowed to abandon its
+   * remaining work.
+   */
+  | "indeterminate";
+
+/**
+ * ISS-904: what may cancel do to the ledger for this session?
+ *
+ * Deliberately NOT `reconcileSessionReality`: that short-circuits to NOT_CHECKED
+ * outside RECONCILED_STATES, and cancel is reachable from HANDOVER, COMPACT,
+ * FINALIZE and COMPLETE -- exactly the states where a stale epoch would
+ * otherwise read as "fine" and let cancel write to a ticket it no longer owns.
+ * The state allowlist exists to stop the PIPELINE stalling at its own finish
+ * line; it has no bearing on whether cancel may write.
+ *
+ * Absent and malformed are kept apart for the same reason claim-preflight.ts
+ * keeps them apart: an absent epoch means a session that never gained the
+ * ability to prove ownership, while a present-but-corrupt one belongs to a
+ * session that DID acquire a claim. Collapsing them would route a corrupt epoch
+ * into the legacy stamp-only release, which in a split claim strips the winner.
+ */
+async function cancelClaimPosture(
+  root: string,
+  state: FullSessionState,
+): Promise<CancelClaimPosture> {
+  const raw = (state as Record<string, unknown>).claimEpoch;
+  if (raw === undefined || raw === null) return "no-epoch";
+
+  const epoch = parseClaimEpoch(raw);
+  if (!epoch) return "indeterminate";
+
+  // FINALIZE clears the draft ticket but leaves the epoch behind, so at COMPLETE
+  // the epoch names a ticket the session has legitimately finished with. Reading
+  // that as claim loss would stand the soft gate down for a perfectly healthy
+  // session and let it discard the rest of a targeted queue. Same guard as
+  // reconcileSessionReality (claim-preflight.ts:153), and it is load-bearing here.
+  if (!state.ticket || state.ticket.id !== epoch.ticketId) return "indeterminate";
+
+  let ticket;
+  try {
+    const { state: projectState } = await loadProject(root, { strict: false });
+    ticket = projectState.ticketByID(epoch.ticketId);
+  } catch {
+    return "indeterminate";
+  }
+
+  return reconcileClaim({
+    epoch,
+    ticket: readTicketClaimState(ticket),
+    claimStalenessHours: 24,
+    now: Date.now(),
+  }).status === "held" ? "held" : "lost";
 }
 
 /**
@@ -1682,6 +1789,21 @@ async function runPipelineStage(
     ));
   }
 
+  // ISS-904: park_item is handled by PLAN and PLAN_REVIEW only, and most stages
+  // do NOT reject an action they do not recognise -- IMPLEMENT, for one, treats
+  // any action other than `no_implementation_needed` as "implementation done".
+  // So an agent that learned the action from a plan-gate hint and tried it one
+  // stage later would silently advance the pipeline instead of parking. Refuse
+  // it centrally, and say where it IS valid.
+  if (report.completedAction === PARK_ACTION && !PARK_STAGES.has(String(state.state))) {
+    return guideError(new Error(
+      `"${PARK_ACTION}" is only valid at ${[...PARK_STAGES].join(" and ")}; this session is in ${state.state}. ` +
+      "Parking declares an item unworkable AS FILED, which is a conclusion the plan gate reaches. " +
+      "If the item is unworkable for a reason found later, report this stage's own action and use `skip_ticket` " +
+      "to end the session with a handover instead.",
+    ));
+  }
+
   const ctx = new StageContext(root, dir, state, recipe);
   const advance = await stage.report(ctx, report);
   const result = await processAdvance(ctx, stage, advance);
@@ -2450,6 +2572,73 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
 // cancel
 // ---------------------------------------------------------------------------
 
+/**
+ * ISS-904 / N-097 operator 3: a refusal must name the condition that actually
+ * refused THIS session.
+ *
+ * The previous text asserted context size regardless of state. That is
+ * diagnosis-substitution: an operator whose session owner was gone was told not
+ * to cancel over context and then pointed at the admin CLI. It also printed a
+ * `ticket_picked` continuation that is wrong from every state except
+ * PICK_TICKET, and reported tickets and issues separately even though the gate
+ * itself counts them together against one cap.
+ *
+ * The admin CLI is deliberately absent here. For a healthy mid-pipeline session
+ * continuing and parking cover the ground, and pointing at `session stop` is
+ * exactly what made operators drop the remainder of a targeted queue.
+ */
+function buildCancelRefusal(state: FullSessionState): string {
+  const workflowState = String(state.state);
+  const totalDone = state.completedTickets.length + (state.resolvedIssues ?? []).length;
+  const cap = state.config.maxTicketsPerSession;
+  const targetCount = state.targetWork?.length ?? 0;
+
+  const progress = targetCount > 0
+    ? `${totalDone} of ${targetCount} target item(s) finished`
+    : cap === 0
+      ? `${totalDone} item(s) finished, no per-session cap`
+      : `${totalDone} of ${cap} item(s) finished`;
+
+  const alternatives: string[] = [];
+  if (workflowState === "PLAN" || workflowState === "PLAN_REVIEW") {
+    const label = state.ticket?.displayId ?? state.ticket?.id ?? "the current item";
+    alternatives.push(
+      `- **The plan gate keeps rejecting ${label}, and the defect is in the FILING rather than the plan.** Park it. The item returns to \`open\` with your reason recorded on it, this session advances to the next one, and no queue is lost:`,
+      "  ```json",
+      `  { "sessionId": "${state.sessionId}", "action": "report", "report": { "completedAction": "${PARK_ACTION}", "notes": "<the contradiction, specifically>" } }`,
+      "  ```",
+    );
+  }
+  if (workflowState === "PICK_TICKET") {
+    alternatives.push(
+      "- **Pick the next item** and continue:",
+      "  ```json",
+      `  { "sessionId": "${state.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
+      "  ```",
+    );
+  } else {
+    alternatives.push(
+      `- **Continue the pipeline from \`${workflowState}\`** by reporting that stage's completed action. Re-read the last instruction if you no longer have it; \`{ "sessionId": "${state.sessionId}", "action": "resume" }\` re-issues it.`,
+    );
+  }
+  alternatives.push(
+    "- **Genuinely nothing left to work.** Finish or park the current item; the session then reaches COMPLETE and ends through HANDOVER on its own. Ending it that way preserves the remaining queue, which cancelling does not.",
+  );
+
+  return [
+    "# Cancel Refused — this session is mid-pipeline and healthy",
+    "",
+    `**Condition that refused it:** an auto-mode session in \`${workflowState}\` with work remaining (${progress}). ` +
+      "It is not stuck, and no claim-loss condition was detected, so nothing that permits cancel applies.",
+    "",
+    "This is about session state, not context size. Client compaction preserves Storybloq state, and the guide rotates through HANDOVER at a clean boundary once pressure reaches the configured threshold, so context pressure is never by itself a reason to cancel.",
+    "",
+    "## Designed alternatives",
+    "",
+    ...alternatives,
+  ].join("\n");
+}
+
 async function handleCancel(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) {
     // Cancel without session ID — check for any active session
@@ -2467,9 +2656,17 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
 
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {
+    // ISS-904: name the designed alternative for THIS session's state rather
+    // than deferring to the admin CLI. The two cells differ and conflating them
+    // is what sent an operator with a dead owner to `session stop`.
+    const isCompact = String(info.state.state) === "COMPACT";
     return guideError(new Error(
       `Cannot cancel session ${args.sessionId}: ${ownershipConflict}. ` +
-      "Open the owning task or use the administrative CLI after confirming it is gone.",
+      (isCompact
+        ? "This session is COMPACT, so the designed recovery is to take it over from this task once you have confirmed the recorded owner task is gone: " +
+          `{ "sessionId": "${args.sessionId}", "action": "resume", "takeover": true }.`
+        : "The recorded owner holds a live, non-COMPACT lease, and a live lease is deliberately never taken over. " +
+          "The owning task is the one that ends this session: open or message it."),
     ));
   }
 
@@ -2487,46 +2684,96 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   const isWorkingState = !["SESSION_END", "HANDOVER", "COMPACT"].includes(info.state.state);
 
   const isStuck = ((info.state as Record<string, unknown>).stuckRetryCount ?? 0) >= 5;
-  if (isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck) {
+  // ISS-904: computed once and used TWICE -- to stand the soft gate down, and to
+  // stop a session that has lost its claim from writing to the ledger on its way
+  // out. Cheap: reconcileSessionReality short-circuits to NOT_CHECKED unless the
+  // session is in a reconciled state AND carries an epoch.
+  // ISS-904: two DIFFERENT questions, and they need different answers. Collapsing
+  // them into one reading was wrong, in a way only the FINALIZE window exposes.
+  //
+  // "May cancel WRITE?" is state-independent: the ledger does not care which
+  // stage the session is in, so `cancelClaimPosture` deliberately ignores the
+  // pipeline allowlist and suppresses writes wherever ownership is not provable.
+  //
+  // "May cancel BYPASS the soft gate?" is state-aware, and must use the same
+  // allowlist the pipeline does. From FINALIZE onward a session's own authorized
+  // completion is observationally identical to a foreign one -- the ticket is
+  // `complete` with its claim keys stripped either way, which reconciles as
+  // "released". That is exactly why claim-preflight.ts excludes FINALIZE from
+  // RECONCILED_STATES. Reading it as claim loss here would let a HEALTHY session
+  // that just finished a ticket cancel and discard the rest of its queue,
+  // including in the crash window where FINALIZE has completed the ledger ticket
+  // but not yet cleared the session draft.
+  const preflight = await reconcileClaimForGuide(root, info.state);
+  const claimLost = preflight !== null && isClaimLost(preflight);
+  const posture = await cancelClaimPosture(root, info.state);
+  const mayWriteTicket = posture === "held" || posture === "no-epoch";
+  if (isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost) {
     return {
       content: [{
         type: "text",
-        text: [
-          "# Cancel Rejected — Session Still Active",
-          "",
-          `You have completed ${info.state.completedTickets.length} ticket(s) and ${(info.state.resolvedIssues ?? []).length} issue(s) with more work remaining.`,
-          "Do NOT cancel an autonomous session due to context size.",
-          "If you need to manage context, the client handles compaction automatically.",
-          "",
-          "Continue working by calling `storybloq_autonomous_guide` with:",
-          '```json',
-          `{ "sessionId": "${info.state.sessionId}", "action": "report", "report": { "completedAction": "ticket_picked", "ticketId": "T-XXX" } }`,
-          '```',
-          "",
-          "To force-cancel (admin only), run: `storybloq session stop`",
-        ].join("\n"),
+        text: buildCancelRefusal(info.state),
       }],
     };
   }
 
-  // ISS-024: recover any pending mutation before cancel
-  await recoverPendingMutation(info.dir, info.state, root);
+  // ISS-024: recover any pending mutation before cancel.
+  //
+  // ISS-904: NOT when the claim is lost. Recovery replays a ticket mutation this
+  // session prepared while it still believed it owned the ticket, and
+  // reconciliation has just proved it does not. Replaying would write to a
+  // ticket that now belongs to someone else -- the exact ISS-784 hazard, reached
+  // through the cancel path instead of the report path. The marker is dropped
+  // instead, so the session still ends cleanly and nothing foreign is touched.
+  if (mayWriteTicket) {
+    await recoverPendingMutation(info.dir, info.state, root);
+  } else if (info.state.pendingProjectMutation) {
+    writeSessionAndRefresh(
+      root, info.dir,
+      { ...info.state, pendingProjectMutation: null } as FullSessionState,
+      "if-active",
+    );
+  }
   // Re-read state after recovery
   const cancelInfo = findSessionById(root, args.sessionId!) ?? info;
 
-  // ISS-027: Release ticket claim if session owns it
+  // ISS-027: Release ticket claim if session owns it.
+  //
+  // ISS-904: skipped entirely on claim loss, and epoch-proven otherwise. The
+  // legacy release below is gated on the `claimedBySession` stamp alone, so in
+  // the split state `{ claimedBySession: us, claim.user: them }` it would strip
+  // the OTHER party's winning claim. A session that cannot prove ownership
+  // releases nothing; it just ends.
   let ticketReleased = false;
   let ticketConflict = false;
-  const ticketId = cancelInfo.state.ticket?.id;
+  const ticketId = mayWriteTicket ? cancelInfo.state.ticket?.id : undefined;
   if (ticketId) {
     try {
       const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
       await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
         const ticket = projectState.ticketByID(ticketId);
         if (ticket && ticket.status === "inprogress") {
+          // ISS-904: when the session carries an epoch, prove ownership HERE,
+          // inside the same lock as the write. The pre-cancel check above cannot
+          // be sufficient on its own -- a claim can move between it and this
+          // lock -- and `releaseClaimIfOwned` compares BOTH ownership fields
+          // rather than the stamp alone.
+          const epoch = parseClaimEpoch((cancelInfo.state as Record<string, unknown>).claimEpoch);
+          if (epoch) {
+            const outcome = releaseClaimIfOwned(ticket, epoch);
+            if (outcome.released) {
+              await writeTicketUnlocked(outcome.ticket, root);
+              ticketReleased = true;
+            } else {
+              ticketConflict = true;
+            }
+            return;
+          }
+
           const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
           const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
-          // ISS-778: strict ownership. Release only when this session owns the
+          // ISS-778: strict ownership for epochless legacy sessions, which have
+          // no proof to check. Release only when this session owns the
           // claimedBySession stamp, or when the ticket carries no claim material
           // at all (a bare inprogress ticket this session flipped before any
           // claim existed, nothing foreign to destroy). The old

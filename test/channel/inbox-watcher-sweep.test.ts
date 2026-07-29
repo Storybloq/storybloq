@@ -117,5 +117,24 @@ describe("inbox-watcher always-on sweep (ISS-741)", () => {
 
     expect(jsonFiles).toHaveLength(0);
     expect(mock.notifications.length).toBeGreaterThanOrEqual(1);
-  });
+    // ISS-901: the sweep itself is fake-timer advanced, so this test is not
+    // waiting 10s of wall clock. What remains real is the processInbox I/O
+    // poll above, whose deadline is 5s -- exactly equal to vitest's default
+    // testTimeout, leaving zero margin: the harness fires at the same instant
+    // the test's own deadline would, so the poll can never actually spend the
+    // budget it was given.
+    //
+    // Both paths measured. PASSING path (the sweep recovers the file, which is
+    // the path this test exists to exercise): 67/69/71/73/81ms under 12 CPU
+    // spinners (n=5, max 81ms).
+    //
+    // FAILING path, measured by mutation (skip the sweep advance so the file
+    // is never consumed): end-to-end 5034ms, ending in the real assertion
+    // "expected [Array(1)] to have a length of +0 but got 1". That 5034ms is
+    // the whole bug in one number -- it lands 34ms past the 5000ms default
+    // cap, so the harness killed this test immediately BEFORE its own
+    // assertion could fire, converting a precise failure into "Test timed out
+    // in 5000ms". 10s accommodates the measured 5.034s worst case with ~4.97s
+    // of scheduler margin. The global 5s cap is unchanged.
+  }, 10_000);
 });

@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startInboxWatcher, stopInboxWatcher } from "../../src/channel/inbox-watcher.js";
+import {
+  startInboxWatcher,
+  stopInboxWatcher,
+  _inboxWatcherTimersForTest,
+} from "../../src/channel/inbox-watcher.js";
 
 /** Minimal mock of McpServer with notification capture. */
 function createMockServer() {
@@ -240,6 +244,17 @@ describe("inbox-watcher", () => {
     // Call again -- should close first watcher, not leak
     await startInboxWatcher(root, mock as any);
 
+    // ISS-901: silence the always-on 10s sweep so ONLY the live FSWatcher can
+    // satisfy the assertions below. They check that the file was consumed and
+    // a notification landed, which the sweep can also accomplish -- so with a
+    // local timeout long enough to let the sweep run, a broken or leaked
+    // second watcher would still pass and this test would silently stop
+    // testing what its name claims. The old 5s harness cap was enforcing that
+    // by accident, not by design; disabling the sweep enforces it on purpose.
+    // Sweep recovery stays covered by inbox-watcher-sweep.test.ts.
+    const sweep = _inboxWatcherTimersForTest().sweep;
+    if (sweep) clearInterval(sweep);
+
     // Write an event after the second start to verify it's functional
     await writeEvent(inboxPath, "pause_session", {}, "2026-04-05T10:00:00.000Z");
 
@@ -247,9 +262,11 @@ describe("inbox-watcher", () => {
     // full-suite load (~50% failure rate observed at 1000ms). Poll until the
     // watcher consumes the file AND the notification lands (a poll landing in
     // the rename-to-.processing claim window sees zero .json files before the
-    // notification is sent), with a deadline generous enough to cover the
-    // always-on 10s sweep recovering a missed watcher event; the assertions
-    // below remain the real check.
+    // notification is sent). ISS-901: this deadline was originally sized to
+    // cover the always-on 10s sweep recovering a missed watcher event, but the
+    // sweep is now cleared above so it cannot stand in for the watcher; what
+    // the deadline buys today is a real assertion failure instead of a harness
+    // timeout when the watcher genuinely does not deliver.
     const deadline = Date.now() + 15_000;
     let jsonFiles: string[];
     do {
@@ -261,7 +278,26 @@ describe("inbox-watcher", () => {
     // The event should be processed by the second watcher
     expect(jsonFiles).toHaveLength(0);
     expect(mock.notifications.length).toBeGreaterThanOrEqual(1);
-  });
+    // ISS-901: this test polls to its own 15s deadline, but vitest's default
+    // testTimeout is 5s, so it was killed a third of the way into the
+    // tolerance it was deliberately given, and could not report a real
+    // assertion when it lost the race.
+    //
+    // Why 20s, both paths measured. PASSING path (watcher delivers):
+    // 158/159/160/165/212ms unloaded and 169/171/173/178/205ms under 12 CPU
+    // spinners (n=10, max 212ms) -- nothing slow remains on a green run.
+    //
+    // The budget is sized for the FAILING run, and that is the number that
+    // matters. Measured by mutation (close the watcher so it cannot deliver,
+    // sweep already cleared): end-to-end 15050ms, ending in the real assertion
+    // "expected [Array(1)] to have a length of +0 but got 1" rather than an
+    // opaque "Test timed out in 5000ms". So 15.05s is the measured worst case
+    // and 20s accommodates it with ~4.95s of scheduler margin. Under the old
+    // 5s cap this failure mode could not report itself at all.
+    //
+    // Not a blanket raise: the global 5s cap is unchanged and still applies
+    // everywhere else, so a genuinely slow operation stays visible.
+  }, 20_000);
 
   it("recovers stale .processing files on startup", async () => {
     await mkdir(inboxPath, { recursive: true });

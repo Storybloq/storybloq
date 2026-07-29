@@ -289,8 +289,16 @@ export function formatStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // `bus` stays conditional, and is NOT the same defect: it is an optional
+    // parameter of these exported formatters, not an answer withheld when
+    // empty. The CLI always supplies a summary -- busSummary returns one with
+    // `enabled: false` for a disabled project rather than undefined -- so its
+    // absence here means only that a caller omitted the argument.
     ...(bus ? { bus } : {}),
-    ...(limitStops.length > 0 ? { limitStops } : {}),
+    // ISS-893: always present, empty when there are none -- the same contract
+    // ISS-891 gave the session arrays, for the same reason. This was the last
+    // field in these two objects still using the omit-when-empty pattern.
+    limitStops,
   };
 
   if (format === "json") {
@@ -384,8 +392,16 @@ export function formatFederatedStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // `bus` stays conditional, and is NOT the same defect: it is an optional
+    // parameter of these exported formatters, not an answer withheld when
+    // empty. The CLI always supplies a summary -- busSummary returns one with
+    // `enabled: false` for a disabled project rather than undefined -- so its
+    // absence here means only that a caller omitted the argument.
     ...(bus ? { bus } : {}),
-    ...(limitStops.length > 0 ? { limitStops } : {}),
+    // ISS-893: always present, empty when there are none -- the same contract
+    // ISS-891 gave the session arrays, for the same reason. This was the last
+    // field in these two objects still using the omit-when-empty pattern.
+    limitStops,
   };
 
   if (format === "json") {

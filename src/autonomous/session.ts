@@ -22,6 +22,7 @@ import {
   type EventEntry,
 } from "./session-types.js";
 import { isContainedSessionDir } from "./session-selector.js";
+import { toPersistedBranchStrategy } from "./branch-strategy.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -185,6 +186,20 @@ export function readSessionResilient(dir: string): FullSessionState | null {
     return null;
   }
 
+  return parseSessionResilient(parsed, dir);
+}
+
+/**
+ * The parse half of readSessionResilient, split out so a caller that has
+ * already decoded state.json can validate that exact snapshot.
+ *
+ * ISS-902: readSessionDetailed inspects schemaVersion and then validates. If
+ * validation re-read the file, an atomic write landing between the two reads
+ * would let the fence judge one revision and the schema another, reporting a
+ * newer session as corrupt rather than as version-skewed. Both halves now see
+ * the same bytes.
+ */
+function parseSessionResilient(parsed: unknown, dir: string): FullSessionState | null {
   const strict = SessionStateSchema.safeParse(parsed);
   if (strict.success) return strict.data;
 
@@ -226,11 +241,31 @@ export function readSessionResilient(dir: string): FullSessionState | null {
   return retry.data;
 }
 
+
+/**
+ * ISS-902: the single ENCODE boundary, mirroring branch-strategy.ts's single
+ * decode boundary.
+ *
+ * Only the serialized bytes are downgraded to the legacy spelling; the object
+ * returned to callers stays canonical, so nothing in memory has to know that
+ * disk and RAM disagree. Doing this here rather than at each assignment site
+ * is what makes it total: every state.json write in the process goes through
+ * writeSessionSync, so no later code path can reintroduce `"current"` on disk.
+ */
+function toPersistedSessionState(state: FullSessionState): Record<string, unknown> {
+  const strategy = state.resolvedBranchStrategy;
+  if (strategy === undefined) return state as unknown as Record<string, unknown>;
+  return {
+    ...(state as unknown as Record<string, unknown>),
+    resolvedBranchStrategy: toPersistedBranchStrategy(strategy),
+  };
+}
+
 /** Write session state atomically (write tmp, rename). Increments revision. Returns the written state. */
 export function writeSessionSync(dir: string, state: FullSessionState): FullSessionState {
   const path = statePath(dir);
   const updated = { ...state, revision: state.revision + 1 };
-  const content = JSON.stringify(updated, null, 2) + "\n";
+  const content = JSON.stringify(toPersistedSessionState(updated), null, 2) + "\n";
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     writeFileSync(tmp, content, "utf-8");
@@ -481,17 +516,112 @@ export function findStaleSessions(root: string): ActiveSessionInfo[] {
 }
 
 /**
- * Find a specific session by ID.
+ * ISS-902: why a session lookup failed, not just that it did.
+ *
+ * Collapsing "no such directory" into the same null as "the file is there but
+ * this build cannot parse it" is what made the T-328 forward-compat break
+ * expensive: `status` listed the session as live while every guide call said
+ * `not found`, which reads as a wrong id or a cleaned-up session and sends you
+ * looking in the wrong place. The state was intact the whole time and only the
+ * reader was too old.
  */
-export function findSessionById(root: string, sessionId: string): ActiveSessionInfo | null {
-  const dir = sessionDir(root, sessionId);
-  if (!existsSync(dir)) return null;
+export type SessionLookupFailure =
+  | { readonly kind: "missing" }
+  | { readonly kind: "version-skew"; readonly writerVersion: number; readonly readerVersion: number }
+  | { readonly kind: "unreadable"; readonly reason: "unreadable-file" | "invalid-json" | "schema" };
+
+export type SessionLookup =
+  | { readonly kind: "found"; readonly info: ActiveSessionInfo }
+  | SessionLookupFailure;
+
+/** Human-facing explanation naming the cause and the remedy. */
+export function describeSessionLookupFailure(
+  sessionId: string,
+  failure: SessionLookupFailure,
+): string {
+  switch (failure.kind) {
+    case "missing":
+      return `Session ${sessionId} not found`;
+    case "version-skew":
+      return (
+        `Session ${sessionId} was written by a newer storybloq ` +
+        `(session schema v${failure.writerVersion}; this build reads v${failure.readerVersion}). ` +
+        `The session is intact and is NOT lost. Restart your AI client to reload the updated ` +
+        `MCP server, or upgrade storybloq (npm install -g @storybloq/storybloq@latest), then retry.`
+      );
+    case "unreadable":
+      return (
+        `Session ${sessionId} corrupt — state.json exists but could not be read ` +
+        `(${failure.reason}). Inspect it with 'storybloq session report ${sessionId}'.`
+      );
+  }
+}
+
+/**
+ * ISS-902: read a session, distinguishing the ways it can fail.
+ *
+ * The schemaVersion fence runs BEFORE schema parse, and deliberately fires
+ * only on a writer NEWER than this reader. That ordering is the whole point:
+ * once the version is checked first, a future field or enum widening surfaces
+ * as "restart or upgrade" instead of failing parse into a missing session.
+ * It cannot retroactively help readers already shipped without it, which is
+ * exactly why the widened value is also kept off disk (see
+ * toPersistedBranchStrategy) rather than relying on the fence alone.
+ */
+export function readSessionDetailed(dir: string): SessionLookup {
+  const path = statePath(dir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    return { kind: "unreadable", reason: "unreadable-file" };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: "unreadable", reason: "invalid-json" };
+  }
+
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const writerVersion = (parsed as Record<string, unknown>).schemaVersion;
+    if (typeof writerVersion === "number" && writerVersion > CURRENT_SESSION_SCHEMA_VERSION) {
+      return {
+        kind: "version-skew",
+        writerVersion,
+        readerVersion: CURRENT_SESSION_SCHEMA_VERSION,
+      };
+    }
+  }
+
   // ISS-556: hot MCP path (all report/resume/cancel handlers) — must tolerate
   // historical lensReviewHistory disposition corruption or the session
   // appears "not reachable via MCP" and autonomous mode cannot progress.
-  const state = readSessionResilient(dir);
-  if (!state) return null;
-  return { state, dir };
+  //
+  // Validates the snapshot already decoded above rather than re-reading, so
+  // the fence and the schema cannot disagree about which revision they saw.
+  const state = parseSessionResilient(parsed, dir);
+  if (!state) return { kind: "unreadable", reason: "schema" };
+  return { kind: "found", info: { state, dir } };
+}
+
+/** Find a specific session by ID, reporting why the lookup failed. */
+export function findSessionByIdDetailed(root: string, sessionId: string): SessionLookup {
+  const dir = sessionDir(root, sessionId);
+  if (!existsSync(dir)) return { kind: "missing" };
+  return readSessionDetailed(dir);
+}
+
+/**
+ * Find a specific session by ID.
+ *
+ * Retains the null-on-any-failure contract for the many callers that only
+ * branch on presence; use findSessionByIdDetailed where the reason matters.
+ */
+export function findSessionById(root: string, sessionId: string): ActiveSessionInfo | null {
+  const lookup = findSessionByIdDetailed(root, sessionId);
+  return lookup.kind === "found" ? lookup.info : null;
 }
 
 // ---------------------------------------------------------------------------

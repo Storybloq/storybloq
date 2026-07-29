@@ -20,9 +20,15 @@ import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
  *
  * Migration semantics being asserted (deliberately NOT byte-for-byte
  * immutability, which would contradict how the guide saves state): reading an
- * old file does not rewrite it, but once the session saves normally, persisting
- * the canonical "current" is correct. What must hold is that the MEANING is
- * preserved and that unrelated fields survive the round trip.
+ * old file does not rewrite it, and what must hold across a save is that the
+ * MEANING is preserved and that unrelated fields survive the round trip.
+ *
+ * ISS-902 amended which spelling that save may use. This file originally
+ * asserted that an ordinary save persists the canonical "current"; persisting
+ * it is what bricked in-flight sessions for every reader shipped before T-328,
+ * so the no-op strategy now persists the legacy "none" and normalizes back on
+ * read. The assertion below is that replacement, not a weakened version of the
+ * old one: canonical in memory, legacy on disk.
  */
 
 function run(cmd: string, cwd: string): void {
@@ -220,11 +226,15 @@ describe("T-328: a session persisted with the legacy value stays readable", () =
     expect(currentBranch(root)).toBe(branchBefore);
 
     // Read the RAW file, not readSession: the schema transform normalizes on
-    // read, so going through it would pass even if the canonical value were
-    // never written. The migration contract is that reads do not rewrite, but
-    // the next ordinary save persists the canonical spelling.
+    // read, so going through it would pass no matter which spelling was
+    // written. ISS-902: the next ordinary save must persist the LEGACY
+    // spelling, because that is the only value a pre-T-328 reader accepts.
     const persisted = JSON.parse(readFileSync(path, "utf-8"));
-    expect(persisted.resolvedBranchStrategy).toBe("current");
+    expect(persisted.resolvedBranchStrategy).toBe("none");
+    // ...and it must still round-trip to canonical in memory, so nothing above
+    // the encode boundary has to know disk and RAM disagree.
+    expect(readSession(join(root, ".story", "sessions", started.sessionId))!
+      .resolvedBranchStrategy).toBe("current");
     // And an unrelated field must survive that save untouched.
     expect(persisted.__sentinel).toBe("do-not-lose-me");
   });

@@ -24,6 +24,8 @@ import {
   findActiveSessionFull,
   findStaleSessions,
   findSessionById,
+  findSessionByIdDetailed,
+  describeSessionLookupFailure,
   sessionDir,
   withSessionLock,
   type SessionConfig,
@@ -1695,8 +1697,12 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   if (!args.sessionId) return guideError(new Error("sessionId is required for report action"));
   if (!args.report) return guideError(new Error("report field is required for report action"));
 
-  const info = findSessionById(root, args.sessionId);
-  if (!info) return guideError(new Error(`Session ${args.sessionId} not found`));
+  // ISS-902: name the cause (missing / version skew / corrupt), never a bare "not found".
+  const lookup = findSessionByIdDetailed(root, args.sessionId);
+  if (lookup.kind !== "found") {
+    return guideError(new Error(describeSessionLookupFailure(args.sessionId, lookup)));
+  }
+  const info = lookup.info;
 
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {
@@ -1790,8 +1796,13 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
 async function handleResume(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) return guideError(new Error("sessionId is required for resume"));
 
-  let info = findSessionById(root, args.sessionId);
-  if (!info) return guideError(new Error(`Session ${args.sessionId} not found`));
+  // ISS-902: a resume against a newer-schema session must say "restart the client",
+  // not "not found" — this is the exact path that stranded the T-328 session.
+  const resumeLookup = findSessionByIdDetailed(root, args.sessionId);
+  if (resumeLookup.kind !== "found") {
+    return guideError(new Error(describeSessionLookupFailure(args.sessionId, resumeLookup)));
+  }
+  let info = resumeLookup.info;
 
   // Recovery and takeover are valid only at the explicit COMPACT boundary.
   // Check before any mutation so a foreign caller cannot refresh the lease or
@@ -2365,8 +2376,12 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
 async function handlePreCompact(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) return guideError(new Error("sessionId is required for pre_compact"));
 
-  const info = findSessionById(root, args.sessionId);
-  if (!info) return guideError(new Error(`Session ${args.sessionId} not found`));
+  // ISS-902: name the cause (missing / version skew / corrupt), never a bare "not found".
+  const preCompactLookup = findSessionByIdDetailed(root, args.sessionId);
+  if (preCompactLookup.kind !== "found") {
+    return guideError(new Error(describeSessionLookupFailure(args.sessionId, preCompactLookup)));
+  }
+  const info = preCompactLookup.info;
 
   const adoption = adoptExpiredLease(
     root,
@@ -2443,8 +2458,12 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     args = { ...args, sessionId: active.state.sessionId };
   }
 
-  const info = findSessionById(root, args.sessionId!);
-  if (!info) return guideError(new Error(`Session ${args.sessionId} not found`));
+  // ISS-902: name the cause (missing / version skew / corrupt), never a bare "not found".
+  const cancelLookup = findSessionByIdDetailed(root, args.sessionId!);
+  if (cancelLookup.kind !== "found") {
+    return guideError(new Error(describeSessionLookupFailure(args.sessionId!, cancelLookup)));
+  }
+  const info = cancelLookup.info;
 
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {

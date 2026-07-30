@@ -387,12 +387,21 @@ describe("rendered scan-completeness contract (ISS-897)", () => {
     // ADMISSION-SCOPED, not survival-scoped. Two earlier drafts of this sentence
     // over-claimed in two different directions -- first that a record was always
     // classified (false with zero survivors), then that a non-empty payload's
-    // record was always classified (false when deduplication drops it). The
-    // scan ADMITS; only survivors are classified, and those are different steps.
+    // record was always REPORTED (false when deduplication drops it). The scan
+    // ADMITS; only survivors are reported, and those are different steps. Since
+    // ISS-914 a dropped participant IS classified, for the collision comparison
+    // only, so the distinction the doc must draw is admitted/reported rather
+    // than admitted/classified.
     expect(text).toContain(
       "For a non-empty payload produced by this build's scanner, the affected record was ADMITTED",
     );
-    expect(text).toContain("Only SURVIVING records are classified");
+    expect(text).toContain("Only SURVIVING records are REPORTED");
+    // ...and it must say what a dropped participant IS used for, or a reader
+    // reconciles the two statements by assuming it is discarded outright.
+    expect(text).toContain("only so the collision rules can attempt the comparison");
+    // ...and it must not promise a comparison that cannot happen: the
+    // survivorless outcome classifies the participant and then withholds.
+    expect(text).toContain("the comparison cannot be made and the collision withholds fail-closed");
     expect(text).toContain(
       "because `undetermined` is a non-omission category, NOT because every affected record was classified",
     );
@@ -437,19 +446,83 @@ describe("rendered scan-completeness contract (ISS-897)", () => {
     // POSITION -- a block rendered after the population rules is a block a
     // top-to-bottom reader has already walked past.
     const text = doc();
-    const collision = text.indexOf("### Second, collisions (`collision-withholds-aggregate`)");
+    // The parent heading is NEUTRAL since ISS-914. Naming it for the
+    // withholding rule put that policy in front of a top-down reader before
+    // either branch, which is the same misdirection this test guards against
+    // one level up.
+    const collision = text.indexOf("### Second, collisions");
     const population = text.indexOf("### Then, the rule for the population size");
     expect(collision, "collision rule section missing").toBeGreaterThan(-1);
     expect(collision).toBeLessThan(population);
 
-    expect(text).toContain(
+    // Both branches exist, and the WAIVER is rendered first. A global substring
+    // search would pass even if the waiver were unreachable, contradictory, or
+    // printed after the rule it modifies, so this is sliced and ordered.
+    const area = text.slice(collision, text.indexOf("### Also a dropped record"));
+    // Keyed on the SUBSECTION HEADINGS, not the bare rule ids. The waiver's own
+    // trigger cites `collision-withholds-aggregate` by name, so slicing on the
+    // id split the section inside the waiver and handed the block half text
+    // belonging to the waiver -- the same region-slice trap this file documents
+    // at the `section` helper.
+    const waiver = area.indexOf("#### First, the equivalence waiver");
+    const block = area.indexOf("#### Then, when the collision blocks");
+    expect(waiver, "equivalence waiver subsection missing").toBeGreaterThan(-1);
+    expect(block, "withholding subsection missing").toBeGreaterThan(-1);
+    // Both ids still appear under their own headings, so the headings are not
+    // labelling empty sections.
+    expect(area.slice(waiver, block)).toContain("`collision-equivalence-waiver`");
+    expect(area.slice(block)).toContain("`collision-withholds-aggregate`");
+    expect(waiver, "the waiver must be read BEFORE the rule it waives").toBeLessThan(block);
+
+    // Each branch states its own outcome, in its own half of the section.
+    const waiverHalf = area.slice(waiver, block);
+    const blockHalf = area.slice(block);
+    // The TRIGGERS must partition, not just the bodies. Before ISS-914's second
+    // review round both printed triggers matched an equivalent collision and
+    // only later body prose resolved it; reverting the blocking trigger alone
+    // would restore that overlap while every body assertion below still passed.
+    //
+    // Asserted against the `**Trigger:**` LINE, not the whole subsection: the
+    // withheld rule's body also states the waiver-declined condition, so a
+    // whole-subsection search would stay green with the trigger itself
+    // broadened back to the base condition -- exactly the contradiction these
+    // assertions exist to prevent.
+    const triggerLine = (half: string, label: string): string => {
+      const at = half.indexOf("**Trigger:**");
+      expect(at, `no trigger line in ${label}`).toBeGreaterThan(-1);
+      const end = half.indexOf("\n", at);
+      return end === -1 ? half.slice(at) : half.slice(at, end);
+    };
+    const waiverTrigger = triggerLine(waiverHalf, "the waiver");
+    const blockTrigger = triggerLine(blockHalf, "the blocking rule");
+
+    expect(waiverTrigger, "the waiver must own the base collision condition").toContain(
+      "this rule owns it: every distinct-directory collision enters here first",
+    );
+    expect(blockTrigger, "the blocking trigger must require the waiver to have declined").toContain(
+      "the base collision condition stated in `collision-equivalence-waiver` above held, AND that rule did NOT waive it",
+    );
+    expect(blockTrigger, "the blocking trigger must exclude an equivalent collision outright").toContain(
+      "An equivalent collision does not satisfy this trigger and this rule does not run for it",
+    );
+
+    expect(waiverHalf).toContain("WAIVE the withholding and continue to the population rule");
+    expect(waiverHalf, "the waiver must name the exact fields it compares").toContain(
+      "`relationship`, `action`, `resumable`, `resumePermittedByProse`, `requiresTakeover`, `recoveryRequiresExplicitRequest`, `bindsOwner`",
+    );
+    // Waiving the block must never read as waiving the report.
+    expect(waiverHalf).toContain("Waiving the block does NOT waive the report");
+
+    expect(blockHalf).toContain(
       "for a surviving population of zero or one, `overallAction` is `unverifiable`",
     );
-    expect(text).toContain("for a population of more than one, `overallAction` stays `null`");
-    expect(text).toContain("Do NOT return the survivor's own action as the project-wide answer");
-    // Fires on ANY collision, so a same-owner duplicate cannot be waived by a
-    // reader who judges it harmless.
-    expect(text).toContain("It fires on ANY collision");
+    expect(blockHalf).toContain("for a population of more than one, `overallAction` stays `null`");
+    // Still present, but now SCOPED: it is the non-waived branch's instruction,
+    // and it must sit inside that branch rather than over the whole section.
+    expect(blockHalf).toContain("Do NOT return the survivor's own action as the project-wide answer");
+    expect(blockHalf).toContain("APPLIES ONLY to a collision the equivalence waiver above did NOT waive");
+    // The old unconditional claim must be GONE, not merely outvoted.
+    expect(text, "the pre-ISS-914 unconditional claim survived").not.toContain("It fires on ANY collision");
 
     // And it is written for N directories, not two. A reader who cleans up one
     // stale copy of a three-way collision gets blocked again by a rule that
@@ -584,11 +657,25 @@ describe("rendered scan-completeness contract (ISS-897)", () => {
     // place a reader looks for the collision rule -- nor imply there isn't one.
     const text = doc();
     expect(text).toContain("That is a statement about the SCAN, not a clean bill of health for the record");
-    // The row must say WHY a collision can be `complete` and still blocked, and
-    // must name the rule that blocks it -- an earlier draft said the collision
-    // "reached classification", which is the opposite of what dedup does to it.
-    expect(text).toContain("deduplication drops at least one before classification");
-    expect(text).toContain("by `collision-withholds-aggregate` rather than by this rule");
+    // The row must say WHY a collision stays `complete`, and must hand the
+    // reader to the COLLISION rules rather than answering for them. An earlier
+    // draft said the collision "reached classification", the opposite of what
+    // dedup did to it; a later one said it was "still withheld, by
+    // `collision-withholds-aggregate`", which since ISS-914 is false for an
+    // equivalent collision and would let a top-down reader treat `complete`
+    // plus any collision diagnostic as an unconditional block.
+    expect(text).toContain("deduplication drops at least one from the REPORTED population");
+    expect(text).toContain("decided on a separate axis by the ordered collision rules");
+    // Dropped is not the same as unclassified, and the row must say so or a
+    // reader skips the comparison the waiver requires. All three populations
+    // named, because the distinction only works as a set.
+    expect(text).toContain("an admitted survivor is classified AND reported");
+    expect(text).toContain("classified but NOT reported, purely so the collision rules can attempt the comparison");
+    expect(text).toContain("only an identical `(sessionId, sourceDir)` repeat is never classified at all");
+    // BOTH outcomes named, so the row cannot be read as either one alone.
+    expect(text).toContain("an EQUIVALENT collision is waived by `collision-equivalence-waiver`");
+    expect(text).toContain("non-equivalent or survivorless one is withheld by `collision-withholds-aggregate`");
+    expect(text).toContain("Do not read a collision diagnostic as an unconditional block");
     expect(text).toContain("Do not read `complete` as permission to act on a collided population");
   });
 

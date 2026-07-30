@@ -155,6 +155,16 @@ interface Fixture {
     remedy: string;
     provenance: string;
   };
+  /** ISS-914: evaluated BEFORE the withholding rule, and rendered before it. */
+  collisionWaiverRule: {
+    id: string;
+    trigger: string;
+    rule: string;
+    policySignatureFields: readonly string[];
+    whyTheseFields: string;
+    whyNotMoreFields: string;
+    provenance: string;
+  };
   /** ISS-914: the third axis. Applies when one id occurs under two or more DISTINCT directories. */
   collisionRule: {
     id: string;
@@ -427,13 +437,33 @@ ${fixture.scanCompletenessRule.kindCategoryTable.examples
 
 **When completeness is \`unknown\`:** ${fixture.scanCompletenessRule.unknownRemedy}
 
-### Second, collisions (\`${fixture.collisionRule.id}\`)
+### Second, collisions
 
 **Derive this SECOND, still before any population rule.** Like completeness, it
 decides whether the population rules may speak at all, and it is not expressible
 as an action. It reads the outcome of \`Deduplicate before classifying\`, which is
 rendered further down this file for the same reason this whole section is placed
 early: reading order and application order are not the same here.
+
+A collision has TWO branches and they are evaluated in the order printed. Read
+the waiver first: applying the withholding rule while standing in the branch
+that waives it is the failure this ordering exists to prevent.
+
+#### First, the equivalence waiver (\`${fixture.collisionWaiverRule.id}\`)
+
+**Trigger:** ${fixture.collisionWaiverRule.trigger}
+
+${fixture.collisionWaiverRule.rule}
+
+**The policy signature is exactly these fields:** ${fixture.collisionWaiverRule.policySignatureFields.map((f) => `\`${f}\``).join(", ")}.
+
+${fixture.collisionWaiverRule.whyTheseFields}
+
+${fixture.collisionWaiverRule.whyNotMoreFields}
+
+> Provenance: ${fixture.collisionWaiverRule.provenance}
+
+#### Then, when the collision blocks (\`${fixture.collisionRule.id}\`)
 
 **Trigger:** ${fixture.collisionRule.trigger}
 

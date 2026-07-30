@@ -318,7 +318,7 @@ export interface GuardVerdict {
    * status payload in Mode A -- so a `sourceDir` here can be `../other-project`,
    * an absolute path, or a name with no directory behind it at all. What this
    * field establishes is that TWO RECORDS IN THAT RESULT claimed one session id
-   * and one was dropped before classification. It does not establish that either
+   * and one was dropped from the reported population. It does not establish that either
    * string names a real, contained session directory.
    *
    * So it is authoritative about the EVENT, not about the filesystem. Before
@@ -347,9 +347,16 @@ export interface GuardVerdict {
 export interface SessionCollision {
   /** The embedded id both directories carried, raw. */
   readonly sessionId: string;
-  /** The `sourceDir` that survived to be classified, unmodified. */
+  /** The `sourceDir` that survived to be REPORTED, unmodified. */
   readonly kept: string;
-  /** The `sourceDir` dropped before classification, raw. */
+  /**
+   * The `sourceDir` dropped from the reported population, raw.
+   *
+   * "Dropped" means unreported, not unexamined: since ISS-914 this record is
+   * still classified, solely so its policy signature can be compared against
+   * the surviving verdict for its id where one exists. Where none does, the
+   * comparison cannot be made and the collision withholds fail-closed.
+   */
   readonly dropped: string;
 }
 
@@ -376,6 +383,69 @@ const NONE: Capabilities = {
 
 function caps(overrides: Partial<Capabilities>): Capabilities {
   return { ...NONE, ...overrides };
+}
+
+/**
+ * The fields that decide whether two verdicts for the SAME session id are
+ * interchangeable as the project-wide answer (ISS-914).
+ *
+ * `relationship` and `action` are what the aggregate SAYS. The capability fields
+ * are what the caller may DO, and the aggregate exists to answer exactly that,
+ * so leaving them out is not a simplification. Measured: a foreign owner with a
+ * live lease classifies as `foreign-live` / `monitor-only` both when COMPACT and
+ * when not, while all five capabilities invert between the two. One of those
+ * records is recoverable by an explicit owner-gone request and the other offers
+ * no recovery path at all, so a rule reading only the first two fields would
+ * treat them as the same answer.
+ *
+ * Deliberately EXCLUDED: `state`, `ticketId`, `mode`, `sourceDir`, `ownerTask`.
+ * They can differ without changing what the caller may do, and blocking on them
+ * would stop an operator over a difference that costs them nothing. The
+ * collision is still reported in every case; only the AGGREGATE is at stake
+ * here.
+ *
+ * The two assertions below are set equality in both directions. A membership
+ * constraint alone (`readonly (keyof SessionVerdict)[]`) rejects a misspelled
+ * key but ACCEPTS a missing one, so adding a field to `Capabilities` and
+ * forgetting it here would compile and silently widen the waiver.
+ */
+type PolicySignatureField = "relationship" | "action" | keyof Capabilities;
+
+export const POLICY_SIGNATURE_FIELDS = [
+  "relationship",
+  "action",
+  "resumable",
+  "resumePermittedByProse",
+  "requiresTakeover",
+  "recoveryRequiresExplicitRequest",
+  "bindsOwner",
+] as const satisfies readonly (PolicySignatureField & keyof SessionVerdict)[];
+
+type _CoversEveryPolicyField =
+  PolicySignatureField extends (typeof POLICY_SIGNATURE_FIELDS)[number] ? true : never;
+type _AddsNoOtherPolicyField =
+  (typeof POLICY_SIGNATURE_FIELDS)[number] extends PolicySignatureField ? true : never;
+const _coversEveryPolicyField: _CoversEveryPolicyField = true;
+const _addsNoOtherPolicyField: _AddsNoOtherPolicyField = true;
+void _coversEveryPolicyField;
+void _addsNoOtherPolicyField;
+
+/**
+ * Does this collision withhold the aggregate? (ISS-914)
+ *
+ * Pure and exported because the `!survivor` arm is UNREACHABLE through
+ * `classifySessionGuard` -- a dropped record's id was `seen`, so its kept record
+ * is in `deduped`, and the verdict loop produces a verdict for every deduped
+ * entry unconditionally (the gates change a verdict's ACTION, they do not remove
+ * it from the population). It is kept as the fail-closed default and is covered
+ * by a direct unit test rather than being claimed as classifier-reachable.
+ */
+export function collisionBlocksAggregate(
+  dropped: SessionVerdict,
+  survivor: SessionVerdict | undefined,
+): boolean {
+  if (!survivor) return true;
+  return POLICY_SIGNATURE_FIELDS.some((field) => dropped[field] !== survivor[field]);
 }
 
 /** Display order only. Nothing reads this to choose a winner (see `aggregate`). */
@@ -1230,6 +1300,20 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
    */
   const droppedDuplicates: { sessionId: string; kept: string; dropped: string }[] = [];
   /**
+   * The dropped collision participants themselves, so they can be CLASSIFIED and
+   * compared against the surviving verdict for their id, where one exists
+   * (ISS-914).
+   *
+   * Separate from `droppedDuplicates` because that array is the public
+   * `collisions` field and its shape is a contract. This one never leaves the
+   * function.
+   *
+   * Repeats (the same `sessionId` AND the same `sourceDir` arriving twice) are
+   * deliberately NOT recorded here: there is no second directory to compare
+   * against, so they keep withholding the aggregate exactly as before.
+   */
+  const droppedRecords: { summary: ActiveSessionSummary; expectCompact: boolean }[] = [];
+  /**
    * The SAME directory arriving twice, which is not a collision at all.
    *
    * Dedup drops the second either way, so both shapes look identical from the
@@ -1305,6 +1389,7 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
         kept,
         dropped: entry.summary.sourceDir,
       });
+      droppedRecords.push({ summary: entry.summary, expectCompact: entry.expectCompact });
       // Both directories, and WHICH is which. A note naming only the dropped one
       // tells an operator a collision exists without telling them what survived;
       // naming only the survivor loses the other participant entirely.
@@ -1370,13 +1455,81 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     deduped.push(entry);
   }
 
-  const verdicts: SessionVerdict[] = [];
-  for (const { summary, expectCompact } of deduped) {
-    const c = expectCompact
+  // ISS-914: ONE dispatch, used for survivors AND for dropped collision
+  // participants. Two copies would let the two populations classify by different
+  // rules, which is exactly the comparison this issue rests on.
+  const classifyEntry = (summary: ActiveSessionSummary, expectCompact: boolean): Classification =>
+    expectCompact
       ? indeterminateState(summary, true) ?? classifyResumable(summary, identityAvailable)
       : indeterminateState(summary, false) ?? classifyLive(summary, caller);
+
+  const verdicts: SessionVerdict[] = [];
+  for (const { summary, expectCompact } of deduped) {
+    const c = classifyEntry(summary, expectCompact);
     if (c.note) notes.push(c.note);
     verdicts.push(toVerdict(summary, c, expectCompact));
+  }
+
+  /**
+   * Classify the DROPPED collision participants and partition the collisions
+   * three ways by the outcome of that comparison: match, mismatch, or no
+   * survivor to compare against at all (ISS-914).
+   *
+   * A collision withholds the aggregate when a dropped participant MISMATCHES
+   * its survivor on the policy signature, or when there is NO survivor to
+   * compare it against. Only a matched comparison is waived. The two blocking
+   * cases are kept apart because they block for different reasons and the
+   * rationale has to say which.
+   *
+   * A waived collision is still REPORTED everywhere it was before --
+   * `collisions`, `diagnostics`, the transcription notes and the rationale --
+   * because waiving the block is not waiving the report.
+   *
+   * Cost is proportional to collisions, not to the population: a record that was
+   * never dropped needs no comparison, so a clean scan pays nothing.
+   *
+   * Note ORDER is deliberate and preserves today's structure: repeat and
+   * collision notes during the dedup loop, then survivor classification notes,
+   * then dropped-participant notes in dropped-record order. That is NOT the
+   * order a classify-before-deduplicate pipeline would produce, so the claim
+   * this pass makes is about VERDICTS, which are order-independent because the
+   * classifiers are pure, and not about note sequence.
+   */
+  const survivorById = new Map(verdicts.map((v) => [v.sessionId, v]));
+  // THREE outcomes, not two. Both of the first two withhold, but they withhold
+  // for different reasons and the rationale has to say which: "disagrees with
+  // its survivor" is false when there is no survivor, and that is precisely the
+  // zero-verdict branch's situation.
+  const mismatchedCollisions: SessionVerdict[] = [];
+  const survivorlessCollisions: SessionVerdict[] = [];
+  const waivedCollisions: SessionVerdict[] = [];
+  let droppedNotes = 0;
+  for (const rec of droppedRecords) {
+    const c = classifyEntry(rec.summary, rec.expectCompact);
+    const dropped = toVerdict(rec.summary, c, rec.expectCompact);
+    const survivor = survivorById.get(dropped.sessionId);
+    // The predicate stays the single decision point; `survivor` only labels WHY.
+    if (collisionBlocksAggregate(dropped, survivor)) {
+      (survivor ? mismatchedCollisions : survivorlessCollisions).push(dropped);
+    } else {
+      waivedCollisions.push(dropped);
+    }
+    // The dropped record's own note is RETAINED, prefixed to say the record is
+    // not among the reported sessions. Measured: with identity unavailable a
+    // foreign COMPACT record emits the U2 note while the non-COMPACT record at
+    // the SAME relationship and action emits none, so the dropped record can be
+    // the only carrier of it. Suppressing it would be the one way this pass is
+    // observably different from classifying before deduplicating.
+    //
+    // Bounded like the collision notes above, and for the same reason: the
+    // populations are caller-supplied.
+    if (c.note && ++droppedNotes <= MAX_PER_ENTRY_NOTES) {
+      notes.push(
+        `Dropped collision participant ${proseLabel(dropped.sourceDir)} (session id ` +
+        `${proseLabel(dropped.sessionId)}) is NOT reported among the sessions above, and its ` +
+        `own classification carries this: ${c.note}`,
+      );
+    }
   }
 
   // Presentation only. Sorting first does not make the first one authoritative.
@@ -1511,12 +1664,30 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
    * population on disk. `unverifiable` means exactly that -- stop, do not guess,
    * go look.
    *
-   * It fires on ANY collision, not only a conflicting one. Deciding whether an
-   * agreeing-owner collision can be waived requires classifying the dropped
-   * record too, which means dedup could no longer discard before classification;
-   * that restructuring is ISS-914. Until then the guard fails closed, which is
-   * the direction an ownership guard is allowed to be wrong in.
+   * It no longer fires on ANY collision. The dropped participants are now
+   * classified and compared, where a survivor exists, against it on the POLICY
+   * SIGNATURE
+   * (`POLICY_SIGNATURE_FIELDS`: relationship, action, and the five capability
+   * fields). A collision where every dropped record matches its survivor changes
+   * no answer the aggregate can give, so it is WAIVED and the survivor's own
+   * action stands. A collision where any dropped record disagrees, or where no
+   * survivor exists to compare against, still withholds exactly as before.
+   *
+   * Waiving the block is not waiving the report. An agreeing collision is still
+   * carried in `collisions`, in the transcription notes, and in the rationale
+   * through `waivedCollisionClause`.
    */
+  /**
+   * Name a set of dropped participants by directory, bounded like every other
+   * caller-supplied list in this file. `collisions` still carries the raw,
+   * unsanitized names; these are for prose only.
+   */
+  const collisionGroup = (group: readonly SessionVerdict[]): string =>
+    boundedList(
+      group.map((v) => `${proseLabel(v.sessionId)} (dropped ${proseLabel(v.sourceDir)})`),
+      { separator: "; ", noun: "collisions" },
+    );
+
   const collisionRationale = (): string => {
     // Plural-neutral throughout. One session id can be embedded in any number of
     // directories, and several ids can collide at once, so "the other" and "the
@@ -1535,9 +1706,43 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     );
     return (
       `${ids.size === 1 ? "A session id appears" : `${ids.size} session ids appear`} under more than one directory (${detail}). ` +
-      `Deduplication kept one record per id and dropped ${droppedDuplicates.length === 1 ? "the other" : "the others"} BEFORE classification, ` +
-      "so what was dropped -- which may be a live session belonging to another task -- contributed nothing to this result. The aggregate is " +
-      "withheld rather than computed from a collapsed population (ISS-914). The names above are SANITIZED for display, so they are " +
+      `Deduplication kept one record per id and dropped ${droppedDuplicates.length === 1 ? "the other" : "the others"}. ` +
+      // ISS-914: the dropped records ARE classified now, so the old wording
+      // ("dropped BEFORE classification ... contributed nothing") would be
+      // false. What they contribute is the comparison below.
+      //
+      // The consequence is stated WITHOUT claiming causation, because this
+      // sentence also renders in the more-than-one-survivor branch, where the
+      // aggregate is already `null` for the population reason and a collision
+      // changes nothing about that.
+      // "attempted", not "compared": the survivorless group below reports that
+      // no comparison was possible, and a common sentence asserting one had
+      // happened would contradict it in exactly that branch.
+      "Every dropped record was then classified and a comparison against its survivor attempted, on the policy signature (relationship, " +
+      "action, and the five capability fields). " +
+      // Each outcome is NAMED with the directories it applies to. Counts alone
+      // leave an operator unable to tell which dropped participant blocked when
+      // several ids collide at once, which is the whole reason they are told.
+      [
+        mismatchedCollisions.length > 0
+          ? `${collisionGroup(mismatchedCollisions)} ${mismatchedCollisions.length === 1 ? "disagrees" : "disagree"} with ` +
+            `${mismatchedCollisions.length === 1 ? "its survivor" : "their survivors"} about what the caller may do, and may be a live ` +
+            "session belonging to another task, so a project-wide answer cannot be computed from the survivors alone (ISS-914)."
+          : null,
+        survivorlessCollisions.length > 0
+          ? `${collisionGroup(survivorlessCollisions)} could not be compared at all: no surviving verdict was produced for ` +
+            `${survivorlessCollisions.length === 1 ? "that session id" : "those session ids"}, so equivalence cannot be established and ` +
+            "the collision is not waived (ISS-914)."
+          : null,
+        waivedCollisions.length > 0
+          ? `${collisionGroup(waivedCollisions)} matched ${waivedCollisions.length === 1 ? "its survivor" : "their survivors"} on the ` +
+            `policy signature and ${waivedCollisions.length === 1 ? "withholds" : "withhold"} nothing on ` +
+            `${waivedCollisions.length === 1 ? "its" : "their"} own; ` +
+            `${waivedCollisions.length === 1 ? "it is" : "they are"} named here so a waived collision is not lost from a result that ` +
+            "blocks for a different one."
+          : null,
+      ].filter((part): part is string => part !== null).join(" ") + " " +
+      "The names above are SANITIZED for display, so they are " +
       "not the unmodified names, and nothing may be deleted on the strength of this sentence: two distinct directory names can render " +
       "identically here. `collisions` on this verdict carries the raw names, derived from this deduplication -- and each still has to " +
       `pass the same checks before it is safe even to OPEN: ${CONTAINMENT_CHECKS}. ` +
@@ -1550,11 +1755,39 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
   };
 
   /**
+   * A collision that was WAIVED, reported so the waiver is never silent (ISS-914).
+   *
+   * Keyed on "a collision happened and none of them block", so it fires exactly
+   * where `collisionRationale` no longer does. It is emitted in BOTH one-verdict
+   * paths, not only the permissive one: when an incomplete scan, a repeated
+   * entry, unknown ownership or an unsupported version independently forces
+   * `unverifiable`, `collapsed` is false and the collision would otherwise
+   * vanish from the one field a reader looks at first.
+   */
+  const waivedCollisionClause = (): string => {
+    const ids = new Set(waivedCollisions.map((v) => v.sessionId));
+    const detail = boundedList(
+      droppedDuplicates.map((d) => `${proseLabel(d.sessionId)}: kept ${proseLabel(d.kept)}, dropped ${proseLabel(d.dropped)}`),
+      { separator: "; ", noun: "collisions" },
+    );
+    return (
+      `${ids.size === 1 ? "A session id appeared" : `${ids.size} session ids appeared`} under more than one directory (${detail}), ` +
+      "and deduplication kept one record per id. Every dropped record was classified and matched its survivor on the policy signature " +
+      "(relationship, action, and the five capability fields), so it could not have changed the answer above and the aggregate is NOT " +
+      "withheld for it (ISS-914). The collision is still real: the records may differ in ticket or workflow state, and only the survivor " +
+      "is reported among the sessions. `collisions` on this verdict carries the raw directory names, which these sanitized ones are not. " +
+      "This waiver authorizes no deletion."
+    );
+  };
+
+  /**
    * The same directory reported twice, which withholds the aggregate for a
    * DIFFERENT reason and must not borrow the collision remedy.
    *
-   * The collapse is the same (a record was dropped before classification) but
-   * the cause is a malformed payload rather than two directories on disk, and
+   * The collapse looks similar but is NOT the same: a repeat is dropped and
+   * never classified, because there is no second directory to compare it
+   * against, so the ISS-914 equivalence waiver can never reach it. The cause is
+   * a malformed payload rather than two directories on disk, and
    * the collision remedy would send an operator to compare against a copy that
    * does not exist. Reported separately, alongside a collision when both apply.
    */
@@ -1721,7 +1954,7 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
           "field meanings are undetermined -- and the project-wide answer is withheld regardless."
         : null,
       deduplicated.length > 0
-        ? `${namedDirectories(deduplicated)} ${deduplicated.length === 1 ? "was" : "were"} dropped by deduplication before classification, so ${deduplicated.length === 1 ? "it is" : "they are"} not among the sessions above.`
+        ? `${namedDirectories(deduplicated)} ${deduplicated.length === 1 ? "was" : "were"} dropped by deduplication, so ${deduplicated.length === 1 ? "it is" : "they are"} not among the sessions above.`
         : null,
       unaccounted.length > 0
         ? `${namedDirectories(unaccounted)} ${unaccounted.length === 1 ? "matches" : "match"} neither a reported session nor a dropped duplicate on \`sessionId\` and \`sourceDir\` together. ` +
@@ -1849,12 +2082,14 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     const clean = scanCompleteness === "complete";
     // A collision blocks HERE too, and the zero row is the one where getting it
     // wrong is worst. `free` is the most permissive answer the guard has, and
-    // "no session is running" asserted over a population that dedup collapsed is
-    // a claim about records that were never classified: the survivor could have
-    // been eliminated by a gate while the record dropped beside it was a live
-    // foreign session. An empty result is not evidence of an empty project when
-    // the scan's own bookkeeping says entries were discarded.
-    const collapsed = droppedDuplicates.length > 0;
+    // "no session is running" asserted over a population that dedup collapsed
+    // would be a claim the surviving population cannot support.
+    //
+    // The ISS-914 waiver cannot reach this row, and that falls out of the rule
+    // rather than needing a special case: with no verdicts there is no survivor
+    // to compare a dropped record against, so `collisionBlocksAggregate` fails
+    // closed for every one of them and this stays exactly as strict as before.
+    const collapsed = mismatchedCollisions.length + survivorlessCollisions.length > 0;
     // A repeated entry blocks HERE too, and for the same reason as a collision:
     // a record was dropped before classification, so the emptiness is not
     // evidence of an empty project. Kept separate so the message does not tell
@@ -1883,10 +2118,14 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
           : [
               clean ? null : incompleteRationale(),
               collapsed
-                ? `${collisionRationale()} No session produced a verdict, but that is not evidence that none is running: the dropped record was never classified.`
+                // The "no survivor to compare against" half is now stated by
+                // `collisionRationale` itself, per dropped participant, so this
+                // suffix carries only what that sentence does not: what the
+                // emptiness may NOT be read as.
+                ? `${collisionRationale()} The emptiness is therefore not evidence that no session is running.`
                 : null,
               repeated
-                ? `${repeatedRationale()} No session produced a verdict, but that is not evidence that none is running: the dropped record was never classified.`
+                ? `${repeatedRationale()} No session produced a verdict, but that is not evidence that none is running: the repeat was dropped and never classified.`
                 : null,
               // NOT `ownershipRationale()`. That sentence says the affected
               // sessions are reported above, which is true for every population
@@ -1917,7 +2156,18 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
   if (verdicts.length === 1) {
     const only = verdicts[0]!;
     const clean = scanCompleteness === "complete";
-    const collapsed = droppedDuplicates.length > 0;
+    // ISS-914: a collision withholds here when a dropped participant mismatches
+    // its survivor on the policy signature, OR when no survivor exists to
+    // compare against (the fail-closed case, unreachable through this function
+    // and kept anyway). A matched comparison changes no answer this branch can
+    // give and is still reported through `waivedCollisionClause` below.
+    const collapsed = mismatchedCollisions.length + survivorlessCollisions.length > 0;
+    // A collision happened and NONE of them block. Deliberately not
+    // `waivedCollisions.length > 0`: with one waived and one blocking,
+    // `collisionRationale` already reports both, and adding this clause too
+    // would say the aggregate is not withheld when it is.
+    const waived = droppedDuplicates.length > 0
+      && mismatchedCollisions.length + survivorlessCollisions.length === 0;
     const repeated = repeatedEntries.length > 0;
     const ownerUnknown = ownershipUndetermined.length > 0;
     const versionUnknown = versionUnsupported.length > 0;
@@ -1941,10 +2191,16 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
         clean && !collapsed && !repeated && !ownerUnknown && !versionUnknown ? only.action : "unverifiable",
       overallRationale:
         clean && !collapsed && !repeated && !ownerUnknown && !versionUnknown
-          ? only.rationale
+          // The permissive path. A waived collision is appended rather than
+          // omitted: the aggregate is the survivor's, and the reader is still
+          // told a record was dropped to get there.
+          ? waived ? `${only.rationale} ${waivedCollisionClause()}` : only.rationale
           : [
               clean ? null : incompleteRationale(),
               collapsed ? collisionRationale() : null,
+              // The withheld path. Without this, an agreeing collision would
+              // disappear whenever an INDEPENDENT blocker forced `unverifiable`.
+              waived ? waivedCollisionClause() : null,
               repeated ? repeatedRationale() : null,
               ownerUnknown ? ownershipRationale() : null,
               versionUnknown ? versionRationale() : null,

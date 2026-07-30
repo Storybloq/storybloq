@@ -6,8 +6,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   classifySessionGuard,
+  collisionBlocksAggregate,
   completenessFromDiagnostics,
   evaluateSessionGuard,
+  POLICY_SIGNATURE_FIELDS,
   PRE_OWNERSHIP_GATES,
   type GuardAction,
   type GuardVerdict,
@@ -745,13 +747,21 @@ describe("aggregation", () => {
       // The RECORD's own verdict stands -- it is correct for the record that was
       // observed, and the caller still needs to know what was found.
       expect(v.sessions[0]?.action).toBe("continue");
-      // The AGGREGATE does not. Deduplication discarded a record before it was
-      // ever classified, so a project-wide answer computed from the survivor
-      // alone would be speaking for a population that is not the one on disk
-      // (ISS-914). This fires even here, where both records share an owner:
-      // waiving the agreeing case needs the dropped record classified too, and
-      // dedup discards before classification.
-      expect(v.overallAction).toBe("unverifiable");
+      // The AGGREGATE now stands too, and this is the expectation ISS-914
+      // changed. The dropped record is classified and compared against the
+      // survivor on the policy signature; here both records name the same owner
+      // and the same state, so the signatures match, the dropped record could
+      // not have changed the answer, and withholding would have stopped the
+      // operator over a difference that does not exist.
+      //
+      // A collision whose records DISAGREE still withholds, unchanged: see the
+      // `duplicate sessionId with conflicting owners (ISS-914)` block below.
+      expect(v.overallAction).toBe("continue");
+      // Waiving the BLOCK is not waiving the REPORT. All three carriers still
+      // name the collision.
+      expect(v.collisions).toHaveLength(1);
+      expect(v.transcriptionNotes.join(" ")).toContain("kept aaa, dropped zzz");
+      expect(v.overallRationale).toContain("matched its survivor on the policy signature");
     });
 
     it("deduplicates across the two arrays, not only within one", () => {
@@ -1886,27 +1896,50 @@ describe("aggregate: population count x scan completeness (ISS-897)", () => {
      * change breaks HERE rather than in production.
      */
     it("cannot produce zero verdicts while a collision was recorded", () => {
-      const shapes: ActiveSessionSummary[][] = [
-        [collided(caller.task!.id, "aaa"), collided("other", "bbb")],
-        [
-          { ...collided(caller.task!.id, "aaa"), leaseState: "missing" },
-          { ...collided("other", "bbb"), leaseState: "missing" },
-        ],
-        [
-          { ...collided(caller.task!.id, "aaa"), state: "NOT_A_STATE" },
-          { ...collided("other", "bbb"), state: "NOT_A_STATE" },
-        ],
-        [
-          { ...collided(caller.task!.id, "aaa"), ownerTask: null },
-          { ...collided("other", "bbb"), ownerTask: null },
-        ],
+      // Each shape carries its MEASURED aggregate, because ISS-914 made that
+      // answer shape-dependent while the invariant under test (a collision can
+      // never yield zero verdicts) stayed independent of it. Asserting a flat
+      // `unverifiable` would now be asserting the old policy in a test whose
+      // subject is the population count.
+      const shapes: { records: ActiveSessionSummary[]; overall: string; why: string }[] = [
+        {
+          records: [collided(caller.task!.id, "aaa"), collided("other", "bbb")],
+          overall: "unverifiable",
+          why: "survivor is same-owner/continue, dropped is foreign-live/monitor-only: the signatures disagree, so it blocks",
+        },
+        {
+          records: [
+            { ...collided(caller.task!.id, "aaa"), leaseState: "missing" },
+            { ...collided("other", "bbb"), leaseState: "missing" },
+          ],
+          overall: "unverifiable",
+          why: "both gated to indeterminate/unverifiable, so the collision is WAIVED and this is the survivor's own action, not the block",
+        },
+        {
+          records: [
+            { ...collided(caller.task!.id, "aaa"), state: "NOT_A_STATE" },
+            { ...collided("other", "bbb"), state: "NOT_A_STATE" },
+          ],
+          overall: "unverifiable",
+          why: "same as above: waived, and the survivor's own action happens to be unverifiable",
+        },
+        {
+          records: [
+            { ...collided(caller.task!.id, "aaa"), ownerTask: null },
+            { ...collided("other", "bbb"), ownerTask: null },
+          ],
+          overall: "monitor-only",
+          why: "both unowned-legacy/monitor-only: waived, and here the waiver is VISIBLE because the survivor's action is not unverifiable",
+        },
       ];
-      for (const activeSessions of shapes) {
-        const v = classifySessionGuard({ activeSessions, resumableSessions: [] }, caller);
-        expect(v.sessions.length, `zero verdicts for ${JSON.stringify(activeSessions[0])}`).toBeGreaterThan(0);
-        // And whatever the gates did to the action, the collision still blocks.
-        expect(v.overallAction).toBe("unverifiable");
-        expect(v.overallRationale).toContain("ISS-914");
+      for (const { records, overall, why } of shapes) {
+        const v = classifySessionGuard({ activeSessions: records, resumableSessions: [] }, caller);
+        // The invariant this test exists for, unchanged by ISS-914.
+        expect(v.sessions.length, `zero verdicts for ${JSON.stringify(records[0])}`).toBeGreaterThan(0);
+        expect(v.overallAction, why).toBe(overall);
+        // Blocking or waived, the collision is ACCOUNTED FOR in the rationale.
+        // Waiving the block never waives the report.
+        expect(v.overallRationale, why).toContain("ISS-914");
       }
     });
 
@@ -4253,3 +4286,256 @@ describe("actions serving several relationships", () => {
 type Assert<T extends true> = T;
 export type _AssertNoAmbiguousAction = Assert<[Extract<GuardAction, "ambiguous">] extends [never] ? true : false>;
 export type _AssertVerdictActionIsGuardAction = Assert<SessionVerdict["action"] extends GuardAction ? true : false>;
+
+// ---------------------------------------------------------------------------
+// ISS-914: a collision withholds the aggregate only when a dropped record
+// disagrees with its survivor on the policy signature, or when no survivor
+// exists to compare it against. A matched comparison is waived.
+// ---------------------------------------------------------------------------
+
+describe("ISS-914 collision equivalence waiver", () => {
+  const ME: OwnerTask = { client: "claude", id: "my-task" } as OwnerTask;
+  const THEM: OwnerTask = { client: "claude", id: "other-task" } as OwnerTask;
+  const CALLER_914 = { task: ME, client: "claude" as const };
+  const ID = "cccc1111-2222-3333-4444-555555555555";
+
+  const rec = (dir: string, over: Partial<ActiveSessionSummary> = {}): ActiveSessionSummary =>
+    summary({ sessionId: ID, sourceDir: dir, ownerTask: ME, ...over });
+
+  const judge = (activeSessions: ActiveSessionSummary[], resumableSessions: ActiveSessionSummary[] = []) =>
+    classifySessionGuard({ activeSessions, resumableSessions }, CALLER_914);
+
+  describe("the waiver itself", () => {
+    it("waives an agreeing collision and returns the survivor's own action (AC 1)", () => {
+      const v = judge([rec("aaa"), rec("zzz")]);
+      expect(v.overallAction).toBe("continue");
+      // Aggregate-only. The dropped record is still not a reported session:
+      // the waiver decides what the AGGREGATE may say, not what is published.
+      expect(v.sessions).toHaveLength(1);
+      // Waiving the block never waives the report, in all three carriers.
+      expect(v.collisions).toEqual([{ sessionId: ID, kept: "aaa", dropped: "zzz" }]);
+      expect(v.transcriptionNotes.join(" ")).toContain("kept aaa, dropped zzz");
+      expect(v.overallRationale).toContain("matched its survivor on the policy signature");
+      expect(v.overallRationale).toContain("authorizes no deletion");
+    });
+
+    it("still blocks when the owners differ (AC 2)", () => {
+      const v = judge([rec("aaa"), rec("zzz", { ownerTask: THEM })]);
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("cannot be computed from the survivors alone");
+    });
+
+    it("blocks a COMPACT/non-COMPACT pair that agrees on relationship AND action", () => {
+      // THE case that separates the shipped rule from the filing's option 2.
+      // Both records are a foreign owner holding a LIVE lease, so both resolve
+      // to `foreign-live` / `monitor-only` -- and every capability flag inverts
+      // between them. Comparing only relationship and action would waive a
+      // collision between a record offering an owner-gone recovery path and one
+      // offering none.
+      const nonCompact = rec("aaa", { ownerTask: THEM });
+      const compact = rec("zzz", { ownerTask: THEM, state: "COMPACT", compactPending: true });
+      const solo = (r: ActiveSessionSummary) => judge([r]).sessions[0]!;
+      const a = solo(nonCompact);
+      const b = solo(compact);
+      expect(a.relationship).toBe(b.relationship);
+      expect(a.action).toBe(b.action);
+      expect(a.resumable, "premise broken: the capabilities no longer differ").not.toBe(b.resumable);
+
+      expect(judge([nonCompact, compact]).overallAction).toBe("unverifiable");
+    });
+
+    it("blocks a live record colliding with an expired COMPACT one (AC 3)", () => {
+      // Membership is not free: `activeSessions` requires a live lease and
+      // `resumableSessions` requires COMPACT + compactPending + a non-live
+      // lease, so "one live, one expired" is necessarily the cross-array shape.
+      //
+      // Measured, and contrary to the filing's premise: this case does NOT
+      // separate options 1 and 2. The survivor is `same-owner`/`continue` and
+      // the dropped record is `expired-compact`/`offer-recovery`, so it blocks
+      // on relationship AND action, and option 1 would block it too. The case
+      // that actually separates them is the COMPACT/non-COMPACT pair above.
+      const v = judge(
+        [rec("live-dir")],
+        [rec("compact-dir", { state: "COMPACT", compactPending: true, leaseState: "expired" })],
+      );
+      expect(v.sessions[0]?.relationship).toBe("same-owner");
+      expect(v.overallAction).toBe("unverifiable");
+    });
+
+    it("waives when only NON-policy fields differ", () => {
+      // The other direction: option 3 (also comparing `state`, `ticketId`,
+      // `mode`) was rejected, and this pins that it was not adopted by accident.
+      const v = judge([
+        rec("aaa", { state: "IMPLEMENT", ticketId: "T-001", mode: "auto" }),
+        rec("zzz", { state: "FINALIZE", ticketId: "T-999", mode: "manual" }),
+      ]);
+      expect(v.overallAction).toBe("continue");
+    });
+  });
+
+  describe("the predicate, per field", () => {
+    const base: SessionVerdict = {
+      sessionId: ID, sourceDir: "a", population: "activeSessions",
+      relationship: "same-owner", action: "continue", state: "IMPLEMENT", mode: "auto",
+      ticketId: "T-1", ticketTitle: "t", leaseState: "live", leaseExpiresAt: null,
+      compactPending: false, ownerTask: ME, rationale: "r",
+      resumable: false, resumePermittedByProse: false, requiresTakeover: false,
+      recoveryRequiresExplicitRequest: false, bindsOwner: false,
+    } as SessionVerdict;
+
+    const flipped = (field: (typeof POLICY_SIGNATURE_FIELDS)[number]): SessionVerdict => {
+      const cur = base[field];
+      const next = field === "relationship" ? "foreign-live" : field === "action" ? "monitor-only" : !cur;
+      return { ...base, [field]: next } as SessionVerdict;
+    };
+
+    it("waives two identical verdicts", () => {
+      expect(collisionBlocksAggregate({ ...base }, base)).toBe(false);
+    });
+
+    // One test per field. Required: the COMPACT/non-COMPACT case above flips all
+    // five capabilities at once, so it cannot detect the removal of any single
+    // one from the tuple.
+    for (const field of POLICY_SIGNATURE_FIELDS) {
+      it(`blocks when only \`${field}\` differs`, () => {
+        expect(collisionBlocksAggregate(flipped(field), base)).toBe(true);
+      });
+    }
+
+    it("ignores fields outside the signature", () => {
+      const other = { ...base, state: "FINALIZE", ticketId: "T-2", mode: "manual", sourceDir: "b" } as SessionVerdict;
+      expect(collisionBlocksAggregate(other, base)).toBe(false);
+    });
+
+    it("fails closed with no survivor to compare against", () => {
+      // UNREACHABLE through `classifySessionGuard`: a dropped record's id was
+      // seen, so its kept record is deduped and the verdict loop pushes a
+      // verdict for every deduped entry. Tested here directly rather than
+      // claimed to be covered by the classifier.
+      expect(collisionBlocksAggregate(base, undefined)).toBe(true);
+    });
+  });
+
+  describe("reporting", () => {
+    it("keeps the dropped record's own classification note", () => {
+      // A dropped record can be the ONLY carrier of a note: with identity
+      // unavailable, a foreign COMPACT record emits the U2 note while the
+      // non-COMPACT record at the same relationship and action emits none.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            rec("aaa", { ownerTask: THEM }),
+            rec("zzz", { ownerTask: THEM, state: "COMPACT", compactPending: true }),
+          ],
+          resumableSessions: [],
+        },
+        { task: null, client: "claude" },
+      );
+      const notes = v.transcriptionNotes.join(" ");
+      expect(notes, "the dropped participant's own note was suppressed").toContain("U2:");
+      // ...and it must say the record is not among the reported sessions, or the
+      // note reads as though it described one of them.
+      expect(notes).toContain("Dropped collision participant");
+      expect(notes).toContain("is NOT reported among the sessions above");
+    });
+
+    it("retains the OTHER note site too: an expired-COMPACT dropped participant", () => {
+      // There are exactly two classification note sites, and they run through
+      // DIFFERENT classifiers. Covering only the live-population one would let a
+      // wrong population dispatch, or a loss specific to `classifyResumable`,
+      // pass unnoticed. This is the cross-array shape: the survivor arrives in
+      // `activeSessions` and the dropped participant in `resumableSessions`, so
+      // it is also the case where the population discriminator matters.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [rec("live-dir")],
+          resumableSessions: [rec("compact-dir", { state: "COMPACT", compactPending: true, leaseState: "expired" })],
+        },
+        { task: null, client: "claude" },
+      );
+      const dropped = v.transcriptionNotes.find((n) => n.includes("Dropped collision participant"));
+      expect(dropped, "the expired-COMPACT participant's note was lost").toBeDefined();
+      expect(dropped).toContain("U5:");
+      expect(dropped).toContain("compact-dir");
+      expect(dropped).toContain("is NOT reported among the sessions above");
+    });
+
+    it("orders notes deterministically: collision, then survivor, then dropped", () => {
+      // BOTH participants must emit a classification note, or this test cannot
+      // detect the survivor's note moving after the dropped one. Two foreign
+      // COMPACT records with no caller identity each emit U2; only the dropped
+      // one is prefixed, which is what tells them apart here.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            rec("aaa", { ownerTask: THEM, state: "COMPACT", compactPending: true }),
+            rec("zzz", { ownerTask: THEM, state: "COMPACT", compactPending: true }),
+          ],
+          resumableSessions: [],
+        },
+        { task: null, client: "claude" },
+      );
+      const collisionNote = v.transcriptionNotes.findIndex((n) => n.includes("kept aaa, dropped zzz"));
+      const survivorNote = v.transcriptionNotes.findIndex((n) => n.startsWith("U2:"));
+      const droppedNote = v.transcriptionNotes.findIndex((n) => n.includes("Dropped collision participant"));
+      expect(collisionNote, "no collision note").toBeGreaterThan(-1);
+      expect(survivorNote, "the survivor emitted no note, so ordering is untestable").toBeGreaterThan(-1);
+      expect(droppedNote, "no dropped-participant note").toBeGreaterThan(-1);
+      // Not the order a classify-before-deduplicate pipeline would produce. The
+      // claim this change makes is about VERDICTS, which are order-independent
+      // because the classifiers are pure; note order is pinned here so it
+      // cannot drift silently.
+      expect(collisionNote).toBeLessThan(survivorNote);
+      expect(survivorNote).toBeLessThan(droppedNote);
+    });
+
+    it("reports a waived collision even when an INDEPENDENT blocker withholds", () => {
+      // Without this, re-gating the collision clause on blocking-only would make
+      // an agreeing collision vanish from the one field a reader looks at first.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [rec("aaa"), rec("zzz")],
+          resumableSessions: [],
+          diagnostics: [{ kind: "unreadable-session", category: "omission", sourceDir: "gone" }],
+        } as unknown as SessionScanResult,
+        CALLER_914,
+      );
+      expect(v.overallAction, "the independent blocker stopped blocking").toBe("unverifiable");
+      expect(v.overallRationale, "the waived collision vanished").toContain(
+        "matched its survivor on the policy signature",
+      );
+    });
+
+    it("reports BOTH sets when one collision blocks and another is waived", () => {
+      const OTHER_ID = "dddd1111-2222-3333-4444-555555555555";
+      const v = judge([
+        rec("agree-a"), rec("agree-b"),
+        summary({ sessionId: OTHER_ID, sourceDir: "differ-a", ownerTask: ME }),
+        summary({ sessionId: OTHER_ID, sourceDir: "differ-b", ownerTask: THEM }),
+      ]);
+      // Two surviving verdicts, so the aggregate is `null` on population
+      // grounds; the point here is that the RATIONALE accounts for both
+      // collisions rather than only the blocking one.
+      expect(v.collisions).toHaveLength(2);
+      // Counts alone are not enough: with several ids colliding at once an
+      // operator cannot tell WHICH participant blocked. Each outcome names its
+      // own directories.
+      expect(v.overallRationale).toContain("(dropped differ-b)");
+      expect(v.overallRationale).toContain("disagrees with its survivor about what the caller may do");
+      expect(v.overallRationale).toContain("(dropped agree-b)");
+      expect(v.overallRationale).toContain("matched its survivor on the policy signature");
+      expect(v.overallRationale).toContain("not lost from a result that blocks for a different one");
+    });
+  });
+
+  it("compares exactly the fields the generated fallback tells mode A to compare", () => {
+    // The signature would otherwise live twice, as this tuple and as prose in
+    // the fixture, with nothing tying them together. The byte-identity test
+    // proves only that the Markdown matches the fixture; it cannot detect the
+    // typed guard comparing a different set than mode A is instructed to.
+    const fixture = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "session-guard-matrix.json"), "utf-8"),
+    ) as { collisionWaiverRule: { policySignatureFields: string[] } };
+    expect(fixture.collisionWaiverRule.policySignatureFields).toEqual([...POLICY_SIGNATURE_FIELDS]);
+  });
+});

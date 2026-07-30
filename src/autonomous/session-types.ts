@@ -424,12 +424,98 @@ export interface EventEntry {
 // Full session state (authoritative, written to state.json)
 // ---------------------------------------------------------------------------
 
+/**
+ * ISS-907: a hand-edit stores null where this build omits the field. For a
+ * declared-optional SCALAR the two forms are semantically identical, so both
+ * parse and reads see undefined for either -- otherwise one cosmetic null
+ * fails the whole state.json parse and the session becomes unreadable (the
+ * ISS-902 escalation class).
+ *
+ * Scalars only, and only ones declared `.optional()`:
+ * - Required fields keep rejecting null. A null `startedAt` is damage, not
+ *   skew, and forgiving it would conceal the difference.
+ * - Fields declared `.nullable()` keep their meaningful null. Wrapping one of
+ *   those here would destroy the null the field exists to carry, so the
+ *   parameter is CONSTRAINED to the three scalar classes rather than left as
+ *   ZodTypeAny -- a comment is not a guard. Verified: swapping any site to a
+ *   nullable, array, or object inner fails tsc with TS2345. The guard has to
+ *   live in the type because it cannot live in a test -- tsconfig excludes
+ *   `test`, so a `@ts-expect-error` probe there would never be compiled.
+ *   (The return type is also inferred rather than annotated: an annotation of
+ *   `z.output<T> | undefined` re-widens to include the null that
+ *   `?? undefined` just discarded, which type-checks clean and turns every
+ *   downstream `=== null` branch into dead code.)
+ * - Optional CONTAINERS (objects, arrays, records) stay `.optional()`: null
+ *   there is a shape corruption, not a scalar-presence question, and must
+ *   stay visible as one.
+ *
+ * Note this widens the READ only. Nothing in this build writes null to any of
+ * these fields, and a parsed state re-serializes without one.
+ */
+const forgiveNull = <T extends z.ZodString | z.ZodNumber | z.ZodBoolean>(inner: T) =>
+  // The cast is load-bearing, do not remove it. Calling `.nullish()` directly
+  // on a UNION-constrained generic resolves the method against the whole
+  // union, so `z.output<T>` comes back as `string | number | boolean` for
+  // every field and 67 call sites across the stages stop type-checking.
+  // Casting to the single-parameter `ZodType<z.output<T>>` keeps the
+  // constraint (misuse is still TS2345 at the call) while restoring precise
+  // per-field inference.
+  (inner as z.ZodType<z.output<T>>).nullish().transform((v) => v ?? undefined);
+
+/**
+ * ISS-918: `codexUnavailable` and `codexUnavailableSince` are read as a PAIR
+ * (review-depth.ts: `timestamp ? withinTTL(timestamp) : !!boolean`). The
+ * timestamp carries the TTL; the boolean is a pre-ISS-110 shim that nothing
+ * ever clears. So the boolean WITHOUT a usable timestamp is the one
+ * combination that blocks codex forever.
+ *
+ * Forgiving null on the timestamp alone would let a CURRENT paired state
+ * normalize into that legacy sticky shape. The shape itself is not new -- it
+ * is exactly what a genuine pre-ISS-110 state looks like, and that one is
+ * still honored. What is new is reaching it from a state this build wrote,
+ * via the most natural hand-edit there is: clearing a stale timestamp to
+ * un-stick codex would instead stick it permanently, and silently.
+ *
+ * This runs on the RAW object, BEFORE per-field normalization, which is what
+ * makes the fix possible without touching ISS-098's semantics: at this point
+ * an EXPLICIT null is still distinguishable from a legacy ABSENT field. Only
+ * the explicit null clears the flag. A genuine pre-ISS-110 state (boolean
+ * present, timestamp never written) keeps its sticky block exactly as before.
+ *
+ * It is applied by `parseSessionState` rather than by wrapping the schema in
+ * `z.preprocess`, so that `SessionStateSchema` stays an exported ZodObject:
+ * the raw cross-field repair is centralized at the persisted-state read
+ * boundary instead of changing the schema's type. That boundary is the right
+ * seam regardless -- the threat model is a hand-edited FILE, and every
+ * production full-schema validation of persisted state goes through this
+ * function. (Raw or minimal readers, such as health telemetry, read the file
+ * without validating it and so do not pass through here.)
+ *
+ * The repair is deliberately NARROW. It fires only on an explicit null
+ * timestamp, and it clears only a flag that is literally `true`. Anything
+ * else -- false, null, or a malformed value -- is left for the schema to
+ * handle, because rewriting those would conceal corruption that should stay
+ * visible (a string `codexUnavailable` must still fail the parse and name
+ * itself, not be quietly normalized to false).
+ */
+function clearExplicitlyNulledCodexBlock(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const o = raw as Record<string, unknown>;
+  if (!Object.hasOwn(o, "codexUnavailableSince") || o.codexUnavailableSince !== null) return raw;
+  const next: Record<string, unknown> = { ...o, codexUnavailableSince: undefined };
+  // Only a genuine sticky flag is cleared. Absent stays absent, false stays
+  // false, and anything invalid stays invalid: this repairs one specific
+  // contradiction, it does not mint state and it does not launder damage.
+  if (o.codexUnavailable === true) next.codexUnavailable = false;
+  return next;
+}
+
 export const SessionStateSchema = z.object({
   schemaVersion: z.literal(CURRENT_SESSION_SCHEMA_VERSION),
   sessionId: z.string().uuid(),
   recipe: z.string(),
   state: z.string(),
-  previousState: z.string().optional(),
+  previousState: forgiveNull(z.string()),
   revision: z.number().int().min(0),
   status: z.enum(["active", "completed", "superseded"]).default("active"),
   mode: z.enum(["auto", "review", "plan", "guided"]).default("auto"),
@@ -437,12 +523,12 @@ export const SessionStateSchema = z.object({
   // Ticket in progress
   ticket: z.object({
     id: z.string(),
-    displayId: z.string().optional(),
+    displayId: forgiveNull(z.string()),
     title: z.string(),
-    risk: z.string().optional(),
-    realizedRisk: z.string().optional(),
+    risk: forgiveNull(z.string()),
+    realizedRisk: forgiveNull(z.string()),
     claimed: z.boolean().default(false),
-    lastPlanHash: z.string().optional(),
+    lastPlanHash: forgiveNull(z.string()),
   }).optional(),
 
   // Review tracking
@@ -453,10 +539,10 @@ export const SessionStateSchema = z.object({
       verdict: z.string(),
       findingCount: z.number(),
       criticalCount: z.number(),
-      unresolvedCriticalCount: z.number().optional(),
+      unresolvedCriticalCount: forgiveNull(z.number()),
       majorCount: z.number(),
       suggestionCount: z.number(),
-      codexSessionId: z.string().optional(),
+      codexSessionId: forgiveNull(z.string()),
       timestamp: z.string(),
     })).default([]),
     code: z.array(z.object({
@@ -465,10 +551,10 @@ export const SessionStateSchema = z.object({
       verdict: z.string(),
       findingCount: z.number(),
       criticalCount: z.number(),
-      unresolvedCriticalCount: z.number().optional(),
+      unresolvedCriticalCount: forgiveNull(z.number()),
       majorCount: z.number(),
       suggestionCount: z.number(),
-      codexSessionId: z.string().optional(),
+      codexSessionId: forgiveNull(z.string()),
       timestamp: z.string(),
     })).default([]),
   }).default({ plan: [], code: [] }),
@@ -476,7 +562,7 @@ export const SessionStateSchema = z.object({
   // T-153: Current issue being fixed (null when working on a ticket)
   currentIssue: z.object({
     id: z.string(),
-    displayId: z.string().optional(),
+    displayId: forgiveNull(z.string()),
     title: z.string(),
     severity: z.string(),
   }).nullable().default(null),
@@ -490,13 +576,13 @@ export const SessionStateSchema = z.object({
   // Completed tickets this session
   completedTickets: z.array(z.object({
     id: z.string(),
-    displayId: z.string().optional(),
-    title: z.string().optional(),
-    commitHash: z.string().optional(),
-    risk: z.string().optional(),
-    realizedRisk: z.string().optional(),
-    startedAt: z.string().optional(),
-    completedAt: z.string().optional(),
+    displayId: forgiveNull(z.string()),
+    title: forgiveNull(z.string()),
+    commitHash: forgiveNull(z.string()),
+    risk: forgiveNull(z.string()),
+    realizedRisk: forgiveNull(z.string()),
+    startedAt: forgiveNull(z.string()),
+    completedAt: forgiveNull(z.string()),
   })).default([]),
 
   // T-187: Per-ticket timing -- set when ticket is picked, cleared on commit
@@ -508,9 +594,9 @@ export const SessionStateSchema = z.object({
   // Git state
   git: z.object({
     branch: z.string().nullable().default(null),
-    initHead: z.string().optional(),
+    initHead: forgiveNull(z.string()),
     mergeBase: z.string().nullable().default(null),
-    expectedHead: z.string().optional(),
+    expectedHead: forgiveNull(z.string()),
     baseline: z.object({
       porcelain: z.array(z.string()).default([]),
       dirtyTrackedFiles: z.record(z.object({ blobHash: z.string() })).default({}),
@@ -525,7 +611,7 @@ export const SessionStateSchema = z.object({
 
   // Lease
   lease: z.object({
-    workspaceId: z.string().optional(),
+    workspaceId: forgiveNull(z.string()),
     lastHeartbeat: z.string(),
     expiresAt: z.string(),
   }),
@@ -543,8 +629,8 @@ export const SessionStateSchema = z.object({
     ticketsCompleted: z.number().default(0),
     compactionCount: z.number().default(0),
     eventsLogBytes: z.number().default(0),
-    workItemsAtLastCompaction: z.number().int().min(0).optional(),
-    eventsLogBytesAtLastCompaction: z.number().int().min(0).optional(),
+    workItemsAtLastCompaction: forgiveNull(z.number().int().min(0)),
+    eventsLogBytesAtLastCompaction: forgiveNull(z.number().int().min(0)),
   }).default({ level: "low", guideCallCount: 0, ticketsCompleted: 0, compactionCount: 0, eventsLogBytes: 0 }),
 
   // Persist why COMPLETE must rotate instead of selecting more work. This
@@ -608,19 +694,19 @@ export const SessionStateSchema = z.object({
 
   // Session metadata
   waitingForRetry: z.boolean().default(false),
-  lastGuideCall: z.string().optional(),
+  lastGuideCall: forgiveNull(z.string()),
   startedAt: z.string(),
   guideCallCount: z.number().default(0),
 
   // ISS-098: Codex availability cache -- skip codex after failure
   // ISS-110: Changed from boolean to ISO timestamp with 10-minute TTL
-  codexUnavailable: z.boolean().optional(),
-  codexUnavailableSince: z.string().optional(),
+  codexUnavailable: forgiveNull(z.boolean()),
+  codexUnavailableSince: forgiveNull(z.string()),
 
   // Supersession tracking
-  supersededBy: z.string().optional(),
-  supersededSession: z.string().optional(),
-  stealReason: z.string().optional(),
+  supersededBy: forgiveNull(z.string()),
+  supersededSession: forgiveNull(z.string()),
+  stealReason: forgiveNull(z.string()),
 
   // Recipe overrides (maxTicketsPerSession: 0 = no limit)
   config: z.object({
@@ -668,7 +754,7 @@ export const SessionStateSchema = z.object({
     severity: z.string(),
     disposition: z.enum(LENS_FINDING_DISPOSITIONS),
     description: z.string(),
-    dismissReason: z.string().optional(),
+    dismissReason: forgiveNull(z.string()),
     timestamp: z.string(),
   })).default([]),
 
@@ -702,9 +788,9 @@ export const SessionStateSchema = z.object({
   // T-128: Resolved recipe (frozen at session start, survives compact/resume)
   resolvedPipeline: z.array(z.string()).optional(),
   resolvedPostComplete: z.array(z.string()).optional(),
-  resolvedRecipeId: z.string().optional(),
+  resolvedRecipeId: forgiveNull(z.string()),
   resolvedStages: z.record(z.record(z.unknown())).optional(),
-  resolvedDirtyFileHandling: z.string().optional(),
+  resolvedDirtyFileHandling: forgiveNull(z.string()),
   // T-328: this gates every session read through safeParse, so it accepts the
   // full input set (including the legacy "none") and transforms to canonical.
   // An un-widened enum here would not drop the field -- it would make a session
@@ -737,7 +823,7 @@ export const SessionStateSchema = z.object({
     compactThreshold: z.string(),
     reviewBackends: z.array(z.string()),
     codexReviewBackends: z.array(z.string()).optional(),
-    handoverInterval: z.number().optional(),
+    handoverInterval: forgiveNull(z.number()),
   }).optional(),
 
   // T-257: Verification counters (accumulated from telemetry JSONL)
@@ -784,7 +870,7 @@ export const SessionStateSchema = z.object({
     verdict: z.string(),
     findingCount: z.number(),
     criticalCount: z.number(),
-    unresolvedCriticalCount: z.number().optional(),
+    unresolvedCriticalCount: forgiveNull(z.number()),
     majorCount: z.number(),
     suggestionCount: z.number(),
     durationMs: z.number(),
@@ -817,6 +903,19 @@ export const SessionStateSchema = z.object({
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
+
+/**
+ * The single parse seam for persisted session state.
+ *
+ * Every production full `SessionStateSchema` validation of a state.json ends
+ * here, so cross-field repairs that must see the RAW shape (ISS-918) live in
+ * this function rather than in the schema. Call this instead of
+ * `SessionStateSchema.safeParse` on anything that came off disk; parsing the
+ * schema directly skips those repairs.
+ */
+export function parseSessionState(raw: unknown): z.SafeParseReturnType<unknown, FullSessionState> {
+  return SessionStateSchema.safeParse(clearExplicitlyNulledCodexBlock(raw));
+}
 
 /** ISS-400: Named type for verification counters, derived from the Zod schema. */
 export type VerificationCounters = NonNullable<FullSessionState["verificationCounters"]>;

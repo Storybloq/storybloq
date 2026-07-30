@@ -56,9 +56,13 @@ function makeRoot(): string {
 /**
  * A session that is real in every respect except one bad field.
  *
- * `codexUnavailableSince` is operator 4's ACTUAL case: declared
- * `z.string().optional()`, so an explicit null fails the whole parse and the
- * entire session becomes unreadable over a field that means nothing when absent.
+ * The vector is `startedAt: null`: a REQUIRED string, so the null is genuine
+ * damage and the parse fails by design. (The original vector was operator 4's
+ * `codexUnavailableSince: null`, but ISS-907 made declared-optional scalars
+ * FORGIVE null -- that shape now parses cleanly, which is the fix working, so
+ * the damage these tests need has to live on a field where null still means
+ * damage. See test/autonomous/session-nullish-forgiveness.test.ts for the
+ * forgiveness side.)
  */
 function damagedSession(root: string, over: Record<string, unknown>): string {
   const state = createSession(root, "default", "ws-1");
@@ -75,7 +79,7 @@ function damagedSession(root: string, over: Record<string, unknown>): string {
 describe("session list surfaces damaged sessions", () => {
   it("renders a damaged row in text, naming the field and the selector to inspect it", async () => {
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     // Precondition: the strict reader really does reject it, so this test is
     // exercising concealment rather than a fixture that happens to parse.
     expect(readSession(join(root, ".story", "sessions", id))).toBeNull();
@@ -92,7 +96,7 @@ describe("session list surfaces damaged sessions", () => {
     const out = await handleSessionList(root, { status: "all", format: "text" });
     expect(out).toContain(id);
     expect(out).toContain("corrupt");
-    expect(out).toContain("codexUnavailableSince expected string, received null");
+    expect(out).toContain("startedAt expected string, received null");
     expect(out).toContain(`storybloq session show ${id}`);
   });
 
@@ -117,7 +121,7 @@ describe("session list surfaces damaged sessions", () => {
 
   it("renders it regardless of the --status filter, because it has no status to filter on", async () => {
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     for (const status of ["active", "completed", "superseded"] as const) {
       const out = await handleSessionList(root, { status, format: "text" });
       expect(out, `--status ${status} hid the damaged row`).toContain(id);
@@ -126,7 +130,7 @@ describe("session list surfaces damaged sessions", () => {
 
   it("reports it in JSON under `damaged`, with structured issues", async () => {
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     const parsed = JSON.parse(await handleSessionList(root, { status: "all", format: "json" })) as {
       sessions: unknown[];
       damaged: { sourceDir: string; reason: string; issues: { path: string; expected?: string; received?: string }[] }[];
@@ -134,7 +138,7 @@ describe("session list surfaces damaged sessions", () => {
     expect(parsed.damaged).toHaveLength(1);
     expect(parsed.damaged[0]!.sourceDir).toBe(id);
     expect(parsed.damaged[0]!.issues[0]).toMatchObject({
-      path: "codexUnavailableSince",
+      path: "startedAt",
       expected: "string",
       received: "null",
     });
@@ -237,18 +241,18 @@ describe("session list JSON is ADDITIVE", () => {
 describe("the failing field is named at every surface", () => {
   it("session show", async () => {
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     await expect(handleSessionShow(root, id, { format: "text", events: 5 })).rejects.toThrow(
-      /codexUnavailableSince expected string, received null/,
+      /startedAt expected string, received null/,
     );
   });
 
   it("session report", async () => {
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     const result = await handleSessionReport(id, root);
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("codexUnavailableSince expected string, received null");
+    expect(result.output).toContain("startedAt expected string, received null");
   });
 
   it("names a nested path with its array index", async () => {
@@ -728,10 +732,10 @@ describe("every surface distinguishes a missing state.json from an invalid one",
   it("and session report still names the FIELD for a genuine schema failure", async () => {
     // The split must not have cost the detail it was built beside.
     const root = makeRoot();
-    const id = damagedSession(root, { codexUnavailableSince: null });
+    const id = damagedSession(root, { startedAt: null });
     const res = await handleSessionReport(id, root, "text");
     expect(res.output ?? "").toContain("invalid state.json");
-    expect(res.output ?? "").toContain("codexUnavailableSince");
+    expect(res.output ?? "").toContain("startedAt");
   });
 
   it("and reports unparseable JSON as its own reason", async () => {

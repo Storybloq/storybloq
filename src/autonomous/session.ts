@@ -17,7 +17,7 @@ import { join, dirname } from "node:path";
 import lockfile from "proper-lockfile";
 import {
   CURRENT_SESSION_SCHEMA_VERSION,
-  SessionStateSchema,
+  parseSessionState,
   deriveWorkspaceId,
   type FullSessionState,
   type SessionState,
@@ -356,7 +356,7 @@ export function readSessionStrict(
     }
   }
 
-  const result = SessionStateSchema.safeParse(parsed);
+  const result = parseSessionState(parsed);
   if (!result.success) {
     return {
       ok: false,
@@ -428,7 +428,7 @@ export function readSessionResilient(dir: string): FullSessionState | null {
  * the same bytes.
  */
 function parseSessionResilient(parsed: unknown, dir: string): FullSessionState | null {
-  const strict = SessionStateSchema.safeParse(parsed);
+  const strict = parseSessionState(parsed);
   if (strict.success) return strict.data;
 
   // Inspect zod issues: recover only if EVERY issue is specifically an
@@ -458,7 +458,7 @@ function parseSessionResilient(parsed: unknown, dir: string): FullSessionState |
     ? candidate.lensReviewHistory
     : [];
   const cleaned = history.filter((_, idx) => !badIndices.has(idx));
-  const retry = SessionStateSchema.safeParse({ ...candidate, lensReviewHistory: cleaned });
+  const retry = parseSessionState({ ...candidate, lensReviewHistory: cleaned });
   if (!retry.success) return null;
 
   const dropped = badIndices.size;
@@ -992,8 +992,8 @@ export function readSessionDetailed(dir: string): SessionLookup {
     // ISS-897: name the fields. The resilient parse already ran and failed, so
     // re-running the strict schema costs one validation of an in-memory object
     // and buys the operator the difference between "corrupt" and
-    // "codexUnavailableSince expected string, received null".
-    const strict = SessionStateSchema.safeParse(parsed);
+    // "startedAt expected string, received null".
+    const strict = parseSessionState(parsed);
     return strict.success
       ? { kind: "unreadable", reason: "schema" }
       : {

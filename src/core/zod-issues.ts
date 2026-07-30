@@ -136,7 +136,7 @@ export function summarizeZodIssues(error: ZodError, limit = 3): readonly SchemaI
 
 /**
  * One line naming the field and both sides, e.g.
- * `codexUnavailableSince expected string, received null`.
+ * `startedAt expected string, received null`.
  *
  * `total` is the pre-cap issue count; pass it so the suffix can say how many
  * were withheld. Omitted, the rendered issues are assumed to be all of them.

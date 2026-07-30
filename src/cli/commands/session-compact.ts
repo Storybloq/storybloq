@@ -1368,8 +1368,9 @@ export async function handleSessionLimitStop(options: SessionLimitStopOptions = 
     // lease filter is wrong here).
     // `listAllSessionsDetailed`, not `listAllSessions` (ISS-897). The plain
     // one drops every session it cannot parse with a bare `continue`, and this
-    // is an OWNERSHIP decision: a single bad field -- `codexUnavailableSince:
-    // null` is enough -- makes this task's own autonomous session vanish from
+    // is an OWNERSHIP decision: a single bad field -- `startedAt: null` is
+    // enough (post-ISS-907, optional scalars forgive null but required fields
+    // still reject it) -- makes this task's own autonomous session vanish from
     // the list, `owned` comes back empty, and the limit stop is recorded as a
     // PLAIN session. That is the concealment this issue exists to close,
     // reached through a classifier rather than through a display.

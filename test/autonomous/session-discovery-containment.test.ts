@@ -21,9 +21,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { findResumableSession } from "../../src/autonomous/session.js";
+import { findResumableSession, probePath, listAllSessionsDetailed } from "../../src/autonomous/session.js";
+import { probeContainment } from "../../src/autonomous/session-selector.js";
 import { deriveWorkspaceId } from "../../src/autonomous/session-types.js";
-import { scanActiveSessions } from "../../src/core/session-scan.js";
+import { scanActiveSessions, scanSessionSummaries } from "../../src/core/session-scan.js";
 import { handleSessionStop, handleSessionClearCompact } from "../../src/cli/commands/session-compact.js";
 
 // ---------------------------------------------------------------------------
@@ -181,5 +182,129 @@ describe("T-251 bulk discovery containment", () => {
     // Reference unused locals.
     expect(sessionId.length).toBe(36);
     expect(linkPath.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `lstat` declines to follow the FINAL component and follows every one before
+ * it (ISS-897).
+ *
+ * So an ENOENT from `lstat(parent/child)` is raised by two different worlds: the
+ * child is gone under a parent that is fine, or the PARENT stopped resolving.
+ * Every caller here reads `absent` as proof, and two of them SKIP on it -- so
+ * treating the second world as the first drops entries in silence over a
+ * sessions root that no longer resolves, and reports the result as clean.
+ */
+describe("a probe cannot prove absence without asking the parent", () => {
+  it("separates a missing child from an unresolvable ancestor", () => {
+    const root = mkdtempSync(join(tmpdir(), "storybloq-probe-parent-"));
+    createdRoots.push(root);
+    mkdirSync(join(root, "real"), { recursive: true });
+    symlinkSync("/nonexistent-target", join(root, "dangling"));
+
+    // A parent that is a real directory: the child's ENOENT is about the child.
+    expect(probePath(join(root, "real", "kid"))).toBe("absent");
+    // A parent that is itself absent proves it too -- a project with no
+    // `.story/sessions` yet is exactly this shape, and calling it unprovable
+    // would turn every ordinary not-found into "could not be read".
+    expect(probePath(join(root, "gone", "kid"))).toBe("absent");
+    // A parent that EXISTS and is not a directory proves nothing. This is the
+    // case the errno hides: the dangling link lstats successfully, so only
+    // asking about it separates this from the two above.
+    expect(probePath(join(root, "dangling", "kid"))).toBe("probe-failed");
+    // ...and the unresolvable ancestor does not have to be the IMMEDIATE
+    // parent. This is what defeated the first version of the walk: for
+    // `dangling/mid/kid`, `lstat` on `dangling/mid` raises ENOENT too, so a
+    // check that stopped after one level accepted the same ambiguity it was
+    // written to resolve and answered `absent`. The climb has to continue
+    // through absent ancestors until one exists.
+    expect(probePath(join(root, "dangling", "mid", "kid"))).toBe("probe-failed");
+    expect(probePath(join(root, "dangling", "a", "b", "c", "kid"))).toBe("probe-failed");
+    // The mirror case, so the walk cannot simply answer `probe-failed` for
+    // everything deep: several genuinely absent levels are still an absence.
+    expect(probePath(join(root, "gone", "deep", "deeper", "kid"))).toBe("absent");
+    // ...and the ordinary present answer is unchanged.
+    expect(probePath(join(root, "real"))).toBe("present");
+  });
+});
+
+/**
+ * Containment has THREE answers and the predicate returned two (ISS-897).
+ *
+ * A proven escape and a probe that could not look are opposites: the first is
+ * the guard working, the second establishes nothing. `listAllSessionsDetailed`
+ * skipped on both, so an entry it could not check disappeared from a listing
+ * this command presents as the whole inventory.
+ */
+describe("an unprovable directory is reported, not skipped", () => {
+  it("keeps a directory whose containment could not be established", () => {
+    const root = mkdtempSync(join(tmpdir(), "storybloq-contain-probe-"));
+    createdRoots.push(root);
+    const sessions = join(root, ".story", "sessions");
+    mkdirSync(sessions, { recursive: true });
+    // A symlink LOOP, which is the portable way to make `realpath` fail with
+    // something other than ENOENT. A merely dangling link would not do: it
+    // raises ENOENT, which the lexical branch answers `contained` for, because
+    // a session directory that does not exist yet looks exactly like that.
+    // ELOOP is different -- something is genuinely there and cannot be
+    // resolved, so containment is UNKNOWN rather than refused.
+    const a = join(sessions, "aaaa1111-2222-4333-8444-555555555555");
+    const b = join(sessions, "bbbb2222-2222-4333-8444-555555555555");
+    symlinkSync(b, a);
+    symlinkSync(a, b);
+    expect(probeContainment(root, a)).toBe("probe-failed");
+
+    // What follows pins the PROBE and the fact that the entry is reported at
+    // all. It does NOT pin the containment routing inside the enumerator: a
+    // symlink is a link rather than a directory to `readdirSync`, so this entry
+    // takes the non-directory branch before containment is consulted, and the
+    // assertions below would hold with that routing reverted. The routing has
+    // its own file, `session-containment-routing.test.ts`, where the probe is
+    // stubbed because no portable filesystem shape produces `probe-failed` for
+    // a real directory without racing the code under test.
+    const all = listAllSessionsDetailed(root);
+    const named = all.unavailable.map((u) => u.sourceDir);
+    expect(named, JSON.stringify(all)).toContain("aaaa1111-2222-4333-8444-555555555555");
+    // Reported as present-but-unread, with no damage claimed: nothing here
+    // opened anything.
+    const row = all.unavailable.find((u) => u.sourceDir === "aaaa1111-2222-4333-8444-555555555555")!;
+    expect(row.failure.kind).toBe("unreadable");
+    expect(all.damaged).toEqual([]);
+  });
+
+  it("REPORTS an escaping symlink instead of dropping it, matching the scanner", () => {
+    // Shape is classified before containment, and the order is observable. A
+    // symlink whose target resolves outside the sessions root is `escaped` to
+    // the containment probe and `entry-not-a-directory` to the scanner --
+    // running containment first dropped it in silence, and the guard tells an
+    // operator to run `storybloq session list` precisely BECAUSE that command
+    // surfaces every symlink. So the guard named a fault and sent them to a
+    // command that showed nothing, which is the concealment moved one surface
+    // downstream rather than removed.
+    //
+    // Reporting is not following: the row says an entry is there and unread,
+    // and nothing here opened the target or offered it as a session.
+    const root = mkdtempSync(join(tmpdir(), "storybloq-contain-escape-"));
+    createdRoots.push(root);
+    const sessions = join(root, ".story", "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const outside = join(root, "outside");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "state.json"), JSON.stringify({ schemaVersion: 1 }));
+    symlinkSync(outside, join(sessions, "cccc3333-2222-4333-8444-555555555555"));
+
+    const all = listAllSessionsDetailed(root);
+    expect(all.unavailable.map((u) => u.sourceDir)).toContain(
+      "cccc3333-2222-4333-8444-555555555555",
+    );
+    // NOT admitted as a session, and not called damaged: the target was never
+    // read, so no claim about its contents is available.
+    expect(all.sessions).toEqual([]);
+    expect(all.damaged).toEqual([]);
+
+    // ...and the scanner says the same thing about the same path, which is the
+    // agreement that makes the guard's advice true.
+    const scanned = scanSessionSummaries(root);
+    expect(scanned.diagnostics.map((d) => d.kind)).toContain("entry-not-a-directory");
   });
 });

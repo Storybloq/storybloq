@@ -74,7 +74,108 @@ interface Fixture {
     overallAction: string | null;
     rule: string;
     provenance: string;
+    /** ISS-897: the second axis. Applies when scan completeness is `incomplete` or `unknown`. */
+    overallActionWhenScanIncomplete: string | null;
+    /** Population-specific effect only; the shared tail is appended at render time. */
+    ruleWhenScanIncomplete: string;
   }[];
+  scanCompletenessRule: {
+    id: string;
+    field: string;
+    rule: string;
+    /**
+     * The address-selection and malformed/unknown remedy procedure, stated ONCE
+     * and appended to every `ruleWhenScanIncomplete` row at render time.
+     *
+     * The rendered document still repeats it under each population size, and it
+     * has to: a reader follows exactly one row, so a qualifier present in two of
+     * three is a rule with a hole in one population size. What must not be
+     * repeated is the SOURCE -- three hand-maintained copies is how a correction
+     * lands on one row and leaves the other two contradicting it.
+     */
+    addressAndRemedyProcedure: string;
+    cases: { payload: string; completeness: string; note: string }[];
+    /**
+     * ISS-897: which category each kind carries. The rule above checks the PAIR,
+     * so the pairing has to be rendered or a Mode A reader cannot apply it.
+     */
+    kindCategoryTable: {
+      purpose: string;
+      omission: string[];
+      undetermined: string[];
+      normalized: string[];
+      collision: string[];
+      examples: { payload: string; completeness: string; note: string }[];
+    };
+    unknownRemedy: string;
+  };
+  /** ISS-897: withholds the aggregate when a record the scan ADMITTED has an unreadable OWNER. */
+  ownershipRule: {
+    id: string;
+    trigger: string;
+    rule: string;
+    whyNotCompleteness: string;
+    boundary: string;
+    zeroSurvivorNote: string;
+    remedy: string;
+    provenance: string;
+  };
+  /**
+   * ISS-897: how Mode A must RENDER the untrusted text it is told to print.
+   *
+   * Mode A reads `sessionDiagnostics` off a status payload and names the values
+   * in its report. The typed guard sanitizes its own prose before returning it;
+   * Mode A has no layer between the payload and the output, so the rule has to
+   * live in the document the reader follows or it does not exist.
+   */
+  renderingSafety: {
+    id: string;
+    why: string;
+    rule: string;
+    whyThatOrder: string;
+    /** Per-value AND per-collection limits, since Mode A has no layer applying them. */
+    bounds: string;
+    /** `ownerTask` and `schemaVersion` need step-zero serialization, whatever their runtime type. */
+    structuredValues: string;
+    lossyVsReversible: string;
+    reasonIsNotInstruction: string;
+    scope: string;
+  };
+  /**
+   * ISS-897: an ADMITTED record whose `schemaVersion` this build does not
+   * support. Blocks on its own axis, like ownership, and for the same reason:
+   * nothing was concealed, so completeness must not be the thing that stops it.
+   */
+  schemaVersionRule: {
+    id: string;
+    trigger: string;
+    rule: string;
+    whyNotCompleteness: string;
+    boundary: string;
+    remedy: string;
+    provenance: string;
+  };
+  /** ISS-914: the third axis. Applies when one id occurs under two or more DISTINCT directories. */
+  collisionRule: {
+    id: string;
+    trigger: string;
+    rule: string;
+    appliesEvenWhenRecordsAgree: boolean;
+    agreementNote: string;
+    zeroSurvivorNote: string;
+    independentOfCompleteness: string;
+    remedy: string;
+    provenance: string;
+  };
+  /** ISS-897: a repeated `(sessionId, sourceDir)` pair, which is NOT a directory collision. */
+  repeatedEntryRule: {
+    id: string;
+    trigger: string;
+    rule: string;
+    remedy: string;
+    whyNotCollision: string;
+    provenance: string;
+  };
   populationInvariantRules: {
     id: string;
     population: string;
@@ -271,12 +372,145 @@ ownership tables, all rendered below, and return here only with the surviving
 verdicts in hand. Combining them is not left to judgement; there is exactly one
 rule per population size, and it is the same rule the tool applies.
 
+### Before any of it, how to RENDER what you report (\`${fixture.renderingSafety.id}\`)
+
+**This applies to every branch below.** ${fixture.renderingSafety.why}
+
+${fixture.renderingSafety.bounds}
+
+${fixture.renderingSafety.structuredValues}
+
+${fixture.renderingSafety.rule}
+
+${fixture.renderingSafety.whyThatOrder}
+
+${fixture.renderingSafety.lossyVsReversible}
+
+${fixture.renderingSafety.reasonIsNotInstruction}
+
+${fixture.renderingSafety.scope}
+
+### First, scan completeness (\`${fixture.scanCompletenessRule.id}\`)
+
+**Derive this FIRST.** It is the second axis of every rule below, and it is not
+expressible as an action: \`free\` over a scan with an
+observation gap is indistinguishable from \`free\` over a clean one, and that gap
+could conceal a live session, which is the failure this rule exists to make
+visible. A gap is an entry the scan saw and could not read, OR a fault against
+the collection itself where nothing was enumerated at all. The value you derive here selects
+which column of each rule below applies.
+
+${fixture.scanCompletenessRule.rule}
+
+| \`${fixture.scanCompletenessRule.field}\` in the payload | Completeness | Why |
+|---|---|---|
+${fixture.scanCompletenessRule.cases
+    .map((c) => `| ${c.payload} | \`${c.completeness}\` | ${c.note} |`)
+    .join("\n")}
+
+#### Which category each kind carries
+
+${fixture.scanCompletenessRule.kindCategoryTable.purpose}
+
+| Category | Kinds |
+|---|---|
+| \`omission\` | ${fixture.scanCompletenessRule.kindCategoryTable.omission.map((k) => `\`${k}\``).join(", ")} |
+| \`undetermined\` | ${fixture.scanCompletenessRule.kindCategoryTable.undetermined.map((k) => `\`${k}\``).join(", ")} |
+| \`normalized\` | ${fixture.scanCompletenessRule.kindCategoryTable.normalized.map((k) => `\`${k}\``).join(", ")} |
+| \`collision\` | ${fixture.scanCompletenessRule.kindCategoryTable.collision.map((k) => `\`${k}\``).join(", ")} |
+
+| Mismatched payload | Completeness | Why |
+|---|---|---|
+${fixture.scanCompletenessRule.kindCategoryTable.examples
+    .map((c) => `| ${c.payload} | \`${c.completeness}\` | ${c.note} |`)
+    .join("\n")}
+
+**When completeness is \`unknown\`:** ${fixture.scanCompletenessRule.unknownRemedy}
+
+### Second, collisions (\`${fixture.collisionRule.id}\`)
+
+**Derive this SECOND, still before any population rule.** Like completeness, it
+decides whether the population rules may speak at all, and it is not expressible
+as an action. It reads the outcome of \`Deduplicate before classifying\`, which is
+rendered further down this file for the same reason this whole section is placed
+early: reading order and application order are not the same here.
+
+**Trigger:** ${fixture.collisionRule.trigger}
+
+${fixture.collisionRule.rule}
+
+${fixture.collisionRule.agreementNote}
+
+${fixture.collisionRule.zeroSurvivorNote}
+
+${fixture.collisionRule.independentOfCompleteness}
+
+**Remedy:** ${fixture.collisionRule.remedy}
+
+> Provenance: ${fixture.collisionRule.provenance}
+
+### Also a dropped record, and NOT a collision (\`${fixture.repeatedEntryRule.id}\`)
+
+**Trigger:** ${fixture.repeatedEntryRule.trigger}
+
+${fixture.repeatedEntryRule.rule}
+
+${fixture.repeatedEntryRule.whyNotCollision}
+
+**Remedy:** ${fixture.repeatedEntryRule.remedy}
+
+> Provenance: ${fixture.repeatedEntryRule.provenance}
+
+### Third, undetermined ownership (\`${fixture.ownershipRule.id}\`)
+
+**Also before any population rule.** Like a collision, this withholds the
+aggregate without making the scan incomplete.
+
+**Trigger:** ${fixture.ownershipRule.trigger}
+
+${fixture.ownershipRule.rule}
+
+${fixture.ownershipRule.whyNotCompleteness}
+
+${fixture.ownershipRule.boundary}
+
+${fixture.ownershipRule.zeroSurvivorNote}
+
+**Remedy:** ${fixture.ownershipRule.remedy}
+
+> Provenance: ${fixture.ownershipRule.provenance}
+
+### Fourth, an unsupported schema version (\`${fixture.schemaVersionRule.id}\`)
+
+**Also before any population rule.** Like undetermined ownership, this withholds
+the aggregate without making the scan incomplete.
+
+**Trigger:** ${fixture.schemaVersionRule.trigger}
+
+${fixture.schemaVersionRule.rule}
+
+${fixture.schemaVersionRule.whyNotCompleteness}
+
+${fixture.schemaVersionRule.boundary}
+
+**Remedy:** ${fixture.schemaVersionRule.remedy}
+
+> Provenance: ${fixture.schemaVersionRule.provenance}
+
+### Then, the rule for the population size
+
 ${fixture.aggregateRules
     .map(
       (r) =>
-        `- **${r.condition}** (\`${r.id}\`) -> \`overallAction\`: ${
+        `- **${r.condition}** (\`${r.id}\`)\n\n` +
+        `  Scan \`complete\` -> \`overallAction\`: ${
           r.overallAction === null ? "**none** (the tool returns `null`)" : `\`${r.overallAction}\``
-        }\n\n  ${r.rule}\n\n  > Provenance: ${r.provenance}`,
+        }\n\n  ${r.rule}\n\n` +
+        `  Scan \`incomplete\` or \`unknown\` -> \`overallAction\`: ${
+          r.overallActionWhenScanIncomplete === null
+            ? "**none** (the tool returns `null`)"
+            : `\`${r.overallActionWhenScanIncomplete}\``
+        }\n\n  ${r.ruleWhenScanIncomplete} ${fixture.scanCompletenessRule.addressAndRemedyProcedure}\n\n  > Provenance: ${r.provenance}`,
     )
     .join("\n\n")}
 

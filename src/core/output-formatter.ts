@@ -15,7 +15,27 @@ import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
-import type { ActiveSessionSummary } from "./session-scan.js";
+import type { ActiveSessionSummary, SessionScanDiagnostic } from "./session-scan.js";
+import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
+import { boundedLines } from "./bounded-list.js";
+
+/**
+ * How many diagnostic lines the human-readable section may carry (ISS-897).
+ *
+ * Enough that a real incident -- a handful of unreadable directories -- is
+ * reported in full, and few enough that a directory built to flood cannot take
+ * the response. The JSON payload is unaffected and still carries every entry.
+ */
+const MAX_DIAGNOSTIC_LINES = 20;
+
+/**
+ * How many session rows either status formatter renders (ISS-897).
+ *
+ * One pen per repo is the invariant this output exists to protect, so a real
+ * project has a handful of sessions; a hundred is a signal in itself, and the
+ * count says so without the rows.
+ */
+const MAX_SESSION_ROWS = 25;
 import type { SelftestResult } from "../cli/commands/selftest.js";
 import type { BusSummary } from "../bus/schemas.js";
 import { describeDeliveryTiers } from "../bus/schemas.js";
@@ -189,6 +209,51 @@ export function escapeMarkdownDocument(text: string): string {
 }
 
 /**
+ * Break the syntax a Markdown renderer AUTOLINKS, without hiding the text.
+ *
+ * `escapeMarkdownDocument` kills the explicit `[text](url)` form by escaping
+ * the brackets and parentheses, which is the dangerous shape -- a link whose
+ * visible text and destination disagree. It leaves a BARE
+ * `https://elsewhere.example` alone, and GitHub-flavoured Markdown turns that
+ * into a clickable link on its own, so a payload that simply omits the wrapper
+ * gets a live link out of an escaper that appears to have neutralized it.
+ *
+ * `&#58;`, `&#46;` and `&#64;` render as `:`, `.` and `@`, so the address stays
+ * readable and a reader can still see exactly what was claimed. What it cannot
+ * do is form the contiguous `://` or `www.` an autolinker scans for.
+ *
+ * The `@` rule is unconditional, and the narrower `word@word` form it replaced
+ * was wrong for the same reason bracket-escaping alone was wrong about links:
+ * it neutralized the shape being thought about and left the shorter one live.
+ * An email address is not the only thing an `@` produces -- `@admin` is a
+ * MENTION on the surfaces that render this, so it notifies, links, and lends
+ * a session-controlled string the appearance of naming a person.
+ *
+ * Deliberately NOT folded into `escapeMarkdownDocument`. That function is what
+ * `storybloq export` uses, where a URL in a ticket description is content the
+ * author put there and a working link is the point. The distinction is the
+ * sink, not the syntax.
+ */
+export function neutralizeAutolinks(text: string): string {
+  return text
+    .replace(/:\/\//g, "&#58;//")
+    .replace(/\bwww\./gi, "www&#46;")
+    .replace(/@/g, "&#64;");
+}
+
+/**
+ * The full document treatment: escape structure, then break autolinks.
+ *
+ * For a value that is ALREADY sanitized -- a `sanitizeDisplayText` label or a
+ * `sanitizeDisplayPath` address -- since those two are not interchangeable and
+ * the caller is the only one who knows which it holds. Sanitizing here would
+ * either re-cap an address to a label width or leave a label unbounded.
+ */
+export function escapeMarkdownDocumentStrict(text: string): string {
+  return neutralizeAutolinks(escapeMarkdownDocument(text));
+}
+
+/**
  * Wraps multi-line content in a fenced code block.
  * Uses a fence length longer than any backtick sequence in the content.
  */
@@ -202,6 +267,67 @@ export function fencedBlock(content: string, lang?: string): string {
   }
   const fence = "`".repeat(maxTicks + 1);
   return `${fence}${lang ?? ""}\n${content}\n${fence}`;
+}
+
+/**
+ * One session line's worth of state-derived strings, made safe to PRINT (ISS-897).
+ *
+ * Every field here is read straight out of `state.json`, and several are free
+ * strings by design -- `state` is deliberately unconstrained (T-328) so a newer
+ * workflow state does not brick an older reader, and `mode`, `ticketId`, and
+ * `ticketTitle` are equally open. `escapeMarkdownInline` protects line-leading Markdown markers -- it does not touch control characters, and it deliberately leaves inline links, HTML, code spans and emphasis alone;
+ * it does not touch control characters, so an ESC or a newline in any of them
+ * forges a line in the section an operator reads to decide whether another agent
+ * is running. Sanitize FIRST, then escape. JSON output keeps the decoded values
+ * unmodified,
+ * because a consumer diffing against the file needs what is actually there.
+ */
+/**
+ * Every session-row field, rendered inert for a Markdown DOCUMENT (ISS-897).
+ *
+ * `escapeMarkdownInline` was the wrong pass here and the suite pinned it as
+ * intended. It guards line-leading markers and deliberately preserves inline
+ * structure, which is right for a plain-text sink; the non-JSON branch of both
+ * status formatters is not one. It emits `#` headings and `**bold**`, clients
+ * render it, and every field below is read back out of a `state.json` -- so a
+ * `ticketTitle` could author a live link, a raw element or a code span in the
+ * status output an operator reads during an incident.
+ *
+ * The inconsistency is what settled it: `sessionDiagnosticLines` in this same
+ * file already escapes strictly, and its values come from the SAME files. One
+ * document cannot neutralize a directory name and leave the ticket title beside
+ * it live.
+ *
+ * Sanitize FIRST, escape SECOND, as everywhere else: the strict pass doubles
+ * backslashes, so running it before the encoder would double the ones the
+ * encoder is about to write and hand back a live marker.
+ *
+ * Scope: session fields only. The ledger-sourced values on the same document
+ * (project name, phase names, summaries) still take the inline pass, and that
+ * boundary is ISS-915's -- a different source, a different set of callers, and
+ * not something to change under cover of this one.
+ */
+function safeSessionFields(s: {
+  sessionId: string;
+  state: string;
+  mode: string;
+  ticketId: string | null;
+  ticketTitle: string | null;
+}): { ticket: string; state: string; mode: string; shortId: string } {
+  const id = sanitizeDisplayText(s.ticketId ?? "");
+  const title = escapeMarkdownDocumentStrict(sanitizeDisplayText(s.ticketTitle ?? ""));
+  return {
+    ticket: s.ticketId ? `${escapeMarkdownDocumentStrict(id)}: ${title}` : "",
+    state: escapeMarkdownDocumentStrict(sanitizeDisplayText(s.state)),
+    mode: escapeMarkdownDocumentStrict(sanitizeDisplayText(s.mode)),
+    // By CODE POINT, not by UTF-16 unit. `sanitizeDisplayText` is careful not
+    // to split a surrogate pair and this `slice` immediately could: an id whose
+    // eighth unit lands inside an astral character leaves a lone high
+    // surrogate, which draws as the replacement glyph -- so two different
+    // sessions can produce the same short id, on the resumable rows an operator
+    // reads to tell them apart during an incident.
+    shortId: escapeMarkdownDocumentStrict([...sanitizeDisplayText(s.sessionId)].slice(0, 8).join("")),
+  };
 }
 
 function formatConfigHints(state: ProjectState): string[] {
@@ -254,6 +380,108 @@ function limitStopsSection(limitStops: readonly LimitStopSummary[]): string[] {
   return lines;
 }
 
+/**
+ * Markdown for the faults a session scan could not account for (ISS-897).
+ *
+ * Rendered only when non-empty, so an empty diagnostics collection adds no
+ * Session Scan Warnings section at all. (Not a claim that the whole output is
+ * unchanged from before this work: session rows now take document escaping and
+ * are bounded, and a non-expired resumable lease is worded differently.) `omission` entries come first and
+ * are labelled as such, because those are the ones where a session may be
+ * running and was not seen -- the rest are annotations on records the scan
+ * ADMITTED, which appear in the reported populations unless deduplication later
+ * drops them.
+ */
+function sessionDiagnosticLines(diagnostics: readonly SessionScanDiagnostic[]): string[] {
+  if (diagnostics.length === 0) return [];
+  const concealing = diagnostics.filter((d) => d.category === "omission");
+  const header = ["", "## Session Scan Warnings", ""];
+  const lines: string[] = [];
+  if (concealing.length > 0) {
+    header.push(
+      `The scan reported ${concealing.length} gap${concealing.length === 1 ? "" : "s"} under \`.story/sessions\`, ` +
+        "so whether a session is running here cannot be established from this output alone." +
+        (concealing.some((d) => d.sourceDir === null)
+          ? " At least one is a fault against the collection itself, where nothing was enumerated and no entry was ever observed, so it names a path rather than a directory."
+          : ""),
+      "",
+    );
+  }
+  for (const d of [...concealing, ...diagnostics.filter((d) => d.category !== "omission")]) {
+    // Both the name and the reason carry filesystem input, and BOTH get the
+    // document treatment rather than the line-start-only one the rest of this
+    // formatter uses.
+    //
+    // The rest of this formatter is the way it is by an explicit decision:
+    // inline and HTML escaping were removed because they leaked visible
+    // `&amp;` and `\[` noise onto plain-text consumers. That decision is now
+    // wrong for a `format: "md"` MCP result, which a client may render -- but
+    // re-deciding it for every ticket title in the ledger is ISS-915, not this
+    // change. What this change may not do is ADD a surface with the problem.
+    // These lines are new here, they carry a directory name straight off disk,
+    // and they are the incident warning itself: a name that authors a link in
+    // the sentence telling an operator a session may be concealed is the worst
+    // place in the output to put one. Partial protection beats none; the
+    // inconsistency is recorded in ISS-915 rather than used as a reason to
+    // leave the new surface open.
+    //
+    // BOTH renderings when there is a directory name, because they answer
+    // different questions and neither substitutes for the other. The name is a
+    // LABEL: short, readable, capped at a label width, and the thing a reader
+    // scans a list by. It is also LOSSY -- `sanitizeDisplayText` maps every
+    // control character, bidi mark and invisible to `?`, and `?` is itself a
+    // legal filename character -- so `dir<ESC>x`, `dir<U+202E>x` and a directory
+    // genuinely named `dir?x` all print as `dir?x`. On the one line in this
+    // output that says a session may be CONCEALED, that is the failure the line
+    // exists to report, manufactured by the line reporting it.
+    //
+    // So the reversible `sourcePath` comes too, as the ADDRESS. It is bounded by
+    // `PATH_MAX` rather than a label width (truncating an address does not
+    // shorten it, it makes it wrong) and it is injective, so the three names
+    // above stay three names. Collection-level faults have `sourceDir: null` by
+    // design and have only the address, which is why that branch prints it
+    // alone rather than printing an empty label beside it.
+    //
+    // Sanitize FIRST, neutralize Markdown SECOND, in both branches -- but for
+    // different reasons, and only one of them is a hazard. For the `sourcePath`
+    // ADDRESS the order is load-bearing: `sanitizeDisplayPath` introduces and
+    // doubles backslashes, and `escapeMarkdownDocumentStrict` doubles them as
+    // its first step, so running the escaper last is what leaves those escapes
+    // as literal text. Reversed, the encoder would double the backslash the
+    // Markdown pass had just inserted and `\[` would become `\\[` -- an
+    // escaped backslash followed by a live `[`. For the `sourceDir` LABEL the
+    // same order is a convention: `sanitizeDisplayText` substitutes `?` and
+    // touches no backslash, so it cannot suffer that. Keep it anyway, so one
+    // order covers every prose sink and a call site is checkable at a glance.
+    const address = escapeMarkdownDocumentStrict(sanitizeDisplayPath(d.sourcePath));
+    const where =
+      d.sourceDir !== null
+        ? `**${escapeMarkdownDocumentStrict(sanitizeDisplayText(d.sourceDir))}** (path: ${address})`
+        : `**${address}**`;
+    lines.push(
+      `- ${where} (${d.kind}, ${d.category}) -- ` +
+        // A PROSE budget, not the label width the name above takes. The label
+        // cap truncated these paragraphs mid-remedy, and the remedy is the
+        // part that says not to delete anything.
+        `${escapeMarkdownDocumentStrict(sanitizeDisplayText(d.reason, MAX_PROSE_LENGTH))}`,
+    );
+  }
+  // Bounded as a SECTION, not only per entry. Each reason is capped and each
+  // name is capped; the NUMBER of diagnostics is neither, and a
+  // workspace-controlled sessions directory decides it -- so an md status
+  // response can still be flooded with every per-value bound in place. What
+  // survives the cut is the count and where the complete set is, because a
+  // shortened section that does not say so reads as a complete one.
+  return [
+    ...header,
+    ...boundedLines(lines, {
+      maxLines: MAX_DIAGNOSTIC_LINES,
+      noun: "scan warnings",
+      fullSetHint: "The complete set is in `sessionDiagnostics` of the JSON output.",
+    }),
+  ];
+}
+
 export function formatStatus(
   state: ProjectState,
   format: OutputFormat,
@@ -261,6 +489,7 @@ export function formatStatus(
   resumableSessions: readonly ActiveSessionSummary[] = [],
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
   limitStops: readonly LimitStopSummary[] = [],
+  sessionDiagnostics?: readonly SessionScanDiagnostic[],
 ): string {
   const phases = phasesWithStatus(state);
   const data = {
@@ -289,6 +518,17 @@ export function formatStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // ISS-897: everything the scan could NOT account for.
+    //
+    // Serialized ONLY when the caller actually supplied it, which is why this
+    // parameter has no default. An empty array is a positive claim -- "the scan
+    // ran and concealed nothing" -- and defaulting to one would make every
+    // caller that performed NO scan assert a verified-clean result, which is
+    // exactly the fail-open the field exists to close. `handleStatus` always
+    // passes the scanner's own output, so real status responses always carry it;
+    // a bare formatter call omits it, and an absent key means "unknown", not
+    // "clean".
+    ...(sessionDiagnostics ? { sessionDiagnostics } : {}),
     // `bus` stays conditional, and is NOT the same defect: it is an optional
     // parameter of these exported formatters, not an answer withheld when
     // empty. The CLI always supplies a summary -- busSummary returns one with
@@ -331,24 +571,52 @@ export function formatStatus(
     lines.push("");
     lines.push("## Active Sessions");
     lines.push("");
-    for (const s of ordinaryActiveSessions) {
-      const ticket = s.ticketId ? `${s.ticketId}: ${escapeMarkdownInline(s.ticketTitle ?? "")}` : "no ticket";
-      const owner = s.ownerTask ? ` in a ${s.ownerTask.client === "codex" ? "Codex" : "Claude Code"} task` : "";
-      lines.push(`- ${ticket} -- ${s.state}${owner} (${s.mode} mode)`);
-    }
+    // Bounded across the POPULATION: the sessions directory decides how many
+    // rows there are, and an unbounded list pushes the scan warnings below it
+    // out of view. The JSON payload stays complete.
+    lines.push(
+      ...boundedLines(
+        ordinaryActiveSessions.map((s) => {
+          const f = safeSessionFields(s);
+          const ticket = f.ticket || "no ticket";
+          const owner = s.ownerTask ? ` in a ${s.ownerTask.client === "codex" ? "Codex" : "Claude Code"} task` : "";
+          return `- ${ticket} -- ${f.state}${owner} (${f.mode} mode)`;
+        }),
+        {
+          maxLines: MAX_SESSION_ROWS,
+          noun: "active sessions",
+          fullSetHint: "The complete set is in `activeSessions` of the JSON output.",
+        },
+      ),
+    );
   }
 
   if (resumableSessions.length > 0) {
     lines.push("");
     lines.push("## Resumable Sessions");
     lines.push("");
-    for (const s of resumableSessions) {
-      const ticket = s.ticketId ? `${s.ticketId}: ${escapeMarkdownInline(s.ticketTitle ?? "")}` : `session ${s.sessionId.slice(0, 8)}`;
-      const lease = s.leaseState === "expired" ? "expired lease" : `${s.leaseState ?? "unknown"} lease`;
-      lines.push(`- ${ticket} -- COMPACT recovery available (${lease})`);
-    }
+    const resumableRows = resumableSessions.map((s) => {
+      const f = safeSessionFields(s);
+      const ticket = f.ticket || `session ${f.shortId}`;
+      // ISS-897: membership in this population does NOT mean resumable. Only a
+      // positively EXPIRED lease is. `missing` and `invalid` mean the lease was
+      // never established, so announcing recovery for them offers recovery
+      // against a liveness nobody observed -- which is what the old wording,
+      // "COMPACT recovery available (missing lease)", did for every member.
+      return s.leaseState === "expired"
+        ? `- ${ticket} -- COMPACT recovery available (expired lease)`
+        : `- ${ticket} -- COMPACT, but its lease is ${s.leaseState ?? "unknown"}, so its liveness is undetermined and it is NOT resumable; run \`storybloq session list\``;
+    });
+    lines.push(
+      ...boundedLines(resumableRows, {
+        maxLines: MAX_SESSION_ROWS,
+        noun: "resumable sessions",
+        fullSetHint: "The complete set is in `resumableSessions` of the JSON output.",
+      }),
+    );
   }
 
+  lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
 
   if (state.isEmptyScaffold) {
@@ -370,6 +638,7 @@ export function formatFederatedStatus(
   resumableSessions: readonly ActiveSessionSummary[] = [],
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
   limitStops: readonly LimitStopSummary[] = [],
+  sessionDiagnostics?: readonly SessionScanDiagnostic[],
 ): string {
   const sanitizedNodes = fedState.nodes.map((node) => ({
     name: node.name,
@@ -392,6 +661,17 @@ export function formatFederatedStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // ISS-897: everything the scan could NOT account for.
+    //
+    // Serialized ONLY when the caller actually supplied it, which is why this
+    // parameter has no default. An empty array is a positive claim -- "the scan
+    // ran and concealed nothing" -- and defaulting to one would make every
+    // caller that performed NO scan assert a verified-clean result, which is
+    // exactly the fail-open the field exists to close. `handleStatus` always
+    // passes the scanner's own output, so real status responses always carry it;
+    // a bare formatter call omits it, and an absent key means "unknown", not
+    // "clean".
+    ...(sessionDiagnostics ? { sessionDiagnostics } : {}),
     // `bus` stays conditional, and is NOT the same defect: it is an optional
     // parameter of these exported formatters, not an answer withheld when
     // empty. The CLI always supplies a summary -- busSummary returns one with
@@ -448,22 +728,51 @@ export function formatFederatedStatus(
     lines.push("");
     lines.push("## Active Sessions");
     lines.push("");
-    for (const s of ordinaryActiveSessions) {
-      const ticket = s.ticketId ? `${s.ticketId}: ${escapeMarkdownInline(s.ticketTitle ?? "")}` : "no ticket";
-      lines.push(`- ${ticket} -- ${s.state} (${s.mode} mode)`);
-    }
+    // Bounded across the POPULATION: the sessions directory decides how many
+    // rows there are, and an unbounded list pushes the scan warnings below it
+    // out of view. The JSON payload stays complete.
+    lines.push(
+      ...boundedLines(
+        ordinaryActiveSessions.map((s) => {
+          const f = safeSessionFields(s);
+          return `- ${f.ticket || "no ticket"} -- ${f.state} (${f.mode} mode)`;
+        }),
+        {
+          maxLines: MAX_SESSION_ROWS,
+          noun: "active sessions",
+          fullSetHint: "The complete set is in `activeSessions` of the JSON output.",
+        },
+      ),
+    );
   }
 
   if (resumableSessions.length > 0) {
     lines.push("");
     lines.push("## Resumable Sessions");
     lines.push("");
-    for (const s of resumableSessions) {
-      const ticket = s.ticketId ? `${s.ticketId}: ${escapeMarkdownInline(s.ticketTitle ?? "")}` : `session ${s.sessionId.slice(0, 8)}`;
-      lines.push(`- ${ticket} -- COMPACT recovery available (${s.leaseState ?? "unknown"} lease)`);
-    }
+    const resumableRows = resumableSessions.map((s) => {
+      const f = safeSessionFields(s);
+      const ticket = f.ticket || `session ${f.shortId}`;
+      // Same rule as the standard formatter, and it has to be stated twice
+      // because the two build their rows independently (ISS-897). Membership in
+      // this population does NOT mean resumable: only a positively EXPIRED
+      // lease is. `missing` and `invalid` mean the lease was never established,
+      // so announcing recovery for them offers recovery against a liveness
+      // nobody observed -- and a federation operator sees only this surface.
+      return s.leaseState === "expired"
+        ? `- ${ticket} -- COMPACT recovery available (expired lease)`
+        : `- ${ticket} -- COMPACT, but its lease is ${s.leaseState ?? "unknown"}, so its liveness is undetermined and it is NOT resumable; run \`storybloq session list\``;
+    });
+    lines.push(
+      ...boundedLines(resumableRows, {
+        maxLines: MAX_SESSION_ROWS,
+        noun: "resumable sessions",
+        fullSetHint: "The complete set is in `resumableSessions` of the JSON output.",
+      }),
+    );
   }
 
+  lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
 
   return lines.join("\n");

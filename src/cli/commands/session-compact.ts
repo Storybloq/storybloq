@@ -10,7 +10,7 @@ import {
   findActiveSessionFull,
   findResumableSession,
   findSessionById,
-  listAllSessions,
+  listAllSessionsDetailed,
   prepareForCompact,
   prepareForLimitStop,
   markCompactionObserved,
@@ -22,6 +22,8 @@ import {
   CLEARED_LIMIT_FIELDS,
   type ActiveSessionInfo,
 } from "../../autonomous/session.js";
+import { sanitizeDisplayText } from "../../core/display-text.js";
+import { boundedList } from "../../core/bounded-list.js";
 import {
   limitRecordKey,
   readLimitLedger,
@@ -1364,7 +1366,48 @@ export async function handleSessionLimitStop(options: SessionLimitStopOptions = 
     // task, INCLUDING expired-lease and already-COMPACT sessions (a re-limit
     // during a pending resume must stay autonomous, so findActiveSessionFull's
     // lease filter is wrong here).
-    const owned = listAllSessions(root).filter((s) => {
+    // `listAllSessionsDetailed`, not `listAllSessions` (ISS-897). The plain
+    // one drops every session it cannot parse with a bare `continue`, and this
+    // is an OWNERSHIP decision: a single bad field -- `codexUnavailableSince:
+    // null` is enough -- makes this task's own autonomous session vanish from
+    // the list, `owned` comes back empty, and the limit stop is recorded as a
+    // PLAIN session. That is the concealment this issue exists to close,
+    // reached through a classifier rather than through a display.
+    //
+    // And it can THROW here, which needs stating precisely rather than as "the
+    // old one could not". The old enumerator already rethrew every non-ENOENT
+    // error, EACCES included -- so that case reached this command as an
+    // uncaught throw and produced NO limit-stop record at all. What changed is
+    // the ENOENT family: a dangling or removed sessions root used to answer
+    // "empty project", which was the concealment, and now throws as well.
+    //
+    // So this catch is doing two different jobs. For the ENOENT family it keeps
+    // the new fix from turning a concealed classification into no record; for
+    // EACCES it repairs a pre-existing silent loss. Both matter because this
+    // runs on a usage-limit stop: losing the record means the session is never
+    // parked, the waker never spawns, and nothing anywhere says why. Recording
+    // it as plain is wrong in a recoverable way; recording nothing is not.
+    //
+    // So: enumerate defensively, say so loudly, and continue to the same plain
+    // path the old code reached silently.
+    let all: ReturnType<typeof listAllSessionsDetailed>;
+    try {
+      all = listAllSessionsDetailed(root);
+    } catch (err) {
+      // Sanitized: the message carries the PATH, which is workspace-controlled
+      // and can hold an ESC or a newline. The per-directory warning below
+      // already does this; a raw interpolation here would let a project path
+      // redraw the line reporting the limit stop.
+      const detail = sanitizeDisplayText(err instanceof Error ? err.message : String(err));
+      process.stderr.write(
+        `[storybloq] limit stop: \`.story/sessions\` could not be enumerated ` +
+          `(${detail}), so ownership could not be determined. ` +
+          `Recording this stop as a PLAIN session. If an autonomous session is running it will not be parked; ` +
+          `run \`storybloq session list\` to see why the directory could not be read.\n`,
+      );
+      all = { sessions: [], damaged: [], unavailable: [], incompatible: [] };
+    }
+    const owned = all.sessions.filter((s) => {
       if (s.state.status !== "active") return false;
       if (s.state.ownerTask) {
         return s.state.ownerTask.client === "claude" && s.state.ownerTask.id === clientTaskId;
@@ -1373,6 +1416,35 @@ export async function handleSessionLimitStop(options: SessionLimitStopOptions = 
     });
     owned.sort((a, b) => (b.state.startedAt ?? "").localeCompare(a.state.startedAt ?? ""));
     const session = owned[0];
+
+    // Be exact about what this can and cannot fix. An unreadable session may be
+    // this task's, and there is no way to find out: the owner is recorded INSIDE
+    // the file that will not parse. So the classification cannot be corrected
+    // here, and parking such a session is impossible anyway -- this build can
+    // neither read nor write its state.
+    //
+    // What was wrong was that it happened in SILENCE. A limit stop recorded as
+    // `plain` over a damaged autonomous session leaves that session unparked
+    // with nothing anywhere saying so, and the next session finds a stale
+    // record it cannot explain. Naming the entries turns an invisible
+    // misclassification into a visible one, which is the difference between a
+    // bug an operator can act on and one they cannot see.
+    if (!session) {
+      const unreadable = [
+        ...all.damaged.map((d) => d.sourceDir),
+        ...all.unavailable.map((d) => d.sourceDir),
+        ...all.incompatible.map((d) => d.sourceDir),
+      ];
+      if (unreadable.length > 0) {
+        process.stderr.write(
+          `[storybloq] limit stop: no readable autonomous session for this task, but ` +
+            `${unreadable.length} session director${unreadable.length === 1 ? "y" : "ies"} could not be read ` +
+            `(${boundedList(unreadable.map((u) => sanitizeDisplayText(u)), { noun: "directories" })}). ` +
+            `Recording this stop as a PLAIN session. If one of those is this task's session it will not be parked; ` +
+            `run \`storybloq session list\` to see why they could not be read.\n`,
+        );
+      }
+    }
 
     let headHash: string | null = null;
     try {

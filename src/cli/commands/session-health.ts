@@ -1,5 +1,5 @@
 import { findActiveSessionMinimal } from "../../autonomous/session.js";
-import { resolveSessionSelector } from "../../autonomous/session-selector.js";
+import { resolveSessionSelector, describeIncompatible } from "../../autonomous/session-selector.js";
 import { deriveHealthState } from "../../autonomous/health-model.js";
 
 export async function handleSessionHealth(
@@ -23,6 +23,14 @@ export async function handleSessionHealth(
       process.stderr.write(`Ambiguous selector "${id}". Matches: ${res.matches.join(", ")}\n`);
     } else if (res.kind === "invalid") {
       process.stderr.write(res.reason + "\n");
+    } else if (res.kind === "incompatible") {
+      // NOT "not found" (ISS-897). The session is there and was never interpreted
+      // rather than found wrong; this
+      // build cannot read it. Reporting it as absent sends an operator looking
+      // for a session that is sitting on disk in front of them.
+      process.stderr.write(
+        `Session ${res.sessionId} is ${describeIncompatible(res)}.\n`,
+      );
     } else {
       process.stderr.write(`Session ${id} not found.\n`);
     }

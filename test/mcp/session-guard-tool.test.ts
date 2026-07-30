@@ -221,8 +221,14 @@ describe("storybloq_session_guard contract", () => {
    */
   it("returns the duplicate-sessionId note through the serialized response", async () => {
     const root = await project();
-    await writeSession(root, "dir-aaa", { sessionId: "collided" });
-    await writeSession(root, "dir-zzz", { sessionId: "collided" });
+    // A real UUID, because that is what a collision IS. `SessionStateSchema`
+    // declares `z.string().uuid()`, so the scanner substitutes the directory
+    // name for anything else -- and two records carrying the same INVALID id
+    // are then two distinct records, correctly: an id the schema rejects
+    // cannot establish that they are the same session.
+    const COLLIDED = "cccccccc-1111-4222-8333-444444444444";
+    await writeSession(root, "dir-aaa", { sessionId: COLLIDED });
+    await writeSession(root, "dir-zzz", { sessionId: COLLIDED });
 
     const tools = capture(registerSessionGuardTool as never, root);
     const out = await call(tools.get("storybloq_session_guard")!, {});
@@ -230,7 +236,7 @@ describe("storybloq_session_guard contract", () => {
     expect(out.sessions, "deduplication did not happen at the boundary").toHaveLength(1);
     const notes = out.transcriptionNotes as string[] | undefined;
     expect(notes, "transcriptionNotes did not survive the tool boundary").toBeDefined();
-    const note = (notes ?? []).find((n) => n.includes("collided"));
+    const note = (notes ?? []).find((n) => n.includes(COLLIDED));
     expect(note, `no collision note: ${JSON.stringify(notes)}`).toBeDefined();
     // Both directories, and which is which -- otherwise the operator knows a
     // collision exists but not what to inspect or delete.

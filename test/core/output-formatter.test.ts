@@ -7,6 +7,7 @@ import {
   escapeMarkdownDocument,
   fencedBlock,
   formatStatus,
+  formatFederatedStatus,
   formatPhaseList,
   formatTicket,
   formatNextTicketOutcome,
@@ -809,5 +810,300 @@ describe("formatIssue phase/location/order (ISS-739)", () => {
     );
     expect(md).toContain("ISS-001 [medium]: Test ISS-001 (p1)");
     expect(md).toContain("ISS-002 [medium]: Test ISS-002 (none)");
+  });
+});
+
+describe("session rows carry UNTRUSTED content (ISS-897)", () => {
+  // `state` is deliberately a free string (T-328): a newer workflow state must
+  // not brick an older reader. Every one of these fields reaches the operator
+  // through Markdown, and every one of them is read out of a state.json this
+  // build did not write -- so schema-valid does not mean safe to print. A
+  // control character reaching a terminal can redraw the line it sits on, and
+  // Markdown metacharacters can restyle the surrounding output; the row that
+  // announces a session must not be forgeable by the session it announces.
+  const ESC = "\u001b";
+  const hostile = {
+    // A CSI erase-line sequence: a terminal that receives it raw wipes the row
+    // it is printed on.
+    sessionId: `${ESC}[2Kaaaa1111-2222`,
+    sourceDir: "sess",
+    state: `IMPLEMENT${ESC}[31m`,
+    // A CR redraws the row without ending it.
+    mode: "auto\r  ",
+    ticketId: "T-001",
+    // Three ways to forge a ROW: a newline; U+2028, which is not a C0 control
+    // character but IS a line break to many renderers; and a bidi override,
+    // which reorders what the reader SEES without changing a byte -- so a row
+    // can name one session and appear to name another.
+    ticketTitle: "Title\n- FORGED: nothing -- COMPLETE (auto mode)\u2028also forged\u202eeltiT",
+  };
+
+  // Every field is schema-valid: strings where strings belong. Nothing here is
+  // malformed, which is exactly why the guard's shape checks cannot catch it.
+  //
+  // Two bars, and the second one moved. Forging a ROW must be impossible,
+  // because these rows are the operator's evidence about which sessions exist.
+  // Authoring inline STRUCTURE must now be impossible too.
+  //
+  // That second bar is new. This is not a terminal-only sink: `storybloq_status`
+  // defaults to `format: "md"` and hands that text to an MCP client, which may
+  // render it. Session-sourced fields therefore take `escapeMarkdownDocumentStrict`
+  // -- links, elements, code spans, emphasis, bare URLs and `@` mentions all
+  // inert. The ledger-sourced fields on the same document (phase names, ticket
+  // titles, issue titles) still take the inline pass, and that boundary is
+  // ISS-915's: a different source, a different set of callers.
+  //
+  // The earlier reasoning here -- that switching the session rows alone would
+  // leave one field on a document escaped and the field beside it not, which is
+  // worse than either consistent answer -- was what kept this open. It was
+  // wrong about which inconsistency mattered: `sessionDiagnosticLines`, in this
+  // same file, already escapes strictly, and its values come out of the SAME
+  // `state.json` files. One document neutralizing a directory name while
+  // leaving the ticket title beside it live is the inconsistency that counts.
+  function assertClean(
+    md: string,
+    label: string,
+    opts: { rendersState?: boolean; rendersTicket?: boolean } = {},
+  ) {
+    for (const [name, ch] of [
+      ["ESC", ESC],
+      ["CR", "\r"],
+      ["LF", "\n- FORGED"],
+      ["U+2028", "\u2028"],
+      ["bidi override", "\u202e"],
+    ] as const) {
+      expect(md, `${label}: raw ${name}`).not.toContain(ch);
+    }
+    // Exactly one row per session, whatever the payload tried to append.
+    expect(md.split("\n").filter((l) => l.startsWith("- ")), `${label}: forged row`).toHaveLength(1);
+    // ...and the row is still useful: neutering must not blank the fields an
+    // operator identifies the session by.
+    // The ticket label is the identifying field on rows that have one. The
+    // short-id fallback rows deliberately have none, which is the whole reason
+    // they exercise a different branch.
+    if (opts.rendersTicket !== false) expect(md, `${label}: ticket lost`).toContain("T-001");
+    // Resumable rows announce recovery instead of a workflow state, so only the
+    // active rows are asked to have kept it.
+    if (opts.rendersState !== false) expect(md, `${label}: state lost`).toContain("IMPLEMENT");
+  }
+
+  const state = makeState();
+
+  it("neutralizes them in ACTIVE rows of standard status", () => {
+    assertClean(formatStatus(state, "md", [hostile], []), "active");
+  });
+
+  it("neutralizes them in RESUMABLE rows of standard status", () => {
+    // A different code path with a different fallback (`session <shortId>`
+    // instead of `no ticket`), so it needs its own row -- and the shortId is a
+    // `slice(0, 8)` of untrusted text, which is a raw substring unless it is
+    // sanitized too.
+    assertClean(formatStatus(state, "md", [], [{ ...hostile, leaseState: "expired" }]), "resumable", {
+      rendersState: false,
+    });
+  });
+
+  const emptyFederation = {
+    orchestratorProject: "orchestrator",
+    nodeCount: 0,
+    reachableCount: 0,
+    unreachableCount: 0,
+    nodes: [],
+    totalTickets: 0,
+    totalOpenTickets: 0,
+    totalCompleteTickets: 0,
+    totalIssues: 0,
+    totalOpenIssues: 0,
+    lastScanTimestamp: "2026-01-01T00:00:00.000Z",
+  };
+
+  it.each([
+    ["standard", (rows: unknown[]) => formatStatus(state, "md", [], rows as never)],
+    [
+      "federated",
+      (rows: unknown[]) =>
+        formatFederatedStatus(emptyFederation as never, state.config, "md", [], rows as never),
+    ],
+  ])("neutralizes the resumable SHORT-ID fallback too (%s)", (label, render) => {
+    // The row above carries `ticketId: "T-001"`, so it renders the ticket label
+    // and never reaches the other branch. That branch is `session ${shortId}`,
+    // where `shortId` is a `slice(0, 8)` of the untrusted `sessionId` -- a raw
+    // substring unless it is sanitized on this path too. With a ticket always
+    // present, the ESC assertions passed over a fallback that was never run.
+    const noTicket = {
+      ...hostile,
+      leaseState: "expired",
+      ticketId: null,
+      ticketTitle: null,
+    };
+    const md = render([noTicket]);
+    assertClean(md, `${label} short-id`, { rendersState: false, rendersTicket: false });
+    // The fallback actually RAN -- otherwise this test would pass by rendering
+    // nothing at all -- and what it printed is the sanitized short id.
+    // The `[` arrives ESCAPED: this is a Markdown document, and a short id is
+    // a raw substring of an untrusted `sessionId`.
+    expect(md, `${label}: short-id fallback not reached`).toContain("session ?\\[2Kaaa");
+  });
+
+  it("does not split an ASTRAL character when building the short id", () => {
+    // `sanitizeDisplayText` is careful not to leave a lone surrogate, and this
+    // `slice(0, 8)` immediately could: an id whose eighth UTF-16 unit lands
+    // inside an astral character keeps the high surrogate and drops the low
+    // one. A terminal draws that as the replacement glyph, so two different
+    // sessions can produce the same short id -- on the resumable rows an
+    // operator reads to tell them apart.
+    const EMOJI = "\u{1f600}";
+    const md = formatStatus(state, "md", [], [
+      {
+        ...hostile,
+        leaseState: "expired",
+        ticketId: null,
+        ticketTitle: null,
+        sessionId: `sevench${EMOJI}rest`,
+      },
+    ] as never);
+
+    for (let i = 0; i < md.length; i += 1) {
+      const c = md.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const next = md.charCodeAt(i + 1);
+        expect(next >= 0xdc00 && next <= 0xdfff, `lone high surrogate at ${i}`).toBe(true);
+        i += 1;
+      } else {
+        expect(c >= 0xdc00 && c <= 0xdfff, `lone low surrogate at ${i}`).toBe(false);
+      }
+    }
+    // The fallback ran AND kept the boundary character whole. Asserting only
+    // the seven-character prefix would pass an implementation that simply
+    // dropped the emoji -- which is the collision this test exists to prevent,
+    // not a fix for it.
+    expect(md).toContain(`session sevench${EMOJI}`);
+
+    // ...and two ids differing only at that boundary still render as two short
+    // ids. This is the property the surrogate check above cannot establish on
+    // its own: absence of a lone surrogate says the output is well formed, not
+    // that it is still distinguishing sessions.
+    const other = formatStatus(state, "md", [], [
+      {
+        ...hostile,
+        leaseState: "expired",
+        ticketId: null,
+        ticketTitle: null,
+        sessionId: `sevench${"\u{1f601}"}rest`,
+      },
+    ] as never);
+    const shortOf = (text: string): string => /session (sevench.)/u.exec(text)?.[1] ?? "";
+    expect(shortOf(md), "short id not found").not.toBe("");
+    expect(shortOf(md)).not.toBe(shortOf(other));
+  });
+
+  it.each([
+    ["standard", (rows: unknown[]) => formatStatus(state, "md", rows as never, [])],
+    [
+      "federated",
+      (rows: unknown[]) =>
+        formatFederatedStatus(emptyFederation as never, state.config, "md", rows as never, []),
+    ],
+  ])("still cannot forge a ROW out of inline Markdown or HTML (%s)", (label, render) => {
+    // Two claims, and this used to make only the weaker one. The non-JSON
+    // branch of both formatters emits a Markdown DOCUMENT -- `#` headings,
+    // `**bold**` -- and every field on a session row is read back out of a
+    // `state.json`, so inline structure surviving here is a live link in the
+    // status output an operator reads during an incident, not a cosmetic
+    // artifact. It is neutralized now, and the text is still legible.
+    const markdownish = {
+      ...hostile,
+      ticketTitle:
+        "[click](https://elsewhere.example) <img src=x> `code` **bold** @admin | piped\u2028second",
+    };
+    const md = render([markdownish]);
+
+    // One row, whatever the payload tried to append.
+    expect(md.split("\n").filter((l) => l.startsWith("- ")), `${label}: forged row`).toHaveLength(1);
+    // The line-break-shaped characters are still gone, which is what forging a
+    // row actually requires.
+    expect(md, `${label}: raw U+2028`).not.toContain("\u2028");
+    expect(md, `${label}: raw LF in title`).not.toContain("piped\n");
+    // ...and the text is preserved rather than dropped, so an operator can see
+    // exactly what the session claimed its ticket was called.
+    expect(md).toContain("elsewhere.example");
+    expect(md).toContain("bold");
+    // ...and no inline structure survives to be RENDERED. The link wrapper is
+    // dead, the element is dead, the code span is dead, the emphasis is dead.
+    expect(md, "live link wrapper").not.toContain("[click](");
+    expect(md, "live element").not.toContain("<img");
+    expect(md, "live code span").not.toContain("`code`");
+    expect(md, "live emphasis").not.toContain("**bold");
+    // The two forms that need no wrapper at all, and that `escapeMarkdownDocument`
+    // (the non-strict pass) leaves alone: a bare URL autolinks by itself, and
+    // `@admin` is a live mention on the surfaces that render this. Without
+    // these, the suite would still pass on the weaker pass.
+    expect(md, "bare URL autolinks").not.toContain("https://elsewhere.example");
+    expect(md, "live mention").not.toContain("@admin");
+    // ...while both remain LEGIBLE, which is the point of escaping rather than
+    // stripping.
+    expect(md).toContain("elsewhere.example");
+    expect(md).toContain("admin");
+    // The escaped forms are what is there instead, so this is neutralization
+    // rather than the payload having been dropped on the floor.
+    expect(md, "escaped bracket").toContain("\\[click\\]");
+  });
+
+  it("neutralizes them in BOTH populations of federated status", () => {
+    // The federated formatter renders its own session rows. It was the seam
+    // that kept the raw values after the standard one was fixed, because the
+    // two share `safeSessionFields` but build and emit their rows separately.
+    const fed = {
+      orchestratorProject: "orch",
+      nodeCount: 0,
+      reachableCount: 0,
+      unreachableCount: 0,
+      nodes: [],
+      totalTickets: 0,
+      totalOpenTickets: 0,
+      totalCompleteTickets: 0,
+      totalIssues: 0,
+      totalOpenIssues: 0,
+      lastScanTimestamp: "2026-01-01T00:00:00.000Z",
+    };
+    assertClean(formatFederatedStatus(fed, state.config, "md", [hostile], []), "federated active");
+    assertClean(
+      formatFederatedStatus(fed, state.config, "md", [], [{ ...hostile, leaseState: "expired" }]),
+      "federated resumable",
+      { rendersState: false },
+    );
+  });
+
+  it("leaves BOTH JSON payload values unmodified -- escaping there would corrupt them", () => {
+    // Markdown escaping is a rendering concern. A consumer parsing the JSON
+    // needs the decoded input values unmodified by this formatter, and `JSON.stringify` already
+    // encodes control characters so they cannot escape the string.
+    //
+    // Asserting that ESC appears encoded is not enough: it would still pass if
+    // the formatter had quietly sanitized the newline, the CR, U+2028 or the
+    // bidi override, since the check names only one of the five. Compare the
+    // whole object instead, and do it for the federated payload too -- it is a
+    // separate implementation, which is exactly why the Markdown fix had to be
+    // made twice.
+    const fed = {
+      orchestratorProject: "orch",
+      nodeCount: 0,
+      reachableCount: 0,
+      unreachableCount: 0,
+      nodes: [],
+      totalTickets: 0,
+      totalOpenTickets: 0,
+      totalCompleteTickets: 0,
+      totalIssues: 0,
+      totalOpenIssues: 0,
+      lastScanTimestamp: "2026-01-01T00:00:00.000Z",
+    };
+    for (const [label, json] of [
+      ["standard", formatStatus(state, "json", [hostile], [])],
+      ["federated", formatFederatedStatus(fed, state.config, "json", [hostile], [])],
+    ] as const) {
+      const parsed = JSON.parse(json) as { data: { activeSessions: unknown[] } };
+      expect(parsed.data.activeSessions, label).toEqual([hostile]);
+    }
   });
 });

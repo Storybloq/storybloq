@@ -7,7 +7,16 @@
  * field extraction.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +221,48 @@ describe("handleSessionLimitStop gates", () => {
 });
 
 describe("handleSessionLimitStop plain sessions", () => {
+  it("still records a stop when `.story/sessions` cannot be enumerated (ISS-897)", async () => {
+    // The regression this guards against was introduced BY the fix beside it.
+    // `listAllSessionsDetailed` used to answer "empty project" for any ENOENT,
+    // which concealed an unreadable sessions root; it now throws instead. That
+    // is right for a display, and it was very nearly fatal here: this call sits
+    // on the usage-limit stop path with nothing but the handler's outer catch
+    // around it, so an unreadable root meant no ledger record, no parked
+    // session, and no waker -- silently, at the moment the agent is stopping.
+    //
+    // The ownership question genuinely cannot be answered here: the owner is
+    // recorded inside a directory this build cannot enumerate. So the outcome
+    // is the same `plain` the old code reached, and what changed is that it is
+    // no longer silent. Recording the wrong classification is recoverable;
+    // recording nothing is not.
+    const transcriptPath = writeTranscript(root);
+    const sessions = join(root, ".story", "sessions");
+    rmSync(sessions, { recursive: true, force: true });
+    // A DANGLING symlink: `readdirSync` raises ENOENT exactly as it does for a
+    // path that was never created, which is what made the old catch wrong.
+    symlinkSync(join(root, ".story", "nowhere"), sessions);
+
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await handleSessionLimitStop({
+        clientTaskId: TASK_ID, cwd: root, transcriptPath, errorType: "rate_limit",
+      });
+
+      const rec = record();
+      expect(rec, "the limit stop was lost entirely").toBeDefined();
+      expect(rec?.sessionType).toBe("plain");
+      expect(rec?.storybloqSessionId).toBeNull();
+
+      // ...and it SAID so. A misclassification an operator can see is a
+      // different thing from one they cannot.
+      const written = warn.mock.calls.map((c) => String(c[0])).join("");
+      expect(written, "recorded plain in silence").toContain("could not be enumerated");
+      expect(written).toContain("PLAIN");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("records a notify stop with transcript evidence", async () => {
     const transcriptPath = writeTranscript(root);
     await handleSessionLimitStop({

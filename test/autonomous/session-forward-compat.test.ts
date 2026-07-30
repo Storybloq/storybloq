@@ -192,8 +192,17 @@ describe("ISS-902: the schemaVersion fence reports skew instead of absence", () 
     expect(message).not.toMatch(/not found/i);
     expect(message).toMatch(/newer storybloq/i);
     expect(message).toMatch(/restart/i);
-    // The operator's first question is "did I lose the work?".
-    expect(message).toMatch(/NOT lost/i);
+    // The operator's first question is "did I lose the work?", and the honest
+    // answer is that this build does not know. The version fence returns before
+    // the fields are validated -- `plantSchemaVersion` writes a file that is
+    // nothing but a version number and still lands here -- so "not lost"
+    // promises a recovery the reader never established. What it CAN say is that
+    // it did not interpret the file, and therefore that deleting it is unsafe.
+    expect(message).not.toMatch(/NOT lost/i);
+    expect(message).toMatch(
+      /nothing here establishes that it is damaged OR that it is sound/,
+    );
+    expect(message).not.toMatch(/intact/i);
   });
 
   it("runs BEFORE schema parse, so an unparseable newer file still reports skew", () => {
@@ -255,7 +264,7 @@ describe("ISS-902: findSessionById distinguishes absent from unreadable", () => 
     expect(lookup.reason).toBe("schema");
   });
 
-  it("reports a session directory with no state.json as unreadable-file", () => {
+  it("reports a session directory with no state.json as missing-state", () => {
     const root = newRoot();
     const created = createSession(root, "coding", "ws-iss902");
     rmSync(join(sessionDir(root, created.sessionId), "state.json"));
@@ -263,9 +272,14 @@ describe("ISS-902: findSessionById distinguishes absent from unreadable", () => 
     const lookup = findSessionByIdDetailed(root, created.sessionId);
     expect(lookup.kind).toBe("unreadable");
     if (lookup.kind !== "unreadable") throw new Error("unreachable");
-    // Distinct from invalid-json and from schema: the directory survived but
-    // the file did not, which is a different operator story.
-    expect(lookup.reason).toBe("unreadable-file");
+    // The operator story this test already named -- "the directory survived but
+    // the file did not" -- now has its own reason rather than sharing
+    // `unreadable-file` with a genuine read error (ISS-897). It had to: it is
+    // the observable shape of `createSession` between its mkdir and its first
+    // write, so `session list` shows the row and says which of the two it is.
+    // Still `kind: "unreadable"`, never `kind: "missing"`, which means the
+    // DIRECTORY is absent and renders as "Session ... not found".
+    expect(lookup.reason).toBe("missing-state");
   });
 
   /**

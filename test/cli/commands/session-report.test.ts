@@ -53,6 +53,25 @@ function writeEvents(dir: string, events: Array<Record<string, unknown>>): void 
   writeFileSync(join(dir, "events.log"), lines);
 }
 
+/**
+ * A snake_case identifier as it appears in the RENDERED report.
+ *
+ * `formatSessionReport` has two formats, `json` and `md`, so every non-JSON
+ * byte it produces is Markdown -- and `storybloq_session_report` hands exactly
+ * that text to an MCP client. Underscores are therefore escaped, and asserting
+ * the bare identifier is asserting the document is unescaped: the same property
+ * that let a session-supplied ticket title put a link into the one document an
+ * operator reads during an incident.
+ *
+ * The backslashes are visible to someone reading the report in a terminal.
+ * That is the accepted cost, and it is the cheaper of the two: an escape
+ * artifact is self-evident and reads correctly anyway, while an injected link
+ * is invisible precisely when it matters.
+ */
+function escapedCode(code: string): string {
+  return code.replace(/_/g, "\\_");
+}
+
 describe("handleSessionReport", () => {
   let testRoot: string;
 
@@ -82,7 +101,11 @@ describe("handleSessionReport", () => {
     makeSessionDir(testRoot); // dir exists, no state.json
     const result = await handleSessionReport(SESSION_ID, testRoot);
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("state.json missing");
+    // ISS-897: phrased on what was ESTABLISHED. The old "state.json missing"
+    // came from an `existsSync` precheck that a dangling parent symlink also
+    // satisfied, so the command asserted a fact about a path it could not
+    // reach. All three surfaces now say the same establishable thing.
+    expect(result.output).toContain("an entry exists at that path, but no readable state.json is in it");
   });
 
   it("returns corrupt error for invalid state.json", async () => {
@@ -93,12 +116,62 @@ describe("handleSessionReport", () => {
     expect(result.output).toContain("corrupt");
   });
 
-  it("returns version mismatch for wrong schema version", async () => {
+  it("returns version mismatch for a NEWER schema version, framed as an upgrade", async () => {
     const dir = makeSessionDir(testRoot);
     writeFileSync(join(dir, "state.json"), JSON.stringify({ schemaVersion: 999 }));
     const result = await handleSessionReport(SESSION_ID, testRoot);
     expect(result.isError).toBe(true);
-    expect(result.output).toContain("schema version");
+    expect(result.errorCode).toBe("version_mismatch");
+    expect(result.output).toContain("session schema v999");
+    // ISS-897/ISS-902: a newer writer is not damage, so this surface must not
+    // read as corruption or suggest removing it. It must not read as a clean
+    // bill of health either -- this very fixture is `{ schemaVersion: 999 }`
+    // and nothing else, so the fence returned before a single session field was
+    // validated. "Intact" would be a claim about session fields this build never validated or interpreted, and so
+    // would "is NOT lost" -- that one promises a compatible reader would still
+    // get the session back.
+    expect(result.output).not.toContain("is NOT lost");
+    expect(result.output).toContain("Do NOT delete it");
+    expect(result.output).toContain(
+      "nothing here establishes that it is damaged OR that it is sound",
+    );
+    expect(result.output).not.toContain("corrupt");
+    expect(result.output).not.toMatch(/is intact/);
+  });
+
+  it("reports a LOWER schema version as UNSUPPORTED, not as corruption", async () => {
+    // This test used to require the opposite, and that requirement was the bug.
+    // The scanner treats a present-but-unsupported version as a record it can
+    // still SEE but must not act on -- admitted, reported, "do not delete it".
+    // Routing the same file to `project_corrupt` here made two operator surfaces
+    // disagree about one state.json, and the disagreement was destructive in
+    // exactly one direction: an operator following this command's advice would
+    // delete a session the guard had just refused to call damaged.
+    //
+    // The remedy is shaped like the newer-writer one because the situation is
+    // the same: this build cannot interpret the file, and therefore knows
+    // nothing about its condition -- which forbids deleting it and equally
+    // forbids vouching for it. It is not IDENTICAL, though: upgrading fixes a
+    // newer writer and does nothing for an older or malformed version, so this
+    // branch says "a storybloq that supports that schema" instead.
+    //
+    // Note also what the SCANNER does with this exact fixture. It carries only
+    // a `schemaVersion`, so its absent status reads as non-active, and the
+    // unsupported-version pre-gate reports it as `unadmitted-schema-version-
+    // undetermined` rather than admitting it. Admission here is `session
+    // report` resolving a named session, which is a different path.
+    const dir = makeSessionDir(testRoot);
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ schemaVersion: 0 }));
+    const result = await handleSessionReport(SESSION_ID, testRoot);
+    expect(result.isError).toBe(true);
+    expect(result.errorCode).toBe("version_mismatch");
+    expect(result.output).toContain("schemaVersion");
+    expect(result.output).toContain(
+      "nothing here establishes that it is damaged OR that it is sound",
+    );
+    expect(result.output).toContain("Do NOT delete it");
+    expect(result.output).not.toContain("corrupt");
+    expect(result.output).not.toContain("is NOT lost");
   });
 
   // --- Successful report ---
@@ -170,6 +243,40 @@ describe("handleSessionReport", () => {
     const result = await handleSessionReport(SESSION_ID, testRoot);
     expect(result.output).toContain("[start]");
     expect(result.output).toContain("[transition]");
+  });
+
+  /**
+   * Event data is arbitrary and comes off disk (ISS-897).
+   *
+   * The timeline rendered it with a bare `JSON.stringify`, which recurses --
+   * so a value nested deeper than the encoder can go raised inside the
+   * formatter and killed the whole report. `events.log` is written by this
+   * build, but the report is exactly the tool an operator reaches for when
+   * something has gone wrong with a session's files, and a diagnostic that
+   * dies on the file it is diagnosing has told them nothing.
+   */
+  it("survives an event whose data cannot be serialized, and bounds a huge one", async () => {
+    const dir = makeSessionDir(testRoot);
+    writeState(dir);
+    // Written as raw text: this is a value `JSON.stringify` cannot emit, so
+    // `writeEvents` (which stringifies) could not produce the fixture.
+    const deep = `${"[".repeat(20000)}1${"]".repeat(20000)}`;
+    expect(() => JSON.stringify(JSON.parse(deep) as unknown)).toThrow();
+    writeFileSync(
+      join(dir, "events.log"),
+      `{"rev":1,"type":"deep","timestamp":"2026-03-27T10:00:00Z","data":{"v":${deep}}}\n` +
+        `{"rev":2,"type":"flood","timestamp":"2026-03-27T10:01:00Z","data":{"v":${JSON.stringify("y".repeat(50_000))}}}\n`,
+    );
+
+    const result = await handleSessionReport(SESSION_ID, testRoot);
+    // It did not die, and it says which value it could not render rather than
+    // dropping the event.
+    expect(result.output).toContain("[deep]");
+    expect(result.output).toContain("unserializable");
+    // ...and the flood is cut, with the magnitude reported.
+    expect(result.output).toContain("[flood]");
+    expect(result.output).not.toContain("y".repeat(500));
+    expect(result.output).toMatch(/truncated from \d+ characters/);
   });
 
   it("skips malformed events and reports count", async () => {
@@ -290,8 +397,8 @@ describe("handleSessionReport", () => {
 
     const result = await handleSessionReport(SESSION_ID, testRoot);
 
-    expect(result.output).toContain("code_review_non_converging");
-    expect(result.output).toContain("landable_uncommitted");
+    expect(result.output).toContain(escapedCode("code_review_non_converging"));
+    expect(result.output).toContain(escapedCode("landable_uncommitted"));
   });
 
   it("treats addressed critical findings as non-blocking at the landing cap", async () => {
@@ -327,7 +434,7 @@ describe("handleSessionReport", () => {
 
     const result = await handleSessionReport(SESSION_ID, testRoot);
     expect(result.output).toContain("1 critical, 0 unresolved critical");
-    expect(result.output).toContain("landable_uncommitted");
+    expect(result.output).toContain(escapedCode("landable_uncommitted"));
   });
 
   // --- JSON format ---

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   classifySessionGuard,
+  completenessFromDiagnostics,
   evaluateSessionGuard,
   PRE_OWNERSHIP_GATES,
   type GuardAction,
@@ -145,6 +146,20 @@ function classify(row: FixtureRow["input"], owner: OwnerTask | null, caller: Own
 // ---------------------------------------------------------------------------
 // The matrix
 // ---------------------------------------------------------------------------
+
+describe("fixture ids", () => {
+  it("does not collide across the directory names this file uses", () => {
+    // `idFor` is a 32-bit FNV-1a, so uniqueness is a property of THIS set and
+    // not of the function. Without this, a colliding pair would make two
+    // unrelated sessions share an id and quietly exercise deduplication --
+    // changing what an unrelated test measures rather than failing it.
+    const ids = FIXTURE_DIRS.map(idFor);
+    expect(new Set(ids).size, `colliding fixture ids: ${ids.join(", ")}`).toBe(FIXTURE_DIRS.length);
+    // ...and each is a session id the production contract accepts, which is why
+    // the helper exists at all.
+    for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+});
 
 describe("classifySessionGuard: caller identity available", () => {
   for (const row of MATRIX.identityAvailable) {
@@ -724,11 +739,19 @@ describe("aggregation", () => {
         { task: CALLER, client: "claude" },
       );
       expect(v.sessions).toHaveLength(1);
-      // Single bearing session, so an aggregate action exists at all.
-      expect(v.overallAction).toBe("continue");
       // The prose names no tiebreak, so the first by read order wins and the
       // choice is deterministic rather than filesystem-dependent.
       expect(v.sessions[0]?.sourceDir).toBe("aaa");
+      // The RECORD's own verdict stands -- it is correct for the record that was
+      // observed, and the caller still needs to know what was found.
+      expect(v.sessions[0]?.action).toBe("continue");
+      // The AGGREGATE does not. Deduplication discarded a record before it was
+      // ever classified, so a project-wide answer computed from the survivor
+      // alone would be speaking for a population that is not the one on disk
+      // (ISS-914). This fires even here, where both records share an owner:
+      // waiving the agreeing case needs the dropped record classified too, and
+      // dedup discards before classification.
+      expect(v.overallAction).toBe("unverifiable");
     });
 
     it("deduplicates across the two arrays, not only within one", () => {
@@ -831,13 +854,70 @@ function makeRoot(): string {
   return root;
 }
 
+/**
+ * A UUID derived from a directory name, stable and distinct per name.
+ *
+ * `sessionId: dir` was convenient and unfaithful: `SessionStateSchema` declares
+ * `z.string().uuid()`, so `"true-legacy"` is a value no writer in this codebase
+ * can produce and every strict reader rejects. Fixtures carrying one made the
+ * scanner's `session-id-invalid` path fire across the whole suite once that
+ * contract was enforced -- which is the fixture being wrong, not the rule.
+ *
+ * Derived rather than random so a test can still reason about which record is
+ * which. The hash is 32-bit, so this is NOT injective in general -- two
+ * directory names could in principle collide and quietly exercise
+ * duplicate-session-id behaviour in a test that meant nothing of the kind. It
+ * is safe here because the fixture set is small and fixed, and `FIXTURE_DIRS`
+ * below pins that it does not collide; a wider set would need a wider digest. Tests that need two directories to SHARE
+ * an id pass `sessionId` explicitly and are unaffected.
+ */
+function idFor(dir: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < dir.length; i += 1) {
+    h = Math.imul(h ^ dir.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  const hex = h.toString(16).padStart(8, "0");
+  return `${hex}-1111-4222-8333-${hex}44444444`.slice(0, 36);
+}
+
+/**
+ * Every directory name this file feeds through `idFor`.
+ *
+ * Listed rather than derived, because the point is to fail when the set grows:
+ * a 32-bit hash is not injective, so a new fixture directory that happens to
+ * collide with an existing one would silently turn an unrelated test into a
+ * duplicate-session-id test. Adding a directory means adding it here.
+ */
+const FIXTURE_DIRS = [
+  // Every directory name passed through `writeSession`/`idFor`, which is
+  // narrower than "every directory this file creates": a name missing from
+  // here is a GENERATED id the collision check below never looked at, and
+  // `damaged-owner` was exactly that. Directories created by hand for scanner
+  // faults (`broken`, `truncated`, and the like) receive no generated id and
+  // need no entry; `writeSession` throws for anything else, so the two cannot
+  // drift again.
+  "aaa-first", "badowner", "damaged", "damaged-owner", "ended", "from-the-future",
+  "legacy", "live", "mine", "nostatus", "owned", "readable-owner",
+  "stale-looking", "theirs", "true-legacy", "weirdstatus", "zzz-second",
+] as const;
+
+const REGISTERED_FIXTURE_DIRS = new Set<string>(FIXTURE_DIRS);
+
 function writeSession(root: string, dir: string, state: Record<string, unknown>): string {
+  // ENFORCED, not documented. `FIXTURE_DIRS` claims to be every fixture name
+  // and the uniqueness check below is only as good as that claim; nothing
+  // connected the two, so a new directory could be written here, collide with
+  // an existing generated id, and leave the check green. `damaged-owner` was
+  // exactly that case.
+  if (!REGISTERED_FIXTURE_DIRS.has(dir)) {
+    throw new Error(`fixture directory "${dir}" is not registered in FIXTURE_DIRS; add it there so its generated id is checked for collisions`);
+  }
   const path = join(root, ".story", "sessions", dir);
   mkdirSync(path, { recursive: true });
   writeFileSync(
     join(path, "state.json"),
     JSON.stringify({
-      sessionId: dir,
+      sessionId: idFor(dir),
       status: "active",
       state: "IMPLEMENT",
       mode: "auto",
@@ -895,34 +975,69 @@ describe("legacy claudeCodeSessionId is ignored (ISS-899)", () => {
 // ---------------------------------------------------------------------------
 
 /**
+ * This block used to be named "preserved fail-open" and asserted `free` for
+ * every fault below. That was T-446 recording today's WRONG answer on purpose,
+ * with a comment saying that changing these tests would be the signal ISS-897
+ * had been fixed. This is that change.
+ *
+ * SIX of the seven now withhold the aggregate. Only the positively terminal
+ * `SESSION_END` case is unchanged, and that matters as much: a fix that also
+ * flipped it would be failing closed on a record that is fully accounted for
+ * and finished.
+ *
+ * The six do not all withhold for the same REASON, and the block below keeps
+ * them apart. Five are concealment -- something the scan could not see, so
+ * `scanCompleteness` is `incomplete`. The sixth, a malformed `ownerTask`, is
+ * not: that record is admitted and classified, its relationship stays T-446's
+ * frozen `unowned-legacy`, and the scan stays `complete`. What it withholds the
+ * aggregate for is that nobody can say WHO owns it.
+ *
  * Every fault here uses a WRONG FILE TYPE rather than chmod. A chmod-based
  * EACCES test running as root reads the file anyway and passes for the wrong
  * reason -- which is exactly the failure mode this block exists to catch. The
  * kernel rejects a wrong file type identically for every user.
  */
-describe("preserved fail-open: scanner concealment (ISS-897)", () => {
+describe("scanner concealment is reported, not silent (ISS-897)", () => {
   const evaluate = (root: string) => evaluateSessionGuard(root, { clientTaskId: "caller-task", client: "claude" });
 
-  it("state.json is a directory (EISDIR) -> session vanishes, verdict free", () => {
+  /** Asserts the verdict stopped AND that it can say what to go and look at. */
+  const expectConcealed = (root: string, kind: string, sourceDir: string | null) => {
+    const v = evaluate(root);
+    expect(v.overallAction, "verdict did not stop on an incomplete scan").toBe("unverifiable");
+    expect(v.scanCompleteness).toBe("incomplete");
+    const d = v.diagnostics.find((x) => x.kind === kind);
+    expect(d, `no ${kind} diagnostic: ${JSON.stringify(v.diagnostics)}`).toBeDefined();
+    expect(d!.category).toBe("omission");
+    expect(d!.sourceDir).toBe(sourceDir);
+    // Naming the fault without naming the file is the complaint ISS-897 makes
+    // about `unverifiable` with nothing attached.
+    expect(d!.sourcePath.length, "diagnostic carries no path to inspect").toBeGreaterThan(0);
+    return v;
+  };
+
+  it("state.json is a directory (EISDIR) -> unverifiable, naming the directory", () => {
     const root = makeRoot();
     mkdirSync(join(root, ".story", "sessions", "broken", "state.json"), { recursive: true });
-    expect(evaluate(root).overallAction).toBe("free");
+    expectConcealed(root, "state-unreadable", "broken");
   });
 
-  it("state.json is truncated JSON -> session vanishes, verdict free", () => {
+  it("state.json is truncated JSON -> unverifiable", () => {
     const root = makeRoot();
     const dir = join(root, ".story", "sessions", "truncated");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "state.json"), '{"status":"active"');
-    expect(evaluate(root).overallAction).toBe("free");
+    expectConcealed(root, "state-invalid-json", "truncated");
   });
 
-  it(".story/sessions is a file (ENOTDIR) -> empty scan, verdict free", () => {
+  it(".story/sessions is a file (ENOTDIR) -> unverifiable, naming the sessions root", () => {
     const root = mkdtempSync(join(tmpdir(), "storybloq-guard-"));
     roots.push(root);
     mkdirSync(join(root, ".story"), { recursive: true });
     writeFileSync(join(root, ".story", "sessions"), "not a directory");
-    expect(evaluate(root).overallAction).toBe("free");
+    // A collection-level fault has no entry to name, so `sourceDir` is null and
+    // `sourcePath` carries the sessions root instead.
+    const v = expectConcealed(root, "sessions-dir-unreadable", null);
+    expect(v.diagnostics[0]!.sourcePath).toContain(join(".story", "sessions"));
   });
 
   /**
@@ -931,36 +1046,2099 @@ describe("preserved fail-open: scanner concealment (ISS-897)", () => {
    * `isSymbolicLink()` and is dropped by `entry.isDirectory()` one line BEFORE
    * `isContainedSessionDir` is consulted. A test claiming to exercise
    * containment here would be asserting against a branch it never reaches.
+   *
+   * Note the name: `linked` is NOT a canonical session id. The symlink half of
+   * the rule is deliberately name-independent, so a rule keyed on UUID shape
+   * would leave this exact fixture silent.
    */
-  it("a symlinked session entry is dropped by the entry.isDirectory() filter", () => {
+  it("a symlinked session entry -> unverifiable, though its name is not a session id", () => {
     const root = makeRoot();
     const real = join(root, "outside-session");
     mkdirSync(real, { recursive: true });
     writeFileSync(join(real, "state.json"), JSON.stringify({ sessionId: "linked", status: "active", state: "IMPLEMENT" }));
     symlinkSync(real, join(root, ".story", "sessions", "linked"));
-    expect(evaluate(root).overallAction).toBe("free");
+    expectConcealed(root, "entry-not-a-directory", "linked");
   });
 
-  it("a parseable record with no `status` key vanishes", () => {
+  it("a parseable record with NO `status` key is active, because the schema says so", () => {
+    // The inverse of the rule beside it, and the correction to an earlier
+    // version of this test that asserted the opposite.
+    //
+    // `SessionStateSchema` declares `.default("active")` on `status`, so a
+    // record written before the field existed parses as ACTIVE in every strict
+    // reader here. A scanner that answers `status-undetermined` for the same
+    // file drops it from both populations and drives the guard to
+    // `unverifiable` -- concealing a valid session with the code added to stop
+    // sessions being concealed, and disagreeing with the schema about a file
+    // both are reading.
+    //
+    // "Unestablished" is the claim that does not survive. An absent optional
+    // field with a declared default is not unknown; its value is the default.
     const root = makeRoot();
     const dir = join(root, ".story", "sessions", "nostatus");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "state.json"), JSON.stringify({ sessionId: "nostatus", state: "IMPLEMENT" }));
-    expect(evaluate(root).overallAction).toBe("free");
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify({
+        sessionId: idFor("nostatus"),
+        state: "IMPLEMENT",
+        lease: { expiresAt: new Date(Date.now() + 600_000).toISOString() },
+      }),
+    );
+    const v = evaluate(root);
+
+    expect(v.scanCompleteness).toBe("complete");
+    expect(v.diagnostics.map((d) => d.kind)).not.toContain("status-undetermined");
+    expect(v.sessions).toHaveLength(1);
+    expect(v.sessions[0]!.sourceDir).toBe("nostatus");
   });
 
-  it("a parseable active record in SESSION_END vanishes", () => {
+  it("but a PRESENT status outside the known set is still undetermined", () => {
+    // The control that keeps the default from swallowing the real case. A
+    // value that is there and unrecognized is not a legacy record taking a
+    // default; it is a field this build cannot interpret, and retiring the
+    // record on it would be the silent drop the rule exists to stop.
+    const root = makeRoot();
+    const dir = join(root, ".story", "sessions", "weirdstatus");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify({ sessionId: idFor("weirdstatus"), status: "paused", state: "IMPLEMENT" }),
+    );
+    expectConcealed(root, "status-undetermined", "weirdstatus");
+  });
+
+  // --- The two that do NOT flip -------------------------------------------
+
+  it("a parseable active record in SESSION_END still vanishes, silently", () => {
     const root = makeRoot();
     writeSession(root, "ended", { state: "SESSION_END" });
-    expect(evaluate(root).overallAction).toBe("free");
+    const v = evaluate(root);
+    // Positively terminal. Nothing is concealed by dropping a session that has
+    // ended, and diagnosing it would put a finished project into `unverifiable`.
+    expect(v.overallAction).toBe("free");
+    expect(v.diagnostics).toEqual([]);
+    expect(v.scanCompleteness).toBe("complete");
+  });
+
+  it("names a deduplicated owner-fault directory without claiming it survived", () => {
+    // End-to-end over a real tree, because the interaction only exists once the
+    // scanner's admission and the guard's deduplication both run: the scanner
+    // admits both directories and emits the ownership diagnostic for the second,
+    // then dedup drops that one. The rationale has to name it as observed rather
+    // than as reported above -- the wording contradicted the verdict beside it.
+    const root = makeRoot();
+    const shared = "aaaa1111-2222-4333-8444-555555555555";
+    writeSession(root, "aaa-first", {
+      sessionId: shared,
+      ownerTask: { client: "claude", id: "caller-task", boundAt: "2026-01-01T00:00:00.000Z" },
+    });
+    writeSession(root, "zzz-second", {
+      sessionId: shared,
+      ownerTask: { client: "claude", id: "", boundAt: "2026-01-01T00:00:00.000Z" },
+    });
+
+    const v = evaluate(root);
+    expect(v.overallAction).toBe("unverifiable");
+    expect(v.sessions.map((s) => s.sourceDir)).toEqual(["aaa-first"]);
+    expect(v.diagnostics.some((d) => d.kind === "owner-task-undetermined" && d.sourceDir === "zzz-second")).toBe(true);
+    expect(v.overallRationale).toContain("zzz-second");
+    expect(v.overallRationale).not.toContain("IS reported above");
+    // Both blockers apply here and both must be visible: the collision and the
+    // unreadable owner are separate facts with separate remedies.
+    expect(v.overallRationale).toContain("ISS-914");
+    expect(v.overallRationale).toContain("WHO owns it");
+  });
+
+  it("a newer-schema live session cannot produce a permissive verdict", () => {
+    // The end-to-end statement of the scanner fence: a session written under a
+    // newer schema, whose condition this build did not determine, must not be
+    // read under THIS build's schema and turned into a green light. Its fields
+    // may mean something else now, so it fails CLOSED -- and the remedy is an
+    // upgrade, never a deletion.
+    const root = makeRoot();
+    writeSession(root, "from-the-future", { schemaVersion: 99 });
+    const v = evaluate(root);
+    expect(v.overallAction).toBe("unverifiable");
+    expect(v.sessions).toEqual([]);
+    expect(v.scanCompleteness).toBe("incomplete");
+    expect(v.diagnostics.map((d) => d.kind)).toContain("state-version-skew");
+    expect(v.overallRationale).toContain("from-the-future");
+  });
+
+  it("an UNSUPPORTED-schema session that looks stale cannot produce `free` either", () => {
+    // The newer-schema case above exits through `state-version-skew`, which is
+    // its own kind and its own branch. This is the other half of the version
+    // contract and it walks a longer path: `status: "active"` clears the
+    // terminal pre-gate, a known non-COMPACT state keeps it out of
+    // `resumableSessions`, and an expired lease keeps it out of
+    // `activeSessions`. Admitted by neither, it used to leave without a
+    // diagnostic -- so the guard saw an empty population on a scan reporting
+    // itself complete and answered `free`, the most permissive verdict it has,
+    // over a session whose fields it had just declared it could not interpret.
+    //
+    // Only the end-to-end path can catch this. The hand-built classifier tests
+    // above start from a scan RESULT, so they cannot see a record the scanner
+    // dropped before building one.
+    const root = makeRoot();
+    writeSession(root, "stale-looking", {
+      schemaVersion: 0,
+      status: "active",
+      state: "IMPLEMENT",
+      lease: { expiresAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const v = evaluate(root);
+
+    expect(v.overallAction).toBe("unverifiable");
+    expect(v.sessions).toEqual([]);
+    expect(v.scanCompleteness).toBe("incomplete");
+    expect(v.diagnostics.map((d) => d.kind)).toContain("unadmitted-schema-version-undetermined");
+    expect(v.overallRationale).toContain("stale-looking");
   });
 
   it("an ownerTask that fails validation reads as unowned-legacy, not foreign-live", () => {
     const root = makeRoot();
     writeSession(root, "badowner", { ownerTask: { client: "claude", id: "", boundAt: 1 } });
     const v = evaluate(root);
+    // T-446's transcription, unchanged: the RELATIONSHIP is still what it was.
     expect(v.sessions[0]?.relationship).toBe("unowned-legacy");
     expect(v.sessions[0]?.ownerTask).toBeNull();
+    // ISS-897: the AGGREGATE is withheld, because the substitution that produced
+    // that relationship is itself the thing that could not be read. See the
+    // takeover test below for why this is not merely tidy.
+    expect(v.overallAction).toBe("unverifiable");
+    expect(v.diagnostics.map((d) => d.kind)).toContain("owner-task-undetermined");
+  });
+
+  /**
+   * PRESENT but unusable is not ABSENT, and collapsing them is a takeover.
+   *
+   * A null `ownerTask` means "legacy session, no owner recorded", and a LIVE
+   * COMPACT legacy session is auto-resumed -- that is the documented migration
+   * path. A session whose owner id is DAMAGED is not that: it belongs to
+   * somebody. The scanner used to normalize both to null, which turned
+   * `foreign-live` into `unowned-legacy` and `monitor-only` into `auto-resume`.
+   *
+   * This is the ISS-554 shape reached through a malformed field, and the pair of
+   * assertions below is the whole argument: identical records, one with a
+   * readable foreign owner and one with a damaged one, must not differ by
+   * "monitor it" versus "take it over".
+   */
+  it("a LIVE COMPACT session with a DAMAGED owner is not auto-resumed", () => {
+    const root = makeRoot();
+    const compactLive = {
+      state: "COMPACT",
+      compactPending: true,
+      lease: { expiresAt: new Date(Date.now() + 600_000).toISOString() },
+    };
+
+    const damaged = makeRoot();
+    writeSession(damaged, "damaged-owner", {
+      ...compactLive,
+      ownerTask: { client: "claude", id: "", boundAt: new Date().toISOString() },
+    });
+    const dv = evaluate(damaged);
+    expect(dv.overallAction).toBe("unverifiable");
+    expect(dv.overallAction).not.toBe("auto-resume");
+    expect(dv.diagnostics.map((d) => d.kind)).toContain("owner-task-undetermined");
+
+    // The control: the same record with a READABLE foreign owner is monitored,
+    // never resumed. The damaged one must not be treated more permissively than
+    // the one whose owner this build can actually read.
+    writeSession(root, "readable-owner", {
+      ...compactLive,
+      ownerTask: { client: "claude", id: "someone-else", boundAt: new Date().toISOString() },
+    });
+    const rv = evaluate(root);
+    expect(rv.sessions[0]?.relationship).toBe("foreign-live");
+    expect(rv.overallAction).toBe("monitor-only");
+  });
+
+  it("a genuinely ABSENT ownerTask still gets the legacy migration path", () => {
+    // The distinction has to be present-but-unreadable versus absent, not
+    // "anything unusual blocks". A real legacy session -- written before owner
+    // binding existed -- must keep its documented recovery, or the fix costs
+    // every pre-migration project its continuity.
+    const root = makeRoot();
+    writeSession(root, "true-legacy", {
+      state: "COMPACT",
+      compactPending: true,
+      lease: { expiresAt: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const v = evaluate(root);
+    expect(v.overallAction).toBe("offer-recovery");
+    expect(v.diagnostics).toEqual([]);
+    expect(v.scanCompleteness).toBe("complete");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The concealment axis of the aggregate (ISS-897)
+// ---------------------------------------------------------------------------
+
+/**
+ * `overallAction` alone cannot express scan completeness: `free` over a scan
+ * that dropped an unreadable directory is indistinguishable from `free` over a
+ * clean one, and that is the ISS-554 shape. So the aggregate has two axes, and
+ * this block is one test per CELL of the 3x2 table -- the population counts down
+ * the side, completeness across the top.
+ */
+describe("aggregate: population count x scan completeness (ISS-897)", () => {
+  const CALLER_TASK = { client: "claude", id: "caller-task", boundAt: "2026-01-01T00:00:00.000Z" } as const;
+  const caller = { task: CALLER_TASK, client: "claude" } as const;
+  const omission = {
+    kind: "state-unreadable",
+    category: "omission",
+    sourceDir: "broken",
+    sourcePath: "/p/.story/sessions/broken/state.json",
+    sessionId: null,
+    reason: "unreadable",
+  } as const;
+  const benign = { ...omission, kind: "session-id-invalid", category: "normalized" } as const;
+
+  const mine = () => summary({ sessionId: "a", sourceDir: "a", ownerTask: CALLER_TASK });
+  const theirs = () =>
+    summary({
+      sessionId: "b",
+      sourceDir: "b",
+      ownerTask: { client: "claude", id: "other-task", boundAt: "2026-01-01T00:00:00.000Z" },
+    });
+
+  describe("no session visible", () => {
+    it("clean scan -> free", () => {
+      const v = classifySessionGuard({ activeSessions: [], resumableSessions: [], diagnostics: [] }, caller);
+      expect(v.overallAction).toBe("free");
+      expect(v.scanCompleteness).toBe("complete");
+    });
+
+    it("omission -> unverifiable, and the rationale names the directory to inspect", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [], resumableSessions: [], diagnostics: [omission] },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.primary).toBeNull();
+      expect(v.overallRationale).toContain("broken");
+      expect(v.diagnostics).toHaveLength(1);
+    });
+  });
+
+  describe("one session visible", () => {
+    it("clean scan -> that session's own action", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [mine()], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("continue");
+    });
+
+    it("omission -> unverifiable, but `primary` and `sessions` are PRESERVED", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [mine()], resumableSessions: [], diagnostics: [omission] },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      // Discarding the observed record would leave the caller unable to say
+      // what was found OR what failed. Only the AGGREGATE is withheld.
+      expect(v.primary?.sourceDir).toBe("a");
+      expect(v.primary?.action).toBe("continue");
+      expect(v.sessions).toHaveLength(1);
+    });
+  });
+
+  describe("two sessions visible", () => {
+    it("clean scan -> null, the existing multiplicity answer", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [mine(), theirs()], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBeNull();
+    });
+
+    it("omission -> STILL null, and the concealment is reported beside the conflict", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [mine(), theirs()], resumableSessions: [], diagnostics: [omission] },
+        caller,
+      );
+      // `null` is a STRONGER stop than `unverifiable` -- it means no aggregate
+      // rule exists at all -- so overwriting it would trade the multiplicity
+      // signal for a weaker one.
+      expect(v.overallAction).toBeNull();
+      // But it must not SUPPRESS the concealment: a reader who saw only the
+      // multiplicity would not know the population it was computed over is
+      // incomplete.
+      expect(v.overallRationale).toContain("More than one session");
+      expect(v.overallRationale).toContain("incomplete");
+      expect(v.overallRationale).toContain("broken");
+      expect(v.diagnostics).toHaveLength(1);
+    });
+  });
+
+  describe("categories other than omission never change a verdict", () => {
+    // `collision` is deliberately NOT in this list, and its exclusion is not a
+    // fail-open. The aggregate is withheld on the observed DEDUPLICATION EVENT,
+    // never on the category: at this typed seam a caller can attach a
+    // `collision`-category diagnostic to a payload whose summaries carry no
+    // duplicate `sessionId` at all, and that payload collapsed nothing, so
+    // there is nothing to withhold. An actual duplicate DOES withhold the
+    // aggregate (ISS-914), which the collision tests below pin. Listing the
+    // category here alongside the two that are genuinely harmless would encode
+    // "a collision is safe" as a tested contract and lose that distinction.
+    // Each pair is a kind WITH ITS OWN category. The earlier version of this
+    // test reused one kind and swapped the category under it, which made
+    // `session-id-invalid` (a `normalized` kind) arrive as `undetermined` -- a
+    // mismatched pair, now correctly unusable. Asserting `continue` for it
+    // locked in the fail-open the validator exists to close, so the parameter
+    // has to be the pair, not the category alone.
+    it.each([
+      ["session-id-invalid", "normalized"],
+      ["lease-undetermined", "undetermined"],
+    ])("%s/%s alone leaves the action alone", (kind, category) => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [{ ...benign, kind, category } as never],
+        },
+        caller,
+      );
+      // CATEGORY-level behaviour only. This asserts that a non-omission
+      // category does not by itself force `unverifiable`, which would fail
+      // closed with no hazard behind it. It deliberately does NOT assert
+      // correlation: the diagnostic is spread from `benign`, so it carries
+      // `sessionId: null` and `sourceDir: "broken"` while the classified record
+      // is (a, a). The pass comes from the category being ignored for blocking,
+      // not from the annotation belonging to that record -- placement is
+      // covered by the ownership correlation tests below.
+      expect(v.overallAction).toBe("continue");
+      expect(v.scanCompleteness).toBe("complete");
+      expect(v.diagnostics).toHaveLength(1);
+    });
+
+    it.each([
+      ["state-unreadable", "normalized"],
+      ["state-unreadable", "undetermined"],
+      ["state-unreadable", "collision"],
+      ["owner-task-undetermined", "normalized"],
+    ])("but %s labelled %s is a MISMATCHED pair, and mismatched is unusable", (kind, category) => {
+      // Both values are individually recognized, which is exactly the problem:
+      // validating them separately let this through as usable, so completeness
+      // stayed `complete` and the aggregate rose to `continue`. Yet
+      // `state-unreadable` means a record was CONCEALED, and no rule fires on a
+      // `normalized` entry to say so -- a payload that is merely wrong, not even
+      // hostile, hides a session. One kind means one category.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [{ ...benign, kind, category } as never],
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("unknown");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
+    });
+
+    it("still drops a mismatched pair that CLAIMS omission, but keeps the claim", () => {
+      // The other direction, and it resolves the opposite way. `session-id-invalid`
+      // labelled `omission` is just as mismatched, but the claim it makes is that
+      // something was CONCEALED -- and the category-only rule outranks the pairing
+      // check precisely so a concealment claim is never softened. The entry is
+      // still unusable and still dropped; what survives is the warning.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [{ ...benign, kind: "session-id-invalid", category: "omission" }] as never,
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("incomplete");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
+    });
+
+    it("keeps the CATEGORY-only omission rule, which outranks the pairing check", () => {
+      // `{ category: "omission" }` has no kind to pair at all, and it must stay
+      // `incomplete` rather than becoming `unknown`: the category alone already
+      // says the scan concealed something, and answering `unknown` there would
+      // trade a specific warning for a vaguer one. The pairing check applies to
+      // entries that claim a kind, not to this one.
+      const v = classifySessionGuard(
+        { activeSessions: [mine()], resumableSessions: [], diagnostics: [{ category: "omission" }] as never },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("incomplete");
+    });
+  });
+
+  /**
+   * The collision block (ISS-914).
+   *
+   * Two directories claiming one `sessionId` are collapsed to one record BEFORE
+   * classification, so the survivor would otherwise decide the aggregate alone.
+   * When the dropped record is a live FOREIGN session, that produced `continue`
+   * off a scan reported as `complete` -- the ISS-554 shape, reached through a
+   * green light, which is the failure this whole guard exists to prevent.
+   *
+   * Detecting the collision was ISS-897's scope. Shipping the detection while
+   * leaving the aggregate permissive would have meant shipping a document that
+   * calls a collision "an unresolved hazard, not a permission" directly above a
+   * rule that grants one, so the block ships with the detection.
+   *
+   * What is still open in ISS-914 is the PRECISION of the rule: this fires on
+   * any collision, including one where both records agree, because deciding that
+   * requires classifying the dropped record and dedup discards it first.
+   */
+  describe("duplicate sessionId with conflicting owners (ISS-914)", () => {
+    const collided = (task: string, dir: string): ActiveSessionSummary => ({
+      ...mine(),
+      sourceDir: dir,
+      sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      ownerTask: { client: "claude", id: task },
+    });
+
+    it("withholds the aggregate rather than answering from the survivor alone", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sourceDir: "bbb-theirs",
+              sessionId: "aaaa1111-2222-3333-4444-555555555555",
+              conflictingSourceDirs: ["aaa-mine", "bbb-theirs"],
+            } as never,
+          ],
+        },
+        caller,
+      );
+
+      // The block. A live foreign record was dropped by dedup, so no
+      // project-wide answer is available at all.
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(v.overallRationale).toContain("ISS-914");
+
+      // The scan itself is genuinely complete -- nothing was concealed FROM the
+      // scan. The two axes are independent, and conflating them would have made
+      // this look like a scanner fault.
+      expect(v.scanCompleteness).toBe("complete");
+
+      // The survivor's own verdict is preserved, not erased. The caller still
+      // needs to know what was found, and only the aggregate is withheld.
+      expect(v.sessions).toHaveLength(1);
+      expect(v.sessions[0]!.relationship).toBe("same-owner");
+      expect(v.sessions[0]!.action).toBe("continue");
+      expect(v.primary).not.toBeNull();
+
+      // And the reporting half from ISS-897 still holds.
+      expect(v.diagnostics.some((d) => d.kind === "duplicate-session-id")).toBe(true);
+      expect(v.transcriptionNotes.join(" ")).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(v.transcriptionNotes.join(" ")).toContain("duplicate-session-id");
+    });
+
+    it("does not claim the diagnostics array is empty when it merely lacks THIS collision", () => {
+      // The note's fallback branch fires on the absence of a matching
+      // `duplicate-session-id` diagnostic, which is not the same as an absent
+      // `diagnostics` array. A hand-built result can carry unrelated entries --
+      // an ownership fault here -- and saying "this scan result carries no
+      // diagnostics" beside a non-empty `diagnostics` array is two incompatible
+      // claims in one result.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [
+            { ...benign, kind: "owner-task-undetermined", category: "undetermined", sourceDir: "aaa-mine" } as never,
+          ],
+        },
+        caller,
+      );
+      const notes = v.transcriptionNotes.join(" ");
+      expect(notes).toContain("kept aaa-mine, dropped bbb-theirs");
+      // The fallback still has to fire -- no `duplicate-session-id` was supplied,
+      // so this sentence really is the only record of the collision.
+      expect(notes).toContain("no structured `duplicate-session-id` diagnostic listing EVERY directory");
+      // ...but it must not misdescribe the array returned beside it.
+      expect(notes).not.toContain("This scan result carries no diagnostics");
+      expect(v.diagnostics).toHaveLength(1);
+    });
+
+    it("does not defer to a matching diagnostic that does not carry this pair", () => {
+      // `conflictingSourceDirs` is OPTIONAL on the type, so a diagnostic can
+      // match on kind and id while holding none of the directories -- and the
+      // structured sentence promises the entry carries every one of them and
+      // tells the reader to act on it instead of parsing the note. Deferring to
+      // a carrier that lost the pair would send the operator to structured data
+      // missing exactly what the note just stopped recording.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sourceDir: "bbb-theirs",
+              sessionId: "aaaa1111-2222-3333-4444-555555555555",
+            } as never,
+          ],
+        },
+        caller,
+      );
+      const notes = v.transcriptionNotes.join(" ");
+      expect(notes).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(notes).toContain("no structured `duplicate-session-id` diagnostic listing EVERY directory");
+      expect(notes).not.toContain("which this verdict returns in `diagnostics`");
+    });
+
+    it("does not defer to a diagnostic that carries only part of a three-way collision", () => {
+      // The note fires once per DROPPED record, so a pairwise check -- does the
+      // diagnostic hold THIS iteration's kept and dropped pair -- passes on a
+      // carrier that omits the third directory. The sentence it gates says the
+      // diagnostic carries every directory and to act on it rather than parse
+      // the note, so the operator would remove two copies, never learn about
+      // the third, and be blocked again by a guard whose instruction reads as
+      // though it had already been followed.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            collided(caller.task!.id, "aaa-mine"),
+            collided("task-b", "bbb-theirs"),
+            collided("task-c", "ccc-third"),
+          ],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sourceDir: "bbb-theirs",
+              sessionId: "aaaa1111-2222-3333-4444-555555555555",
+              conflictingSourceDirs: ["aaa-mine", "bbb-theirs"],
+            } as never,
+          ],
+        },
+        caller,
+      );
+      const notes = v.transcriptionNotes.join(" ");
+      // Every dropped directory is still named by the notes themselves.
+      expect(notes).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(notes).toContain("kept aaa-mine, dropped ccc-third");
+      // And the incomplete carrier is not held out as the complete one.
+      expect(notes).not.toContain("carrying every directory");
+      expect(notes).toContain("listing EVERY directory that holds THIS session id");
+    });
+
+    it("reports the SAME directory arriving twice as a repeated entry, not a collision", () => {
+      // Dedup keys on `sessionId` alone, so it drops the second record whether
+      // the two carry different directories or the identical one -- and from
+      // the `seen` map the two shapes are indistinguishable. They are not the
+      // same event. One directory reported twice is a malformed payload, and
+      // giving it the collision remedy sends an operator to compare directories
+      // and delete a stale copy that does not exist: either a no-op that leaves
+      // the guard blocking on input they cannot change, or a deletion of the
+      // only live session. Unreachable from this build's scanner (a record is
+      // live or resumable, never both), reachable at this seam and from mode A.
+      const same = { ...mine(), sessionId: "dup-id", sourceDir: "only-dir" };
+      const v = classifySessionGuard(
+        { activeSessions: [same], resumableSessions: [same], diagnostics: [] },
+        caller,
+      );
+      // Still fails CLOSED: a record was dropped before classification.
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.sessions).toHaveLength(1);
+      const all = `${v.overallRationale} ${v.transcriptionNotes.join(" ")}`;
+      expect(all).toContain("only-dir");
+      expect(all).toContain("more than once for the SAME directory");
+      // ...but it must NOT describe two directories or prescribe a deletion.
+      expect(all).not.toContain("appears under more than one directory");
+      // Forbid the ACT, not one phrasing of it. Pinning the sweep to the exact
+      // sentence the collision path happened to use in one build makes it pass
+      // the day that sentence is reworded, which is exactly when the repeat
+      // path is most likely to have inherited a deletion instruction.
+      for (const destructive of [/remove every stale/i, /keep the canonical/i, /session delete/i, /\brm\b/]) {
+        expect(all, `repeat path carries a destructive instruction: ${destructive}`).not.toMatch(destructive);
+      }
+      // The word itself cannot simply be banned -- this path REFUSES deletion
+      // out loud, twice, and that refusal is the point. So require that every
+      // mention of it is negated: an instruction to delete would arrive without
+      // the negation, and a reworded refusal still passes.
+      for (const m of all.matchAll(/delet\w*/gi)) {
+        const before = all.slice(Math.max(0, m.index - 25), m.index);
+        expect(before, `unnegated deletion in the repeat path: "${before}${m[0]}"`).toMatch(
+          /\b(no|not|never|nothing)\b/i,
+        );
+      }
+    });
+
+    it("reports A, B, B as ONE collision plus one repeat, not two collisions", () => {
+      // The ordering that breaks a kept-directory comparison. A is kept, the
+      // first B is a genuine collision against it, and the second B is an
+      // identical repeat -- but compared against KEPT A it looks like a second
+      // collision, so the payload fault vanishes and the collision count is
+      // inflated by the very record that proves the payload is malformed. The
+      // operator is then told twice to remove a stale copy of B, and never told
+      // their scan result duplicated a record. Detection keys on the PAIR,
+      // checked before the kept map, which is what makes both statements appear.
+      const b = collided("some-other-task", "bbb-theirs");
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), b],
+          resumableSessions: [b],
+          diagnostics: [],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.sessions).toHaveLength(1);
+      const all = `${v.overallRationale} ${v.transcriptionNotes.join(" ")}`;
+      // Exactly ONE collision statement for the A/B pair.
+      const collisionCount = v.transcriptionNotes.filter((n) =>
+        n.includes("appears under more than one directory"),
+      ).length;
+      expect(collisionCount).toBe(1);
+      expect(all).toContain("kept aaa-mine, dropped bbb-theirs");
+      // ...and the repeat of B reported separately, as a repeat.
+      const repeatCount = v.transcriptionNotes.filter((n) =>
+        n.includes("arrives more than once for the SAME directory"),
+      ).length;
+      expect(repeatCount).toBe(1);
+      expect(all).toContain("One repeated entry was received");
+    });
+
+    it("reports A, A, B, B as two repeated pairs without claiming two sessions", () => {
+      // Several DIFFERENT pairs can repeat in one payload, and the counts then
+      // come apart: 2 repeats, 2 pairs, ONE session id, TWO directories. A
+      // rationale that derives its noun from the pair count says "2 sessions"
+      // here, which is false -- and because A and B share an id, this payload
+      // ALSO contains a genuine A/B collision, so a rule that describes the
+      // whole payload as one directory contradicts the deletion remedy printed
+      // beside it. Each claim has to come from its own count.
+      const a = collided(caller.task!.id, "aaa-mine");
+      const b = collided("some-other-task", "bbb-theirs");
+      const v = classifySessionGuard(
+        { activeSessions: [a, a, b, b], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      const repeatNotes = v.transcriptionNotes.filter((n) =>
+        n.includes("arrives more than once for the SAME directory"),
+      );
+      expect(repeatNotes).toHaveLength(2);
+      const collisionNotes = v.transcriptionNotes.filter((n) =>
+        n.includes("appears under more than one directory"),
+      );
+      expect(collisionNotes).toHaveLength(1);
+      // Both directories named, one session id, and NOT "2 sessions".
+      expect(v.overallRationale).toContain("2 repeated entries were received");
+      expect(v.overallRationale).toContain("2 session/directory pairs");
+      expect(v.overallRationale).toContain("one session id");
+      expect(v.overallRationale).toContain("2 directories");
+      expect(v.overallRationale).not.toContain("2 session ids");
+      // And the genuine collision keeps its own statement, separate from the
+      // repeat's -- but its remedy names no directory for removal either. The
+      // sanitized rationale is not the unmodified name, so it points at
+      // `collisions` and at the containment checks instead.
+      expect(v.overallRationale).toContain("nothing may be deleted on the strength of this sentence");
+      expect(v.overallRationale).toContain("`collisions` on this verdict carries the raw names");
+      expect(v.overallRationale).toContain("before it is safe even to OPEN");
+      // ...and the checks stop at safe-to-open. They establish that a name is a
+      // real participant in this collision; nothing here establishes WHICH
+      // participant is stale, and `kept` is only the first by read order.
+      expect(v.overallRationale).toContain("they do not establish which participant is stale");
+      expect(v.overallRationale).toContain("report what each one holds, and STOP");
+      expect(v.overallRationale).toContain("authorizes no deletion");
+      // This rationale opened by refusing deletion and then closed by
+      // instructing it -- "delete only a copy established as stale, keep both
+      // when none is" -- and the assertions above passed the whole time,
+      // because each of them checked one fragment and none of them read the
+      // paragraph. An operator gets the last instruction, not the first.
+      //
+      // So sweep it. Every mention of deletion must sit inside a refusal, and
+      // no imperative or command may appear at all. Same treatment the
+      // repeated-entry path already gets, applied to the one that can actually
+      // destroy a live session.
+      for (const forbidden of [
+        "delete only a copy",
+        "keep both when none is",
+        "remove only a copy",
+        "session delete",
+        "rm -rf",
+      ]) {
+        expect(v.overallRationale, forbidden).not.toContain(forbidden);
+      }
+      for (const m of v.overallRationale.matchAll(/delet\w*/gi)) {
+        const window = v.overallRationale.slice(Math.max(0, m.index - 40), m.index + 40);
+        expect(window, `unqualified deletion: ${window}`).toMatch(
+          /\b(NO|no|not|never|nothing|without|refus\w*)\b/,
+        );
+      }
+      // The raw targets live in the typed field, and BOTH directories are there.
+      expect(v.collisions).toHaveLength(1);
+      expect(v.collisions[0]).toEqual({
+        sessionId: "aaaa1111-2222-3333-4444-555555555555",
+        kept: "aaa-mine",
+        dropped: "bbb-theirs",
+      });
+    });
+
+    it("counts three copies of one record as two repeats over one directory", () => {
+      // Two counts that differ, and each is a false statement in place of the
+      // other: `repeatedEntries` counts dropped REPEATS (three copies produce
+      // two), the unique pairs count the DIRECTORIES involved (one). Saying
+      // "2 sessions arrived more than once" over a single duplicated session is
+      // the same class of miscount as calling a repeat a collision.
+      const same = { ...mine(), sessionId: "dup-id", sourceDir: "only-dir" };
+      const v = classifySessionGuard(
+        { activeSessions: [same, same], resumableSessions: [same], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("2 repeated entries were received");
+      expect(v.overallRationale).toContain("a session/directory pair already reported in this same scan");
+      expect(v.overallRationale).toContain("spanning one session id and one directory");
+      expect(v.overallRationale).not.toContain("2 sessions");
+    });
+
+    it("keeps a real collision and a repeated entry as separate statements", () => {
+      // Both can be true at once, and each has its own remedy. A reader shown
+      // only one would either delete nothing or delete the wrong thing.
+      const dupe = collided(caller.task!.id, "aaa-mine");
+      const v = classifySessionGuard(
+        {
+          activeSessions: [dupe, collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [dupe],
+          diagnostics: [],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      const all = `${v.overallRationale} ${v.transcriptionNotes.join(" ")}`;
+      // The genuine collision keeps its own statement...
+      expect(all).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(all).toContain("before it is safe even to OPEN");
+      expect(all).toContain("they do not establish which participant is stale");
+      expect(v.collisions).toEqual([
+        { sessionId: "aaaa1111-2222-3333-4444-555555555555", kept: "aaa-mine", dropped: "bbb-theirs" },
+      ]);
+      // ...and the repeat is reported as what it is, beside it.
+      expect(all).toContain("more than once for the SAME directory");
+      expect(all).toContain("authorizes no deletion");
+    });
+
+    it("blocks even with NO diagnostics supplied -- the collapse is observed directly", () => {
+      // The block keys off the dedup event, not off the `duplicate-session-id`
+      // diagnostic. Keying it off the diagnostic would make the safety of the
+      // verdict depend on whether the caller happened to supply one, and this
+      // seam treats an absent `diagnostics` field as `complete` by design.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.scanCompleteness).toBe("complete");
+    });
+
+    /**
+     * The zero-survivor cell is UNREACHABLE, and the guard against it is kept
+     * anyway.
+     *
+     * A collision implies at least two input records, dedup keeps one, and the
+     * classification loop pushes a verdict for every kept record without
+     * exception -- the gates change a verdict's ACTION (`unverifiable`,
+     * `monitor-only`), they never remove it from the population. So there is no
+     * input to this function that produces a collision and zero verdicts.
+     *
+     * The same holds one level up: the scanner emits `duplicate-session-id` only
+     * over records it ADMITTED, so a pair of unadmitted colliding records never
+     * reaches the guard's arrays at all.
+     *
+     * The zero-verdict branch still checks `droppedDuplicates`, because a rule
+     * documented as "zero or one" and implemented as "one" is a rule that stops
+     * being true the day a gate learns to filter -- and it would fail silently,
+     * as `free`. This test pins the invariant that makes it unreachable, so that
+     * change breaks HERE rather than in production.
+     */
+    it("cannot produce zero verdicts while a collision was recorded", () => {
+      const shapes: ActiveSessionSummary[][] = [
+        [collided(caller.task!.id, "aaa"), collided("other", "bbb")],
+        [
+          { ...collided(caller.task!.id, "aaa"), leaseState: "missing" },
+          { ...collided("other", "bbb"), leaseState: "missing" },
+        ],
+        [
+          { ...collided(caller.task!.id, "aaa"), state: "NOT_A_STATE" },
+          { ...collided("other", "bbb"), state: "NOT_A_STATE" },
+        ],
+        [
+          { ...collided(caller.task!.id, "aaa"), ownerTask: null },
+          { ...collided("other", "bbb"), ownerTask: null },
+        ],
+      ];
+      for (const activeSessions of shapes) {
+        const v = classifySessionGuard({ activeSessions, resumableSessions: [] }, caller);
+        expect(v.sessions.length, `zero verdicts for ${JSON.stringify(activeSessions[0])}`).toBeGreaterThan(0);
+        // And whatever the gates did to the action, the collision still blocks.
+        expect(v.overallAction).toBe("unverifiable");
+        expect(v.overallRationale).toContain("ISS-914");
+      }
+    });
+
+    it("reports BOTH the collision and the incomplete scan when both apply", () => {
+      // Two independent reasons the aggregate is withheld, with two different
+      // remedies. A reader shown only one would draw the wrong conclusion about
+      // how much of the population is accounted for.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [{ ...omission, sourceDir: "half-created" } as never],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.scanCompleteness).toBe("incomplete");
+      expect(v.overallRationale).toContain("half-created");
+      expect(v.overallRationale).toContain("kept aaa-mine, dropped bbb-theirs");
+    });
+
+    it("blocks an empty population carrying an ownership fault -- a payload that broke its own invariant", () => {
+      // Unreachable from real scanner output: the scanner emits
+      // `owner-task-undetermined` only for an ADMITTED record. But a hand-built
+      // scan result can report one beside an empty population, and that is the
+      // last input whose emptiness should be trusted -- it just violated the
+      // invariant that would justify trusting it. Both seams answer the same way.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [
+            { ...benign, kind: "owner-task-undetermined", category: "undetermined", sourceDir: "ghost" } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallAction).not.toBe("free");
+      expect(v.scanCompleteness).toBe("complete");
+      // The message must not also claim the session is reported above, which is
+      // what the ordinary ownership rationale says and what is necessarily false
+      // here. Two contradictory statements in one incident message is worse than
+      // either alone.
+      expect(v.overallRationale).toContain("no session produced a verdict at all");
+      expect(v.overallRationale).toContain("violates the invariant");
+      expect(v.overallRationale).not.toContain("IS reported above");
+    });
+
+    it("blocks a NON-empty population whose ownership fault names no record it can place", () => {
+      // The same invariant violation, seen from a populated scan, and the branch
+      // that used to miss it. The zero-verdict branch checked for this; the
+      // non-empty rationale simply ASSERTED the disjunction -- "the record is
+      // among the sessions above, or among the dropped duplicates" -- which is
+      // guaranteed for scanner output and is not guaranteed at this seam, where
+      // a hand-built result (or mode A reading an untrusted status payload) can
+      // name a third directory that is in neither set. Stating where a record is
+      // without looking is the same class of error as claiming it survived.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            { ...benign, kind: "owner-task-undetermined", category: "undetermined", sourceDir: "ghost" } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      // The survivor is still reported, and is NOT described as the affected one.
+      expect(v.sessions.map((s) => s.sourceDir)).toEqual(["a"]);
+      expect(v.overallRationale).toContain("ghost");
+      expect(v.overallRationale).toContain("neither a reported session nor a dropped duplicate");
+      expect(v.overallRationale).toContain("violates that invariant");
+      // And it must not place the record anywhere, in either direction.
+      expect(v.overallRationale).not.toContain("ghost is reported among the sessions above");
+      expect(v.overallRationale).not.toContain("ghost was observed and admitted, then dropped");
+    });
+
+    it("places an ownership fault that DOES identify a surviving session", () => {
+      // The control for the correlation above: a diagnostic matching a survivor
+      // on BOTH identifiers is stated as surviving, plainly, with no hedging
+      // disjunction and no invariant-violation language. `mine()` is
+      // sessionId "a" in sourceDir "a", so the diagnostic must carry both.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "owner-task-undetermined",
+              category: "undetermined",
+              sessionId: "a",
+              sourceDir: "a",
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("a is reported among the sessions above");
+      expect(v.overallRationale).not.toContain("violates that invariant");
+      expect(v.overallRationale).not.toContain("dropped by deduplication");
+    });
+
+    it("does NOT place an ownership fault that only borrows a survivor's directory", () => {
+      // `sourceDir` is not an identifier at this seam. An untrusted payload can
+      // put a survivor's directory string on a diagnostic carrying a different
+      // embedded id, and correlating on the directory alone would report an
+      // unrelated ownership fault as though it were the session listed above --
+      // placing a record the guard cannot actually place, which is the whole
+      // defect the correlation exists to stop.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "owner-task-undetermined",
+              category: "undetermined",
+              sessionId: "some-other-id",
+              sourceDir: "a",
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("violates that invariant");
+      expect(v.overallRationale).not.toContain("a is reported among the sessions above");
+    });
+
+    it("does not let a delimiter collision place an ownership fault", () => {
+      // The composite key must be INJECTIVE, not a joined string. A separator
+      // is only safe if it cannot appear in either field, and nothing is: a JS
+      // string can hold any code unit, and this seam accepts hand-built results.
+      // Under a NUL-delimited key, the survivor (`a\u0000b`, `c`) and this
+      // diagnostic (`a`, `b\u0000c`) hash to one key, and the guard reports an
+      // unrelated fault as the session listed above -- the exact misplacement the
+      // composite key exists to prevent, reintroduced by the encoding. It also
+      // diverges from the fallback document, which compares the fields pairwise.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            { ...mine(), sessionId: "a\u0000b", sourceDir: "c" },
+          ],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "owner-task-undetermined",
+              category: "undetermined",
+              sessionId: "a",
+              sourceDir: "b\u0000c",
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("violates that invariant");
+      expect(v.overallRationale).not.toContain("reported among the sessions above");
+    });
+
+    it("does not THROW on a malformed diagnostics array -- it fails closed", () => {
+      // `completenessFromDiagnostics` was already defensive here and answered
+      // `unknown`, and then the classifier ran `.filter((d) => d.category ...)`
+      // over the same array and threw on the first `null`. A guard whose entire
+      // contract is to fail closed on an untrusted payload cannot fail by
+      // crashing: the caller is left with no verdict at all, which is strictly
+      // worse than the `unverifiable` the completeness check went to the
+      // trouble of computing. Both seams see this input -- a hand-built result
+      // and mode A reading a status payload off an unknown server.
+      for (const bad of [[null], [undefined], [42], [["nested"]], [{ nope: true }]]) {
+        const v = classifySessionGuard(
+          { activeSessions: [mine()], resumableSessions: [], diagnostics: bad as never },
+          caller,
+        );
+        expect(v.overallAction, JSON.stringify(bad)).toBe("unverifiable");
+        expect(v.scanCompleteness, JSON.stringify(bad)).toBe("unknown");
+        // Not silently dropped: the reader is told entries existed and could
+        // not be classified, which is why the aggregate is withheld.
+        expect(v.transcriptionNotes.join(" ")).toContain("could not be read by this build");
+        // And the returned array holds only what a typed consumer can read,
+        // so the crash is not simply moved downstream.
+        for (const d of v.diagnostics) expect(typeof d.category).toBe("string");
+      }
+    });
+
+    it("does not THROW on a recognized category whose FIELDS are malformed", () => {
+      // The same crash one property over. Validating only `category` let
+      // `{ category: "omission" }` through, and `namedDirectories` then called
+      // `sanitizeDisplayPath(undefined)` -- so the guard threw instead of
+      // returning the fail-closed verdict the category check had just earned.
+      // Every field a consumer reads has to be checked, not just the one the
+      // completeness rule needs.
+      const shapes: unknown[] = [
+        { category: "omission" },
+        { category: "omission", kind: 7, sourceDir: "d", sourcePath: "p", sessionId: null, reason: "r" },
+        { category: "omission", kind: "k", sourceDir: 7, sourcePath: "p", sessionId: null, reason: "r" },
+        { category: "omission", kind: "k", sourceDir: "d", sourcePath: null, sessionId: null, reason: "r" },
+        { category: "omission", kind: "k", sourceDir: "d", sourcePath: ["p"], sessionId: null, reason: "r" },
+        { category: "omission", kind: "k", sourceDir: "d", sourcePath: "p", sessionId: 7, reason: "r" },
+        { category: "omission", kind: "k", sourceDir: "d", sourcePath: "p", sessionId: null, reason: 7 },
+        { category: "undetermined", kind: "owner-task-undetermined" },
+      ];
+      for (const bad of shapes) {
+        const v = classifySessionGuard(
+          { activeSessions: [mine()], resumableSessions: [], diagnostics: [bad] as never },
+          caller,
+        );
+        expect(v.overallAction, JSON.stringify(bad)).toBe("unverifiable");
+        expect(v.transcriptionNotes.join(" "), JSON.stringify(bad)).toContain("could not be read by this build");
+        expect(v.diagnostics, JSON.stringify(bad)).toHaveLength(0);
+        // And dropping it must never RAISE the verdict. A malformed
+        // `owner-task-undetermined` is a fault that would have withheld the
+        // aggregate; losing it silently would turn `unverifiable` into
+        // `continue`, which is the one direction this axis must not move.
+        expect(v.scanCompleteness, JSON.stringify(bad)).not.toBe("complete");
+      }
+    });
+
+    it("does not THROW when the diagnostics CONTAINER is not an array", () => {
+      // The elements were narrowed; the container was still trusted. `{}` has no
+      // iterator and a string iterates into characters, so these crashed or
+      // silently mis-derived before any element check could run -- the same
+      // fail-by-crashing the element narrowing was added to stop, one level up.
+      for (const container of [null, "diagnostics", 7, {}, true]) {
+        const v = classifySessionGuard(
+          { activeSessions: [mine()], resumableSessions: [], diagnostics: container as never },
+          caller,
+        );
+        expect(v.overallAction, JSON.stringify(container)).toBe("unverifiable");
+        expect(v.scanCompleteness, JSON.stringify(container)).toBe("unknown");
+        expect(v.diagnostics, JSON.stringify(container)).toEqual([]);
+        expect(v.transcriptionNotes.join(" "), JSON.stringify(container)).toContain("is not an array");
+      }
+    });
+
+    it("treats a well-formed diagnostic with an UNKNOWN kind as unusable", () => {
+      // Every blocking rule matches an EXACT kind, so a future
+      // `owner-fault-of-some-new-shape` triggers nothing at all. Accepting it as
+      // usable would leave completeness `complete` while an ownership fault this
+      // build cannot interpret goes unenforced -- losing data raising the
+      // verdict, in the one direction this axis must never move.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              category: "undetermined",
+              kind: "future-owner-fault",
+              sourceDir: "d",
+              sourcePath: "/p",
+              sessionId: null,
+              reason: "something a newer build understands",
+            },
+          ] as never,
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.scanCompleteness).toBe("unknown");
+      expect(v.diagnostics).toHaveLength(0);
+    });
+
+    it("withholds `free` when an unsupported-version diagnostic sits beside ZERO sessions", () => {
+      // Unreachable from real scanner output -- the kind is emitted only at the
+      // admission point -- which is exactly why the rule has to cover it. A
+      // hand-built result, or Mode A reading an untrusted payload, can produce
+      // it, and that is a payload which just violated the invariant that would
+      // justify trusting its emptiness.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [
+            { ...benign, kind: "schema-version-undetermined", category: "undetermined" } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.scanCompleteness).toBe("complete");
+      expect(v.overallRationale).toContain("no session produced a verdict at all");
+    });
+
+    it("keeps `null` and REPORTS it beside more than one session", () => {
+      // `null` already withholds, so the action does not change -- the failure
+      // mode here is silence. A reader shown the multiplicity and not this would
+      // not know one of the listed sessions was read under a schema it does not
+      // claim.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine(), theirs()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "schema-version-undetermined",
+              category: "undetermined",
+              sessionId: "a",
+              sourceDir: "a",
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBeNull();
+      expect(v.overallRationale).toContain("is not one this build supports");
+      // CORRELATED: it matched a surviving record, so the sentence places it
+      // there rather than claiming no verdict exists -- and describes that
+      // verdict as PROVISIONAL. "Informational but correct" was the overclaim:
+      // the whole reason this diagnostic blocks is that the fields were read
+      // under a schema the record does not claim, so their meanings are exactly
+      // what has not been established.
+      expect(v.overallRationale).toContain("reported among the sessions above");
+      expect(v.overallRationale).toContain("PROVISIONAL");
+      expect(v.overallRationale).toContain("field meanings are undetermined");
+      expect(v.overallRationale).not.toContain("correct for the record as read");
+    });
+
+    it("does not claim placement for an unsupported-version entry it cannot correlate", () => {
+      // The untrusted seam again. "Reported above" is false for an entry that
+      // matches neither a surviving record nor a dropped duplicate, and naming a
+      // state.json to inspect asserts a repair target that was never established.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "schema-version-undetermined",
+              category: "undetermined",
+              sessionId: null,
+              sourceDir: null,
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("matches neither a reported session nor a dropped duplicate");
+      expect(v.overallRationale).toContain("No directory can be named here");
+      expect(v.overallRationale).not.toContain("reported among the sessions above");
+    });
+
+    it("returns RAW directory names in `collisions`, which the notes cannot", () => {
+      // The notes are the operator's explanation and are sanitized for display,
+      // so `sanitizeDisplayText` maps every control character to `?`. Two raw
+      // directory names can therefore render as ONE, and a rendered name can
+      // equal an unrelated literal `?` directory. That is harmless in prose and
+      // wrong in anything an operator will act on, so the raw participant set
+      // is carried separately, built from the deduplication this guard performed
+      // rather than from any supplied payload. It is a CANDIDATE set: each name
+      // still needs the containment and identity checks, and comparing the
+      // validated records may establish that neither copy is stale.
+      const ESC = "\u001b";
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            { ...mine(), sessionId: "dup-id", sourceDir: `dir${ESC}x` },
+            { ...mine(), sessionId: "dup-id", sourceDir: "dir?x" },
+          ],
+          resumableSessions: [],
+          diagnostics: [],
+        },
+        caller,
+      );
+      expect(v.collisions).toHaveLength(1);
+      const [c] = v.collisions;
+      // Unmodified by the guard: the two directories are still distinguishable here...
+      expect([c!.kept, c!.dropped].sort()).toEqual([`dir${ESC}x`, "dir?x"].sort());
+      expect(c!.sessionId).toBe("dup-id");
+      // ...while in the prose they have collapsed into the same rendered name,
+      // which is exactly why the prose may not be used to choose what to delete.
+      const notes = v.transcriptionNotes.join(" ");
+      expect(notes).toContain("dir?x");
+      expect(notes).not.toContain(ESC);
+    });
+
+    it("derives `collisions` from the DEDUP EVENT, not from the supplied diagnostics", () => {
+      // A padded carrier names a directory no deduplication ever touched. This
+      // contract authorizes no deletion at all -- diagnostics are cross-checks,
+      // inspection candidates come from `collisions`, and the operator decides
+      // what to do with what they read. What a padded carrier can still do is
+      // CORROBORATE: riding along with a real collision, it would make the note
+      // claim the carrier lists every participant, and move an unrelated
+      // directory from "mentioned somewhere" to "part of this collision" in a
+      // reader's account of it. That is the property under test.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("other", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sourceDir: "bbb-theirs",
+              sessionId: "aaaa1111-2222-3333-4444-555555555555",
+              conflictingSourceDirs: ["aaa-mine", "bbb-theirs", "unrelated-dir"],
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.collisions).toEqual([
+        { sessionId: "aaaa1111-2222-3333-4444-555555555555", kept: "aaa-mine", dropped: "bbb-theirs" },
+      ]);
+    });
+
+    it("reports NO collisions when nothing was deduplicated", () => {
+      // The empty case is the one that authorizes nothing. A caller reading
+      // `collisions` must not have to also check whether a diagnostic invented
+      // one.
+      //
+      // The carrier is fully POPULATED on purpose. Spreading `benign` alone
+      // leaves `sessionId` null, and an implementation that derived collisions
+      // from diagnostics whenever they carried a string id would have passed
+      // that fixture while failing the contract -- the hostile carrier is a
+      // complete-looking one, not a malformed one.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sessionId: "9999aaaa-2222-4333-8444-555555555555",
+              sourceDir: "ghost-a",
+              conflictingSourceDirs: ["ghost-a", "ghost-b"],
+            } as never,
+          ],
+        },
+        caller,
+      );
+      expect(v.collisions).toEqual([]);
+    });
+
+    it("renders an unknown workflow STATE under the same prose contract", () => {
+      // The two pre-ownership gates interpolated `state` with a bare
+      // `JSON.stringify`, which escapes control characters and nothing else.
+      // The field they write into is `transcriptionNotes`, whose stated
+      // contract is that the guard has already rendered it safely -- SKILL.md
+      // tells the reader to quote it as it arrives and not to clean it up. So
+      // a link authored here is a link the reader is instructed to reproduce.
+      const EVIL = "IMPLEMENT[click](javascript:alert(1)) <img src=x> https://evil.test @admin";
+      const v = classifySessionGuard(
+        { activeSessions: [{ ...mine(), state: EVIL }], resumableSessions: [] },
+        caller,
+      );
+      const prose = [...v.transcriptionNotes, v.overallRationale ?? ""].join(" ");
+
+      // The gate fired at all -- otherwise everything below is vacuous.
+      expect(prose).toContain("is not a known workflow state");
+      expect(prose).not.toContain("](javascript:");
+      expect(prose).not.toContain("<img");
+      expect(prose).not.toContain("https://evil.test");
+      expect(prose).not.toContain("@admin");
+      // ...and it is still legible, because the operator has to see what the
+      // record claimed its state was.
+      expect(prose).toContain("IMPLEMENT");
+    });
+
+    it("bounds an enormous workflow STATE", () => {
+      // No bound at all before: `state` is caller-supplied at the typed seam,
+      // and this note is what a reader sees when the guard cannot decide.
+      const v = classifySessionGuard(
+        { activeSessions: [{ ...mine(), state: "Q".repeat(50_000) }], resumableSessions: [] },
+        caller,
+      );
+      const prose = [...v.transcriptionNotes, v.overallRationale ?? ""].join(" ");
+      expect(prose).toContain("is not a known workflow state");
+      expect(prose.length, "the note is unbounded").toBeLessThan(2_000);
+      expect(prose).toContain("truncated from");
+    });
+
+    it("rejects a collision carrier that lists an UNRELATED directory", () => {
+      // A superset is not a better carrier. This diagnostic is a CROSS-CHECK
+      // against what the guard itself deduplicated, and nothing downstream of
+      // it deletes anything -- that was removed deliberately. What a padded
+      // carrier buys instead is a false corroboration: an unrelated directory
+      // presented as a confirmed participant in a collision no deduplication
+      // ever saw, which sends the operator to inspect the wrong session while
+      // they are working out which one is real. Subset was already rejected;
+      // both directions have to be.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("other", "bbb-theirs")],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "duplicate-session-id",
+              category: "collision",
+              sourceDir: "bbb-theirs",
+              sessionId: "aaaa1111-2222-3333-4444-555555555555",
+              conflictingSourceDirs: ["aaa-mine", "bbb-theirs", "unrelated-dir"],
+            } as never,
+          ],
+        },
+        caller,
+      );
+      const notes = v.transcriptionNotes.join(" ");
+      expect(notes).toContain("kept aaa-mine, dropped bbb-theirs");
+      // Not held out as the authoritative carrier...
+      expect(notes).not.toContain("carrying every directory");
+      expect(notes).toContain("listing EVERY directory that holds THIS session id");
+      // ...and the note, which is now the complete record, never names the
+      // directory the payload tried to smuggle in.
+      expect(notes).not.toContain("unrelated-dir");
+    });
+
+    it("trusts a malformed OMISSION's category even while dropping the entry", () => {
+      // Completeness needs only `category`, and an `omission` whose other fields
+      // are garbage still means the scan concealed something. Downgrading that
+      // to `unknown` would trade a specific warning for a vaguer one, so the
+      // category is honoured even though the entry itself is unusable.
+      const v = classifySessionGuard(
+        { activeSessions: [mine()], resumableSessions: [], diagnostics: [{ category: "omission" }] as never },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("incomplete");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
+      // And the RATIONALE must not contradict that. Falling through to the
+      // ordinary incomplete sentence rendered "0 gaps ()" -- an empty list, a
+      // zero count, and no remedy, beside a completeness value that says
+      // something WAS concealed.
+      expect(v.overallRationale).toContain("could not be read by this build");
+      expect(v.overallRationale).not.toContain("0 gaps");
+      expect(v.overallRationale).not.toContain("()");
+      expect(v.overallRationale).toContain("upgrade storybloq");
+      // ...and it must not borrow the `unknown` explanation, which opens by
+      // saying the scan did not report whether it observed everything. It DID
+      // report: the category-only rule read `omission` off this very entry, and
+      // completeness is `incomplete` because of it. Pasting both into one
+      // paragraph gives the operator two incompatible accounts of one payload.
+      expect(v.overallRationale).not.toContain("did not report whether it observed everything");
+      expect(v.overallRationale).toContain("The gap itself is established");
+    });
+
+    it("says the same thing in the MULTI-session rationale, which had its own copy", () => {
+      // A separate clause with a separate template, so it rendered "0 gaps ()"
+      // long after the single-session paths stopped -- and here beside a list of
+      // real sessions, where it reads as though the scan had accounted for them.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine(), theirs()],
+          resumableSessions: [],
+          diagnostics: [{ category: "omission" }] as never,
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("incomplete");
+      expect(v.overallAction).toBeNull();
+      expect(v.overallRationale).toContain("The scan is ALSO incomplete");
+      expect(v.overallRationale).not.toContain("0 gap");
+      expect(v.overallRationale).not.toContain("()");
+      expect(v.overallRationale).toContain("The gap itself is established");
+    });
+
+    it("emits ONE repeat note per distinct pair while counting every occurrence", () => {
+      // The split the fallback document states: events are counted per
+      // occurrence, notes are emitted per distinct pair. Repeating an identical
+      // sentence twice tells the reader nothing the count does not carry, and
+      // emitting per event made the two seams disagree about A, A, A.
+      const same = { ...mine(), sessionId: "dup-id", sourceDir: "only-dir" };
+      const v = classifySessionGuard(
+        { activeSessions: [same, same, same], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      const repeatNotes = v.transcriptionNotes.filter((n) =>
+        n.includes("arrives more than once for the SAME directory"),
+      );
+      expect(repeatNotes).toHaveLength(1);
+      expect(v.overallRationale).toContain("2 repeated entries were received");
+    });
+
+    it("keeps a recognized diagnostic while dropping the malformed ones beside it", () => {
+      // The mixed payload: an unrecognized element must not cost the reader the
+      // omission sitting next to it, which is the entry that names the
+      // directory to inspect.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [null, omission] as never,
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(1);
+      expect(v.overallRationale).toContain("broken");
+      expect(v.transcriptionNotes.join(" ")).toContain("could not be read by this build");
+    });
+
+    it.each([
+      ["no session", []],
+      ["one session", [1]],
+      ["two sessions", [1, 2]],
+    ])("reports a malformed omission BESIDE a usable one (%s)", (_label, ids) => {
+      // The combination the all-or-nothing branch could not express. Two passes
+      // disagree by design: completeness takes a recognized `omission` on its
+      // CATEGORY alone, while every count and address list is built from the
+      // USABLE set. So `{ category: "omission" }` sets `incomplete` and then
+      // contributes to nothing.
+      //
+      // Handled only when it was the ONLY omission. Put a usable one beside it
+      // and the rationale said "1 gap" with an address and never mentioned the
+      // second -- the one gap with no address at all, which is precisely the
+      // one an operator cannot go and look at without being told.
+      const sessions = ids.map((n) => ({
+        ...mine(),
+        sessionId: `aaaa1111-2222-3333-4444-55555555555${n}`,
+        sourceDir: `dir-${n}`,
+      }));
+      const v = classifySessionGuard(
+        {
+          activeSessions: sessions,
+          resumableSessions: [],
+          diagnostics: [omission, { category: "omission" }] as never,
+        },
+        caller,
+      );
+
+      expect(v.scanCompleteness).toBe("incomplete");
+      // The usable one keeps its address...
+      expect(v.overallRationale).toContain(omission.sourceDir);
+      // ...and the malformed one is reported as a further, ADDRESSLESS gap
+      // rather than silently folded into the count beside it.
+      expect(v.overallRationale).toContain("1 further gap was reported whose diagnostic this build could not read");
+      expect(v.overallRationale).toContain("no address to name");
+      expect(v.overallRationale).toContain("not counted above");
+      // And the remedy names no path, since there is none to name.
+      expect(v.overallRationale).toContain("so no path is named here");
+      expect(v.overallRationale).not.toContain("inspect `.story/sessions` directly");
+    });
+
+    it("counts repeated pairs by RAW value, not by how they render", () => {
+      // The rationale sanitizes directory names for display, and two genuinely
+      // different raw pairs can render identically once control characters are
+      // replaced. Deduplicating the RENDERED strings would fold them into one
+      // and undercount the pairs and directories being reported -- a miscount
+      // in the same sentence that tells an operator how much of their payload
+      // is malformed.
+      // These two RENDER identically: `sanitizeDisplayText` replaces the ESC
+      // with `?`, so `dir<ESC>x` and the literal `dir?x` are the same displayed
+      // string while being different raw values. (The earlier pair here did NOT
+      // collide -- one ESC became `?` and two became `??` -- so a rendered-string
+      // dedup would have passed it, and the test proved nothing.)
+      const ESC = "\u001b";
+      const a = { ...mine(), sessionId: "dup-id", sourceDir: `dir${ESC}x` };
+      const b = { ...mine(), sessionId: "dup-id", sourceDir: "dir?x" };
+      const v = classifySessionGuard(
+        { activeSessions: [a, b, a, b], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("2 repeated entries were received");
+      expect(v.overallRationale).toContain("2 session/directory pairs");
+      expect(v.overallRationale).toContain("one session id");
+      expect(v.overallRationale).toContain("2 directories");
+      // And the rendered text must still be safe to print into a terminal.
+      expect(v.overallRationale).not.toContain(ESC);
+    });
+
+    it("a genuinely empty population remains free", () => {
+      // The CONTROL for the invariant above, and only that. It records no
+      // collision, so it does not exercise the defensive zero-verdict branch --
+      // nothing can, which is what the invariant test establishes. What it does
+      // prove is that adding the branch did not cost an ordinary empty project
+      // its `free`.
+      const v = classifySessionGuard(
+        { activeSessions: [], resumableSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("free");
+    });
+
+    it("handles THREE directories on one id, naming every one", () => {
+      // Two is the shape everything was written for, and it is not the only one.
+      // A remedy that says "remove the stale one" after a three-way collision
+      // leaves one stale copy behind, the guard blocks again, and the
+      // instruction reads as though it had already been followed.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            collided(caller.task!.id, "aaa-mine"),
+            collided("task-b", "bbb-theirs"),
+            collided("task-c", "ccc-third"),
+          ],
+          resumableSessions: [],
+        },
+        caller,
+      );
+      expect(v.sessions).toHaveLength(1);
+      expect(v.overallAction).toBe("unverifiable");
+      // BOTH dropped directories, not just the first.
+      expect(v.overallRationale).toContain("dropped bbb-theirs");
+      expect(v.overallRationale).toContain("dropped ccc-third");
+      expect(v.overallRationale).toContain("aaa-mine");
+      // And what an operator would ACT on covers all of them. The rationale
+      // never names a deletion target -- its names went through
+      // `sanitizeDisplayText` and are not the unmodified names -- so the coverage
+      // that matters is in `collisions`, which carries the raw strings.
+      expect(v.overallRationale).not.toContain("remove the stale one");
+      expect(v.overallRationale).toContain("nothing may be deleted on the strength of this sentence");
+      expect(v.collisions.map((c) => c.dropped).sort()).toEqual(["bbb-theirs", "ccc-third"]);
+      expect(v.collisions.every((c) => c.kept === "aaa-mine")).toBe(true);
+      expect(v.transcriptionNotes.filter((n) => n.includes("appears under more than one"))).toHaveLength(2);
+    });
+
+    it("keeps `null`, not `unverifiable`, when distinct sessions ALSO collide", () => {
+      // `null` is the stronger stop: it means no aggregate rule exists at all.
+      // Downgrading it to `unverifiable` would trade the multiplicity signal for
+      // a weaker one -- but the collision must still be reported, because the
+      // count of survivors reads as the whole population otherwise.
+      const other = { ...theirs(), sessionId: "cccc2222-3333-4444-5555-666666666666" };
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs"), other],
+          resumableSessions: [],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBeNull();
+      expect(v.overallRationale).toContain("More than one session");
+      expect(v.overallRationale).toContain("kept aaa-mine, dropped bbb-theirs");
+    });
+
+    it("reports the collision beside the multiplicity AND an incomplete scan", () => {
+      const other = { ...theirs(), sessionId: "cccc2222-3333-4444-5555-666666666666" };
+      const v = classifySessionGuard(
+        {
+          activeSessions: [collided(caller.task!.id, "aaa-mine"), collided("some-other-task", "bbb-theirs"), other],
+          resumableSessions: [],
+          diagnostics: [{ ...omission, sourceDir: "half-created" } as never],
+        },
+        caller,
+      );
+      // `null` survives both: it is already the strongest stop, and downgrading
+      // it to `unverifiable` would trade the multiplicity signal away.
+      expect(v.overallAction).toBeNull();
+      expect(v.overallRationale).toContain("kept aaa-mine, dropped bbb-theirs");
+      expect(v.overallRationale).toContain("ALSO incomplete");
+      expect(v.overallRationale).toContain("half-created");
+      // And the blind/listable remedy split reaches this row too, rather than
+      // stopping at a bare list of names.
+      expect(v.overallRationale).toContain("storybloq session list");
+    });
+  });
+
+  /**
+   * Prose is sanitized; structured fields are not.
+   *
+   * `overallRationale` and `transcriptionNotes` are read by a human during an
+   * incident, and every one of them embeds a directory name taken off the
+   * filesystem. `sessions[].sourceDir` and `diagnostics` are the carriers a
+   * consumer diffs against a directory listing, so they keep the decoded
+   * strings unmodified.
+   */
+  describe("untrusted directory names are neutralized in prose only", () => {
+    const ESC = String.fromCharCode(27);
+    const NEWLINE = String.fromCharCode(10);
+    const HOSTILE = `bad${ESC}[31m${NEWLINE}- forged`;
+
+    it("sanitizes the incomplete-scan rationale", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [{ ...omission, sourceDir: HOSTILE } as never],
+        },
+        caller,
+      );
+      expect(v.overallRationale).not.toContain(ESC);
+      expect(v.overallRationale).not.toContain(`${NEWLINE}- forged`);
+      // ...while the structured carrier keeps exactly the value passed to the classifier.
+      expect(v.diagnostics[0]!.sourceDir).toBe(HOSTILE);
+    });
+
+    it("sanitizes the multi-session rationale and leaves `sessions[].sourceDir` raw", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [{ ...mine(), sourceDir: HOSTILE }, theirs()], resumableSessions: [] },
+        caller,
+      );
+      expect(v.overallRationale).not.toContain(ESC);
+      expect(v.sessions.some((sv) => sv.sourceDir === HOSTILE)).toBe(true);
+    });
+
+    it("sanitizes the duplicate-id note", () => {
+      const dup = (dir: string): ActiveSessionSummary => ({
+        ...mine(),
+        sourceDir: dir,
+        sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      });
+      const v = classifySessionGuard(
+        { activeSessions: [dup("aaa"), dup(HOSTILE)], resumableSessions: [] },
+        caller,
+      );
+      expect(v.transcriptionNotes.join(" ")).not.toContain(ESC);
+      // The ESC is gone AND the `[` it was wearing is inert. `sanitizeDisplayText`
+      // answers the terminal half of the threat; this note is also returned as
+      // unfenced MCP text, so a `[` that survives into a rendering client is a
+      // link waiting for a `(` -- in the sentence naming which session directory
+      // to look at during a collision.
+      expect(v.transcriptionNotes.join(" ")).toContain("dropped bad?\\[31m?- forged");
+      expect(v.transcriptionNotes.join(" ")).not.toContain("bad?[31m");
+    });
+
+    it("neutralizes Markdown STRUCTURE in the notes, not only terminal escapes", () => {
+      // A directory name is an arbitrary string and this note is rendered, so every
+      // structural form has to arrive as text: a link, a raw HTML sink, a table
+      // cell boundary, and a bare URL that a renderer would autolink on its own.
+      const EVIL = "a](javascript:alert(1)) <img src=x onerror=alert(1)> | b https://evil.test @admin";
+      const dup = (dir: string): ActiveSessionSummary => ({
+        ...mine(),
+        sourceDir: dir,
+        sessionId: "aaaa1111-2222-3333-4444-555555555555",
+      });
+      const v = classifySessionGuard(
+        { activeSessions: [dup("aaa"), dup(EVIL)], resumableSessions: [] },
+        caller,
+      );
+      const note = v.transcriptionNotes.join(" ");
+
+      expect(note).not.toContain("](javascript:");
+      expect(note).not.toContain("<img");
+      expect(note).toContain("&lt;img");
+      // A raw `|` in a rendered table row splits the cell it is sitting in.
+      expect(note).not.toContain(" | b");
+      // Bare URL and mention broken at the character a renderer keys on.
+      expect(note).not.toContain("https://evil.test");
+      expect(note).not.toContain("@admin");
+      // ...and the name is still on the structured field UNMODIFIED. Not "byte
+     // for byte": this test hands the classifier a JavaScript string, and on
+     // the real path `readdirSync` has already decoded the filesystem bytes, so
+     // no layer here can make a byte-level claim. What is pinned is that the
+     // guard passes through exactly what it was given.
+      expect(v.collisions.some((c) => c.dropped === EVIL || c.kept === EVIL)).toBe(true);
+    });
+
+    it("counts SESSIONS, not diagnostic array entries, when a payload repeats one", () => {
+      // Both copies are fully usable by every gate -- recognized kind, paired
+      // category, well-typed fields -- so completeness stays `complete` and
+      // neither is filtered out. Reading `.length` as a session count then told
+      // the operator "2 sessions" for one record, with plural candidate grammar
+      // and the placement sentence twice. The scan result is caller-supplied at
+      // the typed seam, so nothing prevents the repeat.
+      const entry = {
+        ...benign,
+        kind: "schema-version-undetermined",
+        category: "undetermined",
+        sessionId: "a",
+        sourceDir: "a",
+      };
+      const v = classifySessionGuard(
+        {
+          activeSessions: [{ ...mine(), sessionId: "a", sourceDir: "a" }],
+          resumableSessions: [],
+          diagnostics: [entry as never, { ...entry } as never],
+        },
+        caller,
+      );
+      const prose = [...v.transcriptionNotes, v.overallRationale ?? ""].join(" ");
+
+      expect(prose).toContain("a session");
+      expect(prose, "counted the array, not the sessions").not.toContain("2 sessions");
+      // Counted on the per-entry SENTENCES, not on the directory name. The
+      // name here is the single letter `a`, which occurs inside almost every
+      // word of the rationale, and the backticked form this used to count does
+      // not occur at all -- so `<= 1` was measuring nothing and would have been
+      // satisfied by prose that named no directory whatsoever. What the
+      // duplicate entry must not do is emit either sentence twice.
+      for (const sentence of ["is reported among the sessions above", "is a CANDIDATE to inspect"]) {
+        expect(prose.split(sentence).length - 1, `"${sentence}" not emitted exactly once`).toBe(1);
+      }
+      // ...and the address is actually in there, which is the half the old
+      // assertion silently stopped checking.
+      expect(prose).toContain("a is a CANDIDATE to inspect");
+      // ...and both raw entries are still passed through untouched, because a
+      // consumer comparing against the payload needs what actually arrived.
+      expect(v.diagnostics).toHaveLength(2);
+    });
+
+    it("hands the operator the FULL basename checklist, NUL included", () => {
+      // A caller-supplied `sourceDir` can hold any code unit, including one no
+      // filesystem name can contain. The checklist is stated in four places --
+      // this prose, SKILL.md, and both fallback remedies -- and this copy is
+      // the one an operator reads straight off the verdict. It had dropped the
+      // NUL clause, so a reader following the verdict would carry the candidate
+      // on to a filesystem call that throws rather than rejecting it as invalid
+      // before ever touching the disk.
+      const NUL = String.fromCharCode(0);
+      // CORRELATED to a real record, because the checklist is only reached for
+      // an entry that matched one. An uncorrelated entry gets the
+      // invariant-violation sentence instead and names no candidate at all.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [{ ...mine(), sessionId: "a", sourceDir: `sess${NUL}x` }],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...omission,
+              kind: "schema-version-undetermined",
+              category: "undetermined",
+              sessionId: "a",
+              sourceDir: `sess${NUL}x`,
+              sourcePath: `/p/.story/sessions/sess${NUL}x/state.json`,
+            } as never,
+          ],
+        },
+        caller,
+      );
+      const prose = [...v.transcriptionNotes, v.overallRationale ?? ""].join(" ");
+
+      expect(prose).toContain("no path separators");
+      expect(prose).toContain("not `.` or `..`");
+      expect(prose, "the checklist an operator reads omits the NUL clause").toContain("no NUL");
+      // And the name itself is still rendered rather than passed through.
+      expect(prose).not.toContain(NUL);
+    });
+
+    it("escapes the ADDRESS list without destroying its reversibility", () => {
+      // The two halves of the rule meet here. `sanitizeDisplayPath` renders the
+      // ESC as the six characters `\\u001b` so the operator can decode it back;
+      // `escapeMarkdownDocumentStrict` then doubles that backslash, which is
+      // what makes the escape survive rendering as literal text instead of
+      // being eaten. Applied in the other order, the Markdown pass inserts its
+      // backslash first and `sanitizeDisplayPath` then doubles THAT one, which
+      // renders as an escaped backslash followed by a live `[`.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...omission,
+              sourceDir: null,
+              sourcePath: `/tmp/s/bad${ESC}[31m`,
+            } as never,
+          ],
+        },
+        caller,
+      );
+      const prose = [...v.transcriptionNotes, v.overallRationale ?? ""].join(" ");
+
+      expect(prose).not.toContain(ESC);
+      // Reversible escape present, and Markdown-escaped so it renders as itself.
+      expect(prose).toContain("\\\\u001b");
+      // The `[` that followed it is not structural any more.
+      expect(prose).not.toContain("u001b[31m");
+    });
+  });
+
+  /**
+   * The remedy has to name a command that can actually show the fault.
+   *
+   * `storybloq session list` reaches a damaged row only through a contained
+   * subdirectory of a readable `.story/sessions`. A fault against the sessions
+   * directory itself, a non-directory entry, and an uncontained path are all
+   * outside that reach, so sending an operator there prints nothing and reads as
+   * "no problem" -- which is the dead end ISS-897 exists to close, reappearing in
+   * the sentence written to close it.
+   */
+  describe("the incomplete-scan remedy is per-fault", () => {
+    const conceal = (kind: string, sourceDir: string | null, sourcePath: string) =>
+      ({ ...omission, kind, sourceDir, sourcePath }) as never;
+
+    it("sends the operator to the PATH for faults `session list` cannot show", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [conceal("sessions-dir-unreadable", null, "/p/.story/sessions")],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("outside what `storybloq session list` can show");
+      expect(v.overallRationale).toContain("/p/.story/sessions");
+    });
+
+    it("still names `session list` for faults it CAN show", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [conceal("state-missing", "half-created", "/p/.story/sessions/half-created/state.json")],
+        },
+        caller,
+      );
+      expect(v.overallRationale).toContain("Inspect half-created with `storybloq session list`");
+      expect(v.overallRationale).not.toContain("outside what");
+    });
+
+    it("does not start a sentence with a lower-case conjunction", () => {
+      // The gap census, the collection-shape note and the remedy are three
+      // independently-assembled strings, and the shape note is CONDITIONAL, so
+      // every assertion about the finished paragraph was written against the
+      // branch where it is absent. With it present the rationale read "...an
+      // entry the scan observed. so whether a session is running here cannot be
+      // established." -- a sentence beginning mid-clause, in the one paragraph
+      // an operator reads while deciding whether to intervene.
+      //
+      // Asserted over every shape that reaches this rationale rather than the
+      // one that broke, because the defect is in how the pieces JOIN and the
+      // next piece added will join the same way.
+      const shapes: [string, { sourceDir: string | null; path: string }[]][] = [
+        ["named only", [{ sourceDir: "a", path: "/p/.story/sessions/a/state.json" }]],
+        ["collection only", [{ sourceDir: null, path: "/p/.story/sessions" }]],
+        [
+          "mixed",
+          [
+            { sourceDir: "a", path: "/p/.story/sessions/a/state.json" },
+            { sourceDir: null, path: "/p/.story/sessions" },
+          ],
+        ],
+        [
+          "two collection-level",
+          [
+            { sourceDir: null, path: "/p/.story/sessions" },
+            { sourceDir: null, path: "/q/.story/sessions" },
+          ],
+        ],
+      ];
+      for (const [label, gaps] of shapes) {
+        const v = classifySessionGuard(
+          {
+            activeSessions: [],
+            resumableSessions: [],
+            diagnostics: gaps.map((g) => conceal("state-missing", g.sourceDir, g.path)),
+          },
+          caller,
+        );
+        expect(v.overallRationale, `${label}: lower-case sentence start`).not.toMatch(
+          /\.\s+(?:so|and|but|or|which|because|then)\b/,
+        );
+      }
+    });
+
+    it("routes a LISTABLE kind with no directory name to the path instead", () => {
+      // The combination the two tests above miss between them: one uses a blind
+      // kind with a null `sourceDir`, the other a listable kind with a real one,
+      // so the pair reads as complete while testing only the diagonal.
+      //
+      // `isUsableDiagnostic` accepts this shape, and correctly: it validates
+      // `kind` and `sourceDir` separately because a null `sourceDir` is
+      // legitimate on its own. Nothing upstream rules the pairing out, so if
+      // the remedy splits on kind ALONE it hands `storybloq session list` a
+      // fault with no directory name to look up and prints the raw path beside
+      // a command that takes no path. The operator runs it, sees nothing, and
+      // reads that as "no problem" -- which is the exact dead end this issue
+      // exists to close.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [conceal("state-missing", null, "/p/.story/sessions")],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("outside what `storybloq session list` can show");
+      expect(v.overallRationale).toContain("/p/.story/sessions");
+      // The claim that fails if the split is on kind alone.
+      expect(v.overallRationale).not.toContain("with `storybloq session list`.");
+    });
+
+    it("keeps BOTH halves when one fault has a name and the other does not", () => {
+      // Same kind, differing only in whether a directory name is available, so
+      // the split cannot be explained by kind at all. Both sentences must
+      // appear, each carrying only its own fault.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [
+            conceal("state-missing", "half-created", "/p/.story/sessions/half-created/state.json"),
+            conceal("state-missing", null, "/p/.story/sessions"),
+          ],
+        },
+        caller,
+      );
+      expect(v.overallRationale).toContain("Inspect half-created with `storybloq session list`");
+      expect(v.overallRationale).toContain("outside what `storybloq session list` can show");
+      // Scoped to the `session list` CLAUSE, not to the rationale. The opening
+      // gap census names every gap by whatever address it has, including the
+      // collection-level path -- that sentence reports what was missed and is
+      // right to. The claim under test is narrower: the clause that hands names
+      // to a command must contain only the fault that has one.
+      const from = v.overallRationale.indexOf("Inspect ");
+      const to = v.overallRationale.indexOf("with `storybloq session list`.");
+      expect(from, "no session-list clause").toBeGreaterThan(-1);
+      expect(to).toBeGreaterThan(from);
+      expect(v.overallRationale.slice(from, to)).not.toContain("/p/.story/sessions");
+    });
+
+    it("renders a collection-level path as an ADDRESS, not a label", () => {
+      // `sourceDir` is null by design for a fault against the sessions directory
+      // itself, so `sourcePath` is the only actionable address it has -- and the
+      // 300-char label cap would turn a deeply nested one into a wrong path
+      // rather than a shorter one.
+      const deep = `/${"nested-project-directory/".repeat(20)}.story/sessions`;
+      expect(deep.length).toBeGreaterThan(300);
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [conceal("sessions-dir-unreadable", null, deep)],
+        },
+        caller,
+      );
+      expect(v.overallRationale).toContain(deep);
+      expect(v.overallRationale).not.toContain("(truncated)");
+    });
+
+    it("gives BOTH remedies when both kinds are present", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [
+            conceal("state-missing", "half-created", "/p/.story/sessions/half-created/state.json"),
+            conceal("entry-not-contained", "escapee", "/elsewhere/state.json"),
+          ],
+        },
+        caller,
+      );
+      expect(v.overallRationale).toContain("Inspect half-created with `storybloq session list`");
+      expect(v.overallRationale).toContain("outside what `storybloq session list` can show");
+      expect(v.overallRationale).toContain("/elsewhere/state.json");
+    });
+
+    it("treats `entry-not-a-directory` as LISTABLE, because that command now shows it", () => {
+      // This kind used to be blind, and correctly: `listAllSessionsDetailed`
+      // dropped every non-directory with a bare `continue`, so naming
+      // `storybloq session list` sent the operator to a command that printed
+      // nothing -- the dead end this issue exists to close, moved one surface
+      // downstream instead of removed.
+      //
+      // That function now surfaces the two shapes the scanner diagnoses (a
+      // symlink of any name, a session-shaped name on a non-directory) in
+      // `unavailable`, so the remedy has to follow. The membership of
+      // `SESSION_LIST_BLIND_KINDS` is a claim about what that command reports,
+      // and the two drifting apart is silent in both directions: blind-when-
+      // visible hides a fault the operator could have seen, and
+      // visible-when-blind sends them somewhere empty.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          diagnostics: [conceal("entry-not-a-directory", "dangling-link", "/p/.story/sessions/dangling-link")],
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.overallRationale).toContain("Inspect dangling-link with `storybloq session list`");
+      expect(v.overallRationale).not.toContain("outside what");
+    });
+  });
+
+  /**
+   * Absence means different things at the two seams, and this asymmetry is
+   * deliberate. Here the argument was built in-process by a caller inside this
+   * build, so absence is `complete` and every input written before the field
+   * existed keeps its exact verdict. At the mode A boundary -- an untrusted
+   * status payload off a server that may predate the field -- absence is
+   * `unknown` and stops. Do not "fix" one to match the other.
+   */
+  it("omitting `diagnostics` entirely is backward compatible, NOT unknown", () => {
+    const v = classifySessionGuard({ activeSessions: [mine()], resumableSessions: [] }, caller);
+    expect(v.overallAction).toBe("continue");
+    expect(v.scanCompleteness).toBe("complete");
+    expect(v.diagnostics).toEqual([]);
+
+    const empty = classifySessionGuard({ activeSessions: [], resumableSessions: [] }, caller);
+    expect(empty.overallAction).toBe("free");
+  });
+});
+
+/**
+ * Unit coverage for the TYPED derivation only.
+ *
+ * Mode A does not execute this function -- it interprets the rendered prose in
+ * `session-guard-fallback.md`. These tests can therefore stay green while that
+ * table says something different, which is exactly what happened once: the
+ * "no omission" row overlapped the malformed-element row and a mode A reader
+ * could have classified `[null]` as complete. The rendered table is asserted in
+ * `test/cli/session-guard-fallback.test.ts`; this block is not a substitute.
+ */
+describe("completenessFromDiagnostics (typed derivation)", () => {
+  it("an empty array is a VERIFIED clean scan", () => {
+    expect(completenessFromDiagnostics([])).toBe("complete");
+  });
+
+  it("a recognized non-omission category is clean when the entry is USABLE", () => {
+    // Category alone is not enough for `complete`. A recognized non-omission
+    // entry whose fields are garbage gets dropped before it can act, and
+    // `owner-task-undetermined` is exactly a kind that WITHHOLDS the aggregate
+    // -- so calling that payload clean would let losing data raise the verdict.
+    const usable = {
+      category: "normalized",
+      kind: "mode-normalized",
+      sourceDir: "d",
+      sourcePath: "/p",
+      sessionId: null,
+      reason: "r",
+    };
+    expect(completenessFromDiagnostics([usable])).toBe("complete");
+    expect(completenessFromDiagnostics([{ category: "normalized" }])).toBe("unknown");
+    expect(completenessFromDiagnostics([{ ...usable, sourcePath: 7 }])).toBe("unknown");
+  });
+
+  it("a recognized omission is incomplete", () => {
+    expect(completenessFromDiagnostics([{ category: "omission" }])).toBe("incomplete");
+  });
+
+  it.each([[null], [7], ["x"], [[]], [{}], [{ category: 7 }], [{ category: "future-thing" }]])(
+    "an element this build cannot classify (%j) makes completeness unknown",
+    (element) => {
+      // A newer writer's category could perfectly well be concealing, so
+      // reading an unrecognized one as harmless is a fail-open at the
+      // deserialization boundary.
+      expect(completenessFromDiagnostics([element])).toBe("unknown");
+    },
+  );
+
+  it("a recognized omission WINS over malformed elements beside it", () => {
+    // A positively identified concealment is not weakened by malformed
+    // neighbours. Reporting `unknown` here would weaken a definite gap into
+    // generic uncertainty, which is a strictly worse thing to hand an operator.
+    // Note what is NOT being preserved: this fixture is `{ category: "omission" }`
+    // and carries no address at all, so there is no `sourceDir` to lose. The
+    // address stays unavailable until a FULLY USABLE omission supplies one --
+    // that is a separate rule, and conflating the two is how the address claim
+    // gets attached to a payload that cannot support it.
+    expect(completenessFromDiagnostics([{ category: "omission" }, null, { category: "??" }])).toBe(
+      "incomplete",
+    );
   });
 });
 

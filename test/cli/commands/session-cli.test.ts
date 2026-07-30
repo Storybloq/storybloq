@@ -275,7 +275,12 @@ describe("T-251 session list", () => {
     const active1 = "aaaa1111-0000-0000-0000-000000000001";
     const active2 = "aaaa2222-0000-0000-0000-000000000001";
     const completed = "cccc3333-0000-0000-0000-000000000001";
-    const superseded = "ssss4444-0000-0000-0000-000000000001";
+    // Was "ssss4444-...", which is not valid hex, so this record failed schema
+    // validation and `listAllSessions` dropped it. The assertion below then
+    // passed because the session was UNREADABLE, not because the status filter
+    // worked -- and nothing said so, which is the concealment ISS-897 fixes,
+    // reproduced inside this suite's own fixture.
+    const superseded = "bbbb4444-0000-0000-0000-000000000001";
     plantSession(root, { sessionId: active1, status: "active", leaseMinutesAgo: -30 });
     plantSession(root, { sessionId: active2, status: "active", leaseMinutesAgo: 120 });
     plantSession(root, { sessionId: completed, status: "completed" });
@@ -287,6 +292,13 @@ describe("T-251 session list", () => {
     expect(out).toContain(active2);
     expect(out).not.toContain(completed);
     expect(out).not.toContain(superseded);
+
+    // Proves the two absences above are the FILTER at work rather than either
+    // record being unreadable: both come back when nothing is filtered.
+    const all = await handleSessionList(root, { status: "all", format: "text" });
+    expect(all).toContain(completed);
+    expect(all).toContain(superseded);
+    expect(all).not.toContain("corrupt");
   });
 
   // Test 3

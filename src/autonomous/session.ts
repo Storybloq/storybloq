@@ -24,6 +24,7 @@ import {
   type EventEntry,
 } from "./session-types.js";
 import { describeSchemaIssues, summarizeZodIssues, type SchemaIssue } from "../core/zod-issues.js";
+import { withStalenessNote } from "./binary-staleness.js";
 import {
   isContainedSessionDir,
   probeContainment,
@@ -849,6 +850,18 @@ export type SessionLookup =
 
 /** Human-facing explanation naming the cause and the remedy. */
 export function describeSessionLookupFailure(
+  sessionId: string,
+  failure: SessionLookupFailure,
+): string {
+  // ISS-906: every lookup-failure message carries the staleness note when a
+  // stale server binary is POSITIVELY established -- a stale server misreports
+  // sessions in exactly these shapes ("not found" for a session that exists),
+  // so the note belongs on the whole family, appended, never replacing the
+  // branch text. When staleness is not established this is the identity.
+  return withStalenessNote(describeLookupFailureBase(sessionId, failure));
+}
+
+function describeLookupFailureBase(
   sessionId: string,
   failure: SessionLookupFailure,
 ): string {

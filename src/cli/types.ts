@@ -29,6 +29,12 @@ export interface CommandResult {
   readonly exitCode?: ExitCodeValue;
   /** Structured error code for MCP classification. CLI ignores this field. */
   readonly errorCode?: ResultErrorCode;
+  /**
+   * Error flag for MCP adapters (session_report sets it; the adapter maps it
+   * to the MCP result's isError). CLI ignores this field; exitCode is the
+   * CLI-side error signal.
+   */
+  readonly isError?: boolean;
 }
 
 /** Delete command context includes force flag. */

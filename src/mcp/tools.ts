@@ -17,6 +17,7 @@ import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS } from "../autonomous/s
 import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
 import { evaluateSessionGuard } from "../core/session-guard.js";
 import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
+import { withStalenessNote } from "../autonomous/binary-staleness.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
 import { withStrictToolSchemas } from "./strict-schemas.js";
@@ -1134,8 +1135,18 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, async (args) => {
     try {
       const result = await handleSessionReport(args.sessionId, pinnedRoot);
+      // ISS-906: session_report builds its own lookup-failure texts (ISS-897's
+      // per-shape framing), so the staleness note is appended here at the MCP
+      // boundary. The CLI path through handleSessionReport stays untouched.
+      // invalid_input is excluded: a malformed UUID is caller error, not skew.
+      const lookupFailed =
+        result.isError === true &&
+        (result.errorCode === "not_found" ||
+          result.errorCode === "version_mismatch" ||
+          result.errorCode === "project_corrupt" ||
+          result.errorCode === "io_error");
       return {
-        content: [{ type: "text" as const, text: result.output }],
+        content: [{ type: "text" as const, text: lookupFailed ? withStalenessNote(result.output) : result.output }],
         isError: result.isError ?? false,
       };
     } catch (err) {
@@ -1162,7 +1173,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       // ISS-556: resilient read — subprocess registration must not be wedged
       // by historical lensReviewHistory disposition corruption.
       const session = readSessionResilient(sDir);
-      if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
+      if (!session) return { content: [{ type: "text" as const, text: withStalenessNote("Error: session not found or corrupt") }], isError: true };
       if (session.status !== "active") return { content: [{ type: "text" as const, text: `Error: session status is "${session.status}", not "active"` }], isError: true };
       if (isLeaseExpired(session)) return { content: [{ type: "text" as const, text: "Error: session lease has expired" }], isError: true };
       if (session.state === "SESSION_END") return { content: [{ type: "text" as const, text: "Error: session is in terminal SESSION_END state" }], isError: true };
@@ -1194,7 +1205,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       // ISS-556: resilient read — cleanup must work even when the session's
       // lensReviewHistory has historical disposition corruption.
       const session = readSessionResilient(sDir);
-      if (!session) return { content: [{ type: "text" as const, text: "Error: session not found or corrupt" }], isError: true };
+      if (!session) return { content: [{ type: "text" as const, text: withStalenessNote("Error: session not found or corrupt") }], isError: true };
 
       unregisterSubprocess(sDir, args.pid);
       return { content: [{ type: "text" as const, text: `Unregistered subprocess ${args.pid} from session ${args.sessionId}` }] };

@@ -13,6 +13,7 @@
  * - Walk-up from cwd to find .story/config.json
  * - If neither found, server starts in degraded mode with storybloq_init + error status
  */
+import { captureStartupFingerprint } from "../autonomous/binary-staleness.js";
 import { realpathSync, existsSync } from "node:fs";
 import { resolve, join, isAbsolute } from "node:path";
 import { z } from "zod";
@@ -179,6 +180,13 @@ export function registerDegradedTools(rawServer: McpServer, root?: string): void
 }
 
 async function main(): Promise<void> {
+  // ISS-906: fingerprint the binary this process is actually running, once,
+  // before anything else. Error paths later compare it against the disk to
+  // establish "the server is stale; restart the client" POSITIVELY instead of
+  // misreporting skew as a missing session. Capture happens regardless of
+  // whether a .story/ root exists -- a stale server in degraded mode misleads
+  // identically.
+  captureStartupFingerprint();
   const root = tryDiscoverRoot();
 
   const server = new McpServer(

@@ -34,6 +34,7 @@ import {
   writeSessionSync,
 } from "../../../src/autonomous/session.js";
 import { deriveWorkspaceId, type FullSessionState } from "../../../src/autonomous/session-types.js";
+import { scanSessionSummaries } from "../../../src/core/session-scan.js";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -738,5 +739,98 @@ describe("T-251 session delete", () => {
     // Should not throw from parse attempts.
     await handleSessionDelete(root, id, { yes: true });
     expect(existsSync(dir)).toBe(false);
+  });
+});
+
+describe("ISS-911: leaseState and Compact columns", () => {
+  /**
+   * The guard's whole matrix turns on live vs resumable-expired, and the list
+   * used to print only a relative expiry -- so the reader INFERRED the state,
+   * and operator 4 inferred it wrong during a live recovery (N-097). The state
+   * is now printed in the guard's own vocabulary, derived by the SAME function
+   * the scanner uses, so this surface and the guard cannot drift. Population
+   * membership additionally needs compactPending (session-scan's three-input
+   * rule), which rendered nowhere; it gets a column too.
+   */
+  it("prints the guard vocabulary: live for a future lease, expired+pending for a parked COMPACT session", async () => {
+    const root = setupRoot();
+    const live = "11119111-0000-0000-0000-000000000001";
+    const parked = "22229111-0000-0000-0000-000000000002";
+    plantSession(root, { sessionId: live, status: "active", leaseMinutesAgo: -30 });
+    plantSession(root, {
+      sessionId: parked,
+      status: "active",
+      state: "COMPACT",
+      compactPending: true,
+      leaseMinutesAgo: 120,
+    });
+
+    const out = await handleSessionList(root, { status: "all", format: "text" });
+
+    expect(out).toContain("LeaseState");
+    expect(out).toContain("Compact");
+    // Exact cells, not substring presence: "live" appears inside session ids
+    // and "-" appears everywhere, so only positional assertions prove the
+    // columns render what they claim. Columns join on two spaces; values
+    // with inner single spaces (the relative lease) survive the split.
+    const cells = (id: string): string[] =>
+      out.split("\n").find((l) => l.startsWith(id))!.trim().split(/\s{2,}/);
+    expect(cells(live)[4]).toBe("live");
+    expect(cells(live)[5]).toBe("-");
+    expect(cells(parked)[4]).toBe("expired");
+    expect(cells(parked)[5]).toBe("pending");
+  });
+
+  it("emits leaseState and compactPending in json, agreeing with the scanner for the same session", async () => {
+    const root = setupRoot();
+    const id = "33339111-0000-0000-0000-000000000003";
+    plantSession(root, {
+      sessionId: id,
+      status: "active",
+      state: "COMPACT",
+      compactPending: true,
+      leaseMinutesAgo: 120,
+    });
+
+    const out = await handleSessionList(root, { status: "all", format: "json" });
+    const row = JSON.parse(out).sessions.find((s: { sessionId: string }) => s.sessionId === id);
+    expect(row.leaseState).toBe("expired");
+    expect(row.compactPending).toBe(true);
+
+    // The no-drift pin: the scanner classifies the SAME session identically.
+    // This is the filing's core requirement -- sourced from the same
+    // computation the typed guard uses, so CLI and guard cannot diverge.
+    // The parked fixture is COMPACT + compactPending + expired, so the scanner
+    // files it under resumableSessions; search both populations so the pin
+    // does not depend on which side of that split the fixture lands.
+    const scan = scanSessionSummaries(root);
+    const summary = [...scan.activeSessions, ...scan.resumableSessions].find(
+      (s) => s.sessionId === id,
+    );
+    expect(summary).toBeTruthy();
+    expect(summary!.leaseState).toBe(row.leaseState);
+    expect(summary!.compactPending).toBe(row.compactPending);
+  });
+
+  it("renders '-' in both new columns for a damaged row, composing with ISS-897's annotation", async () => {
+    const root = setupRoot();
+    const id = "44449111-0000-0000-0000-000000000004";
+    const dir = plantSession(root, { sessionId: id, status: "active", leaseMinutesAgo: -30 });
+    // startedAt: null is the post-ISS-907 damage vector: a required field
+    // where null still means damage, so the strict reader rejects the file.
+    const file = join(dir, "state.json");
+    const raw = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+    writeFileSync(file, JSON.stringify({ ...raw, startedAt: null }));
+
+    const out = await handleSessionList(root, { status: "all", format: "text" });
+    const row = out.split("\n").find((l) => l.startsWith(id) && l.includes("corrupt"));
+    expect(row).toBeTruthy();
+    // A damaged row asserts nothing it did not establish: the lease state was
+    // never read, so both cells are exactly "-", not "missing" or a guess --
+    // "missing" would claim the FILE said so, and the file was never read.
+    const cols = row!.trim().split(/\s{2,}/);
+    expect(cols[1]).toBe("corrupt");
+    expect(cols[4]).toBe("-");
+    expect(cols[5]).toBe("-");
   });
 });

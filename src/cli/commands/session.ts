@@ -42,6 +42,7 @@ import type { FullSessionState } from "../../autonomous/session-types.js";
 import { describeSchemaIssues } from "../../core/zod-issues.js";
 import { rawVersionField } from "../../core/safe-json.js";
 import { boundedLines } from "../../core/bounded-list.js";
+import { deriveLeaseState } from "../../core/session-scan.js";
 import { lstatSync } from "node:fs";
 import { sanitizeDisplayText, sanitizeDisplayPath } from "../../core/display-text.js";
 
@@ -152,6 +153,12 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
           status: s.state.status,
           state: s.state.state,
           leaseExpiresAt: s.state.lease?.expiresAt ?? null,
+          // The guard's decision matrix turns on leaseState, and population
+          // membership additionally needs compactPending (ISS-911). Derived by
+          // the SAME function the scanner uses, so this surface and the guard
+          // cannot drift.
+          leaseState: deriveLeaseState(s.state.lease?.expiresAt),
+          compactPending: s.state.compactPending ?? false,
           ticketId: (s.state as FullSessionState & { ticket?: { id?: string } }).ticket?.id ?? null,
           mode: s.state.mode ?? "auto",
           lastGuideCall: s.state.lastGuideCall ?? null,
@@ -202,8 +209,13 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
   }
 
   const lines: string[] = [];
-  lines.push("Session ID                            Status      State        Lease              Ticket   Mode");
-  lines.push("------------------------------------  ----------  -----------  -----------------  -------  ------");
+  // LeaseState is the guard's vocabulary (live/expired/missing/invalid),
+  // printed rather than left to inference from the relative expiry: a lease
+  // "in 34m" on a session whose owner is dead READS healthy, and the operator
+  // in N-097 misread exactly that. Compact says whether a COMPACT session is
+  // actually resume-pending, the second input population membership needs.
+  lines.push("Session ID                            Status      State        Lease              LeaseState  Compact  Ticket   Mode");
+  lines.push("------------------------------------  ----------  -----------  -----------------  ----------  -------  -------  ------");
   // BLOCKS, not lines. A damaged entry is a row plus a detail, a remedy and an
   // address, and a bound that cut between them would leave a fault named with
   // no way to reach it. Each collection is bounded separately so one large
@@ -229,6 +241,8 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
         sanitizeDisplayText(s.state.status).padEnd(10),
         sanitizeDisplayText(s.state.state).padEnd(11),
         sanitizeDisplayText(formatLease(s.state.lease?.expiresAt)).padEnd(17),
+        deriveLeaseState(s.state.lease?.expiresAt).padEnd(10),
+        ((s.state.compactPending ?? false) ? "pending" : "-").padEnd(7),
         sanitizeDisplayText(ticketId).padEnd(7),
         sanitizeDisplayText(s.state.mode ?? "auto").padEnd(6),
       ].join("  "),
@@ -246,6 +260,8 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
         (i.cause === "newer" ? "needs-upgrade" : "unsupported").padEnd(10),
         "-".padEnd(11),
         "-".padEnd(17),
+        "-".padEnd(10),
+        "-".padEnd(7),
         "-".padEnd(7),
         "-".padEnd(6),
       ].join("  "),
@@ -272,6 +288,8 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
         "unavailable".padEnd(10),
         "-".padEnd(11),
         "-".padEnd(17),
+        "-".padEnd(10),
+        "-".padEnd(7),
         "-".padEnd(7),
         "-".padEnd(6),
       ].join("  "),
@@ -292,6 +310,8 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
         "corrupt".padEnd(10),
         "-".padEnd(11),
         "-".padEnd(17),
+        "-".padEnd(10),
+        "-".padEnd(7),
         "-".padEnd(7),
         "-".padEnd(6),
       ].join("  "),

@@ -1,4 +1,5 @@
 import { displayIdOf } from "../core/resolver.js";
+import { deriveLeaseState, type SessionLeaseState } from "../core/session-scan.js";
 import {
   deriveClaudeStatus,
   CURRENT_STATUS_SCHEMA_VERSION,
@@ -14,13 +15,13 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function leaseMetadata(session: SessionState): {
   leaseExpiresAt: string | null;
-  leaseState: "live" | "expired" | "missing" | "invalid";
+  leaseState: SessionLeaseState;
 } {
   const leaseExpiresAt = session.lease?.expiresAt ?? null;
-  if (!leaseExpiresAt) return { leaseExpiresAt, leaseState: "missing" };
-  const expires = new Date(leaseExpiresAt).getTime();
-  if (Number.isNaN(expires)) return { leaseExpiresAt, leaseState: "invalid" };
-  return { leaseExpiresAt, leaseState: expires <= Date.now() ? "expired" : "live" };
+  // ONE derivation for the whole product (ISS-911): this was the third
+  // independent copy of the four-way classification, semantically identical
+  // to the scanner's -- which is exactly the state that drifts.
+  return { leaseExpiresAt, leaseState: deriveLeaseState(leaseExpiresAt) };
 }
 
 export function buildActivePayload(

@@ -19,6 +19,29 @@ import { safeJson } from "./safe-json.js";
 
 export type SessionLeaseState = "live" | "expired" | "missing" | "invalid";
 
+/**
+ * The four-way lease classification the guard's whole decision matrix turns
+ * on (ISS-911). Extracted so the scanner and the CLI derive it from ONE
+ * computation and cannot drift: an operator misread exactly the
+ * active-vs-resumable-expired distinction during a live recovery because
+ * `session list` showed only a relative expiry and left the STATE to
+ * inference (N-097, operator 4).
+ *
+ * `isLeaseExpired` is not usable for this: it folds missing, invalid and
+ * expired into one `true`, and the difference between "expired" (a
+ * determinate observation) and "missing"/"invalid" (never established) is
+ * load-bearing for the guard (ISS-897 lease grouping).
+ *
+ * An empty string classifies as missing, matching the scanner's original
+ * falsy check. A lease expiring exactly NOW is expired, not live.
+ */
+export function deriveLeaseState(expiresAt: unknown, now: number = Date.now()): SessionLeaseState {
+  if (typeof expiresAt !== "string" || expiresAt === "") return "missing";
+  const t = new Date(expiresAt).getTime();
+  if (Number.isNaN(t)) return "invalid";
+  return t <= now ? "expired" : "live";
+}
+
 export interface ActiveSessionSummary {
   readonly sessionId: string;
   /**
@@ -923,14 +946,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
 
     const lease = parsed.lease as Record<string, unknown> | undefined;
     const leaseExpiresAt = typeof lease?.expiresAt === "string" ? lease.expiresAt : null;
-    const expires = leaseExpiresAt ? new Date(leaseExpiresAt).getTime() : Number.NaN;
-    const leaseState: SessionLeaseState = !leaseExpiresAt
-      ? "missing"
-      : Number.isNaN(expires)
-        ? "invalid"
-        : expires <= Date.now()
-          ? "expired"
-          : "live";
+    const leaseState = deriveLeaseState(lease?.expiresAt);
 
     const ticket = parsed.ticket as Record<string, unknown> | undefined;
     const rawOwner = parsed.ownerTask as Record<string, unknown> | undefined;

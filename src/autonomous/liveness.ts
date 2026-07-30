@@ -846,6 +846,87 @@ export interface OwnerLivenessSignals {
 }
 
 /**
+ * A digest of WHAT WAS OBSERVED, deliberately independent of WHEN (T-450).
+ *
+ * This exists to answer one question inside the recovery lock: did the picture
+ * the human was shown change between being shown it and confirming it? It is
+ * NOT the eligibility check. Whether the owner is still stale RIGHT NOW is a
+ * separate re-evaluation against the current clock, and keeping the two apart
+ * is the whole point.
+ *
+ * WHY TIME IS EXCLUDED, stated because the obvious implementation is wrong.
+ * A first design folded `observedAt` and the computed ages into the digest and
+ * then required an exact match against a recomputation. That can never match:
+ * recomputing a moment later necessarily produces a different observation time,
+ * so every legitimate confirmation would be rejected while nothing had actually
+ * changed.
+ *
+ * The subtler half is that several fields which LOOK like observations are
+ * really verdicts about the clock. `activity.kind` flips `fresh` to `stale`
+ * with nothing but elapsed time, and `lease.kind` flips `live` to `expired` the
+ * same way. Digesting either would reintroduce the same defect through a
+ * different field. So the rule is: where a usable stored value exists, digest
+ * the VALUE and not its fresh/stale or live/expired classification. Where no
+ * usable value exists, the REASON is digested (see the `future` note below).
+ *
+ * `staleThresholdMs` is excluded for the same reason it is safe to exclude: it
+ * is policy, and a policy change is caught by the eligibility re-evaluation,
+ * which recomputes the verdict under the current threshold.
+ */
+export function evidenceFingerprint(signals: OwnerLivenessSignals): string {
+  const canonical = {
+    // Only the stored timestamp, or the reason there is no usable one. The
+    // `fresh` / `stale` classification is omitted: same value, different clock,
+    // same picture. The `unknown` REASONS are kept, including `future`, because
+    // they distinguish genuinely different pictures (no timestamp at all, an
+    // unparseable one, and a clock-skewed one), and collapsing them would let
+    // three different states confirm against each other. `future` is mildly
+    // clock-dependent, since a future stamp eventually becomes an ordinary
+    // past one. That is accepted rather than hidden: it surfaces as a
+    // fingerprint mismatch, and the confirmation flow built on top of this is
+    // REQUIRED to treat a mismatch by returning fresh evidence and asking for
+    // re-confirmation rather than acting on a stale authorization. Nothing in
+    // this function consumes the digest; that obligation belongs to the caller.
+    activity: "at" in signals.activity
+      ? { at: signals.activity.at }
+      : { absent: signals.activity.reason },
+    // Expiry only. `live` vs `expired` is the clock talking, not the ledger.
+    lease: "expiresAt" in signals.lease
+      ? { expiresAt: signals.lease.expiresAt }
+      : { absent: signals.lease.reason },
+    deathMarker: signals.deathMarker,
+    // `successorPids` is built from a directory listing, so like `successors`
+    // below it arrives in filesystem enumeration order. Normalizing one and not
+    // the other would make the same evidence digest two different ways.
+    markerValidity: signals.markerValidity.kind === "invalidated" && signals.markerValidity.successorPids
+      ? { ...signals.markerValidity, successorPids: [...signals.markerValidity.successorPids].sort((a, b) => a - b) }
+      : signals.markerValidity,
+    sidecarProbe: signals.sidecarProbe,
+    successors: signals.successors.kind === "observed"
+      // Sorted: the registry is a directory listing, so enumeration order is a
+      // filesystem detail and must not change the answer.
+      ? {
+          kind: "observed",
+          servers: [...signals.successors.servers]
+            .map((s) => ({ pid: s.pid, registeredAt: s.registeredAt }))
+            .sort((a, b) => a.pid - b.pid),
+        }
+      : signals.successors,
+  };
+  return createHash("sha256").update(canonicalJson(canonical)).digest("hex");
+}
+
+/** Key-order-independent JSON, so an object literal's shape cannot change the digest. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return "{" + entries.map(([k, v]) => JSON.stringify(k) + ":" + canonicalJson(v)).join(",") + "}";
+}
+
+/**
  * Exactly one of these permits an offer: `gone-candidate`. The other three are
  * distinct on purpose, because the message a caller owes the operator differs.
  *

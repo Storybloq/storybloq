@@ -1,9 +1,131 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput } from "../session-types.js";
+import type { GuideReportInput, FullSessionState } from "../session-types.js";
 import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath } from "../git-inspector.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+
+/**
+ * The commit from which the CURRENT item must produce a new, validated commit
+ * (ISS-922). Initialized at item pick; reset when drift invalidates the epoch.
+ *
+ * NOT expectedHead: that records the last OBSERVED head, and park,
+ * resume-drift and checkout all legitimately advance it -- onto the very
+ * commit FINALIZE has not yet seen. That is what closed all three exits from
+ * this stage and stranded a session with no supported recovery.
+ *
+ * NOT mergeBase either: it is the fork point from main for the first item, so
+ * on a feature branch it sits behind HEAD before any work exists, which would
+ * fire the already-committed shortcut against a pre-existing branch commit.
+ *
+ * The fallback chain covers session state written by an older CLI, which
+ * carries no itemBaseHead. diagnoseStrandedCommit() makes the refusal
+ * actionable when that older state is itself already poisoned.
+ */
+function itemBaseline(state: FullSessionState): string | undefined {
+  return state.git.itemBaseHead ?? state.git.expectedHead ?? state.git.initHead;
+}
+
+/**
+ * Does `candidate` LOOK like this item's work commit, stranded by a baseline a
+ * pre-fix CLI advanced onto it? (ISS-922.)
+ *
+ * DIAGNOSIS ONLY. This never causes the guide to accept a commit. It decides
+ * whether the refusal can name a specific likely commit and the steps to
+ * confirm it, or has to stay generic. That limit is deliberate and was the
+ * outcome of review: the evidence available here cannot separate a stranded
+ * work commit from a pre-existing branch tip.
+ *
+ * Why not heal automatically. A pre-fix state records only that expectedHead
+ * moved, never which writer moved it. Parking moved it (the bug). But so did
+ * the pre-fix checkout writer, which promotes expectedHead alone and leaves
+ * mergeBase behind -- identical in every observable respect. If a session
+ * adopts an existing branch whose tip already contains this item's ledger
+ * update from an earlier session, every check below passes on a commit this
+ * session neither produced nor reviewed. Auto-accepting would mark the item
+ * shipped on unreviewed work; refusing costs one operator step, which the
+ * message spells out. A false completion is the worse failure, so this fails
+ * closed by construction rather than by having enough evidence.
+ *
+ * LEGACY ONLY, enforced as the first condition. A session written by this CLI
+ * has an itemBaseHead that means exactly one thing, so "candidate equals the
+ * baseline" is already conclusive there and nothing needs diagnosing. Running
+ * these checks on such a session would actively misread a pre-existing commit
+ * as the item's work -- for instance the commit that FILED this item, if HEAD
+ * sat on it when the item was picked, since that commit descends from initHead
+ * and does modify the item's ledger file.
+ *
+ * The remaining conditions each refuse cases the others admit:
+ *   - mergeBase on the candidate is the pre-fix foreign-drift writer's
+ *     signature; that writer moved mergeBase and expectedHead together.
+ *   - Ancestry membership refuses a candidate on unrelated or orphan history,
+ *     which the tree check alone would accept.
+ *   - Direct tree evidence refuses a merge commit, which ancestry alone would
+ *     accept (ISS-923).
+ *
+ * The itemBaseHead and initHead guards are also what keep this off the paths
+ * whose fixtures mock git thinly -- they short-circuit before any git call.
+ */
+type StrandedDiagnosis = "likely_stranded" | "not_attributable" | "git_error";
+
+async function diagnoseStrandedCommit(
+  ctx: StageContext,
+  candidate: string,
+  artifactPath: string,
+): Promise<StrandedDiagnosis> {
+  if (ctx.state.git.itemBaseHead !== undefined) return "not_attributable";
+
+  const initHead = ctx.state.git.initHead;
+  if (!initHead || initHead === candidate) return "not_attributable";
+  if (ctx.state.git.mergeBase === candidate) return "not_attributable";
+
+  const candidates = await gitRevListAncestryPath(ctx.root, initHead, candidate, artifactPath);
+  if (!candidates?.ok) return "git_error";
+  if (!candidates.data.includes(candidate)) return "not_attributable";
+
+  const tree = await gitDiffTreeNames(ctx.root, candidate);
+  if (!tree?.ok) return "git_error";
+  return tree.data.includes(artifactPath) ? "likely_stranded" : "not_attributable";
+}
+
+/**
+ * The tail of a FINALIZE refusal: what the operator should do about a commit
+ * the guide will not record for them. Kept in one place so both refusal paths
+ * make the same promise about what has and has not been verified (local git
+ * only -- nothing here checks a remote).
+ */
+function strandedEscape(
+  sessionId: string,
+  diagnosis: StrandedDiagnosis,
+  candidate: string | null,
+): string[] {
+  if (diagnosis === "git_error") {
+    return [
+      "Git could not be queried, so this is NOT a statement that the work is uncommitted.",
+      `Check the repository yourself, then either commit and report the hash, or end the session with \`storybloq session stop ${sessionId}\`.`,
+    ];
+  }
+  const short = candidate ? candidate.slice(0, 7) : "the commit";
+  if (diagnosis === "likely_stranded" && candidate) {
+    return [
+      `This session's state predates the ISS-922 fix, and commit ${short} both descends from the session start and modifies this item's ledger file. It may be this item's work, stranded by a baseline an older CLI advanced onto it.`,
+      `It is NOT recorded automatically: a pre-existing branch tip is indistinguishable from that here. Confirm with \`git show ${short}\`.`,
+      `If it IS this item's work, push it if needed, then end the session with \`storybloq session stop ${sessionId}\` -- the commit stays in local git either way.`,
+    ];
+  }
+  return [
+    `If you believe the work is already committed, confirm it with \`git show ${short}\`, push it if needed, then end the session with \`storybloq session stop ${sessionId}\` -- the commit stays in local git either way.`,
+  ];
+}
+
+/** The ledger file this item's commit must contain, or null outside item work. */
+function itemArtifactPath(state: FullSessionState): string | null {
+  const ticketId = state.ticket?.id;
+  if (ticketId) return `.story/tickets/${ticketId}.json`;
+  const issueId = state.currentIssue?.id;
+  if (issueId) return `.story/issues/${issueId}.json`;
+  return null;
+}
 
 /**
  * FINALIZE stage — 3-checkpoint sub-machine for staging, pre-commit, and commit.
@@ -38,7 +160,7 @@ export class FinalizeStage implements WorkflowStage {
     // ISS-105/ISS-106: Detect pre-existing commit before instructing staging.
     // Agents in the issue-fix pipeline typically commit before reporting back,
     // so HEAD has already advanced. Skip the staging ceremony entirely.
-    const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
+    const previousHead = itemBaseline(ctx.state);
     if (previousHead) {
       const headResult = await gitHead(ctx.root);
       if (headResult.ok && headResult.data.hash !== previousHead) {
@@ -170,7 +292,7 @@ export class FinalizeStage implements WorkflowStage {
     if (!stagedResult.ok || stagedResult.data.length === 0) {
       // ISS-046: Check if agent already committed (staging area empty because commit happened)
       const headResult = await gitHead(ctx.root);
-      const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
+      const previousHead = itemBaseline(ctx.state);
       if (headResult.ok && previousHead && headResult.data.hash !== previousHead) {
         // HEAD advanced — agent committed before reporting files_staged
         // Validate commit contains ticket/issue file if applicable
@@ -200,7 +322,31 @@ export class FinalizeStage implements WorkflowStage {
         ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
         return this.handleCommit(ctx, { ...report, commitHash: headResult.data.hash });
       }
-      return { action: "retry", instruction: 'No files are staged. Stage your changes and call me again with completedAction: "files_staged".' };
+      // ISS-922: a session parked by a pre-fix CLI can arrive here with its
+      // baseline already promoted onto the unreported work commit, so the
+      // check above sees no advance and there is nothing left to stage. Ask
+      // the candidate-specific question directly before dead-ending.
+      // ISS-922: a session parked by a pre-fix CLI can arrive here with its
+      // baseline already promoted onto an unreported commit, so there is
+      // nothing left to stage. Diagnose that shape to make the refusal
+      // actionable -- but never act on it; see diagnoseStrandedCommit.
+      const strandedPath = itemArtifactPath(ctx.state);
+      let stagedDiagnosis: StrandedDiagnosis = headResult.ok ? "not_attributable" : "git_error";
+      if (headResult.ok && strandedPath) {
+        stagedDiagnosis = await diagnoseStrandedCommit(ctx, headResult.data.hash, strandedPath);
+      }
+      return {
+        action: "retry",
+        instruction: [
+          'No files are staged. Stage your changes and call me again with completedAction: "files_staged".',
+          previousHead ? `(Nothing new was found against baseline ${previousHead.slice(0, 7)}.)` : "",
+          ...strandedEscape(
+            ctx.state.sessionId,
+            stagedDiagnosis,
+            headResult.ok ? headResult.data.hash : null,
+          ),
+        ].filter(Boolean).join("\n"),
+      };
     }
 
     // ISS-025 + ISS-063: Overlap detection — block staging of pre-existing untracked files.
@@ -375,7 +521,7 @@ export class FinalizeStage implements WorkflowStage {
       };
     }
     const fullHead = headResult.data.hash;
-    const previousHead = ctx.state.git.expectedHead ?? ctx.state.git.initHead;
+    const previousHead = itemBaseline(ctx.state);
     const initHead = ctx.state.git.initHead;
     const reportedHash = commitHash.toLowerCase();
 
@@ -439,7 +585,25 @@ export class FinalizeStage implements WorkflowStage {
     }
 
     if (previousHead && normalizedHash === previousHead) {
-      return { action: "retry", instruction: `No new commit detected: reported hash ${normalizedHash.slice(0, 7)} equals session baseline. Create a commit first, then report the new hash.` };
+      // ISS-922: a pre-fix CLI may have promoted the baseline onto this very
+      // commit, so "equals the baseline" can be an artefact of the poisoning
+      // rather than evidence that no work landed. That possibility is
+      // DIAGNOSED, never acted on -- see diagnoseStrandedCommit for why the
+      // evidence cannot be made sufficient.
+      const strandedPath = itemArtifactPath(ctx.state);
+      const commitDiagnosis = strandedPath
+        ? await diagnoseStrandedCommit(ctx, normalizedHash, strandedPath)
+        : "not_attributable";
+      // ISS-922: always a refusal. The diagnosis only decides how specific the
+      // instructions can be, never whether the commit is recorded.
+      return {
+        action: "retry",
+        instruction: [
+          `No new commit detected: reported hash ${normalizedHash.slice(0, 7)} equals the current item's baseline.`,
+          "Commit the work, then report the new hash.",
+          ...strandedEscape(ctx.state.sessionId, commitDiagnosis, normalizedHash),
+        ].join("\n"),
+      };
     }
 
     // ISS-084: Issue-fix mode -- record resolved issue, route through COMPLETE
@@ -460,6 +624,7 @@ export class FinalizeStage implements WorkflowStage {
           ...ctx.state.git,
           mergeBase: fullHead,
           expectedHead: fullHead,
+          itemBaseHead: fullHead,
         },
       });
 
@@ -493,6 +658,7 @@ export class FinalizeStage implements WorkflowStage {
         ...ctx.state.git,
         mergeBase: fullHead,
         expectedHead: fullHead,
+        itemBaseHead: fullHead,
       },
     });
 

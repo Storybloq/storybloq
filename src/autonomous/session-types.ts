@@ -591,12 +591,29 @@ export const SessionStateSchema = z.object({
   // FINALIZE checkpoint
   finalizeCheckpoint: z.enum(["staged", "staged_override", "precommit_passed", "committed"]).nullable().default(null),
 
-  // Git state
+  // Git state.
+  //
+  // ISS-922: each of these four commits answers a DIFFERENT question, and
+  // they are not interchangeable. Conflating two of them closed every exit
+  // from FINALIZE and stranded a session with no supported recovery.
+  //
+  // - initHead      HEAD at session start. Never mutated.
+  // - mergeBase     Diff base for the current item's review. NOT a
+  //                 finalization baseline: it starts as the fork point from
+  //                 main, so on a feature branch it sits behind HEAD.
+  // - expectedHead  The last OBSERVED head, for resume drift detection ONLY.
+  //                 Park, resume-drift and checkout all advance it, which is
+  //                 correct for drift detection and wrong for anything else.
+  // - itemBaseHead  The commit from which the current item must produce a
+  //                 newly validated commit. Initialized at item pick, reset
+  //                 when drift invalidates the work/review epoch. The only
+  //                 field FINALIZE measures a work commit against.
   git: z.object({
     branch: z.string().nullable().default(null),
     initHead: forgiveNull(z.string()),
     mergeBase: z.string().nullable().default(null),
     expectedHead: forgiveNull(z.string()),
+    itemBaseHead: forgiveNull(z.string()),
     baseline: z.object({
       porcelain: z.array(z.string()).default([]),
       dirtyTrackedFiles: z.record(z.object({ blobHash: z.string() })).default({}),

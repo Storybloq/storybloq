@@ -112,7 +112,7 @@ function makeWorkingSession(dir: string, overrides: Partial<FullSessionState> = 
     ...session,
     state: "IMPLEMENT",
     ticket: { id: "T-001", title: "Test ticket", risk: "low", claimed: true },
-    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123", itemBaseHead: "abc123" },
     reviews: { plan: [], code: [] },
     ...overrides,
   } as FullSessionState);
@@ -427,9 +427,14 @@ describe("handleResume for limit-parked sessions", () => {
   it("force-clear then clean-HEAD resume re-enters FINALIZE at its recorded checkpoint", async () => {
     // The sanctioned manual-recovery path: after the user verifies git state,
     // clear-compact --force drops the limit gate. With HEAD unchanged the
-    // generic resume restores FINALIZE directly; safety comes from the
-    // finalizeCheckpoint sub-machine (already-landed commits are detected and
-    // skipped), which must survive both the force-clear and the resume.
+    // generic resume restores FINALIZE directly.
+    //
+    // Scope, stated honestly (ISS-922): this pins ONLY that `state` and
+    // `finalizeCheckpoint` survive the force-clear and the resume. HEAD equals
+    // the baseline throughout and no landed commit is modelled, so it proves
+    // nothing about already-landed commits being detected and skipped -- the
+    // claim its earlier comment made. That guarantee is pinned for real, over
+    // a repository with an actual work commit, in finalize-iss922.test.ts.
     const { state, sessDir } = makeWorkingSession(root, {
       state: "FINALIZE",
       finalizeCheckpoint: "precommit_passed",

@@ -1082,7 +1082,11 @@ export function prepareForCompact(
   if (state.state === "SESSION_END") throw new Error("Session already ended");
   if (state.state === "FINALIZE") throw new Error("Cannot compact during FINALIZE — complete the commit first");
 
-  // Idempotent: already pending → refresh timestamp + expectedHead
+  // Idempotent: already pending → refresh timestamp + expectedHead.
+  // ISS-922: expectedHead records an OBSERVATION for resume drift detection.
+  // It must never carry the finalization baseline (git.itemBaseHead): parking
+  // after a work commit but before FINALIZE saw it would promote the baseline
+  // onto that commit and close every exit from the stage.
   if (state.compactPending && state.state === "COMPACT") {
     const updatedGit = opts?.expectedHead
       ? { ...state.git, expectedHead: opts.expectedHead }
@@ -1252,6 +1256,9 @@ export function prepareForLimitStop(
   state: FullSessionState,
   opts: LimitStopPrepareOptions,
 ): CompactPrepareResult {
+  // ISS-922: as in prepareForCompact, opts.expectedHead is an OBSERVATION for
+  // drift detection only. This function deliberately allows FINALIZE, so it is
+  // the likeliest promoter of all -- it must never touch git.itemBaseHead.
   if (state.state === "SESSION_END") throw new Error("Session already ended");
 
   const limitFields = {

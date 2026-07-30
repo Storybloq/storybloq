@@ -8,12 +8,29 @@
  * - State machine transitions
  * - Shared candidate renderer with issues
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+
+/**
+ * ISS-922: PICK_TICKET now establishes the item's finalization baseline from a
+ * FRESH head and fails closed if it cannot, because a cached value is exactly
+ * what cannot establish a baseline after unobserved drift. Session start
+ * already refuses a project without git (guide.ts), so a real gitHead failure
+ * is an anomaly, not a supported mode -- these fixtures previously relied on
+ * it failing in a non-repository tmpdir. Partial mock: only gitHead is
+ * replaced, everything else in the module stays real.
+ */
+vi.mock("../../../src/autonomous/git-inspector.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/autonomous/git-inspector.js")>()),
+  gitHead: vi.fn().mockResolvedValue({ ok: true, data: { hash: "abc123", branch: "main" } }),
+  // "abc123" is this file's own baseline, so PICK gets a resolvable head
+  // while FINALIZE still sees HEAD === baseline and behaves as before.
+}));
+
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();

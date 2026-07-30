@@ -53,6 +53,8 @@ vi.mock("../../src/autonomous/git-inspector.js", () => ({
  * would only exercise the preflight, which fires first and never reaches the
  * stage -- so a fixture that mutates up front proves nothing about this branch.
  */
+import { gitHead } from "../../src/autonomous/git-inspector.js";
+
 const hoisted = vi.hoisted(() => ({ failTicketWrite: false, stealClaimOnLock: null as null | (() => void) }));
 vi.mock("../../src/core/project-loader.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/project-loader.js")>();
@@ -180,6 +182,17 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "iss904-"));
   setupProject(root);
+});
+
+/**
+ * vi.restoreAllMocks() below strips the implementations the module factory
+ * set, so every test after the first sees gitHead resolve undefined.
+ * PICK_TICKET now reads it to establish the item's finalization baseline
+ * (ISS-922) and fails closed when HEAD cannot be resolved, so the
+ * implementation is re-armed per test rather than left to the factory.
+ */
+beforeEach(() => {
+  vi.mocked(gitHead).mockResolvedValue({ ok: true, data: { hash: "abc123", branch: "main" } } as never);
 });
 
 afterEach(() => {

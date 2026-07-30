@@ -11,7 +11,7 @@ import {
   type BranchAffinity, type BranchTarget, type PendingMismatch,
 } from "../branch-affinity.js";
 import { canClaim, buildClaim } from "../../core/claims.js";
-import { gitUserEmail } from "../git-inspector.js";
+import { gitUserEmail, gitHead } from "../git-inspector.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
@@ -37,6 +37,28 @@ type RevalidationResult<T> =
  *
  * T-188: When targetWork is non-empty, candidates are constrained to remaining targets.
  */
+/**
+ * Resolve the finalization baseline for an item about to be picked (ISS-922).
+ *
+ * Must be a FRESH head, never the cached expectedHead: that field records the
+ * last OBSERVED head and has no updater for ordinary active-session drift, so
+ * HEAD can move between COMPLETE and the next pick while branch strategy
+ * "current", "main" already on main, and "per-ticket" already on its branch
+ * all refresh nothing. A stale baseline makes a pre-existing commit read as
+ * this item's work.
+ *
+ * Fails closed rather than falling back: a cached value is exactly what cannot
+ * establish the baseline. That costs no supported configuration, because
+ * session start already refuses a project without git.
+ */
+async function resolveItemBaseHead(ctx: StageContext): Promise<string | null> {
+  const head = await gitHead(ctx.root);
+  return head?.ok ? head.data.hash : null;
+}
+
+const GIT_UNAVAILABLE_AT_PICK =
+  "Cannot resolve HEAD, so the item was NOT picked: without it there is no baseline to detect this item's commit against, and finalization would later refuse work that exists. Restore git access (check `git status` in the project root), then report the pick again.";
+
 export class PickTicketStage implements WorkflowStage {
   readonly id = "PICK_TICKET";
 
@@ -269,6 +291,11 @@ export class PickTicketStage implements WorkflowStage {
     });
     if (applied) return applied;
 
+    // ISS-922: establish this item's finalization baseline from a FRESH head,
+    // after branch strategy (the last thing that moves the repository).
+    const ticketBaseHead = await resolveItemBaseHead(ctx);
+    if (!ticketBaseHead) return { action: "retry", instruction: GIT_UNAVAILABLE_AT_PICK };
+
     // Clean up stale plan from previous ticket (ISS-029)
     const planPath = join(ctx.dir, "plan.md");
     try { if (existsSync(planPath)) unlinkSync(planPath); } catch { /* best-effort */ }
@@ -287,6 +314,7 @@ export class PickTicketStage implements WorkflowStage {
         claimed: true,
       },
       reviews: { plan: [], code: [] },
+      git: { ...ctx.state.git, itemBaseHead: ticketBaseHead },
       // ISS-904: per-ticket, so a fresh pick never inherits the previous item's
       // plan-gate history and mis-trigger the park hint on round one.
       planGateNonApprovals: 0,
@@ -381,6 +409,12 @@ export class PickTicketStage implements WorkflowStage {
     });
     if (applied) return applied;
 
+    // ISS-922: establish the finalization baseline from a FRESH head. This sits
+    // ahead of the ledger mutation below, so failing closed picks nothing AND
+    // leaves the issue's status untouched.
+    const issueBaseHead = await resolveItemBaseHead(ctx);
+    if (!issueBaseHead) return { action: "retry", instruction: GIT_UNAVAILABLE_AT_PICK };
+
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)
     // ISS-759: Use the resolved canonical issue.id -- crash-recovery replay matches on target
@@ -398,6 +432,7 @@ export class PickTicketStage implements WorkflowStage {
       currentIssue: { id: issue.id, displayId: issue.displayId, title: issue.title, severity: issue.severity },
       ticket: undefined,
       reviews: { plan: [], code: [] },
+      git: { ...ctx.state.git, itemBaseHead: issueBaseHead },
       finalizeCheckpoint: null,
       landingDecision: null,
     });
@@ -649,6 +684,8 @@ export class PickTicketStage implements WorkflowStage {
         ...ctx.state.git,
         branch: outcome.refreshed.branch,
         expectedHead: outcome.refreshed.expectedHead,
+        // ISS-922: a checkout relocates HEAD, so the finalization baseline follows it.
+        itemBaseHead: outcome.refreshed.expectedHead,
         baseline: outcome.refreshed.baseline,
       },
     });
@@ -741,6 +778,8 @@ export class PickTicketStage implements WorkflowStage {
           ...ctx.state.git,
           branch: outcome.refreshed.branch,
           expectedHead: outcome.refreshed.expectedHead,
+          // ISS-922: a checkout relocates HEAD, so the finalization baseline follows it.
+          itemBaseHead: outcome.refreshed.expectedHead,
           baseline: outcome.refreshed.baseline,
         },
       });

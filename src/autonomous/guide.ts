@@ -1127,6 +1127,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         initHead: headResult.data.hash,
         mergeBase: mergeBaseResult.ok ? mergeBaseResult.data : null,
         expectedHead: headResult.data.hash,
+        // ISS-922: the finalization baseline starts where the session starts.
+        itemBaseHead: headResult.data.hash,
         baseline: {
           porcelain: porcelainLines,
           dirtyTrackedFiles: dirtyTracked,
@@ -2150,7 +2152,9 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       ticket: recoveryTicket,
       guideCallCount: resumedGuideCallCount,
       contextPressure: resumedContextPressure,
-      git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash },
+      // ISS-922: divergent drift invalidated this item's work and reviews, so
+      // the finalization baseline resets with them.
+      git: { ...info.state.git, expectedHead: headResult.data.hash, mergeBase: headResult.data.hash, itemBaseHead: headResult.data.hash },
       sidecarPid: resumeSidecarPid,
       ownerTask: reboundOwnerTask,
       claudeCodeSessionId: reboundClaudeCodeSessionId,
@@ -2320,7 +2324,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ...CLEARED_LIMIT_FIELDS,
     guideCallCount: resumedGuideCallCount,
     contextPressure: resumedContextPressure,
-    // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point)
+    // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point).
+    // ISS-922: this records an OBSERVATION for drift detection. It must never
+    // touch itemBaseHead -- promoting the finalization baseline onto an
+    // unreported work commit is exactly what closed every exit from FINALIZE.
     ...(ownCommitDrift ? { git: { ...info.state.git, expectedHead: headResult.data.hash } } : {}),
     sidecarPid: resumeSidecarPid,
     ownerTask: reboundOwnerTask,

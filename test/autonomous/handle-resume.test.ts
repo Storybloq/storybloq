@@ -87,7 +87,7 @@ function createCompactSession(dir: string, overrides: Partial<FullSessionState> 
     ...session,
     state: overrides.preCompactState ?? "PLAN",
     ticket: overrides.ticket ?? { id: "T-001", title: "Test ticket", risk: "low", claimed: true },
-    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123", itemBaseHead: "abc123" },
     reviews: overrides.reviews ?? { plan: [], code: [] },
   });
   // prepareForCompact needs (dir, state, opts?) -- sets COMPACT + compactPending
@@ -386,7 +386,7 @@ describe("handleResume integration (ISS-039)", () => {
         ticketsCompleted: 5,
       },
       guideCallCount: 60,
-      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123", itemBaseHead: "abc123" },
     });
     prepareForCompact(dir, working, { expectedHead: "abc123" });
     const compactState = JSON.parse(readFileSync(join(dir, "state.json"), "utf-8")) as FullSessionState;
@@ -430,7 +430,7 @@ describe("handleResume integration (ISS-039)", () => {
         ticketsCompleted: 5,
       },
       guideCallCount: 60,
-      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123", itemBaseHead: "abc123" },
     });
     prepareForCompact(dir, working, { expectedHead: "abc123" });
 
@@ -903,6 +903,10 @@ describe("T-184: own-commit drift tolerance", () => {
     expect(state.state).toBe("IMPLEMENT"); // resumed at preCompactState, not recovered to PLAN
     expect(state.git.expectedHead).toBe("own-commit-head"); // updated
     expect(state.git.mergeBase).toBe("abc123"); // NOT changed (branch-off point preserved)
+    // ISS-922: the finalization baseline must NOT follow expectedHead here.
+    // Promoting it onto a commit FINALIZE has not yet seen is exactly what
+    // closed every exit from that stage and stranded a session on disk.
+    expect(state.git.itemBaseHead).toBe("abc123");
   });
 
   it("own-commit drift logs resumed event with ownCommit: true", async () => {

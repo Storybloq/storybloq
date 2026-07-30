@@ -6,6 +6,7 @@ import { CliValidationError } from "./helpers.js";
 import { RefResolutionError } from "../core/ref-normalization.js";
 import type { OutputFormat } from "../models/types.js";
 import type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
+import { transformForRawMode } from "./raw-mode.js";
 
 // Re-export types so existing test imports that reference run.ts still resolve.
 export type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
@@ -25,8 +26,11 @@ process.stdout.on("error", (err: NodeJS.ErrnoException) => {
  * Treats EPIPE as controlled termination (e.g. piping to head).
  */
 export function writeOutput(text: string): void {
+  // ISS-910: the single seam where --raw unwraps the standard JSON envelope
+  // (identity unless raw mode is active).
+  const finalText = transformForRawMode(text);
   try {
-    process.stdout.write(text + "\n");
+    process.stdout.write(finalText + "\n");
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === "EPIPE") {
       process.exitCode = ExitCode.OK;

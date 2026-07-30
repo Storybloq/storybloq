@@ -142,12 +142,25 @@ export async function handleConflictsShow(
   const { loadProject } = await import("../../core/project-loader.js");
   const { state } = await loadProject(resolve(root));
 
+  // ISS-910: these branches must honor `format`. This command documents an
+  // {"ok", ...} JSON contract in its --help, and a routine lookup failure
+  // answering in prose hands an automated caller non-JSON on stdout -- the
+  // exact parser breakage this issue exists to close. Failure shape matches
+  // the sibling handleResolve: {ok: false, error}.
   const target = resolveConflictTarget(state, id);
   if (target.kind === "missing") {
-    return { output: `Entity ${id} not found.`, exitCode: 1 };
+    const message = `Entity ${id} not found.`;
+    return {
+      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+      exitCode: 1,
+    };
   }
   if (target.kind === "ambiguous") {
-    return { output: `Ref "${id}" is ambiguous (matches: ${target.matches.join(", ")})`, exitCode: 1 };
+    const message = `Ref "${id}" is ambiguous (matches: ${target.matches.join(", ")})`;
+    return {
+      output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+      exitCode: 1,
+    };
   }
 
   let holder: Record<string, unknown>;
@@ -165,7 +178,15 @@ export async function handleConflictsShow(
 
   const conflicts = holder._conflicts as Array<Record<string, unknown>> | undefined;
   if (!conflicts || conflicts.length === 0) {
-    return { output: `${label} has no conflicts.` };
+    // A found entity with nothing to report is SUCCESS with an empty list,
+    // not an error -- and under json it is the same shape as any other
+    // success, so a caller parses one shape for both.
+    return {
+      output:
+        format === "json"
+          ? JSON.stringify({ ok: true, data: { id: label, conflicts: [] } }, null, 2)
+          : `${label} has no conflicts.`,
+    };
   }
 
   if (format === "json") {

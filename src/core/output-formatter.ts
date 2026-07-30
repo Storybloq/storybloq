@@ -151,6 +151,33 @@ export function errorEnvelope(
   return { version: 1, error: { code, message } };
 }
 
+/**
+ * The "no .story/ project" failure, rendered in whichever JSON family the
+ * calling command documents (ISS-910).
+ *
+ * These guards sit in the yargs adapter, ahead of the shared run.ts pipeline,
+ * so they never passed through a formatter and answered in prose even under
+ * --format json. That hands an automated caller non-JSON on stdout for the
+ * most routine failure there is -- the same parser breakage this issue exists
+ * to close, one layer above the handlers.
+ *
+ * `family` is the command's documented JSON shape: "envelope" for the shared
+ * {version, error} contract, "ok" for the {"ok", ...} commands. The Markdown
+ * rendering is byte-identical to what these guards emitted before.
+ *
+ * It lives HERE, beside errorEnvelope, rather than in cli/helpers.ts: helpers
+ * is in the type-fixture program for ISS-886 (via cli/array-options.ts), and
+ * giving it an edge to this module widens that fixture's tsc program to the
+ * whole repo, surfacing unrelated pre-existing errors as fixture failures.
+ */
+export function noProjectFoundOutput(format: unknown, family: "envelope" | "ok"): string {
+  const message = "No .story/ project found.";
+  if (format !== "json") return message;
+  return family === "ok"
+    ? JSON.stringify({ ok: false, error: message }, null, 2)
+    : JSON.stringify(errorEnvelope("not_found", message), null, 2);
+}
+
 export function partialEnvelope<T>(
   data: T,
   warnings: readonly LoadWarning[],
@@ -2030,6 +2057,12 @@ export function formatReference(
   lines.push("# storybloq Reference");
   lines.push("");
   lines.push("## CLI Commands");
+  lines.push("");
+  // ISS-910: the JSON envelope is part of every command's contract; document
+  // it once at the top of the command reference rather than per command.
+  lines.push("### JSON output envelope");
+  lines.push("");
+  lines.push('Commands accepting `--format json` wrap their payload in a versioned envelope: `{"version": 1, "data": ...}` on success, `{"version": 1, "error": {"code": ..., "message": ...}}` on failure, plus a `warnings` array on partial loads (exit code 3). Pass `--raw` with `--format json` to emit the `data` payload verbatim: errors keep the envelope, partial-load warnings are dropped (the exit code still signals them), and commands whose JSON is not the standard envelope reject `--raw` naming their shape. A few commands predate the envelope and emit their own JSON instead: `gc`, `limit-status`, `conflicts list`, `conflicts show`, `resolve` and `team reserve` return an `{"ok", "data"}` object, and `team init` and `team setup` return a bare result object. `session list` and `session show` use a text/json axis with their own top-level shapes, and the `bus` subcommands speak the versioned Bus wire format. Every one of these names its own shape in its `--help` and does not accept `--raw` at all, so passing it is rejected during argument validation, before the command runs -- which matters because several of them mutate state.');
   lines.push("");
   for (const cmd of commands) {
     lines.push(`### ${cmd.name}`);

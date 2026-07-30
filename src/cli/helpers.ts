@@ -110,14 +110,79 @@ export function assertUpdateHasFields(
   }
 }
 
-/** Adds --format option to a yargs command builder. */
-export function addFormatOption<T>(y: Argv<T>): Argv<T & { format: string }> {
-  return y.option("format", {
+/**
+ * Shared help epilogue for every command on the md/json format axis (ISS-910).
+ * Lives on the COMMAND builders because a root .epilogue() does not propagate
+ * to subcommand --help in yargs 17; attaching it here makes the coverage
+ * structural rather than per-command prose.
+ */
+export const JSON_ENVELOPE_EPILOGUE =
+  'JSON output (--format json) is wrapped in a versioned envelope: {"version": 1, "data": ...} on success, ' +
+  '{"version": 1, "error": {"code", "message"}} on failure, plus a "warnings" array on partial loads (exit code 3). ' +
+  "--raw emits the data payload verbatim instead: errors keep the envelope, partial-load warnings are dropped " +
+  "(the exit code still signals them), and commands whose JSON is not the standard envelope reject --raw naming their shape.";
+
+/**
+ * Help text for a command whose JSON is NOT the shared envelope (ISS-910).
+ *
+ * Such a command does not register --raw AT ALL, so strict parsing rejects
+ * `--raw` during argument validation, before the handler runs. That ordering
+ * is the point: several of these commands mutate (`gc --apply`, `resolve`,
+ * `team init/setup/reserve`, `limit-status --cancel`), and rejecting at the
+ * output seam instead would let the mutation happen and only then report a
+ * raw-mode error, inviting a retry of work that already succeeded.
+ */
+function deviantShapeEpilogue(jsonShape: string): string {
+  return (
+    `JSON output (--format json) from this command is ${jsonShape}, NOT the shared ` +
+    '{"version": 1, "data": ...} envelope that most commands use. --raw is defined only for ' +
+    "the shared envelope and is therefore not accepted by this command; passing it is rejected " +
+    "before the command runs."
+  );
+}
+
+/**
+ * Adds the shared --format/--raw options and the envelope epilogue to a yargs
+ * command builder. Every command on the standard md/json axis registers
+ * through here (ISS-910) so the envelope documentation and the --raw contract
+ * cannot drift per command. The session list/show text/json axis and the bus
+ * wire format deliberately do NOT use this helper.
+ *
+ * Pass `jsonShape` for a command whose JSON is knowingly deviant (verified by
+ * running it, not assumed): its help then names that shape instead of
+ * promising the shared envelope. `test/cli/raw-envelope.e2e.test.ts` pins the
+ * annotation against each command's ACTUAL output, so an annotation that
+ * stops matching reality fails the suite rather than misleading an operator.
+ */
+export function addFormatOption<T>(y: Argv<T>): Argv<T & { format: string; raw: boolean }>;
+export function addFormatOption<T>(y: Argv<T>, jsonShape: string): Argv<T & { format: string }>;
+export function addFormatOption<T>(
+  y: Argv<T>,
+  jsonShape?: string,
+): Argv<T & { format: string; raw: boolean }> | Argv<T & { format: string }> {
+  const withFormat = y.option("format", {
     type: "string",
     default: "md",
     choices: ["json", "md"],
-    describe: "Output format: json or md",
-  }) as Argv<T & { format: string }>;
+    describe: jsonShape
+      ? `Output format: md, or json (this command emits ${jsonShape}, not the shared envelope)`
+      : 'Output format: md, or json (a versioned {"version": 1, "data": ...} envelope)',
+  });
+
+  // No --raw here, so strict parsing rejects it before the handler runs. The
+  // overload above keeps the TYPE honest too: a deviant builder must not hand
+  // its handler an argv that claims a definite `raw: boolean`.
+  if (jsonShape) {
+    return withFormat.epilogue(deviantShapeEpilogue(jsonShape)) as Argv<T & { format: string }>;
+  }
+
+  return withFormat
+    .option("raw", {
+      type: "boolean",
+      default: false,
+      describe: "With --format json: emit the data payload without the envelope",
+    })
+    .epilogue(JSON_ENVELOPE_EPILOGUE) as Argv<T & { format: string; raw: boolean }>;
 }
 
 /**

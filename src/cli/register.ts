@@ -45,7 +45,7 @@ const LITERAL_DROP_BLANK = { comma: "literal", empty: "drop", trim: "never" } as
 /** Payload value where a comma is legal and a blank must still reach validation. */
 const LITERAL_KEEP_BLANK = { comma: "literal", empty: "preserve", trim: "never" } as const;
 import { parseMetadataValue } from "./commands/metadata.js";
-import { formatError, formatLedgerIntegrity, ExitCode } from "../core/output-formatter.js";
+import { formatError, formatLedgerIntegrity, noProjectFoundOutput, ExitCode } from "../core/output-formatter.js";
 import { discoverIntegrityRoot, scanLedgerIntegrity } from "../core/ledger-integrity.js";
 import type { IssueSourceRefInput } from "../models/issue.js";
 
@@ -282,11 +282,10 @@ export function registerReconcileCommand(yargs: Argv): Argv {
     "reconcile",
     "Detect and fix duplicate displayIds across all entity types",
     (y) =>
-      y
+      addFormatOption(y
         .option("dry-run", { type: "boolean", default: false, describe: "Show what would change without writing" })
         .option("ci", { type: "boolean", default: false, describe: "Exit non-zero if duplicates found, no mutations" })
-        .option("rebalance-ranks", { type: "boolean", default: false, describe: "Also rebalance fractional ranks" })
-        .option("format", { type: "string", choices: ["md", "json"], default: "md", describe: "Output format" }),
+        .option("rebalance-ranks", { type: "boolean", default: false, describe: "Also rebalance fractional ranks" })),
     async (argv) => {
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
       const result = await handleReconcile(root, {
@@ -316,10 +315,10 @@ export function registerConflictsCommand(yargs: Argv): Argv {
         .command(
           "list",
           "List all items with unresolved conflicts",
-          (y2) => y2.option("format", { type: "string", choices: ["md", "json"], default: "md" }),
+          (y2) => addFormatOption(y2, 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
           async (argv) => {
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-            if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
             const { handleConflictsList } = await import("./commands/conflicts.js");
             const result = await handleConflictsList(root, (argv.format as "md" | "json") ?? "md");
             writeOutput(result.output);
@@ -329,12 +328,11 @@ export function registerConflictsCommand(yargs: Argv): Argv {
           "show <id>",
           "Show field-level conflict detail for an item",
           (y2) =>
-            y2
-              .positional("id", { type: "string", demandOption: true, describe: "Entity ID" })
-              .option("format", { type: "string", choices: ["md", "json"], default: "md" }),
+            addFormatOption(y2
+              .positional("id", { type: "string", demandOption: true, describe: "Entity ID" }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
           async (argv) => {
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-            if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
             const { handleConflictsShow } = await import("./commands/conflicts.js");
             const result = await handleConflictsShow(argv.id as string, root, (argv.format as "md" | "json") ?? "md");
             writeOutput(result.output);
@@ -351,15 +349,14 @@ export function registerResolveCommand(yargs: Argv): Argv {
     "resolve <id>",
     "Resolve merge conflicts on a .story/ item",
     (y) =>
-      y
+      addFormatOption(y
         .positional("id", { type: "string", demandOption: true, describe: "Entity ID" })
         .option("field", { type: "string", describe: "Resolve a specific field" })
         .option("use", { type: "string", choices: ["ours", "theirs"], describe: "Pick a side" })
-        .option("value", { type: "string", describe: "Custom value (JSON)" })
-        .option("format", { type: "string", choices: ["md", "json"], default: "md" }),
+        .option("value", { type: "string", describe: "Custom value (JSON)" }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
     async (argv) => {
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-      if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+      if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
       try {
         const { handleResolve } = await import("./commands/conflicts.js");
         let parsedValue: unknown;
@@ -375,8 +372,14 @@ export function registerResolveCommand(yargs: Argv): Argv {
         writeOutput(result.output);
         if (result.exitCode) process.exitCode = result.exitCode;
       } catch (err: unknown) {
+        // ISS-910: same rule the gc and team-reserve adapters already follow
+        // (ISS-805 R3) -- a post-validation handler failure still honors
+        // --format json, emitting one parseable { ok:false, error } object
+        // rather than prose an automated caller cannot read.
         const message = err instanceof Error ? err.message : String(err);
-        writeOutput(message);
+        writeOutput(
+          argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+        );
         process.exitCode = ExitCode.USER_ERROR;
       }
     },
@@ -392,7 +395,7 @@ export function registerGcCommand(yargs: Argv): Argv {
     "gc",
     "Remove tombstoned files past retention period",
     (y) =>
-      y
+      addFormatOption(y
         .option("apply", {
           type: "boolean",
           default: false,
@@ -407,17 +410,11 @@ export function registerGcCommand(yargs: Argv): Argv {
           type: "number",
           default: 30,
           describe: "Retention period in days",
-        })
-        .option("format", {
-          type: "string",
-          choices: ["md", "json"],
-          default: "md",
-          describe: "Output format",
-        }),
+        }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
     async (argv) => {
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
       if (!root) {
-        writeOutput("No .story/ project found.");
+        writeOutput(noProjectFoundOutput(argv.format, "ok"));
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
@@ -487,9 +484,8 @@ export function registerTeamCommand(yargs: Argv): Argv {
         "doctor",
         "Run team health checks on the project",
         (y2) =>
-          y2
-            .option("ci", { type: "boolean", default: false, describe: "Exit non-zero on error-level findings" })
-            .option("format", { type: "string", choices: ["md", "json"], default: "md", describe: "Output format" }),
+          addFormatOption(y2
+            .option("ci", { type: "boolean", default: false, describe: "Exit non-zero on error-level findings" })),
         async (argv) => {
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
           const result = await handleTeamDoctor(root, {
@@ -506,10 +502,9 @@ export function registerTeamCommand(yargs: Argv): Argv {
         "reserve <type>",
         "Reserve display IDs via remote git refs",
         (y2) =>
-          y2
+          addFormatOption(y2
             .positional("type", { type: "string", demandOption: true, choices: ["tickets", "issues", "notes", "lessons"], describe: "Entity type" })
-            .option("count", { type: "number", default: 1, describe: "Number of IDs to reserve (1-100)" })
-            .option("format", { type: "string", choices: ["md", "json"], default: "md" }),
+            .option("count", { type: "number", default: 1, describe: "Number of IDs to reserve (1-100)" }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
         async (argv) => {
           const reserveFormat = (argv.format as "md" | "json") ?? "md";
           // ISS-805 R1: validate --count BEFORE project discovery so the JSON
@@ -524,7 +519,7 @@ export function registerTeamCommand(yargs: Argv): Argv {
             return;
           }
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
           try {
             const result = await handleReserve(root, argv.type as "tickets" | "issues" | "notes" | "lessons", argv.count as number, reserveFormat);
             writeOutput(result.output);
@@ -546,13 +541,12 @@ export function registerTeamCommand(yargs: Argv): Argv {
         "init",
         "Enable team mode on this project",
         (y2) =>
-          y2
+          addFormatOption(y2
             .option("claim-staleness-hours", { type: "number", describe: "Hours before a claim is considered stale (default 48)" })
-            .option("id-allocator", { type: "string", choices: ["local", "git-refs"], describe: "ID allocation strategy: local (default) needs no remote but divergent branches can mint duplicate display ids (run `storybloq reconcile` after merges); git-refs reserves ids via remote refs, preventing collisions at the source" })
-            .option("format", { type: "string", choices: ["md", "json"], default: "md", describe: "Output format" }),
+            .option("id-allocator", { type: "string", choices: ["local", "git-refs"], describe: "ID allocation strategy: local (default) needs no remote but divergent branches can mint duplicate display ids (run `storybloq reconcile` after merges); git-refs reserves ids via remote refs, preventing collisions at the source" }), "its own top-level result object with no envelope"),
         async (argv) => {
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
           const { handleTeamInit } = await import("./commands/team-init.js");
           const result = await handleTeamInit(root, {
             claimStalenessHours: argv["claim-staleness-hours"] as number | undefined,
@@ -566,12 +560,10 @@ export function registerTeamCommand(yargs: Argv): Argv {
       .command(
         "setup",
         "Install git merge driver and .gitattributes for team mode",
-        (y2) =>
-          y2
-            .option("format", { type: "string", choices: ["md", "json"], default: "md", describe: "Output format" }),
+        (y2) => addFormatOption(y2, "its own top-level result object with no envelope"),
         async (argv) => {
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
           const { handleTeamSetup } = await import("./commands/team-setup.js");
           const result = await handleTeamSetup(root, { format: (argv.format as "md" | "json") ?? "md" });
           writeOutput(result.output);
@@ -589,7 +581,7 @@ export function registerTeamCommand(yargs: Argv): Argv {
               (y2) => addFormatOption(y2),
               async (argv) => {
                 const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-                if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope")); process.exitCode = ExitCode.USER_ERROR; return; }
                 const { handleTeamConfigShow } = await import("./commands/team-config.js");
                 const result = handleTeamConfigShow(root, parseOutputFormat(argv.format));
                 writeOutput(result.output);
@@ -606,7 +598,7 @@ export function registerTeamCommand(yargs: Argv): Argv {
                 ),
               async (argv) => {
                 const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-                if (!root) { writeOutput("No .story/ project found."); process.exitCode = ExitCode.USER_ERROR; return; }
+                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope")); process.exitCode = ExitCode.USER_ERROR; return; }
                 const { handleTeamConfigSet } = await import("./commands/team-config.js");
                 const result = await handleTeamConfigSet(root, argv.key as string, argv.value as string, parseOutputFormat(argv.format));
                 writeOutput(result.output);
@@ -629,17 +621,12 @@ export function registerMigrateCommand(yargs: Argv): Argv {
     "migrate",
     "Migrate config schema to latest version",
     (y) =>
-      y
+      addFormatOption(y
         .option("dry-run", {
           type: "boolean",
           default: false,
           describe: "Show proposed changes without writing",
-        })
-        .option("format", {
-          choices: ["md", "json"] as const,
-          default: "md",
-          describe: "Output format",
-        }),
+        })),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       const dryRun = argv["dry-run"] as boolean;
@@ -3738,7 +3725,7 @@ export function registerLimitStatusCommand(yargs: Argv): Argv {
     "limit-status",
     "Show pending usage-limit auto-resumes (global, all projects)",
     (y) =>
-      y
+      addFormatOption(y
         .option("cancel", {
           type: "string",
           describe: "Cancel the pending auto-resume for a record key or client session id",
@@ -3746,12 +3733,7 @@ export function registerLimitStatusCommand(yargs: Argv): Argv {
         .option("requeue", {
           type: "string",
           describe: "Return a manual/failed record to the wake queue",
-        })
-        .option("format", {
-          choices: ["json", "md"] as const,
-          default: "md" as const,
-          describe: "Output format",
-        }),
+        }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
     async (argv) => {
       const { handleLimitStatus } = await import("./commands/limit-status.js");
       try {
@@ -3760,10 +3742,20 @@ export function registerLimitStatusCommand(yargs: Argv): Argv {
           requeue: argv.requeue as string | undefined,
           format: argv.format as "json" | "md",
         });
-        process.stdout.write(result.output + "\n");
+        // ISS-910: all output through writeOutput, never process.stdout. This
+        // command does NOT register --raw (its JSON shape is deviant, so the
+        // flag is rejected during argument validation); the seam still owns
+        // EPIPE handling and keeps one output path for the whole CLI.
+        writeOutput(result.output);
         if (result.errorCode) process.exitCode = 1;
       } catch (err: unknown) {
-        process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        // ISS-910: an automated caller parses stdout. Answering only on
+        // stderr left it with empty stdout on failure, which is as
+        // unparseable as prose; emit this command's documented shape.
+        const message = err instanceof Error ? err.message : String(err);
+        writeOutput(
+          argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+        );
         process.exitCode = 1;
       }
     },
@@ -3828,7 +3820,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
         "set-overrides",
         "Set or clear recipe overrides in config.json",
         (y2) =>
-          y2
+          addFormatOption(y2
             .option("json", {
               type: "string",
               describe: "JSON object to merge into recipeOverrides",
@@ -3836,12 +3828,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
             .option("clear", {
               type: "boolean",
               describe: "Remove recipeOverrides entirely (reset to defaults)",
-            })
-            .option("format", {
-              choices: ["json", "md"] as const,
-              default: "md" as const,
-              describe: "Output format",
-            }),
+            })),
         async (argv) => {
           const { handleConfigSetOverrides } = await import("./commands/config-update.js");
           const { writeOutput } = await import("./run.js");
@@ -3871,16 +3858,11 @@ export function registerConfigCommand(yargs: Argv): Argv {
         "set-federation",
         "Set federation settings (orchestrator only)",
         (y2) =>
-          y2
+          addFormatOption(y2
             .option("allow-node-writes", {
               type: "boolean",
               describe: "Allow orchestrator MCP tools to write to node .story/ directories",
-            })
-            .option("format", {
-              choices: ["json", "md"] as const,
-              default: "md" as const,
-              describe: "Output format",
-            }),
+            })),
         async (argv) => {
           const { handleConfigSetFederation } = await import("./commands/config-update.js");
           const { writeOutput } = await import("./run.js");
@@ -4072,7 +4054,15 @@ export function registerSessionCommand(yargs: Argv): Argv {
                 describe: "Output format",
                 choices: ["text", "json"] as const,
                 default: "text",
-              }),
+              })
+              // ISS-910: this command is EXEMPT from the shared md/json
+              // envelope axis -- its text/json contract predates it and was
+              // deliberately hardened (ISS-897). Documented here instead.
+              .epilogue(
+                'JSON output (--format json) emits this command\'s own top-level shape {"sessions", "damaged"} -- ' +
+                "NOT the shared {\"version\": 1, \"data\"} envelope other commands use -- and --raw is not defined here. " +
+                "The text/json axis predates the shared envelope and its raw contract is preserved deliberately.",
+              ),
           async (argv) => {
             const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
             const root = discoverProjectRoot();
@@ -4110,6 +4100,12 @@ export function registerSessionCommand(yargs: Argv): Argv {
                 choices: ["text", "json"] as const,
                 default: "text",
               })
+              // ISS-910: same exemption as `session list` -- own shape, no envelope.
+              .epilogue(
+                'JSON output (--format json) emits this command\'s own top-level shape {"state", "recentEvents"} -- ' +
+                "NOT the shared {\"version\": 1, \"data\"} envelope other commands use -- and --raw is not defined here. " +
+                "The text/json axis predates the shared envelope and its raw contract is preserved deliberately.",
+              )
               .option("events", {
                 type: "number",
                 describe: "Number of recent events to include (non-negative integer)",
@@ -4312,25 +4308,20 @@ export function registerFeedbackCommand(yargs: Argv): Argv {
           "list",
           "List community feedback",
           (sub) =>
-            sub
+            addFormatOption(sub
               .option("category", {
                 type: "string",
                 choices: ["bug", "feature", "idea"] as const,
                 describe: "Filter by category",
-              })
-              .option("format", {
-                type: "string",
-                default: "md",
-                choices: ["md", "json"] as const,
-                describe: "Output format",
-              }),
+              })),
           async (argv) => {
             const { handleFeedbackList } = await import("./commands/feedback.js");
             const result = await handleFeedbackList(
               { category: argv.category as "bug" | "feature" | "idea" | undefined },
               argv.format as "md" | "json",
             );
-            process.stdout.write(result.output + "\n");
+            // ISS-910: accepts --raw, so it prints through the seam.
+            writeOutput(result.output);
             if (result.exitCode) process.exitCode = result.exitCode;
           },
         )

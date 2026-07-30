@@ -36,6 +36,7 @@ async function runCli(): Promise<void> {
   const { hideBin } = await import("yargs/helpers");
   const { ExitCode, formatError } = await import("../core/output-formatter.js");
   const { writeOutput } = await import("./run.js");
+  const { configureRawMode, checkRawMode, rawRejectionPending, RAW_REJECTION_EXIT } = await import("./raw-mode.js");
   const { takeArrayOptionError, resetArrayOptionError } = await import("./array-options.js");
   const {
     registerInitCommand,
@@ -137,6 +138,28 @@ async function runCli(): Promise<void> {
       writeOutput(formatError("invalid_input", msg ?? "Unknown error", errorFormat));
       process.exitCode = ExitCode.USER_ERROR;
       throw new HandledError();
+    })
+    // ISS-910: --raw is only meaningful for the JSON envelope, and raw mode is
+    // armed here, before any handler runs. Commands that never registered
+    // --raw parse it as undefined (and strict mode rejects it outright), so
+    // this is inert for them.
+    //
+    // The misuse is reported HERE rather than through .check() or a rethrow:
+    // a .check() failure reaches .fail() with a truthy err, which the shared
+    // handler rethrows into the io_error catch-all -- the wrong code for user
+    // input. Printing here and throwing HandledError gives the correct
+    // invalid_input envelope exactly once, because handleUnexpectedError
+    // early-returns on HandledError. Adding a branch to .fail() instead would
+    // perturb the pinned handling of a CliValidationError raised inside an
+    // async handler, which double-printed when tried (ISS-886 boundary tests).
+    .middleware((argv) => {
+      const problem = checkRawMode(argv as { raw?: unknown; format?: unknown });
+      if (problem !== true) {
+        writeOutput(formatError("invalid_input", problem, errorFormat));
+        process.exitCode = ExitCode.USER_ERROR;
+        throw new HandledError();
+      }
+      configureRawMode((argv as { raw?: unknown }).raw, (argv as { format?: unknown }).format);
     });
 
   cli = registerInitCommand(cli);
@@ -193,6 +216,13 @@ async function runCli(): Promise<void> {
     handleUnexpectedError(err);
   } finally {
     resetArrayOptionError();
+  }
+
+  // ISS-910: a raw-mode rejection must survive the command runner's own exit
+  // code assignment, which happens after writeOutput; escalate here, once,
+  // after the whole parse.
+  if (rawRejectionPending()) {
+    process.exitCode = RAW_REJECTION_EXIT;
   }
 
   // ISS-570 G1: banner is the last thing the CLI does, after the command's

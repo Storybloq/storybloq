@@ -1,6 +1,13 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { gitDiffNames } from "../git-inspector.js";
+import {
+  MAX_FRESHNESS_RETRIES,
+  freshnessStatusLine,
+  probeArtifactFreshness,
+  resolveFreshnessGlobs,
+  staleRebuildInstruction,
+} from "../artifact-freshness.js";
 
 const MAX_VERIFY_RETRIES = 3;
 
@@ -85,6 +92,8 @@ export class VerifyStage implements WorkflowStage {
         }),
         "4. Kill the server process",
         "",
+        freshnessStatusLine(resolveFreshnessGlobs(ctx.root, config, ctx.recipe.stages?.TEST as Record<string, unknown> | undefined)),
+        "",
         "Report results in your notes as a JSON array:",
         '```',
         `notes: ${JSON.stringify(endpoints.map((e) => ({ endpoint: e, status: "STATUS_CODE" })))}`,
@@ -111,6 +120,50 @@ export class VerifyStage implements WorkflowStage {
     const notes = report.notes ?? "";
     const retryCount = ctx.state.verifyRetryCount ?? 0;
     const nextRetry = retryCount + 1;
+
+    // ISS-912: same artifact-freshness gate as TEST -- endpoint results from
+    // a server built off stale artifacts verify code that is not in the tree.
+    // Stale (positively established) instructs a rebuild and re-verify,
+    // bounded; everything unestablished fails open with a recorded event.
+    const verifyConfig = ctx.recipe.stages?.VERIFY as Record<string, unknown> | undefined;
+    const testStageConfig = ctx.recipe.stages?.TEST as Record<string, unknown> | undefined;
+    const freshnessGlobs = resolveFreshnessGlobs(ctx.root, verifyConfig, testStageConfig);
+    let freshnessWaived = false;
+    if (freshnessGlobs) {
+      const probe = probeArtifactFreshness(ctx.root, freshnessGlobs);
+      const freshnessRetries = ctx.state.verifyFreshnessRetryCount ?? 0;
+      if (probe.kind === "stale") {
+        if (freshnessRetries < MAX_FRESHNESS_RETRIES) {
+          ctx.writeState({ verifyFreshnessRetryCount: freshnessRetries + 1 });
+          ctx.appendEvent("verify", {
+            result: "stale_artifacts_retry",
+            newestSource: probe.newestSource,
+            newestOutput: probe.newestOutput,
+            attempt: freshnessRetries + 1,
+          });
+          const buildConfig = ctx.recipe.stages?.BUILD as Record<string, unknown> | undefined;
+          const rebuildCommand = (buildConfig?.command as string) ?? "npm run build";
+          return {
+            action: "retry",
+            instruction: staleRebuildInstruction(probe, rebuildCommand, "Restart the server and re-curl every endpoint.", freshnessRetries + 1),
+          };
+        }
+        freshnessWaived = true;
+        ctx.writeState({ verifyFreshnessRetryCount: 0 });
+        ctx.appendEvent("verify", {
+          result: "stale_waived",
+          newestSource: probe.newestSource,
+          newestOutput: probe.newestOutput,
+        });
+      } else if (probe.kind === "unestablished") {
+        ctx.appendEvent("verify", { result: "freshness_unestablished", reason: probe.reason });
+      }
+    }
+    // Same debt-clearing rule as TEST: any report not rejected as stale
+    // resets the session-wide counter so later tickets get the full bound.
+    if (ctx.state.verifyFreshnessRetryCount) {
+      ctx.writeState({ verifyFreshnessRetryCount: 0 });
+    }
 
     // Parse results
     let results: Array<{ endpoint: string; status: number }>;
@@ -182,6 +235,21 @@ export class VerifyStage implements WorkflowStage {
       endpointCount: results.length,
       statuses: results.map((r) => r.status),
     });
+    if (freshnessWaived) {
+      return {
+        action: "advance",
+        result: {
+          instruction: [
+            "# Verification Passed -- Artifact Freshness NOT Established",
+            "",
+            `Rebuilding did not refresh the build outputs after ${MAX_FRESHNESS_RETRIES} attempts, so these endpoint results may attest to stale artifacts.`,
+            "",
+            "Proceeding (the probe never hard-blocks), but mention unestablished artifact freshness in the commit message.",
+          ].join("\n"),
+          reminders: ["Mention unestablished artifact freshness in the commit message."],
+        },
+      };
+    }
     return { action: "advance" };
   }
 }

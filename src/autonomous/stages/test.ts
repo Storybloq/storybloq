@@ -1,5 +1,12 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import {
+  MAX_FRESHNESS_RETRIES,
+  freshnessStatusLine,
+  probeArtifactFreshness,
+  resolveFreshnessGlobs,
+  staleRebuildInstruction,
+} from "../artifact-freshness.js";
 
 const MAX_TEST_RETRIES = 3;
 
@@ -31,6 +38,8 @@ export class TestStage implements WorkflowStage {
         "",
         `Run the test suite: \`${command}\``,
         "",
+        freshnessStatusLine(resolveFreshnessGlobs(ctx.root, testConfig, testConfig)),
+        "",
         "Report the results with:",
         '```json',
         `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "tests_run", "notes": "<exit code and summary>" } }`,
@@ -46,6 +55,55 @@ export class TestStage implements WorkflowStage {
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
     const notes = report.notes ?? "";
     const retryCount = ctx.state.testRetryCount ?? 0;
+
+    // ISS-912: before this report is accepted IN EITHER DIRECTION, establish
+    // that the artifact under test is the code in the working tree. A stale
+    // pass attests to code that is not there; a stale fail sends IMPLEMENT
+    // chasing phantom failures. Stale (positively established) instructs a
+    // rebuild and re-run, bounded; everything unestablished fails open.
+    const testConfig = ctx.recipe.stages?.TEST as Record<string, unknown> | undefined;
+    const freshnessGlobs = resolveFreshnessGlobs(ctx.root, testConfig, testConfig);
+    let freshnessWaived = false;
+    if (freshnessGlobs) {
+      const probe = probeArtifactFreshness(ctx.root, freshnessGlobs);
+      const freshnessRetries = ctx.state.testFreshnessRetryCount ?? 0;
+      if (probe.kind === "stale") {
+        if (freshnessRetries < MAX_FRESHNESS_RETRIES) {
+          ctx.writeState({ testFreshnessRetryCount: freshnessRetries + 1 });
+          ctx.appendEvent("tests_stale_artifacts", {
+            newestSource: probe.newestSource,
+            newestOutput: probe.newestOutput,
+            attempt: freshnessRetries + 1,
+          });
+          const buildConfig = ctx.recipe.stages?.BUILD as Record<string, unknown> | undefined;
+          const rebuildCommand = (buildConfig?.command as string) ?? "npm run build";
+          return {
+            action: "retry",
+            instruction: staleRebuildInstruction(probe, rebuildCommand, "Re-run the full test suite.", freshnessRetries + 1),
+          };
+        }
+        // Exhausted: fail open, visibly. Rebuilding did not refresh the
+        // outputs (incremental builders can leave older mtimes legitimately),
+        // so blocking further would hard-fail a project that cannot satisfy
+        // the probe. The waiver is recorded and surfaces on the pass path.
+        freshnessWaived = true;
+        ctx.writeState({ testFreshnessRetryCount: 0 });
+        ctx.appendEvent("tests_stale_waived", {
+          newestSource: probe.newestSource,
+          newestOutput: probe.newestOutput,
+        });
+      } else if (probe.kind === "unestablished") {
+        ctx.appendEvent("tests_freshness_unestablished", { reason: probe.reason });
+      }
+    }
+    // Any report NOT rejected as stale clears the rebuild-retry debt --
+    // including a probe that went unestablished mid-sequence or a config
+    // that no longer resolves. The counters are session-wide; carrying debt
+    // across acceptances would hand a later ticket fewer than the promised
+    // attempts before the waiver.
+    if (ctx.state.testFreshnessRetryCount) {
+      ctx.writeState({ testFreshnessRetryCount: 0 });
+    }
 
     // Parse exit code from notes — require explicit exit code, default to failure if ambiguous
     const exitCodeMatch = notes.match(/exit\s*(?:code[:\s]*)?\s*(\d+)/i);
@@ -66,6 +124,21 @@ export class TestStage implements WorkflowStage {
       // Tests passed — advance to CODE_REVIEW
       ctx.writeState({ testRetryCount: 0 });
       ctx.appendEvent("tests_passed", { retryCount, notes: notes.slice(0, 200) });
+      if (freshnessWaived) {
+        return {
+          action: "advance",
+          result: {
+            instruction: [
+              "# Tests Passed -- Artifact Freshness NOT Established",
+              "",
+              `Rebuilding did not refresh the build outputs after ${MAX_FRESHNESS_RETRIES} attempts, so this green result may attest to stale artifacts.`,
+              "",
+              "Proceeding (the probe never hard-blocks), but carry this forward: mention unestablished artifact freshness in the code review submission and the commit message.",
+            ].join("\n"),
+            reminders: ["Mention unestablished artifact freshness in the code review submission."],
+          },
+        };
+      }
       return { action: "advance" };
     }
 

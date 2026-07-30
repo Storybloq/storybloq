@@ -783,6 +783,14 @@ export const SessionStateSchema = z.object({
   writeTestsRetryCount: z.number().default(0),
   buildRetryCount: z.number().default(0),
   verifyRetryCount: z.number().default(0),
+  // ISS-912: bounded rebuild-and-re-run retries when TEST/VERIFY establish
+  // stale build artifacts before accepting a report. Nonnegative integers by
+  // schema: a negative value would satisfy `retries < MAX` forever and turn
+  // the bounded fail-open gate into a hard block, so a malformed counter
+  // fails the parse loudly and names itself (ISS-907 doctrine: a repair or a
+  // loose bound must not double as a corruption filter).
+  testFreshnessRetryCount: z.number().int().min(0).default(0),
+  verifyFreshnessRetryCount: z.number().int().min(0).default(0),
   verifyAutoDetected: z.boolean().default(false),
 
   // T-128: Resolved recipe (frozen at session start, survives compact/resume)

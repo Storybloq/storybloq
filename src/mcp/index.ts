@@ -19,6 +19,8 @@ import { resolve, join, isAbsolute } from "node:path";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serverRegistryBinder } from "../autonomous/mcp-binding.js";
+
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
 import { registerAllTools, registerSessionGuardTool } from "./tools.js";
 import { withStrictToolSchemas } from "./strict-schemas.js";
@@ -28,6 +30,21 @@ import { startInboxWatcher, stopInboxWatcher } from "../channel/inbox-watcher.js
 const ENV_VAR = "STORYBLOQ_PROJECT_ROOT";
 const LEGACY_ENV_VAR = "CLAUDESTORY_PROJECT_ROOT";
 const CONFIG_PATH = ".story/config.json";
+
+/**
+ * Bind this process to a project's server registry (T-450).
+ *
+ * The mechanism lives in `../autonomous/mcp-binding.js` so it can be imported
+ * and tested without executing `main()`. Kept exported here because callers
+ * inside this module bind at two distinct moments: startup, and a
+ * `storybloq_init` that creates the project in a server that began in degraded
+ * mode. Missing the second would leave a server stamping its pid on guide calls
+ * while absent from the registry, so it could never be recognized as a live
+ * successor until the client restarted.
+ */
+export function bindServerRegistry(root: string | null | undefined): void {
+  serverRegistryBinder.bind(root);
+}
 
 // Version injected at build time by tsup define
 const version = process.env.STORYBLOQ_VERSION ?? "0.0.0-dev";
@@ -138,6 +155,11 @@ export function registerDegradedTools(rawServer: McpServer, root?: string): void
       degradedInit.remove();
       degradedGuard.remove();
       registerAllTools(server, result.root);
+      // T-450: this server now serves a project it did not know about at
+      // startup. Without binding here it would stamp its pid on guide calls
+      // while staying absent from that project's registry, so it could never
+      // be seen as a live successor until the client restarted.
+      bindServerRegistry(result.root);
       // Explicit tool-list-changed notification after the full swap. Each
       // underlying registerTool / remove call already emits its own
       // notification, but firing 49 notifications in rapid succession can
@@ -278,6 +300,13 @@ async function main(): Promise<void> {
     try { stopInboxWatcher(); } catch { /* best effort */ }
     process.exit(isEpipe ? 0 : 1);
   });
+
+  // T-450: register as a live server so a death marker left by a PREDECESSOR
+  // can be recognized as an ordinary restart rather than the client going away.
+  // The successor never touches the predecessor's sessions, so this registry is
+  // the only place that relationship is observable. Success here is also what
+  // licenses this process to stamp its pid on sessions at all.
+  bindServerRegistry(root);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

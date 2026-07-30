@@ -32,6 +32,7 @@ import {
   type IncompatibleCause,
 } from "./session-selector.js";
 import { toPersistedBranchStrategy } from "./branch-strategy.js";
+import { currentMcpServerPid, mcpProcessRole } from "./liveness.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -612,6 +613,31 @@ export function refreshLease(state: FullSessionState): FullSessionState {
       expiresAt: new Date(Date.now() + LEASE_DURATION_MS).toISOString(),
     },
     lastGuideCall: now,
+    // T-450: `mcpServerPid` is stamped beside its OWN timestamp,
+    // `mcpGuideCallAt`. It is deliberately NOT paired with `lastGuideCall`,
+    // which advances on CLI refreshes that leave the pid untouched. A death
+    // marker is only trustworthy if the server that last served this session is
+    // gone, and answering that needs both which server it was and when.
+    //
+    // `currentMcpServerPid()` returns null outside an MCP server, and the
+    // existing value is preserved in that case. This function has CLI callers
+    // (`session compact-prepare`, limit-stop) whose short-lived pids would
+    // otherwise be recorded and then read as a dead server.
+    //
+    // The pid is written WITH its own timestamp rather than relying on
+    // `lastGuideCall`, because a CLI refresh advances `lastGuideCall` while
+    // leaving the pid alone; the two would then describe different calls, and
+    // any evidence pairing them would be quietly wrong.
+    ...(mcpProcessRole() === "mcp-registered"
+      ? { mcpServerPid: currentMcpServerPid(), mcpGuideCallAt: now }
+      // An MCP server that could not register is SERVING while invisible to
+      // every other evaluator. Preserving the recorded pair would leave it
+      // naming a dead predecessor, which is the evidence another process would
+      // use to authorize taking over this very much live owner. Clear it.
+      : mcpProcessRole() === "mcp-unregistered"
+        ? { mcpServerPid: undefined, mcpGuideCallAt: undefined }
+        // A CLI caller is not a server and leaves the pair alone.
+        : {}),
     guideCallCount: newCallCount,
     contextPressure: {
       ...state.contextPressure,

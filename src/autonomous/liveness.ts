@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SuccessorServers } from "./mcp-registry.js";
 
 const LOCK_BASENAME = "sidecar.lock";
 const PID_BASENAME = "sidecar.pid";
@@ -259,7 +260,7 @@ function inspectExistingLock(lockPath: string): LockInspection {
       if (typeof body.token !== "string" || body.token.length === 0) return { state: "unreadable", ino: st.ino, token: null };
       if (!Number.isFinite(body.acquiredAt) || body.acquiredAt <= 0) return { state: "unreadable", ino: st.ino, token: null };
 
-      // EPERM means pid exists but we can't signal it — another uid owns it.
+      // EPERM means pid exists but we cannot signal it: another uid owns it.
       // That cannot be our sidecar; treat as dead for staleness purposes to
       // avoid a PID-reuse wedge where the recorded pid was recycled to
       // another user and the lock becomes un-breakable until that process
@@ -292,7 +293,7 @@ export type UnlinkResult =
 
 // Narrow the lstat/unlink TOCTOU window by holding an fd across the
 // verification. When expectedInode/expectedToken are provided we require the
-// currently-linked file to match before unlinking — this protects against a
+// currently-linked file to match before unlinking, which protects against a
 // concurrent holder replacing the lock between inspect and unlink.
 // expectedRenewedAt additionally fences against an IN-PLACE lease renewal by the
 // SAME holder (same inode+token, newer renewedAt): a lease that looked stealable
@@ -751,6 +752,596 @@ export function readAliveTimestamp(sessionDir: string): number | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Owner-gone CANDIDATE evidence (T-450)
+// ---------------------------------------------------------------------------
+
+/**
+ * WHAT THIS IS NOT: a determination that an owner task is dead.
+ *
+ * That determination is not available from anything on disk (ISS-926). The
+ * alive sidecar watches `process.ppid` and is spawned by the MCP SERVER, so it
+ * reports server death, not owner-task death; an ordinary MCP restart produces
+ * the identical marker while the owner task lives on. The only owner-task-bound
+ * signal is `lastGuideCall`, and guide calls happen at workflow-state
+ * transitions, so a healthy session in IMPLEMENT lapses for many minutes. Read
+ * together, those two can BOTH read "gone" for a fully live owner, and no
+ * threshold repairs it because they measure different subjects.
+ *
+ * So this returns CANDIDATE evidence and nothing stronger. The machine decides
+ * only whether to OFFER a recovery; a human decides whether to act, and the
+ * typed confirmation is the authority. Every consumer must present the signals
+ * separately, with timestamps, and say what could not be verified. No caller
+ * may render any of this as "the owner is dead".
+ *
+ * TRUST MODEL: these are ordinary workspace files, writable by any process
+ * running as this user. Reading them here rather than trusting a caller's
+ * assertion buys resistance to ACCIDENT, not to forgery, which is the same
+ * posture SKILL.md already documents for task identity. A process that can
+ * forge these can also run the admin CLI, so the threat model is unchanged.
+ * The hardened reads below are corruption resistance, not authentication.
+ */
+export type OwnerActivitySignal =
+  | { readonly kind: "fresh"; readonly at: string; readonly ageMs: number }
+  | { readonly kind: "stale"; readonly at: string; readonly ageMs: number }
+  | { readonly kind: "unknown"; readonly reason: "absent" | "unparseable" | "future" };
+
+export type DeathMarkerSignal =
+  | { readonly kind: "shutdown-marker"; readonly at: string | null }
+  | { readonly kind: "alive-zero"; readonly at: string }
+  | { readonly kind: "none"; readonly aliveAt: number }
+  | {
+      readonly kind: "unreadable";
+      readonly reason: "absent" | "non-numeric" | "future" | "raced" | "no-marker-time";
+    };
+
+export type MarkerValiditySignal =
+  | {
+      readonly kind: "invalidated";
+      readonly reason: "recorded-mcp-pid-alive" | "superseded-by-successor";
+      readonly pid: number;
+      readonly recordedAt: string;
+      readonly successorPids?: readonly number[];
+    }
+  /** The recorded server pid is DEFINITIVELY gone (ESRCH). The only arm that may corroborate. */
+  | { readonly kind: "not-invalidated"; readonly pid: number; readonly recordedAt: string }
+  | {
+      readonly kind: "unknown";
+      readonly reason:
+        | "no-recorded-pid"
+        | "pid-probe-failed"
+        | "successors-unavailable"
+        | "recorded-time-unknown"
+        | "successor-time-unknown";
+      readonly pid: number | null;
+    };
+
+export type SidecarProbeSignal =
+  | { readonly kind: "match"; readonly pid: number }
+  | { readonly kind: "absent"; readonly pid: number }
+  | { readonly kind: "unknown"; readonly reason: "no-pid" | "probe-unknown"; readonly pid: number | null };
+
+/**
+ * Lease state, captured HERE rather than read separately later.
+ *
+ * Ruling B requires the confirmation prompt to present lease state alongside
+ * the rest of the evidence. Reading it at render time would produce a
+ * different-time snapshot and quietly falsify the claim that this object is a
+ * single coherent observation.
+ */
+export type LeaseSignal =
+  | { readonly kind: "live"; readonly expiresAt: string; readonly remainingMs: number }
+  | { readonly kind: "expired"; readonly expiresAt: string; readonly agoMs: number }
+  | { readonly kind: "unknown"; readonly reason: "absent" | "unparseable" };
+
+export interface OwnerLivenessSignals {
+  readonly activity: OwnerActivitySignal;
+  readonly lease: LeaseSignal;
+  readonly deathMarker: DeathMarkerSignal;
+  readonly markerValidity: MarkerValiditySignal;
+  readonly sidecarProbe: SidecarProbeSignal;
+  readonly observedAt: string;
+  readonly staleThresholdMs: number;
+  readonly successors: SuccessorServers;
+}
+
+/**
+ * Exactly one of these permits an offer: `gone-candidate`. The other three are
+ * distinct on purpose, because the message a caller owes the operator differs.
+ *
+ * - `active`        the owner acted recently. Never offer, whatever else says.
+ * - `gone-candidate` activity lapsed AND a death marker survived invalidation.
+ * - `contradicted`  a death marker exists but something live disagrees with it.
+ *                   This is NOT `undetermined`: we HAVE evidence and it
+ *                   conflicts, which is worth saying out loud.
+ * - `undetermined`  evidence is missing or unreadable. `missing` names which.
+ */
+export type OwnerLivenessVerdict =
+  | { readonly kind: "active"; readonly signals: OwnerLivenessSignals }
+  | { readonly kind: "gone-candidate"; readonly signals: OwnerLivenessSignals }
+  | { readonly kind: "contradicted"; readonly signals: OwnerLivenessSignals; readonly why: string }
+  | { readonly kind: "undetermined"; readonly signals: OwnerLivenessSignals; readonly missing: readonly string[] };
+
+/** The session fields this evidence is derived from. */
+export interface OwnableLivenessState {
+  readonly lastGuideCall?: string | null;
+  readonly mcpServerPid?: number | null;
+  readonly mcpGuideCallAt?: string | null;
+  readonly lease?: { readonly expiresAt?: string | null } | null;
+}
+
+/**
+ * A PROVIDER, never a snapshot.
+ *
+ * A precomputed set cannot be re-read, so re-reading it before authorizing
+ * returns the same object and the check is theatre. Accepting one would make
+ * the final gate optional at exactly the authorization boundary, so the only
+ * shape callers may pass is one that can actually answer twice.
+ */
+export type SuccessorSource = () => SuccessorServers;
+
+/**
+ * Session state, also a provider and for the same reason as the successor set.
+ *
+ * The owner can become active DURING an evaluation: a CLI `compact-prepare`
+ * advances `lastGuideCall` without registering any successor, so a recheck that
+ * looked only at the registry would still authorize from stale activity
+ * evidence. Anything that can change under us has to be re-readable.
+ */
+export type LivenessStateSource = () => OwnableLivenessState;
+
+/** The single predicate consumers gate the OFFER on. Never inline this test. */
+export function permitsRecoveryOffer(v: OwnerLivenessVerdict): boolean {
+  return v.kind === "gone-candidate";
+}
+
+/**
+ * How long owner-task ACTIVITY must have lapsed before an owner-gone candidate
+ * may even be considered.
+ *
+ * Deliberately NOT `ALIVE_FRESH_MS` (30s, in `waker.ts`), and deliberately not
+ * derived from it. The two measure different subjects:
+ *
+ * - `ALIVE_FRESH_MS` is the alive FILE, rewritten every 10s by a sidecar whose
+ *   parent is the MCP server. It answers "is a client process ticking".
+ * - This is `lastGuideCall`, refreshed by `refreshLease` on the OWNER TASK's
+ *   own guide calls. Those fire at workflow-state transitions, so a healthy
+ *   session in IMPLEMENT running a test suite lapses for many minutes.
+ *   Anything near 30s here would flag every working session.
+ *
+ * It lives in this module rather than beside `ALIVE_FRESH_MS` because `waker`
+ * imports `liveness`, so the reverse import would be a cycle.
+ *
+ * Bounded on both sides: it must exceed the longest legitimate gap between
+ * guide calls, and stay well under `LEASE_DURATION_MS` (45 min) or the band
+ * this serves is empty, since `handleResume` already rebinds on expiry.
+ *
+ * A POLICY choice, not a derivation, which is why it is carried into every
+ * evidence record as `staleThresholdMs`: a later change must show up in the
+ * audit trail instead of silently reinterpreting past records.
+ */
+export const OWNER_STALE_MS = 10 * 60_000;
+
+/**
+ * What kind of process is this? THREE roles, not two, because collapsing the
+ * last two is a fail-open.
+ *
+ * `mcpServerPid` is stamped inside `refreshLease`, which is the right seam for
+ * keeping it consistent with its own timestamp but is NOT exclusively an MCP
+ * path: `session compact-prepare` and the limit-stop flow call it from
+ * short-lived CLI processes (`cli/commands/session-compact.ts:160`, `:1561`).
+ *
+ * - `cli`               not a server. Leaves any recorded pair untouched,
+ *                       because recording a CLI pid would be worse than
+ *                       recording nothing: it exits at once and its corpse then
+ *                       reads as "this session's server is gone".
+ * - `mcp-registered`    a server visible in the project registry. Stamps.
+ * - `mcp-unregistered`  a server that is SERVING but could not register. It
+ *                       must CLEAR the recorded pair, not preserve it.
+ *                       Preserving would leave the pair naming a dead
+ *                       predecessor while this live process stays invisible to
+ *                       every other evaluator, which is exactly the evidence
+ *                       one of them would use to authorize taking over a live
+ *                       owner.
+ */
+export type McpProcessRole = "cli" | "mcp-registered" | "mcp-unregistered";
+
+let processRole: McpProcessRole = "cli";
+
+/** Called by the MCP server entry point after a CONFIRMED registry binding. */
+export function markMcpServerProcess(): void { processRole = "mcp-registered"; }
+
+/** Called by the MCP server entry point when registration failed. */
+export function markMcpServerUnregistered(): void { processRole = "mcp-unregistered"; }
+
+export function mcpProcessRole(): McpProcessRole { return processRole; }
+
+/** The pid to stamp, or null when this process is not a registered server. */
+export function currentMcpServerPid(): number | null {
+  return processRole === "mcp-registered" ? process.pid : null;
+}
+
+/** Clock skew tolerance before a future-dated timestamp is treated as unusable. */
+const FUTURE_SKEW_MS = 60_000;
+
+function readActivity(lastGuideCall: string | null | undefined, now: number, staleMs: number): OwnerActivitySignal {
+  if (!lastGuideCall) return { kind: "unknown", reason: "absent" };
+  const t = new Date(lastGuideCall).getTime();
+  if (Number.isNaN(t)) return { kind: "unknown", reason: "unparseable" };
+  const ageMs = now - t;
+  if (ageMs < -FUTURE_SKEW_MS) return { kind: "unknown", reason: "future" };
+  return ageMs >= staleMs
+    ? { kind: "stale", at: lastGuideCall, ageMs }
+    : { kind: "fresh", at: lastGuideCall, ageMs };
+}
+
+function readLease(expiresAt: string | null | undefined, now: number): LeaseSignal {
+  if (!expiresAt) return { kind: "unknown", reason: "absent" };
+  const t = new Date(expiresAt).getTime();
+  if (Number.isNaN(t)) return { kind: "unknown", reason: "unparseable" };
+  return t > now
+    ? { kind: "live", expiresAt, remainingMs: t - now }
+    : { kind: "expired", expiresAt, agoMs: now - t };
+}
+
+function readDeathMarker(tDir: string, now: number): DeathMarkerSignal {
+  try {
+    const st = fs.statSync(join(tDir, "shutdown"));
+    // A marker that is not a regular file, or whose mtime is implausible, is
+    // not evidence. Only a readable regular file with a sane time counts.
+    if (!st.isFile()) return { kind: "unreadable", reason: "non-numeric" };
+    const t = st.mtime.getTime();
+    if (Number.isNaN(t) || t - now > FUTURE_SKEW_MS) {
+      return { kind: "unreadable", reason: "future" };
+    }
+    return { kind: "shutdown-marker", at: st.mtime.toISOString() };
+  } catch (e: any) {
+    // ONLY a genuinely absent marker falls through to the alive file. EACCES,
+    // EIO, ELOOP and friends mean a marker may be there and we failed to read
+    // it, which is absence of evidence, not evidence of absence.
+    if (!e || e.code !== "ENOENT") return { kind: "unreadable", reason: "absent" };
+  }
+
+  // Stat, read, stat. The sidecar rewrites this file every 10s, so a bare
+  // read-then-stat can pair zero CONTENT with the newer heartbeat's mtime and
+  // still call it a death marker. Accepting only an unchanged snapshot makes
+  // content and timestamp describe the same write.
+  const p = join(tDir, "alive");
+  let raw: string;
+  let mtime: string | null = null;
+  try {
+    const before = fs.statSync(p);
+    raw = fs.readFileSync(p, "utf-8").trim();
+    const after = fs.statSync(p);
+    if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || before.ino !== after.ino) {
+      return { kind: "unreadable", reason: "raced" };
+    }
+    mtime = after.mtime.toISOString();
+  } catch { return { kind: "unreadable", reason: "absent" }; }
+
+  // STRICT parsing, because `Number()` is far too permissive for evidence that
+  // authorizes a destructive offer. `Number("")` is 0, so a file caught
+  // mid-truncation by `writeFileSync` would manufacture a death marker out of
+  // a concurrent write. Only the sidecar's exact literal counts.
+  // A marker with no time cannot be presented as evidence (ruling B requires
+  // the timestamp), so it must not be able to authorize anything either.
+  if (raw === "0") {
+    return mtime === null
+      ? { kind: "unreadable", reason: "no-marker-time" }
+      : { kind: "alive-zero", at: mtime };
+  }
+  if (!/^[0-9]+$/.test(raw)) return { kind: "unreadable", reason: "non-numeric" };
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n) || n <= 0) return { kind: "unreadable", reason: "non-numeric" };
+  if (n - now > FUTURE_SKEW_MS) return { kind: "unreadable", reason: "future" };
+  return { kind: "none", aliveAt: n };
+}
+
+function readMarkerValidity(
+  mcpServerPid: number | null | undefined,
+  successors: SuccessorServers,
+  mcpGuideCallAt: string | null | undefined,
+  now: number,
+): MarkerValiditySignal {
+  if (!mcpServerPid || !Number.isInteger(mcpServerPid) || mcpServerPid <= 0) {
+    return { kind: "unknown", reason: "no-recorded-pid", pid: null };
+  }
+
+  // Validate the paired timestamp FIRST, and reject a future one. A recorded
+  // time far ahead of `now` would make every genuine successor compare as
+  // older and hand back a candidate for a live owner -- fail-open, and the
+  // exact shape this whole path exists to prevent.
+  const recordedMs = mcpGuideCallAt ? new Date(mcpGuideCallAt).getTime() : NaN;
+  if (Number.isNaN(recordedMs) || recordedMs - now > FUTURE_SKEW_MS) {
+    return { kind: "unknown", reason: "recorded-time-unknown", pid: mcpServerPid };
+  }
+  const recordedAt: string = mcpGuideCallAt as string;
+  // No signature check, deliberately. A recycled pid reads as alive, which
+  // SUPPRESSES the offer -- reuse points the safe way, so the cost of a
+  // ps/proc lookup buys nothing here.
+  try {
+    probeApi.killProbe(mcpServerPid);
+    return { kind: "invalidated", reason: "recorded-mcp-pid-alive", pid: mcpServerPid, recordedAt };
+  } catch (e: any) {
+    // EPERM means the pid exists under another uid. It cannot be our MCP
+    // server, but something IS there, so treat it as alive and suppress.
+    if (e && e.code === "EPERM") {
+      return { kind: "invalidated", reason: "recorded-mcp-pid-alive", pid: mcpServerPid, recordedAt };
+    }
+    // Only ESRCH is a definitive "that process is gone". Anything else is a
+    // probe that failed, which is absence of evidence, not evidence of
+    // absence, and must not corroborate a death marker.
+    if (!e || e.code !== "ESRCH") {
+      return { kind: "unknown", reason: "pid-probe-failed", pid: mcpServerPid };
+    }
+  }
+
+  // The recorded server is definitively gone. That is NOT yet enough: an
+  // ordinary MCP restart produces exactly this, and the successor never touched
+  // this session so nothing in its state mentions it. Ask the registry.
+  if (successors.kind === "unavailable") {
+    return { kind: "unknown", reason: "successors-unavailable", pid: mcpServerPid };
+  }
+
+  // ANCHOR: the recorded server's own last guide call, NOT the death marker.
+  //
+  // Anchoring on the marker looked right and is wrong. The replacement server
+  // registers the instant the client reconnects, while the OLD sidecar only
+  // notices reparenting on its next tick, up to `intervalMs` (10s) later. So in
+  // an ordinary restart the successor legitimately registers BEFORE the marker
+  // it supersedes, and a marker-anchored comparison would miss it and hand back
+  // `gone-candidate` for a live owner. The last guide call is the last moment
+  // the recorded server was observably serving, so any live server that
+  // registered after it can be its continuation.
+  const others = successors.servers.filter((s) => s.pid !== mcpServerPid);
+  if (others.length === 0) {
+    return { kind: "not-invalidated", pid: mcpServerPid, recordedAt };
+  }
+
+  // "Another server is alive" is NOT supersession. On a machine running two
+  // clients against one project, the other client's server has been up the
+  // whole time and proves nothing here; counting it would suppress recovery
+  // permanently.
+  const superseding: number[] = [];
+  for (const s of others) {
+    if (s.registeredAt === null) {
+      // An entry we cannot place in time could be a successor. Unresolvable
+      // ambiguity suppresses rather than resolving either way.
+      return { kind: "unknown", reason: "successor-time-unknown", pid: mcpServerPid };
+    }
+    const t = new Date(s.registeredAt).getTime();
+    if (Number.isNaN(t)) {
+      return { kind: "unknown", reason: "successor-time-unknown", pid: mcpServerPid };
+    }
+    // Skew-TOLERANT and deliberately conservative. A strict `>` means a
+    // backward clock step between the predecessor's guide call and the
+    // successor's registration hides a genuine successor, which fails OPEN.
+    // Widening by the same tolerance used elsewhere errs toward suppressing.
+    if (t >= recordedMs - FUTURE_SKEW_MS) superseding.push(s.pid);
+  }
+
+  if (superseding.length > 0) {
+    return {
+      kind: "invalidated",
+      reason: "superseded-by-successor",
+      pid: mcpServerPid,
+      recordedAt,
+      successorPids: superseding,
+    };
+  }
+  return { kind: "not-invalidated", pid: mcpServerPid, recordedAt };
+}
+
+/**
+ * Mutable indirection, same pattern as `fsApi` above and for the same reason.
+ *
+ * The `unknown` arm of the probe is the one that MUST never corroborate death,
+ * and it is unreachable from on-disk fixtures: a dead pid probes `absent`, and
+ * a live non-sidecar process probes `absent` too because its argv lacks the
+ * markers. Producing a genuine `unknown` needs a live process whose argv cannot
+ * be read, which a test cannot arrange portably. Without this seam a mutation
+ * that collapses the tri-state survives the whole suite, which is exactly what
+ * happened before it existed.
+ */
+const probeApi = {
+  probeArgvSignature,
+  /**
+   * Liveness probe for the recorded MCP server pid. Seamed for the same reason
+   * as the argv probe: EPERM and unexpected `kill` failures are the fail-closed
+   * arms, and neither is reachable from a fixture, so a mutation collapsing
+   * `pid-probe-failed` into definitive absence would otherwise survive.
+   */
+  killProbe: (pid: number): void => { process.kill(pid, 0); },
+};
+
+function readSidecarProbe(tDir: string): SidecarProbeSignal {
+  const pid = readSidecarPid(tDir);
+  if (pid === null) return { kind: "unknown", reason: "no-pid", pid: null };
+  // The TRI-STATE probe, never `hasSidecarSignature`. That wrapper collapses
+  // "unknown" to false, so a ps/proc failure or an unsupported platform would
+  // read as proof of death -- inverting this function's own documented
+  // contract ("do NOT report a live pid as absent").
+  const byMarker = probeApi.probeArgvSignature(pid, [SIDECAR_ARGV_MARKER]);
+  const probe = byMarker === "absent" ? probeApi.probeArgvSignature(pid, [SIDECAR_SENTINEL]) : byMarker;
+  if (probe === "match") return { kind: "match", pid };
+  if (probe === "absent") return { kind: "absent", pid };
+  return { kind: "unknown", reason: "probe-unknown", pid };
+}
+
+/**
+ * Gather every signal, then rule. Signals are ALWAYS fully populated, even when
+ * the verdict is decided by the first one, because callers must render them all
+ * (the confirmation prompt shows each separately with its timestamp).
+ */
+export function readOwnerLiveness(
+  sessionDir: string,
+  readState: LivenessStateSource,
+  now: number = Date.now(),
+  staleThresholdMs: number = OWNER_STALE_MS,
+  readSuccessors: SuccessorSource = () => ({ kind: "unavailable", reason: "not supplied by caller" }),
+): OwnerLivenessVerdict {
+  const snapshot = readState();
+  const tDir = telemetryDirPath(sessionDir);
+  const deathMarker = readDeathMarker(tDir, now);
+  const observed = readSuccessors();
+  const signals: OwnerLivenessSignals = {
+    activity: readActivity(snapshot.lastGuideCall, now, staleThresholdMs),
+    lease: readLease(snapshot.lease?.expiresAt, now),
+    deathMarker,
+    markerValidity: readMarkerValidity(snapshot.mcpServerPid, observed, snapshot.mcpGuideCallAt, now),
+    sidecarProbe: readSidecarProbe(tDir),
+    observedAt: new Date(now).toISOString(),
+    staleThresholdMs,
+    successors: observed,
+  };
+
+  /**
+   * Last gate before authorizing anything: enumerate successors AGAIN and only
+   * proceed if the answer still permits it. Closes the window between the first
+   * enumeration and this return, where a replacement server coming up would
+   * otherwise be missed.
+   */
+  const candidate = (): OwnerLivenessVerdict => {
+    // ORDER MATTERS. The registry is read first and the OWNER's own state
+    // LAST, so the final thing checked before authorizing is the most direct
+    // refutation there is. Reading state first would leave the window between
+    // that read and the registry read wide open, and a CLI `compact-prepare`
+    // fits in it: it advances `lastGuideCall` and registers no successor, so
+    // nothing else on this path would notice.
+    //
+    // The re-observation REPLACES the recorded evidence. Keeping the first
+    // snapshot would let a `contradicted` verdict name a successor pid that
+    // does not appear in the evidence it ships with.
+    const reobserved = readSuccessors();
+    const latest = readState();
+    const recheck = readMarkerValidity(latest.mcpServerPid, reobserved, latest.mcpGuideCallAt, now);
+    const freshActivity = readActivity(latest.lastGuideCall, now, staleThresholdMs);
+    const fresh = { ...signals, activity: freshActivity, markerValidity: recheck, successors: reobserved };
+
+    // Every arm is handled explicitly. `fresh` refutes; `unknown` means the
+    // latest activity could not be read at all, and falling through on it
+    // would authorize on evidence we just failed to confirm.
+    if (freshActivity.kind === "fresh") return { kind: "active", signals: fresh };
+    if (freshActivity.kind === "unknown") {
+      return {
+        kind: "undetermined",
+        signals: fresh,
+        missing: [`owner activity on recheck (${freshActivity.reason})`],
+      };
+    }
+
+    if (recheck.kind === "not-invalidated") {
+      return { kind: "gone-candidate", signals: fresh };
+    }
+    return recheck.kind === "invalidated"
+      ? {
+          kind: "contradicted",
+          signals: fresh,
+          why: "a replacement MCP server appeared while this evidence was being gathered, " +
+            "so the death marker records a restart rather than the client going away",
+        }
+      : { kind: "undetermined", signals: fresh, missing: [`successor check (${recheck.reason})`] };
+  };
+
+  // 1. Recent owner-task activity outranks every process-level signal, because
+  //    it is the only one bound to the OWNER rather than to a server process.
+  if (signals.activity.kind === "fresh") return { kind: "active", signals };
+  if (signals.activity.kind === "unknown") {
+    return { kind: "undetermined", signals, missing: [`owner activity (${signals.activity.reason})`] };
+  }
+
+  // 2. A death marker that a live server contradicts is stale. This is the
+  //    MCP-restart case: the old server's sidecar wrote the marker on its way
+  //    out, then a new server took over and the owner kept working.
+  if (signals.markerValidity.kind === "invalidated") {
+    return {
+      kind: "contradicted",
+      signals,
+      why: signals.markerValidity.reason === "recorded-mcp-pid-alive"
+        ? `the MCP server process recorded for this session (pid ${signals.markerValidity.pid}) is still alive, ` +
+          "so any death marker predates a server that is still running"
+        : `the MCP server recorded for this session (pid ${signals.markerValidity.pid}) has been superseded by a ` +
+          `live successor (pid ${(signals.markerValidity.successorPids ?? []).join(", ")}), so its death marker ` +
+          "records an ordinary server restart rather than the client going away",
+    };
+  }
+
+  // 3. A sidecar that is still running contradicts its own marker: it writes
+  //    the zero and exits, so both at once is a race we must not act on.
+  if (signals.sidecarProbe.kind === "match") {
+    return {
+      kind: "contradicted",
+      signals,
+      why: `the alive sidecar (pid ${signals.sidecarProbe.pid}) is still running, which disagrees with its own death marker`,
+    };
+  }
+
+  // 4. A still-ticking alive file is positive evidence of LIFE, and it outranks
+  //    the ambiguity gate below. Something is writing that file right now, so
+  //    the honest answer is "contradicted", not "we could not tell".
+  if (signals.deathMarker.kind === "none" && now - signals.deathMarker.aliveAt < staleThresholdMs) {
+    return {
+      kind: "contradicted",
+      signals,
+      why: "the alive file is still being refreshed, so a client process is ticking for this session",
+    };
+  }
+
+  // 5. AMBIGUITY SUPPRESSES THE OFFER, even alongside a positive marker.
+  //    A marker says a server went away; it cannot say WHICH, so without a
+  //    definitively dead recorded server pid there is nothing tying the marker
+  //    to the server this session actually had. A legacy session with no
+  //    recorded pid, or a pid probe that failed, is exactly that gap.
+  if (signals.markerValidity.kind === "unknown") {
+    return {
+      kind: "undetermined",
+      signals,
+      missing: [`which MCP server this session had (${signals.markerValidity.reason})`],
+    };
+  }
+  //    Likewise an unreadable sidecar identity: `unknown` is a probe that could
+  //    not answer, and it must never stand in for `absent`.
+  if (signals.sidecarProbe.kind === "unknown") {
+    return {
+      kind: "undetermined",
+      signals,
+      missing: [`sidecar process identity (${signals.sidecarProbe.reason})`],
+    };
+  }
+
+  switch (signals.deathMarker.kind) {
+    case "shutdown-marker":
+    case "alive-zero":
+      // The sidecar positively recorded that its parent went away, the server
+      // this session recorded is definitively gone, and nothing live disagrees.
+      // The strongest evidence available, and still only a CANDIDATE: it
+      // attests to a server process, not to the owner task.
+      return candidate();
+
+    case "none": {
+      // No marker was written. A SIGKILL of the process group, an OOM, or a
+      // host reboot kills the sidecar before it can write one, so a stale
+      // heartbeat plus a provably absent sidecar is the corroborated form of
+      // the same observation. `unknown` never corroborates.
+      if (signals.sidecarProbe.kind === "absent" && now - signals.deathMarker.aliveAt >= staleThresholdMs) {
+        return candidate();
+      }
+      return {
+        kind: "contradicted",
+        signals,
+        why: "the alive file is still being refreshed, so a client process is ticking for this session",
+      };
+    }
+
+    case "unreadable":
+      return {
+        kind: "undetermined",
+        signals,
+        missing: [`the alive file (${signals.deathMarker.reason})`],
+      };
+  }
+}
+
 export function computeBinaryFingerprint(): {
   mtime: string;
   sha256: string;
@@ -795,4 +1386,6 @@ export const __testing = {
   killPriorSidecar: killPriorSidecarImpl,
   escalate,
   fsApi,
+  probeApi,
+  setProcessRole: (r: McpProcessRole) => { processRole = r; },
 };

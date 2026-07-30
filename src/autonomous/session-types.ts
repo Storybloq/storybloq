@@ -175,6 +175,28 @@ export interface SessionState {
   readonly state: WorkflowState | string;
   readonly waitingForRetry?: boolean;
   readonly lastGuideCall?: string;
+  /**
+   * PID of the MCP server process that made the last recorded MCP guide call
+   * (T-450). Its timestamp is `mcpGuideCallAt`, NOT `lastGuideCall`: the latter
+   * also advances on CLI refreshes that leave this pid alone.
+   *
+   * Its ONLY job is to invalidate a stale death marker. The alive sidecar is
+   * spawned by the MCP server and watches `process.ppid`, so it writes its
+   * death marker when the SERVER exits, which an ordinary MCP restart does
+   * while the owner task lives on. If this pid is still alive, a server that
+   * recently served this session is running and the marker cannot be trusted.
+   *
+   * PID reuse points the safe way here: a recycled pid reads as alive, which
+   * SUPPRESSES the takeover offer. That is why no signature check is needed.
+   */
+  readonly mcpServerPid?: number | null;
+  /**
+   * When `mcpServerPid` was stamped. Paired with it and written in the same
+   * update, because `lastGuideCall` also advances on CLI refreshes that leave
+   * the pid untouched; reading the pid against `lastGuideCall` would then
+   * describe two different calls as though they were one.
+   */
+  readonly mcpGuideCallAt?: string | null;
   readonly ticket?: {
     readonly id: string;
     readonly displayId?: string;
@@ -712,6 +734,8 @@ export const SessionStateSchema = z.object({
   // Session metadata
   waitingForRetry: z.boolean().default(false),
   lastGuideCall: forgiveNull(z.string()),
+  mcpServerPid: z.number().int().positive().nullish(),
+  mcpGuideCallAt: forgiveNull(z.string()),
   startedAt: z.string(),
   guideCallCount: z.number().default(0),
 

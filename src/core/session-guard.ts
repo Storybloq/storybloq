@@ -120,8 +120,10 @@ const proseLabel = (value: string): string =>
  * capability advertised and the representation question open; expired-COMPACT recovery has no
  * identity-free variant, so it binds no new `ownerTask`, preserves any
  * `ownerTask` already recorded, and derives `claudeCodeSessionId` from it when
- * one is present), ISS-899 (this guard and
- * `liveOwnershipConflict` disagree about ownership in two cells).
+ * one is present), ISS-899 (of the two ownership cells where this guard and
+ * `liveOwnershipConflict` disagreed, the live `ownerTask` plus identity-free
+ * caller cell is now CLOSED, and the ownerless legacy-id cell stays looser here
+ * by design).
  *
  * The classifier is pure -- no fs, no clock, no environment -- so the matrix is
  * testable without a filesystem. `evaluateSessionGuard` is the thin IO edge.
@@ -610,14 +612,23 @@ function classifyLive(summary: ActiveSessionSummary, caller: GuardCaller): Class
 
   const compact = summary.state === "COMPACT";
 
-  // NOTE (ISS-899): `claudeCodeSessionId` is deliberately not consulted.
-  // `liveOwnershipConflict` resolves ownership by `ownerTask`, else that legacy
-  // id, else no conflict -- but the id appears nowhere in `SKILL.md`, and Step
-  // 0.5's only rule for an `ownerTask`-absent session is the legacy pair below,
-  // which inspects no id. Transcribing enforcement's precedence here would be
-  // reading the implementation instead of the text, and the scanner does not
-  // even project the field. The two components therefore disagree in this cell,
-  // deliberately and with a test naming the issue.
+  // POLICY (ISS-899): this guard classifies on `ownerTask` alone and never
+  // consults `claudeCodeSessionId`; the guide keeps resolving ownership through
+  // that legacy id, and the resulting looseness in THIS cell is accepted rather
+  // than transcribed away.
+  //
+  // Why it is not transcribed: the id appears nowhere in `SKILL.md` as an
+  // ownership rule, and the scanner does not project the field into
+  // `ActiveSessionSummary`, so a classifier reading it would be reading the
+  // implementation instead of the text and could not do so on an older server.
+  //
+  // What that costs, stated in the honest direction: for an ownerless session
+  // carrying a legacy id, this row advises attempting a COMPACT recovery that
+  // the guide may then refuse on a mismatch. SKILL.md now describes that
+  // adjudication and its escape instead of promising the bind, so the advice
+  // leads somewhere rather than dead-ending. The OTHER ISS-899 cell, an
+  // `ownerTask` session on a live lease met by a caller with no identity, is
+  // CLOSED: the guide refuses it now, matching the monitor-only rows below.
   if (summary.ownerTask === null) {
     return compact
       ? {

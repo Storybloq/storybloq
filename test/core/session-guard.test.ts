@@ -931,10 +931,26 @@ function writeSession(root: string, dir: string, state: Record<string, unknown>)
 }
 
 /**
- * ISS-899. `liveOwnershipConflict` resolves ownership by `ownerTask`, else
- * `claudeCodeSessionId`, else no conflict. Step 0.5 has no such precedence --
- * `claudeCodeSessionId` appears nowhere in SKILL.md, and its only rule for an
+ * ISS-899. The guide resolves ownership by `ownerTask`, else
+ * `claudeCodeSessionId`, else no conflict. Step 0.5 has no such precedence:
+ * `claudeCodeSessionId` gives it no ownership rule, and its only rule for an
  * ownerTask-absent session is the legacy pair, which inspects no id.
+ *
+ * STILL GREEN AFTER ISS-899 WAS RULED, and that is the point of this note
+ * rather than an accident. The ruling closed the OTHER cell (a live
+ * `ownerTask` session met by a caller with no identity, where the guide now
+ * refuses as this guard always advised) and deliberately left THIS one split:
+ * the guard keeps classifying on `ownerTask` alone, the guide keeps
+ * adjudicating the legacy id, and SKILL.md now describes that adjudication
+ * instead of promising a bind. So these cases pin unchanged behaviour on
+ * purpose. Enforcement's side of both cells is pinned in
+ * `test/autonomous/ownership-iss899.test.ts`; if this block ever goes red,
+ * read that file before changing anything here.
+ *
+ * Note also what these cases are NOT: `writeSession` defaults `state` to
+ * `IMPLEMENT` with a live lease, so every one of them is the live
+ * non-COMPACT unowned-legacy cell. The divergence the issue names bites on the
+ * COMPACT variant, which the enforcement file covers.
  *
  * This must run through `evaluateSessionGuard` over a real tree. The scanner
  * does not project the field into `ActiveSessionSummary`, so a classifier-level

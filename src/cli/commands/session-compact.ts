@@ -63,11 +63,11 @@ import {
 } from "../../autonomous/wake-claim.js";
 import { WORKFLOW_STATES } from "../../autonomous/session-types.js";
 import {
-  isSameOwnerTask,
   normalizeClientTaskId,
   ownerTaskForClient,
   type StorybloqClient,
 } from "../../autonomous/client-profile.js";
+import { resolveSessionOwnership, callerMayAct } from "../../autonomous/session-ownership.js";
 import { writeShutdownMarker, probeArgvSignature } from "../../autonomous/liveness.js";
 import { loadProject } from "../../core/project-loader.js";
 import { writeResumeMarker, removeResumeMarker } from "../../autonomous/resume-marker.js";
@@ -140,14 +140,14 @@ export async function handleSessionCompactPrepare(
       const active = findActiveSessionFull(root);
       if (!active) return; // No active session — silent no-op
 
+      // ISS-899: was one of five hand-rolled copies of the ownership
+      // precedence. Behaviour is unchanged -- callerMayAct is exactly the old
+      // `sameOwner || legacySameOwner || fullyUnownedLegacy`, including its
+      // fail-closed treatment of a caller with no identity in BOTH via cases.
       const callerTask = ownerTaskForClient(client, clientTaskId);
-      const sameOwner = isSameOwnerTask(active.state.ownerTask, callerTask);
-      const legacySameOwner = !active.state.ownerTask &&
-        callerTask?.client === "claude" &&
-        active.state.claudeCodeSessionId === callerTask.id;
-      const fullyUnownedLegacy = !active.state.ownerTask && !active.state.claudeCodeSessionId;
+      const ownership = resolveSessionOwnership(active.state, callerTask);
 
-      if (!sameOwner && !legacySameOwner && !fullyUnownedLegacy) {
+      if (!callerMayAct(ownership)) {
         process.stderr.write(
           `[storybloq] compact-prepare skipped: active session ${active.state.sessionId} ` +
           `is not owned by this ${client} task.\n`,
@@ -777,13 +777,13 @@ export async function handleSessionResumePrompt(
       client,
       clientTaskId,
     );
-    const sameOwner = isSameOwnerTask(info.state.ownerTask, callerTask);
-    const legacySameOwner = !info.state.ownerTask &&
-      callerTask?.client === "claude" &&
-      info.state.claudeCodeSessionId === callerTask.id;
-    const unownedLegacy = !info.state.ownerTask && !info.state.claudeCodeSessionId;
-    const hasRecordedOwner = !!info.state.ownerTask || !!info.state.claudeCodeSessionId;
-    const verifiedSameOwner = sameOwner || legacySameOwner || unownedLegacy;
+    // ISS-899: the fourth copy of the precedence, and the one that gates a
+    // STATE WRITE (markCompactionObserved below). Behaviour is unchanged:
+    // verifiedSameOwner is exactly callerMayAct, and hasRecordedOwner is
+    // "the resolver found an owner of either kind".
+    const ownership = resolveSessionOwnership(info.state, callerTask);
+    const hasRecordedOwner = ownership.kind !== "unowned";
+    const verifiedSameOwner = callerMayAct(ownership);
     const leaseExpired = isLeaseExpired(info.state);
     const ticket = sanitizeForContext(
       info.state.ticket?.displayId ?? info.state.ticket?.id ?? "The autonomous ticket",
@@ -1408,12 +1408,14 @@ export async function handleSessionLimitStop(options: SessionLimitStopOptions = 
       );
       all = { sessions: [], damaged: [], unavailable: [], incompatible: [] };
     }
+    // ISS-899: a FIFTH copy of the ownership precedence lived here, found by the
+    // architecture pin rather than by reading. Exactly equivalent: clientTaskId
+    // is non-empty by the guard at the top of this function, so the caller task
+    // always resolves and "same" means what the two hand-rolled branches meant.
+    const limitStopCaller = ownerTaskForClient("claude", clientTaskId);
     const owned = all.sessions.filter((s) => {
       if (s.state.status !== "active") return false;
-      if (s.state.ownerTask) {
-        return s.state.ownerTask.client === "claude" && s.state.ownerTask.id === clientTaskId;
-      }
-      return s.state.claudeCodeSessionId === clientTaskId;
+      return resolveSessionOwnership(s.state, limitStopCaller).kind === "same";
     });
     owned.sort((a, b) => (b.state.startedAt ?? "").localeCompare(a.state.startedAt ?? ""));
     const session = owned[0];

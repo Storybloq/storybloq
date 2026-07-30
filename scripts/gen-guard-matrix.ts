@@ -726,9 +726,23 @@ ${fixture.actions
   per-field outcomes are observed rather than inferred, across the whole owner
   axis the row spans: see
   \`test/autonomous/identity-free-expired-resume.test.ts\`.
-- **ISS-899** -- this classification ignores \`claudeCodeSessionId\` because Step
-  0.5 never mentions it, while \`liveOwnershipConflict\` still resolves ownership
-  through it. The two disagree in two cells, deliberately and with tests.
+- **ISS-899** -- RULED AND PARTLY CLOSED. This classification still ignores
+  \`claudeCodeSessionId\` because Step 0.5 never consults it for
+  ownership classification and the scanner does not project it, while the guide
+  still resolves ownership through it. Of the two
+  cells that disagreed, one is now CLOSED and one remains open BY DESIGN, and the
+  two directions are opposite, so neither describes the other.
+  CLOSED: a session recording an \`ownerTask\` with a LIVE lease, met by a caller
+  with no identity. The guide used to accept it while this guard advised
+  monitor-only; the guide now refuses it too, so the two AGREE. Expired leases are
+  untouched and still accept an identity-free caller.
+  OPEN BY DESIGN: an ownerless session carrying a legacy id that does not match
+  the caller. This guard reads it as unowned-legacy and advises attempting a
+  COMPACT recovery; the guide adjudicates against the stored id and may refuse.
+  The guard is LOOSER here, and SKILL.md now describes the attempt and the refusal
+  path rather than promising the bind. A third cell, an ownerless legacy-id session
+  met by an identity-free caller, is deliberately left on its existing split
+  behaviour and is filed separately.
 - **ISS-900** -- Step 0.5 says what to do when the guard tool is ABSENT (this
   file) but not when it is present and its call FAILS. Today a failure preserves the
   fail-open OUTCOME it always had, through a different ROUTE: the Step 0.5

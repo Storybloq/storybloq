@@ -88,6 +88,7 @@ import {
   legacyClaudeSessionIdForOwner,
   ownerTaskForCurrentClient,
 } from "./client-profile.js";
+import { resolveSessionOwnership, unidentifiedCallerRemedy } from "./session-ownership.js";
 import {
   handleHandoverLatest,
   handleHandoverCreate,
@@ -113,23 +114,52 @@ function writeSessionAndRefresh(
   return written;
 }
 
+/**
+ * ISS-899: whether this caller is refused, and WHY, which the call sites need
+ * because the two reasons have different remedies. Precedence itself lives in
+ * resolveSessionOwnership and is not restated here or anywhere else.
+ */
+interface OwnershipRefusal {
+  readonly reason: string;
+  readonly kind: "foreign" | "unidentified-caller";
+}
+
 function liveOwnershipConflict(
   state: FullSessionState,
   clientTaskId?: string,
   enforceAfterExpiry = false,
-): string | null {
-  const callerTask = ownerTaskForCurrentClient(clientTaskId);
-  if (!callerTask || (!enforceAfterExpiry && isLeaseExpired(state))) return null;
-  if (state.ownerTask) {
-    return isSameOwnerTask(state.ownerTask, callerTask)
-      ? null
-      : `session is owned by another live ${state.ownerTask.client} task`;
+  // The expiry that decides ISS-899 cell (a) must be read from the state as the
+  // CALLER found it. pre_compact refreshes the lease before it gets here, which
+  // would make an expired session look live and sweep it into the ruled cell.
+  leaseWasExpired: boolean = isLeaseExpired(state),
+): OwnershipRefusal | null {
+  const expired = isLeaseExpired(state);
+  if (!enforceAfterExpiry && expired) return null;
+
+  const ownership = resolveSessionOwnership(state, ownerTaskForCurrentClient(clientTaskId));
+
+  if (ownership.kind === "foreign") {
+    return { reason: `session is owned by ${ownership.ownerDescription}`, kind: "foreign" };
   }
-  if (state.claudeCodeSessionId) {
-    return callerTask.client === "claude" && state.claudeCodeSessionId === callerTask.id
-      ? null
-      : "session is owned by another live legacy Claude Code task";
+
+  // ISS-899 cell (a). Narrow on BOTH axes, and both are load-bearing:
+  //
+  // - `via === "ownerTask"` only. The owner ruling covers sessions bearing an
+  //   ownerTask. An ownerless session carrying a legacy claudeCodeSessionId met
+  //   by an identityless caller is a separate cell nobody has ruled on, and it
+  //   keeps failing open here exactly as it does today.
+  // - Live lease only, checked SEPARATELY from the early return above. That
+  //   return is skipped when enforceAfterExpiry is set (pre_compact does set
+  //   it), which is correct for keeping foreign-owner checks alive past expiry
+  //   but must not widen this cell: an expired session met by an identityless
+  //   caller is accepted today and stays accepted.
+  if (ownership.kind === "unidentified-caller" && ownership.via === "ownerTask" && !leaseWasExpired) {
+    return {
+      reason: `session is owned by ${ownership.ownerDescription}, and this task has no client task id to check against`,
+      kind: "unidentified-caller",
+    };
   }
+
   return null;
 }
 
@@ -140,6 +170,13 @@ function adoptExpiredLease(
   clientTaskId: string | undefined,
   action: "report" | "pre_compact",
 ): { state: FullSessionState; adopted: boolean } {
+  // ISS-899: deliberately NOT routed through resolveSessionOwnership. This asks
+  // a different question -- "may this caller adopt an EXPIRED lease?" -- and it
+  // checks ownerTask ALONE on purpose. Switching it to the shared verdict would
+  // fold legacy-id sameness into the skip condition, so a legacy-same-owner
+  // caller would stop adopting; that is an expired-lease behaviour change, and
+  // expired leases are outside this issue's ruling. The claudeCodeSessionId read
+  // below is event telemetry, not an ownership decision.
   const callerTask = ownerTaskForCurrentClient(clientTaskId);
   const actionCanAdopt = state.status === "active" &&
     state.state !== "COMPACT" &&
@@ -805,6 +842,22 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // ISS-024: recover pending mutations on existing sessions before checking
   let existing = findActiveSessionFull(root);
   if (existing && !isLeaseExpired(existing.state)) {
+    // ISS-899 cell (a): refuse BEFORE recovery, not after. recoverPendingMutation
+    // replays another task's pending session and project writes, so a refusal
+    // that fires later has already let an unidentifiable caller mutate state.
+    //
+    // ONLY the newly ruled cell is hoisted here. The identified-foreign
+    // sequence deliberately keeps recovery first: those callers complete or
+    // clear the pending mutation today, and moving their refusal earlier would
+    // delete writes they currently make. That is a separate decision with its
+    // own breakage analysis, not this one.
+    const preRecoveryConflict = liveOwnershipConflict(existing.state, args.clientTaskId);
+    if (preRecoveryConflict?.kind === "unidentified-caller") {
+      return guideError(new Error(
+        `Cannot start: ${preRecoveryConflict.reason}.\n` +
+        unidentifiedCallerRemedy(existing.state.sessionId),
+      ));
+    }
     await recoverPendingMutation(existing.dir, existing.state, root);
     // Re-read after recovery — session may have been ended by postMutation
     existing = findActiveSessionFull(root);
@@ -1831,8 +1884,10 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {
     return guideError(new Error(
-      `Cannot report progress for session ${args.sessionId}: ${ownershipConflict}. ` +
-      "Continue from its owning task.",
+      `Cannot report progress for session ${args.sessionId}: ${ownershipConflict.reason}. ` +
+      (ownershipConflict.kind === "unidentified-caller"
+        ? `\n${unidentifiedCallerRemedy(args.sessionId)}`
+        : "Continue from its owning task."),
     ));
   }
 
@@ -1974,17 +2029,30 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
 
   const callerTask = ownerTaskForCurrentClient(args.clientTaskId);
   const leaseWasExpired = isLeaseExpired(info.state);
-  const hasLegacyClaudeOwner = !info.state.ownerTask && !!info.state.claudeCodeSessionId;
-  const legacySameOwner = !info.state.ownerTask &&
-    callerTask?.client === "claude" &&
-    info.state.claudeCodeSessionId === callerTask.id;
-  const unownedLegacy = !info.state.ownerTask && !info.state.claudeCodeSessionId;
-  const knownForeignOwner = !!callerTask && !isSameOwnerTask(info.state.ownerTask, callerTask) &&
-    !legacySameOwner && !unownedLegacy;
+  // ISS-899: derived from the ONE shared resolver, never recomputed here. This
+  // was the second of five independent copies of the precedence, and it is the
+  // seam that actually gates the COMPACT auto-resume the skill guard advises.
+  const ownership = resolveSessionOwnership(info.state, callerTask);
+  const legacySameOwner = ownership.kind === "same" && ownership.via === "legacyId";
+  const unownedLegacy = ownership.kind === "unowned";
+  const knownForeignOwner = ownership.kind === "foreign";
 
   if (args.takeover && !callerTask) {
     return guideError(new Error(
       `Recovering session ${args.sessionId} requires a valid clientTaskId so ownership can be rebound.`,
+    ));
+  }
+  // ISS-899 cell (a). Gated on a LIVE lease and on ownerTask ownership, matching
+  // liveOwnershipConflict: an expired session met by an identityless caller is
+  // accepted today and must stay accepted (T-446 U5 measures all eight shapes).
+  if (
+    ownership.kind === "unidentified-caller" &&
+    ownership.via === "ownerTask" &&
+    !leaseWasExpired
+  ) {
+    return guideError(new Error(
+      `Session ${args.sessionId} is owned by ${ownership.ownerDescription}, and this task has no client task id to check against.\n` +
+      unidentifiedCallerRemedy(args.sessionId),
     ));
   }
   if (
@@ -1992,13 +2060,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     !leaseWasExpired &&
     !args.takeover
   ) {
-    const ownerDescription = info.state.ownerTask
-      ? `another live ${info.state.ownerTask.client} task`
-      : hasLegacyClaudeOwner
-        ? "another live legacy Claude Code task"
-        : "another live task";
     return guideError(new Error(
-      `Session ${args.sessionId} is owned by ${ownerDescription}. ` +
+      `Session ${args.sessionId} is owned by ${ownership.ownerDescription}. ` +
       "Open or message that task first. Recovery from another task requires the " +
       "explicit owner-gone confirmation flow.",
     ));
@@ -2519,12 +2582,17 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
     args.clientTaskId,
     "pre_compact",
   );
+  // ISS-899: capture expiry BEFORE the refresh below, so the cell (a) gate sees
+  // the lease the caller actually found rather than the one we just renewed.
+  const leaseWasExpired = isLeaseExpired(info.state);
   const state = adoption.adopted ? adoption.state : refreshLease(adoption.state);
-  const ownershipConflict = liveOwnershipConflict(state, args.clientTaskId, true);
+  const ownershipConflict = liveOwnershipConflict(state, args.clientTaskId, true, leaseWasExpired);
   if (ownershipConflict) {
     return guideError(new Error(
-      `Cannot prepare session ${args.sessionId} for compaction: ${ownershipConflict}. ` +
-      "Continue from its owning task.",
+      `Cannot prepare session ${args.sessionId} for compaction: ${ownershipConflict.reason}. ` +
+      (ownershipConflict.kind === "unidentified-caller"
+        ? `\n${unidentifiedCallerRemedy(args.sessionId)}`
+        : "Continue from its owning task."),
     ));
   }
 
@@ -2667,8 +2735,18 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     // than deferring to the admin CLI. The two cells differ and conflating them
     // is what sent an operator with a dead owner to `session stop`.
     const isCompact = String(info.state.state) === "COMPACT";
+    // ISS-899: the ISS-904 prescription below is for IDENTIFIED callers only.
+    // `takeover: true` is rejected without a clientTaskId (see handleResume),
+    // so offering it to a caller refused for having no identity would hand them
+    // an action that fails for the very reason they were blocked.
+    if (ownershipConflict.kind === "unidentified-caller") {
+      return guideError(new Error(
+        `Cannot cancel session ${args.sessionId}: ${ownershipConflict.reason}.\n` +
+        unidentifiedCallerRemedy(args.sessionId!),
+      ));
+    }
     return guideError(new Error(
-      `Cannot cancel session ${args.sessionId}: ${ownershipConflict}. ` +
+      `Cannot cancel session ${args.sessionId}: ${ownershipConflict.reason}. ` +
       (isCompact
         ? "This session is COMPACT, so the designed recovery is to take it over from this task once you have confirmed the recorded owner task is gone: " +
           `{ "sessionId": "${args.sessionId}", "action": "resume", "takeover": true }.`

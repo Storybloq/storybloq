@@ -196,6 +196,15 @@ function defaultReadSessionState(sessionDir: string): ProbeSnapshot | null {
     // established. Malformed collapsing to null is the safe direction here,
     // since a null owner suppresses the verdict to `undetermined`.
     ownerTask: normalizeOwnerTask(parsed.ownerTask),
+    // Read for the same reason `ownerTask` is: a session that HAS a heartbeat
+    // generation and is observed without one reads the legacy telemetry
+    // directory, which is a different owner's evidence.
+    //
+    // Passed through RAW. Coercing a present-but-invalid value to null here
+    // would erase the difference between absent and damaged, and absent is
+    // exactly the arm that selects legacy telemetry. `resolveTelemetryLocation`
+    // is where that distinction is made, and it makes it as a refusal.
+    heartbeatGeneration: parsed.heartbeatGeneration,
   };
 }
 

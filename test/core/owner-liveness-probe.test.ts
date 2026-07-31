@@ -108,9 +108,9 @@ function deadPid(): number {
  * corroborating shutdown marker, a sidecar pid file, and a recorded MCP pid
  * that is definitively gone. Only this path re-reads owner state.
  */
-function candidateSession(sourceDir: string, sessionId: string): string {
+function candidateSession(sourceDir: string, sessionId: string, overrides: Record<string, unknown> = {}): string {
   const pid = deadPid();
-  const dir = writeSession(sourceDir, sessionId, { mcpServerPid: pid, mcpGuideCallAt: STALE });
+  const dir = writeSession(sourceDir, sessionId, { mcpServerPid: pid, mcpGuideCallAt: STALE, ...overrides });
   const tDir = join(dir, "telemetry");
   fs.writeFileSync(join(tDir, "shutdown"), STALE);
   fs.utimesSync(join(tDir, "shutdown"), new Date(NOW - 60_000), new Date(NOW - 60_000));
@@ -215,6 +215,41 @@ describe("T-450: the probe's three values come from ONE observation", () => {
     }), "s2", "d2");
     expect(without.verdict.signals.markerValidity.reason).toBe("owner-identity-unrecorded");
     expect(without.verdict.kind).toBe("undetermined");
+  });
+
+  it("reads the heartbeat generation, or it observes another owner's telemetry", () => {
+    // A session that HAS a generation and is observed without one reads the
+    // LEGACY directory, which after a takeover holds the previous owner's
+    // marker. The probe is the only thing between the guard and that, so the
+    // field is read here for the same reason `ownerTask` is.
+    const id = "abcdefghjkmnpqrs";
+    const dir = candidateSession("d", "s", { heartbeatGeneration: id });
+    // Move the corroborating telemetry into the generation the state names.
+    const gen = join(dir, "telemetry", "generations", id);
+    fs.mkdirSync(gen, { recursive: true });
+    for (const name of ["shutdown", "sidecar.pid"]) {
+      fs.renameSync(join(dir, "telemetry", name), join(gen, name));
+    }
+    fs.utimesSync(join(gen, "shutdown"), new Date(NOW - 60_000), new Date(NOW - 60_000));
+    const ev = only(probeOwnerLiveness(root, [summary("d", "s")], {
+      now: NOW, readSuccessors: NO_SERVERS,
+    }), "s", "d");
+    expect(ev.verdict.kind).toBe("gone-candidate");
+  });
+
+  it("passes a DAMAGED generation through as damage, not as absence", () => {
+    // Absence selects the legacy telemetry directory, which after a takeover
+    // holds the previous owner's marker. Coercing a present-but-invalid value
+    // to null here would therefore turn damaged state into another owner's
+    // evidence. The resolver decides, and it decides refusal.
+    for (const damaged of [{}, "", 42, ["x"]] as unknown[]) {
+      const dir = `d${JSON.stringify(damaged).replace(/[^a-z0-9]/gi, "")}`;
+      candidateSession(dir, dir, { heartbeatGeneration: damaged });
+      const ev = only(probeOwnerLiveness(root, [summary(dir, dir)], {
+        now: NOW, readSuccessors: NO_SERVERS,
+      }), dir, dir);
+      expect(ev.verdict.kind, JSON.stringify(damaged)).toBe("undetermined");
+    }
   });
 
   it("re-reads state during evaluation rather than reusing one snapshot", () => {

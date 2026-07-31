@@ -1,10 +1,12 @@
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SuccessorServers } from "./mcp-registry.js";
 import { isSameOwnerTask, type OwnerTask } from "./client-profile.js";
+import { encodeBase32Crockford } from "../core/canonical-id.js";
+import { CROCKFORD_CLASS } from "../models/types.js";
 
 const LOCK_BASENAME = "sidecar.lock";
 const PID_BASENAME = "sidecar.pid";
@@ -22,9 +24,18 @@ const SIDECAR_PID_MAX_BYTES = 64;
 
 // Mutable indirection so tests can replace methods (vi.spyOn cannot mock ESM
 // module-namespace exports directly).
+/** Seamed so readiness regressions fail fast instead of blocking the event loop. */
+const timeApi = { sleepMs: (ms: number) => sleepMs(ms) };
+
 const fsApi = {
   linkSync: fs.linkSync,
   renameSync: fs.renameSync,
+  // Seamed for the same reason as the probes below: the arms that distinguish
+  // "not there" from "could not tell" are the fail-closed ones, and an
+  // indeterminate `realpath` or `lstat` failure is not reachable from a fixture
+  // on a real filesystem.
+  realpathSync: fs.realpathSync,
+  lstatSync: fs.lstatSync,
 };
 
 interface LockBody { pid: number; token: string; acquiredAt: number; }
@@ -48,7 +59,7 @@ const SIDECAR_SCRIPT = [
 if (!SIDECAR_SCRIPT.includes(SIDECAR_SENTINEL)) {
   throw new Error(
     "liveness.ts: SIDECAR_SCRIPT lost sentinel " + SIDECAR_SENTINEL +
-    " \u2014 PID-reuse guard cannot match the sidecar in ps/proc output; refusing to load."
+    ": PID-reuse guard cannot match the sidecar in ps/proc output; refusing to load."
   );
 }
 
@@ -603,7 +614,59 @@ export function telemetryDirPath(sessionDir: string): string {
   return join(sessionDir, "telemetry");
 }
 
-export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | null {
+/** A child staging spawned, with the exact means of stopping it. */
+export interface StagedChild {
+  readonly pid: number;
+  /**
+   * Terminates through the retained `ChildProcess` capability rather than a
+   * number read off a handle. Node's `kill()` does ultimately signal the stored
+   * pid, so this is not immunity from pid reuse; see ISS-930 for the one window
+   * where that distinction bites and why it is unreachable here today.
+   */
+  terminate(): void;
+}
+
+/**
+ * Stop a child we hold the handle for.
+ *
+ * The handle is what makes this safe, though NOT because a `ChildProcess` is a
+ * pidfd: Node still signals the stored number. It is safe because a number can
+ * only be recycled once the parent REAPS the child, Node reaps on the event
+ * loop, and this wait blocks that loop. A child that exits inside the grace
+ * window therefore stays a zombie holding its own number until we return, so
+ * neither signal can land on a replacement. Measured, not assumed: during the
+ * blocked wait an exited child still reports `exitCode === null` and its pid is
+ * still addressable; both flip only after the loop turns.
+ *
+ * The case where the number IS unsafe is a child reaped BEFORE we are called,
+ * which is what a delayed discard looks like. That child reports its exit and
+ * we do not signal it. Note the asymmetry, because it is easy to overstate: the
+ * "a reaped child reports its exit" premise is guaranteed DURING the wait, where
+ * the loop cannot turn so nothing can be reaped, but only USUALLY true at entry.
+ * libuv reaps a whole batch of sibling children before dispatching any of their
+ * exit callbacks, so inside such a callback a sibling can report `exitCode ===
+ * null` with its number already released. That window is not reachable from here
+ * today and ISS-930 records both why and what would make it reachable.
+ * There is deliberately no second check before escalating:
+ * `exitCode` provably cannot change while we hold the loop, so a recheck there
+ * would re-read the same value and imply a protection that is really coming
+ * from the reaping invariant above. Reaching the escalation means the pid was
+ * still addressable on the last poll, and it can only still be addressable
+ * because it is our child, live or unreaped.
+ */
+function terminateChild(child: ChildProcess, pid: number): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  try { child.kill("SIGTERM"); } catch { /* already gone */ }
+  const start = Date.now();
+  while (Date.now() - start < KILL_GRACE_MS) {
+    // Read-only. Proves the child is gone without signalling anything.
+    try { process.kill(pid, 0); } catch (e: any) { if (e && e.code === "ESRCH") return; }
+    sleepMs(KILL_POLL_MS);
+  }
+  try { child.kill("SIGKILL"); } catch { /* already gone */ }
+}
+
+function spawnAliveSidecarChild(tDir: string, intervalMs = 10_000): StagedChild | null {
   try {
     fs.mkdirSync(tDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(tDir, 0o700); } catch { /* best-effort */ }
@@ -616,10 +679,13 @@ export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | n
     if (existing === null) return null;
     try { process.kill(existing, 0); } catch { return null; }
     if (!hasSidecarSignature(existing)) return null;
-    return existing;
+    // ADOPTED, not spawned. We hold no handle for it and it is not ours to
+    // stop. Unreachable from staging, which always creates a fresh directory
+    // that cannot already contain a sidecar.
+    return { pid: existing, terminate: () => {} };
   }
 
-  let spawnedPid: number | null = null;
+  let spawned: StagedChild | null = null;
   try {
     const priorPid = readSidecarPid(tDir);
     if (priorPid !== null) {
@@ -672,20 +738,25 @@ export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | n
     if (newPid !== null) {
       try {
         writeSidecarPid(tDir, newPid);
-        spawnedPid = newPid;
+        spawned = { pid: newPid, terminate: () => terminateChild(child, newPid) };
       } catch (e: any) {
         livenessLog("write-pid-failed", { code: e?.code, newPid });
-        // We just spawned this pid; bypass the signature gate (which races
-        // the ps/proc table write for a freshly-forked child) and signal
-        // it directly. SIGTERM, poll for exit, then SIGKILL if needed.
-        killJustSpawnedChild(newPid);
+        // We hold the handle for this child, so stop it through the handle
+        // rather than by number. That also bypasses the signature gate, which
+        // races the ps/proc table write for a freshly-forked child, without
+        // the risk of signalling a number the OS may have reassigned (ISS-930).
+        terminateChild(child, newPid);
         return null;
       }
     }
-    return spawnedPid;
+    return spawned;
   } finally {
     releaseSpawnLock(handle);
   }
+}
+
+export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | null {
+  return spawnAliveSidecarChild(tDir, intervalMs)?.pid ?? null;
 }
 
 export function killSidecar(pid: number | undefined | null): void {
@@ -741,8 +812,7 @@ export function readLastMcpCall(sessionDir: string): string | null {
   }
 }
 
-export function readAliveTimestamp(sessionDir: string): number | null {
-  const tDir = telemetryDirPath(sessionDir);
+function readAliveTimestampIn(tDir: string): number | null {
   if (fs.existsSync(join(tDir, "shutdown"))) return null;
   try {
     const val = fs.readFileSync(join(tDir, "alive"), "utf-8").trim();
@@ -751,6 +821,636 @@ export function readAliveTimestamp(sessionDir: string): number | null {
   } catch {
     return null;
   }
+}
+
+export function readAliveTimestamp(sessionDir: string): number | null {
+  return readAliveTimestampIn(telemetryDirPath(sessionDir));
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat generations (T-450 step 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * WHY TELEMETRY IS GENERATION-SCOPED.
+ *
+ * Two failures share one cause, that every owner in turn writes to a single
+ * telemetry directory. A failed `spawnAliveSidecar` does not leave the session
+ * byte-identical: before returning null it can create and chmod telemetry, kill
+ * a prior sidecar, unlink the shutdown marker, spawn a child and rewrite
+ * `sidecar.pid`. Worse in the other direction, a SUCCESSFUL spawn followed by a
+ * failed commit leaves a heartbeat produced by the RECOVERING caller attached
+ * to the still-OLD owner, which suppresses that session's recovery for good.
+ *
+ * So a recovery STAGES its heartbeat in a generation-specific directory, and
+ * the generation id is published only in the same atomic postimage as
+ * `ownerTask`. A staged generation nothing published is invisible to every
+ * reader, so a failed commit suppresses nothing, and a marker written by an
+ * older generation is not consulted at all, so it cannot corroborate after the
+ * server that wrote it has gone.
+ *
+ * A session with no recorded generation keeps using the legacy directory
+ * unchanged. That is the compatibility arm, and it is why this ships with no
+ * caller: nothing writes a generation yet, so nothing on disk today changes.
+ */
+const GENERATIONS_DIRNAME = "generations";
+const GENERATION_ID_PATTERN = new RegExp(`^${CROCKFORD_CLASS}{16}$`);
+const READINESS_TIMEOUT_MS = 5_000;
+const READINESS_POLL_MS = 25;
+/** Ceilings for caller-supplied waits. A bounded wait that is not bounded is a hang. */
+const READINESS_TIMEOUT_MAX_MS = 60_000;
+const READINESS_POLL_MAX_MS = 1_000;
+
+/**
+ * A caller-supplied duration, normalized before anything waits on it.
+ *
+ * Non-finite values are REFUSED rather than passed through, because both of
+ * them defeat the bound they are supposed to set. `Date.now() + NaN` is NaN and
+ * every comparison against NaN is false, so a NaN timeout produces a readiness
+ * loop with no reachable deadline; `sleepMs(Infinity)` parks the synchronous
+ * caller inside `Atomics.wait` and never returns. Either one turns a bounded
+ * wait into an indefinite hang of the process that asked for the wait.
+ *
+ * A negative value is clamped rather than refused: asking for no wait at all is
+ * coherent, and the poll floor keeps that from becoming a spin.
+ */
+function durationOption(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(Math.max(min, value), max);
+}
+
+/**
+ * The window between creating a staged generation and re-checking where it
+ * landed. Exposed on `__testing` for the same reason `fsApi` and `probeApi`
+ * are: the re-check defends against a swap inside a window no test can
+ * otherwise reach, and a defence nothing can exercise is a defence nobody
+ * knows still works.
+ */
+const stagingHooks = {
+  at: (_stage: "before-parent" | "before-create" | "created" | "before-spawn" | "before-remove" | "before-unlink", _path: string): void => {},
+  /**
+   * The spawn, seamed MODULE-PRIVATELY.
+   *
+   * Deliberately not a public option. Cleanup stops the child through the
+   * capability the spawn returns, so a caller able to supply that spawn could
+   * hand staging a process it never created and have it terminated on failure.
+   * The seam exists for tests, which is why it lives here and not on the
+   * exported options.
+   */
+  spawn: null as null | ((dir: string, intervalMs: number) => StagedChild | null),
+  /** Test-only: issue a handle that is not frozen, to prove cleanup ignores its fields. */
+  freezeHandles: true,
+};
+
+export type TelemetryUnusableReason =
+  | "malformed-generation-id"
+  | "generation-escapes-telemetry"
+  /** A component exists but could not be canonicalized, so containment is unproven. */
+  | "generation-path-unresolvable";
+
+export type TelemetryLocation =
+  | { readonly kind: "legacy"; readonly dir: string }
+  | { readonly kind: "generation"; readonly dir: string; readonly id: string }
+  | { readonly kind: "unusable"; readonly reason: TelemetryUnusableReason };
+
+/**
+ * A fresh, opaque generation id.
+ *
+ * Internally generated and never derived from anything a caller supplied,
+ * because persisting one makes session state select a DIRECTORY. Same alphabet
+ * and length as the ledger's canonical ids, reusing that encoder rather than
+ * growing a second one.
+ */
+export function newHeartbeatGenerationId(): string {
+  return encodeBase32Crockford(randomBytes(10));
+}
+
+type RealPath =
+  | { readonly kind: "resolved"; readonly path: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unresolvable" };
+
+/**
+ * Canonicalize, distinguishing "not there" from "could not tell".
+ *
+ * Collapsing the two is a fail-open: an existing component that cannot be
+ * resolved because of EACCES, EIO, or a dangling link would read as absent,
+ * and absent is the arm that skips the containment proof.
+ */
+function realPath(path: string): RealPath {
+  try {
+    return { kind: "resolved", path: fsApi.realpathSync(path) };
+  } catch (e: any) {
+    if (!e || e.code !== "ENOENT") return { kind: "unresolvable" };
+    // ENOENT from `realpath` has two causes, and only one of them is "nothing
+    // is there". A DANGLING symlink also reports ENOENT while the path very
+    // much exists, and treating that as absent would skip the containment
+    // proof for a component that is already a link to somewhere else.
+    try {
+      fsApi.lstatSync(path);
+      // It exists, as a link that goes nowhere.
+      return { kind: "unresolvable" };
+    } catch (inner: any) {
+      // And the confirming call gets the same three-state treatment as the
+      // first one. An EACCES or EIO here means we could not tell whether the
+      // path exists, which is not the same as knowing it does not.
+      return inner && inner.code === "ENOENT" ? { kind: "absent" } : { kind: "unresolvable" };
+    }
+  }
+}
+
+/**
+ * Where to read this session's telemetry, or a refusal.
+ *
+ * THE ID IS A PATH SELECTOR, so it is treated as one. `.story/` is
+ * corruption-resistant rather than forgery-resistant, and that posture is fine
+ * for a value that is merely read. It is not fine for a value that selects a
+ * directory whose cleanup KILLS PROCESSES and REMOVES FILES, so this is
+ * stricter than "parse it": the pattern admits no separators, no dots and no
+ * absolute paths, and the resolved real path must still be the one we expect.
+ *
+ * The symlink check cannot be done lexically. An impeccable id can name a
+ * directory that is a link somewhere else entirely, and following it would read
+ * evidence from outside the session. It is done on the REAL paths of both
+ * sides, so a session reached through a symlinked path (every project under
+ * /tmp on macOS) is unaffected: what matters is where the generation lands,
+ * not how the session directory was reached.
+ */
+export function resolveTelemetryLocation(
+  sessionDir: string,
+  // `unknown`, not `string | null`, because this reads a PERSISTED value. A
+  // caller that narrows first has to decide what a number or an object means,
+  // and the only safe answer is the one made here: anything that is not a
+  // valid id is a refusal, never a fallback to the legacy directory.
+  generationId?: unknown,
+): TelemetryLocation {
+  const root = telemetryDirPath(sessionDir);
+
+  // ONLY a genuinely absent value takes the legacy arm. Not the empty string:
+  // no session written before this feature carries the field at all, so a
+  // present-but-empty value is damage, and treating it as "no generation"
+  // would point a generation-bearing session at the previous owner's
+  // telemetry, which is the exact confusion generations exist to end.
+  if (generationId === undefined || generationId === null) {
+    return { kind: "legacy", dir: root };
+  }
+  if (typeof generationId !== "string" || !GENERATION_ID_PATTERN.test(generationId)) {
+    return { kind: "unusable", reason: "malformed-generation-id" };
+  }
+
+  // THE PARENT IS CHECKED TOO, and checking only the leaf is the bug this
+  // exists to avoid: with the leaf absent, its realpath is null, so a
+  // `generations` directory that is itself a symlink out of the tree would be
+  // accepted and staging would then create files at the far end of it.
+  const realRoot = realPath(root);
+  if (realRoot.kind === "unresolvable") {
+    return { kind: "unusable", reason: "generation-path-unresolvable" };
+  }
+  const parent = join(root, GENERATIONS_DIRNAME);
+  const contained = (component: RealPath, expected: string): TelemetryUnusableReason | null => {
+    if (component.kind === "absent") return null;
+    if (component.kind === "unresolvable") return "generation-path-unresolvable";
+    // An existing component with no resolvable root cannot be proven contained.
+    if (realRoot.kind !== "resolved") return "generation-escapes-telemetry";
+    return component.path === expected ? null : "generation-escapes-telemetry";
+  };
+
+  const parentFault = contained(
+    realPath(parent),
+    realRoot.kind === "resolved" ? join(realRoot.path, GENERATIONS_DIRNAME) : "",
+  );
+  if (parentFault) return { kind: "unusable", reason: parentFault };
+
+  const dir = join(parent, generationId);
+  const leafFault = contained(
+    realPath(dir),
+    realRoot.kind === "resolved" ? join(realRoot.path, GENERATIONS_DIRNAME, generationId) : "",
+  );
+  if (leafFault) return { kind: "unusable", reason: leafFault };
+
+  // A generation that does not exist yet is contained by construction, since a
+  // pattern-checked id cannot leave the directory it is joined onto and the
+  // ancestors it would pass through have just been checked.
+  return { kind: "generation", dir, id: generationId };
+}
+
+/**
+ * The handles staging actually produced, mapped to what cleanup may act on.
+ *
+ * A CAPABILITY, not a shape, defended at two levels that do different jobs.
+ * The private field makes the type nominal, so ordinary callers cannot build a
+ * compile-time-valid handle at all; that stops honest mistakes. It does not
+ * stop casts or plain JavaScript, which can still fabricate a lookalike with a
+ * valid id, the derived path and any pid it likes, and checking that its fields
+ * agree with one another proves only that the caller could do the arithmetic.
+ * Membership here is the RUNTIME authority, and the only thing that establishes
+ * provenance.
+ *
+ * A MAP rather than a set, because `readonly` is a compile-time fiction: the
+ * holder of a genuine handle can still assign to its fields and would otherwise
+ * be signalling an arbitrary pid or deleting an arbitrary directory through a
+ * capability it legitimately owns. Cleanup therefore reads the record stored
+ * here and never the object it was handed. Discard CONSUMES the entry, so a
+ * handle cannot be replayed against a pid that has since been recycled.
+ *
+ * Weak so a dropped handle does not leak the MAP ENTRY. That is the only thing
+ * it saves, and it is worth being exact: a caller that drops its sole handle
+ * without discarding can no longer clean up at all, so the staged child keeps
+ * running and its directory stays on disk. Every unpublished handle must be
+ * retained and discarded.
+ */
+const stagedHandles = new WeakMap<StagedHeartbeatGeneration, StagedRecord>();
+
+/**
+ * Is this still a path underneath the session's own generations directory?
+ *
+ * Re-derived from the real filesystem rather than trusted from earlier, because
+ * the thing being defended against is precisely that an ancestor changed since
+ * then. A parent replaced by a symlink resolves somewhere else, so the compare
+ * fails and the caller declines. Unresolvable on either side is also a decline:
+ * cleanup is the wrong place to guess.
+ */
+function stillInsideTelemetry(sessionDir: string, dir: string): boolean {
+  // The expected path is BUILT from the resolved telemetry root, never resolved
+  // through the generations component itself. Resolving both sides would follow
+  // the same replaced link on each and compare a path against itself, which is
+  // the tautology this whole guard exists to avoid.
+  const root = realPath(telemetryDirPath(sessionDir));
+  if (root.kind !== "resolved") return false;
+  const parent = realPath(join(dir, ".."));
+  return parent.kind === "resolved" && parent.path === join(root.path, GENERATIONS_DIRNAME);
+}
+
+/**
+ * Re-check identity AND containment, then attempt bounded removal.
+ *
+ * Not "remove only the validated directory", which would claim more than any
+ * path-based code can deliver: a final check-to-use window remains between the
+ * containment proof and the syscalls, and ISS-931 records why it cannot be
+ * closed here. The bounded removal is what makes losing that window survivable.
+ */
+function removeIfStillOurs(dir: string, identity: string, sessionDir: string): void {
+  if (directoryIdentityOf(dir) !== identity) {
+    livenessLog("generation-cleanup-not-ours", { dir });
+    return;
+  }
+  // The seam is the window: anything a concurrent writer does to this path can
+  // be landed here by a test.
+  stagingHooks.at("before-remove", dir);
+  // Containment is re-proven as LATE as it can be, so a swap that persists to
+  // this moment is caught outright instead of being raced. What remains after
+  // this line is a check-to-use sliver that no path-based API can remove, and
+  // the bounded removal below is what makes losing that sliver survivable.
+  if (!stillInsideTelemetry(sessionDir, dir)) {
+    livenessLog("generation-cleanup-escaped", { dir });
+    return;
+  }
+  // THE RESIDUAL, and it is not closable from here. Between the proof above and
+  // the syscalls below the parent can change again, and no further path-based
+  // recheck helps: each one just moves the same window. Deferring cleanup to a
+  // collector does not help either, because a collector must also unlink by
+  // path and inherits exactly this window. Only handle-relative primitives
+  // (openat/unlinkat) close it, and Node exposes none.
+  //
+  // So the residual is bounded rather than eliminated, and the bound is what
+  // makes it acceptable: cleanup unlinks only the names this feature writes and
+  // never recurses, so losing this race costs at most those named files in a
+  // directory that is not ours. It cannot cost a subtree. ISS-931 tracks the
+  // real closure. The seam exists so this exact window is covered by a test
+  // instead of being described in a comment nobody can verify.
+  stagingHooks.at("before-unlink", dir);
+  removeGenerationDir(dir);
+}
+
+/**
+ * A generation that exists on disk and has acknowledged a heartbeat, but that
+ * nothing has published.
+ *
+ * RETAIN THIS BY REFERENCE. It is a capability, not a value: the private field
+ * means a spread, a clone or a serialization round-trip is not this type, so
+ * copying it is a compile error rather than a puzzle at runtime. Its public
+ * fields are informational; nothing in cleanup reads them.
+ *
+ * Only the TYPE is exported. The class itself is module-private and so is the
+ * one function that issues instances, because an exported factory would hand
+ * every caller a way to mint a compile-time-valid handle and reduce the private
+ * field to decoration. Staging is the only issuer there is.
+ */
+class StagedHeartbeatGenerationImpl {
+  /** Excluded from structural typing, which is the entire point of it. */
+  readonly #issued: true = true;
+
+  constructor(
+    readonly id: string,
+    readonly dir: string,
+    readonly sessionDir: string,
+    readonly pid: number,
+    readonly identity: string,
+  ) {}
+
+  /** True for every instance; exists so the private field is not dead weight. */
+  get issued(): boolean {
+    return this.#issued;
+  }
+}
+
+export type StagedHeartbeatGeneration = StagedHeartbeatGenerationImpl;
+
+function issueStagedGeneration(
+  id: string,
+  dir: string,
+  sessionDir: string,
+  pid: number,
+  identity: string,
+): StagedHeartbeatGeneration {
+  return new StagedHeartbeatGenerationImpl(id, dir, sessionDir, pid, identity);
+}
+
+/** What cleanup actually acts on. Never reachable from the handle's holder. */
+interface StagedRecord {
+  readonly dir: string;
+  readonly identity: string;
+  /** For the containment re-proof at cleanup time. Never read off the handle. */
+  readonly sessionDir: string;
+  /** The exact child, not its number. */
+  readonly child: StagedChild;
+}
+
+export interface StageGenerationOptions {
+  readonly intervalMs?: number;
+  readonly readinessTimeoutMs?: number;
+  readonly pollMs?: number;
+}
+
+/**
+ * A NON-NULL SPAWN IS NOT READINESS.
+ *
+ * An earlier draft treated a returned pid as proof of a heartbeat and, when the
+ * child died before its first tick, relied on a later takeover being refused.
+ * That is the wrong outcome: the generation stays permanently `undetermined`,
+ * so the owner this recovery just bound has no usable heartbeat and can never
+ * itself be recovered through this feature. It converts a live-owner false
+ * positive into a permanently unrecoverable session, which is a different
+ * failure and not a safer one.
+ *
+ * So publication requires an acknowledgement within a bounded wait: a first
+ * heartbeat in the staged generation, and a staged pid still carrying the
+ * sidecar signature. The directory is created here and only that child writes
+ * into it, so a heartbeat appearing in it is that child's.
+ */
+function acknowledgeReadiness(dir: string, pid: number, timeoutMs: number, pollMs: number): boolean {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    // Deliberately NOT sticky. `readAliveTimestampIn` returns null once a
+    // shutdown marker appears, so remembering an earlier tick would let the
+    // deadline arm accept a generation whose own telemetry now says it stopped.
+    // Readiness is a claim about the current state, not about a state that once
+    // held.
+    const heartbeat = readAliveTimestampIn(dir) !== null;
+    const signature = probeApi.probeArgvSignature(pid, [SIDECAR_ARGV_MARKER]);
+
+    // Both halves proven: a heartbeat we can see, written by a process that is
+    // still the sidecar we spawned.
+    if (heartbeat && signature === "match") return true;
+
+    // A definitively dead child is an ANSWER, not something to keep waiting on.
+    // Waiting out the full timeout on a process that is provably gone buys
+    // nothing and delays every recovery attempt by that much.
+    if (signature === "absent") return false;
+
+    if (Date.now() >= deadline) {
+      // DEGRADED ACCEPTANCE, and the alternative is worse. "unknown" means the
+      // argv probe could not answer (a `ps` failure, an unsupported platform),
+      // never that the process is gone; requiring "match" here would make
+      // staging fail permanently wherever argv inspection is unavailable, so
+      // the feature could never recover a session on that platform at all.
+      // A heartbeat is direct evidence that the staged child ran and wrote, so
+      // it is accepted alone only after the probe has been given the whole
+      // window to answer and never once said "absent".
+      if (heartbeat) livenessLog("generation-readiness-degraded", { pid });
+      return heartbeat;
+    }
+    // Seamed so a regression cannot HANG the suite that is meant to catch it.
+    // An unnormalized poll blocks inside `Atomics.wait`, which holds the event
+    // loop, so no test timer could ever fire to report the failure; the test
+    // would present as an outer job timeout with no indication of which case
+    // broke. The seam lets a test observe the value and cap the iterations.
+    timeApi.sleepMs(pollMs);
+  }
+}
+
+/**
+ * Stage a generation and prove it heartbeats, or refuse and attempt bounded
+ * cleanup. Not "leave nothing behind": cleanup declines whenever it cannot
+ * re-prove containment, and a leaf created inside a parent that was swapped
+ * before the create is deliberately LEAKED rather than deleted through a path
+ * this code cannot vouch for. Leaking is the intended failure direction.
+ *
+ * Returns a handle the caller publishes ATOMICALLY alongside `ownerTask`, or
+ * null. Nothing here writes session state: staging is not publication, and a
+ * handle that is never published is invisible to every reader.
+ */
+export function stageHeartbeatGeneration(
+  sessionDir: string,
+  options: StageGenerationOptions = {},
+): StagedHeartbeatGeneration | null {
+  const id = newHeartbeatGenerationId();
+  if (resolveTelemetryLocation(sessionDir, id).kind !== "generation") return null;
+
+  // Create the parent SEPARATELY and prove it is a real directory before
+  // creating anything beneath it. `mkdirSync(recursive)` happily succeeds when
+  // a component is a symlink to an existing directory, so creating the leaf in
+  // one call would follow such a link and write outside the session.
+  const parent = join(telemetryDirPath(sessionDir), GENERATIONS_DIRNAME);
+  stagingHooks.at("before-parent", parent);
+  try {
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    // lstat, so a symlink is not a directory.
+    if (!fs.lstatSync(parent).isDirectory()) {
+      livenessLog("generation-parent-not-a-directory", {});
+      return null;
+    }
+  } catch (e: any) {
+    livenessLog("generation-mkdir-failed", { code: e?.code });
+    return null;
+  }
+  const dir = join(parent, id);
+  stagingHooks.at("before-create", dir);
+  try {
+    // NON-recursive on purpose: an existing leaf, including a symlink someone
+    // put there, throws EEXIST rather than being silently adopted or followed.
+    fs.mkdirSync(dir, { mode: 0o700 });
+  } catch (e: any) {
+    livenessLog("generation-mkdir-failed", { code: e?.code });
+    return null;
+  }
+  stagingHooks.at("created", dir);
+
+  // WHAT THE BRACKET BELOW DOES AND DOES NOT BUY.
+  //
+  // Every check here is check-then-use: the parent can be swapped between its
+  // lstat and the leaf's creation, and the leaf between its validation and the
+  // spawn. Closing those windows properly needs no-follow directory handles
+  // (openat/mkdirat), which Node does not expose, so it would take a native
+  // addon. That is disproportionate to the threat this module documents:
+  // `.story/` is corruption-resistant, not forgery-resistant, and a process
+  // that can swap directories inside the user's own project can equally well
+  // edit the state file or run the admin CLI.
+  //
+  // So the windows are narrowed rather than eliminated, in the same shape used
+  // elsewhere in this feature: identify the validated directory by `dev:ino`
+  // and re-check that identity before anything is published. A concurrent
+  // recreation is caught; a determined adversary with write access is not the
+  // subject.
+  const identity = directoryIdentityOf(dir);
+  const location = resolveTelemetryLocation(sessionDir, id);
+  if (identity === null || location.kind !== "generation" || location.dir !== dir) {
+    livenessLog("generation-escaped-after-create", { id, reason: location.kind === "unusable" ? location.reason : "leaf-not-ours" });
+    // This is the one cleanup site whose identity cannot be a real guard: it was
+    // read from the same path a moment ago, so comparing it re-reads the same
+    // directory and matches itself. That is worth stating plainly rather than
+    // dressing up, and an earlier version of this code did dress it up.
+    //
+    // What makes the removal safe anyway is that cleanup is BOUNDED: it unlinks
+    // only the names this feature writes and then removes the directory only if
+    // that left it empty. So the worst outcome when the parent was swapped and
+    // this path now resolves somewhere foreign is that a directory keeping a
+    // file called `alive` or `shutdown` loses it. It cannot lose a subtree.
+    // The alternative, removing nothing, is not free either: a parent swapped
+    // BEFORE the create leaves our own fresh leaf sitting inside somebody
+    // else's directory, so refusing to clean up trades destroying foreign data
+    // for littering in it.
+    if (identity !== null) removeIfStillOurs(dir, identity, sessionDir);
+    return null;
+  }
+  stagingHooks.at("before-spawn", dir);
+  if (directoryIdentityOf(dir) !== identity) {
+    livenessLog("generation-swapped-before-spawn", { id });
+    return null;
+  }
+
+  const spawnSidecar = stagingHooks.spawn ?? spawnAliveSidecarChild;
+  let child: StagedChild | null;
+  try {
+    child = spawnSidecar(dir, options.intervalMs ?? 10_000);
+  } catch (e: any) {
+    // The real spawn can throw from lock setup or an unexpected filesystem
+    // error. Escaping here would break the null-on-failure contract AND leave
+    // the staged directory behind for a generation nobody will ever publish.
+    livenessLog("generation-spawn-threw", { code: e?.code });
+    removeIfStillOurs(dir, identity, sessionDir);
+    return null;
+  }
+  if (child === null) {
+    removeIfStillOurs(dir, identity, sessionDir);
+    return null;
+  }
+  const pid = child.pid;
+
+  const issued = issueStagedGeneration(id, dir, sessionDir, pid, identity);
+  // The cast is the brand working as intended: `Object.freeze` returns
+  // `Readonly<T>`, which drops the private field, so even the freeze cannot
+  // launder a value into this type without saying so.
+  const staged = (stagingHooks.freezeHandles ? Object.freeze(issued) : issued) as StagedHeartbeatGeneration;
+  stagedHandles.set(staged, { dir, identity, sessionDir, child });
+  const timeoutMs = durationOption(options.readinessTimeoutMs, READINESS_TIMEOUT_MS, 0, READINESS_TIMEOUT_MAX_MS);
+  const pollMs = durationOption(options.pollMs, READINESS_POLL_MS, 1, READINESS_POLL_MAX_MS);
+  if (!acknowledgeReadiness(dir, pid, timeoutMs, pollMs)) {
+    livenessLog("generation-readiness-failed", { pid });
+    stagedHandles.delete(staged);
+    child.terminate();
+    removeIfStillOurs(dir, identity, sessionDir);
+    return null;
+  }
+  // The heartbeat we just accepted has to have been written in the directory we
+  // validated, not in whatever now sits at that path.
+  if (directoryIdentityOf(dir) !== identity) {
+    livenessLog("generation-swapped-during-readiness", { id });
+    discardStagedGeneration(staged);
+    return null;
+  }
+  return staged;
+}
+
+/** `dev:ino` for a real directory, or null. bigint because an inode need not fit a double. */
+function directoryIdentityOf(dir: string): string | null {
+  try {
+    const stat = fs.lstatSync(dir, { bigint: true });
+    return stat.isDirectory() ? `${stat.dev}:${stat.ino}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The fixed member names in a generation directory. Not the whole set cleanup
+ * recognizes: the lock's `sidecar.lock.tmp.*` temporaries carry a pid and a
+ * timestamp, so they are matched by prefix separately rather than listed here.
+ */
+const GENERATION_MEMBERS = ["alive", "shutdown", "lastMcpCall", PID_BASENAME, LOCK_BASENAME];
+
+/**
+ * Remove a generation directory by NAME, never recursively.
+ *
+ * Recursion is what turns a lost race into data loss. Every identity check in
+ * this file is check-then-use against a path, and no path-based API can close
+ * that window: the parent can be replaced between the check and the syscall,
+ * and `mkdirat`/`openat`, which would close it, are not exposed by Node. So
+ * rather than depend on winning the race, cleanup is made incapable of the
+ * harm. It unlinks only the names this feature itself writes and then removes
+ * the directory only if that left it EMPTY.
+ *
+ * A directory that turns out not to be ours therefore loses, at worst, files
+ * named exactly `alive`, `shutdown`, `lastMcpCall`, `sidecar.pid`,
+ * `sidecar.lock` or a `sidecar.lock.tmp.*` temporary, and survives entirely if
+ * it holds anything else. The cost is
+ * that an unexpected member leaks the directory rather than deleting it, which
+ * is the correct direction to fail and is logged.
+ */
+function removeGenerationDir(dir: string): void {
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!GENERATION_MEMBERS.includes(name) && !name.startsWith(`${LOCK_BASENAME}.tmp.`)) continue;
+      try { fs.unlinkSync(join(dir, name)); } catch { /* already gone, or not a file */ }
+    }
+    fs.rmdirSync(dir);
+  } catch (e: any) {
+    livenessLog("generation-cleanup-failed", { code: e?.code });
+  }
+}
+
+/**
+ * Stop a staged generation's child and attempt bounded removal of its
+ * directory. Removal is best-effort by design: it declines if containment
+ * cannot be re-proven, unlinks only the names this feature writes, and leaves
+ * the directory in place if that did not empty it.
+ *
+ * Accepts ONLY the exact capability staging issued, consumes it, and acts on
+ * the record stored against it. Nothing here reads a field off the object it
+ * was handed: the child is stopped through the capability the spawn returned,
+ * never through a pid read off the handle. That takes the handle's fields out
+ * of the decision. It does not make Node stop signalling the stored pid. A
+ * discard arriving long after the sidecar died is ordinarily fine, because by
+ * then the exit is reflected in the child's fields and nothing is signalled;
+ * the window ISS-930 tracks is narrower than that, and needs the discard to run
+ * inside the libuv batch-reap interval before those fields are updated.
+ */
+export function discardStagedGeneration(staged: StagedHeartbeatGeneration): void {
+  const record = stagedHandles.get(staged);
+  if (!record) {
+    livenessLog("generation-discard-refused", {});
+    return;
+  }
+  stagedHandles.delete(staged);
+
+  // Unconditional for the CHILD: leaving it running orphans a sidecar
+  // heartbeating into a generation nobody will publish.
+  record.child.terminate();
+
+  // Conditional for the DIRECTORY. If it was replaced while readiness was
+  // being acknowledged, what sits there now belongs to whatever concurrent
+  // operation put it there.
+  removeIfStillOurs(record.dir, record.identity, record.sessionDir);
 }
 
 // ---------------------------------------------------------------------------
@@ -793,7 +1493,16 @@ export type DeathMarkerSignal =
   | { readonly kind: "none"; readonly aliveAt: number }
   | {
       readonly kind: "unreadable";
-      readonly reason: "absent" | "non-numeric" | "future" | "raced" | "no-marker-time";
+      readonly reason:
+        | "absent"
+        | "non-numeric"
+        | "future"
+        | "raced"
+        | "no-marker-time"
+        // The session names a heartbeat generation we will not read from. Kept
+        // DISTINCT from "absent", which is an observation: this is a refusal to
+        // look, and collapsing the two would let a refusal corroborate.
+        | TelemetryUnusableReason;
     };
 
 export type MarkerValiditySignal =
@@ -821,7 +1530,11 @@ export type MarkerValiditySignal =
 export type SidecarProbeSignal =
   | { readonly kind: "match"; readonly pid: number }
   | { readonly kind: "absent"; readonly pid: number }
-  | { readonly kind: "unknown"; readonly reason: "no-pid" | "probe-unknown"; readonly pid: number | null };
+  | {
+      readonly kind: "unknown";
+      readonly reason: "no-pid" | "probe-unknown" | TelemetryUnusableReason;
+      readonly pid: number | null;
+    };
 
 /**
  * Lease state, captured HERE rather than read separately later.
@@ -970,6 +1683,16 @@ export type OwnerLivenessVerdict =
 
 /** The session fields this evidence is derived from. */
 export interface OwnableLivenessState {
+  /**
+   * The telemetry generation this session's heartbeat lives in, if it has one.
+   * Absent means the legacy directory, which is every session written before
+   * this existed. Published only in the same atomic postimage as `ownerTask`.
+   *
+   * `unknown` deliberately. It arrives from a JSON file, and narrowing it at
+   * the boundary would force each reader to decide what a number or an object
+   * means; `resolveTelemetryLocation` decides once, and decides refusal.
+   */
+  readonly heartbeatGeneration?: unknown;
   readonly lastGuideCall?: string | null;
   readonly mcpServerPid?: number | null;
   readonly mcpGuideCallAt?: string | null;
@@ -1286,15 +2009,24 @@ export function readOwnerLiveness(
   readSuccessors: SuccessorSource = () => ({ kind: "unavailable", reason: "not supplied by caller" }),
 ): OwnerLivenessVerdict {
   const snapshot = readState();
-  const tDir = telemetryDirPath(sessionDir);
-  const deathMarker = readDeathMarker(tDir, now);
+  // Only the generation session state NAMES is consulted. An unusable value is
+  // not "no marker", which would be an observation; it is a refusal to look,
+  // and it flows through the ordinary arms below rather than short-circuiting,
+  // so fresh owner activity still outranks it exactly as it outranks every
+  // other process-level signal.
+  const location = resolveTelemetryLocation(sessionDir, snapshot.heartbeatGeneration);
+  const deathMarker: DeathMarkerSignal = location.kind === "unusable"
+    ? { kind: "unreadable", reason: location.reason }
+    : readDeathMarker(location.dir, now);
   const observed = readSuccessors();
   const signals: OwnerLivenessSignals = {
     activity: readActivity(snapshot.lastGuideCall, now, staleThresholdMs),
     lease: readLease(snapshot.lease?.expiresAt, now),
     deathMarker,
     markerValidity: readMarkerValidity(snapshot.mcpServerPid, observed, snapshot.ownerTask, snapshot.mcpGuideCallAt),
-    sidecarProbe: readSidecarProbe(tDir),
+    sidecarProbe: location.kind === "unusable"
+      ? { kind: "unknown", reason: location.reason, pid: null }
+      : readSidecarProbe(location.dir),
     observedAt: new Date(now).toISOString(),
     staleThresholdMs,
     successors: observed,
@@ -1498,5 +2230,10 @@ export const __testing = {
   escalate,
   fsApi,
   probeApi,
+  timeApi,
+  stagingHooks,
+  spawnAliveSidecarChild,
+  terminateChild,
+  durationOption,
   setProcessRole: (r: McpProcessRole) => { processRole = r; },
 };

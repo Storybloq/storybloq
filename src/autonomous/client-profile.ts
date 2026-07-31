@@ -75,6 +75,30 @@ export function ownerTaskForClient(
   return id ? { client, id, boundAt } : null;
 }
 
+/**
+ * Read an `ownerTask` off untrusted JSON, or null.
+ *
+ * PRESENT but unusable is not the same as ABSENT (ISS-897), and every caller
+ * must decide for itself what an unreadable owner means. What no caller may do
+ * is treat a malformed record as a USABLE identity: a truthy `{}` compares
+ * unequal to every real task, so an identity-bound succession check would read
+ * it as "the owner is not among the live clients" and conclude the owner is
+ * gone, when nothing about the owner was ever established.
+ *
+ * Canonical here rather than inline at each call site, because a predicate that
+ * decides whether one task may take over another's session is not something to
+ * keep two copies of.
+ */
+export function normalizeOwnerTask(raw: unknown): OwnerTask | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const id = normalizeClientTaskId(typeof record.id === "string" ? record.id : null);
+  if (id === null) return null;
+  if (record.client !== "claude" && record.client !== "codex") return null;
+  if (typeof record.boundAt !== "string") return null;
+  return { client: record.client, id, boundAt: record.boundAt };
+}
+
 export function isSameOwnerTask(
   owner: OwnerTask | null | undefined,
   candidate: OwnerTask | null | undefined,

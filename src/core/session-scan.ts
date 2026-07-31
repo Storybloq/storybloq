@@ -11,7 +11,7 @@
 import { statSync, lstatSync, readdirSync, readFileSync, type Dirent, type Stats } from "node:fs";
 import { join, dirname } from "node:path";
 import { isContainedSessionDir, SESSION_ID_REGEX } from "../autonomous/session-selector.js";
-import { normalizeClientTaskId, type OwnerTask } from "../autonomous/client-profile.js";
+import { normalizeOwnerTask, type OwnerTask } from "../autonomous/client-profile.js";
 import { WORKFLOW_STATES, CURRENT_SESSION_SCHEMA_VERSION } from "../autonomous/session-types.js";
 import { CONTAINMENT_CHECKS } from "./containment-checks.js";
 import { boundedList } from "./bounded-list.js";
@@ -950,19 +950,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
 
     const ticket = parsed.ticket as Record<string, unknown> | undefined;
     const rawOwner = parsed.ownerTask as Record<string, unknown> | undefined;
-    const ownerTaskId = typeof rawOwner?.id === "string"
-      ? normalizeClientTaskId(rawOwner.id)
-      : null;
-    const ownerTask = rawOwner &&
-      (rawOwner.client === "claude" || rawOwner.client === "codex") &&
-      ownerTaskId !== null &&
-      typeof rawOwner.boundAt === "string"
-      ? {
-          client: rawOwner.client,
-          id: ownerTaskId,
-          boundAt: rawOwner.boundAt,
-        } satisfies OwnerTask
-      : null;
+    const ownerTask = normalizeOwnerTask(rawOwner);
 
     const sessionMode = typeof parsed.mode === "string" ? parsed.mode : "auto";
 

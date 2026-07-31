@@ -910,6 +910,26 @@ export function evidenceFingerprint(signals: OwnerLivenessSignals): string {
       ? {
           kind: "observed",
           servers: [...signals.successors.servers]
+            // OUR OWN ENTRY IS EXCLUDED, and only here.
+            //
+            // The guide-call seam rewrites this server's entry whenever the
+            // calling task id differs from the one recorded in it, stamping a
+            // new identity and a fresh `registeredAt`. That is process-local
+            // churn: it says nothing about the question this digest answers,
+            // which is whether the set of OTHER live servers moved under a
+            // human who confirmed a picture. Digesting it makes the handshake
+            // self-invalidating, and one MCP server serving two tasks then
+            // rejects the second task's first confirmation.
+            //
+            // Safe because it is scoped to the DIGEST. `readMarkerValidity`,
+            // the rendered evidence and the eligibility recheck all still see
+            // our entry, and `markerValidity` is itself digested below: if our
+            // entry turns out to carry the OWNER's identity, the predicate
+            // returns `superseded-by-owner-identity` naming our pid, that moves
+            // the fingerprint, and the handshake fails as it must. Widening
+            // this exclusion to `markerValidity` or `successorPids` would open
+            // exactly the hole it is currently closing.
+            .filter((s) => s.pid !== process.pid)
             // Identity is load-bearing since C-2, so it must be part of the
             // picture the human confirmed. registeredAt rides along as the
             // display value it now is.

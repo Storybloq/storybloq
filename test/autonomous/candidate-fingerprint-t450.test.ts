@@ -50,6 +50,97 @@ function signals(overrides: Partial<OwnerLivenessSignals> = {}): OwnerLivenessSi
   } as OwnerLivenessSignals;
 }
 
+describe("T-450: our OWN entry is not part of the picture we digest", () => {
+  /**
+   * Ruling C-2 corrective, delta pass amendment B. The guide-call seam rewrites
+   * THIS server's registry entry whenever the calling task id differs from the
+   * one recorded there, stamping a new identity and a fresh `registeredAt`. Our
+   * own entry is therefore process-local truth that moves for reasons that have
+   * nothing to do with the question the digest answers, which is whether the
+   * set of OTHER live servers changed under a human who confirmed a picture.
+   * Digesting it makes the handshake self-invalidating: one MCP server serving
+   * two tasks rejects the second task's first confirmation.
+   */
+  const self = (identity: OwnerTask | null, registeredAt: string) =>
+    ({ pid: process.pid, identity, registeredAt });
+  const stranger = { pid: process.pid + 1, identity: OTHER, registeredAt: AT };
+
+  it("ignores our own entry appearing, changing identity, or being restamped", () => {
+    const base = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [stranger] },
+    }));
+    // Our entry arrives.
+    expect(evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [stranger, self(OTHER, AT)] },
+    }))).toBe(base);
+    // The seam restamps it with a different identity and a new time.
+    expect(evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [stranger, self(OTHER, "2027-02-02T02:02:02.000Z")] },
+    }))).toBe(base);
+    expect(evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [stranger, self(null, AT)] },
+    }))).toBe(base);
+  });
+
+  it("still digests every OTHER server, so a real change is still a change", () => {
+    // The exclusion is scoped to our pid and nothing else. A different server
+    // changing identity is exactly the picture change the digest exists for.
+    const a = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [stranger, self(OWNER, AT)] },
+    }));
+    const b = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ ...stranger, identity: OWNER }, self(OWNER, AT)] },
+    }));
+    expect(b).not.toBe(a);
+  });
+
+  it("does NOT extend the exclusion to markerValidity, which is what keeps it safe", () => {
+    // The safety argument for excluding our own entry. If our entry carries the
+    // OWNER's identity, the predicate returns `superseded-by-owner-identity`
+    // naming our pid, and THAT is digested. So the dangerous direction, our own
+    // process turning out to be the owner's live client, still moves the
+    // fingerprint and still fails the handshake. Widening the exclusion to
+    // `markerValidity` or `successorPids` would open exactly that hole.
+    const benign = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [self(OWNER, AT)] },
+    }));
+    const invalidated = (successorPids: number[]) => ({
+      kind: "invalidated" as const,
+      reason: "superseded-by-owner-identity" as const,
+      pid: 4242,
+      recordedAt: AT,
+      successorPids,
+    });
+    const dangerous = evidenceFingerprint(signals({
+      markerValidity: invalidated([process.pid]),
+      successors: { kind: "observed", servers: [self(OWNER, AT)] },
+    }));
+    expect(dangerous).not.toBe(benign);
+
+    // The load-bearing pair, and the reason the one above is not enough on its
+    // own: these two differ ONLY in whether `successorPids` names US. A
+    // fingerprint that filtered our pid out of `successorPids` too would digest
+    // them identically, and the case where our own process turns out to be the
+    // owner's live client would stop moving the digest.
+    const withoutUs = evidenceFingerprint(signals({
+      markerValidity: invalidated([]),
+      successors: { kind: "observed", servers: [self(OWNER, AT)] },
+    }));
+    expect(dangerous).not.toBe(withoutUs);
+  });
+
+  it("leaves an `unavailable` observation alone", () => {
+    // Nothing to filter, and the reason string is the whole picture.
+    const a = evidenceFingerprint(signals({
+      successors: { kind: "unavailable", reason: "registry directory does not exist" },
+    }));
+    const b = evidenceFingerprint(signals({
+      successors: { kind: "unavailable", reason: "registry unreadable (EACCES)" },
+    }));
+    expect(b).not.toBe(a);
+  });
+});
+
 describe("T-450: the fingerprint identifies the picture, not the moment", () => {
   it("is stable across a different observation time", () => {
     const a = evidenceFingerprint(signals());

@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SuccessorServers } from "./mcp-registry.js";
+import { isSameOwnerTask, type OwnerTask } from "./client-profile.js";
 
 const LOCK_BASENAME = "sidecar.lock";
 const PID_BASENAME = "sidecar.pid";
@@ -798,21 +799,22 @@ export type DeathMarkerSignal =
 export type MarkerValiditySignal =
   | {
       readonly kind: "invalidated";
-      readonly reason: "recorded-mcp-pid-alive" | "superseded-by-successor";
+      readonly reason: "recorded-mcp-pid-alive" | "superseded-by-owner-identity";
       readonly pid: number;
-      readonly recordedAt: string;
+      /** Display and audit only (ruling C-2). Never read by the predicate. */
+      readonly recordedAt: string | null;
       readonly successorPids?: readonly number[];
     }
   /** The recorded server pid is DEFINITIVELY gone (ESRCH). The only arm that may corroborate. */
-  | { readonly kind: "not-invalidated"; readonly pid: number; readonly recordedAt: string }
+  | { readonly kind: "not-invalidated"; readonly pid: number; readonly recordedAt: string | null }
   | {
       readonly kind: "unknown";
       readonly reason:
         | "no-recorded-pid"
         | "pid-probe-failed"
         | "successors-unavailable"
-        | "recorded-time-unknown"
-        | "successor-time-unknown";
+        | "owner-identity-unrecorded"
+        | "successor-identity-unknown";
       readonly pid: number | null;
     };
 
@@ -908,7 +910,10 @@ export function evidenceFingerprint(signals: OwnerLivenessSignals): string {
       ? {
           kind: "observed",
           servers: [...signals.successors.servers]
-            .map((s) => ({ pid: s.pid, registeredAt: s.registeredAt }))
+            // Identity is load-bearing since C-2, so it must be part of the
+            // picture the human confirmed. registeredAt rides along as the
+            // display value it now is.
+            .map((s) => ({ pid: s.pid, identity: s.identity, registeredAt: s.registeredAt }))
             .sort((a, b) => a.pid - b.pid),
         }
       : signals.successors,
@@ -949,6 +954,13 @@ export interface OwnableLivenessState {
   readonly mcpServerPid?: number | null;
   readonly mcpGuideCallAt?: string | null;
   readonly lease?: { readonly expiresAt?: string | null } | null;
+  /**
+   * Whose session this is. Load-bearing since ruling C-2: succession is decided
+   * by whether the OWNER's client is alive elsewhere, which is an identity
+   * question, so the owner's identity is an input to the predicate rather than
+   * decoration on the verdict.
+   */
+  readonly ownerTask?: OwnerTask | null;
 }
 
 /**
@@ -1121,22 +1133,24 @@ function readDeathMarker(tDir: string, now: number): DeathMarkerSignal {
 function readMarkerValidity(
   mcpServerPid: number | null | undefined,
   successors: SuccessorServers,
-  mcpGuideCallAt: string | null | undefined,
-  now: number,
+  ownerTask: OwnerTask | null | undefined,
+  recordedAtRaw: string | null | undefined,
 ): MarkerValiditySignal {
   if (!mcpServerPid || !Number.isInteger(mcpServerPid) || mcpServerPid <= 0) {
     return { kind: "unknown", reason: "no-recorded-pid", pid: null };
   }
+  // Inert to this predicate (ruling C-2): nothing below this line reads it.
+  // Succession is an identity question, and anchoring it on time is what let a
+  // recovery client count itself as its own superseding successor. It is still
+  // carried into the evidence so the confirmation prompt can show when the
+  // recorded server was last serving, and it does reach `evidenceFingerprint`
+  // from there, which is deliberate: inert to the PREDICATE is not the same as
+  // absent from the picture a human confirmed.
+  const recordedAt: string | null =
+    recordedAtRaw && !Number.isNaN(new Date(recordedAtRaw).getTime()) ? recordedAtRaw : null;
 
-  // Validate the paired timestamp FIRST, and reject a future one. A recorded
-  // time far ahead of `now` would make every genuine successor compare as
-  // older and hand back a candidate for a live owner -- fail-open, and the
-  // exact shape this whole path exists to prevent.
-  const recordedMs = mcpGuideCallAt ? new Date(mcpGuideCallAt).getTime() : NaN;
-  if (Number.isNaN(recordedMs) || recordedMs - now > FUTURE_SKEW_MS) {
-    return { kind: "unknown", reason: "recorded-time-unknown", pid: mcpServerPid };
-  }
-  const recordedAt: string = mcpGuideCallAt as string;
+  // (a) The recorded server itself. Strongest suppression, unchanged.
+  //
   // No signature check, deliberately. A recycled pid reads as alive, which
   // SUPPRESSES the offer -- reuse points the safe way, so the cost of a
   // ps/proc lookup buys nothing here.
@@ -1164,52 +1178,42 @@ function readMarkerValidity(
     return { kind: "unknown", reason: "successors-unavailable", pid: mcpServerPid };
   }
 
-  // ANCHOR: the recorded server's own last guide call, NOT the death marker.
-  //
-  // Anchoring on the marker looked right and is wrong. The replacement server
-  // registers the instant the client reconnects, while the OLD sidecar only
-  // notices reparenting on its next tick, up to `intervalMs` (10s) later. So in
-  // an ordinary restart the successor legitimately registers BEFORE the marker
-  // it supersedes, and a marker-anchored comparison would miss it and hand back
-  // `gone-candidate` for a live owner. The last guide call is the last moment
-  // the recorded server was observably serving, so any live server that
-  // registered after it can be its continuation.
   const others = successors.servers.filter((s) => s.pid !== mcpServerPid);
-  if (others.length === 0) {
-    return { kind: "not-invalidated", pid: mcpServerPid, recordedAt };
-  }
 
-  // "Another server is alive" is NOT supersession. On a machine running two
-  // clients against one project, the other client's server has been up the
-  // whole time and proves nothing here; counting it would suppress recovery
-  // permanently.
-  const superseding: number[] = [];
-  for (const s of others) {
-    if (s.registeredAt === null) {
-      // An entry we cannot place in time could be a successor. Unresolvable
-      // ambiguity suppresses rather than resolving either way.
-      return { kind: "unknown", reason: "successor-time-unknown", pid: mcpServerPid };
-    }
-    const t = new Date(s.registeredAt).getTime();
-    if (Number.isNaN(t)) {
-      return { kind: "unknown", reason: "successor-time-unknown", pid: mcpServerPid };
-    }
-    // Skew-TOLERANT and deliberately conservative. A strict `>` means a
-    // backward clock step between the predecessor's guide call and the
-    // successor's registration hides a genuine successor, which fails OPEN.
-    // Widening by the same tolerance used elsewhere errs toward suppressing.
-    if (t >= recordedMs - FUTURE_SKEW_MS) superseding.push(s.pid);
-  }
-
-  if (superseding.length > 0) {
+  // (b) IDENTITY MATCH is the only thing that supersedes (ruling C-2).
+  //
+  // The question is not "is some server newer than the dead one". Under that
+  // reading every fresh client supersedes, including the recovery client doing
+  // the evaluating, so the offer could never fire from anyone who arrived to
+  // recover. The real question is whether the OWNER's client is alive right
+  // now, somewhere other than the dead server. A live entry carrying the
+  // owner's identity answers yes, and nothing else does.
+  const matching = others.filter((s) => isSameOwnerTask(ownerTask ?? null, s.identity));
+  if (matching.length > 0) {
     return {
       kind: "invalidated",
-      reason: "superseded-by-successor",
+      reason: "superseded-by-owner-identity",
       pid: mcpServerPid,
       recordedAt,
-      successorPids: superseding,
+      successorPids: matching.map((s) => s.pid),
     };
   }
+
+  // (c) Cannot answer the identity question. Never `contradicted`: an
+  // unattributable server COULD be the owner's, but "could be" is not positive
+  // evidence of life, and asserting either way is the diagnosis-substitution
+  // ruling A forbids. Ordered after (b) deliberately, so a definite match still
+  // suppresses even when some other entry is unattributable.
+  if (!ownerTask) {
+    return { kind: "unknown", reason: "owner-identity-unrecorded", pid: mcpServerPid };
+  }
+  if (others.some((s) => s.identity === null)) {
+    return { kind: "unknown", reason: "successor-identity-unknown", pid: mcpServerPid };
+  }
+
+  // (d) Every live entry is readable and belongs to somebody else, or there are
+  // none at all. Succession does not invalidate; the marker and sidecar checks
+  // decide, exactly as they would with an empty registry.
   return { kind: "not-invalidated", pid: mcpServerPid, recordedAt };
 }
 
@@ -1269,7 +1273,7 @@ export function readOwnerLiveness(
     activity: readActivity(snapshot.lastGuideCall, now, staleThresholdMs),
     lease: readLease(snapshot.lease?.expiresAt, now),
     deathMarker,
-    markerValidity: readMarkerValidity(snapshot.mcpServerPid, observed, snapshot.mcpGuideCallAt, now),
+    markerValidity: readMarkerValidity(snapshot.mcpServerPid, observed, snapshot.ownerTask, snapshot.mcpGuideCallAt),
     sidecarProbe: readSidecarProbe(tDir),
     observedAt: new Date(now).toISOString(),
     staleThresholdMs,
@@ -1295,7 +1299,7 @@ export function readOwnerLiveness(
     // does not appear in the evidence it ships with.
     const reobserved = readSuccessors();
     const latest = readState();
-    const recheck = readMarkerValidity(latest.mcpServerPid, reobserved, latest.mcpGuideCallAt, now);
+    const recheck = readMarkerValidity(latest.mcpServerPid, reobserved, latest.ownerTask, latest.mcpGuideCallAt);
     const freshActivity = readActivity(latest.lastGuideCall, now, staleThresholdMs);
     const fresh = { ...signals, activity: freshActivity, markerValidity: recheck, successors: reobserved };
 
@@ -1339,11 +1343,17 @@ export function readOwnerLiveness(
       kind: "contradicted",
       signals,
       why: signals.markerValidity.reason === "recorded-mcp-pid-alive"
+        // Says nothing about WHOSE server it is, and does not need to: the
+        // recorded server itself being alive means the marker cannot be about it.
         ? `the MCP server process recorded for this session (pid ${signals.markerValidity.pid}) is still alive, ` +
           "so any death marker predates a server that is still running"
-        : `the MCP server recorded for this session (pid ${signals.markerValidity.pid}) has been superseded by a ` +
-          `live successor (pid ${(signals.markerValidity.successorPids ?? []).join(", ")}), so its death marker ` +
-          "records an ordinary server restart rather than the client going away",
+        // Names the OWNER, because that is what the identity predicate actually
+        // established (ruling C-2). "A newer server exists" would be both weaker
+        // and untrue: a stranger's server supersedes nothing.
+        : `the client that owns this session is still running under a different MCP server ` +
+          `(pid ${(signals.markerValidity.successorPids ?? []).join(", ")}), which supersedes the one recorded ` +
+          `here (pid ${signals.markerValidity.pid}), so its death marker records an ordinary server restart ` +
+          "rather than the client going away",
     };
   }
 

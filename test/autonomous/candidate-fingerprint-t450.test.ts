@@ -28,8 +28,11 @@ import {
   OWNER_STALE_MS,
   type OwnerLivenessSignals,
 } from "../../src/autonomous/liveness.js";
+import type { OwnerTask } from "../../src/autonomous/client-profile.js";
 
 const AT = "2027-01-15T00:00:00.000Z";
+const OWNER: OwnerTask = { client: "claude", id: "owner-task-aaa", boundAt: AT };
+const OTHER: OwnerTask = { client: "claude", id: "other-task-bbb", boundAt: AT };
 const LEASE_AT = "2027-01-15T00:40:00.000Z";
 
 /** A complete, realistic candidate-shaped signal set. */
@@ -174,7 +177,7 @@ describe("T-450: the fingerprint changes when the picture actually changes", () 
 
   it("a successor appearing", () => {
     expect(evidenceFingerprint(signals({
-      successors: { kind: "observed", servers: [{ pid: 77, registeredAt: AT }] },
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OWNER, registeredAt: AT }] },
     }))).not.toBe(base());
   });
 
@@ -182,6 +185,70 @@ describe("T-450: the fingerprint changes when the picture actually changes", () 
     expect(evidenceFingerprint(signals({
       successors: { kind: "unavailable", reason: "registry directory does not exist" },
     }))).not.toBe(base());
+  });
+
+  it("a successor's IDENTITY changing at the same pid", () => {
+    // Identity is what the predicate reads (ruling C-2), so two listings that
+    // differ only in whose server is running are two different pictures. A
+    // fingerprint that missed this would let a confirmation carry over the
+    // moment the owner's client was replaced by somebody else's.
+    const owner = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OWNER, registeredAt: AT }] },
+    }));
+    const other = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OTHER, registeredAt: AT }] },
+    }));
+    expect(other).not.toBe(owner);
+  });
+
+  it("an attributable successor versus an unattributable one", () => {
+    const attributed = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OWNER, registeredAt: AT }] },
+    }));
+    const anonymous = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: null, registeredAt: AT }] },
+    }));
+    expect(anonymous).not.toBe(attributed);
+  });
+
+  it("a successor's boundAt, which the PREDICATE ignores, still changes it", () => {
+    // Deliberate, and the reasoning is worth keeping because the opposite is
+    // arguable. `boundAt` is not part of identity matching, so digesting it can
+    // make a human reconfirm on a change that could not have altered the
+    // verdict.
+    //
+    // It stays in for two reasons. This function's rule is to digest stored
+    // VALUES and exclude only clock-DERIVED classifications, and `boundAt` is a
+    // stored value: it moves when a client rebinds, not with the passage of
+    // time, so it cannot self-invalidate a confirmation the way `activity.kind`
+    // would. And `registeredAt`, which the predicate also ignores, is digested
+    // for exactly the same reason. Normalizing one and not the other would buy
+    // nothing and leave the rule incoherent.
+    const before = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OWNER, registeredAt: AT }] },
+    }));
+    const rebound = evidenceFingerprint(signals({
+      successors: {
+        kind: "observed",
+        servers: [{ pid: 77, identity: { ...OWNER, boundAt: "2027-06-01T00:00:00.000Z" }, registeredAt: AT }],
+      },
+    }));
+    expect(rebound).not.toBe(before);
+  });
+
+  it("the same task id under a different CLIENT", () => {
+    // The two are different tasks, and the predicate treats them as such, so
+    // the evidence has to distinguish them too.
+    const claude = evidenceFingerprint(signals({
+      successors: { kind: "observed", servers: [{ pid: 77, identity: OWNER, registeredAt: AT }] },
+    }));
+    const codex = evidenceFingerprint(signals({
+      successors: {
+        kind: "observed",
+        servers: [{ pid: 77, identity: { ...OWNER, client: "codex" }, registeredAt: AT }],
+      },
+    }));
+    expect(codex).not.toBe(claude);
   });
 });
 
@@ -218,30 +285,30 @@ describe("T-450: the fingerprint is canonical", () => {
     // successorPids comes from the same directory listing as `servers`, so
     // normalizing one and not the other digests identical evidence two ways.
     const a = evidenceFingerprint(signals({
-      markerValidity: { kind: "invalidated", reason: "superseded-by-successor", pid: 4242, recordedAt: AT, successorPids: [3, 8, 11] },
+      markerValidity: { kind: "invalidated", reason: "superseded-by-owner-identity", pid: 4242, recordedAt: AT, successorPids: [3, 8, 11] },
     }));
     const b = evidenceFingerprint(signals({
-      markerValidity: { kind: "invalidated", reason: "superseded-by-successor", pid: 4242, recordedAt: AT, successorPids: [11, 3, 8] },
+      markerValidity: { kind: "invalidated", reason: "superseded-by-owner-identity", pid: 4242, recordedAt: AT, successorPids: [11, 3, 8] },
     }));
     expect(b).toBe(a);
   });
 
   it("does not depend on key order inside a successor entry", () => {
     const a = evidenceFingerprint(signals({
-      successors: { kind: "observed", servers: [{ pid: 7, registeredAt: AT }] },
+      successors: { kind: "observed", servers: [{ pid: 7, identity: OWNER, registeredAt: AT }] },
     }));
     const b = evidenceFingerprint(signals({
-      successors: { servers: [{ registeredAt: AT, pid: 7 }], kind: "observed" } as never,
+      successors: { servers: [{ registeredAt: AT, identity: OWNER, pid: 7 }], kind: "observed" } as never,
     }));
     expect(b).toBe(a);
   });
 
   it("does not depend on successor enumeration order", () => {
     const one = evidenceFingerprint(signals({
-      successors: { kind: "observed", servers: [{ pid: 5, registeredAt: AT }, { pid: 9, registeredAt: AT }] },
+      successors: { kind: "observed", servers: [{ pid: 5, identity: OWNER, registeredAt: AT }, { pid: 9, identity: OTHER, registeredAt: AT }] },
     }));
     const two = evidenceFingerprint(signals({
-      successors: { kind: "observed", servers: [{ pid: 9, registeredAt: AT }, { pid: 5, registeredAt: AT }] },
+      successors: { kind: "observed", servers: [{ pid: 9, identity: OTHER, registeredAt: AT }, { pid: 5, identity: OWNER, registeredAt: AT }] },
     }));
     expect(two).toBe(one);
   });

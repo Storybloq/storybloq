@@ -21,6 +21,8 @@ import {
   type ClaimPreflightResult,
 } from "./claim-preflight.js";
 import { reconcileClaim } from "./claim-reconciliation.js";
+import { reassertMcpServerIdentity } from "./mcp-registry.js";
+import { serverRegistryBinder } from "./mcp-binding.js";
 import { releaseClaimIfOwned } from "../core/claims.js";
 import {
   createSession,
@@ -705,6 +707,35 @@ export async function handleAutonomousGuide(
   root: string,
   args: GuideInput,
 ): Promise<McpToolResult> {
+  // Ruling C-2 item 1: RE-ASSERT this server's registry identity from the
+  // request-scoped `clientTaskId`. This seam is not an optimization, it is the
+  // only path a Codex identity can arrive by: `setup-skill` injects just
+  // STORYBLOQ_CLIENT=codex into the server env, so a Codex server registers
+  // identity-null at startup and would stay unattributable forever otherwise,
+  // making every session it owns resolve to `undetermined`. It also REPAIRS an
+  // entry that is gone or no longer carries the right identity, which is why it
+  // costs one file read per guide call rather than a map lookup: our own memory
+  // being right is no comfort to the process that has to read the file. It
+  // writes only when the entry on disk does not already say what it should, so
+  // it is identity repair rather than a full validation of the file.
+  //
+  // A verification failure is REPORTED to the binder, not swallowed. If the
+  // entry cannot be proven present and correct, this process is registered in
+  // name only: still stamping its pid onto the sessions it serves, on the
+  // strength of an entry we could not corroborate. The binder demotes it and retries, exactly as it would for
+  // a failed startup bind.
+  //
+  // A throw from the binder itself IS suppressed, and that asymmetry is the
+  // point: a registry write is a side effect of serving, never a precondition
+  // for it, so there is nothing left to try and the guide call proceeds.
+  try {
+    if (!reassertMcpServerIdentity(root, ownerTaskForCurrentClient(args.clientTaskId))) {
+      serverRegistryBinder.registrationLost(root);
+    }
+  } catch {
+    try { serverRegistryBinder.registrationLost(root); } catch { /* nothing left to try */ }
+  }
+
   const wsId = deriveWorkspaceId(root);
   const prev = workspaceLocks.get(wsId) ?? Promise.resolve();
 

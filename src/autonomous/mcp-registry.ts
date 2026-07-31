@@ -1,5 +1,5 @@
 /**
- * Which MCP servers are alive for this project (T-450, ruling C).
+ * Which MCP servers are alive for this project, and WHOSE they are (T-450, ruling C-2).
  *
  * WHY THIS EXISTS. A session records the pid of the MCP server that last served
  * it. When that server exits, its alive sidecar writes a death marker. But an
@@ -8,56 +8,85 @@
  * cannot tell "the owner's whole client went away" from "the server bounced and
  * the owner has not made a guide call since".
  *
- * The missing half is the SUCCESSOR: if some other MCP server is alive for this
- * project, a death marker attributable to an older server has been superseded
- * and must not authorize anything. That is the case a recorded-pid check
- * structurally cannot see, because the successor never touched this session.
+ * WHY IDENTITY AND NOT TIME (ruling C-2, superseding C's successor clause). The
+ * first version answered that question temporally: a server that registered
+ * after the recorded server's last guide call was treated as its continuation.
+ * That is wrong in both directions, and the fatal direction is the primary use
+ * case. EVERY fresh client registers after a dead server's last guide call,
+ * including the recovery client that is evaluating the offer and registered
+ * itself at its own startup. So the evaluator counted ITSELF as a superseding
+ * successor, the verdict came back `contradicted`, and the offer could never
+ * fire from anyone who arrived to recover. Only a server that had been running
+ * BEFORE the owner's last guide call could ever have seen `gone-candidate`.
+ * Anchoring on marker time instead fails the other way, because an in-place
+ * restart registers the true successor before the orphaned sidecar writes its
+ * marker on the next tick.
  *
- * Entries are pid-named files under `.story/servers/`, written at server start
- * and removed at exit. A crashed server leaves a stale entry, which is why
- * liveness is always re-probed rather than trusted from the file's existence.
+ * The question was never "is some server newer". It is "is the OWNER's client
+ * alive somewhere else right now", and that is an identity question. Entries
+ * therefore carry the registering server's client identity, and on succession
+ * grounds only an identity MATCH invalidates the marker. (The recorded server's
+ * own pid being alive invalidates it too, on other grounds entirely.) An entry
+ * that cannot be attributed
+ * does not: it resolves to `undetermined`, which withholds the offer without
+ * claiming the owner is alive. `registeredAt` survives for display and audit
+ * and is never read by the liveness predicate; it does reach the evidence
+ * fingerprint, which is a separate question about what the human was shown.
  *
  * TRUST: same posture as the rest of this machinery. Ordinary workspace files,
  * corruption-resistant rather than forgery-resistant, and every ambiguity
- * resolves toward NOT offering.
+ * resolves toward NOT offering, with one deliberate exception: this process
+ * never reports its OWN entry as missing or unattributable (see `selfVouch`).
  */
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { CLIENT_TASK_ID_PATTERN, type OwnerTask } from "./client-profile.js";
 
 const SERVERS_DIRNAME = "servers";
 
 /**
- * Observed successors, or an explicit statement that we could not look.
- *
- * `unavailable` is NOT the same as an empty `pids`. Empty means "we enumerated
- * and nothing else is running", which permits a candidate. `unavailable` means
- * the registry could not be read, so a successor can be neither confirmed nor
- * ruled out, and the offer must be suppressed.
- */
+  * Entry format version. Readers must also accept the v1 shape, a bare ISO
+  * timestamp with no identity, which parses to identity-null.
+  */
+const ENTRY_VERSION = 2;
+
 export interface RegisteredServer {
   readonly pid: number;
   /**
-   * When this server registered. Load bearing, not decorative: "some other
-   * server is alive" is NOT supersession. A second client's server that has
-   * been running since before the recorded server was last serving proves
-   * nothing about that server's death, and treating it as a successor would
-   * suppress recovery forever on any machine running two clients against one
-   * project.
+   * Whose client this server belongs to, in normalized `{client, id}` ownerTask
+   * shape. This is the load-bearing field: a live entry whose identity equals
+   * the session's owner proves the owner's client is alive NOW, which is the
+   * only thing that positively invalidates the marker on succession grounds.
    *
-   * The comparison anchor is the recorded server's LAST GUIDE CALL, not the
-   * death marker. Anchoring on the marker looks more natural and is wrong: a
-   * replacement server registers the moment it starts, while the dying server's
-   * sidecar writes its marker up to a full tick later, so a genuine successor
-   * routinely predates the marker it superseded. The last guide call is the
-   * latest instant the recorded server is known to have been serving, which is
-   * the bound that actually holds. See `readMarkerValidity` in `liveness.ts`.
+   * Null when the entry predates identity-bearing registration (a v1
+   * bare-timestamp file) or when the environment supplied no usable id. Null is
+   * NOT "not the owner": an unattributable server could be the owner's, so it
+   * resolves to `undetermined` rather than to either verdict.
+   */
+  readonly identity: OwnerTask | null;
+  /**
+   * When this server registered. DISPLAY AND AUDIT ONLY (ruling C-2).
    *
-   * Null when the entry exists but its timestamp could not be read or parsed,
-   * which makes the comparison impossible and therefore suppresses.
+   * Nothing in the liveness predicate may read it: succession is decided by
+   * identity, and deciding it by time is what let a recovery client count
+   * itself as its own successor. It is kept because an operator reading the
+   * evidence wants to know how long a server has been up, and because the
+   * evidence fingerprint may legitimately include it.
+   *
+   * Null when unreadable or unparseable, which is now a cosmetic loss rather
+   * than a reason to suppress.
    */
   readonly registeredAt: string | null;
 }
 
+/**
+ * Observed successors, or an explicit statement that we could not look.
+ *
+ * `unavailable` is NOT the same as an empty `servers`. Empty means "we
+ * enumerated and nothing else is running", which permits a candidate.
+ * `unavailable` means the registry could not be read, so nothing can be
+ * confirmed or ruled out.
+ */
 export type SuccessorServers =
   | { readonly kind: "observed"; readonly servers: readonly RegisteredServer[] }
   | { readonly kind: "unavailable"; readonly reason: string };
@@ -66,97 +95,296 @@ function serversDir(root: string): string {
   return join(root, ".story", SERVERS_DIRNAME);
 }
 
+function entryPath(root: string, pid: number): string {
+  return join(serversDir(root), String(pid));
+}
+
 /**
- * Roots this process is a live server for but FAILED to register in.
+ * What THIS process knows about its own entry, per root.
  *
- * The reader-side checks below catch the failures that are visible from the
- * filesystem: a missing directory, an unreadable one, an unwritable one. They
- * do NOT catch a failure that leaves the directory perfectly readable and
- * writable to everyone else while this process's own write happened to fail,
- * such as a transient ENOSPC or a lost race. Enumeration would then report
- * `observed` without this server in it, a predecessor's session would see no
- * successor, and it would reach `gone-candidate` while this very process is
- * the successor. Recording the failure locally answers `unavailable` instead.
+ * Ruling C-2 item 3: the evaluator vouches in-process for its own entry, so an
+ * enumeration that SUCCEEDS is never missing us and never reports us as
+ * unattributable. That was self-suppression: a process declaring itself unable
+ * to see the registry BECAUSE of its own write, and thereby refusing to offer a
+ * recovery it is the one running. This map is the in-process truth that
+ * replaces reading our own file back off disk.
  *
- * It is process-local, so it protects only evaluations made HERE. That is a
- * real limit, not an oversight: see the residual window documented in
- * `mcp-binding.ts`.
+ * Scoped to our own entry, and to enumerations that happened. A registry that
+ * cannot be read or created at all stays `unavailable` for this process and for
+ * every reader with the same access: it may be hiding the owner's server, and
+ * no vouch can speak to somebody else's entry.
  */
-const unregisteredRoots = new Set<string>();
+const selfEntries = new Map<string, RegisteredServer>();
 
-/** Note that this process is serving `root` without a registry entry. */
-export function markRegistryUnavailable(root: string): void {
-  unregisteredRoots.add(root);
+/**
+  * Forget this process's vouch for `root`.
+  *
+  * Exported for tests. Production code clears the vouch through
+  * `unregisterMcpServer`, which drops it as part of removing the entry.
+  */
+export function clearSelfVouch(root: string): void {
+  selfEntries.delete(root);
 }
 
-/** Clear the flag once registration finally succeeds. */
-export function clearRegistryUnavailable(root: string): void {
-  unregisteredRoots.delete(root);
+/** What this process would contribute to `root`'s listing, if anything. */
+export function selfVouch(root: string): RegisteredServer | undefined {
+  return selfEntries.get(root);
 }
 
-/** Record this process as a live MCP server for `root`. Best effort. */
-export function registerMcpServer(root: string, pid: number = process.pid): boolean {
+function serializeEntry(entry: RegisteredServer): string {
+  return JSON.stringify({
+    v: ENTRY_VERSION,
+    identity: entry.identity,
+    registeredAt: entry.registeredAt,
+  });
+}
+
+/**
+ * Parse an entry file. A v1 bare timestamp yields identity-null rather than
+ * failing: mixed-version registries are expected during rollout, and the
+ * ruling accepts that those entries resolve to `undetermined` for as long as
+ * they exist, which is until their server unregisters or their pid is reaped as
+ * stale. Anything unparseable also yields identity-null with no timestamp,
+ * which is the same honest "we could not attribute this server".
+ */
+function parseEntry(pid: number, raw: string): RegisteredServer {
+  const text = raw.trim();
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      // An entry written by a FUTURE version may mean something else by these
+      // field names. Reading it as v2 would attribute a server on a guess;
+      // identity-null resolves it to `undetermined` instead, which is the
+      // fail-closed direction and costs only until the entry ages out.
+      const identity = parsed.v === ENTRY_VERSION ? normalizeIdentity(parsed.identity) : null;
+      const at = typeof parsed.registeredAt === "string" && !Number.isNaN(new Date(parsed.registeredAt).getTime())
+        ? parsed.registeredAt
+        : null;
+      return { pid, identity, registeredAt: at };
+    } catch {
+      return { pid, identity: null, registeredAt: null };
+    }
+  }
+  // v1: a bare ISO timestamp, no identity.
+  const legacy = !Number.isNaN(new Date(text).getTime()) && text.length > 0 ? text : null;
+  return { pid, identity: null, registeredAt: legacy };
+}
+
+/**
+ * Accept only a fully-formed identity. A half-written one is worse than none:
+ * a partial match could suppress a real recovery, and a partial mismatch could
+ * permit one, so it degrades to null and lands in the `undetermined` arm.
+ */
+function normalizeIdentity(value: unknown): OwnerTask | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const client = raw.client;
+  const id = raw.id;
+  if (client !== "claude" && client !== "codex") return null;
+  // The SAME grammar the owner's id was normalized through. Accepting a
+  // noncanonical id would be worse than rejecting it: it can never equal a
+  // normalized owner id, so it could not suppress, but it WOULD count as a
+  // readable "known stranger" and let the verdict skip the
+  // `successor-identity-unknown` arm that an unattributable server belongs in.
+  if (typeof id !== "string" || !CLIENT_TASK_ID_PATTERN.test(id)) return null;
+  const boundAt = typeof raw.boundAt === "string" ? raw.boundAt : "";
+  return { client, id, boundAt };
+}
+
+/**
+ * Record this process as a live MCP server for `root`, and VERIFY it landed.
+ *
+ * Verified rather than best-effort (ruling C-2 item 4). A silent write failure
+ * leaves a live server whose entry is missing or wrong for readers that can
+ * enumerate the registry, and under the identity predicate that is exactly the
+ * state in which a restarted owner's own client cannot be found and a live
+ * owner reads as a candidate. Writing and
+ * then reading back is cheap, and it is the only thing standing between an
+ * unproven initial bind and a server that serves its whole life on an entry
+ * that is missing, wrong, or unattributable. Later
+ * damage is a separate problem with a separate answer: the guide-call seam
+ * rereads and repairs (see `reassertMcpServerIdentity`).
+ *
+ * Returns false when the entry cannot be proven present and correct. The caller
+ * (see `mcp-binding.ts`) declines the registered role and retries.
+ *
+ * `pid` defaults to ours and exists so a test can plant a foreign entry. The
+ * in-process vouch is deliberately NOT recorded in that case; see below.
+ */
+export function registerMcpServer(
+  root: string,
+  identity: OwnerTask | null,
+  pid: number = process.pid,
+): boolean {
+  // Normalize at the boundary, through the SAME gate a reader applies. Writing
+  // an identity the reader would reject creates a registration that can never
+  // verify: the read-back parses it to null, the comparison fails, the binder
+  // declines the role and retries, and the retry writes the same rejected value
+  // again. Every production caller is already normalized, so this is defence in
+  // depth against a loop rather than a live defect, and null here is honest: an
+  // identity we cannot express is one we cannot claim.
+  const normalized = normalizeIdentity(identity);
+  const entry: RegisteredServer = { pid, identity: normalized, registeredAt: new Date().toISOString() };
+  const payload = serializeEntry(entry);
+  // Vouch FIRST, before the write can fail. This process is a live server for
+  // `root` from this moment whether or not the write lands, and the whole point
+  // of the vouch is that a failed write must not erase us from our own view.
+  //
+  // Only ever for OUR pid. `pid` is a parameter so tests can plant a foreign
+  // entry, and vouching for one would have this process assert that some other
+  // pid is live, which `liveMcpServers` would then re-add after reaping it.
+  if (pid === process.pid) selfEntries.set(root, entry);
   try {
     const dir = serversDir(root);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(join(dir, String(pid)), new Date().toISOString());
-    unregisteredRoots.delete(root);
-    return true;
+    fs.writeFileSync(entryPath(root, pid), payload);
   } catch {
-    // Never throws: the MCP server must keep serving without a registry. The
-    // BOOLEAN is the point though. A silent failure that the caller records as
-    // a successful bind is worse than no registry at all, because the caller
-    // then stops retrying and marks this process registered, so it stamps its
-    // pid onto sessions while absent from the listing. Returning false is what
-    // lets the binder flag the root, decline the registered role, and retry.
-    unregisteredRoots.add(root);
     return false;
   }
+  // Read back and compare BYTES, not the parsed identity. Parsing first would
+  // verify nothing in the most common case: a truncated, empty, or garbage
+  // read-back parses to identity-null, which equals the identity a Codex server
+  // registers with at startup, so a write to a full disk would report success
+  // with nothing on disk. The file is pid-scoped, so we are its only writer and
+  // exact equality is both safe and the strongest check available.
+  try {
+    if (fs.readFileSync(entryPath(root, pid), "utf-8") !== payload) return false;
+  } catch {
+    return false;
+  }
+  return true;
 }
 
-/** Remove this process's registry entry. Best effort. */
-export function unregisterMcpServer(root: string, pid: number = process.pid): void {
-  try { fs.unlinkSync(join(serversDir(root), String(pid))); }
-  catch { /* already gone, or never written */ }
+function sameIdentity(a: OwnerTask | null, b: OwnerTask | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.client === b.client && a.id === b.id;
+}
+
+/**
+ * Re-assert this process's entry with a request-scoped identity.
+ *
+ * The guide-call seam is the ONLY path a Codex identity can arrive by:
+ * `setup-skill` injects just `STORYBLOQ_CLIENT=codex` into the server env, so a
+ * Codex server registers identity-null at startup and only learns its task id
+ * when a call carrying `clientTaskId` arrives.
+ *
+ * It also REPAIRS what it can see, which is why the check reaches the
+ * filesystem rather than stopping at the in-process vouch. An entry that is
+ * gone, unreadable, or carrying the wrong identity is rewritten. Content that
+ * still parses to the desired identity is left alone, so this is identity
+ * repair, not envelope validation. The two outcomes differ: an entry that is
+ * GONE leaves the owner's client unfindable, which is the state in which a live
+ * owner reads as a recovery candidate, while one that is present but
+ * unattributable resolves to `undetermined` and withholds the offer instead.
+ * The first fails open and the second fails closed, and repairing covers both. Our own memory being right is no comfort
+ * to the process that has to read the file, so the check costs one read per
+ * guide call rather than a map lookup.
+ *
+ * A null `identity` never downgrades one already established: guide calls
+ * arrive both with and without `clientTaskId`, and an entry that flapped
+ * between attributable and unattributable would take the verdict with it.
+ */
+export function reassertMcpServerIdentity(
+  root: string,
+  identity: OwnerTask | null,
+  pid: number = process.pid,
+): boolean {
+  const current = selfEntries.get(root);
+  // Normalized before anything reads it, so an id the writer cannot express is
+  // treated exactly like no id at all rather than triggering a rewrite on every
+  // guide call that can never converge.
+  const requested = normalizeIdentity(identity);
+  const desired = requested ?? current?.identity ?? null;
+  // Nothing to assert and nothing already asserted: this process was never
+  // bound to `root`, and inventing a registration here would claim a role the
+  // binder deliberately declined.
+  if (requested === null && !current) return true;
+
+  try {
+    const onDisk = parseEntry(pid, fs.readFileSync(entryPath(root, pid), "utf-8"));
+    if (sameIdentity(onDisk.identity, desired)) return true;
+  } catch { /* absent, unreadable, or a directory: rewrite it below */ }
+  return registerMcpServer(root, desired, pid);
+}
+
+/**
+ * Remove a registry entry, ours by default, and REPORT whether it is gone.
+ *
+ * The boolean matters. An entry we failed to delete still carries a live pid,
+ * and a live pid in a project this process no longer serves either suppresses
+ * recovery there (if the entry is attributable to our task) or drags every
+ * verdict there to `undetermined` (if it is not). The caller in
+ * `mcp-binding.ts` keeps the root on its cleanup list until this returns true,
+ * rather than deleting once and assuming.
+ *
+ * True means the entry is not there: unlinked now, or provably absent. ENOENT
+ * says so directly; ENOTDIR says a component of the path is not a directory, so
+ * no file can exist beneath it either. False means something else went wrong
+ * (EACCES on the directory, EIO) and the file may well still exist.
+ *
+ * `pid` is a test affordance, the same as on `registerMcpServer`.
+ */
+export function unregisterMcpServer(root: string, pid: number = process.pid): boolean {
+  // Symmetric with `registerMcpServer`: removing some other pid's file says
+  // nothing about whether WE are still a live server for this root.
+  if (pid === process.pid) selfEntries.delete(root);
+  try {
+    fs.unlinkSync(entryPath(root, pid));
+    return true;
+  } catch (e: any) {
+    // Already gone, or somewhere a file cannot be: the postcondition, "the
+    // entry is not there", holds either way.
+    return !!e && (e.code === "ENOENT" || e.code === "ENOTDIR");
+  }
 }
 
 /**
  * Enumerate live MCP servers for `root`, reaping stale entries as it goes.
  *
- * Every outcome that is not a complete enumeration is `unavailable`, including
- * a MISSING directory. That is deliberate and is the opposite of the obvious
- * reading: absence looks like "nothing is running", but any healthy server
- * creates this directory by registering, so absence instead means no server
- * ever registered here, and a live-but-unlisted server would go unseen. The
- * cost is that a project which has never run a registering server suppresses
- * offers until one does, which is the safe direction.
+ * Every outcome that is not a complete enumeration is `unavailable`, with one
+ * exception that ruling C-2 makes mandatory: once the directory HAS been
+ * enumerated, this process never reports its own entry as missing or
+ * unreadable. Wherever our own file would have been the reason to give up, the
+ * in-process vouch is substituted instead.
+ *
+ * The exception is scoped to our own entry deliberately. See the comment on the
+ * enumeration failures below for why a vouch cannot stand in for a directory
+ * nobody could read.
  */
 export function liveMcpServers(root: string): SuccessorServers {
-  // This process is a live server for `root` and is NOT in the listing, so the
-  // listing cannot be read as complete no matter what it contains.
-  if (unregisteredRoots.has(root)) {
-    return { kind: "unavailable", reason: "this server could not register itself" };
-  }
+  const self = selfEntries.get(root);
   const dir = serversDir(root);
   let entries: string[];
+  // THE LIMIT OF THE VOUCH, and it is a real one.
+  //
+  // A vouch proves what THIS process contributes to the listing. It proves
+  // nothing about whether anyone ELSE is missing from it, and the two failures
+  // that land here are about the shared directory, not about our own entry: the
+  // tree does not exist, or this reader cannot read it. Substituting the vouch would answer "enumerated, and the only
+  // server running is me", which is a claim about every other process, made on
+  // evidence about one. If the owner's own server failed to register for the
+  // same reason ours did, that answer authorizes recovery against a live owner.
+  //
+  // This is NOT the self-suppression ruling C-2 item 3 forbids. That is a
+  // process-local flag: declaring the registry unusable FOR OURSELVES because
+  // of our own write, while any other reader sees it fine. Nothing here is
+  // process-local: the failure is about shared state, not about a decision this
+  // process made regarding itself. This is the current reader failing to read a
+  // shared directory, and a vouch about our own entry cannot stand in for it. Another
+  // process running as another uid may well read the directory fine; that is
+  // its answer to give, not ours to assume.
   try {
     entries = fs.readdirSync(dir);
   } catch (e: any) {
-    // ENOENT is NOT "nothing is running". Any healthy server creates this
-    // directory by registering, and the process asking is normally one of
-    // them, so its absence means no server ever registered here. Reporting an
-    // empty listing would let a live but unlisted server go unseen, which is
-    // the cross-process half of the same fail-open the local flag guards.
     if (e && e.code === "ENOENT") {
       return { kind: "unavailable", reason: "registry directory does not exist" };
     }
     return { kind: "unavailable", reason: `registry unreadable (${e?.code ?? "error"})` };
   }
 
-  // Writability is observable by ANY reader, which is what makes it useful:
-  // a local "I failed to register" flag cannot be seen by another process, but
-  // a directory no one can write to explains why a live server might be
-  // missing from the listing, whichever process is asking.
+  // Writability, same reasoning: a directory this process cannot write to is a
+  // standing explanation for why a live server might be missing from the
+  // listing, so the listing cannot be treated as complete.
   try {
     const probe = join(dir, `.probe-${process.pid}`);
     fs.writeFileSync(probe, "");
@@ -166,6 +394,7 @@ export function liveMcpServers(root: string): SuccessorServers {
   }
 
   const servers: RegisteredServer[] = [];
+  let sawSelf = false;
   for (const name of entries) {
     if (!/^[0-9]+$/.test(name)) continue; // skips .probe-* and anything foreign
     const pid = Number(name);
@@ -178,20 +407,35 @@ export function liveMcpServers(root: string): SuccessorServers {
         continue;
       }
       // EPERM means something occupies the pid under another uid. It cannot be
-      // our server, but it is not provably absent either, so keep it: the
-      // consequence is suppressing an offer, which is the safe direction.
+      // our server, but it is not provably absent either, so keep it: under the
+      // identity predicate an unattributable entry suppresses, which is safe.
       if (!e || e.code !== "EPERM") {
-        // Probe failed for an unexpected reason: we cannot classify this entry,
-        // and guessing either way is worse than admitting it.
         return { kind: "unavailable", reason: `pid probe failed (${e?.code ?? "error"})` };
       }
     }
-    let registeredAt: string | null = null;
+    if (self && pid === self.pid) {
+      // Our own entry: trust memory over the filesystem. A corrupted or
+      // half-written own file must not become `identity: null` and drag the
+      // verdict to `undetermined`, which is the self-suppression item 3 names.
+      servers.push(self);
+      sawSelf = true;
+      continue;
+    }
+    let entry: RegisteredServer;
     try {
-      const raw = fs.readFileSync(join(dir, name), "utf-8").trim();
-      registeredAt = Number.isNaN(new Date(raw).getTime()) ? null : raw;
-    } catch { registeredAt = null; }
-    servers.push({ pid, registeredAt });
+      entry = parseEntry(pid, fs.readFileSync(join(dir, name), "utf-8"));
+    } catch {
+      // Unreadable and NOT ours. Unattributable, so it is carried as
+      // identity-null and the predicate resolves it to `undetermined`.
+      entry = { pid, identity: null, registeredAt: null };
+    }
+    servers.push(entry);
   }
+  // Present but unlisted: our write failed or our file was removed underneath
+  // us. The directory enumerated successfully, so substituting our known
+  // contribution restores what WE are owed in it. That is all it claims: the
+  // enumeration itself is still only what this reader could see. Unlike the
+  // ENOENT case above, it makes no claim about a registry we could not read.
+  if (self && !sawSelf) servers.push(self);
   return { kind: "observed", servers };
 }

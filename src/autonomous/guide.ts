@@ -2745,6 +2745,153 @@ function buildCancelRefusal(state: FullSessionState): string {
   ].join("\n");
 }
 
+/**
+ * How a cancellation left the session's ticket claim.
+ *
+ * A discriminated union rather than the two booleans this replaced, because
+ * those admitted `{released: true, conflict: true}`, which means nothing, and
+ * could not tell a successful no-op apart from an operational failure. That
+ * distinction matters to any future retry: `unchanged` must never be retried,
+ * `failed` might be.
+ */
+type TicketDisposition =
+  | { readonly kind: "not-authorized" }
+  | { readonly kind: "no-ticket" }
+  | { readonly kind: "released"; readonly ticketId: string }
+  | { readonly kind: "conflict"; readonly ticketId: string }
+  | { readonly kind: "unchanged"; readonly ticketId: string;
+      readonly reason: "empty-id" | "missing" | "not-inprogress" }
+  | { readonly kind: "failed"; readonly ticketId: string };
+
+/**
+ * The disposition as it is PERSISTED, which is the pre-existing shape.
+ *
+ * The union above is internal. Both the audit event and the telemetry keep
+ * emitting exactly `{ticketId, ticketReleased, ticketConflict}`, because those
+ * records are read by things this module does not control. Widening the union
+ * is free; widening the payload is not.
+ */
+function auditOf(disposition: TicketDisposition): {
+  ticketId: string | null;
+  ticketReleased: boolean;
+  ticketConflict: boolean;
+} {
+  switch (disposition.kind) {
+    case "not-authorized":
+    case "no-ticket":
+      return { ticketId: null, ticketReleased: false, ticketConflict: false };
+    case "released":
+      return { ticketId: disposition.ticketId, ticketReleased: true, ticketConflict: false };
+    case "conflict":
+      return { ticketId: disposition.ticketId, ticketReleased: false, ticketConflict: true };
+    // A no-op and a swallowed failure were indistinguishable in the payload
+    // before this union existed, and stay so, because changing the record is
+    // not behavior-preserving.
+    case "unchanged":
+    case "failed":
+      return { ticketId: disposition.ticketId, ticketReleased: false, ticketConflict: false };
+  }
+}
+
+/**
+ * The cancellation transition: stash restore, terminal publication, and the
+ * cleanup that follows it. Shared so candidate cancellation runs THIS code
+ * rather than a second spelling of it.
+ *
+ * SINGLE-ATTEMPT. This is not a retryable finalizer and there is no recovery
+ * route that resumes it after publication -- `handleCancel` refuses a session
+ * already in SESSION_END. Do not build a retry on top of it without a durable
+ * protocol, because several effects here are not safely re-runnable:
+ *   - `killSidecar` signals a RAW pid with no generation check, so a delayed
+ *     retry can signal an unrelated process that inherited that pid;
+ *   - `removeResumeMarker` deletes by PATH with no session identity, so a
+ *     delayed retry can delete a NEWER session's marker;
+ *   - `markEnded` overwrites its timestamp, and `appendEvent` appends, so a
+ *     rerun rewrites the end time and duplicates the audit entry;
+ *   - re-running the whole thing performs a second terminal write and bumps
+ *     the revision.
+ * The disposition is also volatile: it is computed by the caller BEFORE
+ * publication, so a crash in between loses the fact that a release happened.
+ *
+ * ORDER, which is observable and load-bearing:
+ *   1.  stash restore -- the ONLY effect here that precedes publication.
+ *   2a. atomic terminal state write.
+ *   2b. status refresh, a SEPARATE best-effort checkpoint inside
+ *       `writeSessionAndRefresh`. It can be absent after a crash, and its
+ *       failure must not stop anything below.
+ *   3.  `killSidecar`, then `writeShutdownMarker`. After publication, or a
+ *       failed cancel would kill a still-live session's sidecar.
+ *   4.  `appendEvent`, which needs `written.revision`.
+ *   5.  telemetry `session_cancelled`, then `markEnded`, which requires an
+ *       already-persisted SESSION_END.
+ *   6.  `removeResumeMarker`, last, so a failed cancel does not erase recovery
+ *       guidance.
+ * Every post-publication effect is independently best-effort: the failure of
+ * one must not suppress a later one.
+ *
+ * The caller keeps the compact report and the response prose, which differ per
+ * caller. Everything here is the transition itself.
+ */
+async function applyCancellationTransition(
+  root: string,
+  session: { readonly dir: string; readonly state: FullSessionState },
+  disposition: TicketDisposition,
+): Promise<{ readonly written: FullSessionState; readonly stashPopFailed: boolean }> {
+  // T-125: Restore auto-stashed changes on cancel.
+  let stashPopFailed = false;
+  const autoStash = session.state.git.autoStash;
+  if (autoStash) {
+    const popResult = await gitStashPop(root, autoStash.ref);
+    if (!popResult.ok) stashPopFailed = true;
+  }
+
+  const written = writeSessionAndRefresh(root, session.dir, {
+    ...session.state,
+    state: "SESSION_END",
+    previousState: session.state.state,
+    status: "completed",
+    terminationReason: "cancelled",
+    compactPending: false,
+    compactPreparedAt: null,
+    compactObservedAt: null,
+    resumeBlocked: false,
+    ticket: undefined,
+  } as FullSessionState, "always");
+  // T-260: Same-process finalization (after state write succeeds)
+  try { killSidecar(session.state.sidecarPid); } catch { /* best-effort */ }
+  try { writeShutdownMarker(session.dir); } catch { /* best-effort */ }
+
+  const audit = auditOf(disposition);
+  appendEvent(session.dir, {
+    rev: written.revision,
+    type: "cancelled",
+    timestamp: new Date().toISOString(),
+    data: {
+      previousState: session.state.state,
+      ...audit,
+      stashPopFailed,
+    },
+  });
+  postStateWrite(session.dir, {
+    event: {
+      type: "session_cancelled",
+      layer: "guide",
+      data: {
+        previousState: session.state.state,
+        reason: "cancelled",
+        ...audit,
+        stashPopFailed,
+      },
+    },
+    ended: { reason: "cancelled" },
+  });
+
+  // T-183: Clean resume marker
+  removeResumeMarker(root);
+
+  return { written, stashPopFailed };
+}
+
 async function handleCancel(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) {
     // Cancel without session ID — check for any active session
@@ -2860,111 +3007,96 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // the split state `{ claimedBySession: us, claim.user: them }` it would strip
   // the OTHER party's winning claim. A session that cannot prove ownership
   // releases nothing; it just ends.
-  let ticketReleased = false;
-  let ticketConflict = false;
-  const ticketId = mayWriteTicket ? cancelInfo.state.ticket?.id : undefined;
-  if (ticketId) {
+  let disposition: TicketDisposition;
+  // The authority gate is deliberately expressed twice: once here, binding the
+  // id to the authority to use it, and once as the `!mayWriteTicket` branch
+  // below. The branch makes this ternary redundant TODAY, which is why a mutant
+  // that drops it survives. It stays because the redundancy is the cheap half of
+  // a security boundary: an unauthorized session should not be holding a
+  // writable ticket id in scope at all, whatever the branches below are later
+  // rearranged to do with it.
+  const draftTicketId = mayWriteTicket ? cancelInfo.state.ticket?.id : undefined;
+  if (!mayWriteTicket) {
+    disposition = { kind: "not-authorized" };
+  } else if (draftTicketId === undefined) {
+    disposition = { kind: "no-ticket" };
+  } else if (draftTicketId === "") {
+    // `ticket.id` is `z.string()` with no `.min(1)`, so the empty string is
+    // schema-valid and reaches here. No release can act on it, but the audit
+    // still reports it VERBATIM: the payload mapping is nullish rather than
+    // truthy, so "" stays "" instead of collapsing into the no-ticket null.
+    disposition = { kind: "unchanged", ticketId: "", reason: "empty-id" };
+  } else {
+    const ticketId = draftTicketId;
+    // `settled` reproduces what the two booleans did before this was extracted.
+    // A throw BEFORE any arm is reached reports `failed`; a throw AFTER one was
+    // reached leaves that arm standing, because the old code simply kept
+    // whatever the booleans already held when the catch swallowed.
+    let settled = false;
+    disposition = { kind: "unchanged", ticketId, reason: "missing" };
     try {
       const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
       await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
         const ticket = projectState.ticketByID(ticketId);
-        if (ticket && ticket.status === "inprogress") {
-          // ISS-904: when the session carries an epoch, prove ownership HERE,
-          // inside the same lock as the write. The pre-cancel check above cannot
-          // be sufficient on its own -- a claim can move between it and this
-          // lock -- and `releaseClaimIfOwned` compares BOTH ownership fields
-          // rather than the stamp alone.
-          const epoch = parseClaimEpoch((cancelInfo.state as Record<string, unknown>).claimEpoch);
-          if (epoch) {
-            const outcome = releaseClaimIfOwned(ticket, epoch);
-            if (outcome.released) {
-              await writeTicketUnlocked(outcome.ticket, root);
-              ticketReleased = true;
-            } else {
-              ticketConflict = true;
-            }
-            return;
-          }
-
-          const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
-          const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
-          // ISS-778: strict ownership for epochless legacy sessions, which have
-          // no proof to check. Release only when this session owns the
-          // claimedBySession stamp, or when the ticket carries no claim material
-          // at all (a bare inprogress ticket this session flipped before any
-          // claim existed, nothing foreign to destroy). The old
-          // `!claimedBySession` escape hatch released FOREIGN CLI claims, which
-          // write claim{user,branch,since} but never set claimedBySession.
-          if (ticketClaim === cancelInfo.state.sessionId || (!ticketClaim && ticketClaimBlock == null)) {
-            // ISS-759/ISS-652: delete the claim keys rather than writing
-            // explicit nulls, so a released ticket carries no residual state.
-            const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-            await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, root);
-            ticketReleased = true;
-          } else {
-            ticketConflict = true;
-          }
+        if (!ticket) {
+          disposition = { kind: "unchanged", ticketId, reason: "missing" };
+          settled = true;
+          return;
         }
+        if (ticket.status !== "inprogress") {
+          disposition = { kind: "unchanged", ticketId, reason: "not-inprogress" };
+          settled = true;
+          return;
+        }
+        // ISS-904: when the session carries an epoch, prove ownership HERE,
+        // inside the same lock as the write. The pre-cancel check above cannot
+        // be sufficient on its own -- a claim can move between it and this
+        // lock -- and `releaseClaimIfOwned` compares BOTH ownership fields
+        // rather than the stamp alone.
+        const epoch = parseClaimEpoch((cancelInfo.state as Record<string, unknown>).claimEpoch);
+        if (epoch) {
+          const outcome = releaseClaimIfOwned(ticket, epoch);
+          if (outcome.released) {
+            await writeTicketUnlocked(outcome.ticket, root);
+            disposition = { kind: "released", ticketId };
+          } else {
+            disposition = { kind: "conflict", ticketId };
+          }
+          settled = true;
+          return;
+        }
+
+        const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
+        const ticketClaimBlock = (ticket as Record<string, unknown>).claim;
+        // ISS-778: strict ownership for epochless legacy sessions, which have
+        // no proof to check. Release only when this session owns the
+        // claimedBySession stamp, or when the ticket carries no claim material
+        // at all (a bare inprogress ticket this session flipped before any
+        // claim existed, nothing foreign to destroy). The old
+        // `!claimedBySession` escape hatch released FOREIGN CLI claims, which
+        // write claim{user,branch,since} but never set claimedBySession.
+        if (ticketClaim === cancelInfo.state.sessionId || (!ticketClaim && ticketClaimBlock == null)) {
+          // ISS-759/ISS-652: delete the claim keys rather than writing
+          // explicit nulls, so a released ticket carries no residual state.
+          const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
+          await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, root);
+          disposition = { kind: "released", ticketId };
+        } else {
+          disposition = { kind: "conflict", ticketId };
+        }
+        settled = true;
       });
     } catch {
-      // Best-effort — session ends regardless, ticket may remain inprogress
+      // Best-effort -- session ends regardless, ticket may remain inprogress.
+      if (!settled) disposition = { kind: "failed", ticketId };
     }
   }
 
-  // T-125: Restore auto-stashed changes on cancel
-  let stashPopFailed = false;
-  const autoStash = cancelInfo.state.git.autoStash;
-  if (autoStash) {
-    const popResult = await gitStashPop(root, autoStash.ref);
-    if (!popResult.ok) stashPopFailed = true;
-  }
-
-  const written = writeSessionAndRefresh(root, cancelInfo.dir, {
-    ...cancelInfo.state,
-    state: "SESSION_END",
-    previousState: cancelInfo.state.state,
-    status: "completed",
-    terminationReason: "cancelled",
-    compactPending: false,
-    compactPreparedAt: null,
-    compactObservedAt: null,
-    resumeBlocked: false,
-    ticket: undefined,
-  } as FullSessionState, "always");
-  // T-260: Same-process finalization (after state write succeeds)
-  try { killSidecar(cancelInfo.state.sidecarPid); } catch { /* best-effort */ }
-  try { writeShutdownMarker(cancelInfo.dir); } catch { /* best-effort */ }
-
-  appendEvent(cancelInfo.dir, {
-    rev: written.revision,
-    type: "cancelled",
-    timestamp: new Date().toISOString(),
-    data: {
-      previousState: cancelInfo.state.state,
-      ticketId: ticketId ?? null,
-      ticketReleased,
-      ticketConflict,
-      stashPopFailed,
-    },
-  });
-  postStateWrite(cancelInfo.dir, {
-    event: {
-      type: "session_cancelled",
-      layer: "guide",
-      data: {
-        previousState: cancelInfo.state.state,
-        reason: "cancelled",
-        ticketId: ticketId ?? null,
-        ticketReleased,
-        ticketConflict,
-        stashPopFailed,
-      },
-    },
-    ended: { reason: "cancelled" },
-  });
-
-  // T-183: Clean resume marker
-  removeResumeMarker(root);
+  const { written, stashPopFailed } = await applyCancellationTransition(
+    root,
+    { dir: cancelInfo.dir, state: cancelInfo.state },
+    disposition,
+  );
 
   // T-185: Build compact session report
   let reportSection = "";

@@ -11,7 +11,7 @@ export const TARGET_WORK_ID_REGEX = new RegExp(`^(T-\\d+[a-z]?|ISS-\\d+|t-${CROC
  * ISS-556: Canonical dispositions for lens-review findings.
  * Used at the MCP input boundary AND in the persisted SessionStateSchema so
  * the write and read paths enforce the same vocabulary. Adding a value here
- * automatically widens both sides — no second file to update.
+ * automatically widens both sides -- no second file to update.
  */
 export const LENS_FINDING_DISPOSITIONS = ["open", "addressed", "contested", "deferred"] as const;
 export type LensFindingDisposition = typeof LENS_FINDING_DISPOSITIONS[number];
@@ -94,7 +94,7 @@ export type WorkflowState =
   | "SESSION_END";
 
 // ---------------------------------------------------------------------------
-// Claude status derivation — exhaustive mapping
+// Claude status derivation -- exhaustive mapping
 // ---------------------------------------------------------------------------
 
 export type ClaudeStatus = "working" | "idle" | "waiting" | "unknown";
@@ -140,12 +140,12 @@ export function deriveClaudeStatus(
 }
 
 // ---------------------------------------------------------------------------
-// Workspace ID — shared between hook-status (reader) and guide (writer)
+// Workspace ID -- shared between hook-status (reader) and guide (writer)
 // ---------------------------------------------------------------------------
 
 /**
  * Derives a stable workspace ID from the project root path.
- * Uses realpathSync to resolve symlinks — deterministic across sessions.
+ * Uses realpathSync to resolve symlinks -- deterministic across sessions.
  * T-119 may extend to include branch/worktree info.
  *
  * @throws {Error} If projectRoot does not exist or is not readable (ENOENT, EACCES).
@@ -167,7 +167,7 @@ export interface CurrentIssueRef {
 }
 
 // ---------------------------------------------------------------------------
-// Session state — minimal shape that hook-status reads from state.json
+// Session state -- minimal shape that hook-status reads from state.json
 // ---------------------------------------------------------------------------
 
 export interface SessionState {
@@ -271,7 +271,7 @@ export interface SessionState {
 }
 
 // ---------------------------------------------------------------------------
-// Status payload — written to .story/status.json by hook-status
+// Status payload -- written to .story/status.json by hook-status
 // ---------------------------------------------------------------------------
 
 export const CURRENT_STATUS_SCHEMA_VERSION = 1 as const;

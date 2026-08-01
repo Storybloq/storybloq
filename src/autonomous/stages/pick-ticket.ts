@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput } from "../session-types.js";
+import type { GuideReportInput, PendingProjectMutation } from "../session-types.js";
 import { isDeleted } from "../../core/project-state.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
 import {
@@ -15,6 +15,7 @@ import { gitUserEmail, gitHead } from "../git-inspector.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
+import { entityFingerprint } from "../pending-artifacts.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
 
@@ -418,9 +419,38 @@ export class PickTicketStage implements WorkflowStage {
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)
     // ISS-759: Use the resolved canonical issue.id -- crash-recovery replay matches on target
+    // T-450 step 4: provenance and presence-preserving snapshots are recorded
+    // where the artifact is PREPARED, because neither can be reconstructed at
+    // recovery time -- by then the preimage is whatever the crash left behind.
+    // `expectedCurrent` stays because the shipped recovery path reads it; the
+    // snapshots are what the three-outcome table reads once it is wired.
     const transitionId = `issue-pick-${issue.id}-${Date.now()}`;
     ctx.writeState({
-      pendingProjectMutation: { type: "issue_update", target: issue.id, field: "status", value: "inprogress", expectedCurrent: issue.status, transitionId },
+      pendingProjectMutation: {
+        type: "issue_update",
+        target: issue.id,
+        field: "status",
+        value: "inprogress",
+        expectedCurrent: issue.status,
+        transitionId,
+        provenance: {
+          ownerTask: ctx.state.ownerTask?.id ?? null,
+          revision: ctx.state.revision,
+          ticket: null,
+        },
+        preimage: { present: true, value: issue.status },
+        postimage: { present: true, value: "inprogress" },
+        // The status field alone cannot corroborate a landed write: anyone can
+        // set an issue to inprogress. These digest the WHOLE issue on either
+        // side of the write, which only matches if the entity as a whole is the
+        // one this transaction intended. Without the postimage digest the
+        // "already applied" row is unreachable for the one variant that is
+        // actually prepared. Without the preimage digest a replay could be
+        // authorized against an issue that had drifted since, producing a
+        // result this record could never afterwards recognize.
+        preimageFingerprint: entityFingerprint(issue),
+        postimageFingerprint: entityFingerprint({ ...issue, status: "inprogress" }),
+      } satisfies PendingProjectMutation,
     });
     try {
       const { handleIssueUpdate } = await import("../../cli/commands/issue.js");

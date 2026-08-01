@@ -422,14 +422,240 @@ export interface GitBaseline {
 // Pending project mutation (cross-domain consistency)
 // ---------------------------------------------------------------------------
 
+/**
+ * Presence-preserving snapshot of one field.
+ *
+ * `{ present: false }` and `{ present: true, value: "" }` are different
+ * observations and produce different replay decisions. Collapsing absence to
+ * `undefined` would also make "the field was absent" indistinguishable from
+ * "no snapshot was recorded", which is the difference between a replayable
+ * record and a legacy one.
+ */
+export type FieldSnapshot =
+  | { readonly present: false }
+  | { readonly present: true; readonly value: string };
+
+/**
+ * Who prepared a pending mutation, and against what.
+ *
+ * Recorded where the artifact is PREPARED rather than derived at recovery
+ * time. A record without a structurally valid provenance object is legacy and
+ * quarantines in every state: recovery authorizes a write, and an authority
+ * reconstructed from the record it is authorizing is not an authority (L-038).
+ */
+export interface MutationProvenance {
+  /** Creating owner task. Null when the client supplied no task identity. */
+  readonly ownerTask: string | null;
+  /** Session revision at prepare time. */
+  readonly revision: number;
+  /** Ticket id where the variant is ticket-scoped; null where it is not. */
+  readonly ticket: string | null;
+}
+
+interface PendingMutationCommon {
+  readonly transitionId: string;
+  readonly provenance?: MutationProvenance;
+}
+
+/**
+ * Ticket identities produced BY THE RESOLVER, over a real project state.
+ *
+ * The brand states the claim; a runtime registry enforces it, because a type
+ * cannot survive a cast. Only `resolvePayloadTicketIdentities` produces a
+ * registered value, so a caller cannot satisfy this by handing back the same
+ * list it was asked to authenticate, which is exactly the self-confirming
+ * guard the check exists to prevent (L-038).
+ */
+export type ResolvedTicketIdentities = readonly string[] & {
+  readonly __resolvedTicketIdentities: unique symbol;
+};
+
+/**
+ * A ticket identity that has been PROVEN canonical, not merely assumed to be.
+ *
+ * Canonical means "what the resolver returns for it", in EITHER form the ledger
+ * uses: a legacy ticket's canonical id is its display-form value (`T-001`) and
+ * a post-migration ticket's is a hash (`t-...`). Both are canonical, and a rule
+ * that read one syntax as canonical would quarantine every create linked to the
+ * other.
+ *
+ * So the proof is provenance, not spelling. Minted only by
+ * `asCanonicalTicketIdentities`, which requires the stored set to agree with a
+ * `ResolvedTicketIdentities` that a resolver actually produced. A preparer
+ * writing a display ALIAS -- a spelling that resolves to something else -- gets
+ * a disagreement rather than a record that replays, gets its references
+ * rewritten by the create, and can then no longer recognize its own result.
+ */
+export type CanonicalTicketIdentity = string & {
+  readonly __canonicalTicketIdentity: unique symbol;
+};
+
+/**
+ * A digest produced by `issueCreateFingerprint`, and by nothing else.
+ *
+ * Branded so a preparer writing `satisfies PendingProjectMutation` cannot
+ * store an arbitrary string, or a whole-entity digest, where the semantic
+ * projection belongs. Persisted JSON loses the brand, so the classifier also
+ * re-derives the value at runtime; the brand stops the mistake being written,
+ * the runtime check stops it being believed.
+ */
+export type IssueCreateSemanticFingerprint = string & {
+  readonly __issueCreateSemantic: unique symbol;
+};
+
+/**
+ * The create input a replay would actually submit.
+ *
+ * Typed rather than `unknown`, and shared by the preparer, the classifier and
+ * the eventual replay consumer, because a replay verdict is a promise that the
+ * operation can be executed. An `unknown` payload lets a number, a string or an
+ * array satisfy "a payload is present" while no create can be performed from
+ * it. Mirrors the required arguments of `handleIssueCreate`; legacy records
+ * stay representable through the OPTIONAL `content`, never through an
+ * unvalidated payload.
+ */
+export interface PendingIssueCreatePayload {
+  readonly title: string;
+  readonly severity: string;
+  readonly impact: string;
+  readonly components: readonly string[];
+  /**
+   * CANONICAL ticket identities, resolved at preparation time.
+   *
+   * Not the spellings a caller happened to use. The create resolves ticket
+   * references, so raw references and the written entity would hold different
+   * representations of the same relationship and could not be compared. Storing
+   * the resolved form is what makes the relationship comparable, and storing it
+   * ONCE is what stops the replay input and the identity prediction disagreeing:
+   * `handleIssueCreate` resolves canonical ids to themselves, so this one field
+   * is both what a replay writes and what a recognition compares.
+   */
+  readonly relatedTickets: readonly CanonicalTicketIdentity[];
+  readonly location: readonly string[];
+  /**
+   * REQUIRED, and the single canonical identity of an issue_create.
+   *
+   * It lives here rather than beside the record because a create can only be
+   * identified by something the create itself writes. Stored in two places it
+   * could disagree, and a replay would then produce an issue that its own
+   * record could never afterwards recognize.
+   */
+  readonly dedupeKey: string;
+  readonly phase?: string | null;
+}
+
+/**
+ * A field write that can be replayed, because the value to write is stored.
+ *
+ * `expectedCurrent` is the legacy three-way key and is still written and still
+ * read by the shipped recovery path. `preimage` / `postimage` are what the
+ * outcome table reads for the named field.
+ *
+ * BOTH whole-entity digests are stored, and both are load-bearing.
+ * `postimageFingerprint` corroborates a postimage match on targets that carry
+ * no transition nonce: the field value alone proves nothing, since anyone can
+ * write the same value. `preimageFingerprint` is what makes a REPLAY verdict
+ * safe to give. Corroboration is whole-entity, so replay has to be too: if some
+ * OTHER field drifted while the named one stayed at its preimage, replaying
+ * would produce an entity whose digest can never match the stored postimage,
+ * and this record would quarantine on its own result instead of clearing.
+ */
+interface PendingFieldWrite extends PendingMutationCommon {
+  readonly target: string;
+  readonly field: string;
+  readonly value: string;
+  readonly expectedCurrent?: string;
+  readonly preimage?: FieldSnapshot;
+  readonly postimage?: FieldSnapshot;
+  readonly preimageFingerprint?: string | null;
+  readonly postimageFingerprint?: string | null;
+}
+
+/**
+ * The pending-mutation record, as it is actually written.
+ *
+ * Two fields on `ticket_update` are undeclared in every build before this one
+ * even though the shipped recovery path reads both: `claimedBySession`, which
+ * it copies onto the replayed ticket, and `postMutation`, which drives the
+ * session transition after a successful replay. A union that omits what the
+ * code reads is a comment, not a type.
+ */
 export type PendingProjectMutation =
-  | { type: "ticket_update"; target: string; field: string; value: string; transitionId: string }
-  | { type: "ticket_recovery_write"; target: string; transitionId: string }
-  | { type: "ticket_recovery_clear"; target: string; transitionId: string }
-  | { type: "handover_create"; filename: string | null; transitionId: string }
-  | { type: "issue_create"; expectedId: string; transitionId: string }
-  | { type: "issue_update"; target: string; field: string; value: string; transitionId: string }
-  | { type: "snapshot_save"; filename: string | null; transitionId: string };
+  | (PendingFieldWrite & {
+      readonly type: "ticket_update";
+      readonly claimedBySession?: string;
+      readonly postMutation?: {
+        readonly nextSessionState?: string;
+        readonly terminationReason?: string;
+        readonly clearTicket?: boolean;
+      };
+    })
+  | (PendingFieldWrite & { readonly type: "ticket_recovery_write" })
+  | (PendingFieldWrite & { readonly type: "ticket_recovery_clear" })
+  | (PendingFieldWrite & { readonly type: "issue_update" })
+  | (PendingMutationCommon & {
+      readonly type: "issue_create";
+      /**
+       * Where the create was expected to land. A LOCATOR and an audit record,
+       * never the identity: `handleIssueCreate` allocates the next free id and
+       * cannot be aimed at a chosen one, so a display id is not something any
+       * replay can promise to produce. Identity is the payload's dedupe key.
+       */
+      readonly expectedId: string;
+      /**
+       * Canonical create content plus a stable dedupe key. Both are required
+       * for this variant to be replayable or recognizable: a display id can be
+       * occupied by unrelated content in this ledger, so identity alone would
+       * accept a foreign issue as this transaction's postimage.
+       *
+       * `payload` is the create input itself, kept because a replay has to
+       * write something and an id plus a digest is not something.
+       *
+       * `semanticFingerprint` is named apart from the whole-entity digests used
+       * elsewhere BECAUSE it must not be one. A create cannot be aimed, so the
+       * issue it produces carries an allocated id, order and dates no preparer
+       * could predict; a whole-entity digest taken beforehand could never match
+       * what was written, and the record would execute its own replay and then
+       * fail to recognize the result. Produce it only with
+       * `issueCreateFingerprint`.
+       */
+      readonly content?: {
+        readonly payload: PendingIssueCreatePayload;
+        readonly semanticFingerprint: IssueCreateSemanticFingerprint;
+      };
+    })
+  | (PendingMutationCommon & {
+      readonly type: "handover_create";
+      readonly filename: string | null;
+      /**
+       * These two variants store a filename, never a body. They are therefore
+       * recognizable or quarantined, never replayable: rewriting one would
+       * have to invent the content, which fabricates a record.
+       */
+      readonly contentFingerprint?: string;
+    })
+  | (PendingMutationCommon & {
+      readonly type: "snapshot_save";
+      readonly filename: string | null;
+      readonly contentFingerprint?: string;
+    });
+
+/**
+ * A pending mutation that could not be safely replayed or confirmed applied.
+ *
+ * Durable, because the alternative to keeping it is dropping authorized work
+ * silently. Carries the original payload verbatim so the record stays readable
+ * after the schema moves on.
+ */
+export interface QuarantinedMutation {
+  /** The record's `type`, or "unknown" when it had none. */
+  readonly kind: string;
+  readonly payload: unknown;
+  readonly reason: string;
+  readonly quarantinedAt: string;
+  /** The owner task the record was prepared by, when it recorded one. */
+  readonly displacedOwner: string | null;
+}
 
 // ---------------------------------------------------------------------------
 // Event entry (append-only JSONL in events.log)
@@ -684,6 +910,13 @@ export const SessionStateSchema = z.object({
 
   // Pending project mutation (for crash recovery)
   pendingProjectMutation: z.any().nullable().default(null),
+
+  // Pending mutations that recovery refused to replay or confirm. `z.any()`
+  // entries for the same reason `pendingProjectMutation` is: this array is an
+  // audit trail, and a strict inner schema would fail the whole state.json
+  // parse over one malformed entry, destroying the record it exists to keep
+  // (the ISS-902 escalation class). Shape is asserted at the write site.
+  quarantinedMutations: z.array(z.any()).default([]),
 
   // COMPACT resume
   resumeFromRevision: z.number().nullable().default(null),

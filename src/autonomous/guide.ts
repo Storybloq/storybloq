@@ -79,6 +79,7 @@ import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./
 import { writeResumeMarker, removeResumeMarker } from "./resume-marker.js";
 import { refreshStatusForSession } from "./status-writer.js";
 import { writeSessionAndRefresh, emitTelemetry, postStateWrite } from "./guide-effects.js";
+import { auditOf, type TicketDisposition } from "./cancellation-transition.js";
 import { formatCompactReport } from "../core/session-report-formatter.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "./target-work.js";
 import { buildAutoStartEventData, buildTieredStartEventData } from "./event-data.js";
@@ -2724,54 +2725,6 @@ function buildCancelRefusal(state: FullSessionState): string {
     "",
     ...alternatives,
   ].join("\n");
-}
-
-/**
- * How a cancellation left the session's ticket claim.
- *
- * A discriminated union rather than the two booleans this replaced, because
- * those admitted `{released: true, conflict: true}`, which means nothing, and
- * could not tell a successful no-op apart from an operational failure. That
- * distinction matters to any future retry: `unchanged` must never be retried,
- * `failed` might be.
- */
-type TicketDisposition =
-  | { readonly kind: "not-authorized" }
-  | { readonly kind: "no-ticket" }
-  | { readonly kind: "released"; readonly ticketId: string }
-  | { readonly kind: "conflict"; readonly ticketId: string }
-  | { readonly kind: "unchanged"; readonly ticketId: string;
-      readonly reason: "empty-id" | "missing" | "not-inprogress" }
-  | { readonly kind: "failed"; readonly ticketId: string };
-
-/**
- * The disposition as it is PERSISTED, which is the pre-existing shape.
- *
- * The union above is internal. Both the audit event and the telemetry keep
- * emitting exactly `{ticketId, ticketReleased, ticketConflict}`, because those
- * records are read by things this module does not control. Widening the union
- * is free; widening the payload is not.
- */
-function auditOf(disposition: TicketDisposition): {
-  ticketId: string | null;
-  ticketReleased: boolean;
-  ticketConflict: boolean;
-} {
-  switch (disposition.kind) {
-    case "not-authorized":
-    case "no-ticket":
-      return { ticketId: null, ticketReleased: false, ticketConflict: false };
-    case "released":
-      return { ticketId: disposition.ticketId, ticketReleased: true, ticketConflict: false };
-    case "conflict":
-      return { ticketId: disposition.ticketId, ticketReleased: false, ticketConflict: true };
-    // A no-op and a swallowed failure were indistinguishable in the payload
-    // before this union existed, and stay so, because changing the record is
-    // not behavior-preserving.
-    case "unchanged":
-    case "failed":
-      return { ticketId: disposition.ticketId, ticketReleased: false, ticketConflict: false };
-  }
 }
 
 /**

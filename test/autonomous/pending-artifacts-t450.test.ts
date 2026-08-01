@@ -1667,6 +1667,11 @@ describe("T-450 step 4: a resolution can only be obtained by resolving", () => {
   beforeAll(async () => {
     mintRoot = buildRepo();
     writeAliasedTicket(mintRoot);
+    // A second, LEGACY ticket, so a substituted ref can resolve to something
+    // real rather than merely failing to resolve. A test where the substitution
+    // just errors cannot tell "the wrong ref was refused" from "the wrong ref
+    // was never read".
+    writeLegacyTicket(mintRoot, "T-002");
     ({ state: mintState } = await loadProject(mintRoot));
   });
   afterAll(() => {
@@ -1790,6 +1795,36 @@ describe("T-450 step 4: a resolution can only be obtained by resolving", () => {
       .not.toThrow();
     expect(resolvePayloadTicketIdentities(mintState, withThrowingGetter() as readonly string[])).toBeNull();
     expect(reads, "and no getter was invoked").toBe(0);
+  });
+
+  it("resolves the checked copy, not the caller's array, which reads by iterator", () => {
+    // The other half of "what was verified is what gets resolved", and the one
+    // a reflection-only reading misses. `ownStringArray` checks the INDEXED
+    // elements through descriptors, but `resolveAndNormalizeTicketRefs`
+    // consumes its argument with `for...of` -- so the array's ITERATOR decides
+    // what actually gets resolved. An exotic array can disagree with itself
+    // across those two channels while passing every structural check, because
+    // the iterator lives on the prototype and owns no property the boundary
+    // can see.
+    class AliasedRefs extends Array<string> {
+      *[Symbol.iterator](): IterableIterator<string> {
+        yield "T-002";
+      }
+    }
+    const refs = new AliasedRefs();
+    refs.push("T-001");
+
+    // The premise: this list passes the own-data boundary intact.
+    expect(Array.isArray(refs), "an array subclass is still an array").toBe(true);
+    expect(Object.getOwnPropertyNames(refs), "and owns nothing extra").toEqual(["0", "length"]);
+    expect(refs[0], "indexed, it holds the ref that was checked").toBe("T-001");
+    // ...and says something else entirely when iterated.
+    expect([...refs], "iterated, it holds another one").toEqual(["T-002"]);
+
+    // So the resolution must be of T-001, whose canonical id is the hash form.
+    // Resolving the caller's array instead would mint a proven resolution of
+    // T-002: a different, real ticket that no check ever looked at.
+    expect(resolvePayloadTicketIdentities(mintState, refs)).toEqual(["t-abcdefgh23456789"]);
   });
 
   it("registers a COPY, so a resolution cannot be edited after it is proven", () => {

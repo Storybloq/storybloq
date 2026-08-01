@@ -759,12 +759,125 @@ export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | n
   return spawnAliveSidecarChild(tDir, intervalMs)?.pid ?? null;
 }
 
-export function killSidecar(pid: number | undefined | null): void {
-  if (!pid) return;
+/**
+ * What a verified shutdown actually did.
+ *
+ * Only the VERIFIED form produces one of these. The unverified form returns
+ * nothing at all, deliberately: a blind SIGTERM cannot know whether it reached
+ * a sidecar, so giving it any of these values would put an unearned assertion
+ * into a durable record.
+ */
+export type SidecarShutdownOutcome = "signalled" | "already-absent" | "declined";
+
+/**
+ * Signal a session's heartbeat sidecar.
+ *
+ * WITHOUT `verify`, this is byte-identical to the shipped behavior, return
+ * value included: a blind SIGTERM at a bare pid, returning nothing. Three
+ * production call sites still use that form (stages/types.ts:127,
+ * guide.ts:1127, guide.ts:2590) and none is in T-450 step 6a's scope, so their
+ * behavior must not change as a side effect of this extension.
+ *
+ * WITH `verify`, identity is proven SESSION-BOUND and the proof happens inside
+ * this function, immediately before the signal.
+ *
+ * Why session-bound. `hasSidecarSignature` proves only that a pid is SOME
+ * storybloq sidecar, so a recycled pid running a PEER session's sidecar passes
+ * it. The sidecar is spawned with its telemetry directory in argv
+ * (`spawnAliveSidecarChild`), so requiring BOTH that directory and the sidecar
+ * marker is what distinguishes ours from a neighbour's.
+ *
+ * Why inside, and not as a caller-side preflight. A probe followed by a
+ * separate kill call reopens exactly the PID-reuse TOCTOU that `escalate`
+ * documents and guards against, one function above. The outcome is derived
+ * from the kill itself for the same reason: an ESRCH between probe and signal
+ * means nothing was signalled, and reporting otherwise would be a false record.
+ *
+ * Why declining is safe. An argv that cannot be read (a truncated `ps` line,
+ * an unsupported platform) is `unknown`, not proof, so it declines. That costs
+ * only promptness: `writeShutdownMarker` remains the guaranteed shutdown
+ * channel and the sidecar self-exits on the marker. The kill is an accelerator,
+ * never the mechanism of record.
+ *
+ * NOTE ON SCOPE: nothing calls the verified form yet. T-450 step 6a commit B2
+ * wires it into the cancellation tail and adds the completion gate that reads
+ * these outcomes; the contracts described here are that consumer's.
+ */
+export function killSidecar(pid: number | undefined | null): void;
+export function killSidecar(
+  pid: number | undefined | null,
+  verify: {
+    readonly sessionDir: string;
+    readonly probe?: (pid: number, tokens: readonly string[]) => "match" | "absent" | "unknown";
+  },
+): SidecarShutdownOutcome;
+export function killSidecar(
+  pid: number | undefined | null,
+  verify?: {
+    readonly sessionDir: string;
+    readonly probe?: (pid: number, tokens: readonly string[]) => "match" | "absent" | "unknown";
+  },
+): SidecarShutdownOutcome | void {
+  if (!verify) {
+    // BYTE-IDENTICAL to the shipped function, return value included: it
+    // returned nothing, and so does this. Handing existing callers a new value
+    // would be an observable change to three call sites outside this step's
+    // scope, however harmlessly they currently ignore it.
+    if (!pid) return;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // ESRCH or similar - process already dead
+    }
+    return;
+  }
+
+  // No pid recorded at all: nothing to signal and nothing to probe. This is the
+  // path the step 5 fixtures exercise, since none of them sets `sidecarPid`.
+  if (!pid) return "already-absent";
+
+  // TWO exception boundaries, not one, and the split is load-bearing.
+  //
+  // Only an ESRCH raised BY `process.kill` AFTER a successful identity match
+  // proves absence. If the probe stage shared this catch, a probe that threw an
+  // error merely CARRYING `code: "ESRCH"` would be laundered into
+  // `already-absent`, writing false absence evidence into a durable artifact
+  // that the planned B2 completion gate would then trust. A failed probe proves
+  // nothing, so it can only ever decline.
+  let probed: "match" | "absent" | "unknown";
+  try {
+    const tokens: readonly string[] = [SIDECAR_ARGV_MARKER, telemetryDirPath(verify.sessionDir)];
+    // `probe` is injectable for tests, mirroring `escalate`'s existing `hasSig`
+    // parameter, and returns the SAME tri-state as `probeArgvSignature`: a
+    // boolean seam would leave the injected form unable to express the
+    // distinction the real one draws.
+    probed = verify.probe ? verify.probe(pid, tokens) : probeArgvSignature(pid, tokens);
+  } catch {
+    // Includes an injected or platform probe that throws. Never rethrown: the
+    // caller's tail wraps this in nothing.
+    return "declined";
+  }
+
+  // The probe's THREE answers stay three. Collapsing them to a boolean would
+  // record `declined` for a process that is definitively gone, which is a
+  // different fact with a different remedy: `absent` means there is nothing
+  // left to shut down, while `declined` means something is alive that we
+  // refused to signal. A completion gate reading the artifact must be able to
+  // tell those apart.
+  if (probed === "absent") return "already-absent";
+  // `unknown` is a process that EXISTS whose argv could not be inspected. Not
+  // proof of ownership, so it declines, which costs only promptness.
+  if (probed !== "match") return "declined";
+
   try {
     process.kill(pid, "SIGTERM");
-  } catch {
-    // ESRCH or similar - process already dead
+    return "signalled";
+  } catch (e: any) {
+    // THIS ESRCH is evidence: identity matched a moment ago and the process is
+    // gone now, which is the TOCTOU seam `escalate` documents.
+    if (e && e.code === "ESRCH") return "already-absent";
+    // EPERM or anything else: the pid exists but is not ours to signal.
+    return "declined";
   }
 }
 

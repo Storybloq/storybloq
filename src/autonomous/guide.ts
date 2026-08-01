@@ -27,7 +27,6 @@ import { releaseClaimIfOwned } from "../core/claims.js";
 import {
   createSession,
   deleteSession,
-  writeSessionSync,
   writeSessionWithEvent,
   appendEvent,
   refreshLease,
@@ -68,7 +67,7 @@ import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, t
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
 import { PARK_ACTION, PARK_STAGES } from "./stages/park.js";
 import "./stages/index.js"; // Register all extracted stages
-import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer } from "./telemetry-writer.js";
+import { writeCheckpoint } from "./telemetry-writer.js";
 
 import { loadProject } from "../core/project-loader.js";
 import { buildLessonDigest } from "../core/lessons.js";
@@ -78,7 +77,8 @@ import { nextTickets } from "../core/queries.js";
 import { recommend, type RecommendOptions } from "../core/recommend.js";
 import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./version-check.js";
 import { writeResumeMarker, removeResumeMarker } from "./resume-marker.js";
-import { refreshStatusForSession, isSessionActiveForStatus } from "./status-writer.js";
+import { refreshStatusForSession } from "./status-writer.js";
+import { writeSessionAndRefresh, emitTelemetry, postStateWrite } from "./guide-effects.js";
 import { formatCompactReport } from "../core/session-report-formatter.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "./target-work.js";
 import { buildAutoStartEventData, buildTieredStartEventData } from "./event-data.js";
@@ -96,25 +96,6 @@ import {
   handleHandoverCreate,
 } from "../cli/commands/handover.js";
 import type { CommandContext } from "../cli/types.js";
-
-// ---------------------------------------------------------------------------
-// Guide-side write + status refresh wrapper
-// ---------------------------------------------------------------------------
-
-type RefreshMode = "always" | "if-active" | "never";
-
-function writeSessionAndRefresh(
-  root: string,
-  dir: string,
-  state: FullSessionState,
-  mode: RefreshMode = "if-active",
-): FullSessionState {
-  const written = writeSessionSync(dir, state);
-  if (mode === "never") return written;
-  if (mode === "if-active" && !isSessionActiveForStatus(written)) return written;
-  try { refreshStatusForSession(root, dir, written, "guide"); } catch { /* best-effort */ }
-  return written;
-}
 
 /**
  * ISS-899: whether this caller is refused, and WHY, which the call sites need
@@ -3136,24 +3117,6 @@ function transitionAndWrite(
   }
   const updated = { ...state, state: to, previousState: from };
   return writeSessionAndRefresh(root, dir, updated, "always");
-}
-
-// ---------------------------------------------------------------------------
-// T-262: Telemetry helpers -- called AFTER state persistence completes
-// ---------------------------------------------------------------------------
-
-function emitTelemetry(dir: string, type: string, layer: TelemetryLayer, data: Record<string, unknown>): void {
-  writeEvent(dir, { ts: new Date().toISOString(), layer, type, data });
-}
-
-function postStateWrite(dir: string, opts: {
-  event?: { type: string; layer: TelemetryLayer; data: Record<string, unknown> };
-  checkpoint?: { stage: string; state: Record<string, unknown>; revision: number };
-  ended?: { reason: string };
-}): void {
-  if (opts.event) emitTelemetry(dir, opts.event.type, opts.event.layer, opts.event.data);
-  if (opts.checkpoint) writeCheckpoint(dir, opts.checkpoint.stage, opts.checkpoint.state as Record<string, unknown>, opts.checkpoint.revision);
-  if (opts.ended) markEnded(dir, opts.ended.reason);
 }
 
 function guideResult(

@@ -1182,9 +1182,363 @@ export const SessionStateSchema = z.object({
   lastMcpCall: z.string().nullish(),
   healthState: z.string().nullish(),
   currentReviewStartedAt: z.string().nullish(),
+
+  // T-450 step 6a: the durable cancellation transition record.
+  //
+  // DELIBERATELY `unknown`, and it stays that way. `CancellationTransitionSchema`
+  // below is the strict shape; the reader that applies it to this field arrives
+  // with the behavior half of 6a.
+  //
+  // WHY THE BOUNDARY MUST BE TOLERANT. `readSessionDetailed` (session.ts:963)
+  // runs THIS schema, and `findSessionByIdDetailed` runs it before
+  // `handleCancel` is reachable at all. A strict field here would make a
+  // malformed transition report a corrupt SESSION, so the fail-closed
+  // fall-through the recovery path is meant to reach would be unreachable code.
+  //
+  // ISS-556 is the nearest precedent and the mechanism is deliberately
+  // DIFFERENT. There, the schema stays strict and `parseSessionResilient`
+  // (session.ts:432-462) recovers after the fact, but only from one enumerated
+  // corruption (`lensReviewHistory[N].disposition` outside its enum) and only
+  // by DELETING the offending entries. Neither half transfers: a transition
+  // record can be malformed in ways that cannot be enumerated in advance, and
+  // deleting it would destroy the very intent recovery exists to read. What
+  // does transfer is the principle stated at session.ts:388-396, that
+  // historical metadata must not make a live session unreachable.
+  cancellationTransition: z.unknown().optional(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
+
+// ---------------------------------------------------------------------------
+// T-450 step 6a: the cancellation transition record
+//
+// The durable answer to "what had the crashed process already done?". Every
+// constraint below exists because the alternative is a FALSE durable record,
+// which is worse than an absent one: an absent record leaves recovery open,
+// while a false one closes it against a lie.
+// ---------------------------------------------------------------------------
+
+/**
+ * What the stash pop actually did.
+ *
+ * `indeterminate` is the honest terminal value when a crash makes the answer
+ * unknowable, and it is NOT a synonym for failure: `failed` is reserved for a
+ * pop that was attempted and OBSERVED to fail. There is deliberately no fifth
+ * spelling such as `unknown`; two names for one state is how audit records
+ * start disagreeing with each other.
+ */
+export const StashPopOutcomeSchema = z.enum(["popped", "failed", "none", "indeterminate"]);
+export type StashPopOutcome = z.infer<typeof StashPopOutcomeSchema>;
+
+/**
+ * What was DONE, never what was believed.
+ *
+ * Ruling A: a durable record names the action and its authority, because it is
+ * read in isolation long after anyone remembers the context that produced it.
+ * `candidate_recovery_takeover` is declared here in 6a although only 6b writes
+ * it, so 6b needs no schema migration, and so an unrecognized action can be
+ * refused rather than guessed at.
+ */
+export const CancellationActionSchema = z.enum(["ordinary_cancellation", "candidate_recovery_takeover"]);
+export type CancellationAction = z.infer<typeof CancellationActionSchema>;
+
+/**
+ * The canonical `Date.prototype.toISOString()` grammar, and only that.
+ *
+ * Persisted timestamps here are compared for BYTE equality against session
+ * state, so a merely parseable spelling (`+00:00`, no milliseconds, a space
+ * separator) could never match and would strand recovery forever. The refine
+ * proves the value is a real instant that round-trips to itself.
+ */
+export const CanonicalInstantSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, "must be a canonical toISOString() instant")
+  .refine((v) => {
+    const parsed = new Date(v);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === v;
+  }, "must round-trip through Date.toISOString()");
+
+/**
+ * The PERSISTED projection of owner-liveness evidence.
+ *
+ * `OwnerLivenessSignals` is a TypeScript interface, which proves nothing about
+ * bytes that came off disk. 6b persists evidence inside an authority record, so
+ * the durability boundary needs a real runtime schema.
+ *
+ * THIS MIRRORS THE ACTUAL SIGNAL UNIONS, field for field, rather than flattening
+ * them into a generic `{kind, state}` list. A lossy projection would be worse
+ * than none: `evidenceFingerprint` digests specific VALUES (the stored
+ * timestamp, the expiry, the recorded pid), so evidence that survived a lossy
+ * round trip could never re-derive the fingerprint it was stored with, and the
+ * confirmation check 6b exists to perform would reject every legitimate
+ * confirmation. Every arm below is `.strict()` for the same reason the source
+ * unions are discriminated: an arm that quietly accepts a foreign field is an
+ * arm that can carry a claim nobody validated.
+ *
+ * The TS type is INFERRED from the schema rather than declared beside it, so
+ * the two cannot drift.
+ */
+const TelemetryUnusableReasonSchema = z.enum([
+  "malformed-generation-id",
+  "generation-escapes-telemetry",
+  "generation-path-unresolvable",
+]);
+
+export const PersistedOwnerActivitySignalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("fresh"), at: z.string().min(1), ageMs: z.number() }).strict(),
+  z.object({ kind: z.literal("stale"), at: z.string().min(1), ageMs: z.number() }).strict(),
+  z.object({ kind: z.literal("unknown"), reason: z.enum(["absent", "unparseable", "future"]) }).strict(),
+]);
+
+export const PersistedLeaseSignalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("live"), expiresAt: z.string().min(1), remainingMs: z.number() }).strict(),
+  z.object({ kind: z.literal("expired"), expiresAt: z.string().min(1), agoMs: z.number() }).strict(),
+  z.object({ kind: z.literal("unknown"), reason: z.enum(["absent", "unparseable"]) }).strict(),
+]);
+
+export const PersistedDeathMarkerSignalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("shutdown-marker"), at: z.string().min(1).nullable() }).strict(),
+  z.object({ kind: z.literal("alive-zero"), at: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("none"), aliveAt: z.number() }).strict(),
+  z.object({
+    kind: z.literal("unreadable"),
+    reason: z.union([
+      z.enum(["absent", "non-numeric", "future", "raced", "no-marker-time"]),
+      TelemetryUnusableReasonSchema,
+    ]),
+  }).strict(),
+]);
+
+export const PersistedMarkerValiditySignalSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("invalidated"),
+    reason: z.enum(["recorded-mcp-pid-alive", "superseded-by-owner-identity"]),
+    pid: z.number().int(),
+    recordedAt: z.string().min(1).nullable(),
+    successorPids: z.array(z.number().int()).max(64).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal("not-invalidated"),
+    pid: z.number().int(),
+    recordedAt: z.string().min(1).nullable(),
+  }).strict(),
+  z.object({
+    kind: z.literal("unknown"),
+    reason: z.enum([
+      "no-recorded-pid",
+      "pid-probe-failed",
+      "successors-unavailable",
+      "owner-identity-unrecorded",
+      "successor-identity-unknown",
+    ]),
+    pid: z.number().int().nullable(),
+  }).strict(),
+]);
+
+export const PersistedSidecarProbeSignalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("match"), pid: z.number().int() }).strict(),
+  z.object({ kind: z.literal("absent"), pid: z.number().int() }).strict(),
+  z.object({
+    kind: z.literal("unknown"),
+    reason: z.union([z.enum(["no-pid", "probe-unknown"]), TelemetryUnusableReasonSchema]),
+    pid: z.number().int().nullable(),
+  }).strict(),
+]);
+
+/**
+ * A registered server, mirroring `RegisteredServer` (mcp-registry.ts:53-80).
+ *
+ * `identity` is the load-bearing field, not an optional extra: an entry whose
+ * identity equals the session's owner proves the owner's client is alive NOW,
+ * which is the only thing that positively invalidates the death marker on
+ * succession grounds. It is REQUIRED and nullable, never absent, because `null`
+ * carries real meaning here (an unattributable server, which resolves to
+ * undetermined rather than to either verdict) and a missing key would let that
+ * distinction be lost in persistence.
+ */
+export const PersistedRegisteredServerSchema = z.object({
+  pid: z.number().int(),
+  identity: z.object({
+    client: z.enum(["claude", "codex"]),
+    id: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+    // NOT `.min(1)`. The registry normalizer (mcp-registry.ts:190) yields
+    // `boundAt: ""` whenever the stored entry omits this display-only field,
+    // and that identity is still fully valid for succession, which is decided
+    // by client and id alone. Requiring a non-empty value here would make the
+    // persisted schema reject evidence the producer legitimately emits.
+    boundAt: z.string(),
+  }).strict().nullable(),
+  // Display and audit only per ruling C-2, but the fingerprint may legitimately
+  // include it, so it round-trips exactly.
+  registeredAt: z.string().min(1).nullable(),
+}).strict();
+
+export const PersistedSuccessorServersSchema = z.discriminatedUnion("kind", [
+  // `unavailable` is NOT an empty `servers`: empty means the registry was read
+  // and nothing else is running, while unavailable means it could not be read,
+  // so nothing is confirmed or ruled out. Keeping them distinct is why this is
+  // a union rather than a nullable array.
+  z.object({
+    kind: z.literal("observed"),
+    servers: z.array(PersistedRegisteredServerSchema).max(64),
+  }).strict(),
+  z.object({ kind: z.literal("unavailable"), reason: z.string().max(512) }).strict(),
+]);
+
+export const PersistedLivenessEvidenceSchema = z.object({
+  activity: PersistedOwnerActivitySignalSchema,
+  lease: PersistedLeaseSignalSchema,
+  deathMarker: PersistedDeathMarkerSignalSchema,
+  markerValidity: PersistedMarkerValiditySignalSchema,
+  sidecarProbe: PersistedSidecarProbeSignalSchema,
+  observedAt: z.string().min(1),
+  staleThresholdMs: z.number().int().min(0),
+  successors: PersistedSuccessorServersSchema,
+}).strict();
+export type PersistedLivenessEvidence = z.infer<typeof PersistedLivenessEvidenceSchema>;
+
+/**
+ * Who authorized this cancellation.
+ *
+ * Separate ARMS rather than a `kind` plus optional fields, so that the
+ * contradictions are unrepresentable instead of merely unwritten: the shape
+ * this replaced admitted `basis: "task"` with a null caller id, which asserts
+ * an identity check that never happened.
+ *
+ * `legacy` is not a degraded `task`. It records that no task identity existed
+ * at cancel time, which is the true state for pre-identity sessions, and it
+ * stays recoverable precisely because refusing it would strand exactly the
+ * sessions most likely to need recovery.
+ */
+export const CancellationAuthoritySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("legacy") }).strict(),
+  z.object({
+    kind: z.literal("task"),
+    callerTaskId: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+  }).strict(),
+  z.object({
+    kind: z.literal("candidate"),
+    clientTaskId: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+    confirmedSessionRevision: z.number().int().min(0),
+    confirmedFingerprint: z.string().min(1).max(256),
+    evidence: PersistedLivenessEvidenceSchema,
+  }).strict(),
+]);
+export type CancellationAuthority = z.infer<typeof CancellationAuthoritySchema>;
+
+/** The persisted ticket disposition, mirroring the in-memory union. */
+export const PersistedTicketDispositionSchema = z.union([
+  z.object({ kind: z.literal("not-authorized") }).strict(),
+  z.object({ kind: z.literal("no-ticket") }).strict(),
+  z.object({ kind: z.literal("released"), ticketId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal("conflict"), ticketId: z.string().min(1) }).strict(),
+  // `unchanged` is split BY REASON because the reasons disagree about the
+  // ticket id. `empty-id` is the case where the id itself was empty, which the
+  // cancel path reaches at guide.ts:3010 with `ticketId: ""`, so a blanket
+  // `.min(1)` would refuse to record a REACHABLE disposition. The other two
+  // reasons always name a ticket. Separate arms also make the contradictions
+  // (`empty-id` with a real id, `missing` with none) unrepresentable.
+  z.object({
+    kind: z.literal("unchanged"),
+    ticketId: z.literal(""),
+    reason: z.literal("empty-id"),
+  }).strict(),
+  z.object({
+    kind: z.literal("unchanged"),
+    ticketId: z.string().min(1),
+    reason: z.enum(["missing", "not-inprogress"]),
+  }).strict(),
+  z.object({ kind: z.literal("failed"), ticketId: z.string().min(1) }).strict(),
+]);
+export type PersistedTicketDisposition = z.infer<typeof PersistedTicketDispositionSchema>;
+
+/** The one and only shutdown-result artifact basename. See `shutdownArtifact`. */
+export const CANCELLATION_SHUTDOWN_ARTIFACT = "cancellation-shutdown.json" as const;
+
+/** What the verified shutdown actually did, and what became of the resume marker. */
+export const CancellationShutdownResultSchema = z.object({
+  sidecar: z.enum(["signalled", "already-absent", "declined"]),
+  resumeMarker: z.enum(["removed", "absent", "preserved-foreign", "preserved-unstructured"]),
+  detail: z.string().max(512).optional(),
+}).strict();
+
+const transitionCommon = {
+  transitionId: z.string().uuid(),
+  action: CancellationActionSchema,
+  authority: CancellationAuthoritySchema,
+  disposition: PersistedTicketDispositionSchema,
+  // IDENTITY BINDING. `sessionStartedAt` cannot serve this role: it is
+  // wall-clock and millisecond-granular, so two sessions can carry the same
+  // value and a transplanted record would pass a timestamp check and apply
+  // another session's disposition, authority and stash outcome here. Typed as
+  // a uuid to match `SessionStateSchema.sessionId`, so a record that could
+  // never name a real session fails the strict reader rather than the
+  // comparison.
+  sessionId: z.string().uuid(),
+  // PROVENANCE only, checked in addition to the id, never instead of it.
+  sessionStartedAt: CanonicalInstantSchema,
+  transitionStartedRevision: z.number().int().min(0),
+};
+
+/**
+ * Phases are separate ARMS because `endedAt` and `terminalRevision` do not
+ * EXIST before publication. A flat record with optional fields would let a
+ * writer set a termination time on a session that had not terminated, and an
+ * auditor would have no way to tell that apart from a real one.
+ */
+export const CancellationTransitionSchema = z.discriminatedUnion("phase", [
+  z.object({
+    ...transitionCommon,
+    phase: z.literal("stash_pending"),
+    // `null` means "not yet decided", which is only ever true before
+    // publication.
+    stash: z.object({ outcome: StashPopOutcomeSchema.nullable() }).strict(),
+  }).strict(),
+  z.object({
+    ...transitionCommon,
+    phase: z.literal("published"),
+    // Concrete by construction: publication is where the outcome becomes
+    // final, and the honest terminal value for an unknowable pop is
+    // `indeterminate`, never `null`.
+    stash: z.object({ outcome: StashPopOutcomeSchema }).strict(),
+    endedAt: CanonicalInstantSchema,
+    terminalRevision: z.number().int().min(0),
+    // NO shutdown result here, deliberately. Publication is write 4 and the
+    // sidecar shutdown and resume-marker removal are step 5, so nothing at
+    // this point can know their outcomes; a field for them could only ever be
+    // fabricated, or bought by reordering the characterized tail, or by an
+    // unplanned extra state write. The outcomes live in the durable
+    // shutdown-result artifact, which the completion gate reads back and
+    // verifies. What the transition CAN carry is a precomputable pointer to
+    // that artifact, which is enough for recovery to find and classify it.
+    shutdownArtifact: z.object({
+      schemaVersion: z.literal(1),
+      // A LITERAL, not a pattern. Commit B resolves this against the session
+      // telemetry directory, so any string field here is an instruction from a
+      // file the operator may have edited: separators, `..` segments, an
+      // absolute path or a Windows-style prefix would each redirect a read or
+      // write outside the telemetry directory. There is exactly one shutdown
+      // artifact per session, so the name never needs to vary, and a literal
+      // removes the traversal surface entirely rather than trying to filter it.
+      filename: z.literal(CANCELLATION_SHUTDOWN_ARTIFACT),
+    }).strict(),
+  }).strict(),
+]).superRefine((value, ctx) => {
+  // THE CROSS-FIELD RULE. Each half parses alone; the PAIRING is the lie.
+  // Enforced in the schema rather than at call sites because an audit record is
+  // read in isolation, where no call site is around to have been careful.
+  const ordinary = value.action === "ordinary_cancellation";
+  const candidate = value.authority.kind === "candidate";
+  if (ordinary === candidate) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["authority", "kind"],
+      message: ordinary
+        ? "ordinary_cancellation cannot carry candidate authority"
+        : "candidate_recovery_takeover requires candidate authority",
+    });
+  }
+});
+export type CancellationTransition = z.infer<typeof CancellationTransitionSchema>;
 
 /**
  * The single parse seam for persisted session state.

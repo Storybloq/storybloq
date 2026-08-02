@@ -1461,8 +1461,17 @@ export const CancellationShutdownResultSchema = z.object({
   detail: z.string().max(512).optional(),
 }).strict();
 
+/**
+ * THE predicate for a transition identifier, exported so a pre-write gate can
+ * apply the very schema the reader will, by reference rather than by parallel
+ * construction. A second spelling of "is this a uuid" is a drift waiting to
+ * happen: a gate that accepts what the reader refuses writes records that can
+ * never be read again.
+ */
+export const TransitionIdSchema = z.string().uuid();
+
 const transitionCommon = {
-  transitionId: z.string().uuid(),
+  transitionId: TransitionIdSchema,
   action: CancellationActionSchema,
   authority: CancellationAuthoritySchema,
   disposition: PersistedTicketDispositionSchema,
@@ -1639,6 +1648,25 @@ const intentCommon = {
     predecessorEpoch: z.number().int().min(0),
     predecessorFingerprint: z.string().min(1).max(256),
   }).strict().optional(),
+  /**
+   * THE RECEIPT that an adoption ran, and the only thing that distinguishes a
+   * completed adoption from the state it started in.
+   *
+   * Adoption replaces the confirmation pair in place under the SAME
+   * transitionId, so after it lands the record is `epoch N+1, triple T`. A
+   * caller retrying that exact adoption presents `epoch N+1, triple T` and
+   * must be told "already done". A caller making a FIRST adoption request
+   * that merely happens to carry the canonical epoch presents `epoch N,
+   * triple T` against a record at `epoch N, triple T` -- identical equality,
+   * completely different situation, and it must be refused, because two
+   * distinct re-authorizations may never collapse onto one epoch and evidence
+   * cannot separate them (the fingerprint is time-independent by design).
+   *
+   * Recording the epoch adopted FROM separates them: a record that was
+   * created rather than adopted carries no receipt at all, so the equal-epoch
+   * first request cannot be mistaken for a retry.
+   */
+  adoptedFromEpoch: z.number().int().min(0).optional(),
 };
 
 /**

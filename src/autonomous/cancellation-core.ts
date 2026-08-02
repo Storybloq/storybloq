@@ -15,7 +15,6 @@
  * stays acyclic.
  */
 import { readFileSync, existsSync } from "node:fs";
-import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -25,6 +24,7 @@ import {
   type CancellationAuthority,
   type CancellationTransition,
   CANCELLATION_SHUTDOWN_ARTIFACT,
+  TransitionIdSchema,
 } from "./session-types.js";
 import { appendEvent } from "./session.js";
 import {
@@ -738,9 +738,10 @@ export interface CandidateCancellationInit {
   readonly authority: Extract<CancellationAuthority, { kind: "candidate" }>;
 }
 
-/** The exact predicate `transitionCommon` applies to persisted ids, so the
- * pre-write gate and the strict reader cannot disagree about what a uuid is. */
-const TRANSITION_UUID = z.string().uuid();
+/** The exact predicate `transitionCommon` applies to persisted ids, imported
+ * BY REFERENCE rather than reconstructed, so an edit to the persisted
+ * predicate propagates to this gate instead of silently diverging from it. */
+const TRANSITION_UUID = TransitionIdSchema;
 
 export async function applyCancellationTransition(
   root: string,

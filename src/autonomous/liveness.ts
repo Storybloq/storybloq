@@ -1566,6 +1566,55 @@ export function discardStagedGeneration(staged: StagedHeartbeatGeneration): void
   removeIfStillOurs(record.dir, record.identity, record.sessionDir);
 }
 
+export type StagedGenerationValidation =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "unknown-handle" | "directory-swapped" | "signature-mismatch" | "no-heartbeat" };
+
+/**
+ * Re-prove, immediately before publication, that a staged generation is still
+ * what readiness acknowledged (T-450 step 6b).
+ *
+ * The staged child can exit and its pid be REUSED, and the directory at the
+ * staged path can be replaced, in the window between readiness and project-lock
+ * acquisition -- and `commitCandidateTakeover` deliberately stages OUTSIDE the
+ * lock, so that window is real and unbounded. A readiness result from before
+ * lock acquisition is therefore not evidence of liveness at write time.
+ *
+ * Read-only over the record staging retained, never over fields of the handle
+ * (the same rule as discard): the handle proves the caller was ISSUED a staged
+ * generation, the record says what it actually was. An "unknown" probe answer
+ * refuses like a mismatch does, because a ps failure proves nothing about the
+ * child, and publishing on it would make probe infrastructure failure an
+ * authorization. Each check names its own reason so a refused takeover can say
+ * exactly what stopped it.
+ */
+export function validateStagedGeneration(staged: StagedHeartbeatGeneration): StagedGenerationValidation {
+  const record = stagedHandles.get(staged);
+  if (!record) return { ok: false, reason: "unknown-handle" };
+
+  // Same name, new inode: whatever heartbeat now appears there was not
+  // written by the child readiness acknowledged, so the other two checks
+  // below would be reading an impostor's files.
+  if (directoryIdentityOf(record.dir) !== record.identity) {
+    return { ok: false, reason: "directory-swapped" };
+  }
+
+  // Bound to THIS child, not to the species: the spawn puts the generation
+  // directory in the child's argv, so requiring both markers distinguishes the
+  // staged sidecar from an unrelated Storybloq sidecar that recycled its pid.
+  // The generic marker alone would validate exactly that impostor (same shape
+  // as the verify form of `killSidecar`, which probes marker + directory).
+  const signature = probeApi.probeArgvSignature(record.child.pid, [SIDECAR_ARGV_MARKER, record.dir]);
+  if (signature !== "match") return { ok: false, reason: "signature-mismatch" };
+
+  // NOT sticky, exactly like readiness: `readAliveTimestampIn` returns null
+  // once a shutdown marker appears, so this is a claim about the current
+  // state, not about a state that once held.
+  if (readAliveTimestampIn(record.dir) === null) return { ok: false, reason: "no-heartbeat" };
+
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------------------
 // Owner-gone CANDIDATE evidence (T-450)
 // ---------------------------------------------------------------------------

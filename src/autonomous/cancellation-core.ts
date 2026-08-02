@@ -199,6 +199,42 @@ export function validateRecoveryAuthority(
 }
 
 /**
+ * THE SIX-WAY COMPLETION-MARKER GATE, wrapped exactly once (T-450 step 6b).
+ *
+ * `authorizeTailRecovery` and the candidate published branch both decide the
+ * same question -- may this transition's tail be re-run? -- and before this
+ * function each spelled the marker switch itself. Two spellings of a six-way
+ * fail-closed switch is how one of them silently gains a seventh behavior, so
+ * the CLASSIFICATION lives here and only the refusal TEXT stays with each
+ * owner, because the ordinary path and the candidate path owe their operators
+ * different sentences, not different decisions.
+ *
+ * PURE over durable state: reads the marker, mutates nothing, throws nothing.
+ */
+export type TailRecoveryGate =
+  | { readonly kind: "proceed"; readonly marker: "absent" | "owned-mismatched" }
+  | { readonly kind: "already-complete" }
+  | { readonly kind: "refuse"; readonly classification: "foreign"; readonly owner: string }
+  | { readonly kind: "refuse"; readonly classification: "malformed" | "io-unreadable"; readonly detail: string };
+
+export function classifyTailRecovery(sessionDir: string, transitionId: string): TailRecoveryGate {
+  const marker = classifyCompletionMarker(sessionDir, transitionId);
+  switch (marker.kind) {
+    case "absent":
+    case "owned-mismatched":
+      return { kind: "proceed", marker: marker.kind };
+    case "matching":
+      return { kind: "already-complete" };
+    case "foreign":
+      return { kind: "refuse", classification: "foreign", owner: marker.owner };
+    case "malformed":
+      return { kind: "refuse", classification: "malformed", detail: marker.detail };
+    case "io-unreadable":
+      return { kind: "refuse", classification: "io-unreadable", detail: marker.detail };
+  }
+}
+
+/**
  * THE NARROWLY AUTHORIZED, FAIL-CLOSED EXCEPTION to handleCancel's SESSION_END
  * refusal (T-450 step 6a).
  *
@@ -288,27 +324,29 @@ export function authorizeTailRecovery(
       `by the cancellation write sequence and its tail is not safe to finish.` };
   }
 
-  const marker = classifyCompletionMarker(sessionDir, t.transitionId);
-  switch (marker.kind) {
-    case "absent":
-    case "owned-mismatched":
+  const gate = classifyTailRecovery(sessionDir, t.transitionId);
+  switch (gate.kind) {
+    case "proceed":
       return { kind: "recover", transition: t };
-    case "matching":
+    case "already-complete":
       return { kind: "refuse", message: ended };
-    case "foreign":
-      return { kind: "refuse", message:
-        `${ended} Its completion marker names a DIFFERENT transition (${marker.owner}), which is durable ` +
-        `evidence that another cancellation ran in this session directory. Finishing this one would ` +
-        `overwrite that record, so it is refused rather than resolved silently.` };
-    case "malformed":
-      return { kind: "refuse", message:
-        `${ended} Its completion marker is malformed (${marker.detail}), so it proves ownership in ` +
-        `neither direction: this session's tail can be neither confirmed finished nor safely finished. ` +
-        `Inspect the telemetry directory under .story/sessions/${state.sessionId}/.` };
-    case "io-unreadable":
-      return { kind: "refuse", message:
-        `${ended} Its completion marker could not be read (${marker.detail}). An unreadable artifact is ` +
-        `not an absent one, so nothing here is assumed about whether the cancellation finished.` };
+    case "refuse":
+      switch (gate.classification) {
+        case "foreign":
+          return { kind: "refuse", message:
+            `${ended} Its completion marker names a DIFFERENT transition (${gate.owner}), which is durable ` +
+            `evidence that another cancellation ran in this session directory. Finishing this one would ` +
+            `overwrite that record, so it is refused rather than resolved silently.` };
+        case "malformed":
+          return { kind: "refuse", message:
+            `${ended} Its completion marker is malformed (${gate.detail}), so it proves ownership in ` +
+            `neither direction: this session's tail can be neither confirmed finished nor safely finished. ` +
+            `Inspect the telemetry directory under .story/sessions/${state.sessionId}/.` };
+        case "io-unreadable":
+          return { kind: "refuse", message:
+            `${ended} Its completion marker could not be read (${gate.detail}). An unreadable artifact is ` +
+            `not an absent one, so nothing here is assumed about whether the cancellation finished.` };
+      }
   }
 }
 
@@ -339,24 +377,26 @@ export function authorizeTailRecovery(
  * sentence over.
  */
 export function retryAdvice(sessionDir: string, transitionId: string): string {
-  const marker = classifyCompletionMarker(sessionDir, transitionId);
-  switch (marker.kind) {
-    case "absent":
-    case "owned-mismatched":
+  const gate = classifyTailRecovery(sessionDir, transitionId);
+  switch (gate.kind) {
+    case "proceed":
       return `Transition ${transitionId} remains recoverable, so re-issuing cancel will retry.`;
-    case "matching":
+    case "already-complete":
       // The marker landed after all; whatever failed did so before it, and the
       // gate is now closed because the tail reads as finished.
       return `Transition ${transitionId} is now marked complete, so a further cancel will be refused.`;
-    case "foreign":
-      return `A completion marker belonging to a DIFFERENT transition (${marker.owner}) is now present, `
-        + `so a further cancel will be refused until it is inspected.`;
-    case "malformed":
-      return `Its completion marker is now malformed (${marker.detail}), so a further cancel will be `
-        + `refused until it is inspected.`;
-    case "io-unreadable":
-      return `Its completion marker cannot be read (${marker.detail}), so a further cancel will be `
-        + `refused until that is resolved.`;
+    case "refuse":
+      switch (gate.classification) {
+        case "foreign":
+          return `A completion marker belonging to a DIFFERENT transition (${gate.owner}) is now present, `
+            + `so a further cancel will be refused until it is inspected.`;
+        case "malformed":
+          return `Its completion marker is now malformed (${gate.detail}), so a further cancel will be `
+            + `refused until it is inspected.`;
+        case "io-unreadable":
+          return `Its completion marker cannot be read (${gate.detail}), so a further cancel will be `
+            + `refused until that is resolved.`;
+      }
   }
 }
 
@@ -676,11 +716,32 @@ function anyJsonLineMatches(path: string, predicate: (entry: Record<string, unkn
   return false;
 }
 
+/**
+ * The candidate path's write-1 identity (T-450 step 6b).
+ *
+ * A FRESH candidate cancellation cannot reach write 1 through either existing
+ * parameter: the ordinary default mints its own legacy-authority record, and
+ * `resume` structurally requires an already-persisted stash_pending record. So
+ * the shared core accepts a third, mutually exclusive input carrying the
+ * identity the intent file pre-minted at authorize.
+ *
+ * There is deliberately NO separate `confirmedSessionRevision` field: the one
+ * inside `authority` is the single source, so the invariant checked at write
+ * time and the value recovery later validates against cannot disagree.
+ */
+export interface CandidateCancellationInit {
+  /** Pre-minted at authorize and carried by the durable intent, never fresh. */
+  readonly transitionId: string;
+  readonly action: "candidate_recovery_takeover";
+  readonly authority: Extract<CancellationAuthority, { kind: "candidate" }>;
+}
+
 export async function applyCancellationTransition(
   root: string,
   session: { readonly dir: string; readonly state: FullSessionState },
   disposition: TicketDisposition,
   resume?: Extract<CancellationTransition, { phase: "stash_pending" }>,
+  init?: CandidateCancellationInit,
 ): Promise<{ readonly written: FullSessionState; readonly stashPopFailed: boolean; readonly tail: TailOutcome }> {
   // THE WRITE PROTOCOL (T-450 step 6a). Four writes, and the shape carries the
   // recovery guarantees:
@@ -717,8 +778,51 @@ export async function applyCancellationTransition(
   // the first attempt actually did with a reading of the ticket it already
   // changed.
   const startedAt = canonicalStartedAt((session.state as Record<string, unknown>).startedAt);
-  let transitionId: string | null = resume ? resume.transitionId : null;
-  if (!resume && startedAt !== null) {
+
+  // THE CANDIDATE ENTRY CONDITIONS, refused BEFORE any write. These throw
+  // rather than degrade because for a candidate the record IS the
+  // authorization: the ordinary path's recordless fallback exists so that
+  // minting failure cannot take a working cancel down, but a candidate
+  // cancellation with no durable transition could never be resumed and its
+  // invariant could never be validated, so degradation here would be silent
+  // authority laundering. The caller (commitCandidateCancel) treats a throw as
+  // a refusal and re-authorizes.
+  if (init) {
+    if (resume) {
+      throw new Error("applyCancellationTransition: init and resume are mutually exclusive");
+    }
+    // The schema's superRefine catches this pairing at READ time, but by then
+    // the lie is on disk. This is the one place that refuses it pre-write.
+    if (init.action !== "candidate_recovery_takeover" || init.authority.kind !== "candidate") {
+      throw new Error(
+        "applyCancellationTransition: init requires candidate_recovery_takeover under candidate authority",
+      );
+    }
+    if (startedAt === null) {
+      throw new Error(
+        "applyCancellationTransition: this session's start time is unusable, so no candidate " +
+        "transition can be minted; the candidate path refuses rather than degrading to a recordless cancel",
+      );
+    }
+    // THE CANDIDATE INVARIANT: transitionStartedRevision (the revision write 1
+    // is about to produce, session.state.revision + 1) must equal
+    // confirmedSessionRevision + 1. Anything that moved the session between
+    // authorize and here makes the confirmation stale, and acting on it would
+    // take over a session the human was not shown. Re-authorization is cheap;
+    // an unearned takeover is not.
+    if (session.state.revision !== init.authority.confirmedSessionRevision) {
+      throw new Error(
+        `applyCancellationTransition: the candidate invariant fails: the session is at ` +
+        `revision ${session.state.revision} but the authorization confirmed ` +
+        `confirmedSessionRevision ${init.authority.confirmedSessionRevision}, so write 1 would ` +
+        `produce transitionStartedRevision ${session.state.revision + 1}, not ` +
+        `${init.authority.confirmedSessionRevision + 1}. Re-authorize against the current state.`,
+      );
+    }
+  }
+
+  let transitionId: string | null = resume ? resume.transitionId : init ? init.transitionId : null;
+  if (!resume && !init && startedAt !== null) {
     try { transitionId = randomUUID(); } catch { transitionId = null; }
   }
   const common = resume ? {
@@ -731,8 +835,10 @@ export async function applyCancellationTransition(
     transitionStartedRevision: resume.transitionStartedRevision,
   } : (startedAt === null || transitionId === null) ? null : {
     transitionId,
-    action: "ordinary_cancellation" as const,
-    authority: { kind: "legacy" as const },
+    // With init the identity is the intent's, pre-minted at authorize; the
+    // entry conditions above already proved the pairing and the invariant.
+    action: init ? init.action : ("ordinary_cancellation" as const),
+    authority: init ? init.authority : { kind: "legacy" as const },
     disposition: toPersistedDisposition(disposition),
     // IDENTITY is the session id. `sessionStartedAt` is provenance, checked in
     // addition to it and never instead of it.

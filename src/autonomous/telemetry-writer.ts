@@ -55,9 +55,15 @@ export function resetTruncationCount(): void {
 // against rare overlap during lease expiry, orphan recovery, or operator error.
 export function withTelemLock<T>(sessionDir: string, fn: () => T): T | undefined {
   const tDir = telemetryDirPath(sessionDir);
-  mkdirSync(tDir, { recursive: true });
   let release: (() => void) | undefined;
   try {
+    // INSIDE the guarded region. A mkdir failure outside it escaped the
+    // wrapper as a throw, which at the call sites suppressed everything after
+    // the lock attempt -- the exact one-failure-must-not-suppress violation
+    // this wrapper's `undefined` return exists to prevent. An unmakeable
+    // directory is the same fact as an untakeable lock: the caller cannot
+    // proceed, and learns it the same way.
+    mkdirSync(tDir, { recursive: true });
     release = lockfile.lockSync(tDir, LOCK_OPTIONS);
   } catch {
     return undefined;

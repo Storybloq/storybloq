@@ -47,6 +47,21 @@ import { readCancellationTransition } from "../../src/autonomous/cancellation-tr
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
+// Valid interception: `killSidecar` lives in liveness.js, a different module
+// from its guide.ts caller, so replacing the export replaces what the caller
+// resolves (the L-041 trap applies only to same-module calls).
+const inject = vi.hoisted(() => ({ killThrows: false }));
+vi.mock("../../src/autonomous/liveness.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/autonomous/liveness.js")>();
+  return {
+    ...actual,
+    killSidecar: ((pid: unknown, opts?: unknown) => {
+      if (inject.killThrows) throw new Error("injected kill failure");
+      return (actual.killSidecar as (p: unknown, o?: unknown) => unknown)(pid, opts);
+    }) as typeof actual.killSidecar,
+  };
+});
+
 const NOW = new Date().toISOString();
 const PRIOR_TID = "aaaaaaaa-1111-4222-8333-444444444444";
 // Valid uuid, simply not this session's. `sessionId` is uuid-typed in the
@@ -140,6 +155,8 @@ function priorTransition(over: Record<string, unknown> = {}): Record<string, unk
     // The disposition the FIRST attempt acted on: it released the ticket.
     disposition: { kind: "released", ticketId: "T-001" },
     sessionStartedAt: "2026-08-01T00:00:00.000Z",
+    // The revision write 1 PRODUCED. The planted session sits at revision 1,
+    // and the per-phase contract for a null outcome is current === tSR.
     transitionStartedRevision: 1,
     stash: { outcome: null },
     ...over,
@@ -157,6 +174,7 @@ function transitionOf(sessDir: string) {
 let root: string;
 
 beforeEach(() => {
+  inject.killThrows = false;
   root = mkdtempSync(join(tmpdir(), "t450-recovery-"));
   setupProject(root);
   vi.mocked(gitStashPop).mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof gitStashPop>>);
@@ -205,8 +223,10 @@ describe("T-450: a re-issued cancel RESUMES the interrupted transition", () => {
     // made every one of these resolve to `indeterminate`, including the ones
     // whose outcome was known. The separate write exists to keep this fact.
     writeTicket(root, "open");
+    // tSR 0: a concrete outcome means write 3 ran, so the contract is
+    // current === tSR + 1, and the planted session sits at revision 1.
     const { sessionId, sessDir } = plantInterrupted(
-      root, priorTransition({ stash: { outcome: "popped" } }), { autoStash: true },
+      root, priorTransition({ stash: { outcome: "popped" }, transitionStartedRevision: 0 }), { autoStash: true },
     );
 
     await handleAutonomousGuide(root, { action: "cancel", sessionId });
@@ -259,20 +279,38 @@ describe("T-450: a re-issued cancel RESUMES the interrupted transition", () => {
     expect(read.transition.phase).toBe("published");
   });
 
-  it("costs exactly TWO writes, because write 1 is already on disk", async () => {
+  it("costs exactly ONE write, because writes 1 and 3 are already on disk", async () => {
     // Rewriting write 1 on resume would reset a CONCRETE outcome back to
-    // `null`, and a crash between that rewrite and write 3 would lose it
-    // permanently: recovery would have destroyed the fact it came to preserve.
-    // Two writes remain, the outcome and the publication.
+    // `null`, and rewriting write 3 would spend a revision the published
+    // equation does not allow. One write remains: terminal publication.
     writeTicket(root, "open");
     const { sessionId, sessDir } = plantInterrupted(
-      root, priorTransition({ stash: { outcome: "popped" } }), { autoStash: true },
+      root, priorTransition({ stash: { outcome: "popped" }, transitionStartedRevision: 0 }), { autoStash: true },
     );
     const before = readState(sessDir).revision;
 
     await handleAutonomousGuide(root, { action: "cancel", sessionId });
 
-    expect(readState(sessDir).revision).toBe(before + 2);
+    // ONE write, not two: the concrete outcome is already on disk as write 3,
+    // and rewriting it would push publication to tSR + 3, breaking the
+    // published equation (terminalRevision === tSR + 2). Only write 4 runs.
+    expect(readState(sessDir).revision).toBe(before + 1);
+    const read = transitionOf(sessDir);
+    if (read.kind !== "valid" || read.transition.phase !== "published") throw new Error("expected published");
+    expect(read.transition.terminalRevision).toBe(read.transition.transitionStartedRevision + 2);
+  });
+
+  it("publishes at tSR + 2 when resuming a null outcome too", async () => {
+    // The null-outcome resume DOES run write 3 (it records `indeterminate`),
+    // so both resume shapes land publication on the same equation.
+    writeTicket(root, "open");
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition(), { autoStash: true });
+
+    await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    const read = transitionOf(sessDir);
+    if (read.kind !== "valid" || read.transition.phase !== "published") throw new Error("expected published");
+    expect(read.transition.terminalRevision).toBe(read.transition.transitionStartedRevision + 2);
   });
 
   it("finishes the cancellation even in auto mode with work remaining", async () => {
@@ -360,6 +398,181 @@ describe("T-450: a transition that is not this session's fails closed", () => {
     expect(result.isError).toBeTruthy();
     expect(JSON.stringify(result)).toContain("earlier session");
     expect(readState(sessDir).revision).toBe(before);
+  });
+});
+
+describe("T-450: the resumed tail tells the truth about itself", () => {
+  it("reports an incomplete shutdown instead of asserting one it never checked", async () => {
+    // F1 from the pen's byte-review of 1091b226: the resumed path dropped the
+    // TailOutcome and replied unconditionally. Same honesty rule as the
+    // terminal branch: say what was verified.
+    //
+    // The fixture also pins the RESUMED-TAIL MARKER MODE ruling: a
+    // legacy-shaped, identifier-free ended marker may be adopted by a FIRST
+    // pass (which provably runs before this transition wrote one) but not by a
+    // resume, which arrives after a crash window in which anything may have
+    // written it. Under recovery mode markEnded refuses it, the postcondition
+    // goes unmet, and the reply must say so.
+    writeTicket(root, "open");
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition());
+    const tDir = join(sessDir, "telemetry");
+    mkdirSync(tDir, { recursive: true });
+    writeFileSync(join(tDir, "ended"), JSON.stringify({ reason: "cancelled", timestamp: "2026-07-01T00:00:00.000Z" }));
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(result.isError).toBeFalsy();
+    const text = JSON.stringify(result);
+    expect(text).toContain("NOT yet complete");
+    expect(text).toContain("ended-marker");
+    // And the ruling's preserve half: the identifier-free marker is intact.
+    expect(JSON.parse(readFileSync(join(tDir, "ended"), "utf-8")).timestamp).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("names a THROWN shutdown call as unknown, never as a missing record", async () => {
+    // F2: with the transition present and a sibling outcome undefined (the
+    // undefined-on-throw rule), the old fall-through reported "no transition
+    // record" -- telling an operator there is nothing to recover exactly when
+    // there is.
+    writeTicket(root, "open");
+    const { sessionId } = plantInterrupted(root, priorTransition());
+    inject.killThrows = true;
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    const text = JSON.stringify(result);
+    expect(text).toContain("NOT yet complete");
+    expect(text).toContain("sidecar: shutdown call threw, outcome unknown");
+    expect(text).not.toContain("no transition record");
+  });
+
+  it("survives an UNCREATABLE telemetry directory and reports it, rather than dying on it", async () => {
+    // F3: `withTelemLock` created the telemetry directory OUTSIDE its guarded
+    // region, so an unmakeable directory escaped the wrapper as a throw and
+    // took the whole cancel down -- one failed postcondition suppressing every
+    // other, the exact invariant the tail exists to hold. A regular FILE at the
+    // telemetry path is the cheapest way to make mkdir fail.
+    writeTicket(root, "open");
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition());
+    writeFileSync(join(sessDir, "telemetry"), "not a directory");
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(result.isError).toBeFalsy();
+    expect(readState(sessDir).state).toBe("SESSION_END");
+    expect(JSON.stringify(result)).toContain("NOT yet complete");
+  });
+
+  it("says nothing extra when the resumed tail completes", async () => {
+    // The note is for unverified completions, not a banner.
+    writeTicket(root, "open");
+    const { sessionId } = plantInterrupted(root, priorTransition());
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.stringify(result)).not.toContain("NOT yet complete");
+  });
+});
+
+describe("T-450: re-entry validates shape and authority before resuming", () => {
+  it("REFUSES when the session revision does not match the recorded phase", async () => {
+    // The per-phase equations are the re-entry shape check: a null outcome
+    // means only write 1 ran, so the session must sit exactly at tSR. A
+    // session that has moved past it was written by something after the crash,
+    // and resuming over that would publish a terminalRevision the equation
+    // rejects -- 6b's locked validator would then refuse the record forever.
+    writeTicket(root);
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition({ transitionStartedRevision: 5 }));
+    const before = readState(sessDir).revision;
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(result.isError).toBeTruthy();
+    expect(JSON.stringify(result)).toContain("revision");
+    expect(readState(sessDir).revision).toBe(before);
+    expect(vi.mocked(gitStashPop)).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES task authority when the caller is not the recorded caller", async () => {
+    // The record says WHO may finish this cancellation. Legacy has no identity
+    // to check; task does, and it is checked.
+    writeTicket(root);
+    const { sessionId, sessDir } = plantInterrupted(
+      root, priorTransition({ authority: { kind: "task", callerTaskId: "task-original" } }),
+    );
+    const before = readState(sessDir).revision;
+
+    const result = await handleAutonomousGuide(root, {
+      action: "cancel", sessionId, clientTaskId: "task-somebody-else",
+    });
+
+    expect(result.isError).toBeTruthy();
+    expect(JSON.stringify(result)).toContain("task-original");
+    expect(readState(sessDir).revision).toBe(before);
+  });
+
+  it("REFUSES candidate authority ALWAYS, whoever the caller is", async () => {
+    // Candidate recovery runs through the locked candidate validator that
+    // ships with the candidate paths: fingerprint recomputation, revision
+    // anchoring, current eligibility, caller identity. Honoring the record
+    // through a plain cancel would bypass every one of those checks, so this
+    // path refuses it categorically, matching caller or not.
+    //
+    // Hand-built minimal-but-VALID evidence: it must survive the strict
+    // reader, or this test would exercise the malformed branch instead of the
+    // authority gate and pass for the wrong reason (the L-041-adjacent trap
+    // this suite already fell into once with a non-uuid sessionId).
+    writeTicket(root);
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition({
+      action: "candidate_recovery_takeover",
+      authority: {
+        kind: "candidate",
+        clientTaskId: "task-candidate",
+        confirmedSessionRevision: 0,
+        confirmedFingerprint: "fp-1",
+        evidence: {
+          activity: { kind: "unknown", reason: "absent" },
+          lease: { kind: "unknown", reason: "absent" },
+          deathMarker: { kind: "unreadable", reason: "absent" },
+          markerValidity: { kind: "unknown", reason: "no-recorded-pid", pid: null },
+          sidecarProbe: { kind: "unknown", reason: "no-pid", pid: null },
+          observedAt: "2026-08-01T00:00:00.000Z",
+          staleThresholdMs: 2700000,
+          successors: { kind: "unavailable", reason: "test fixture" },
+        },
+      },
+    }));
+    // PROVE the fixture parses valid, so the refusal below is the authority
+    // gate and nothing earlier.
+    const planted = transitionOf(sessDir);
+    expect(planted.kind).toBe("valid");
+    const before = readState(sessDir).revision;
+
+    const result = await handleAutonomousGuide(root, {
+      action: "cancel", sessionId, clientTaskId: "task-candidate",
+    });
+
+    expect(result.isError).toBeTruthy();
+    expect(JSON.stringify(result)).toContain("candidate");
+    expect(readState(sessDir).revision).toBe(before);
+    expect(vi.mocked(gitStashPop)).not.toHaveBeenCalled();
+  });
+
+  it("RESUMES task authority for the recorded caller", async () => {
+    writeTicket(root, "open");
+    const { sessionId, sessDir } = plantInterrupted(
+      root, priorTransition({ authority: { kind: "task", callerTaskId: "task-original" } }),
+    );
+
+    const result = await handleAutonomousGuide(root, {
+      action: "cancel", sessionId, clientTaskId: "task-original",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const read = transitionOf(sessDir);
+    if (read.kind !== "valid") throw new Error("expected a valid transition");
+    expect(read.transition.transitionId).toBe(PRIOR_TID);
   });
 });
 

@@ -396,9 +396,15 @@ describe("T-450: the ordinary cancel publishes a durable, readable transition", 
     const read = transitionOf(sessDir);
     if (read.kind !== "valid" || read.transition.phase !== "published") throw new Error("expected published");
     expect(read.transition.terminalRevision).toBe(after.revision);
-    // And the transition knows where it started, which is what lets recovery
-    // compute its own deltas without guessing.
-    expect(read.transition.transitionStartedRevision).toBe(before);
+    // And the transition knows where it started: `transitionStartedRevision`
+    // is the revision write 1 PRODUCED, not the one it observed. The
+    // consumption contract's per-phase equations hang off this definition
+    // (null outcome: current === tSR; concrete: tSR + 1; published:
+    // terminalRevision === tSR + 2), and 6b's locked validator checks them, so
+    // persisting the observed revision instead would make every legitimate
+    // record fail validation by one.
+    expect(read.transition.transitionStartedRevision).toBe(before + 1);
+    expect(read.transition.terminalRevision).toBe(read.transition.transitionStartedRevision + 2);
   });
 });
 

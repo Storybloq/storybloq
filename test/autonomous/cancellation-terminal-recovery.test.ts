@@ -126,7 +126,8 @@ function publishedTransition(sessionId: string, over: Record<string, unknown> = 
     disposition: { kind: "released", ticketId: "T-001" },
     sessionId,
     sessionStartedAt: "2026-08-01T00:00:00.000Z",
-    transitionStartedRevision: 1,
+    // The published equation: terminalRevision === transitionStartedRevision + 2.
+    transitionStartedRevision: 2,
     stash: { outcome: "popped" },
     endedAt: ENDED_AT,
     terminalRevision: 4,
@@ -561,6 +562,46 @@ describe("T-450: the exception is fail closed, and every refusal names its condi
     // The refusal names the identity mismatch, not some earlier condition that
     // happened to fire first.
     expect(JSON.stringify(result)).toContain(OTHER_SESSION);
+  });
+
+  it("REFUSES a published record whose revisions do not satisfy the equation", async () => {
+    // terminalRevision === transitionStartedRevision + 2 is the published
+    // arm's shape check: write 3 and write 4 are the only writes after tSR.
+    // A record that violates it was not produced by this protocol's write
+    // sequence, and finishing its tail would attest artifacts to a transition
+    // whose own arithmetic says it is not what it claims.
+    const { sessionId } = plantUnfinished(root, (id) => publishedTransition(id, { terminalRevision: 9 }));
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(result.isError).toBeTruthy();
+    expect(JSON.stringify(result)).toContain("revision");
+  });
+
+  it("REFUSES task authority when the caller is not the recorded caller", async () => {
+    const { sessionId } = plantUnfinished(root, (id) => publishedTransition(id, {
+      authority: { kind: "task", callerTaskId: "task-original" },
+    }));
+
+    const result = await handleAutonomousGuide(root, {
+      action: "cancel", sessionId, clientTaskId: "task-somebody-else",
+    });
+
+    expect(result.isError).toBeTruthy();
+    expect(JSON.stringify(result)).toContain("task-original");
+  });
+
+  it("RECOVERS task authority for the recorded caller", async () => {
+    const { sessionId, sessDir } = plantUnfinished(root, (id) => publishedTransition(id, {
+      authority: { kind: "task", callerTaskId: "task-original" },
+    }));
+
+    const result = await handleAutonomousGuide(root, {
+      action: "cancel", sessionId, clientTaskId: "task-original",
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(classifyCompletionMarker(sessDir, TID).kind).toBe("matching");
   });
 
   it("REFUSES a terminal session whose transition never reached publication", async () => {

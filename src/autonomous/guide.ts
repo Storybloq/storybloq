@@ -93,6 +93,7 @@ import {
   classifyCompletionMarker,
   type TicketDisposition,
 } from "./cancellation-transition.js";
+import type { CancellationAuthority } from "./session-types.js";
 import type { CancellationTransition } from "./session-types.js";
 import { formatCompactReport } from "../core/session-report-formatter.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "./target-work.js";
@@ -2746,10 +2747,12 @@ function buildCancelRefusal(state: FullSessionState): string {
  * cleanup that follows it. Shared so candidate cancellation runs THIS code
  * rather than a second spelling of it.
  *
- * SINGLE-ATTEMPT. This is not a retryable finalizer and there is no recovery
- * route that resumes it after publication -- `handleCancel` refuses a session
- * already in SESSION_END. Do not build a retry on top of it without a durable
- * protocol, because several effects here are not safely re-runnable:
+ * RECOVERABLE SINCE B2b: an interrupted run is RESUMED through the dispatcher
+ * in `handleCancel` (nonterminal, under the original transitionId) or its tail
+ * re-run through `authorizeTailRecovery` (terminal, gated on the completion
+ * marker). The durable protocol below is what makes that safe; the effects are
+ * still not blindly re-runnable, which is why recovery validates before it
+ * touches anything:
  *   - `killSidecar` signals a RAW pid with no generation check, so a delayed
  *     retry can signal an unrelated process that inherited that pid;
  *   - `removeResumeMarker` deletes by PATH with no session identity, so a
@@ -2862,6 +2865,37 @@ function transitionBelongsTo(
 }
 
 /**
+ * May THIS caller finish a cancellation recorded under THIS authority?
+ *
+ * Shared by both recovery paths so they cannot drift. The rules are the
+ * contract's, verbatim: `legacy` recovers, because it records that no task
+ * identity existed at cancel time and refusing it would strand exactly the
+ * sessions most likely to need recovery. `task` recovers only for the recorded
+ * caller. `candidate` ALWAYS refuses here: its recovery runs through the locked
+ * candidate validator that ships with the candidate paths, never through a
+ * plain cancel, so honoring it from this path would bypass every check that
+ * validator exists to make.
+ */
+function validateRecoveryAuthority(
+  authority: CancellationAuthority,
+  callerTaskId: string | undefined,
+): { readonly ok: true } | { readonly ok: false; readonly detail: string } {
+  switch (authority.kind) {
+    case "legacy":
+      return { ok: true };
+    case "task":
+      if (callerTaskId === authority.callerTaskId) return { ok: true };
+      return { ok: false, detail:
+        `it was recorded under task authority for ${authority.callerTaskId}, and this caller ` +
+        (callerTaskId ? `is ${callerTaskId}` : "carries no task identity") };
+    case "candidate":
+      return { ok: false, detail:
+        "it was recorded under candidate authority, which is finished only through the locked " +
+        "candidate recovery path, never through a plain cancel" };
+  }
+}
+
+/**
  * THE NARROWLY AUTHORIZED, FAIL-CLOSED EXCEPTION to handleCancel's SESSION_END
  * refusal (T-450 step 6a).
  *
@@ -2901,6 +2935,7 @@ function authorizeTailRecovery(
   sessionDir: string,
   state: FullSessionState,
   prior: ReturnType<typeof readCancellationTransition>,
+  callerTaskId: string | undefined,
 ): TailRecovery {
   const ended = "Session already ended.";
 
@@ -2930,6 +2965,24 @@ function authorizeTailRecovery(
     return { kind: "refuse", message:
       `${ended} The cancellation transition in this session's directory does not belong to it: ` +
       `${belongs.detail}. It authorizes nothing here.` };
+  }
+
+  const authorized = validateRecoveryAuthority(t.authority, callerTaskId);
+  if (!authorized.ok) {
+    return { kind: "refuse", message:
+      `${ended} Its recorded cancellation cannot be finished by this caller: ${authorized.detail}.` };
+  }
+
+  // THE PUBLISHED SHAPE CHECK. Write 3 and write 4 are the only writes after
+  // tSR, so a published record violating this was not produced by the write
+  // sequence it claims, and finishing its tail would attest artifacts to a
+  // transition whose own arithmetic contradicts it.
+  if (t.terminalRevision !== t.transitionStartedRevision + 2) {
+    return { kind: "refuse", message:
+      `${ended} Its transition record fails the published revision equation ` +
+      `(terminalRevision ${t.terminalRevision}, transitionStartedRevision ` +
+      `${t.transitionStartedRevision}; expected terminal = started + 2), so it was not produced ` +
+      `by the cancellation write sequence and its tail is not safe to finish.` };
   }
 
   const marker = classifyCompletionMarker(sessionDir, t.transitionId);
@@ -3262,8 +3315,18 @@ function runCancellationTail(
       : { completed: false, unmet: ["completion-marker: not written"] };
   }
 
-  // No transition record: the legacy path, which has no completion marker to
-  // write and so nothing to verify. Never reported as completed.
+  // TWO different unfinished states, named apart. A missing transition is the
+  // legacy path: nothing to verify, nothing recoverable. A PRESENT transition
+  // whose sibling outcome is undefined means a shutdown call THREW (the
+  // undefined-on-throw rule), so no artifact was written and the tail is
+  // unfinished but recoverable. Reporting the second as "no transition record"
+  // would tell an operator there is nothing to recover exactly when there is.
+  if (published) {
+    return { completed: false, unmet: [
+      ...(sidecarOutcome === undefined ? ["sidecar: shutdown call threw, outcome unknown"] : []),
+      ...(resumeOutcome === undefined ? ["resume-marker: removal call threw, outcome unknown"] : []),
+    ] };
+  }
   return { completed: false, unmet: ["no transition record"] };
 }
 
@@ -3309,8 +3372,8 @@ async function applyCancellationTransition(
   root: string,
   session: { readonly dir: string; readonly state: FullSessionState },
   disposition: TicketDisposition,
-  resume?: CancellationTransition,
-): Promise<{ readonly written: FullSessionState; readonly stashPopFailed: boolean }> {
+  resume?: Extract<CancellationTransition, { phase: "stash_pending" }>,
+): Promise<{ readonly written: FullSessionState; readonly stashPopFailed: boolean; readonly tail: TailOutcome }> {
   // THE WRITE PROTOCOL (T-450 step 6a). Four writes, and the shape carries the
   // recovery guarantees:
   //
@@ -3367,7 +3430,14 @@ async function applyCancellationTransition(
     // addition to it and never instead of it.
     sessionId: session.state.sessionId,
     sessionStartedAt: startedAt,
-    transitionStartedRevision: session.state.revision,
+    // The revision write 1 PRODUCES, precomputable the same way
+    // `terminalRevision` is (`writeSessionSync` increments by exactly one).
+    // The per-phase equations hang off this definition -- null outcome:
+    // current === tSR; concrete: tSR + 1; published: terminalRevision ===
+    // tSR + 2 -- and 6b's locked validator checks them, so persisting the
+    // OBSERVED revision here would make every legitimate record fail
+    // validation by one.
+    transitionStartedRevision: session.state.revision + 1,
   };
 
   // WRITE 1. `if-active` rather than `always`: the session is still live at
@@ -3407,8 +3477,12 @@ async function applyCancellationTransition(
     outcome = popResult.ok ? "popped" : "failed";
   }
 
-  // WRITE 3.
-  if (common) {
+  // WRITE 3. SKIPPED when a concrete outcome is already on disk: that IS
+  // write 3, verbatim, and rewriting it would spend a revision the published
+  // equation does not allow (terminalRevision === tSR + 2 admits exactly one
+  // write between the outcome and publication on re-entry). The null-outcome
+  // resume does run it, because recording `indeterminate` is the whole point.
+  if (common && !(resume && resume.stash.outcome !== null)) {
     current = writeSessionAndRefresh(root, session.dir, {
       ...current,
       cancellationTransition: {
@@ -3444,7 +3518,7 @@ async function applyCancellationTransition(
     ticket: undefined,
     ...(published ? { cancellationTransition: published } : {}),
   } as FullSessionState, "always");
-  runCancellationTail(root, session, {
+  const tail = runCancellationTail(root, session, {
     published: published as Extract<CancellationTransition, { phase: "published" }> | undefined,
     disposition,
     stashPopFailed,
@@ -3455,10 +3529,16 @@ async function applyCancellationTransition(
     // which has no transition and therefore no `terminalRevision`, byte for
     // byte what it was.
     terminalRevision: written.revision,
-    mode: "first-pass",
+    // A RESUMED tail is not a first pass, and the distinction is load-bearing:
+    // first-pass mode may adopt an identifier-free ended marker and delete an
+    // identifier-free resume marker, on the proof that it runs before this
+    // transition wrote either. A resume arrives LATE, after a crash window in
+    // which anything may have written them, so that proof is gone and the
+    // recovery rules (preserve what cannot be attributed) are the honest ones.
+    mode: resume ? "recovery" : "first-pass",
   });
 
-  return { written, stashPopFailed };
+  return { written, stashPopFailed, tail };
 }
 
 async function handleCancel(root: string, args: GuideInput): Promise<McpToolResult> {
@@ -3549,6 +3629,39 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
         `that record. Inspect .story/sessions/${args.sessionId}/state.json before retrying.`,
       ));
     }
+
+    const authorized = validateRecoveryAuthority(
+      priorRead.transition.authority,
+      ownerTaskForCurrentClient(args.clientTaskId)?.id,
+    );
+    if (!authorized.ok) {
+      return guideError(new Error(
+        `Cannot cancel session ${args.sessionId}: ${authorized.detail}.`,
+      ));
+    }
+
+    // THE RE-ENTRY SHAPE CHECK, per phase. A null outcome means only write 1
+    // ran, so the session sits exactly at tSR; a concrete outcome adds write 3.
+    // A session that has moved past the expected revision was written by
+    // something AFTER the crash, and resuming over that would publish a
+    // terminalRevision the published equation rejects, leaving a record 6b's
+    // locked validator refuses forever.
+    if (priorRead.transition.phase === "stash_pending") {
+      const t = priorRead.transition;
+      const expected = t.stash.outcome === null
+        ? t.transitionStartedRevision
+        : t.transitionStartedRevision + 1;
+      if (info.state.revision !== expected) {
+        return guideError(new Error(
+          `Cannot cancel session ${args.sessionId}: its cancellationTransition record expects the ` +
+          `session at revision ${expected} (transitionStartedRevision ${t.transitionStartedRevision}, ` +
+          `outcome ${t.stash.outcome === null ? "undecided" : "recorded"}), but the session is at ` +
+          `revision ${info.state.revision}. Something wrote the session after the interrupted ` +
+          `cancellation, so resuming is not safe. Inspect ` +
+          `.story/sessions/${args.sessionId}/state.json before retrying.`,
+        ));
+      }
+    }
   }
 
   // CONTRADICTORY EVIDENCE, refused rather than normalized. Write 4 sets
@@ -3578,7 +3691,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // rejected, EXCEPT the one narrowly authorized case where the session is
   // terminal only because publication landed and the tail did not.
   if (isTerminal) {
-    const authorized = authorizeTailRecovery(info.dir, info.state, priorRead);
+    const authorized = authorizeTailRecovery(
+      info.dir, info.state, priorRead,
+      ownerTaskForCurrentClient(args.clientTaskId)?.id,
+    );
     if (authorized.kind === "refuse") return guideError(new Error(authorized.message));
 
     const t = authorized.transition;
@@ -3783,7 +3899,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     }
   }
 
-  const { written, stashPopFailed } = await applyCancellationTransition(
+  const { written, stashPopFailed, tail } = await applyCancellationTransition(
     root,
     { dir: cancelInfo.dir, state: cancelInfo.state },
     disposition,
@@ -3806,8 +3922,16 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   } catch { /* best-effort */ }
 
   const stashNote = stashPopFailed ? " Auto-stash pop failed — run `git stash pop` manually." : "";
+  // F1 (pen byte-review of 1091b226): the resumed path must not assert a
+  // completion it never checked -- the same honesty rule the terminal branch
+  // already follows. Scoped to RESUME: the fresh-cancel reply predates the
+  // protocol and its tail truth is carried by the completion marker and the
+  // artifacts, which recovery reads; changing its text is not this fixup.
+  const tailNote = resume && !tail.completed
+    ? ` Shutdown is NOT yet complete: ${tail.unmet.join("; ")}. ${retryAdvice(cancelInfo.dir, resume.transitionId)}`
+    : "";
   return {
-    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) were completed.${stashNote}${reportSection}` }],
+    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) were completed.${stashNote}${tailNote}${reportSection}` }],
   };
 }
 

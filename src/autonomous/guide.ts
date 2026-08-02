@@ -84,10 +84,13 @@ import { checkVersionMismatch, getInstalledVersion, getRunningVersion } from "./
 import { writeResumeMarker, removeResumeMarker, type ResumeMarkerRemoval } from "./resume-marker.js";
 import { refreshStatusForSession } from "./status-writer.js";
 import { writeSessionAndRefresh, emitTelemetry, postStateWrite } from "./guide-effects.js";
+import { withTelemLock } from "./telemetry-writer.js";
 import {
   auditOf,
   writeShutdownArtifact,
   writeCompletionMarker,
+  readCancellationTransition,
+  classifyCompletionMarker,
   type TicketDisposition,
 } from "./cancellation-transition.js";
 import type { CancellationTransition } from "./session-types.js";
@@ -2815,6 +2818,456 @@ function toPersistedDisposition(d: TicketDisposition): PersistedTicketDispositio
 }
 
 /**
+ * Does this transition record belong to THIS session?
+ *
+ * Shared by both recovery paths so they cannot drift. A record is bound by
+ * `sessionId`, and `sessionStartedAt` is checked IN ADDITION, never instead:
+ * session directories are reused, so a record left by an earlier incarnation
+ * carries the right id and the wrong provenance, and resuming it would adopt
+ * another run's transitionId, disposition and stash outcome as this run's own.
+ *
+ * Timestamps deliberately do NOT order anything here. They are compared for
+ * equality only: equal-millisecond values and clock rollback both make ordering
+ * unable to authorize a decision, and `startedAt` cannot bind identity at all.
+ */
+function transitionBelongsTo(
+  state: FullSessionState,
+  t: CancellationTransition,
+): { readonly ok: true } | { readonly ok: false; readonly detail: string } {
+  if (t.sessionId !== state.sessionId) {
+    return { ok: false, detail: `it names session ${t.sessionId}, not ${state.sessionId}` };
+  }
+  const startedAt = canonicalStartedAt((state as Record<string, unknown>).startedAt);
+  // FAIL CLOSED when the live start time is unusable, rather than falling back
+  // to the id alone. The id is the REUSABLE half: a directory outlives the
+  // session that made it, so dropping provenance exactly where provenance
+  // cannot be established is dropping it exactly where it was load-bearing.
+  //
+  // This costs nothing legitimate. `applyCancellationTransition` mints a
+  // transition ONLY when `canonicalStartedAt` returns non-null, so no record
+  // created by this protocol can live on a session whose start time is
+  // unreadable. Reaching here means the state file changed underneath the
+  // record, which is precisely when a recovery should stop.
+  if (startedAt === null) {
+    return { ok: false, detail:
+      "this session's own startedAt is missing or unparseable, so the record's provenance " +
+      "cannot be checked and the session id alone cannot prove the directory was not reused" };
+  }
+  if (t.sessionStartedAt !== startedAt) {
+    return { ok: false, detail:
+      `it names start time ${t.sessionStartedAt}, but this session started at ${startedAt}, ` +
+      `so the record was left by an earlier session in this directory` };
+  }
+  return { ok: true };
+}
+
+/**
+ * THE NARROWLY AUTHORIZED, FAIL-CLOSED EXCEPTION to handleCancel's SESSION_END
+ * refusal (T-450 step 6a).
+ *
+ * Without it, the state "publication landed, tail did not" is unreachable
+ * through the API: the session is terminal, so cancel refuses, and the operator
+ * is sent to `storybloq session stop`, the admin escape hatch this ticket
+ * exists to retire. Meanwhile the sidecar may still be running and the resume
+ * marker may still be on disk pointing the next session at this one.
+ *
+ * IT GRANTS NO NEW AUTHORITY. It finishes a cancellation that was already
+ * authorized, under that transition's own recorded `action` and `authority`,
+ * with its `transitionId` as the evidence pointer that keys every artifact the
+ * tail writes. Nothing here can start a cancellation, release a ticket, pop a
+ * stash, or write session state.
+ *
+ * AND IT IS FAIL CLOSED. Six classifications, two of which open the gate:
+ *
+ *   absent           ours, unattested       -> RECOVER
+ *   owned-mismatched ours, provably wrong   -> RECOVER (repairable)
+ *   matching         the tail is done       -> refuse, and rightly: this is the
+ *                                              ordinary clean-cancel case
+ *   foreign          another transition's   -> refuse; overwriting it destroys
+ *                                              the only trace of a conflict
+ *   malformed        ownership unprovable   -> refuse; repairing claims a
+ *                                              transition we cannot show is ours
+ *   io-unreadable    we could not look      -> refuse; unreadable is never absence
+ *
+ * Every refusal names its own condition. A refusal that says "already ended"
+ * when the real condition is a foreign marker is diagnosis-substitution, which
+ * is the specific failure three operators hit on the way to the admin CLI.
+ */
+type TailRecovery =
+  | { readonly kind: "refuse"; readonly message: string }
+  | { readonly kind: "recover"; readonly transition: Extract<CancellationTransition, { phase: "published" }> };
+
+function authorizeTailRecovery(
+  sessionDir: string,
+  state: FullSessionState,
+  prior: ReturnType<typeof readCancellationTransition>,
+): TailRecovery {
+  const ended = "Session already ended.";
+
+  // A legacy session, or one terminated by something that is not this
+  // protocol. There is no recorded tail to finish and no authority to finish
+  // one under, so the answer is today's answer.
+  if (prior.kind === "absent") return { kind: "refuse", message: ended };
+  if (prior.kind === "malformed") {
+    return { kind: "refuse", message:
+      `${ended} Its cancellationTransition record is unreadable (${prior.detail}), so there is no ` +
+      `recorded cancellation to finish. Inspect .story/sessions/${state.sessionId}/state.json.` };
+  }
+
+  const t = prior.transition;
+
+  // Contradictory: publication is what makes a session terminal. A terminal
+  // session still holding `stash_pending` was terminated by another route, and
+  // the tail this branch knows how to finish is not the one interrupted.
+  if (t.phase !== "published") {
+    return { kind: "refuse", message:
+      `${ended} Its cancellation transition is recorded as ${t.phase}, not published, so it did not ` +
+      `terminate through the cancellation protocol and has no published tail to finish.` };
+  }
+
+  const belongs = transitionBelongsTo(state, t);
+  if (!belongs.ok) {
+    return { kind: "refuse", message:
+      `${ended} The cancellation transition in this session's directory does not belong to it: ` +
+      `${belongs.detail}. It authorizes nothing here.` };
+  }
+
+  const marker = classifyCompletionMarker(sessionDir, t.transitionId);
+  switch (marker.kind) {
+    case "absent":
+    case "owned-mismatched":
+      return { kind: "recover", transition: t };
+    case "matching":
+      return { kind: "refuse", message: ended };
+    case "foreign":
+      return { kind: "refuse", message:
+        `${ended} Its completion marker names a DIFFERENT transition (${marker.owner}), which is durable ` +
+        `evidence that another cancellation ran in this session directory. Finishing this one would ` +
+        `overwrite that record, so it is refused rather than resolved silently.` };
+    case "malformed":
+      return { kind: "refuse", message:
+        `${ended} Its completion marker is malformed (${marker.detail}), so it proves ownership in ` +
+        `neither direction: this session's tail can be neither confirmed finished nor safely finished. ` +
+        `Inspect the telemetry directory under .story/sessions/${state.sessionId}/.` };
+    case "io-unreadable":
+      return { kind: "refuse", message:
+        `${ended} Its completion marker could not be read (${marker.detail}). An unreadable artifact is ` +
+        `not an absent one, so nothing here is assumed about whether the cancellation finished.` };
+  }
+}
+
+/**
+ * THE CANCELLATION TAIL: the six effects that run after publication.
+ *
+ * Extracted so the terminal recovery branch runs the SAME code rather than a
+ * second spelling of it. Publication is what makes a session terminal and it
+ * happens before any of this, so a crash in here leaves a session that is
+ * terminal with its shutdown unfinished, and finishing it later has to mean
+ * finishing it identically.
+ *
+ * Everything the tail needs is passed EXPLICITLY rather than read off the
+ * session, because on recovery the session no longer says these things. Its
+ * `state` is `SESSION_END`, not the state cancellation interrupted, and its
+ * revision has moved past the one the audit event must carry. The transition
+ * record is what remembers them.
+ */
+/**
+ * What an operator should actually do after a tail that did not complete.
+ *
+ * The completion marker is RE-CLASSIFIED rather than assumed, because a failed
+ * marker write can itself be the reason the gate has closed: a marker that
+ * became foreign, malformed or unreadable after this recovery was authorized
+ * will be REFUSED by the next `authorizeTailRecovery`. Telling an operator to
+ * re-issue cancel in that state promises a retry that will not happen, which is
+ * the same untruth as reporting a completion that did not occur, moved one
+ * sentence over.
+ */
+function retryAdvice(sessionDir: string, transitionId: string): string {
+  const marker = classifyCompletionMarker(sessionDir, transitionId);
+  switch (marker.kind) {
+    case "absent":
+    case "owned-mismatched":
+      return `Transition ${transitionId} remains recoverable, so re-issuing cancel will retry.`;
+    case "matching":
+      // The marker landed after all; whatever failed did so before it, and the
+      // gate is now closed because the tail reads as finished.
+      return `Transition ${transitionId} is now marked complete, so a further cancel will be refused.`;
+    case "foreign":
+      return `A completion marker belonging to a DIFFERENT transition (${marker.owner}) is now present, `
+        + `so a further cancel will be refused until it is inspected.`;
+    case "malformed":
+      return `Its completion marker is now malformed (${marker.detail}), so a further cancel will be `
+        + `refused until it is inspected.`;
+    case "io-unreadable":
+      return `Its completion marker cannot be read (${marker.detail}), so a further cancel will be `
+        + `refused until that is resolved.`;
+  }
+}
+
+/**
+ * Whether the tail's postconditions all hold, and which do not.
+ *
+ * The tail is six best-effort effects and every one can fail without throwing,
+ * so a caller that reports completion without consulting this is asserting
+ * something it never checked.
+ */
+type TailOutcome = { readonly completed: boolean; readonly unmet: readonly string[] };
+
+function runCancellationTail(
+  root: string,
+  session: { readonly dir: string; readonly state: FullSessionState },
+  ctx: {
+    readonly published: Extract<CancellationTransition, { phase: "published" }> | undefined;
+    readonly disposition: TicketDisposition;
+    readonly stashPopFailed: boolean;
+    readonly previousState: string;
+    /**
+     * The revision the audit event is stamped with AND read back by. On the
+     * first pass this is the revision write 4 produced; on recovery it is the
+     * `terminalRevision` that write 4 recorded, which is the same number. A
+     * recovery pass stamping today's revision would append an event the
+     * postcondition could not find, and would leave the completion marker
+     * unwritable for a tail that in fact completed.
+     */
+    readonly terminalRevision: number;
+    readonly mode: "first-pass" | "recovery";
+  },
+): TailOutcome {
+  // Destructured so the `published &&` guard below NARROWS. Read through
+  // `ctx` inside the postcondition closures, TypeScript loses the narrowing
+  // and the guarded block stops compiling.
+  const { published } = ctx;
+  // T-260: Same-process finalization (after state write succeeds)
+  //
+  // The `verify` form binds the signal to THIS session. `hasSidecarSignature`
+  // proves only that the pid is SOME Storybloq sidecar, so a recycled pid
+  // running another session's sidecar passes it; the sidecar's argv carries the
+  // real binding, because it is spawned with this session's telemetry
+  // directory on the command line. Declining is SAFE: `writeShutdownMarker`
+  // below is the guaranteed shutdown channel and the sidecar self-exits on it.
+  // The kill is an accelerator, not the mechanism of record.
+  // UNDEFINED until the call returns, exactly like `resumeOutcome` below. Both
+  // are recorded outcomes in the same artifact, so a reader must not have to
+  // remember that one of them is lossy. Pre-seeding this with `"declined"` made
+  // a THROWN kill indistinguishable from a probe that ran and refused, which
+  // would let the artifact assert that an identity check happened when it did
+  // not.
+  let sidecarOutcome: SidecarShutdownOutcome | undefined;
+  try {
+    sidecarOutcome = published
+      ? killSidecar(session.state.sidecarPid, { sessionDir: session.dir })
+      : (killSidecar(session.state.sidecarPid), "declined");
+  } catch { /* stays undefined: we do not know what happened */ }
+  // READ BACK, rather than trusting the call. `writeShutdownMarker` is a `: void`
+  // best-effort writer that swallows its own failures, so its returning tells
+  // us nothing about whether it wrote anything (L-039: the thing that reports
+  // your verification worked is itself unverified until something independent
+  // checks it).
+  //
+  // This matters precisely because the kill above is allowed to DECLINE. The
+  // justification for declining being safe is that this marker is the
+  // guaranteed shutdown channel, since the sidecar self-exits on it. If the
+  // marker never lands and the kill declined, nothing shut the sidecar down,
+  // and a completion marker claiming otherwise would be false.
+  let shutdownMarkerLanded = false;
+  try {
+    writeShutdownMarker(session.dir);
+    // EXISTENCE, which is exactly the predicate the sidecar itself consumes
+    // (`fs.existsSync(shut)` in SIDECAR_SCRIPT). Requiring content would be a
+    // STRICTER test than the consumer applies, so a partial write that the
+    // sidecar would honour would be reported unmet and leave recovery open for
+    // a shutdown that will in fact happen.
+    shutdownMarkerLanded = existsSync(join(telemetryDirPath(session.dir), "shutdown"));
+  } catch { /* best-effort */ }
+
+  const audit = auditOf(ctx.disposition);
+  // IDEMPOTENT, and bound to the transition. `events.log` is append-only, so a
+  // recovery pass that re-ran the tail after an earlier pass had already
+  // appended would leave TWO `cancelled` records for one cancellation, and a
+  // reader with no id on them could not tell a retry from a second cancel.
+  // Adding `transitionId` (additive, matching what the telemetry event already
+  // carries) makes the record self-identifying, which is what makes skipping it
+  // safe. The legacy path has no transition, so the guard is false there and
+  // the append stays unconditional exactly as before.
+  const appendAudit = (): void => {
+    appendEvent(session.dir, {
+      rev: ctx.terminalRevision,
+      type: "cancelled",
+      timestamp: new Date().toISOString(),
+      data: {
+        previousState: ctx.previousState,
+        ...audit,
+        stashPopFailed: ctx.stashPopFailed,
+        ...(published ? { transitionId: published.transitionId } : {}),
+      },
+    });
+  };
+  if (published === undefined) {
+    // The legacy path, byte for byte: no transition means no id to deduplicate
+    // on and no second pass that could reach here, so the append stays
+    // unconditional and unlocked exactly as it has always been.
+    appendAudit();
+  } else {
+    // ATOMIC check-and-append. `events.log` is append-only, so a recovery that
+    // re-appends leaves two `cancelled` records for one cancellation and a
+    // reader cannot tell a retry from a second cancel. A bare read-then-append
+    // is only SEQUENTIALLY idempotent: two concurrent authorized recoveries can
+    // both observe nothing and both append, recreating the duplicate this is
+    // here to prevent. The session's existing telemetry lock is what makes the
+    // pair indivisible; `markEnded` already serializes on it, so the two
+    // postconditions of this tail now share one mutual exclusion rather than
+    // inventing a second.
+    const tid = published.transitionId;
+    // NO FALLBACK when the lock cannot be taken. Appending outside it would
+    // defeat the serialization at exactly the moment it is needed: the holder
+    // may already have read the event as absent and be about to append, so both
+    // would write and the duplicate would be back.
+    //
+    // Failing closed costs nothing here, and that is the point of doing the
+    // recovery work first. An append that does not happen leaves the audit
+    // postcondition unmet, so no completion marker is written, so the
+    // transition stays recoverable and a later pass appends it. The record is
+    // DEFERRED, not lost. (And if the concurrent holder does land it, the
+    // read-back below simply finds it and this attempt completes anyway.)
+    withTelemLock(session.dir, () => {
+      const present = anyJsonLineMatches(
+        join(session.dir, "events.log"),
+        (e) => e.type === "cancelled"
+          && e.rev === ctx.terminalRevision
+          && (e.data as Record<string, unknown> | undefined)?.transitionId === tid,
+      );
+      if (!present) appendAudit();
+    });
+  }
+  const endedOutcome = postStateWrite(session.dir, {
+    event: {
+      type: "session_cancelled",
+      layer: "guide",
+      data: {
+        previousState: ctx.previousState,
+        reason: "cancelled",
+        ...audit,
+        stashPopFailed: ctx.stashPopFailed,
+        // ATTRIBUTION, and the read-back below depends on it. Matching on the
+        // event TYPE alone would let a session_cancelled record from an earlier
+        // cancellation satisfy a check about this one, so a failed telemetry
+        // write could be read back as successful. Additive: nothing asserts an
+        // exact payload shape.
+        ...(published ? { transitionId: published.transitionId } : {}),
+      },
+    },
+    ended: published
+      ? {
+          reason: "cancelled",
+          transition: { transitionId: published.transitionId, endedAt: published.endedAt, mode: ctx.mode },
+        }
+      : { reason: "cancelled" },
+  });
+
+  // T-183: Clean resume marker.
+  //
+  // The identified form deletes only a marker this session owns.
+  // `removeResumeMarker` otherwise deletes by PATH with no session identity, so
+  // a delayed pass can remove a NEWER session's marker.
+  // UNDEFINED until the call returns, never pre-seeded with a real outcome.
+  // Initializing this to `"absent"` would mean a throw silently became the
+  // successful observation "there was no marker to remove", which is the same
+  // unreadable-becomes-absent defect the rest of this protocol exists to
+  // prevent, reached through an exception instead of an error code.
+  let resumeOutcome: ResumeMarkerRemoval | undefined;
+  try {
+    resumeOutcome = published
+      ? removeResumeMarker(root, { sessionId: session.state.sessionId, mode: ctx.mode })
+      : (removeResumeMarker(root), "removed");
+  } catch { /* stays undefined: we do not know what happened */ }
+
+  // Either outcome being `undefined` means its call THREW, so there is nothing
+  // truthful to put in that artifact field, and the artifact's whole value is
+  // that it records what actually happened. Writing no artifact is both the
+  // honest answer and the fail-closed one: recovery reads a published
+  // transition with no artifact as a tail that did not finish, which is exactly
+  // the state we are in.
+  if (published && resumeOutcome !== undefined && sidecarOutcome !== undefined) {
+    // The ended marker is a POSTCONDITION, so its outcome gates the completion
+    // marker rather than being fire-and-forget. `markEnded` can refuse: a valid
+    // marker naming a different transition is durable evidence of a competing
+    // one and is never overwritten, and an unreadable marker proves nothing. A
+    // completion marker written over any of those would assert that every
+    // postcondition holds when one demonstrably does not.
+    const endedOk = endedOutcome === "written"
+      || endedOutcome === "repaired"
+      || endedOutcome === "already-correct";
+
+    // THE OTHER TWO SILENT WRITERS. `appendEvent` and the telemetry
+    // `session_cancelled` write are `: void` best-effort writers with bare
+    // catches, exactly like the ones this protocol exists to stop trusting, so
+    // each is verified by READING BACK what it should have produced. Without
+    // this the completion marker would assert that every postcondition holds
+    // while the audit trail and the telemetry record were both silently lost,
+    // which is the very condition the marker is supposed to exclude.
+    const auditLanded = anyJsonLineMatches(
+      join(session.dir, "events.log"),
+      (e) => e.type === "cancelled"
+        && e.rev === ctx.terminalRevision
+        && (e.data as Record<string, unknown> | undefined)?.transitionId === published.transitionId,
+    );
+    const telemetryLanded = anyJsonLineMatches(
+      join(telemetryDirPath(session.dir), "events.jsonl"),
+      (e) => e.type === "session_cancelled"
+        && (e.data as Record<string, unknown> | undefined)?.transitionId === published.transitionId,
+    );
+
+    // The shutdown postcondition. `already-absent` means there was nothing to
+    // shut down, which satisfies it outright. Otherwise the marker is what
+    // satisfies it: a bare `signalled` is NOT sufficient, because delivering
+    // SIGTERM is not the same fact as the process having exited, and the marker
+    // is the channel the sidecar actually self-exits on.
+    const shutdownAssured = sidecarOutcome === "already-absent" || shutdownMarkerLanded;
+
+    const unmet = [
+      ...(auditLanded ? [] : ["audit-event: not found in events.log"]),
+      ...(telemetryLanded ? [] : ["telemetry: session_cancelled not found"]),
+      ...(endedOk ? [] : [`ended-marker: ${String(endedOutcome)}`]),
+      ...(shutdownAssured ? [] : [`shutdown-marker: absent after ${sidecarOutcome}`]),
+    ];
+
+    // The record of what the shutdown ACTUALLY did. The completion gate reads
+    // this rather than re-probing liveness, because a killed process whose
+    // parent has not reaped it is a zombie that still holds its pid and still
+    // accepts signals, so a probe at gate time is not proof either way.
+    //
+    // A refusal is carried in `detail` so the reason survives to whoever finds
+    // the transition unfinished, instead of being inferable only from the
+    // completion marker's absence.
+    const recorded = writeShutdownArtifact(session.dir, published.transitionId, {
+      sidecar: sidecarOutcome,
+      resumeMarker: resumeOutcome,
+      ...(unmet.length === 0 ? {} : { detail: unmet.join("; ") }),
+    });
+    // The marker comes LAST, and only when every postcondition it attests to
+    // actually holds. `stages/finalize.ts` is the cautionary precedent: it
+    // writes its checkpoint and appends its event as two steps, and its own
+    // re-entry guard returns before the append, so a crash between them loses
+    // the event permanently. A marker written before the thing it attests to is
+    // a marker that can lie, and a marker written over a FAILED artifact write
+    // would close recovery over evidence that does not exist.
+    if (!recorded) return { completed: false, unmet: [...unmet, "shutdown-artifact: not written"] };
+    if (unmet.length > 0) return { completed: false, unmet };
+    // The marker write can fail on its own, and a caller told "completed" over
+    // a marker that does not exist is the finalize.ts failure this module
+    // exists to stop reproducing.
+    const marked = writeCompletionMarker(session.dir, published.transitionId, published.endedAt);
+    return marked
+      ? { completed: true, unmet: [] }
+      : { completed: false, unmet: ["completion-marker: not written"] };
+  }
+
+  // No transition record: the legacy path, which has no completion marker to
+  // write and so nothing to verify. Never reported as completed.
+  return { completed: false, unmet: ["no transition record"] };
+}
+
+/**
  * Whether ANY record in an append-only log satisfies a predicate.
  *
  * Scanning rather than checking only the newest line, and that is safe HERE for
@@ -2856,6 +3309,7 @@ async function applyCancellationTransition(
   root: string,
   session: { readonly dir: string; readonly state: FullSessionState },
   disposition: TicketDisposition,
+  resume?: CancellationTransition,
 ): Promise<{ readonly written: FullSessionState; readonly stashPopFailed: boolean }> {
   // THE WRITE PROTOCOL (T-450 step 6a). Four writes, and the shape carries the
   // recovery guarantees:
@@ -2884,12 +3338,27 @@ async function applyCancellationTransition(
   // cancellation down with it. `randomUUID` can throw when the platform entropy
   // source fails, and it is generated only after `startedAt` validates so the
   // legacy path costs nothing.
+  //
+  // ON RESUME every one of these is taken from the record instead. A fresh
+  // `transitionId` would orphan the first attempt's evidence, which is keyed by
+  // the original; a fresh `transitionStartedRevision` would misdate the
+  // transition's start; and re-deriving the disposition would overwrite what
+  // the first attempt actually did with a reading of the ticket it already
+  // changed.
   const startedAt = canonicalStartedAt((session.state as Record<string, unknown>).startedAt);
-  let transitionId: string | null = null;
-  if (startedAt !== null) {
+  let transitionId: string | null = resume ? resume.transitionId : null;
+  if (!resume && startedAt !== null) {
     try { transitionId = randomUUID(); } catch { transitionId = null; }
   }
-  const common = (startedAt === null || transitionId === null) ? null : {
+  const common = resume ? {
+    transitionId: resume.transitionId,
+    action: resume.action,
+    authority: resume.authority,
+    disposition: resume.disposition,
+    sessionId: resume.sessionId,
+    sessionStartedAt: resume.sessionStartedAt,
+    transitionStartedRevision: resume.transitionStartedRevision,
+  } : (startedAt === null || transitionId === null) ? null : {
     transitionId,
     action: "ordinary_cancellation" as const,
     authority: { kind: "legacy" as const },
@@ -2904,8 +3373,12 @@ async function applyCancellationTransition(
   // WRITE 1. `if-active` rather than `always`: the session is still live at
   // this point, so this is an ordinary in-flight update, not the terminal
   // publication that the status file exists to reflect.
+  //
+  // SKIPPED on resume: write 1 is what records that a transition began, and it
+  // is already on disk. Rewriting it would reset a concrete outcome back to
+  // `null`, discarding the very fact recovery came here to preserve.
   let current = session.state;
-  if (common) {
+  if (common && !resume) {
     current = writeSessionAndRefresh(root, session.dir, {
       ...current,
       cancellationTransition: {
@@ -2915,10 +3388,20 @@ async function applyCancellationTransition(
   }
 
   // T-125: Restore auto-stashed changes on cancel.
+  //
+  // NEVER on resume. `outcome: null` spans two indistinguishable crash seams,
+  // before the pop and after it but before write 3, and the durable state is
+  // identical in both. A second pop would therefore be a coin flip on whether
+  // it re-applies work already applied, or applies an unrelated stash that has
+  // since taken the ref. `indeterminate` is the honest terminal value: it says
+  // the answer is unknowable rather than guessing at it.
   let stashPopFailed = false;
   const autoStash = session.state.git.autoStash;
   let outcome: StashPopOutcome = "none";
-  if (autoStash) {
+  if (resume) {
+    outcome = resume.stash.outcome ?? "indeterminate";
+    stashPopFailed = outcome === "failed";
+  } else if (autoStash) {
     const popResult = await gitStashPop(root, autoStash.ref);
     if (!popResult.ok) stashPopFailed = true;
     outcome = popResult.ok ? "popped" : "failed";
@@ -2961,168 +3444,19 @@ async function applyCancellationTransition(
     ticket: undefined,
     ...(published ? { cancellationTransition: published } : {}),
   } as FullSessionState, "always");
-  // T-260: Same-process finalization (after state write succeeds)
-  //
-  // The `verify` form binds the signal to THIS session. `hasSidecarSignature`
-  // proves only that the pid is SOME Storybloq sidecar, so a recycled pid
-  // running another session's sidecar passes it; the sidecar's argv carries the
-  // real binding, because it is spawned with this session's telemetry
-  // directory on the command line. Declining is SAFE: `writeShutdownMarker`
-  // below is the guaranteed shutdown channel and the sidecar self-exits on it.
-  // The kill is an accelerator, not the mechanism of record.
-  let sidecarOutcome: SidecarShutdownOutcome = "declined";
-  try {
-    sidecarOutcome = published
-      ? killSidecar(session.state.sidecarPid, { sessionDir: session.dir })
-      : (killSidecar(session.state.sidecarPid), "declined");
-  } catch { /* best-effort */ }
-  // READ BACK, rather than trusting the call. `writeShutdownMarker` is a `: void`
-  // best-effort writer that swallows its own failures, so its returning tells
-  // us nothing about whether it wrote anything (L-039: the thing that reports
-  // your verification worked is itself unverified until something independent
-  // checks it).
-  //
-  // This matters precisely because the kill above is allowed to DECLINE. The
-  // justification for declining being safe is that this marker is the
-  // guaranteed shutdown channel, since the sidecar self-exits on it. If the
-  // marker never lands and the kill declined, nothing shut the sidecar down,
-  // and a completion marker claiming otherwise would be false.
-  let shutdownMarkerLanded = false;
-  try {
-    writeShutdownMarker(session.dir);
-    // EXISTENCE, which is exactly the predicate the sidecar itself consumes
-    // (`fs.existsSync(shut)` in SIDECAR_SCRIPT). Requiring content would be a
-    // STRICTER test than the consumer applies, so a partial write that the
-    // sidecar would honour would be reported unmet and leave recovery open for
-    // a shutdown that will in fact happen.
-    shutdownMarkerLanded = existsSync(join(telemetryDirPath(session.dir), "shutdown"));
-  } catch { /* best-effort */ }
-
-  const audit = auditOf(disposition);
-  appendEvent(session.dir, {
-    rev: written.revision,
-    type: "cancelled",
-    timestamp: new Date().toISOString(),
-    data: {
-      previousState: session.state.state,
-      ...audit,
-      stashPopFailed,
-    },
+  runCancellationTail(root, session, {
+    published: published as Extract<CancellationTransition, { phase: "published" }> | undefined,
+    disposition,
+    stashPopFailed,
+    previousState: session.state.state,
+    // EXACTLY `written.revision`: `terminalRevision` is `current.revision + 1`
+    // and `writeSessionSync` increments by one, so these are the same number
+    // by construction. Passing the written revision keeps the legacy path,
+    // which has no transition and therefore no `terminalRevision`, byte for
+    // byte what it was.
+    terminalRevision: written.revision,
+    mode: "first-pass",
   });
-  const endedOutcome = postStateWrite(session.dir, {
-    event: {
-      type: "session_cancelled",
-      layer: "guide",
-      data: {
-        previousState: session.state.state,
-        reason: "cancelled",
-        ...audit,
-        stashPopFailed,
-        // ATTRIBUTION, and the read-back below depends on it. Matching on the
-        // event TYPE alone would let a session_cancelled record from an earlier
-        // cancellation satisfy a check about this one, so a failed telemetry
-        // write could be read back as successful. Additive: nothing asserts an
-        // exact payload shape.
-        ...(published ? { transitionId: published.transitionId } : {}),
-      },
-    },
-    ended: published
-      ? {
-          reason: "cancelled",
-          transition: { transitionId: published.transitionId, endedAt: published.endedAt, mode: "first-pass" },
-        }
-      : { reason: "cancelled" },
-  });
-
-  // T-183: Clean resume marker.
-  //
-  // The identified form deletes only a marker this session owns.
-  // `removeResumeMarker` otherwise deletes by PATH with no session identity, so
-  // a delayed pass can remove a NEWER session's marker.
-  // UNDEFINED until the call returns, never pre-seeded with a real outcome.
-  // Initializing this to `"absent"` would mean a throw silently became the
-  // successful observation "there was no marker to remove", which is the same
-  // unreadable-becomes-absent defect the rest of this protocol exists to
-  // prevent, reached through an exception instead of an error code.
-  let resumeOutcome: ResumeMarkerRemoval | undefined;
-  try {
-    resumeOutcome = published
-      ? removeResumeMarker(root, { sessionId: session.state.sessionId, mode: "first-pass" })
-      : (removeResumeMarker(root), "removed");
-  } catch { /* stays undefined: we do not know what happened */ }
-
-  // `resumeOutcome === undefined` means the removal THREW, so there is nothing
-  // truthful to put in the artifact's `resumeMarker` field, and the artifact's
-  // whole value is that it records what actually happened. Writing no artifact
-  // is both the honest answer and the fail-closed one: recovery reads a
-  // published transition with no artifact as a tail that did not finish, which
-  // is exactly the state we are in.
-  if (published && resumeOutcome !== undefined) {
-    // The ended marker is a POSTCONDITION, so its outcome gates the completion
-    // marker rather than being fire-and-forget. `markEnded` can refuse: a valid
-    // marker naming a different transition is durable evidence of a competing
-    // one and is never overwritten, and an unreadable marker proves nothing. A
-    // completion marker written over any of those would assert that every
-    // postcondition holds when one demonstrably does not.
-    const endedOk = endedOutcome === "written"
-      || endedOutcome === "repaired"
-      || endedOutcome === "already-correct";
-
-    // THE OTHER TWO SILENT WRITERS. `appendEvent` and the telemetry
-    // `session_cancelled` write are `: void` best-effort writers with bare
-    // catches, exactly like the ones this protocol exists to stop trusting, so
-    // each is verified by READING BACK what it should have produced. Without
-    // this the completion marker would assert that every postcondition holds
-    // while the audit trail and the telemetry record were both silently lost,
-    // which is the very condition the marker is supposed to exclude.
-    const auditLanded = anyJsonLineMatches(
-      join(session.dir, "events.log"),
-      (e) => e.type === "cancelled" && e.rev === written.revision,
-    );
-    const telemetryLanded = anyJsonLineMatches(
-      join(telemetryDirPath(session.dir), "events.jsonl"),
-      (e) => e.type === "session_cancelled"
-        && (e.data as Record<string, unknown> | undefined)?.transitionId === published.transitionId,
-    );
-
-    // The shutdown postcondition. `already-absent` means there was nothing to
-    // shut down, which satisfies it outright. Otherwise the marker is what
-    // satisfies it: a bare `signalled` is NOT sufficient, because delivering
-    // SIGTERM is not the same fact as the process having exited, and the marker
-    // is the channel the sidecar actually self-exits on.
-    const shutdownAssured = sidecarOutcome === "already-absent" || shutdownMarkerLanded;
-
-    const unmet = [
-      ...(auditLanded ? [] : ["audit-event: not found in events.log"]),
-      ...(telemetryLanded ? [] : ["telemetry: session_cancelled not found"]),
-      ...(endedOk ? [] : [`ended-marker: ${String(endedOutcome)}`]),
-      ...(shutdownAssured ? [] : [`shutdown-marker: absent after ${sidecarOutcome}`]),
-    ];
-
-    // The record of what the shutdown ACTUALLY did. The completion gate reads
-    // this rather than re-probing liveness, because a killed process whose
-    // parent has not reaped it is a zombie that still holds its pid and still
-    // accepts signals, so a probe at gate time is not proof either way.
-    //
-    // A refusal is carried in `detail` so the reason survives to whoever finds
-    // the transition unfinished, instead of being inferable only from the
-    // completion marker's absence.
-    const recorded = writeShutdownArtifact(session.dir, published.transitionId, {
-      sidecar: sidecarOutcome,
-      resumeMarker: resumeOutcome,
-      ...(unmet.length === 0 ? {} : { detail: unmet.join("; ") }),
-    });
-    // The marker comes LAST, and only when every postcondition it attests to
-    // actually holds. `stages/finalize.ts` is the cautionary precedent: it
-    // writes its checkpoint and appends its event as two steps, and its own
-    // re-entry guard returns before the append, so a crash between them loses
-    // the event permanently. A marker written before the thing it attests to is
-    // a marker that can lie, and a marker written over a FAILED artifact write
-    // would close recovery over evidence that does not exist.
-    if (recorded && unmet.length === 0) {
-      writeCompletionMarker(session.dir, published.transitionId, published.endedAt);
-    }
-  }
 
   return { written, stashPopFailed };
 }
@@ -3168,9 +3502,121 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     ));
   }
 
-  // ISS-052 + ISS-066: Allow cancel from any state. Already-ended sessions are rejected.
-  if (info.state.state === "SESSION_END" || info.state.status === "completed") {
-    return guideError(new Error("Session already ended."));
+  // THE RECOVERY DISPATCHER (T-450 step 6a). Placed here deliberately: after
+  // lookup and authority validation, and before ANY state write, so a refusal
+  // below costs no revision.
+  //
+  // A cancel that crashed between write 1 and write 4 leaves the session NOT in
+  // SESSION_END, so a re-issued cancel reaches the ordinary path, which would
+  // run a FRESH cancellation: re-derive the disposition and attempt a SECOND
+  // pop. Both are wrong. The second pop can apply a stash that is no longer
+  // there, or an unrelated one that has since taken its ref. The re-derived
+  // disposition is quieter and worse: the ticket release precedes every
+  // transition write, so by re-entry the ticket is already open and re-deriving
+  // would record `unchanged`, asserting that nothing happened to a ticket this
+  // session in fact released.
+  const isTerminal = info.state.state === "SESSION_END" || info.state.status === "completed";
+  const priorRead = readCancellationTransition(
+    (info.state as Record<string, unknown>).cancellationTransition,
+  );
+
+  // FAIL CLOSED on a corrupt record. A malformed transition is still a record:
+  // something started a cancellation here and we cannot tell what it decided.
+  // Minting a fresh one would destroy the only evidence of it, and could
+  // release a ticket or pop a stash the first attempt already handled.
+  if (!isTerminal && priorRead.kind === "malformed") {
+    return guideError(new Error(
+      `Cannot cancel session ${args.sessionId}: its cancellationTransition record is unreadable ` +
+      `(${priorRead.detail}). A cancellation was already started for this session and its record ` +
+      `cannot be trusted, so starting a fresh one could repeat work the first attempt already did. ` +
+      `Inspect .story/sessions/${args.sessionId}/state.json before retrying.`,
+    ));
+  }
+
+  // THE SAME IDENTITY GATE the terminal branch applies. Without it the two
+  // recovery paths disagree: a record naming another session would be REFUSED
+  // on a terminal session and silently RESUMED on a live one, adopting that
+  // record's transitionId, disposition and stash outcome as this session's own.
+  // Fail closed for the same reason a malformed record does: the record is
+  // evidence of something, we cannot tell what, and minting a fresh transition
+  // over it would destroy it.
+  if (!isTerminal && priorRead.kind === "valid") {
+    const belongs = transitionBelongsTo(info.state, priorRead.transition);
+    if (!belongs.ok) {
+      return guideError(new Error(
+        `Cannot cancel session ${args.sessionId}: the cancellationTransition record in its directory ` +
+        `does not belong to it (${belongs.detail}). Starting a fresh cancellation would overwrite ` +
+        `that record. Inspect .story/sessions/${args.sessionId}/state.json before retrying.`,
+      ));
+    }
+  }
+
+  // CONTRADICTORY EVIDENCE, refused rather than normalized. Write 4 sets
+  // SESSION_END, `status: completed` and the published record in ONE write, so
+  // no crash can produce a published transition on a live session. Resuming one
+  // would drive it back through `stash_pending` and republish it with a fresh
+  // `endedAt` and `terminalRevision`, overwriting the termination time and
+  // revision the first publication recorded. The terminal path already refuses
+  // the mirror image of this; the two paths must not disagree.
+  if (!isTerminal && priorRead.kind === "valid" && priorRead.transition.phase !== "stash_pending") {
+    return guideError(new Error(
+      `Cannot cancel session ${args.sessionId}: its cancellationTransition is recorded as ` +
+      `${priorRead.transition.phase} while the session is still live, which cannot happen through ` +
+      `the cancellation protocol (publication and termination are one write). Resuming it would ` +
+      `overwrite the termination time it already carries. Inspect ` +
+      `.story/sessions/${args.sessionId}/state.json before retrying.`,
+    ));
+  }
+
+  // Resume the interrupted transition under its ORIGINAL id. A fresh id would
+  // orphan the first attempt's evidence, which is keyed by that id.
+  const resume = !isTerminal && priorRead.kind === "valid" && priorRead.transition.phase === "stash_pending"
+    ? priorRead.transition
+    : undefined;
+
+  // ISS-052 + ISS-066: Allow cancel from any state. Already-ended sessions are
+  // rejected, EXCEPT the one narrowly authorized case where the session is
+  // terminal only because publication landed and the tail did not.
+  if (isTerminal) {
+    const authorized = authorizeTailRecovery(info.dir, info.state, priorRead);
+    if (authorized.kind === "refuse") return guideError(new Error(authorized.message));
+
+    const t = authorized.transition;
+    // NO STATE WRITE, and therefore no status refresh. `buildInactivePayload()`
+    // (status-payload.ts:89-95) carries no sessionId, so a refresh here would
+    // blank status.json with no way to tell whose session it had described,
+    // making a DIFFERENT session that became active in the meantime vanish from
+    // status while still running. The state is already terminal and already
+    // published; there is nothing about it left to record.
+    const tail = runCancellationTail(root, { dir: info.dir, state: info.state }, {
+      published: t,
+      // Every one of these comes from the RECORD. The session itself no longer
+      // knows them: its `state` is SESSION_END rather than the state the
+      // cancellation interrupted, and its revision has moved past the one the
+      // audit event has to carry.
+      disposition: t.disposition,
+      stashPopFailed: t.stash.outcome === "failed",
+      previousState: info.state.previousState ?? "unknown",
+      terminalRevision: t.terminalRevision,
+      mode: "recovery",
+    });
+
+    // SAY WHAT HAPPENED, not what was attempted. The tail is six best-effort
+    // effects; claiming completion without consulting its verdict would be the
+    // same class of untruth the completion marker exists to prevent, moved into
+    // the operator-facing text.
+    const preamble = `Session ${args.sessionId} was already cancelled, but its shutdown had not finished. `;
+    const scope = " No ticket, stash or session state was changed.";
+    return {
+      content: [{
+        type: "text",
+        text: tail.completed
+          ? `${preamble}Completed the remaining shutdown for transition ${t.transitionId} `
+            + `(ended ${t.endedAt}).${scope}`
+          : `${preamble}Advanced it, but it is still NOT complete: ${tail.unmet.join("; ")}. `
+            + `${retryAdvice(info.dir, t.transitionId)}${scope}`,
+      }],
+    };
   }
 
   // T-178: Soft gate — reject context-motivated cancel in active auto sessions
@@ -3206,7 +3652,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   const claimLost = preflight !== null && isClaimLost(preflight);
   const posture = await cancelClaimPosture(root, info.state);
   const mayWriteTicket = posture === "held" || posture === "no-epoch";
-  if (isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost) {
+  // `!resume`: the soft gate exists to stop a cancel from STARTING, and this
+  // cancellation already started. Refusing here would strand a session that is
+  // durably mid-transition, with no route to finish it.
+  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost) {
     return {
       content: [{
         type: "text",
@@ -3223,7 +3672,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // ticket that now belongs to someone else -- the exact ISS-784 hazard, reached
   // through the cancel path instead of the report path. The marker is dropped
   // instead, so the session still ends cleanly and nothing foreign is touched.
-  if (mayWriteTicket) {
+  if (resume) {
+    // No ticket work is repeated. The first attempt already ran it, and its
+    // result is what the transition record carries.
+  } else if (mayWriteTicket) {
     await recoverPendingMutation(info.dir, info.state, root);
   } else if (info.state.pendingProjectMutation) {
     writeSessionAndRefresh(
@@ -3250,8 +3702,12 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // a security boundary: an unauthorized session should not be holding a
   // writable ticket id in scope at all, whatever the branches below are later
   // rearranged to do with it.
-  const draftTicketId = mayWriteTicket ? cancelInfo.state.ticket?.id : undefined;
-  if (!mayWriteTicket) {
+  const draftTicketId = (mayWriteTicket && !resume) ? cancelInfo.state.ticket?.id : undefined;
+  if (resume) {
+    // FROM THE RECORD, never re-derived. This is the disposition the first
+    // attempt actually acted on.
+    disposition = resume.disposition;
+  } else if (!mayWriteTicket) {
     disposition = { kind: "not-authorized" };
   } else if (draftTicketId === undefined) {
     disposition = { kind: "no-ticket" };
@@ -3331,6 +3787,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     root,
     { dir: cancelInfo.dir, state: cancelInfo.state },
     disposition,
+    resume,
   );
 
   // T-185: Build compact session report

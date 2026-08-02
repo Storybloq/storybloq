@@ -49,7 +49,18 @@ const WRITES: string[] = [];
 const entropy = vi.hoisted(() => ({ fail: false }));
 
 /** Armed per-test to force a specific tail writer to fail deterministically. */
-const inject = vi.hoisted(() => ({ resumeThrows: false, telemetryCancelFails: false }));
+const inject = vi.hoisted(() => ({ resumeThrows: false, telemetryCancelFails: false, killThrows: false }));
+
+vi.mock("../../src/autonomous/liveness.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/autonomous/liveness.js")>();
+  return {
+    ...actual,
+    killSidecar: vi.fn((...args: Parameters<typeof actual.killSidecar>) => {
+      if (inject.killThrows) throw new Error("simulated kill failure");
+      return (actual.killSidecar as (...a: unknown[]) => unknown)(...args);
+    }),
+  };
+});
 
 vi.mock("../../src/autonomous/resume-marker.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/autonomous/resume-marker.js")>();
@@ -198,6 +209,7 @@ beforeEach(() => {
   entropy.fail = false;
   inject.resumeThrows = false;
   inject.telemetryCancelFails = false;
+  inject.killThrows = false;
   root = mkdtempSync(join(tmpdir(), "t450-write-protocol-"));
   setupProject(root);
   vi.mocked(gitStashPop).mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof gitStashPop>>);
@@ -207,6 +219,7 @@ afterEach(() => {
   entropy.fail = false;
   inject.resumeThrows = false;
   inject.telemetryCancelFails = false;
+  inject.killThrows = false;
   killSidecarsInRoot(root);
   rmSync(root, { recursive: true, force: true });
   vi.clearAllMocks();
@@ -305,6 +318,51 @@ describe("T-450: the ordinary cancel publishes a durable, readable transition", 
     const noneRead = transitionOf(none.sessDir);
     if (noneRead.kind !== "valid" || noneRead.transition.phase !== "published") throw new Error("expected published");
     expect(noneRead.transition.stash.outcome).toBe("none");
+  });
+
+  it("leaves the project status reporting NO active session", async () => {
+    // The terminal write refreshes status UNCONDITIONALLY (`always`), and that
+    // is the whole point of the mode: `if-active` short-circuits on a session
+    // that has just become inactive, which is precisely this one, so the status
+    // file would keep describing a session that has ended.
+    //
+    // Pinned HERE rather than in the characterization suite, whose
+    // `ORDER).toContain("refreshStatusForSession")` assertion no longer
+    // distinguishes this: writes 1 and 3 happen while the session is still
+    // active, so they satisfy that containment on their own and the terminal
+    // write's mode became invisible to it. The frozen suite is left untouched;
+    // the lost property is re-pinned by observing the FILE instead of the call.
+    writeTicket(root);
+    const { sessionId } = plantSession(root);
+
+    await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    const status = JSON.parse(
+      readFileSync(join(root, ".story", "status.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    expect(status.sessionActive).toBe(false);
+  });
+
+  it("records the outcome only AFTER the pop, never before it", async () => {
+    // The reason write 3 is a SEPARATE write, observed from inside the pop
+    // itself. At pop time the durable record must still say `null`: the outcome
+    // is not yet known. If write 3 ran first it would record `none`, and a
+    // crash between it and publication would then resolve on recovery to a
+    // CONCRETE `none` -- an audit record stating there was no stash to restore,
+    // for a stash that was in fact popped a moment later.
+    writeTicket(root);
+    const { sessionId, sessDir } = plantSession(root, { autoStash: { ref: "stash@{0}", stashedAt: NOW } });
+
+    let atPopTime: unknown = "the pop never ran";
+    vi.mocked(gitStashPop).mockImplementation(async () => {
+      const read = transitionOf(sessDir);
+      atPopTime = read.kind === "valid" ? read.transition.stash.outcome : `unreadable: ${read.kind}`;
+      return { ok: true } as Awaited<ReturnType<typeof gitStashPop>>;
+    });
+
+    await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    expect(atPopTime).toBeNull();
   });
 
   it("carries a precomputable pointer to the shutdown artifact, not its outcomes", async () => {
@@ -634,6 +692,28 @@ describe("T-450: the tail records what it did, and says so only afterwards", () 
     if (artifact.kind !== "present") throw new Error("expected a present artifact");
     expect(artifact.artifact.detail).toContain("telemetry");
     expect(classifyCompletionMarker(sessDir, read.transition.transitionId).kind).toBe("absent");
+  });
+
+  it("writes NO artifact, and no completion, when the sidecar kill throws", async () => {
+    // The sibling of the resume-marker case, and it must behave identically.
+    // Pre-seeding this outcome with a real value would make a THROWN kill
+    // indistinguishable from a probe that ran and refused, so the artifact
+    // would assert that an identity check happened when it did not. A reader of
+    // the artifact should never have to remember that one of its two outcome
+    // fields is lossy.
+    writeTicket(root);
+    const { sessionId, sessDir } = plantSession(root);
+    inject.killThrows = true;
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+    expect(readState(sessDir).state).toBe("SESSION_END");
+
+    const read = transitionOf(sessDir);
+    if (read.kind !== "valid") throw new Error("expected a valid transition");
+    expect(readShutdownArtifact(sessDir).kind).toBe("absent");
+    expect(classifyCompletionMarker(sessDir, read.transition.transitionId).kind).toBe("absent");
+    expect(WRITES).toEqual([]);
   });
 
   it("writes NO artifact, and no completion, when the resume-marker removal throws", async () => {

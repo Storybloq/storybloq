@@ -8,6 +8,10 @@
     "type": "git",
     "url": "https://github.com/Storybloq/storybloq"
   },
+  "bugs": {
+    "url": "https://github.com/Storybloq/storybloq/issues",
+    "email": "shayegh@me.com"
+  },
   "keywords": [
     "storybloq",
     "claude-code",

@@ -85,14 +85,7 @@ import { writeResumeMarker, removeResumeMarker, type ResumeMarkerRemoval } from 
 import { refreshStatusForSession } from "./status-writer.js";
 import { writeSessionAndRefresh, emitTelemetry, postStateWrite } from "./guide-effects.js";
 import { withTelemLock } from "./telemetry-writer.js";
-import {
-  auditOf,
-  writeShutdownArtifact,
-  writeCompletionMarker,
-  readCancellationTransition,
-  classifyCompletionMarker,
-  type TicketDisposition,
-} from "./cancellation-transition.js";
+import { readCancellationTransition, type TicketDisposition } from "./cancellation-transition.js";
 import type { CancellationAuthority } from "./session-types.js";
 import type { CancellationTransition } from "./session-types.js";
 import {

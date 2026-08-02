@@ -1540,6 +1540,143 @@ export const CancellationTransitionSchema = z.discriminatedUnion("phase", [
 });
 export type CancellationTransition = z.infer<typeof CancellationTransitionSchema>;
 
+// ---------------------------------------------------------------------------
+// The durable candidate-cancellation intent (T-450 step 6b)
+// ---------------------------------------------------------------------------
+
+/** The one and only intent basename. Lives in the session directory, NOT in
+ * `state.json`: the candidate invariant `transitionStartedRevision ===
+ * confirmedSessionRevision + 1` requires that nothing increments the session
+ * revision between authorize and write 1, so the pre-publication phases must
+ * be durable without a session write. */
+export const CANCELLATION_INTENT_FILE = "cancellation-intent.json" as const;
+
+/**
+ * `Field<T>` in its persisted spelling, exactly the in-memory shape
+ * (claim-reconciliation.ts): presence and value are SEPARATE facts, and
+ * `value` is REQUIRED and nullable rather than optional. `claim` deleted
+ * versus `claim: null` are different ledger states (ISS-759 gates on key
+ * presence, not truthiness): the first persists `{present: false, value:
+ * null}`, the second `{present: true, value: null}`, and a schema that could
+ * not carry the explicit null would collapse a release into a null write.
+ */
+const PersistedFieldSchema = <T extends z.ZodTypeAny>(inner: T) =>
+  z.object({ present: z.boolean(), value: inner.nullable() }).strict();
+
+const PersistedClaimSchema = z.object({
+  user: z.string().nullable(),
+  branch: z.string().nullable(),
+  since: z.string().nullable(),
+}).strict();
+
+export const PersistedClaimEpochSchema = z.object({
+  ticketId: z.string().min(1),
+  sessionId: z.string(),
+  user: z.string().nullable(),
+  branch: z.string().nullable(),
+  since: z.string().nullable(),
+  establishedAt: z.string(),
+}).strict();
+
+/** The claim-bearing slice of a ticket at a moment in time, exactly the shape
+ * `recoverClaimTransaction` compares against. */
+export const PersistedTicketSnapshotSchema = z.object({
+  ticketId: z.string().min(1),
+  lifecycle: PersistedFieldSchema(z.string()),
+  status: PersistedFieldSchema(z.string()),
+  completedDate: PersistedFieldSchema(z.string()),
+  claim: PersistedFieldSchema(PersistedClaimSchema),
+  claimedBySession: PersistedFieldSchema(z.string()),
+}).strict();
+export type PersistedTicketSnapshot = z.infer<typeof PersistedTicketSnapshotSchema>;
+
+/** A `ClaimTxn` in its persisted spelling, nested INSIDE the intent so the
+ * claim transaction and the cancellation it serves cannot be orphaned from
+ * one another by a crash between two files. */
+const persistedClaimTxnCore = {
+  kind: z.enum(["acquire", "release", "complete"]),
+  ticketId: z.string().min(1),
+  transitionId: z.string().uuid(),
+  fromEpoch: PersistedClaimEpochSchema.nullable(),
+  toEpoch: PersistedClaimEpochSchema.nullable(),
+  fromBusiness: PersistedTicketSnapshotSchema,
+  toBusiness: PersistedTicketSnapshotSchema,
+  startedAt: z.string().min(1),
+};
+export const PersistedClaimTxnSchema = z.discriminatedUnion("phase", [
+  z.object({ ...persistedClaimTxnCore, phase: z.literal("prepared") }).strict(),
+  z.object({ ...persistedClaimTxnCore, phase: z.literal("ticket_applied") }).strict(),
+]);
+export type PersistedClaimTxn = z.infer<typeof PersistedClaimTxnSchema>;
+
+const intentCommon = {
+  schemaVersion: z.literal(1),
+  /** Pre-minted at authorize; write 1 carries it verbatim. Superseded only
+   * while ticket work has not begun (the R2 adoption rule). */
+  transitionId: z.string().uuid(),
+  /** Monotonic, bumped on EVERY re-authorization including
+   * transitionId-preserving ones, so two confirmations can never collide on
+   * the archive pathname their supersession writes. */
+  confirmationEpoch: z.number().int().min(0),
+  clientTaskId: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+  // IDENTITY + PROVENANCE, the same pair the transition record binds: session
+  // directories are reused, so an intent left by an earlier incarnation
+  // carries the right id and the wrong start time.
+  sessionId: z.string().uuid(),
+  sessionStartedAt: CanonicalInstantSchema,
+  confirmedSessionRevision: z.number().int().min(0),
+  confirmedFingerprint: z.string().min(1).max(256),
+  evidence: PersistedLivenessEvidenceSchema,
+  /** The ticket exactly as authorize read it, BEFORE anything touched it, so
+   * recovery at any pre-publication boundary reconstructs the release
+   * transaction deterministically. Null when the session held no ticket. */
+  ticketPreimage: PersistedTicketSnapshotSchema.nullable(),
+  /** Present only on an intent that superseded another; validated on
+   * acceptance against the named archive's existence and content, so the
+   * audit chain holds even when supersession changes the id. */
+  predecessor: z.object({
+    predecessorTransitionId: z.string().uuid(),
+    predecessorEpoch: z.number().int().min(0),
+    predecessorFingerprint: z.string().min(1).max(256),
+  }).strict().optional(),
+};
+
+/**
+ * Phases are separate ARMS for the same reason the transition record's are:
+ * `claimTxn` does not EXIST outside prepared/ticket_applied, and the closed
+ * outcome pointer does not exist before closure. A flat record with optional
+ * fields would let a writer claim a phase whose obligations it never wrote.
+ */
+export const CancellationIntentSchema = z.discriminatedUnion("phase", [
+  z.object({ ...intentCommon, phase: z.literal("authorized") }).strict(),
+  // The nested transaction's phase is BOUND to the enclosing intent's, so an
+  // intent cannot claim `prepared` while carrying a transaction that says the
+  // ticket was already applied: that contradiction is exactly the ambiguity
+  // recoverClaimTransaction persists the phase to rule out.
+  z.object({
+    ...intentCommon,
+    phase: z.literal("prepared"),
+    claimTxn: z.object({ ...persistedClaimTxnCore, phase: z.literal("prepared") }).strict(),
+  }).strict(),
+  z.object({
+    ...intentCommon,
+    phase: z.literal("ticket_applied"),
+    claimTxn: z.object({ ...persistedClaimTxnCore, phase: z.literal("ticket_applied") }).strict(),
+  }).strict(),
+  z.object({ ...intentCommon, phase: z.literal("claim_cleared") }).strict(),
+  z.object({
+    ...intentCommon,
+    phase: z.literal("closed"),
+    /** Derivable evidence, not authority: closed-ness is confirmed from the
+     * record this points at, never from this pointer alone. */
+    outcome: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("cancellation"), transitionId: z.string().uuid() }).strict(),
+      z.object({ kind: z.literal("takeover"), committedRevision: z.number().int().min(0) }).strict(),
+    ]),
+  }).strict(),
+]);
+export type CancellationIntent = z.infer<typeof CancellationIntentSchema>;
+
 /**
  * The single parse seam for persisted session state.
  *

@@ -15,6 +15,7 @@
  * stays acyclic.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -100,7 +101,7 @@ import {
  * recovery route, which is where it already was, rather than gaining a record
  * with an invented provenance field in it.
  */
-function canonicalStartedAt(raw: unknown): string | null {
+export function canonicalStartedAt(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
@@ -201,9 +202,10 @@ export function validateRecoveryAuthority(
 /**
  * THE SIX-WAY COMPLETION-MARKER GATE, wrapped exactly once (T-450 step 6b).
  *
- * `authorizeTailRecovery` and the candidate published branch both decide the
- * same question -- may this transition's tail be re-run? -- and before this
- * function each spelled the marker switch itself. Two spellings of a six-way
+ * `authorizeTailRecovery` and `retryAdvice` both decide the same question --
+ * may this transition's tail be re-run? -- and before this function each
+ * spelled the marker switch itself (the candidate published branch becomes the
+ * third consumer). Two spellings of a six-way
  * fail-closed switch is how one of them silently gains a seventh behavior, so
  * the CLASSIFICATION lives here and only the refusal TEXT stays with each
  * owner, because the ordinary path and the candidate path owe their operators
@@ -736,6 +738,10 @@ export interface CandidateCancellationInit {
   readonly authority: Extract<CancellationAuthority, { kind: "candidate" }>;
 }
 
+/** The exact predicate `transitionCommon` applies to persisted ids, so the
+ * pre-write gate and the strict reader cannot disagree about what a uuid is. */
+const TRANSITION_UUID = z.string().uuid();
+
 export async function applyCancellationTransition(
   root: string,
   session: { readonly dir: string; readonly state: FullSessionState },
@@ -787,6 +793,11 @@ export async function applyCancellationTransition(
   // invariant could never be validated, so degradation here would be silent
   // authority laundering. The caller (commitCandidateCancel) treats a throw as
   // a refusal and re-authorizes.
+  //
+  // CALLER OBLIGATION: `session.state` must be freshly loaded under the held
+  // session lock. The invariant below binds to this in-memory snapshot, and
+  // for a takeover the invariant IS the authorization, so a stale snapshot
+  // would validate a confirmation against a state nobody confirmed.
   if (init) {
     if (resume) {
       throw new Error("applyCancellationTransition: init and resume are mutually exclusive");
@@ -796,6 +807,19 @@ export async function applyCancellationTransition(
     if (init.action !== "candidate_recovery_takeover" || init.authority.kind !== "candidate") {
       throw new Error(
         "applyCancellationTransition: init requires candidate_recovery_takeover under candidate authority",
+      );
+    }
+    // The transitionId is the key every artifact and every future validation
+    // hangs off. A null or empty id would collapse `common` to null below and
+    // silently degrade to the recordless path WITH init present; a non-uuid
+    // id would write a record the strict reader refuses at every future read,
+    // which is a transition that can never be resumed. Both refuse pre-write,
+    // and the predicate is THE SAME `z.string().uuid()` the persisted schema
+    // applies, so this gate and the reader cannot drift apart under a zod
+    // upgrade: whatever passes here parses there, by construction.
+    if (typeof init.transitionId !== "string" || !TRANSITION_UUID.safeParse(init.transitionId).success) {
+      throw new Error(
+        "applyCancellationTransition: init.transitionId must be a uuid; the intent pre-mints it at authorize",
       );
     }
     if (startedAt === null) {
@@ -952,7 +976,12 @@ export async function applyCancellationTransition(
     // transition wrote either. A resume arrives LATE, after a crash window in
     // which anything may have written them, so that proof is gone and the
     // recovery rules (preserve what cannot be attributed) are the honest ones.
-    mode: resume ? "recovery" : "first-pass",
+    // A CANDIDATE (init) tail is recovery for the same reason with a different
+    // clock: first-pass adoption rests on the claim that no OTHER writer could
+    // have produced an identifier-free marker, and an owner-gone takeover
+    // arrives after an unbounded unattended window in which anything may have
+    // written one (pen ruling, 6b enablers byte-review).
+    mode: resume || init ? "recovery" : "first-pass",
   });
 
   return { written, stashPopFailed, tail };

@@ -1287,6 +1287,9 @@ interface StagedRecord {
   readonly sessionDir: string;
   /** The exact child, not its number. */
   readonly child: StagedChild;
+  /** The heartbeat cadence the child was spawned with; the degraded
+   * validation arm sizes its advancement wait from it. */
+  readonly intervalMs: number;
 }
 
 export interface StageGenerationOptions {
@@ -1465,7 +1468,7 @@ export function stageHeartbeatGeneration(
   // `Readonly<T>`, which drops the private field, so even the freeze cannot
   // launder a value into this type without saying so.
   const staged = (stagingHooks.freezeHandles ? Object.freeze(issued) : issued) as StagedHeartbeatGeneration;
-  stagedHandles.set(staged, { dir, identity, sessionDir, child });
+  stagedHandles.set(staged, { dir, identity, sessionDir, child, intervalMs: options.intervalMs ?? 10_000 });
   const timeoutMs = durationOption(options.readinessTimeoutMs, READINESS_TIMEOUT_MS, 0, READINESS_TIMEOUT_MAX_MS);
   const pollMs = durationOption(options.pollMs, READINESS_POLL_MS, 1, READINESS_POLL_MAX_MS);
   if (!acknowledgeReadiness(dir, pid, timeoutMs, pollMs)) {
@@ -1567,8 +1570,9 @@ export function discardStagedGeneration(staged: StagedHeartbeatGeneration): void
 }
 
 export type StagedGenerationValidation =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: "unknown-handle" | "directory-swapped" | "signature-mismatch" | "no-heartbeat" };
+  | { readonly ok: true; readonly argvProof: "proven" | "degraded-unknown" }
+  | { readonly ok: false; readonly reason:
+      "unknown-handle" | "directory-swapped" | "signature-mismatch" | "no-heartbeat" | "heartbeat-stale" };
 
 /**
  * Re-prove, immediately before publication, that a staged generation is still
@@ -1605,14 +1609,49 @@ export function validateStagedGeneration(staged: StagedHeartbeatGeneration): Sta
   // The generic marker alone would validate exactly that impostor (same shape
   // as the verify form of `killSidecar`, which probes marker + directory).
   const signature = probeApi.probeArgvSignature(record.child.pid, [SIDECAR_ARGV_MARKER, record.dir]);
-  if (signature !== "match") return { ok: false, reason: "signature-mismatch" };
+  if (signature === "absent") return { ok: false, reason: "signature-mismatch" };
 
   // NOT sticky, exactly like readiness: `readAliveTimestampIn` returns null
   // once a shutdown marker appears, so this is a claim about the current
   // state, not about a state that once held.
-  if (readAliveTimestampIn(record.dir) === null) return { ok: false, reason: "no-heartbeat" };
+  const heartbeat = readAliveTimestampIn(record.dir);
+  if (heartbeat === null) return { ok: false, reason: "no-heartbeat" };
 
-  return { ok: true };
+  if (signature === "match") return { ok: true, argvProof: "proven" };
+
+  // DEGRADED ACCEPTANCE, symmetric with readiness (see acknowledgeReadiness):
+  // "unknown" means the argv probe could not answer -- a ps failure, an
+  // unsupported platform -- never that the process is gone. Refusing here
+  // would make every publication fail exactly where readiness's own degraded
+  // arm worked to keep the feature alive, so the takeover would self-disable
+  // on those platforms after a wasted spawn.
+  //
+  // But a heartbeat merely PRESENT is readiness evidence, not liveness at
+  // write time: the child can write and exit an instant before this call. So
+  // the degraded arm requires the heartbeat to ADVANCE past the value read
+  // above, within a bound sized from the child's own cadence, which only a
+  // process that is alive NOW can make happen. The containment that makes an
+  // advancing heartbeat sufficient is this module's own: the generation
+  // directory is freshly created, EEXIST-refusing, dev:ino identity-checked,
+  // and only our child writes into it -- and the identity is re-proven after
+  // the wait, since the wait itself is a window. The wait blocks only on
+  // platforms whose probes cannot answer; where argv inspection works, the
+  // arm above returned already. The acceptance is REPORTED, not silent: the
+  // caller must persist `argvProof` in the takeover evidence so an auditor
+  // can see the authorization was made without argv proof.
+  const before = heartbeat;
+  const deadline = Date.now() + 2 * record.intervalMs + 500;
+  const pollMs = Math.max(10, Math.min(200, Math.floor(record.intervalMs / 4)));
+  for (;;) {
+    const now = readAliveTimestampIn(record.dir);
+    if (now !== null && now > before) break;
+    if (Date.now() >= deadline) return { ok: false, reason: "heartbeat-stale" };
+    sleepMs(pollMs);
+  }
+  if (directoryIdentityOf(record.dir) !== record.identity) {
+    return { ok: false, reason: "directory-swapped" };
+  }
+  return { ok: true, argvProof: "degraded-unknown" };
 }
 
 // ---------------------------------------------------------------------------

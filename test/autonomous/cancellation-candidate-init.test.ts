@@ -230,6 +230,43 @@ describe("T-450 6b: applyCancellationTransition with candidate init", () => {
     ).rejects.toThrow(/mutually exclusive/);
   });
 
+  it("refuses a transitionId that is not a uuid, before any write", async () => {
+    // The id is the key every artifact and every future validation hangs off.
+    // A null id would collapse the record to null and silently degrade to the
+    // recordless path WITH init present; a non-uuid id would write a record
+    // the strict reader refuses at every future read, which is a transition
+    // that can never be resumed (pen F1).
+    const { sessDir, state } = plantLive(root);
+    const before = readFileSync(join(sessDir, "state.json"), "utf-8");
+    for (const bad of [null, "", "not-a-uuid"]) {
+      const forged = { ...initFor(1), transitionId: bad } as unknown as CandidateCancellationInit;
+      await expect(
+        applyCancellationTransition(root, { dir: sessDir, state }, { kind: "no-ticket" }, undefined, forged),
+      ).rejects.toThrow(/uuid/);
+    }
+    expect(readFileSync(join(sessDir, "state.json"), "utf-8")).toBe(before);
+  });
+
+  it("runs its tail in RECOVERY mode: an identifier-free resume marker survives", async () => {
+    // First-pass marker privileges rest on the claim that no OTHER writer
+    // could have produced an identifier-free marker. An owner-gone takeover
+    // arrives after an unbounded unattended window, so that claim is exactly
+    // what a candidate cancellation cannot make (pen F2 ruling), and deleting
+    // the marker would silently disable a live session's resume.
+    const { sessDir, state } = plantLive(root);
+    mkdirSync(join(root, ".claude", "rules"), { recursive: true });
+    const markerPath = join(root, ".claude", "rules", "autonomous-resume.md");
+    writeFileSync(markerPath, "# resume\n\nno session id here\n");
+
+    await applyCancellationTransition(root, { dir: sessDir, state }, { kind: "no-ticket" }, undefined, initFor(1));
+
+    expect(fs.existsSync(markerPath)).toBe(true);
+    const artifact = JSON.parse(
+      readFileSync(join(telemetryDirPath(sessDir), "cancellation-shutdown.json"), "utf-8"),
+    ) as Record<string, unknown>;
+    expect(artifact.resumeMarker).toBe("preserved-unstructured");
+  });
+
   it("refuses a runtime pairing violation the type system cannot see", async () => {
     // The schema's superRefine catches this at READ time, but by then the lie
     // is on disk. The shared core is the one place that can refuse it before
@@ -352,13 +389,16 @@ describe("T-450 6b: validateStagedGeneration re-proves liveness at write time", 
     __testing.stagingHooks.spawn = null;
   });
 
-  /** A staged generation whose fake child wrote its readiness heartbeat. */
+  /** A staged generation whose fake child wrote its readiness heartbeat ONCE
+   * and will never tick again: written-and-exited, as far as any later
+   * validation can tell. The small intervalMs keeps the degraded arm's
+   * advancement bound test-sized. */
   function stagedFixture(): StagedHeartbeatGeneration {
     __testing.stagingHooks.spawn = (dir: string) => {
       fs.writeFileSync(join(dir, "alive"), String(Date.now()));
       return { pid: 999_999, terminate: () => { /* recorded, not signalled */ } };
     };
-    const staged = stageHeartbeatGeneration(root, { readinessTimeoutMs: 400, pollMs: 25 });
+    const staged = stageHeartbeatGeneration(root, { intervalMs: 50, readinessTimeoutMs: 400, pollMs: 25 });
     __testing.stagingHooks.spawn = null;
     if (!staged) throw new Error("fixture failed to stage");
     stagedCleanup.push(staged);
@@ -367,7 +407,7 @@ describe("T-450 6b: validateStagedGeneration re-proves liveness at write time", 
 
   it("validates a generation that is still exactly what readiness acknowledged", () => {
     const staged = stagedFixture();
-    expect(validateStagedGeneration(staged)).toEqual({ ok: true });
+    expect(validateStagedGeneration(staged)).toEqual({ ok: true, argvProof: "proven" });
   });
 
   it("refuses a handle staging never issued, or one already discarded", () => {
@@ -402,12 +442,36 @@ describe("T-450 6b: validateStagedGeneration re-proves liveness at write time", 
     expect(validateStagedGeneration(staged)).toEqual({ ok: false, reason: "signature-mismatch" });
   });
 
-  it("treats an UNKNOWN probe as a refusal, not as a pass", () => {
-    // A ps/proc failure proves nothing about the child. Publishing on
-    // "unknown" would make probe infrastructure failure an authorization.
+  it("accepts an UNKNOWN probe only on an ADVANCING heartbeat, and says the proof is degraded", () => {
+    // Symmetric with readiness's degraded arm (pen F3 ruling): "unknown"
+    // means argv inspection is unavailable, never that the process is gone,
+    // and refusing would self-disable the feature exactly where readiness
+    // worked to keep it alive. But a heartbeat merely PRESENT is readiness
+    // evidence, not liveness at write time, so the arm demands the heartbeat
+    // move PAST the value it read, which only a process alive NOW can do.
+    // A REAL child, still ticking, is the only fixture that can prove it.
+    const staged = stageHeartbeatGeneration(root, { intervalMs: 50, readinessTimeoutMs: 5_000 });
+    expect(staged).not.toBeNull();
+    stagedCleanup.push(staged!);
+    probeAnswer = "unknown";
+    expect(validateStagedGeneration(staged!)).toEqual({ ok: true, argvProof: "degraded-unknown" });
+  });
+
+  it("refuses an UNKNOWN probe whose heartbeat never advances: written-and-exited is not alive", () => {
+    // The stale-heartbeat race the degraded arm must not codify: the fake
+    // child wrote its readiness heartbeat and will never tick again, which is
+    // indistinguishable from a child that exited an instant before
+    // validation. The bound is sized from the child's own cadence.
     const staged = stagedFixture();
     probeAnswer = "unknown";
-    expect(validateStagedGeneration(staged)).toEqual({ ok: false, reason: "signature-mismatch" });
+    expect(validateStagedGeneration(staged)).toEqual({ ok: false, reason: "heartbeat-stale" });
+  });
+
+  it("degraded acceptance still requires the heartbeat", () => {
+    const staged = stagedFixture();
+    probeAnswer = "unknown";
+    fs.rmSync(join(staged.dir, "alive"));
+    expect(validateStagedGeneration(staged)).toEqual({ ok: false, reason: "no-heartbeat" });
   });
 
   it("refuses when the heartbeat is gone from the staged directory", () => {

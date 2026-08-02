@@ -12,12 +12,13 @@
  * one (proceed), and absence stays unambiguous permission to create. Archives
  * are evidence, never authority: exactly one transitionId is ever LIVE.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, existsSync, linkSync, statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync, spawn } from "node:child_process";
 
 import {
   readCancellationIntent,
@@ -37,6 +38,7 @@ import {
 
 const TID = "aaaaaaaa-1111-4222-8333-444444444444";
 const TID2 = "bbbbbbbb-1111-4222-8333-444444444444";
+const TID3 = "cccccccc-1111-4222-8333-444444444444";
 const SESSION = "eeeeeeee-1111-4222-8333-444444444444";
 const STARTED = "2026-08-02T00:00:00.000Z";
 const TASK = "task-candidate";
@@ -106,6 +108,31 @@ function intentOnDisk(): CancellationIntent {
 }
 
 /** The never-freed-pathname invariant plus single-live-transitionId. */
+/**
+ * Every per-attempt temp currently in the session directory.
+ *
+ * The grammar is `<target>.creating.<pid>.<counter>` and `.tmp.<pid>.<counter>`
+ * (ISS-954). It deliberately does NOT match the legacy bare `.creating` /
+ * `.tmp` names, because those carry no pid, nothing about their owner can be
+ * proven, and the sweep must leave them alone.
+ */
+function lingeringTemps(): string[] {
+  return readdirSync(sessDir).filter((n) => /\.(?:creating|tmp)\.\d+\.[0-9a-z]+$/.test(n)).sort();
+}
+
+/** A pid that is genuinely free: allocated, run to completion, reaped, probed. */
+function reapedPid(): number {
+  const child = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
+  if (typeof child.pid !== "number") throw new Error("could not allocate a pid to reap");
+  try {
+    process.kill(child.pid, 0);
+    throw new Error(`pid ${child.pid} is still live after being reaped`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+  }
+  return child.pid;
+}
+
 function assertCanonicalInvariants(liveTids: readonly string[]): void {
   expect(existsSync(join(sessDir, CANCELLATION_INTENT_FILE))).toBe(true);
   const read = readCancellationIntent(sessDir);
@@ -229,7 +256,11 @@ describe("T-450 6b: only an adoption may write the adoption receipt", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("malformed");
     expect(readCancellationIntent(sessDir).kind).toBe("absent");
-    expect(existsSync(join(sessDir, `${CANCELLATION_INTENT_FILE}.creating`))).toBe(false);
+    // Rewritten for the per-attempt temp grammar (ISS-954): asserting the
+    // single legacy name is absent would now pass vacuously, since no writer
+    // can ever produce that name. The property is that the refusal left NO
+    // temp of ANY attempt behind.
+    expect(lingeringTemps()).toEqual([]);
   });
 
   it("refuses an ADOPTED record that would not parse", () => {
@@ -291,34 +322,76 @@ describe("T-450 6b: only an adoption may write the adoption receipt", () => {
 });
 
 describe("T-450 6b: a stale temp can never reach through to a published record", () => {
-  // THE CORRUPTION THIS CLOSES. After `link`, the temp name and the published
-  // name are two directory entries for ONE inode. A crash before the unlink,
-  // or a power loss that drops the un-fsynced unlink, leaves the temp
-  // pointing at the LIVE record -- and the temp is opened `w`, which is
-  // O_TRUNC, so the next writer of ANY prefix would truncate that live record
-  // through the shared inode the moment it opened its own temp. The writers
-  // share one deterministic temp name, so this crosses between them: a temp
-  // left behind by a create reaches an archive write, and the reverse.
+  // THE CORRUPTION THIS CLOSES, in two generations.
+  //
+  // FIRST: after `link` the temp name and the published name are two entries
+  // for ONE inode, so a temp left by a crash pointed at the LIVE record, and
+  // an `w` (O_TRUNC) open by the next writer truncated it through the shared
+  // inode. That was closed by unlinking before every open.
+  //
+  // SECOND (ISS-954): unlinking first is what made the name STEALABLE across
+  // processes, because `link` and `rename` resolve the name a second time
+  // after the bytes are written. Both generations are closed structurally now:
+  // the name carries the writing attempt's pid and counter, and `wx` refuses a
+  // name already claimed, so no writer can ever open or publish through
+  // ANOTHER attempt's temp. The `finally` unlink removes OUR OWN temp on every
+  // EXCEPTION path, which is a distinct claim from surviving a KILLED process:
+  // `finally` does not run across SIGKILL, so a per-attempt temp CAN still be
+  // left hard-linked to a published record. The tests below split accordingly
+  // -- exception cleanup asserts the state is UNREACHABLE that way, and the
+  // killed-process test stages the state BY HAND and asserts it is HARMLESS,
+  // not that it cannot occur.
+  //
+  // The legacy bare name is still staged by hand in several tests. That is
+  // deliberate: it is exactly what an older binary leaves behind, and no
+  // current writer may open, publish through, or sweep it.
   const TMP = CANCELLATION_INTENT_FILE + ".creating";
 
-  it("survives a temp left hard-linked to the canonical by a crashed create", () => {
+  it("EXCEPTION cleanup: a thrown create removes its own temp via `finally`", () => {
+    // NAMED FOR WHAT IT PROVES. An injected throw runs `finally`, so this
+    // establishes the exception path only. It deliberately does NOT claim
+    // anything about a killed process, which skips `finally` entirely; that is
+    // the test below, and conflating the two would assert a property the code
+    // does not have.
     __intentTesting.at = (p) => { if (p === "create:dir-fsynced") throw new Error("injected"); };
     expect(() => createCancellationIntent(sessDir, intentFixture())).toThrow(/injected/);
     __intentTesting.at = () => undefined;
 
-    // The state the crash leaves: canonical published, temp still linked to
-    // the very same inode.
-    expect(existsSync(join(sessDir, TMP))).toBe(true);
-    expect(statSync(join(sessDir, TMP)).ino).toBe(statSync(join(sessDir, CANCELLATION_INTENT_FILE)).ino);
-
-    // A LATER, UNRELATED writer opens its temp. Before the unlink-first fix
-    // this truncated the canonical through the shared inode.
-    const second = createCancellationIntent(sessDir, intentFixture({ transitionId: TID2 }));
-    expect(second.ok).toBe(false);
-    if (!second.ok) expect(second.reason).toBe("exists");
+    expect(lingeringTemps()).toEqual([]);
     const after = readCancellationIntent(sessDir);
     expect(after.kind).toBe("valid");
     if (after.kind === "valid") expect(after.intent.transitionId).toBe(TID);
+  });
+
+  it("KILLED process: the stale temp it leaves is HARMLESS, and the sweep reclaims it", () => {
+    // THE TRUE CLAIM, and it is weaker than "a crash leaves no temp". A killed
+    // process does not run `finally`, so a per-attempt temp CAN survive still
+    // hard-linked to the published canonical. That state is staged here by hand
+    // because it is exactly what SIGKILL between `link` and the unlink leaves.
+    //
+    // It is harmless for two independent reasons, and both are asserted: no
+    // later writer can ever reuse that name (it carries the dead attempt's pid
+    // and counter, and `wx` would refuse it anyway), and the sweep removes only
+    // the TEMP directory entry, never the inode's other link.
+    expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    const canonical = join(sessDir, CANCELLATION_INTENT_FILE);
+    const dead = reapedPid();
+    const orphan = join(sessDir, `${CANCELLATION_INTENT_FILE}.creating.${dead}.k1`);
+    linkSync(canonical, orphan);
+
+    const inoBefore = statSync(canonical).ino;
+    const bytesBefore = readFileSync(canonical, "utf-8");
+    expect(statSync(orphan).ino).toBe(inoBefore);
+
+    // Any later writer runs the sweep on its way in.
+    const second = createCancellationIntent(sessDir, intentFixture({ transitionId: TID2 }));
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe("exists");
+
+    // The temp entry is gone; the record it shared an inode with is untouched.
+    expect(existsSync(orphan)).toBe(false);
+    expect(statSync(canonical).ino).toBe(inoBefore);
+    expect(readFileSync(canonical, "utf-8")).toBe(bytesBefore);
   });
 
   it("NO CRASH REQUIRED: a create against an existing canonical cannot reach it", () => {
@@ -361,6 +434,292 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     expect(JSON.parse(readFileSync(archive, "utf-8")).transitionId).toBe(TID);
     expect(intentOnDisk().transitionId).toBe(TID2);
   });
+
+  it("SWEEP: removes a temp whose owner is PROVEN gone, and only that one", () => {
+    const dead = reapedPid();
+    const deadTemp = `${CANCELLATION_INTENT_FILE}.creating.${dead}.zz`;
+    writeFileSync(join(sessDir, deadTemp), "orphan");
+    writeFileSync(join(sessDir, TMP), "legacy-bare");
+
+    expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+
+    expect(existsSync(join(sessDir, deadTemp))).toBe(false);
+    // Legacy bare name: outside the grammar, never swept, never opened.
+    expect(readFileSync(join(sessDir, TMP), "utf-8")).toBe("legacy-bare");
+  });
+
+  it("SWEEP: an EPERM probe is NOT proof of death, so the temp is kept", () => {
+    // MOCKED, not staged against pid 1. `kill(1, 0)` answers EPERM only when
+    // unprivileged; as root or in many containers it SUCCEEDS, so a fixture
+    // built on it would silently exercise the alive branch and let a mutant
+    // that treats EPERM as death survive while staying green.
+    const foreign = `${CANCELLATION_INTENT_FILE}.creating.424242.aa`;
+    writeFileSync(join(sessDir, foreign), "someone else's live attempt");
+    const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number) => {
+      if (pid === 424242) {
+        const err = new Error("operation not permitted") as NodeJS.ErrnoException;
+        err.code = "EPERM";
+        throw err;
+      }
+      return true;
+    }) as unknown as typeof process.kill);
+
+    try {
+      expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(readFileSync(join(sessDir, foreign), "utf-8")).toBe("someone else's live attempt");
+  });
+
+  it("SWEEP: an ESRCH probe IS proof, so the same temp is reclaimed", () => {
+    // The paired positive, so the test above cannot pass by the sweep simply
+    // never deleting anything.
+    const foreign = `${CANCELLATION_INTENT_FILE}.creating.424242.aa`;
+    writeFileSync(join(sessDir, foreign), "a dead attempt");
+    const spy = vi.spyOn(process, "kill").mockImplementation(((pid: number) => {
+      if (pid === 424242) {
+        const err = new Error("no such process") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      }
+      return true;
+    }) as unknown as typeof process.kill);
+
+    try {
+      expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(existsSync(join(sessDir, foreign))).toBe(false);
+  });
+
+  it("a temp collision is RETRIED, and exhaustion never reports an existing record", () => {
+    // THE MISCLASSIFICATION THIS PINS (ISS-954 A2). A temp EEXIST is a name
+    // collision; the canonical pathname here is ABSENT. If that errno reached
+    // `createCancellationIntent`'s classifier it would return `exists`,
+    // reporting a record that is not there. So exhaustion must surface as a
+    // throw carrying NO `code`, and never as a refusal.
+    //
+    // A constant injected suffix makes all 32 attempts collide, which is the
+    // only way to reach this branch: the real name carries seeded entropy plus
+    // the pid.
+    const taken = `${CANCELLATION_INTENT_FILE}.creating.CONST`;
+    writeFileSync(join(sessDir, taken), "another attempt's bytes");
+    __intentTesting.tempSuffix = () => "CONST";
+
+    try {
+      let thrown: unknown;
+      try {
+        createCancellationIntent(sessDir, intentFixture());
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as NodeJS.ErrnoException).code).toBeUndefined();
+      expect((thrown as Error).message).toContain("temp-name collision");
+    } finally {
+      __intentTesting.tempSuffix = null;
+    }
+
+    // `wx` refused every attempt, so the squatter's bytes are intact and the
+    // canonical was never published.
+    expect(readFileSync(join(sessDir, taken), "utf-8")).toBe("another attempt's bytes");
+    expect(readCancellationIntent(sessDir).kind).toBe("absent");
+  });
+
+  it("the retry walks to a FRESH name and succeeds once one is free", () => {
+    // The other side of the same loop: collisions must be retried, not fatal.
+    const taken = `${CANCELLATION_INTENT_FILE}.creating.A0`;
+    writeFileSync(join(sessDir, taken), "occupied");
+    __intentTesting.tempSuffix = (attempt) => (attempt === 0 ? "A0" : `A${attempt}`);
+
+    try {
+      expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    } finally {
+      __intentTesting.tempSuffix = null;
+    }
+
+    expect(intentOnDisk().transitionId).toBe(TID);
+    expect(readFileSync(join(sessDir, taken), "utf-8")).toBe("occupied");
+    expect(lingeringTemps()).toEqual([]);
+  });
+
+  it("the LINK writer and the RENAME writer claim distinct, target-derived names", () => {
+    // Uniqueness must hold BETWEEN writers, not just across repeated calls to
+    // one of them: the two derive from different targets and different kinds.
+    const seen: string[] = [];
+    __intentTesting.at = (p) => {
+      if (p.endsWith(":tmp-written")) seen.push(...lingeringTemps());
+    };
+    expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    expect(advanceCancellationIntent(
+      sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }),
+    ).ok).toBe(true);
+    __intentTesting.at = () => undefined;
+
+    expect(seen.length).toBe(2);
+    expect(new Set(seen).size).toBe(2);
+    expect(seen[0]).toContain(".creating.");
+    expect(seen[1]).toContain(".tmp.");
+    expect(lingeringTemps()).toEqual([]);
+  });
+
+  it("CROSS-PROCESS: the inode-steal window itself, with BOTH writers parked before publishing", async () => {
+    // THE REGRESSION FOR ISS-954, reproducing the window rather than its
+    // aftermath. An earlier version of this test parked one writer and let the
+    // other RUN TO COMPLETION. That version did fail on the old shared name,
+    // which is what made it look sufficient, but it failed for the WRONG
+    // REASON: a completing writer also unlinks the shared temp, so the parked
+    // writer hit ENOENT rather than publishing the other's inode. Verifying
+    // that a test fails on reverted code is not the same as verifying it fails
+    // for the reason it claims.
+    //
+    // Both writers now stop with their temps WRITTEN AND FSYNCED but NOT
+    // published. Under one shared deterministic name, B's open is what the
+    // name last resolved to, so releasing A makes A link B'S INODE to the
+    // canonical: A reports success while the record on disk is B's. Under
+    // per-attempt names A can only ever link its own.
+    const runner = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const script = join(process.cwd(), "test", "autonomous", "fixtures", "t450-concurrent-writer.ts");
+    const spawnParked = (role: string, out: string, tid: string, sig: string, go: string) =>
+      spawn(runner, [script, sessDir, role, out], {
+        env: {
+          ...process.env,
+          INTENT: JSON.stringify(intentFixture({ transitionId: tid })),
+          PARK_SEAM: "create:tmp-fsynced",
+          PARK_SIGNAL: sig,
+          PARK_GO: go,
+        },
+        stdio: "ignore",
+      });
+    const await_ = async (name: string) => {
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(join(sessDir, name)) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(existsSync(join(sessDir, name))).toBe(true);
+    };
+
+    const a = spawnParked("a", "result-a", TID, "a-parked", "a-go");
+    await await_("a-parked");
+    // B parks with ITS temp durable. This is the instant the shared name would
+    // have stopped meaning what A wrote.
+    const bProc = spawnParked("b", "result-b", TID2, "b-parked", "b-go");
+    await await_("b-parked");
+
+    // Release A first: it publishes through the name it claimed.
+    writeFileSync(join(sessDir, "a-go"), "1");
+    await new Promise((r) => a.on("exit", r));
+    writeFileSync(join(sessDir, "b-go"), "1");
+    await new Promise((r) => bProc.on("exit", r));
+
+    const ra = JSON.parse(readFileSync(join(sessDir, "result-a"), "utf-8"));
+    const rb = JSON.parse(readFileSync(join(sessDir, "result-b"), "utf-8"));
+    expect([ra.ok, rb.ok].filter(Boolean).length).toBe(1);
+
+    // THE DECISIVE ASSERTION: the writer that reported success must be the one
+    // whose bytes are on disk. Under the steal, A returns ok while the
+    // canonical holds B's intent.
+    const onDisk = readCancellationIntent(sessDir);
+    expect(onDisk.kind).toBe("valid");
+    if (onDisk.kind !== "valid") return;
+    expect(onDisk.intent.transitionId).toBe(ra.ok ? TID : TID2);
+  }, 90_000);
+
+  it("the ARCHIVE writer derives its temp from the ARCHIVE, not from the canonical", () => {
+    // Target-derivation asserted where it actually matters. Comparing a create
+    // against an advance only shows that the `.creating` and `.tmp` KINDS
+    // differ; both target the canonical, so reverting the archive writer to
+    // derive from `intentPath` would stay green. The archive path is the one
+    // that shared a name with the canonical writer before ISS-954, which is how
+    // a stale create temp reached an archive write.
+    expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    const archiveBase = `cancellation-intent.superseded.${TID}.0.json`;
+
+    let archiveTemp: string | undefined;
+    __intentTesting.at = (p) => {
+      if (p === "supersede:archive:tmp-written") {
+        archiveTemp = lingeringTemps().find((n) => n.startsWith(archiveBase));
+      }
+    };
+    const replacement = intentFixture({
+      transitionId: TID2, confirmationEpoch: 1,
+      predecessor: { predecessorTransitionId: TID, predecessorEpoch: 0, predecessorFingerprint: "fp-1" },
+    });
+    expect(supersedeCancellationIntent(sessDir, replacement).ok).toBe(true);
+    __intentTesting.at = () => undefined;
+
+    expect(archiveTemp).toBeDefined();
+    expect(archiveTemp).toMatch(new RegExp(`^${archiveBase.replace(/\./g, "\\.")}\\.creating\\.\\d+\\.`));
+    expect(lingeringTemps()).toEqual([]);
+  });
+
+  it("CROSS-PROCESS, DIFFERENT TARGETS: a create and an archive write cannot reach each other", async () => {
+    // THE OTHER HALF OF ISS-954's ACCEPTANCE, and the one the single-process
+    // derivation test above cannot reach. Before the fix, createExclusiveDurable
+    // derived its temp from the CANONICAL pathname even when publishing an
+    // ARCHIVE, so a create and a supersession's archive write collided on one
+    // name despite writing to different targets.
+    //
+    // The harm runs archive-ward: the archive writer parks with the canonical's
+    // bytes staged under the shared name, the create then truncates that name
+    // and writes ITS bytes, and releasing the archive writer links the name to
+    // the archive path. The archive, which is supposed to be the superseded
+    // record's evidence, ends up holding an unrelated intent. That breaks both
+    // the byte-strict EEXIST resolution and the archive proof for the triple.
+    expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
+    const canonicalBytes = readFileSync(join(sessDir, CANCELLATION_INTENT_FILE), "utf-8");
+
+    const runner = join(process.cwd(), "node_modules", ".bin", "tsx");
+    const script = join(process.cwd(), "test", "autonomous", "fixtures", "t450-concurrent-writer.ts");
+    const spawnParked = (mode: string, out: string, intent: unknown, seam: string, sig: string, go: string) =>
+      spawn(runner, [script, sessDir, mode, out], {
+        env: { ...process.env, INTENT: JSON.stringify(intent), PARK_SEAM: seam, PARK_SIGNAL: sig, PARK_GO: go },
+        stdio: "ignore",
+      });
+    const await_ = async (name: string) => {
+      const deadline = Date.now() + 30_000;
+      while (!existsSync(join(sessDir, name)) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(existsSync(join(sessDir, name))).toBe(true);
+    };
+
+    // The ARCHIVE writer parks first, holding the canonical's bytes staged.
+    const superseder = spawnParked(
+      "supersede", "result-sup",
+      intentFixture({
+        transitionId: TID2, confirmationEpoch: 1,
+        predecessor: { predecessorTransitionId: TID, predecessorEpoch: 0, predecessorFingerprint: "fp-1" },
+      }),
+      "supersede:archive:tmp-fsynced", "sup-parked", "sup-go",
+    );
+    await await_("sup-parked");
+
+    // The CREATE writer then stages its own bytes. Under one shared name this
+    // is the instant the archive writer's staged content stops being the
+    // canonical's.
+    const creator = spawnParked(
+      "create", "result-cre", intentFixture({ transitionId: TID3 }),
+      "create:tmp-fsynced", "cre-parked", "cre-go",
+    );
+    await await_("cre-parked");
+
+    writeFileSync(join(sessDir, "sup-go"), "1");
+    await new Promise((r) => superseder.on("exit", r));
+    writeFileSync(join(sessDir, "cre-go"), "1");
+    await new Promise((r) => creator.on("exit", r));
+
+    // THE DECISIVE ASSERTION: the archive holds the record it superseded, not
+    // the concurrent create's intent.
+    const archive = join(sessDir, `cancellation-intent.superseded.${TID}.0.json`);
+    expect(existsSync(archive)).toBe(true);
+    expect(readFileSync(archive, "utf-8")).toBe(canonicalBytes);
+    expect(JSON.parse(readFileSync(archive, "utf-8")).transitionId).toBe(TID);
+  }, 90_000);
 
   it("survives a stale temp left linked to an ARCHIVE", () => {
     // The evidence-corrupting direction: a later cycle rewriting archived

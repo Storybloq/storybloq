@@ -36,11 +36,13 @@ import {
   linkSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { Buffer } from "node:buffer";
 import {
   CANCELLATION_INTENT_FILE,
@@ -72,6 +74,18 @@ import { readCancellationTransition } from "./cancellation-transition.js";
  * `__testing` hooks: module-private effects, test-visible seams. */
 export const __intentTesting = {
   at: (_point: string): void => undefined,
+  /**
+   * Temp-name components, injectable for the same reason the crash seams are.
+   *
+   * The claim loop's failure arms are unreachable from on-disk fixtures: the
+   * name carries 32 bits of seeded entropy plus the pid, so no test can force
+   * a collision, let alone the 32 consecutive ones that reach the exhaustion
+   * wrap. Without this the `wx` exclusivity, the retry, and the wrap are three
+   * guards no test can distinguish from their own absence -- which is a
+   * coverage gap dressed as a passing suite. Returning a CONSTANT name makes
+   * every attempt collide deterministically.
+   */
+  tempSuffix: null as null | ((attempt: number) => string),
 };
 
 function intentPath(sessionDir: string): string {
@@ -98,6 +112,90 @@ function fsyncPath(path: string): void {
 }
 
 /**
+ * Per-attempt temp names. The counter is seeded with process entropy so two
+ * processes that share a pid across a restart do not march through the same
+ * sequence and turn every collision into a retry storm.
+ */
+let tempCounter = randomBytes(4).readUInt32BE(0);
+
+/** Matches `<target>.creating.<pid>.<counter>` and `<target>.tmp.<pid>.<counter>`. */
+const TEMP_NAME = /\.(?:creating|tmp)\.(\d+)\.[0-9a-z]+$/;
+const MAX_TEMP_ATTEMPTS = 32;
+
+/**
+ * Delete temps whose owner is PROVEN gone, and nothing else.
+ *
+ * ESRCH is the only proof of death. EPERM, and every other probe error, means
+ * a process exists that we may not signal, so the temp is KEPT: deleting a
+ * live attempt's name is exactly the theft this sweep exists downstream of.
+ * Sweep failures are ignored and no caller's correctness depends on it
+ * running, which is what lets it be this conservative.
+ *
+ * Legacy bare `.creating` / `.tmp` names are deliberately NOT swept. They
+ * carry no pid, so nothing about them can be proven, and removing one could
+ * pull the name out from under a writer running older bytes.
+ */
+function sweepOrphanTemps(dir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const m = TEMP_NAME.exec(name);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      process.kill(pid, 0);
+      continue; // alive
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue; // unprovable, keep
+    }
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      // Cosmetic only. Never a correctness path.
+    }
+  }
+}
+
+/**
+ * Claim a fresh temp beside `target`, opened `wx` so the name is ours alone.
+ *
+ * EEXIST HERE IS A NAME COLLISION, NOT THE PROTOCOL'S ANSWER, and confusing
+ * the two would be a reporting bug with teeth: `createCancellationIntent`
+ * reads EEXIST as "a canonical intent already exists" and the archive writers
+ * read it as `archive-conflict`, so a temp collision reaching either
+ * classifier would report an existing record at a pathname that is ABSENT.
+ * Collisions therefore retry on a new counter, and exhaustion throws a wrapped
+ * error carrying no `code`, which cannot satisfy any `code === "EEXIST"` test
+ * downstream.
+ */
+function openFreshTemp(sessionDir: string, target: string, kind: "creating" | "tmp"): { fd: number; tmp: string } {
+  sweepOrphanTemps(sessionDir);
+  let last: unknown;
+  for (let i = 0; i < MAX_TEMP_ATTEMPTS; i++) {
+    const suffix = __intentTesting.tempSuffix
+      ? __intentTesting.tempSuffix(i)
+      : `${process.pid}.${(tempCounter++ >>> 0).toString(36)}`;
+    const tmp = `${target}.${kind}.${suffix}`;
+    try {
+      return { fd: openSync(tmp, "wx"), tmp };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      last = err;
+    }
+  }
+  throw new Error(
+    `could not claim a temporary file beside ${target} after ${MAX_TEMP_ATTEMPTS} attempts; ` +
+    "this is a temp-name collision, NOT an existing record at the target",
+    { cause: last },
+  );
+}
+
+/**
  * EXCLUSIVE CREATE, done as build-then-claim rather than claim-then-build.
  *
  * The obvious spelling, `openSync(name, "wx")`, creates the inode BEFORE the
@@ -116,108 +214,134 @@ function fsyncPath(path: string): void {
  * either absence (the retry creates) or a valid record (the retry reads
  * EEXIST and routes through classification). There is no third state.
  *
- * The temp name is DETERMINISTIC rather than unique, so a temp left by a
- * crashed attempt is truncated by the next attempt's `w` open instead of
- * accumulating as litter. It never carries authority; only the linked name
- * does, which is why the link, not the write, is the moment of creation.
+ * The temp name is UNIQUE PER ATTEMPT, and derived from the TARGET rather
+ * than always from the canonical intent. Both properties are corrections
+ * (ISS-954). A single deterministic name shared by every writer in the
+ * directory is stealable: `link` and `rename` resolve that name a SECOND
+ * time, after the bytes are already written through a descriptor, so a
+ * concurrent process that replaces the name in between makes this writer
+ * publish the OTHER attempt's inode under this attempt's pathname. If that
+ * attempt completed, the pathname holds well-formed bytes belonging to
+ * another cycle, which parse and so are never flagged; if it crashed
+ * mid-write, the pathname is empty or partial, which is the zero-length wedge
+ * build-then-claim exists to remove, and this time nothing can clear it.
+ *
+ * The lock narrows that window and does not close it. Every writer here
+ * requires the held session lock, but stale-lock breakage hands the lock to a
+ * second process BY DESIGN, and a zombie writer that has lost the lock still
+ * holds an open descriptor and still completes its publish. This ticket
+ * exists precisely to let a second process act on a session whose owner is
+ * believed dead, so those are the central paths, not exotic ones.
+ *
+ * Uniqueness makes the name unstealable; `wx` makes the claim on it
+ * exclusive. The cost is litter, because a name no other attempt may reuse is
+ * also a name no other attempt may blindly clean up: anti-litter and
+ * anti-theft cannot both be bought with one deterministic name. Litter is
+ * reclaimed by a sweep that deletes only temps whose owning pid is PROVEN
+ * gone, since a cosmetic leak is cheaper than deleting a live attempt's name
+ * and reopening this entire class.
  */
 function createExclusiveDurable(sessionDir: string, path: string, text: string, prefix: string): void {
-  const tmp = intentPath(sessionDir) + ".creating";
-  // UNLINK BEFORE OPEN, and this is not tidiness -- it is the difference
-  // between this writer and a corruption path.
-  //
-  // After `link` the temp NAME and the published name are two directory
-  // entries for ONE inode. A crash between the link and the unlink below, or
-  // a power loss that drops the un-fsynced unlink, leaves the temp still
-  // pointing at the LIVE record. `openSync(tmp, "w")` is O_TRUNC, so the next
-  // writer of any prefix -- create, supersede's archive, retire's archive --
-  // would truncate that live record through the shared inode the instant it
-  // opened its temp. For the canonical intent that resurrects the exact
-  // zero-length wedge build-then-claim was introduced to remove, and this
-  // time from a state nothing in the module can clear; for an archive it
-  // silently rewrites evidence, breaking both the byte-strict EEXIST
-  // resolution and `priorCycleIsArchived` for that triple.
-  //
-  // Unlinking first drops OUR entry only, so the open always mints a fresh
-  // inode and the published record is untouchable from here. The
-  // deterministic name is kept: a crashed attempt leaves at most one stale
-  // temp, and the next attempt REMOVES it rather than reopening it, so it
-  // never accumulates and never carries anything forward.
+  const { fd, tmp } = openFreshTemp(sessionDir, path, "creating");
   try {
-    unlinkSync(tmp);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-  }
-  const fd = openSync(tmp, "w");
-  try {
-    // INSIDE the try, so an injected throw here still runs `closeSync`. This
-    // seam fires on every crash-sweep iteration of every writer, so leaking a
-    // descriptor per injection is how a suite runs out of them.
-    __intentTesting.at(`${prefix}:tmp-opened`);
-    const bytes = Buffer.from(text, "utf-8");
-    const written = writeSync(fd, bytes);
-    if (written !== bytes.length) {
-      throw new Error(`intent write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
+    try {
+      // INSIDE the try, so an injected throw here still runs `closeSync`. This
+      // seam fires on every crash-sweep iteration of every writer, so leaking a
+      // descriptor per injection is how a suite runs out of them.
+      __intentTesting.at(`${prefix}:tmp-opened`);
+      const bytes = Buffer.from(text, "utf-8");
+      const written = writeSync(fd, bytes);
+      if (written !== bytes.length) {
+        throw new Error(`intent write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
+      }
+      __intentTesting.at(`${prefix}:tmp-written`);
+      fsyncSync(fd);
+      __intentTesting.at(`${prefix}:tmp-fsynced`);
+    } finally {
+      closeSync(fd);
     }
-    __intentTesting.at(`${prefix}:tmp-written`);
-    fsyncSync(fd);
-    __intentTesting.at(`${prefix}:tmp-fsynced`);
+    // EEXIST propagates to the caller, whose situation table decides. This is
+    // the create.
+    try {
+      linkSync(tmp, path);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // EEXIST is the answer, not a failure, and must pass through untouched.
+      // The others mean the FILESYSTEM cannot do this, which `wx` did not
+      // require: exFAT and some SMB mounts have no hard links. Say so plainly
+      // rather than surfacing a bare errno from a call the caller never made.
+      if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") {
+        throw new Error(
+          `the session directory's filesystem does not support hard links (${code}), which the durable ` +
+          `intent protocol requires to publish ${path} without a window where the name exists empty`,
+          { cause: err },
+        );
+      }
+      throw err;
+    }
+    __intentTesting.at(`${prefix}:linked`);
+    fsyncPath(sessionDir);
+    __intentTesting.at(`${prefix}:dir-fsynced`);
   } finally {
-    closeSync(fd);
-  }
-  // EEXIST propagates to the caller, whose situation table decides. This is
-  // the create.
-  try {
-    linkSync(tmp, path);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    // EEXIST is the answer, not a failure, and must pass through untouched.
-    // The others mean the FILESYSTEM cannot do this, which `wx` did not
-    // require: exFAT and some SMB mounts have no hard links. Say so plainly
-    // rather than surfacing a bare errno from a call the caller never made.
-    if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") {
-      throw new Error(
-        `the session directory's filesystem does not support hard links (${code}), which the durable ` +
-        `intent protocol requires to publish ${path} without a window where the name exists empty`,
-        { cause: err },
-      );
+    // IN A FINALLY, so no exit leaves our name behind. The unique name means
+    // this unlink can only ever remove OUR attempt, which is what makes doing
+    // it unconditionally safe -- under the old shared name the same line would
+    // have been the theft. On the success path the record is already durable
+    // under its real name, so losing the machine here costs a stale temp and
+    // nothing else; on a failure path it keeps litter proportional to crashes
+    // rather than to attempts.
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Already gone, or unremovable. The sweep is the backstop.
     }
-    throw err;
   }
-  __intentTesting.at(`${prefix}:linked`);
-  fsyncPath(sessionDir);
-  __intentTesting.at(`${prefix}:dir-fsynced`);
-  // Last, and deliberately after the directory fsync: the record is already
-  // durable under its real name, so losing the machine here costs a stale
-  // temp and nothing else.
-  unlinkSync(tmp);
   __intentTesting.at(`${prefix}:tmp-removed`);
 }
 
 /** Atomic replace: fsync'd temp, rename over the canonical name, directory
  * fsync. The canonical pathname is never absent at any instant. */
 function replaceDurable(sessionDir: string, text: string, pointPrefix: string): void {
-  const tmp = intentPath(sessionDir) + ".tmp";
-  const fd = openSync(tmp, "w");
+  const target = intentPath(sessionDir);
+  // Same per-attempt uniqueness as the link writer, and for the same reason:
+  // `renameSync` resolves this name a second time after the bytes are written
+  // through the descriptor, so a shared name lets a concurrent attempt's inode
+  // be published over the canonical record (ISS-954).
+  const { fd, tmp } = openFreshTemp(sessionDir, target, "tmp");
+  let renamed = false;
   try {
-    const bytes = Buffer.from(text, "utf-8");
-    const written = writeSync(fd, bytes);
-    // Checked for the same reason as the exclusive create: a short write here
-    // is renamed over the canonical pathname, so a truncated temp becomes a
-    // permanently malformed canonical intent.
-    if (written !== bytes.length) {
-      throw new Error(`intent write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
+    try {
+      const bytes = Buffer.from(text, "utf-8");
+      const written = writeSync(fd, bytes);
+      // Checked for the same reason as the exclusive create: a short write here
+      // is renamed over the canonical pathname, so a truncated temp becomes a
+      // permanently malformed canonical intent.
+      if (written !== bytes.length) {
+        throw new Error(`intent write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
+      }
+      __intentTesting.at(`${pointPrefix}:tmp-written`);
+      fsyncSync(fd);
+      __intentTesting.at(`${pointPrefix}:tmp-fsynced`);
+    } finally {
+      closeSync(fd);
     }
-    __intentTesting.at(`${pointPrefix}:tmp-written`);
-    fsyncSync(fd);
-    __intentTesting.at(`${pointPrefix}:tmp-fsynced`);
+    renameSync(tmp, target);
+    // Set only after the rename returns: the rename CONSUMES the temp name, so
+    // unlinking afterwards would either fail or, if some other attempt had
+    // since claimed the name, remove a file that is not ours.
+    renamed = true;
+    __intentTesting.at(`${pointPrefix}:renamed`);
+    fsyncPath(sessionDir);
+    __intentTesting.at(`${pointPrefix}:dir-fsynced`);
   } finally {
-    closeSync(fd);
+    if (!renamed) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // Already gone, or unremovable. The sweep is the backstop.
+      }
+    }
   }
-  renameSync(tmp, intentPath(sessionDir));
-  __intentTesting.at(`${pointPrefix}:renamed`);
-  fsyncPath(sessionDir);
-  __intentTesting.at(`${pointPrefix}:dir-fsynced`);
 }
 
 // ---------------------------------------------------------------------------

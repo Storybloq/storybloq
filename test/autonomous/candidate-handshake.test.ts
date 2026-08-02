@@ -19,7 +19,7 @@
  * re-run rather than worked around.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -32,7 +32,7 @@ import {
   OWNER_STALE_MS,
   type OwnableLivenessState,
 } from "../../src/autonomous/liveness.js";
-import type { SuccessorServers } from "../../src/autonomous/mcp-registry.js";
+import type { SuccessorServers, RegisteredServer } from "../../src/autonomous/mcp-registry.js";
 
 const NOW = Date.parse("2026-08-02T12:00:00.000Z");
 const STALE_AT = new Date(NOW - 30 * 60_000).toISOString();
@@ -83,7 +83,22 @@ function candidateState(over: Partial<OwnableLivenessState> = {}): OwnableLivene
 function writeMarker(pid: number): void {
   const tDir = telemetryDirPath(sessDir);
   mkdirSync(tDir, { recursive: true });
-  writeFileSync(join(tDir, "shutdown"), STALE_AT);
+  const marker = join(tDir, "shutdown");
+  writeFileSync(marker, STALE_AT);
+  // MTIME IS THE SIGNAL, and it must come from the INJECTED clock.
+  //
+  // `readDeathMarker` never reads this file's contents: it stats the file and
+  // compares `st.mtime` against the `now` it was handed. Leaving the mtime at
+  // the real wall-clock time means the test controls one clock and the
+  // filesystem controls the other, and the comparison is then
+  // `realNow - NOW`. That is negative only while real time is BEHIND the
+  // pinned constant, so the whole suite passes until the wall clock crosses
+  // it and then reads every marker as `future`, which is unreadable, which
+  // makes the verdict `undetermined` and fails the fixture precondition in
+  // `shown()` rather than any assertion. See ISS-957: a fake clock pinned to
+  // a then-future date is a bomb whose fuse is the calendar.
+  const at = new Date(Date.parse(STALE_AT));
+  utimesSync(marker, at, at);
   writeFileSync(join(tDir, "sidecar.pid"), String(pid));
 }
 
@@ -545,5 +560,110 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     expect(result.ticketWork.kind).toBe("blocked");
     if (result.ticketWork.kind !== "blocked") return;
     expect(result.ticketWork.why).toBe("unpersistable-preimage");
+  });
+});
+
+/**
+ * The digest excludes THIS server's own registry entry, and that exclusion is
+ * scoped to the digest alone. Both halves need pinning, because each one
+ * without the other is a bug:
+ *
+ *   Too narrow (digest our own entry) and the handshake is
+ *   SELF-INVALIDATING. The guide-call seam rewrites this server's entry
+ *   whenever the calling task id differs from the one recorded in it, so one
+ *   MCP server serving two tasks rejects the second task's very first
+ *   confirmation, having invalidated the picture by looking at it.
+ *
+ *   Too wide (carry the exclusion into `markerValidity` or `successorPids`)
+ *   and a takeover proceeds against a LIVE owner, because our entry turning
+ *   out to carry the owner's identity is precisely the signal that the
+ *   owner's client is alive somewhere other than the dead server.
+ *
+ * The pair below is a counterfactual, not two independent assertions. Showing
+ * that the fingerprint moves when the owner's identity appears would not
+ * prove WHICH field moved it, and a mutant that widened the exclusion into
+ * `markerValidity` while leaving some other field reactive would still pass.
+ * Restoring only `markerValidity` and watching the original digest come back
+ * is what attributes the move to that field alone.
+ */
+describe("T-450 6b: the digest excludes our own entry, and nothing more than ours", () => {
+  /** This server's own registry entry, carrying whatever identity we stamp on it. */
+  function ourEntry(identity: RegisteredServer["identity"]): SuccessorServers {
+    return { kind: "observed", servers: [{ pid: process.pid, identity, registeredAt: STALE_AT }] };
+  }
+
+  it("SUCCESS REGRESSION: an unrelated task stamping OUR entry does not reject the first confirmation", async () => {
+    // The human confirmed against a registry that did not list us. Before the
+    // authorization arrives, an unrelated task's guide call rewrites THIS
+    // server's entry with its own identity and a fresh `registeredAt`. That is
+    // process-local churn: it says nothing about whether the set of OTHER live
+    // servers moved under the human. The first confirmation must still pass.
+    const state = candidateState();
+    const { fingerprint } = shown(state);
+    // `boundAt` is required by `PersistedRegisteredServerSchema`, which is
+    // `.strict()`. Omitting it makes the evidence unpersistable and the
+    // handshake refuses before either check runs, which would have made this
+    // test pass for entirely the wrong reason had it been asserting a refusal.
+    const churned = ourEntry({ client: "claude", id: "task-unrelated", boundAt: "" });
+
+    // The premise, asserted rather than assumed: a non-owner identity leaves
+    // `markerValidity` exactly where an empty registry leaves it, so this test
+    // is genuinely exercising the successors exclusion and not riding on a
+    // marker signal that never moved for an unrelated reason.
+    const fresh = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => churned);
+    expect(fresh.signals.markerValidity).toEqual(shown(state).verdict.signals.markerValidity);
+
+    const result = await authorizeCandidateRecovery(sessDir, {
+      sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
+      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+    }, depsFor(state, { readSuccessors: () => churned }));
+
+    expect(result.kind).toBe("authorized");
+  });
+
+  it("PAIRED NEGATIVE: the OWNER's identity on our entry moves the digest, and only markerValidity moved it", async () => {
+    const state = candidateState();
+    const confirmed = shown(state);
+
+    // Our own entry now carries the RECORDED OWNER's identity. `others` is
+    // filtered by the recorded dead pid, not by ours, so our entry is in the
+    // set the identity question is asked over: the owner's client is alive
+    // right now, somewhere other than the dead server.
+    const ownerStamped = ourEntry({ client: OWNER.client, id: OWNER.id, boundAt: OWNER.boundAt });
+    const fresh = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => ownerStamped);
+
+    expect(fresh.signals.markerValidity.kind).toBe("invalidated");
+    if (fresh.signals.markerValidity.kind !== "invalidated") return;
+    expect(fresh.signals.markerValidity.reason).toBe("superseded-by-owner-identity");
+    expect(fresh.signals.markerValidity.successorPids).toEqual([process.pid]);
+
+    // The digest moved.
+    expect(evidenceFingerprint(fresh.signals)).not.toBe(confirmed.fingerprint);
+
+    // THE COUNTERFACTUAL. From the same fresh signals, restore ONLY
+    // `markerValidity` to its confirmed value. The digest must come back to
+    // the confirmed one, DESPITE our entry having appeared in `successors`
+    // with a changed identity. That equality is the attribution: the
+    // successors exclusion is still doing its job, and the move came from
+    // `markerValidity` and nowhere else.
+    const counterfactual = { ...fresh.signals, markerValidity: confirmed.verdict.signals.markerValidity };
+    expect(evidenceFingerprint(counterfactual)).toBe(confirmed.fingerprint);
+
+    // Restore it and the mismatch returns, so the equality above cannot be a
+    // digest that stopped responding to this field altogether.
+    expect(evidenceFingerprint({ ...counterfactual, markerValidity: fresh.signals.markerValidity }))
+      .not.toBe(confirmed.fingerprint);
+
+    // And end to end: check 1 refuses, nothing is mutated.
+    const before = readdirSync(sessDir).sort();
+    const result = await authorizeCandidateRecovery(sessDir, {
+      sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
+      confirmedFingerprint: confirmed.fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+    }, depsFor(state, { readSuccessors: () => ownerStamped }));
+
+    expect(result.kind).toBe("re-confirm");
+    if (result.kind !== "re-confirm") return;
+    expect(result.reason).toBe("fingerprint-changed");
+    expect(readdirSync(sessDir).sort()).toEqual(before);
   });
 });

@@ -300,6 +300,22 @@ describe("T-450: a re-issued cancel RESUMES the interrupted transition", () => {
     expect(read.transition.terminalRevision).toBe(read.transition.transitionStartedRevision + 2);
   });
 
+  it("records NONE, not indeterminate, when the crashed session had no stash at all", async () => {
+    // `indeterminate` says "whether the pop ran is unknowable". With no
+    // `git.autoStash` there was never a pop to run, so nothing is unknowable
+    // and `none` is the truthful record. Conservative-direction fix (pen N2 on
+    // the 6a completion verdict): the old value overstated uncertainty, never
+    // understated it.
+    writeTicket(root, "open");
+    const { sessionId, sessDir } = plantInterrupted(root, priorTransition());
+
+    await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    const read = transitionOf(sessDir);
+    if (read.kind !== "valid" || read.transition.phase !== "published") throw new Error("expected published");
+    expect(read.transition.stash.outcome).toBe("none");
+  });
+
   it("publishes at tSR + 2 when resuming a null outcome too", async () => {
     // The null-outcome resume DOES run write 3 (it records `indeterminate`),
     // so both resume shapes land publication on the same equation.

@@ -3322,10 +3322,15 @@ function runCancellationTail(
   // unfinished but recoverable. Reporting the second as "no transition record"
   // would tell an operator there is nothing to recover exactly when there is.
   if (published) {
-    return { completed: false, unmet: [
+    const unknown = [
       ...(sidecarOutcome === undefined ? ["sidecar: shutdown call threw, outcome unknown"] : []),
       ...(resumeOutcome === undefined ? ["resume-marker: removal call threw, outcome unknown"] : []),
-    ] };
+    ];
+    // DEFENSIVE (pen N3): with both siblings defined this branch should be
+    // unreachable, but an incomplete outcome with an EMPTY unmet list would
+    // render F1's note with nothing after the colon, so the artifact that was
+    // certainly not recorded on this path names itself.
+    return { completed: false, unmet: unknown.length > 0 ? unknown : ["shutdown-artifact: not recorded"] };
   }
   return { completed: false, unmet: ["no transition record"] };
 }
@@ -3469,7 +3474,10 @@ async function applyCancellationTransition(
   const autoStash = session.state.git.autoStash;
   let outcome: StashPopOutcome = "none";
   if (resume) {
-    outcome = resume.stash.outcome ?? "indeterminate";
+    // `indeterminate` says "whether the pop ran is unknowable". With no
+    // autoStash there was never a pop to run, so nothing is unknowable and
+    // `none` is the truthful record (pen N2, 6a completion verdict).
+    outcome = resume.stash.outcome ?? (autoStash ? "indeterminate" : "none");
     stashPopFailed = outcome === "failed";
   } else if (autoStash) {
     const popResult = await gitStashPop(root, autoStash.ref);

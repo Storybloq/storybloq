@@ -29,7 +29,7 @@
  */
 import { writeSessionSync } from "./session.js";
 import { refreshStatusForSession, isSessionActiveForStatus } from "./status-writer.js";
-import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer } from "./telemetry-writer.js";
+import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer, type EndedMarkerOutcome } from "./telemetry-writer.js";
 import type { FullSessionState } from "./session-types.js";
 
 export type RefreshMode = "always" | "if-active" | "never";
@@ -67,9 +67,28 @@ export function emitTelemetry(dir: string, type: string, layer: TelemetryLayer, 
 export function postStateWrite(dir: string, opts: {
   event?: { type: string; layer: TelemetryLayer; data: Record<string, unknown> };
   checkpoint?: { stage: string; state: Record<string, unknown>; revision: number };
-  ended?: { reason: string };
-}): void {
+  /**
+   * `transition` opts into the OWNERSHIP-CLASSIFYING form of `markEnded`
+   * (T-450 step 6a). Without it the two-argument call is preserved byte for
+   * byte, which is what every other termination path still wants: an
+   * unconditional overwrite with the writer's own timestamp.
+   */
+  ended?: {
+    reason: string;
+    transition?: {
+      readonly transitionId: string;
+      readonly endedAt: string;
+      readonly mode: "first-pass" | "recovery";
+    };
+  };
+}): EndedMarkerOutcome | void {
   if (opts.event) emitTelemetry(dir, opts.event.type, opts.event.layer, opts.event.data);
   if (opts.checkpoint) writeCheckpoint(dir, opts.checkpoint.stage, opts.checkpoint.state as Record<string, unknown>, opts.checkpoint.revision);
-  if (opts.ended) markEnded(dir, opts.ended.reason);
+  if (!opts.ended) return;
+  // The two spellings are kept as two CALLS rather than one call with an
+  // optional argument, so the legacy path provably reaches the two-argument
+  // overload and keeps its void contract.
+  return opts.ended.transition
+    ? markEnded(dir, opts.ended.reason, opts.ended.transition)
+    : markEnded(dir, opts.ended.reason);
 }

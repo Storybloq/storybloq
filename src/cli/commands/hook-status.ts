@@ -8,7 +8,7 @@ import {
 } from "../../autonomous/session-types.js";
 import { buildActivePayload, buildInactivePayload } from "../../autonomous/status-payload.js";
 import { findActiveSessionMinimal, sessionDir } from "../../autonomous/session.js";
-import { readLastMcpCall, readAliveTimestamp } from "../../autonomous/liveness.js";
+import { readLastMcpCall, readOwnerHeartbeat } from "../../autonomous/liveness.js";
 import { readSubprocessSummaries } from "../../autonomous/subprocess-registry.js";
 import { writeStatusFile } from "../../autonomous/status-writer.js";
 import { collectProbes, reduceHealthState } from "../../autonomous/health-model.js";
@@ -324,13 +324,22 @@ function inactivePayload(): StatusPayload {
 function activePayload(session: Parameters<typeof buildActivePayload>[0], root: string): StatusPayload {
   const sDir = sessionDir(root, session.sessionId);
   const lastMcpCall = readLastMcpCall(sDir);
-  const aliveTs = readAliveTimestamp(sDir);
+  // T-450 step 7b.4: same posture as status-writer -- the OWNER's heartbeat,
+  // with `unusable` surfaced as an explicit unknown rather than folded into
+  // absence. The generation comes from the session state this payload is being
+  // BUILT FROM, not from a second read of state.json: a takeover landing
+  // between the lookup and here would otherwise have the heartbeat describing a
+  // different owner than the rest of the payload.
+  const heartbeat = readOwnerHeartbeat(sDir, session as { heartbeatGeneration?: unknown });
   const subprocesses = readSubprocessSummaries(sDir);
-  const probes = collectProbes(sDir);
+  // The SAME snapshot, for the same reason: a takeover landing between the
+  // lookup and here would otherwise leave `alive` describing one owner and
+  // `healthState` describing another, inside one payload.
+  const probes = collectProbes(sDir, undefined, session as unknown as Record<string, unknown>);
   const healthState = reduceHealthState(probes);
   return buildActivePayload(session, {
     lastMcpCall,
-    alive: aliveTs !== null,
+    alive: heartbeat.kind === "unusable" ? null : heartbeat.kind === "alive",
     runningSubprocesses: subprocesses.length > 0 ? subprocesses : null,
     healthState,
   });

@@ -258,6 +258,12 @@ describe("collectProbes", () => {
     sessionDir = join(tmpDir, "sessions", "test-session");
     mkdirSync(sessionDir, { recursive: true });
     mkdirSync(join(sessionDir, "telemetry"), { recursive: true });
+    // T-450 step 7b.4: the alive probe asks about the OWNER's heartbeat, and
+    // which directory that lives in is named by session state. A directory with
+    // telemetry and no state.json is not a session, and the probe now says so
+    // (`unknown`) rather than reading the legacy directory unconditionally --
+    // which after a takeover is the DISPLACED owner's.
+    writeFileSync(join(sessionDir, "state.json"), JSON.stringify({ sessionId: "test-session" }));
   });
 
   afterEach(() => {
@@ -441,6 +447,10 @@ describe("deriveHealthState (full derivation)", () => {
 
   it("returns 'crashed' for dead sidecar without ended marker", () => {
     writeTelemetry(sessionDir, "alive", String(Date.now() - 120_000));
+    // T-450 step 7b.4: the alive probe reads the OWNER's telemetry directory,
+    // which session state names. Without state there is no owner to ask about,
+    // and the honest answer is `unknown`, not `crashed`.
+    writeState(sessionDir, { sessionId: "test-session" });
 
     const result = deriveHealthState(sessionDir);
     expect(result.healthState).toBe("crashed");

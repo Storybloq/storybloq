@@ -9,7 +9,7 @@ import type {
   StatusPayload,
 } from "./session-types.js";
 import { buildActivePayload, buildInactivePayload } from "./status-payload.js";
-import { readLastMcpCall, readAliveTimestamp } from "./liveness.js";
+import { readLastMcpCall, readOwnerHeartbeat } from "./liveness.js";
 import { readSubprocessSummaries } from "./subprocess-registry.js";
 
 export function isSessionActiveForStatus(state: SessionState | Record<string, unknown>): boolean {
@@ -49,11 +49,15 @@ export function refreshStatusForSession(
   try {
     if (isSessionActiveForStatus(state)) {
       const lastMcpCall = readLastMcpCall(dir);
-      const aliveTs = readAliveTimestamp(dir);
+      // T-450 step 7b.4: the OWNER's heartbeat, and `unusable` surfaces as an
+      // explicit unknown. `false` is a claim that nobody is there; a read fault
+      // is a refusal to claim anything, and the payload field is already
+      // nullable to carry exactly that difference.
+      const heartbeat = readOwnerHeartbeat(dir, state as { heartbeatGeneration?: unknown });
       const subprocesses = readSubprocessSummaries(dir);
       const activePayload = buildActivePayload(state as SessionState, {
         lastMcpCall,
-        alive: aliveTs !== null,
+        alive: heartbeat.kind === "unusable" ? null : heartbeat.kind === "alive",
         runningSubprocesses: subprocesses.length > 0 ? subprocesses : null,
       });
       const payload = { ...activePayload, lastWrittenBy } as StatusPayload;

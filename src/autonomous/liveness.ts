@@ -759,6 +759,35 @@ export function spawnAliveSidecar(tDir: string, intervalMs = 10_000): number | n
   return spawnAliveSidecarChild(tDir, intervalMs)?.pid ?? null;
 }
 
+export type OwnerSidecarSpawn =
+  | { readonly kind: "spawned"; readonly pid: number | null; readonly dir: string }
+  | { readonly kind: "unusable"; readonly reason: TelemetryUnusableReason };
+
+/**
+ * SPAWN the owner's heartbeat sidecar into the directory the generation names
+ * (T-450 step 7b.4).
+ *
+ * The generation is passed IN rather than read from state, because the site
+ * that creates a session spawns before its state is durable: reading state
+ * there would answer "unreadable" and spawn nothing, changing behaviour on the
+ * one path that must stay byte-identical. A creating caller passes `undefined`
+ * and resolves `legacy`; it is routed through the resolver anyway so the two
+ * spawn sites cannot drift apart.
+ *
+ * On `unusable` it spawns NOTHING. Falling back to legacy would attach a fresh
+ * heartbeat to the displaced owner's directory, which is the failure
+ * generations exist to end.
+ */
+export function spawnAliveSidecarFor(
+  sessionDir: string,
+  generationId?: unknown,
+  intervalMs = 10_000,
+): OwnerSidecarSpawn {
+  const location = resolveTelemetryLocation(sessionDir, generationId);
+  if (location.kind === "unusable") return { kind: "unusable", reason: location.reason };
+  return { kind: "spawned", pid: spawnAliveSidecar(location.dir, intervalMs), dir: location.dir };
+}
+
 /**
  * What a verified shutdown actually did.
  *
@@ -881,16 +910,61 @@ export function killSidecar(
   }
 }
 
-export function writeShutdownMarker(sessionDir: string): void {
-  const tDir = telemetryDirPath(sessionDir);
-  try {
-    fs.mkdirSync(tDir, { recursive: true });
-    fs.writeFileSync(join(tDir, "shutdown"), "1");
-    fs.writeFileSync(join(tDir, "alive"), "0");
-    unlinkSidecarPid(tDir);
-  } catch {
-    // best-effort
-  }
+/** What each directory's shutdown write actually did (T-450 step 7b.4). */
+export interface ShutdownMarkerWrite {
+  readonly attempted: readonly {
+    readonly dir: string;
+    readonly ok: boolean;
+    readonly error: string | null;
+  }[];
+  /** Set when the session NAMES a generation we could not resolve. Legacy was
+   * still marked; the generation was not, and this says why. */
+  readonly unresolved: string | null;
+}
+
+/**
+ * MARK THE SESSION SHUT DOWN, in every directory an owner could be heartbeating
+ * into (T-450 step 7b.4).
+ *
+ * Before generations there was one directory and one write. After a takeover
+ * there are two: the displaced owner's legacy directory and the new owner's
+ * generation. Writing only legacy left the generation's sidecar heartbeating,
+ * so an ENDED session read as alive until the MCP server exited -- and
+ * `readOwnerHeartbeat`, which consults the generation, would have agreed with
+ * the sidecar rather than with the shutdown.
+ *
+ * The two writes are INDEPENDENT try blocks on purpose: a fault writing either
+ * target must not suppress the other. The generation is ordered FIRST because
+ * that is where the current owner's sidecar is heartbeating, so it is the write
+ * that actually stops it; legacy follows so the legacy-only accessors agree.
+ * The outcome is RETURNED rather than only logged so a caller (and a test) can
+ * see which side failed; every existing caller ignores the value, so the
+ * signature is source-compatible.
+ */
+export function writeShutdownMarker(sessionDir: string): ShutdownMarkerWrite {
+  const legacy = telemetryDirPath(sessionDir);
+  const resolved = resolveOwnerTelemetry(sessionDir);
+  const targets = resolved.kind !== "unusable" && resolved.dir !== legacy
+    ? [resolved.dir, legacy]
+    : [legacy];
+
+  const attempted = targets.map((dir) => {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(join(dir, "shutdown"), "1");
+      fs.writeFileSync(join(dir, "alive"), "0");
+      unlinkSidecarPid(dir);
+      return { dir, ok: true, error: null as string | null };
+    } catch (e: any) {
+      const error = String(e?.code ?? e?.message ?? "unknown");
+      livenessLog("shutdown-marker-failed", { dir, error });
+      return { dir, ok: false, error };
+    }
+  });
+
+  const unresolved = resolved.kind === "unusable" ? resolved.reason : null;
+  if (unresolved) livenessLog("shutdown-marker-generation-unresolved", { reason: unresolved });
+  return { attempted, unresolved };
 }
 
 const _knownTelemetryDirs = new Set<string>();
@@ -936,8 +1010,193 @@ function readAliveTimestampIn(tDir: string): number | null {
   }
 }
 
+/**
+ * THE LEGACY-DIRECTORY accessor, retained ONLY for callers that genuinely mean
+ * the legacy directory.
+ *
+ * It answers "is anything heartbeating into this session's ORIGINAL telemetry
+ * directory", which stops being the same question as "does this session have a
+ * live owner" the moment a takeover binds the session to a generation. Nothing
+ * on the heartbeat-liveness path uses it after T-450 step 7b.4; use
+ * `readOwnerHeartbeat`, which resolves the owner's directory and cannot report
+ * a read fault as absence.
+ */
 export function readAliveTimestamp(sessionDir: string): number | null {
   return readAliveTimestampIn(telemetryDirPath(sessionDir));
+}
+
+// ---------------------------------------------------------------------------
+// The OWNER's heartbeat (T-450 step 7b.4)
+// ---------------------------------------------------------------------------
+
+export type OwnerHeartbeatUnusableReason =
+  | TelemetryUnusableReason
+  | "session-state-unreadable"
+  | "session-state-unparsable"
+  | "shutdown-probe-unreadable"
+  | "shutdown-marker-not-a-regular-file"
+  | "alive-unreadable"
+  | "alive-not-a-regular-file"
+  | "alive-unparsable";
+
+/**
+ * THREE answers, and the third is why this type exists.
+ *
+ * A `number | null` accessor cannot say "I could not tell", so every read fault
+ * -- EACCES, EIO, a non-regular file, garbage content -- has to be spelled as
+ * `null`, which every caller reads as "nobody is there". For the waker that is
+ * fail-OPEN in the one direction that matters: it spawns a second resume
+ * against a session a live client is actively driving.
+ */
+export type OwnerHeartbeat =
+  | { readonly kind: "alive"; readonly at: number }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unusable"; readonly reason: OwnerHeartbeatUnusableReason; readonly detail?: string };
+
+export type OwnerTelemetryResolution =
+  | { readonly kind: "legacy"; readonly dir: string }
+  | { readonly kind: "generation"; readonly dir: string; readonly id: string }
+  | { readonly kind: "unusable"; readonly reason: OwnerHeartbeatUnusableReason };
+
+/**
+ * WHICH directory holds the CURRENT owner's heartbeat.
+ *
+ * `state.json` is read RAW and `heartbeatGeneration` is handed to the resolver
+ * UNNARROWED. Narrowing to `string` here would turn a corrupted number or
+ * object into apparent absence and a silent legacy fallback, and the legacy
+ * directory after a takeover belongs to the DISPLACED owner -- so the fallback
+ * consults exactly the process this feature exists to stop consulting. The
+ * resolver's own contract is that anything which is not a valid id is a
+ * refusal, and that contract only holds if it gets to see the raw value.
+ *
+ * A session state that cannot be read or parsed is `unusable` for the same
+ * reason: we do not know which directory to consult, and guessing legacy is the
+ * guess that reads the wrong owner.
+ */
+export function resolveOwnerTelemetry(
+  sessionDir: string,
+  // The state the CALLER already holds, when it holds one. Preferred over the
+  // disk read whenever it exists: the caller's copy is the state the decision
+  // is being made about, and re-reading is both wasteful and wrong at the
+  // moments when state.json is not there yet (a session mid-creation) or has
+  // moved on. The field is `unknown` for the same reason the resolver's
+  // parameter is -- narrowing here would decide what a corrupted value means,
+  // and the only safe answer is refusal, which the resolver already makes.
+  state?: { readonly heartbeatGeneration?: unknown } | null,
+): OwnerTelemetryResolution {
+  if (state !== undefined && state !== null) {
+    return resolveTelemetryLocation(sessionDir, state.heartbeatGeneration);
+  }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(join(sessionDir, "state.json"), "utf-8");
+  } catch {
+    return { kind: "unusable", reason: "session-state-unreadable" };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { kind: "unusable", reason: "session-state-unparsable" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "unusable", reason: "session-state-unparsable" };
+  }
+  return resolveTelemetryLocation(sessionDir, (parsed as Record<string, unknown>).heartbeatGeneration);
+}
+
+/**
+ * The STRICT reader under the resolver.
+ *
+ * Resolving the right directory buys nothing if reading it still collapses
+ * every failure into absence, and `readAliveTimestampIn` does exactly that:
+ * `existsSync` returns false on EACCES as readily as on ENOENT, the `alive`
+ * read catches every error as null, and any non-positive or unparseable content
+ * maps to null too. So EIO, a permissions fault, a non-regular file, a symlink
+ * fault, garbage content and a non-finite number would all arrive as "absent"
+ * and the waker would spawn anyway -- the exact failure the tri-state exists to
+ * prevent.
+ *
+ * ABSENT is reserved for the three ways the system SAYS nobody is there: no
+ * `alive` file (ENOENT), a canonical shutdown marker, or a canonical `alive`
+ * value of `0`. Everything else is `unusable`.
+ */
+function readOwnerHeartbeatIn(tDir: string): OwnerHeartbeat {
+  const alivePath = join(tDir, "alive");
+  try {
+    // The marker must be a regular FILE, checked with `lstatSync` so a SYMLINK
+    // is rejected rather than followed. Anything else at that path -- a
+    // directory, a link anywhere -- is damage, and reading damage as "the
+    // session said it shut down" is fail-open in the direction that matters:
+    // `absent` is what lets the waker spawn.
+    //
+    // DELIBERATELY STRICTER THAN `readDeathMarker`, which stats through links.
+    // The two disagree only in the safe direction: this reader answers "I
+    // cannot tell" where that one would accept the marker, and `unusable` makes
+    // its consumers stand down. A reader that is stricter than its neighbour
+    // costs a declined resume; one that is looser costs a second driver.
+    // Tightening `readDeathMarker` to match is a separate change with its own
+    // blast radius, since that marker is takeover EVIDENCE rather than a
+    // liveness probe.
+    //
+    // The SHAPE is checked and the CONTENT deliberately is not. Content is what
+    // the two readers must keep agreeing on: the shipped writer puts "1" there
+    // but nothing reads it, and inventing a content rule in one reader would
+    // make two readers of one artifact disagree about what a marker even is.
+    if (!fs.lstatSync(join(tDir, "shutdown")).isFile()) {
+      return { kind: "unusable", reason: "shutdown-marker-not-a-regular-file" };
+    }
+    return { kind: "absent" };
+  } catch (e: any) {
+    if (!e || e.code !== "ENOENT") {
+      return { kind: "unusable", reason: "shutdown-probe-unreadable", detail: String(e?.code ?? "unknown") };
+    }
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(alivePath);
+  } catch (e: any) {
+    if (e && e.code === "ENOENT") return { kind: "absent" };
+    return { kind: "unusable", reason: "alive-unreadable", detail: String(e?.code ?? "unknown") };
+  }
+  if (!stat.isFile()) return { kind: "unusable", reason: "alive-not-a-regular-file" };
+
+  let content: string;
+  try {
+    content = fs.readFileSync(alivePath, "utf-8");
+  } catch (e: any) {
+    // ENOENT here is a race with teardown, not a fault: the file was there a
+    // moment ago and is gone now, which is the same fact `absent` records.
+    if (e && e.code === "ENOENT") return { kind: "absent" };
+    return { kind: "unusable", reason: "alive-unreadable", detail: String(e?.code ?? "unknown") };
+  }
+
+  const text = content.trim();
+  if (text === "") return { kind: "unusable", reason: "alive-unparsable", detail: "empty" };
+  const n = Number(text);
+  if (!Number.isFinite(n)) return { kind: "unusable", reason: "alive-unparsable", detail: "not a finite number" };
+  // `0` is what `writeShutdownMarker` writes, so it is the system saying nobody
+  // is there. A NEGATIVE value is not: nothing writes one, so it is damage.
+  if (n === 0) return { kind: "absent" };
+  if (n < 0) return { kind: "unusable", reason: "alive-unparsable", detail: "negative" };
+  return { kind: "alive", at: n };
+}
+
+/**
+ * Does this session's CURRENT owner have a live heartbeat?
+ *
+ * The pair of `resolveOwnerTelemetry` (which directory) and the strict reader
+ * (what it says), kept apart so a resolution fault and a read fault are both
+ * `unusable` without either being mistaken for the other's absence.
+ */
+export function readOwnerHeartbeat(
+  sessionDir: string,
+  state?: { readonly heartbeatGeneration?: unknown } | null,
+): OwnerHeartbeat {
+  const location = resolveOwnerTelemetry(sessionDir, state);
+  if (location.kind === "unusable") return { kind: "unusable", reason: location.reason };
+  return readOwnerHeartbeatIn(location.dir);
 }
 
 // ---------------------------------------------------------------------------

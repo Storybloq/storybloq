@@ -101,7 +101,7 @@ import {
   type TailOutcome,
 } from "./cancellation-core.js";
 import { readCancellationTransition, type TicketDisposition } from "./cancellation-transition.js";
-import { readSession, withSessionLock, StateWriteUndurableError } from "./session.js";
+import { readSession, withSessionLock, StateWriteUndurableError, LEASE_DURATION_MS } from "./session.js";
 import { writeSessionAndRefresh } from "./guide-effects.js";
 
 /** Crash-injection seam. Production is a no-op; the intent suite replaces it
@@ -2268,9 +2268,70 @@ export async function commitCandidateTakeoverLocked(
       }
 
       let after: FullSessionState;
+      // THE NEW OWNER'S FENCE IS STAMPED IN THIS SAME WRITE.
+      //
+      // Leaving the DEAD owner's decaying lease attached to a live replacement
+      // was a real hole, not a conservative omission. The guide's live-lease
+      // conjunct only proves the lease was live when the takeover STARTED, and
+      // staging a heartbeat generation blocks on a child's readiness; a lease
+      // with little left can expire inside that window, and the takeover would
+      // then publish an owner whose fence is already down. Any other task could
+      // adopt it through `adoptExpiredLease` on its very next call -- the
+      // five-step handshake losing to the weaker gate, which is precisely what
+      // the conjunct was supposed to prevent.
+      //
+      // `lastGuideCall` moves for the same reason and it is not decoration: the
+      // owner-liveness verdict reads it as ACTIVITY, so a new owner published
+      // with the dead owner's stale timestamp reads as stale itself and invites
+      // a second candidate takeover of the session that was just recovered.
+      //
+      // Deliberately NOT `refreshLease`: that helper also advances
+      // `contextPressure.guideCallCount`, and a takeover is an ownership change,
+      // not a step of the work. Only the two facts that make the new owner's
+      // ownership defensible are stamped here.
+      //
+      // ONE INSTANT, not two clocks. `nowIso` is injectable, so deriving the
+      // heartbeat from it and the expiry from `Date.now()` lets the two
+      // disagree: under an injected clock the fence could expire before the
+      // heartbeat it is stamped beside, or outlast it by an arbitrary amount.
+      // The whole point of an atomic write is that its fields describe one
+      // moment. A `nowIso` that does not parse falls back to the wall clock
+      // rather than producing an Invalid Date, because a fence is the one field
+      // that must never be unreadable.
+      const suppliedNow = nowIso();
+      const parsedNow = Date.parse(suppliedNow);
+      // BOTH ends must be convertible, not just parseable. An instant near
+      // JavaScript's maximum Date passes `Number.isFinite` and then throws a
+      // RangeError when the expiry is rendered -- and a throw here aborts a
+      // takeover that has already staged a generation, which is a far worse
+      // outcome than a fence stamped from the wall clock.
+      const usableInstant = (ms: number): boolean => {
+        if (!Number.isFinite(ms)) return false;
+        try {
+          new Date(ms).toISOString();
+          new Date(ms + LEASE_DURATION_MS).toISOString();
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const leaseBaseMs = usableInstant(parsedNow) ? parsedNow : Date.now();
+      // NORMALIZED before ANY field is written, not just the expiry. All three
+      // fields are the new owner's fence and activity evidence together, so
+      // rescuing only `expiresAt` would still persist an unparseable
+      // `lastGuideCall` -- and that is the field the owner-liveness path reads
+      // as ACTIVITY, the one refreshed here specifically to stop an immediate
+      // second takeover of the session just recovered.
+      const leaseNow = new Date(leaseBaseMs).toISOString();
       try {
         after = writeState({
           ...(fresh as unknown as Record<string, unknown>),
+          lease: {
+            ...((fresh as unknown as Record<string, unknown>).lease as Record<string, unknown> | undefined),
+            lastHeartbeat: leaseNow,
+            expiresAt: new Date(leaseBaseMs + LEASE_DURATION_MS).toISOString(),
+          },
+          lastGuideCall: leaseNow,
           ownerTask: args.callerTask,
           heartbeatGeneration: staged.id,
           mcpServerPid: process.pid,

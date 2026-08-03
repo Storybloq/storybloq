@@ -15,6 +15,8 @@ import {
   type StashPopOutcome,
   type PersistedTicketDisposition,
   CANCELLATION_SHUTDOWN_ARTIFACT,
+  OwnerGoneCandidateTakeoverSchema,
+  type OwnerGoneCandidateTakeover,
 } from "./session-types.js";
 import {
   reconcileSessionReality,
@@ -25,7 +27,16 @@ import {
   type ClaimPreflightResult,
 } from "./claim-preflight.js";
 import { reconcileClaim } from "./claim-reconciliation.js";
-import { reassertMcpServerIdentity } from "./mcp-registry.js";
+import { reassertMcpServerIdentity, liveMcpServers } from "./mcp-registry.js";
+import {
+  authorizeCandidateTakeover,
+  commitCandidateTakeoverLocked,
+  type CandidateHandshakeDeps,
+  type CandidateHandshakeInput,
+  type CandidateAuthorization,
+} from "./candidate-recovery.js";
+import type { IssueAuthorityView } from "./candidate-authority.js";
+import type { Ticket } from "../models/ticket.js";
 import { serverRegistryBinder } from "./mcp-binding.js";
 import { releaseClaimIfOwned } from "../core/claims.js";
 import {
@@ -57,7 +68,7 @@ import { assertTransition } from "./state-machine.js";
 import { evaluatePressure, pressureAfterCompaction } from "./context-pressure.js";
 import { reviewRiskForTicket } from "./review-depth.js";
 import {
-  spawnAliveSidecar,
+  spawnAliveSidecarFor,
   killSidecar,
   writeShutdownMarker,
   type SidecarShutdownOutcome,
@@ -778,6 +789,28 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
   if (args.takeover && args.action !== "resume") {
     return guideError(new Error(`takeover is only valid with action "resume". Got action "${args.action}".`));
   }
+  // T-450 step 7b.1. All three checks run BEFORE any mutation, and the field is
+  // never silently ignored: a confirmation object accepted and discarded is the
+  // worst outcome available here, because the caller has already told a human
+  // the takeover was authorized on the picture they confirmed.
+  if (args.ownerGoneCandidateTakeover !== undefined) {
+    if (args.action !== "resume") {
+      return guideError(new Error(
+        `ownerGoneCandidateTakeover is only valid with action "resume". Got action "${args.action}".`,
+      ));
+    }
+    if (args.takeover !== true) {
+      return guideError(new Error(
+        "ownerGoneCandidateTakeover requires takeover: true. The confirmed picture is the evidence FOR a takeover, not a takeover by itself.",
+      ));
+    }
+    const parsed = OwnerGoneCandidateTakeoverSchema.safeParse(args.ownerGoneCandidateTakeover);
+    if (!parsed.success) {
+      return guideError(new Error(
+        `ownerGoneCandidateTakeover is malformed: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
+      ));
+    }
+  }
   switch (args.action) {
     case "start":
       return handleStart(root, args);
@@ -1339,7 +1372,13 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       ? legacyClaudeSessionIdForOwner(ownerTask, null)
       : captureClaudeCodeSessionId();
     try {
-      sidecarPid = spawnAliveSidecar(telemetryDirPath(dir));
+      // T-450 step 7b.4: routed through the generation resolver even though a
+      // session being CREATED has no generation and this resolves `legacy`,
+      // byte-identically to before. Routing it anyway is the point: the two
+      // spawn sites cannot drift apart. The generation is passed in rather than
+      // read from state because this state is not durable yet.
+      const spawn = spawnAliveSidecarFor(dir, undefined);
+      sidecarPid = spawn.kind === "spawned" ? spawn.pid : null;
     } catch { /* best-effort */ }
     updated = {
       ...updated,
@@ -2001,6 +2040,261 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
 // resume
 // ---------------------------------------------------------------------------
 
+/**
+ * The LEDGER readers the candidate handshake decides on, lifted so the two
+ * places that need them cannot drift (T-450 step 7b.3).
+ *
+ * THREE-WAY, deliberately: `undefined` means the read FAILED, `null` means it
+ * positively resolved to nothing. Collapsing a loader fault into absence is the
+ * fail-open the whole authority layer exists to remove -- it would tell the
+ * matrix "there is no ticket" when the truth is "we could not look".
+ */
+function guideLedgerReaders(root: string): {
+  loadTicket: (ticketId: string) => Promise<Ticket | null | undefined>;
+  loadIssue: (issueId: string) => Promise<IssueAuthorityView | null | undefined>;
+} {
+  return {
+    loadTicket: async (ticketId) => {
+      try {
+        const { state: projectState } = await loadProject(root, { strict: false });
+        return projectState.ticketByID(ticketId) ?? null;
+      } catch {
+        return undefined;
+      }
+    },
+    loadIssue: async (issueId) => {
+      try {
+        const { state: projectState } = await loadProject(root, { strict: false });
+        const issue = projectState.issues.find((i) => i.id === issueId);
+        return issue ? { id: issue.id, status: issue.status } : null;
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
+/**
+ * The handshake's dependencies, wired to PRODUCTION sources.
+ *
+ * Every state-shaped dep is a PROVIDER over a fresh `readSession(sessionDir)`,
+ * never the `info.state` snapshot the resume path already holds. The snapshot
+ * was read before this call decided anything; the handshake's whole job is to
+ * decide against what is on disk NOW, under the held lock, and a dep that
+ * cannot re-read makes the recheck theatre.
+ */
+function candidateHandshakeDeps(root: string, sessionDir: string): CandidateHandshakeDeps {
+  const readers = guideLedgerReaders(root);
+  return {
+    readState: () => (readSession(sessionDir) ?? {}) as FullSessionState,
+    readLifecycle: () => {
+      const fresh = readSession(sessionDir);
+      // An unreadable state is not a live one. Naming it terminal here would
+      // overclaim; the handshake's own state-unreadable arm is reached through
+      // `readSessionState` returning null, and this pair keeps that the only
+      // place the question is answered.
+      return { state: fresh?.state ?? "UNKNOWN", status: fresh?.status ?? "unknown" };
+    },
+    readSuccessors: () => liveMcpServers(root),
+    loadTicket: readers.loadTicket,
+    loadIssue: readers.loadIssue,
+    readSessionState: () => readSession(sessionDir),
+  };
+}
+
+/** One sentence per refusal, naming its OWN condition. */
+function describeCandidateAuthorizationRefusal(
+  sessionId: string,
+  authorization: CandidateAuthorization,
+): string {
+  switch (authorization.kind) {
+    case "re-confirm":
+      // Fresh evidence goes BACK, so the client re-presents the current picture
+      // rather than starting over blind.
+      return (
+        `The picture changed before this takeover of ${sessionId} was authorized (${authorization.reason}). ` +
+        `${authorization.detail}\n` +
+        `Re-confirm against the current evidence, then retry with ` +
+        `ownerGoneCandidateTakeover: { sessionRevision: <the session's current revision>, ` +
+        `evidenceFingerprint: "${authorization.fresh.fingerprint}" }.`
+      );
+    case "ineligible":
+      return `Session ${sessionId} is not an owner-gone candidate (${authorization.verdict}). ${authorization.detail}`;
+    case "refused":
+      return authorization.authority
+        ? `Takeover of session ${sessionId} refused: ${authorization.detail} ` +
+          `(posture: ${authorization.authority.posture}).`
+        : `Takeover of session ${sessionId} refused: ${authorization.detail}`;
+    default:
+      return `Takeover of session ${sessionId} was not authorized.`;
+  }
+}
+
+/**
+ * TAKE OVER a live, non-COMPACT session whose recorded owner is confirmed gone
+ * (T-450 step 7b.3).
+ *
+ * WHAT THIS DOES NOT DO, and each omission is a decision:
+ *
+ *  - It does NOT call `stage.enter`. `CompleteStage.enter` writes state
+ *    unconditionally and `FinalizeStage.enter` runs git and can fast-forward
+ *    into `handleCommit`, so entering the stage would break the commit's
+ *    one-atomic-write promise and could COMMIT on the new owner's behalf.
+ *    Suppressing `processAdvance` would not suppress any of that. What comes
+ *    back is a PURELY RENDERED directive: where the session is, what it is on,
+ *    that ownership moved, and the instruction to make the next ordinary guide
+ *    call.
+ *  - It does NOT reset context pressure, clear `compactPending`, touch
+ *    `preCompactState`, or remove the resume marker. Those are the COMPACT
+ *    body's work, and applying them to a mid-IMPLEMENT session corrupts it --
+ *    which is exactly why this is a separate handler.
+ *  - It refreshes the OWNERSHIP FENCE and the activity stamp and nothing else.
+ *    The lease and `lastGuideCall` are re-stamped inside the commit's one
+ *    atomic write, because publishing a live owner under a dead owner's
+ *    decaying fence is what makes the takeover immediately adoptable by the
+ *    weaker expired-lease gate. `contextPressure.guideCallCount` is NOT
+ *    advanced: a takeover is an ownership change, not a step of the work.
+ */
+async function handleCandidateTakeoverResume(
+  root: string,
+  args: GuideInput,
+  info: ActiveSessionInfo,
+  confirmed: OwnerGoneCandidateTakeover,
+): Promise<McpToolResult> {
+  const sessionId = args.sessionId!;
+  const callerTask = ownerTaskForCurrentClient(args.clientTaskId);
+  if (!callerTask) {
+    // THE SAME SENTENCE the other takeover door gives, so the two say one thing.
+    return guideError(new Error(
+      `Recovering session ${sessionId} requires a valid clientTaskId so ownership can be rebound.`,
+    ));
+  }
+
+  const input: CandidateHandshakeInput = {
+    sessionId: info.state.sessionId,
+    clientTaskId: args.clientTaskId,
+    confirmedSessionRevision: confirmed.sessionRevision,
+    confirmedFingerprint: confirmed.evidenceFingerprint,
+  };
+  const handshake = candidateHandshakeDeps(root, info.dir);
+
+  // PRE-CHECK before the commit, for a concrete reason: the commit's first act
+  // is `stageHeartbeatGeneration`, which spawns a child and blocks on its
+  // readiness. Running that before the handshake is even plausible would
+  // spawn-and-kill a process on every refused takeover. The pre-check's verdict
+  // is never relied on -- the commit's own in-lock re-validation is the
+  // authority, and it re-reads everything.
+  const precheck = await authorizeCandidateTakeover(info.dir, input, handshake);
+  //
+  // `caller-is-owner` IS NOT A SHORT CIRCUIT, and this is the one exception
+  // that makes the pre-check safe to have at all. It is the exact signature of
+  // a CRASH RETRY: a prior attempt wrote the postimage -- which made this
+  // caller the owner -- and died before closing its intent. The commit's step 2
+  // exists precisely to verify and close that, and it checks for an
+  // already-durable postimage BEFORE re-validating. Refusing here would put the
+  // pre-check in front of that rescue and strand every crashed takeover, with
+  // the sentence "you are already the owner" and no way to finish.
+  //
+  // Nothing is lost by falling through: if there is no durable postimage, the
+  // commit's own re-validation reaches the same refusal, from state it read
+  // under the lock.
+  if (precheck.kind !== "authorized" && !(precheck.kind === "refused" && precheck.reason === "caller-is-owner")) {
+    return guideError(new Error(describeCandidateAuthorizationRefusal(sessionId, precheck)));
+  }
+
+  // Captured BEFORE the commit: after it, state names the NEW owner.
+  const priorOwnerTask = info.state.ownerTask ?? null;
+
+  const commit = await commitCandidateTakeoverLocked(
+    root,
+    info.dir,
+    { input, callerTask },
+    { handshake },
+  );
+
+  if (commit.kind === "refused") {
+    // A durable intent written before a later-stage refusal is the intent
+    // protocol working, not a session mutation. Nothing here writes state.json.
+    const fresh = commit.authorization
+      ? `\n${describeCandidateAuthorizationRefusal(sessionId, commit.authorization)}`
+      : "";
+    return guideError(new Error(
+      `Takeover of session ${sessionId} did not commit (${commit.stage}). ${commit.detail}${fresh}`,
+    ));
+  }
+
+  // AUDIT, honest on both paths. Two event types rather than one keyed event,
+  // because a resumed commit genuinely cannot supply what a fresh one can, and
+  // null-filling the difference invites a false reading.
+  //
+  // `rev` on both is the revision at which the event is APPENDED, which is what
+  // `rev` means everywhere else.
+  try {
+    appendEvent(info.dir, commit.resumed
+      ? {
+          rev: commit.state.revision,
+          type: "candidate_takeover_resumed",
+          timestamp: new Date().toISOString(),
+          data: {
+            // NO priorOwnerTask: state already names the new owner, and NO
+            // committedRevision claim: on this path `commit.state` is the
+            // CURRENT state, possibly many revisions after the original write.
+            cycleNonce: commit.postimage.cycleNonce,
+            intentTransitionId: commit.postimage.intentTransitionId,
+            intentClosed: commit.close.ok,
+          },
+        }
+      : {
+          rev: commit.state.revision,
+          type: "candidate_takeover",
+          timestamp: new Date().toISOString(),
+          data: {
+            takeoverKind: "owner_gone_candidate_takeover",
+            priorOwnerTask,
+            newOwnerTask: callerTask,
+            heartbeatGeneration: commit.state.heartbeatGeneration ?? null,
+            cycleNonce: commit.postimage.cycleNonce,
+            intentTransitionId: commit.postimage.intentTransitionId,
+            committedRevision: commit.state.revision,
+            intentClosed: commit.close.ok,
+          },
+        });
+  } catch { /* events.log is supplementary */ }
+
+  const state = commit.state;
+  const item = state.ticket
+    ? `ticket ${(state.ticket as Record<string, unknown>).displayId as string | undefined ?? state.ticket.id}: ${state.ticket.title}`
+    : state.currentIssue
+      ? `issue ${state.currentIssue.id}`
+      : "no item";
+
+  return guideResult(state, state.state, {
+    instruction: [
+      `# Ownership of session ${sessionId} is now yours`,
+      "",
+      `The recorded owner was confirmed gone and the takeover committed${commit.resumed ? " (verified an earlier attempt that had already landed; nothing was rewritten)" : ""}.`,
+      "",
+      `- State: ${state.state}`,
+      `- Working on: ${item}`,
+      // On a RESUMED commit the earlier attempt already wrote this caller as
+      // owner, so `priorOwnerTask` IS the caller -- rendering it would tell the
+      // operator they took the session over from themselves. The audit event
+      // omits the field on that path for the same reason; the directive must
+      // not contradict it.
+      commit.resumed
+        ? "- Previous owner: not recoverable here (the takeover had already landed before this call)"
+        : `- Previous owner: ${priorOwnerTask ? `${priorOwnerTask.client}:${priorOwnerTask.id}` : "none recorded"}`,
+      "",
+      "The session was NOT advanced, re-entered or otherwise touched beyond the ownership write.",
+      `Continue it with an ordinary call: action "report" for the work ${state.state} owes.`,
+    ].join("\n"),
+    reminders: [
+      "You are now the owner. Nothing about the work changed -- only who is driving it.",
+      "The takeover established a fresh ownership lease; your next ordinary guide call renews it as usual.",
+    ],
+  });
+}
+
 async function handleResume(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) return guideError(new Error("sessionId is required for resume"));
 
@@ -2011,6 +2305,47 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     return guideError(new Error(describeSessionLookupFailure(args.sessionId, resumeLookup)));
   }
   let info = resumeLookup.info;
+
+  // -------------------------------------------------------------------------
+  // T-450 step 7b.2: the owner-gone candidate takeover of a LIVE, non-COMPACT
+  // session. The ONE door out of the COMPACT-only rule below, and it is a
+  // separate handler rather than a widening of the body that follows: the
+  // COMPACT body applies preCompactState recovery, clears compactPending,
+  // resets pressure and removes the resume marker, and applying any of that to
+  // a mid-IMPLEMENT session corrupts it.
+  // -------------------------------------------------------------------------
+  const candidateRequest = args.ownerGoneCandidateTakeover;
+  if (candidateRequest && String(info.state.state) === "COMPACT") {
+    // NOT silently ignored. Falling through would let `takeover: true` drive
+    // the ordinary COMPACT path while the confirmation object -- which the
+    // caller has already shown a human -- is accepted and discarded.
+    return guideError(new Error(
+      `Session ${args.sessionId} is in COMPACT state, where takeover: true is already the confirmed-owner-gone path. ` +
+      "Retry without ownerGoneCandidateTakeover; the candidate handshake is for LIVE non-COMPACT sessions.",
+    ));
+  }
+  if (candidateRequest && args.takeover === true && !isLeaseExpired(info.state)) {
+    // THE LIVE-LEASE CONJUNCT IS THE SCOPE BOUNDARY, and only that.
+    //
+    // It is NOT what keeps a published takeover from being adoptable -- the
+    // commit re-stamps the fence in its own atomic write, so a takeover
+    // authorized here lands with a full lease however long the handshake took.
+    // What the conjunct does is hold this door to the case the ticket is
+    // about, a LIVE non-COMPACT lease. An EXPIRED lease is a different
+    // question with a different existing answer: `adoptExpiredLease` already
+    // rebinds ownership and refreshes the lease for any identified caller on
+    // `report` or `pre_compact`, deliberately bypassing foreign-owner
+    // precedence, so putting the five-step handshake in front of it would be
+    // ceremony over a gate that reaches the same place without it.
+    //
+    // An expired-lease non-COMPACT session with a dead owner still has no
+    // non-destructive adoption path, because both of those doors require
+    // something to report. That hole is PRE-EXISTING (it holds on
+    // main today; this step neither creates nor widens it) and is the
+    // complement of this ticket's subject, "live non-COMPACT leases". Filed as
+    // ISS-964 with the mechanism and the scope boundary in both directions.
+    return handleCandidateTakeoverResume(root, args, info, candidateRequest);
+  }
 
   // Recovery and takeover are valid only at the explicit COMPACT boundary.
   // Check before any mutation so a foreign caller cannot refresh the lease or
@@ -2204,7 +2539,13 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // T-260: Spawn new sidecar for resumed session (old sidecar died with previous process)
   let resumeSidecarPid: number | null = null;
   try {
-    resumeSidecarPid = spawnAliveSidecar(telemetryDirPath(info.dir));
+    // T-450 step 7b.4: a TAKEN-OVER session carries a generation, and its
+    // replacement sidecar belongs in that generation's directory -- spawning
+    // into legacy would attach the new owner's heartbeat to the displaced
+    // owner's telemetry. On an unusable generation this spawns NOTHING rather
+    // than falling back, for the same reason.
+    const spawn = spawnAliveSidecarFor(info.dir, info.state.heartbeatGeneration);
+    resumeSidecarPid = spawn.kind === "spawned" ? spawn.pid : null;
   } catch { /* best-effort */ }
 
   try {
@@ -2526,6 +2867,15 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   const modeContext = [baseModeContext, compactionNotice].filter(Boolean).join("\n\n");
 
   // ISS-057: Call stage's enter() for stage-specific instruction instead of generic fallback
+  //
+  // T-450 step 7b: SCOPED TO THE COMPACT PATH by construction. An owner-gone
+  // candidate takeover returns from the split near the top of `handleResume`
+  // and never arrives here, which is the point: `CompleteStage.enter` writes
+  // state unconditionally and `FinalizeStage.enter` runs git and can
+  // fast-forward into `handleCommit`, so reaching this line on a live
+  // mid-IMPLEMENT session would break the takeover's one-atomic-write promise
+  // and could commit on the new owner's behalf. The early return is the
+  // guarantee; do not relax it into a flag checked here.
   const resumeStage = getStage(resumeState);
   if (resumeStage) {
     const recipe = resolveRecipeFromState(written);

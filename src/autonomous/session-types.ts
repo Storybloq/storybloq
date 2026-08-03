@@ -1907,6 +1907,26 @@ export interface GuideReportInput {
   readonly reviewId?: string;  // ISS-720: lens reviewId from prepare/synthesize; joins to verification telemetry to record the path actually taken
 }
 
+/**
+ * ONE schema, used at BOTH boundaries (the MCP tool definition and the direct
+ * guide path).
+ *
+ * Validating in only one of them is a hole rather than an inconvenience: an
+ * earlier revision checked the fingerprint at the guide and left
+ * `sessionRevision` to the MCP schema alone, so a non-MCP caller could pass a
+ * negative, fractional or non-finite revision straight into a compare-and-swap.
+ *
+ * The digest shape is not decoration. `evidenceFingerprint` is a
+ * `createHash("sha256").digest("hex")`, so 64 lowercase hex characters is the
+ * only thing a real confirmation can be.
+ */
+export const OwnerGoneCandidateTakeoverSchema = z.object({
+  sessionRevision: z.number().int().nonnegative().finite(),
+  evidenceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+export type OwnerGoneCandidateTakeover = z.infer<typeof OwnerGoneCandidateTakeoverSchema>;
+
 export interface GuideInput {
   readonly sessionId: string | null;
   readonly action: GuideAction;
@@ -1921,6 +1941,19 @@ export interface GuideInput {
   readonly clientTaskId?: string;
   /** Explicitly recover a COMPACT session after confirming its recorded owner is gone. */
   readonly takeover?: boolean;
+  /**
+   * T-450 step 7b: the confirmed picture behind an owner-gone candidate
+   * TAKEOVER of a LIVE, non-COMPACT session.
+   *
+   * Its own field rather than a widening of `takeover`, for the same reason
+   * `ownerGoneCandidateCancel` is its own field: `takeover` is a SHIPPED
+   * published boolean, and changing its type changes what an already-advertised
+   * field means. A carrier is unavoidable in any case, because the handshake
+   * decides on two values only the CLIENT can know -- the revision a human was
+   * shown, and the digest of the picture they were shown -- so symmetry with
+   * cancel is the only defensible shape.
+   */
+  readonly ownerGoneCandidateTakeover?: OwnerGoneCandidateTakeover;
 }
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,7 @@ import {
   writeSessionDurableSync,
   withSessionLock,
   __stateWriteTesting,
+  LEASE_DURATION_MS,
 } from "../../src/autonomous/session.js";
 import {
   CandidateTakeoverPostimageSchema,
@@ -261,6 +262,64 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+describe("T-450 7b: the fence is one normalized instant", () => {
+  it("an EXTREME but parseable clock does not abort the takeover mid-commit", async () => {
+    // `Number.isFinite` alone accepts JavaScript's maximum Date, and the expiry
+    // derived from it is out of range, so rendering it throws a RangeError --
+    // inside the write, after a generation has already been staged. Aborting a
+    // takeover there is far worse than stamping the fence from the wall clock.
+    const state = plantLive();
+    writeMarker();
+    const maxDate = new Date(8_640_000_000_000_000).toISOString();
+
+    const before = Date.now();
+    const result = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps({ nowIso: () => maxDate }));
+    const after = Date.now();
+
+    expect(result.kind).toBe("committed");
+    const raw = currentState() as unknown as Record<string, unknown>;
+    const lease = raw.lease as { expiresAt: string; lastHeartbeat: string };
+    expect(Date.parse(lease.lastHeartbeat)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(lease.lastHeartbeat)).toBeLessThanOrEqual(after);
+    expect(Date.parse(lease.expiresAt) - Date.parse(lease.lastHeartbeat)).toBe(LEASE_DURATION_MS);
+  });
+
+  it("an UNPARSEABLE injected clock still publishes three readable, agreeing timestamps", async () => {
+    // Rescuing only `expiresAt` would leave the supplied garbage in
+    // `lastGuideCall` -- and that is the field the owner-liveness path reads as
+    // ACTIVITY, the one refreshed here specifically to stop an immediate second
+    // takeover of the session just recovered.
+    const state = plantLive();
+    writeMarker();
+
+    // Bracketed by the WALL CLOCK: a fallback that regressed to any fixed
+    // parseable instant (epoch zero, say) would still parse, still agree with
+    // itself and still be exactly one duration wide. Only these bounds say the
+    // fallback is the clock we actually meant.
+    const before = Date.now();
+    const result = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps({ nowIso: () => "not-a-date" }));
+    const after = Date.now();
+
+    expect(result.kind).toBe("committed");
+    const raw = currentState() as unknown as Record<string, unknown>;
+    const lease = raw.lease as { expiresAt: string; lastHeartbeat: string };
+
+    expect(Number.isFinite(Date.parse(lease.lastHeartbeat))).toBe(true);
+    expect(Number.isFinite(Date.parse(raw.lastGuideCall as string))).toBe(true);
+    expect(Number.isFinite(Date.parse(lease.expiresAt))).toBe(true);
+    // ONE instant: the two activity fields agree, and the fence is exactly the
+    // canonical duration after it.
+    expect(lease.lastHeartbeat).toBe(raw.lastGuideCall);
+    expect(Date.parse(lease.expiresAt) - Date.parse(lease.lastHeartbeat)).toBe(LEASE_DURATION_MS);
+    expect(Date.parse(lease.lastHeartbeat)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(lease.lastHeartbeat)).toBeLessThanOrEqual(after);
+  });
+});
+
 describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () => {
   it("commits ownership, generation, MCP pair and proof in ONE revision, then closes the intent", async () => {
     const state = plantLive();
@@ -290,6 +349,13 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
     expect(post.data.clientTaskId).toBe(CALLER.id);
     const evidence = post.data.evidence as { argvProof: string };
     expect(evidence.argvProof).toBe("proven");
+
+    // T-450 step 7b: the NEW OWNER'S FENCE, in the same write. Publishing a
+    // live owner under the dead owner's decaying lease is what makes a fresh
+    // takeover immediately adoptable through the weaker expired-lease gate.
+    const lease = raw.lease as { expiresAt: string; lastHeartbeat: string };
+    expect(Date.parse(lease.expiresAt) - Date.now()).toBeGreaterThan(40 * 60_000);
+    expect(lease.lastHeartbeat).toBe(raw.lastGuideCall);
 
     // The intent: created by the commit, closed by the gated close, nonce
     // and transitionId agreeing with the postimage.

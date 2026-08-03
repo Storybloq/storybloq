@@ -50,7 +50,7 @@ import { acquireLimitLock, releaseLimitLock, renewLimitLock, captureProcessSigna
 import { safeUnlinkLock } from "../../src/autonomous/liveness.js";
 import { spawnSync } from "node:child_process";
 import { readWakeClaim, wakeClaimPath } from "../../src/autonomous/wake-claim.js";
-import { telemetryDirPath } from "../../src/autonomous/liveness.js";
+import { telemetryDirPath, newHeartbeatGenerationId } from "../../src/autonomous/liveness.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 // Signatures exist only on darwin/linux; elsewhere a live claimant resolves to
@@ -414,6 +414,67 @@ describe("wakerTick headless dispatch", () => {
     expect(rec?.status).toBe("deferred");
     expect(rec?.nextAttemptAt).toBeGreaterThan(Date.now() + DEFER_BACKOFF_MS[0]! - 5_000);
     expect(deps.notifications[0]).toContain("still open in a terminal");
+  });
+
+  // T-450 step 7b.4: after an owner-gone takeover the session is bound to a
+  // heartbeat GENERATION, and the legacy directory keeps the DEAD owner's
+  // leftovers. A waker that still reads legacy judges the live REPLACEMENT owner
+  // absent and spawns a second resume against a session someone is actively
+  // driving -- the double-driving hazard T-450 exists to prevent, through the
+  // back door.
+  it("defers when the live heartbeat is in the session's GENERATION, not the legacy directory", async () => {
+    const generation = newHeartbeatGenerationId();
+    const { sessDir } = makeAutonomousStop({ sessionOverrides: { heartbeatGeneration: generation } as any });
+    const gDir = join(telemetryDirPath(sessDir), "generations", generation);
+    mkdirSync(gDir, { recursive: true });
+    writeFileSync(join(gDir, "alive"), String(Date.now()));
+    // Legacy is silent: the displaced owner left nothing behind.
+    mkdirSync(telemetryDirPath(sessDir), { recursive: true });
+
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    expect(deps.spawns).toHaveLength(0);
+    expect(record()?.status).toBe("deferred");
+    expect(deps.notifications[0]).toContain("still open in a terminal");
+  });
+
+  // A read fault is not evidence of absence. Failing OPEN here spawns a
+  // duplicate driver, which is unrecoverable; declining to spawn is not.
+  it("fails CLOSED when the owner heartbeat cannot be read at all", async () => {
+    const { sessDir } = makeAutonomousStop({ sessionOverrides: { heartbeatGeneration: "not-a-generation" } as any });
+    mkdirSync(telemetryDirPath(sessDir), { recursive: true });
+    // A legacy heartbeat that a fallback would have consulted -- and it belongs
+    // to the DISPLACED owner, which is why there is no fallback.
+    writeFileSync(join(telemetryDirPath(sessDir), "alive"), String(Date.now()));
+
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    expect(deps.spawns).toHaveLength(0);
+    expect(record()?.status).toBe("deferred");
+    // Its OWN words. Reusing the live-client message would assert liveness from
+    // evidence that could not be read.
+    expect(deps.notifications[0]).not.toContain("still open in a terminal");
+    expect(deps.notifications[0]).toContain("heartbeat");
+  });
+
+  it("stands down to manual with its own reason when unreadable telemetry outlasts the grace", async () => {
+    const resetAt = Date.now() - BLOCKED_GRACE_MS - 60_000;
+    const { sessDir } = makeAutonomousStop({
+      resetAt,
+      sessionOverrides: { heartbeatGeneration: "not-a-generation" } as any,
+    });
+    mkdirSync(telemetryDirPath(sessDir), { recursive: true });
+
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    expect(deps.spawns).toHaveLength(0);
+    const rec = record();
+    expect(rec?.status).toBe("manual");
+    expect(rec?.reasonCode).toBe("telemetry_unreadable");
+    expect(deps.notifications[0]).not.toContain("still open in a terminal");
   });
 
   it("stands down to manual when still blocked past the post-reset grace", async () => {

@@ -69,7 +69,7 @@ import {
 } from "../core/limit-lock.js";
 import { readLimitResumeConfig, type LimitResumeConfig } from "../core/limit-config.js";
 import { sendDesktopNotification } from "../core/notify.js";
-import { hasArgvSignature, probeArgvSignature, readAliveTimestamp } from "./liveness.js";
+import { hasArgvSignature, probeArgvSignature, readOwnerHeartbeat } from "./liveness.js";
 import {
   WAKE_ATTEMPT_ENV,
   writeWakeClaim,
@@ -223,6 +223,8 @@ function notifyMoment(
     | "bypass-not-opted-in"
     | "alive-blocked"
     | "alive-blocked-manual"
+    | "telemetry-unreadable"
+    | "telemetry-unreadable-manual"
     | "approvals-blocked"
     | "resume-blocked"
     | "claude-missing"
@@ -240,6 +242,10 @@ function notifyMoment(
     "bypass-not-opted-in": `Session in ${proj} is ready but ran with bypassed permissions. Set limitResume.inheritBypass in .story/config.json to wake it automatically, or resume manually: ${resumeCmd}`,
     "alive-blocked": `Usage limit reset, but the session in ${proj} is still open in a terminal at the limit banner. Continue there, or close it -- auto-resume will retry.`,
     "alive-blocked-manual": `Session in ${proj} is still open in a terminal well past its limit reset. Continue there, or close it and run: storybloq limit-status --requeue ${rec.key}`,
+    // Names the TELEMETRY fault and never claims a live terminal: the whole
+    // point of the fail-closed arm is that we could not read the evidence.
+    "telemetry-unreadable": `Usage limit reset, but the owner heartbeat for the session in ${proj} could not be read (${extra ?? "unknown"}). Not auto-resuming while ownership is unverifiable. Check it is not still running, then resume manually: ${resumeCmd}`,
+    "telemetry-unreadable-manual": `The owner heartbeat for the session in ${proj} has been unreadable (${extra ?? "unknown"}) well past its limit reset. Confirm nothing is still driving it, then: ${resumeCmd} -- or requeue with: storybloq limit-status --requeue ${rec.key}`,
     "approvals-blocked": `Auto-resume of the session in ${proj} exited without progress (likely waiting on approvals). Open it: ${resumeCmd}`,
     "resume-blocked": `Auto-resume of the session in ${proj} was blocked -- check git state, then resume manually: ${resumeCmd}`,
     "claude-missing": `Usage limit reset but the claude CLI was not found on PATH. Resume manually: ${resumeCmd}`,
@@ -332,7 +338,31 @@ async function dispatchClaimed(
 
     // A live client still owns this session: never spawn a second resume and
     // never terminate the user's interactive client.
-    const aliveAt = readAliveTimestamp(session.dir);
+    //
+    // T-450 step 7b.4: read the OWNER's heartbeat, not the legacy directory.
+    // After an owner-gone takeover the session is bound to a generation and the
+    // legacy directory holds the DEAD owner's leftovers, so the legacy accessor
+    // judges the live REPLACEMENT owner absent and spawns a second driver.
+    const heartbeat = readOwnerHeartbeat(session.dir, state as { heartbeatGeneration?: unknown });
+    if (heartbeat.kind === "unusable") {
+      // FAIL CLOSED. A read fault is not evidence of absence, and the two
+      // outcomes are not symmetric: a resume we decline to spawn is
+      // recoverable, a duplicate driver is not.
+      //
+      // Its OWN reason and notification, deliberately, rather than reusing the
+      // live-client branch: that branch tells the operator the session is
+      // "still open in a terminal", which would be an assertion of liveness
+      // made from evidence that could not be read.
+      if (now > rec.resetAt + BLOCKED_GRACE_MS) {
+        notifyMoment(deps, cfg, rec, "telemetry-unreadable-manual", heartbeat.reason);
+        settle("manual", "telemetry_unreadable");
+      } else {
+        if (rec.deferCount === 0) notifyMoment(deps, cfg, rec, "telemetry-unreadable", heartbeat.reason);
+        settle("deferred");
+      }
+      return { spawned: false };
+    }
+    const aliveAt = heartbeat.kind === "alive" ? heartbeat.at : null;
     if (aliveAt != null && now - aliveAt < ALIVE_FRESH_MS) {
       if (now > rec.resetAt + BLOCKED_GRACE_MS) {
         notifyMoment(deps, cfg, rec, "alive-blocked-manual");

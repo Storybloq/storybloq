@@ -42,7 +42,13 @@ import { currentMcpServerPid, mcpProcessRole } from "./liveness.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-const LEASE_DURATION_MS = 45 * 60 * 1000; // 45 minutes
+/**
+ * How long an owner's lease fence lasts. Exported since T-450 step 7b: the
+ * candidate takeover publishes a NEW owner and has to stamp that owner's fence
+ * in the same atomic write, so it needs the one policy value rather than a
+ * second copy of it.
+ */
+export const LEASE_DURATION_MS = 45 * 60 * 1000; // 45 minutes
 const SESSIONS_DIR = "sessions";
 
 // ---------------------------------------------------------------------------

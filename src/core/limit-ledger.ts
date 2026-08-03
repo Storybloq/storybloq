@@ -100,6 +100,11 @@ export type LimitReasonCode =
   | "user_cancel"
   | "project_gone"
   | "resume_blocked"
+  // T-450 step 7b.4: the owner heartbeat could not be read at all, so liveness
+  // is unverifiable. Distinct from `blocked_client`, which asserts a live
+  // terminal -- an assertion this code cannot make from evidence it failed to
+  // read.
+  | "telemetry_unreadable"
   | "cancellation_blocked";
 
 export interface LimitStatusMeta {

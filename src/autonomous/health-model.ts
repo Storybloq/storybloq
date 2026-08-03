@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
-import { telemetryDirPath, readAliveTimestamp, readLastMcpCall, computeBinaryFingerprint } from "./liveness.js";
+import { telemetryDirPath, readOwnerHeartbeat, readLastMcpCall, computeBinaryFingerprint } from "./liveness.js";
 import { analyzeSessionDiagnostics } from "./session-diagnostics.js";
 import type { EventEntry, FullSessionState } from "./session-types.js";
 
@@ -157,10 +157,20 @@ function readDiagnosticEvents(sessionDir: string): { events: EventEntry[]; malfo
   }
 }
 
-function probeAlive(sessionDir: string, now: number): { value: ProbeValue; age: number | null } {
-  const ts = readAliveTimestamp(sessionDir);
-  if (ts === null) return { value: null, age: null };
-  const age = now - ts;
+function probeAlive(sessionDir: string, now: number, state: Record<string, unknown> | null): { value: ProbeValue; age: number | null } {
+  // T-450 step 7b.4: the OWNER's heartbeat. After a takeover the legacy
+  // directory holds the DISPLACED owner's leftovers, so reading it can report a
+  // healthy session that nobody is driving.
+  //
+  // `absent` and `unusable` both map to `null` (unknown), which is what this
+  // probe already did for a missing heartbeat -- the health state machine reads
+  // `alive === false` as "crashed", and neither "nothing is heartbeating yet"
+  // nor "the evidence could not be read" is a crash. They stay apart in the
+  // accessor; what this probe adds is that neither is ever reported as a stale
+  // timestamp from the wrong owner's directory.
+  const heartbeat = readOwnerHeartbeat(sessionDir, state);
+  if (heartbeat.kind !== "alive") return { value: null, age: null };
+  const age = now - heartbeat.at;
   return { value: age <= ALIVE_THRESHOLD, age };
 }
 
@@ -247,7 +257,7 @@ export function collectProbes(sessionDir: string, now?: number, preReadState?: R
   const clock = now ?? Date.now();
   const state = preReadState !== undefined ? preReadState : readSessionState(sessionDir);
 
-  const aliveResult = probeAlive(sessionDir, clock);
+  const aliveResult = probeAlive(sessionDir, clock, state);
   const mcpResult = probeMcpResponsive(sessionDir, clock);
   const guideResult = probeGuideAdvancing(state, clock);
 

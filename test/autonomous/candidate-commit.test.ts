@@ -48,7 +48,6 @@ vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
 });
 
 import {
-  authorizeCandidateRecovery,
   closeTakeoverIntent,
   closeCancellationIntentOnPublication,
   commitCandidateTakeoverLocked,
@@ -193,6 +192,11 @@ function handshakeDeps(over: Partial<CandidateHandshakeDeps> = {}): CandidateHan
     },
     readSuccessors: () => NO_SERVERS,
     loadTicket: async () => null,
+    // THE SERVER-DERIVED HALF. `sessionRevision`, `ticket` and `claimEpoch`
+    // used to ride in the handshake INPUT; the handshake now reads them out of
+    // the session state itself, and this is the same state.json the commit
+    // drivers read, so both sides decide on one observation.
+    readSessionState: () => currentState(),
     ...over,
   };
 }
@@ -214,9 +218,6 @@ function inputFor(state: FullSessionState, over: Partial<CandidateHandshakeInput
     clientTaskId: CALLER.id,
     confirmedSessionRevision: state.revision,
     confirmedFingerprint: shownFingerprint(),
-    sessionRevision: state.revision,
-    ticket: null,
-    claimEpoch: null,
     ...over,
   };
 }
@@ -559,6 +560,368 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
     }, takeoverDeps({ stage: () => null }));
     expect(vi.mocked(withSessionLock)).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * THE TICKET IS A SECOND, INDEPENDENT AXIS on the takeover resume arm too.
+   *
+   * The confirmation pair describes the SESSION; the claim lives in a ticket
+   * file that can move without touching either field. A resume that consults
+   * only the confirmation therefore inherits `existing.intent.ticketPreimage`
+   * verbatim from an intent minted under an EARLIER authorization, and the
+   * postimage it publishes then carries audit evidence the live ledger
+   * contradicts. The cancel driver has guarded exactly this since step 6b
+   * (`ticketWorkMoved`); the takeover driver did not, and that asymmetry was
+   * the defect. The pair below is the takeover analogue of the cancel path's
+   * two "TICKET WORK MOVED" tests, and it needs BOTH directions: the moved case
+   * proves the guard fires, and the unmoved case proves it does not fire on
+   * every resume (which would mint a new cycle for no reason and retire an id
+   * that was doing its job).
+   *
+   * Both stage the crash the same way the nonce-equality test does -- a first
+   * attempt that dies at the generation gate, leaving this task's own intent
+   * durable at `authorized` -- and both move the ticket axis with
+   * `setTicketAxis`, which leaves the revision alone so the confirmation axis
+   * stays valid and the ticket axis is the only thing that differs.
+   */
+  it("TICKET WORK UNMOVED across a resumed takeover: the existing cycle is reused, not superseded", async () => {
+    const state = plantLive();
+    writeMarker();
+    const tickets = ticketFixture();
+    tickets.bind();
+    holdTicket();
+    const input = inputFor(state);
+    const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
+
+    // FIRST ATTEMPT: dies at the generation gate, after the intent is minted.
+    const first = await commitCandidateTakeoverLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, takeoverDeps({ handshake, validateStaged: () => ({ ok: false, reason: "no-heartbeat" }) }));
+    expect(first.kind).toBe("refused");
+    const born = readCancellationIntent(sessDir);
+    expect(born.kind).toBe("valid");
+    if (born.kind !== "valid") return;
+    expect(born.intent.phase).toBe("authorized");
+    // The premise, asserted rather than assumed: there IS a preimage to inherit,
+    // so a reuse here is a real decision and not a comparison of two nulls.
+    expect(born.intent.ticketPreimage).not.toBeNull();
+    // AND BOTH AXES are genuinely fixed. The crashed attempt wrote nothing, so
+    // the confirmation the retry presents is still the one the intent recorded.
+    // Asserted rather than assumed: a fixture drift that moved the revision
+    // would supersede on the OTHER axis, and the reuse this test exists to pin
+    // would silently stop being exercised.
+    expect(currentState().revision).toBe(born.intent.confirmedSessionRevision);
+    expect(input.confirmedFingerprint).toBe(born.intent.confirmedFingerprint);
+
+    // THE RETRY, with the ticket axis exactly where the crashed attempt left it.
+    const retry = await commitCandidateTakeoverLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, takeoverDeps({ handshake }));
+    expect(retry.kind).toBe("committed");
+    if (retry.kind !== "committed") return;
+    expect(retry.resumed).toBe(false);
+
+    const closed = readCancellationIntent(sessDir);
+    expect(closed.kind).toBe("valid");
+    if (closed.kind !== "valid") return;
+    // SAME cycle end to end: same identity, same confirmation, same preimage.
+    expect(closed.intent.transitionId).toBe(born.intent.transitionId);
+    expect(closed.intent.confirmationEpoch).toBe(born.intent.confirmationEpoch);
+    expect(closed.intent.cycleNonce).toBe(born.intent.cycleNonce);
+    expect(closed.intent.ticketPreimage).toEqual(born.intent.ticketPreimage);
+    // Nothing was retired, so no supersession link was written.
+    expect(closed.intent.predecessor).toBeUndefined();
+    expect(retry.postimage.intentTransitionId).toBe(born.intent.transitionId);
+  });
+
+  it("TICKET WORK MOVED under a resumed takeover: the cycle is SUPERSEDED onto the fresh preimage", async () => {
+    const state = plantLive();
+    writeMarker();
+    const tickets = ticketFixture();
+    const input = inputFor(state);
+    const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
+
+    // FIRST ATTEMPT: the session is on no ticket and holds no claim, so the
+    // intent is minted with a NULL preimage; it then dies at the generation
+    // gate, leaving that intent durable at `authorized`.
+    const first = await commitCandidateTakeoverLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, takeoverDeps({ handshake, validateStaged: () => ({ ok: false, reason: "no-heartbeat" }) }));
+    expect(first.kind).toBe("refused");
+    const born = readCancellationIntent(sessDir);
+    expect(born.kind).toBe("valid");
+    if (born.kind !== "valid") return;
+    expect(born.intent.phase).toBe("authorized");
+    expect(born.intent.ticketPreimage).toBeNull();
+
+    // THE CLAIM APPEARS between the passes, and the session records that it is
+    // on the ticket. The revision is deliberately untouched, so the
+    // confirmation the retry presents is still the right one and the ticket
+    // axis alone is what moved.
+    tickets.bind();
+    holdTicket();
+    // The confirmation axis is held fixed, so the supersession below can only
+    // be the ticket axis's doing.
+    expect(currentState().revision).toBe(born.intent.confirmedSessionRevision);
+    expect(input.confirmedFingerprint).toBe(born.intent.confirmedFingerprint);
+
+    const retry = await commitCandidateTakeoverLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, takeoverDeps({ handshake }));
+    expect(retry.kind).toBe("committed");
+    if (retry.kind !== "committed") return;
+
+    const closed = readCancellationIntent(sessDir);
+    expect(closed.kind).toBe("valid");
+    if (closed.kind !== "valid") return;
+
+    // A NEW CYCLE: new identity, epoch bumped by exactly one, and a predecessor
+    // triple naming the intent it retired, all three components of it.
+    expect(closed.intent.transitionId).not.toBe(born.intent.transitionId);
+    expect(closed.intent.confirmationEpoch).toBe(born.intent.confirmationEpoch + 1);
+    expect(closed.intent.predecessor).toEqual({
+      predecessorTransitionId: born.intent.transitionId,
+      predecessorEpoch: born.intent.confirmationEpoch,
+      predecessorFingerprint: born.intent.confirmedFingerprint,
+    });
+
+    // AND IT CARRIES THE FRESH PREIMAGE, not the stale null it would have
+    // inherited. This is the whole point: the record now describes the ticket
+    // as the live ledger has it, so the published postimage cannot be audit
+    // evidence the ledger contradicts.
+    expect(closed.intent.ticketPreimage).not.toBeNull();
+    expect(closed.intent.ticketPreimage?.ticketId).toBe(TICKET_ID);
+    expect(closed.intent.ticketPreimage?.claimedBySession)
+      .toEqual({ present: true, value: sessionId });
+
+    // The postimage names the SUPERSEDING cycle, never the retired one.
+    expect(retry.postimage.intentTransitionId).toBe(closed.intent.transitionId);
+    expect(retry.postimage.cycleNonce).toBe(closed.intent.cycleNonce);
+    expect(retry.postimage.cycleNonce).not.toBe(born.intent.cycleNonce);
+    expect(retry.postimage.confirmationEpoch).toBe(born.intent.confirmationEpoch + 1);
+  });
+
+  /**
+   * THE CONFIRMATION IS THE OTHER AXIS, and it moves independently of the
+   * ticket. The pair above holds it fixed by construction, so on its own it
+   * pins only half the resume guard: an implementation that compared the
+   * preimage and nothing else would satisfy both and still reuse an intent
+   * whose recorded confirmation is stale.
+   *
+   * That is not cosmetic. The postimage written below the resume arm is built
+   * from the FRESH authorization's evidence while the intent it names would
+   * still carry the OLD confirmed revision and fingerprint, so the durable
+   * cycle would record two confirmations that disagree about one transition --
+   * and `retirement`'s derivability proof, which reads the intent, would be
+   * reasoning from the one nobody authorized. The cancel path has compared both
+   * axes at its own resume since step 6b; these two cases are the takeover
+   * halves of that.
+   *
+   * The ticket axis is deliberately held FIXED in both (claim held before the
+   * crash and still held on the retry, so the preimage is byte-identical),
+   * which is what isolates the confirmation axis as the only thing that moved.
+   */
+  it("CONFIRMED REVISION MOVED under a resumed takeover: the cycle is SUPERSEDED onto the fresh pair", async () => {
+    const state = plantLive();
+    writeMarker();
+    const tickets = ticketFixture();
+    tickets.bind();
+    holdTicket();
+    const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
+
+    const first = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps({ handshake, validateStaged: () => ({ ok: false, reason: "no-heartbeat" }) }));
+    expect(first.kind).toBe("refused");
+    const born = readCancellationIntent(sessDir);
+    expect(born.kind).toBe("valid");
+    if (born.kind !== "valid") return;
+    expect(born.intent.phase).toBe("authorized");
+
+    // SOMETHING ELSE WROTE THE SESSION between the crash and the retry. The
+    // ticket axis is untouched, so only the confirmed revision can differ.
+    const moved = writeSessionSync(sessDir, currentState());
+    expect(moved.revision).toBe(born.intent.confirmedSessionRevision + 1);
+    // A FRESHLY MATCHING input, so the handshake still authorizes and the
+    // refusal cannot come from check 1 instead of the guard under test.
+    const movedInput = inputFor(moved);
+    expect(movedInput.confirmedSessionRevision).not.toBe(born.intent.confirmedSessionRevision);
+    expect(movedInput.confirmedFingerprint).toBe(born.intent.confirmedFingerprint);
+
+    const retry = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: movedInput, callerTask: CALLER,
+    }, takeoverDeps({ handshake }));
+    expect(retry.kind).toBe("committed");
+    if (retry.kind !== "committed") return;
+
+    const closed = readCancellationIntent(sessDir);
+    expect(closed.kind).toBe("valid");
+    if (closed.kind !== "valid") return;
+
+    // A NEW CYCLE, with the full audit link back to the one it retired.
+    expect(closed.intent.transitionId).not.toBe(born.intent.transitionId);
+    expect(closed.intent.confirmationEpoch).toBe(born.intent.confirmationEpoch + 1);
+    expect(closed.intent.predecessor).toEqual({
+      predecessorTransitionId: born.intent.transitionId,
+      predecessorEpoch: born.intent.confirmationEpoch,
+      predecessorFingerprint: born.intent.confirmedFingerprint,
+    });
+
+    // CARRYING THE FRESH PAIR AND ITS EVIDENCE, which is the whole point: the
+    // intent now records the confirmation the postimage was actually written
+    // under.
+    expect(closed.intent.confirmedSessionRevision).toBe(movedInput.confirmedSessionRevision);
+    expect(closed.intent.confirmedFingerprint).toBe(movedInput.confirmedFingerprint);
+    expect(closed.intent.evidence.observedAt).toBe(new Date(NOW).toISOString());
+
+    // The ticket axis really did stay put, so this test cannot be passing for
+    // the previous pair's reason.
+    expect(closed.intent.ticketPreimage).toEqual(born.intent.ticketPreimage);
+
+    expect(retry.postimage.intentTransitionId).toBe(closed.intent.transitionId);
+    expect(retry.postimage.confirmationEpoch).toBe(born.intent.confirmationEpoch + 1);
+  });
+
+  it("CONFIRMED FINGERPRINT MOVED under a resumed takeover: the cycle is SUPERSEDED onto the fresh pair", async () => {
+    // The other operand of the same disjunction. Pinned separately because a
+    // guard that compared only the revision would pass the test above and let
+    // a re-confirmed picture be recorded under the old fingerprint.
+    const state = plantLive();
+    writeMarker();
+    const tickets = ticketFixture();
+    tickets.bind();
+    holdTicket();
+
+    const first = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps({
+      handshake: handshakeDeps({ loadTicket: async () => tickets.io.load() }),
+      validateStaged: () => ({ ok: false, reason: "no-heartbeat" }),
+    }));
+    expect(first.kind).toBe("refused");
+    const born = readCancellationIntent(sessDir);
+    expect(born.kind).toBe("valid");
+    if (born.kind !== "valid") return;
+
+    // THE PICTURE MOVED: the owner's last activity reads older than it did.
+    // Still stale, so the verdict stays gone-candidate and the session remains
+    // eligible; the digest moves because it digests the ages. The revision is
+    // untouched, so the fingerprint is the only half of the pair that differs.
+    const olderActivity = new Date(NOW - 60 * 60_000).toISOString();
+    const movedLiveness = () => ({
+      ...livenessStateOf(currentState()), lastGuideCall: olderActivity,
+    });
+    const verdict = readOwnerLiveness(sessDir, movedLiveness, NOW, OWNER_STALE_MS, () => NO_SERVERS);
+    expect(verdict.kind).toBe("gone-candidate");
+    const movedFingerprint = evidenceFingerprint(verdict.signals);
+    expect(movedFingerprint).not.toBe(born.intent.confirmedFingerprint);
+
+    const movedInput = { ...inputFor(state), confirmedFingerprint: movedFingerprint };
+    expect(movedInput.confirmedSessionRevision).toBe(born.intent.confirmedSessionRevision);
+
+    const retry = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: movedInput, callerTask: CALLER,
+    }, takeoverDeps({
+      handshake: handshakeDeps({
+        readState: movedLiveness,
+        loadTicket: async () => tickets.io.load(),
+      }),
+    }));
+    expect(retry.kind).toBe("committed");
+    if (retry.kind !== "committed") return;
+
+    const closed = readCancellationIntent(sessDir);
+    expect(closed.kind).toBe("valid");
+    if (closed.kind !== "valid") return;
+
+    expect(closed.intent.transitionId).not.toBe(born.intent.transitionId);
+    expect(closed.intent.confirmationEpoch).toBe(born.intent.confirmationEpoch + 1);
+    expect(closed.intent.predecessor).toEqual({
+      predecessorTransitionId: born.intent.transitionId,
+      predecessorEpoch: born.intent.confirmationEpoch,
+      predecessorFingerprint: born.intent.confirmedFingerprint,
+    });
+    expect(closed.intent.confirmedFingerprint).toBe(movedFingerprint);
+    expect(closed.intent.confirmedSessionRevision).toBe(born.intent.confirmedSessionRevision);
+    // The evidence was re-minted with the picture, not carried over.
+    expect(closed.intent.evidence.activity).not.toEqual(born.intent.evidence.activity);
+    expect(closed.intent.ticketPreimage).toEqual(born.intent.ticketPreimage);
+  });
+
+  /**
+   * "WE COULD NOT LOOK" IS NOT "IT IS NOT THERE", carried all the way to the
+   * operator's sentence.
+   *
+   * The claim path loads the ticket inside a try/catch and flattens a throw to
+   * `ticket = null` so its own arms can share one variable. That null must NOT
+   * be what the authority matrix is handed: spelled as `absent` it becomes a
+   * positive finding that the ticket does not exist, which is the exact
+   * collapse `LedgerRead`'s three arms exist to prevent.
+   *
+   * It is not fail-open -- the claim-bearing posture refuses either way,
+   * through reconciliation -- and that is precisely why only the REASON can
+   * catch it. A test that asserted "refused" would pass on both spellings.
+   * So this pins the reason and the detail: `ledger-unreadable`, carrying the
+   * failure's own message, rather than `claim-not-held`, which would tell an
+   * operator the ticket is gone when the ledger merely could not be read.
+   *
+   * BOTH unreadable spellings are covered, because they are easy to conflate
+   * and only one of them is a thrown error.
+   */
+  it("LEDGER-UNREADABLE survives to the takeover refusal as itself, never as absence", async () => {
+    const spellings: Array<{
+      readonly name: string;
+      readonly loadTicket: CandidateHandshakeDeps["loadTicket"];
+      readonly detail: string;
+    }> = [
+      {
+        name: "a throwing ledger read",
+        loadTicket: async () => { throw new Error("ledger unreadable: EIO"); },
+        detail: "ledger unreadable: EIO",
+      },
+      {
+        name: "a read that did not answer",
+        loadTicket: async () => undefined,
+        detail: "the ledger read did not answer",
+      },
+    ];
+
+    for (const spelling of spellings) {
+      // A claim-bearing session (IMPLEMENT) that is ON the ticket, with an
+      // epoch naming that same ticket -- so the claim path really does perform
+      // the load whose result the matrix then reuses.
+      const state = plantLive();
+      writeMarker();
+      const tickets = ticketFixture();
+      tickets.bind();
+      holdTicket();
+
+      const result = await commitCandidateTakeoverLocked(root, sessDir, {
+        input: inputFor(state), callerTask: CALLER,
+      }, takeoverDeps({ handshake: handshakeDeps({ loadTicket: spelling.loadTicket }) }));
+
+      expect(result.kind, spelling.name).toBe("refused");
+      if (result.kind !== "refused") continue;
+      expect(result.stage, spelling.name).toBe("validation");
+
+      const authorization = result.authorization;
+      expect(authorization?.kind, spelling.name).toBe("refused");
+      if (authorization?.kind !== "refused") continue;
+      expect(authorization.reason, spelling.name).toBe("takeover-unauthorized");
+
+      const authority = authorization.authority;
+      expect(authority?.kind, spelling.name).toBe("refused");
+      if (authority?.kind !== "refused") continue;
+
+      // THE WHOLE ASSERTION. Both lines are load-bearing: the first says what
+      // the reason must be, the second names the wrong answer the collapse
+      // produced, so a regression cannot be read as a mere rewording.
+      expect(authority.reason, spelling.name).toBe("ledger-unreadable");
+      expect(authority.reason, spelling.name).not.toBe("claim-not-held");
+      // And the failure's own words reach the operator, so the sentence says
+      // WHY the ledger could not be read rather than only that it could not.
+      expect(authority.detail, spelling.name).toContain(spelling.detail);
+    }
+  });
 });
 
 describe("T-450 6b: the content-gated takeover close (B8)", () => {
@@ -676,36 +1039,61 @@ describe("T-450 6b: the content-gated takeover close (B8)", () => {
   });
 });
 
+const TICKET_ID = "T-001";
+
+/** A mutable in-ledger ticket plus the IO both the handshake and the txn
+ * steps read, so the two sides compare like with like. */
+function ticketFixture() {
+  let ticket: Record<string, unknown> = {
+    id: TICKET_ID, title: "t", status: "inprogress", type: "task", phase: "p1", order: 1,
+    description: "", createdDate: "2026-08-01", completedDate: null, blockedBy: [],
+    claimedBySession: "", // bound after plantLive, when sessionId exists
+  };
+  return {
+    bind: () => { ticket.claimedBySession = sessionId; },
+    /** Someone else released it between our passes. */
+    release: () => { delete ticket.claimedBySession; ticket.status = "open"; },
+    get: () => ticket,
+    io: {
+      load: () => ({ ...ticket }) as never,
+      write: async (t: Record<string, unknown>) => { ticket = { ...t }; },
+    } satisfies CandidateTicketIO,
+  };
+}
+
+/** The claim epoch this session recorded at acquisition. It lives in the
+ * SESSION STATE, which is where both the handshake and the commit drivers now
+ * read it from; it names the sessionId `plantLive` mints, so it can only be
+ * built after one. */
+function epochFor() {
+  return {
+    ticketId: TICKET_ID, sessionId, user: null, branch: null, since: null,
+    establishedAt: STALE_AT,
+  };
+}
+
+/**
+ * Move the session's ticket axis WITHOUT moving its revision.
+ *
+ * These fields used to be handed to the commit as input, so changing them
+ * cost nothing. They are session state now, and the ordinary writer bumps the
+ * revision -- which would move the CONFIRMATION axis too and supersede a
+ * cycle for a reason the test is not about. Writing state.json directly keeps
+ * the two axes independent, exactly as the input/state split did.
+ */
+function setTicketAxis(over: Record<string, unknown>): void {
+  const next = { ...(currentState() as unknown as Record<string, unknown>), ...over };
+  writeFileSync(join(sessDir, "state.json"), JSON.stringify(next, null, 2) + "\n");
+}
+
+/** The session is on the ticket and holds the epoch it acquired. The ref
+ * carries a title because the session schema requires one; the handshake
+ * reads only the id. */
+function holdTicket(): void {
+  setTicketAxis({ ticket: { id: TICKET_ID, title: "t" }, claimEpoch: epochFor() });
+}
+
 describe("T-450 6b: commitCandidateCancel drives the phase table end to end", () => {
-  const TICKET_ID = "T-001";
-
-  /** A mutable in-ledger ticket plus the IO both the handshake and the txn
-   * steps read, so the two sides compare like with like. */
-  function ticketFixture() {
-    let ticket: Record<string, unknown> = {
-      id: TICKET_ID, title: "t", status: "inprogress", type: "task", phase: "p1", order: 1,
-      description: "", createdDate: "2026-08-01", completedDate: null, blockedBy: [],
-      claimedBySession: "", // bound after plantLive, when sessionId exists
-    };
-    return {
-      bind: () => { ticket.claimedBySession = sessionId; },
-      /** Someone else released it between our passes. */
-      release: () => { delete ticket.claimedBySession; ticket.status = "open"; },
-      get: () => ticket,
-      io: {
-        load: () => ({ ...ticket }) as never,
-        write: async (t: Record<string, unknown>) => { ticket = { ...t }; },
-      } satisfies CandidateTicketIO,
-    };
-  }
-
-  function epochFor(): NonNullable<CandidateHandshakeInput["claimEpoch"]> {
-    return {
-      ticketId: TICKET_ID, sessionId, user: null, branch: null, since: null,
-      establishedAt: STALE_AT,
-    };
-  }
-
   function cancelDeps(over: Partial<CandidateCancelDeps> = {}): CandidateCancelDeps {
     return {
       handshake: handshakeDeps(),
@@ -773,9 +1161,10 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeMarker();
     const tickets = ticketFixture();
     tickets.bind();
+    holdTicket();
 
     const result = await commitCandidateCancelLocked(root, sessDir, {
-      input: inputFor(state, { ticket: { id: TICKET_ID }, claimEpoch: epochFor() }),
+      input: inputFor(state),
       callerTask: CALLER,
     }, cancelDeps({
       handshake: handshakeDeps({ loadTicket: async () => tickets.io.load() }),
@@ -810,7 +1199,8 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeMarker();
     const tickets = ticketFixture();
     tickets.bind();
-    const input = inputFor(state, { ticket: { id: TICKET_ID }, claimEpoch: epochFor() });
+    holdTicket();
+    const input = inputFor(state);
     const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
 
     // FIRST ATTEMPT: crash immediately after the step-2 ticket write, before
@@ -888,11 +1278,14 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(born.intent.phase).toBe("authorized");
     expect(born.intent.ticketPreimage).toBeNull();
 
-    // THE CLAIM APPEARS between the passes.
+    // THE CLAIM APPEARS between the passes, and the session records that it is
+    // on the ticket. The revision is deliberately left where it was, so the
+    // confirmation axis is unmoved and the ticket axis alone is what differs.
     tickets.bind();
+    holdTicket();
 
     const retry = await commitCandidateCancelLocked(root, sessDir, {
-      input: inputFor(state, { ticket: { id: TICKET_ID }, claimEpoch: epochFor() }),
+      input: inputFor(state),
       callerTask: CALLER,
     }, cancelDeps({ handshake, withTicketLock: async (fn) => { await fn(tickets.io); } }));
     expect(retry.kind).toBe("published");
@@ -918,10 +1311,11 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeMarker();
     const tickets = ticketFixture();
     tickets.bind();
+    holdTicket();
     const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
 
     const first = await commitCandidateCancelLocked(root, sessDir, {
-      input: inputFor(state, { ticket: { id: TICKET_ID }, claimEpoch: epochFor() }),
+      input: inputFor(state),
       callerTask: CALLER,
     }, cancelDeps({
       handshake,
@@ -943,8 +1337,12 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeFileSync(join(sessDir, "cancellation-intent.json"), JSON.stringify(rewound, null, 2));
     const staleTid = born.intent.transitionId;
 
-    // The claim is released by someone else before the retry.
+    // The claim is released by someone else before the retry, and the session
+    // is no longer on the ticket. Revision unmoved: the ticket axis alone.
     tickets.release();
+    // `undefined` rather than null: `ticket` is an optional object in the
+    // session schema, and JSON.stringify drops the key entirely.
+    setTicketAxis({ ticket: undefined, claimEpoch: null });
 
     const retry = await commitCandidateCancelLocked(root, sessDir, {
       input: inputFor(state), callerTask: CALLER,
@@ -981,7 +1379,8 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeMarker();
     const tickets = ticketFixture();
     tickets.bind();
-    const input = inputFor(state, { ticket: { id: TICKET_ID }, claimEpoch: epochFor() });
+    holdTicket();
+    const input = inputFor(state);
     const handshake = handshakeDeps({ loadTicket: async () => tickets.io.load() });
 
     const first = await commitCandidateCancelLocked(root, sessDir, {

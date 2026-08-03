@@ -6,6 +6,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
+import { canAcquireTicketClaim } from "../candidate-authority.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -149,20 +150,19 @@ export class PlanStage implements WorkflowStage {
           const ticket = projectState.ticketByID(ctx.state.ticket!.id);
           if (!ticket) return;
           const ticketClaim = (ticket as Record<string, unknown>).claimedBySession;
+          // ALREADY OURS: nothing to acquire and nothing to write. Checked
+          // separately from the predicate below, which reports this case as
+          // acquirable (it is) -- but re-writing the ticket here would be a
+          // pointless ledger write, so this arm keeps its own early return.
           if (ticket.status === "inprogress" && ticketClaim === ctx.state.sessionId) return;
-          if (ticket.status !== "open") { claimFailed = true; return; }
-          if (ticketClaim && ticketClaim !== ctx.state.sessionId) { claimFailed = true; return; }
           const draftClaim = (ctx.state as Record<string, unknown>).pendingTicketClaim as { user: string; branch: string; since: string } | undefined;
-          if (ticket.claim && draftClaim) {
-            // ISS-759: same-user claims are re-claimable on ANY branch. A
-            // per-ticket-branch session legitimately holds a claim from a
-            // previous branch of the same user (e.g. a prior story/T-xxx
-            // attempt), and the canClaim same-branch requirement made PLAN
-            // spin on retry. Only a FOREIGN user's claim blocks the recheck;
-            // freshness handling for foreign claims stays where it is today
-            // (PICK_TICKET), unchanged by this gate.
-            if (ticket.claim.user !== draftClaim.user) { claimFailed = true; return; }
-          } else if (ticket.claim && !draftClaim) {
+          // T-450 step 7a: the acquisition rule is SHARED with candidate
+          // takeover rather than restated there, so the two cannot drift.
+          // Takeover asks the same question this stage asks -- may this session
+          // hold this ticket -- and a takeover applying a stricter rule would
+          // refuse recoveries the ordinary path would have allowed. The ISS-759
+          // same-user-any-branch allowance lives inside the shared predicate.
+          if (!canAcquireTicketClaim(ticket, ctx.state.sessionId, draftClaim)) {
             claimFailed = true; return;
           }
           const updated = { ...ticket, status: "inprogress" as const, claimedBySession: ctx.state.sessionId, ...(draftClaim ? { claim: draftClaim } : {}) };

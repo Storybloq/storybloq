@@ -320,6 +320,7 @@ export class PickTicketStage implements WorkflowStage {
       // plan-gate history and mis-trigger the park hint on round one.
       planGateNonApprovals: 0,
       finalizeCheckpoint: null,
+      finalizedItem: null,
       landingDecision: null,
       ticketStartedAt: new Date().toISOString(),
       ...(claimObj ? { pendingTicketClaim: claimObj } : {}),
@@ -464,6 +465,7 @@ export class PickTicketStage implements WorkflowStage {
       reviews: { plan: [], code: [] },
       git: { ...ctx.state.git, itemBaseHead: issueBaseHead },
       finalizeCheckpoint: null,
+      finalizedItem: null,
       landingDecision: null,
     });
 

@@ -31,6 +31,7 @@ export class CompleteStage implements WorkflowStage {
     ctx.writeState({
       contextPressure: { ...ctx.state.contextPressure, level: pressure },
       finalizeCheckpoint: null,
+      finalizedItem: null,
     });
 
     const ticketsDone = ctx.state.completedTickets.length;

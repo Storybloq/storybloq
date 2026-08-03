@@ -73,6 +73,14 @@ import {
   type StagedGenerationValidation,
 } from "./liveness.js";
 import type { SuccessorServers } from "./mcp-registry.js";
+import { parseClaimEpoch } from "./claim-preflight.js";
+import {
+  authorityLedgerTargets,
+  decideTakeoverAuthority,
+  type LedgerRead,
+  type IssueAuthorityView,
+  type TakeoverAuthority,
+} from "./candidate-authority.js";
 import {
   reconcileClaim,
   recoverClaimTransaction,
@@ -1293,21 +1301,54 @@ export interface CandidateHandshakeDeps {
   readonly readLifecycle: () => { readonly state: string; readonly status: string };
   readonly readSuccessors: () => SuccessorServers;
   readonly loadTicket: (ticketId: string) => Promise<Ticket | null | undefined>;
+  /** The ledger issue behind `state.currentIssue`, for the ISSUE_FIX authority
+   * row. Same three-way contract as `loadTicket`: `undefined` means the read
+   * FAILED, `null` means it positively resolved to nothing. */
+  readonly loadIssue?: (issueId: string) => Promise<IssueAuthorityView | null | undefined>;
+  /**
+   * The session state RIGHT NOW. A provider, never a snapshot, and the single
+   * source of every SERVER-DERIVED value the handshake decides on -- see the
+   * provenance note on `CandidateHandshakeInput`.
+   */
+  readonly readSessionState: () => FullSessionState | null;
   readonly claimStalenessHours?: number;
 }
 
-/** What the caller confirmed, and the session facts the checks are against. */
+/**
+ * WHAT THE CALLER CONFIRMED, and nothing else.
+ *
+ * This type is split by PROVENANCE, and the split is load-bearing. It used to
+ * also carry `sessionRevision`, `ticket` and `claimEpoch`, which the caller read
+ * before acquiring the lock. The commit then re-validated under the lock by
+ * spreading that same struct and overriding ONE field:
+ * `{ ...args.input, sessionRevision: fresh.revision }`. So the ticket and the
+ * claim epoch -- the two values the ticket-work decision is actually made from
+ * -- were never refreshed, and a gate that re-reads one field out of four is
+ * not a recheck.
+ *
+ * What remains here is exactly what only the CALLER can know: which session
+ * they mean, who they are, and the picture a human confirmed. Everything a
+ * SERVER can read for itself now comes from `deps.readSessionState()` at
+ * decision time, so no caller snapshot can reach an authority decision.
+ */
 export interface CandidateHandshakeInput {
   readonly sessionId: string;
   readonly clientTaskId: string | undefined;
   /** The revision the human was shown, and the fingerprint of that picture. */
   readonly confirmedSessionRevision: number;
   readonly confirmedFingerprint: string;
-  /** The session's revision RIGHT NOW, read under the held lock. */
-  readonly sessionRevision: number;
-  readonly ticket: { readonly id: string } | null;
-  readonly claimEpoch: ClaimEpoch | null;
 }
+
+/**
+ * WHICH operation an authorization was granted for.
+ *
+ * Not a field on the input. A caller-supplied discriminator would be fail-open
+ * by construction: a takeover caller could pass `"cancel"` and skip the takeover
+ * authority matrix entirely. It is stamped by the shared core from its own
+ * parameter, and each commit path rejects an authorization carrying the other
+ * value.
+ */
+export type CandidateOperation = "takeover" | "cancel";
 
 /**
  * What ticket work the commit owes, stated positively.
@@ -1335,6 +1376,9 @@ export type CandidateTicketWork =
 export type CandidateAuthorization =
   | {
       readonly kind: "authorized";
+      /** Stamped by the core, never read from caller input. Each commit path
+       * rejects the value that is not its own. */
+      readonly operation: CandidateOperation;
       readonly authority: Extract<CancellationAuthority, { kind: "candidate" }>;
       readonly ticketWork: CandidateTicketWork;
       readonly claimReconciliation: ClaimReconciliation["status"] | "not-checked";
@@ -1355,8 +1399,12 @@ export type CandidateAuthorization =
         | "caller-is-owner"
         | "unpersistable-evidence"
         | "session-mismatch"
-        | "session-terminal";
+        | "session-terminal"
+        | "state-unreadable"
+        | "takeover-unauthorized";
       readonly detail: string;
+      /** Present on `takeover-unauthorized`: which posture refused, and why. */
+      readonly authority?: TakeoverAuthority;
     };
 
 /**
@@ -1389,13 +1437,28 @@ function persistEvidence(signals: OwnerLivenessSignals): PersistedLivenessEviden
  * told to re-confirm rather than being told about an eligibility verdict for a
  * picture it was never shown.
  */
-export async function authorizeCandidateRecovery(
+async function authorizeCandidateRecoveryCore(
   sessionDir: string,
   input: CandidateHandshakeInput,
   deps: CandidateHandshakeDeps,
+  operation: CandidateOperation,
 ): Promise<CandidateAuthorization> {
   const now = (deps.now ?? Date.now)();
   const staleThresholdMs = deps.staleThresholdMs ?? OWNER_STALE_MS;
+
+  // EVERY SERVER-DERIVED VALUE COMES FROM HERE, and from nowhere the caller
+  // controls. Read once, at decision time: in the commit's case this executes
+  // under the held locks, so the values the authority decision is made from are
+  // the values on disk at the moment of the decision.
+  const sessionState = deps.readSessionState();
+  if (sessionState === null) {
+    return { kind: "refused", reason: "state-unreadable", detail:
+      "the session state could not be read, and an authorization cannot be derived from a state " +
+      "nobody can load" };
+  }
+  const sessionRevision = sessionState.revision;
+  const derivedTicket = sessionState.ticket ? { id: sessionState.ticket.id } : null;
+  const derivedEpoch = parseClaimEpoch((sessionState as Record<string, unknown>).claimEpoch);
 
   // STEP 3, hoisted: candidate authority is task-bound, so a caller with no
   // identity can never hold it, and the recorded OWNER taking over from
@@ -1455,10 +1518,10 @@ export async function authorizeCandidateRecovery(
     return { kind: "re-confirm", reason: "fingerprint-changed", detail:
       "the evidence changed between being shown and being confirmed", fresh: { evidence, fingerprint } };
   }
-  if (input.sessionRevision !== input.confirmedSessionRevision) {
+  if (sessionRevision !== input.confirmedSessionRevision) {
     return { kind: "re-confirm", reason: "revision-moved", detail:
       `the session was at revision ${input.confirmedSessionRevision} when confirmed and is at ` +
-      `${input.sessionRevision} now`, fresh: { evidence, fingerprint } };
+      `${sessionRevision} now`, fresh: { evidence, fingerprint } };
   }
 
   // CHECK 2, still eligible NOW. The gate is `permitsRecoveryOffer` and
@@ -1494,7 +1557,7 @@ export async function authorizeCandidateRecovery(
   // reported apart (see CandidateTicketWork) so a commit can never mistake
   // "we looked and nothing is owed" for "we could not look".
   let reconciliation: ClaimReconciliation["status"] | "not-checked" = "not-checked";
-  const epoch = input.claimEpoch;
+  const epoch = derivedEpoch;
 
   // EVERY COMBINATION IS NAMED. The default used to be `no-ticket`, which
   // positively asserts that nothing is owed, and it was reached by any input
@@ -1508,19 +1571,31 @@ export async function authorizeCandidateRecovery(
   //                       not on. We cannot say what is owed (blocked)
   //   both, ids differ -> the same contradiction, louder (blocked)
   let ticketWork: CandidateTicketWork =
-    !epoch && !input.ticket
+    !epoch && !derivedTicket
       ? { kind: "none", why: "no-ticket", detail:
           "this session holds no ticket and recorded no claim epoch, so no ticket work is owed" }
       : !epoch
         ? { kind: "none", why: "claim-not-held", detail:
-            `this session is on ticket ${input.ticket!.id} but recorded no claim epoch, so it cannot prove ` +
+            `this session is on ticket ${derivedTicket!.id} but recorded no claim epoch, so it cannot prove ` +
             "ownership and no release may be written for it" }
         : { kind: "blocked", why: "claim-context-mismatch", detail:
             `the recorded claim epoch names ticket ${epoch.ticketId} while the session is on ` +
-            `${input.ticket ? input.ticket.id : "no ticket"}; the claim context contradicts itself, so what ` +
+            `${derivedTicket ? derivedTicket.id : "no ticket"}; the claim context contradicts itself, so what ` +
             "is owed cannot be determined" };
 
-  if (epoch && input.ticket && input.ticket.id === epoch.ticketId) {
+  // Hoisted so the authority matrix below reuses THIS observation rather than
+  // taking a second, possibly divergent, reading of the same ticket.
+  //
+  // Carried as a THREE-WAY read, not as `Ticket | null`. The catch below sets
+  // `ticket = null` so the claim arms can share one variable, and handing that
+  // null on as the matrix's observation would spell a failed read the same way
+  // as a positive finding of absence -- the exact collapse this module refuses
+  // to make everywhere else. It is not fail-open today (the ticket postures
+  // refuse anyway, through reconciliation or the shape check), but the refusal
+  // would name the wrong reason and the operator would be told the ticket is
+  // gone when it is unreadable.
+  let loadedRead: LedgerRead<Ticket> | undefined;
+  if (epoch && derivedTicket && derivedTicket.id === epoch.ticketId) {
     let ticket: Ticket | null | undefined;
     let unreadable: string | null = null;
     try {
@@ -1529,6 +1604,13 @@ export async function authorizeCandidateRecovery(
       unreadable = err instanceof Error ? err.message : "unknown error";
       ticket = null;
     }
+    loadedRead = unreadable !== null
+      ? { kind: "unreadable", detail: unreadable }
+      : ticket === undefined
+        ? { kind: "unreadable", detail: "the ledger read did not answer" }
+        : ticket === null
+          ? { kind: "absent" }
+          : { kind: "found", value: ticket };
     const claimState = readTicketClaimState(ticket);
     reconciliation = reconcileClaim({
       epoch,
@@ -1568,8 +1650,42 @@ export async function authorizeCandidateRecovery(
     }
   }
 
+  // THE AUTHORITY MATRIX, and only for a takeover.
+  //
+  // Cancel deliberately skips it: a session needs ENDING whatever its claim
+  // posture, and refusing to cancel a claim-lost session is precisely what
+  // strands it. Takeover is the opposite question -- may this session's WORK be
+  // handed on -- and until now nothing asked it, so a takeover was authorized
+  // and published even when the claim had been released, won by another
+  // session, left unreadable, or left contradicting itself.
+  //
+  // It runs HERE rather than at a caller so that the commit's under-lock
+  // re-validation inherits it from the same implementation, which closes the
+  // window between a caller's pre-check and the write for free.
+  if (operation === "takeover") {
+    // WHAT TO READ is the module's question, not this function's. Asking
+    // `state.currentIssue` and "the epoch's ticket" directly loaded the wrong
+    // record in two postures: the retained epoch names the PREVIOUS item at a
+    // pre-acquisition state, and `currentIssue` is already cleared at
+    // FINALIZE/`committed`, which is precisely the crash `finalizedItem` exists
+    // to make resolvable.
+    const targets = authorityLedgerTargets(sessionState);
+    const authorityDecision = decideTakeoverAuthority({
+      state: sessionState,
+      ticket: await readLedgerTicket(deps, loadedRead, epoch, targets.ticketId),
+      issue: await readLedgerIssue(deps, targets.issueId),
+      reconciliation,
+    });
+    if (authorityDecision.kind === "refused") {
+      return { kind: "refused", reason: "takeover-unauthorized", authority: authorityDecision, detail:
+        `takeover is not authorized at ${sessionState.state} (${authorityDecision.posture}): ` +
+        authorityDecision.detail };
+    }
+  }
+
   return {
     kind: "authorized",
+    operation,
     authority: {
       kind: "candidate",
       clientTaskId: input.clientTaskId,
@@ -1580,6 +1696,84 @@ export async function authorizeCandidateRecovery(
     ticketWork,
     claimReconciliation: reconciliation,
   };
+}
+
+/**
+ * The ledger ticket for the authority matrix, as a three-way read.
+ *
+ * The claim path above may already have loaded it; reusing that result avoids a
+ * second ledger hit and, more importantly, keeps both decisions made from ONE
+ * observation. When it did not (no epoch, so no claim work was owed) this loads
+ * it for the identity the matrix resolves, and a THROW is reported as
+ * `unreadable` rather than swallowed into absence.
+ */
+async function readLedgerTicket(
+  deps: CandidateHandshakeDeps,
+  alreadyLoaded: LedgerRead<Ticket> | undefined,
+  epoch: ClaimEpoch | null,
+  ticketId: string | null,
+): Promise<LedgerRead<Ticket>> {
+  if (!ticketId) return { kind: "absent" };
+  // Reuse the claim path's read only when it is a read of the SAME ticket, so
+  // an epoch pointing at a previous item cannot answer for the current one. It
+  // is carried three-way, so an unreadable ledger stays unreadable here.
+  if (epoch && epoch.ticketId === ticketId && alreadyLoaded !== undefined) {
+    return alreadyLoaded;
+  }
+  try {
+    const loaded = await deps.loadTicket(ticketId);
+    if (loaded === undefined) return { kind: "unreadable", detail: "the ledger read did not answer" };
+    return loaded === null ? { kind: "absent" } : { kind: "found", value: loaded };
+  } catch (err) {
+    return { kind: "unreadable", detail: err instanceof Error ? err.message : "unknown error" };
+  }
+}
+
+/** As above, for the ISSUE_FIX and issue-finalization rows. */
+async function readLedgerIssue(
+  deps: CandidateHandshakeDeps,
+  issueId: string | null,
+): Promise<LedgerRead<IssueAuthorityView>> {
+  if (!issueId) return { kind: "absent" };
+  if (!deps.loadIssue) {
+    return { kind: "unreadable", detail: "no issue loader was supplied, so the ledger issue could not be read" };
+  }
+  try {
+    const loaded = await deps.loadIssue(issueId);
+    if (loaded === undefined) return { kind: "unreadable", detail: "the ledger read did not answer" };
+    return loaded === null ? { kind: "absent" } : { kind: "found", value: loaded };
+  } catch (err) {
+    return { kind: "unreadable", detail: err instanceof Error ? err.message : "unknown error" };
+  }
+}
+
+/**
+ * TAKEOVER authorization: the five-step handshake PLUS the per-state authority
+ * matrix. `commitCandidateTakeoverLocked` calls this and nothing else.
+ */
+export async function authorizeCandidateTakeover(
+  sessionDir: string,
+  input: CandidateHandshakeInput,
+  deps: CandidateHandshakeDeps,
+): Promise<CandidateAuthorization> {
+  return authorizeCandidateRecoveryCore(sessionDir, input, deps, "takeover");
+}
+
+/**
+ * CANCEL authorization: the five-step handshake alone.
+ *
+ * No authority matrix, deliberately. Cancellation ends a session, and a session
+ * whose claim posture has gone wrong is exactly the one that most needs ending;
+ * gating it on claim authority would strand it. The protection cancel needs is
+ * on its WRITES (it refuses to touch a ticket it cannot prove is this
+ * session's), not on its right to run.
+ */
+export async function authorizeCandidateCancel(
+  sessionDir: string,
+  input: CandidateHandshakeInput,
+  deps: CandidateHandshakeDeps,
+): Promise<CandidateAuthorization> {
+  return authorizeCandidateRecoveryCore(sessionDir, input, deps, "cancel");
 }
 
 /** Presence-preserving read of one ticket field, the same shape
@@ -1739,6 +1933,11 @@ export type CandidateTakeoverCommit =
         | "staging"
         | "state-unreadable"
         | "validation"
+        // NOT a policy outcome. An invariant this module's correctness rests on
+        // was violated, which can only mean the code is wired wrong. It is a
+        // separate arm so it cannot be mistaken for, or "fixed" by loosening,
+        // an ordinary authorization refusal.
+        | "invariant-violated"
         | "intent"
         | "generation"
         | "write"
@@ -1888,10 +2087,34 @@ export async function commitCandidateTakeoverLocked(
       // sessionRevision is read HERE, not taken from the caller: the
       // confirmation was made against a number, and the number that counts
       // is the one the postimage write is about to build on.
-      const authorization = await authorizeCandidateRecovery(sessionDir, {
-        ...args.input,
-        sessionRevision: fresh.revision,
-      }, deps.handshake);
+      const authorization = await authorizeCandidateTakeover(sessionDir, args.input, deps.handshake);
+      // AN INVARIANT CHECK, NOT DEAD CODE, and the distinction is the reason
+      // this is kept. An unreachable BRANCH of business logic should be
+      // deleted; an executable statement of a PRECONDITION the module's
+      // correctness rests on should not, and the test that separates them is
+      // the failure mode when the precondition is violated. Here it is a SILENT
+      // authority bypass, and a guard is the only thing that turns silence into
+      // a signal. A comment asserting the same precondition would drift with
+      // nothing to say when it had; this cannot.
+      //
+      // It is unreachable today -- the entry point above stamps its own tag --
+      // so no behavioural test can kill a mutation of it. That is a property of
+      // invariant guards, not a coverage gap.
+      //
+      // The refusal is deliberately NOT the ordinary shape. If it ever fires
+      // and reads as a routine authorization refusal, someone debugs it as a
+      // policy question and "fixes" it by loosening policy, at which point the
+      // guard has caused the very bypass it exists to prevent.
+      if (authorization.kind === "authorized" && authorization.operation !== "takeover") {
+        result = { kind: "refused", stage: "invariant-violated", authorization, detail:
+          "PROGRAMMING ERROR, not a policy refusal: this takeover commit received an authorization " +
+          `stamped "${authorization.operation}". The takeover entry point stamps its own tag, so this ` +
+          "cannot happen unless the call above has been repointed at the shared core or at the cancel " +
+          "entry point. The takeover authority matrix runs only on the takeover path, so committing " +
+          "here would publish a takeover nothing ever authorized. Fix the wiring; do NOT loosen this " +
+          "check or the authorization policy." };
+        return;
+      }
       if (authorization.kind !== "authorized") {
         result = { kind: "refused", stage: "validation", authorization, detail:
           `re-validation under the lock returned ${authorization.kind}; the takeover commits only what ` +
@@ -1903,7 +2126,65 @@ export async function commitCandidateTakeoverLocked(
       // nonce); this task's own authorized intent resumes verbatim.
       let intent: CancellationIntent;
       if (existing.kind === "valid") {
-        intent = existing.intent;
+        // THE TICKET IS A SECOND, INDEPENDENT AXIS, and this arm used to ignore
+        // it. Resuming `existing.intent` verbatim inherits a `ticketPreimage`
+        // minted under an EARLIER authorization, with no comparison against
+        // what the fresh under-lock handshake just found -- so a ticket that
+        // moved between the crashed attempt and this retry would be recorded by
+        // its stale preimage, and the postimage written below would carry audit
+        // evidence the live ledger contradicts. The cancel path has guarded
+        // exactly this since step 6b (`ticketWorkMoved`); the takeover path did
+        // not, and the asymmetry was the defect.
+        //
+        // Only supersession applies here, never adoption: this arm is reached
+        // only at `authorized` (a further-along phase refused above), and the
+        // already-committed check at STEP 2 has already returned for any cycle
+        // whose postimage is durable. So nothing durable references the nonce
+        // being retired, and the id retires with its confirmation.
+        //
+        // BOTH AXES, as the cancel path does at its own resume. The
+        // confirmation pair describes the SESSION and the preimage describes
+        // the TICKET, and either can move without the other. Reusing an intent
+        // whose confirmation pair is stale while the postimage below is written
+        // from the FRESH authorization's evidence would leave the durable cycle
+        // recording two confirmations that disagree about the same transition.
+        const freshPreimage = authorization.ticketWork.kind === "release"
+          ? authorization.ticketWork.preimage
+          : null;
+        const confirmationMoved =
+          existing.intent.confirmedSessionRevision !== authorization.authority.confirmedSessionRevision
+          || existing.intent.confirmedFingerprint !== authorization.authority.confirmedFingerprint;
+        const ticketWorkMoved = !deepEquals(existing.intent.ticketPreimage ?? null, freshPreimage ?? null);
+        if (!confirmationMoved && !ticketWorkMoved) {
+          intent = existing.intent;
+        } else {
+          const superseded = supersedeCancellationIntent(sessionDir, {
+            schemaVersion: 1,
+            transitionId: randomUUID(),
+            confirmationEpoch: existing.intent.confirmationEpoch + 1,
+            clientTaskId: args.callerTask.id,
+            sessionId: existing.intent.sessionId,
+            sessionStartedAt: existing.intent.sessionStartedAt,
+            confirmedSessionRevision: authorization.authority.confirmedSessionRevision,
+            confirmedFingerprint: authorization.authority.confirmedFingerprint,
+            evidence: authorization.authority.evidence,
+            ticketPreimage: freshPreimage,
+            predecessor: {
+              predecessorTransitionId: existing.intent.transitionId,
+              predecessorEpoch: existing.intent.confirmationEpoch,
+              predecessorFingerprint: existing.intent.confirmedFingerprint,
+            },
+            phase: "authorized",
+          } as NewCycleIntent);
+          if (!superseded.ok) {
+            result = { kind: "refused", stage: "intent", detail:
+              `a resumed takeover intent moved on its ` +
+              `${confirmationMoved && ticketWorkMoved ? "confirmation and ticket axes" : confirmationMoved ? "confirmation axis" : "ticket axis"} ` +
+              `and supersession failed (${superseded.reason}): ${superseded.detail}` };
+            return;
+          }
+          intent = superseded.intent;
+        }
       } else {
         // Provenance is REQUIRED: an intent without a usable start time could
         // be matched by a later incarnation of the same directory. The same
@@ -2234,6 +2515,8 @@ export type CandidateCancelCommit =
       readonly stage:
         | "state-unreadable"
         | "validation"
+        // See the note on the takeover result's own `invariant-violated` arm.
+        | "invariant-violated"
         | "intent"
         | "ticket-txn"
         | "transition"
@@ -2375,6 +2658,15 @@ export async function commitCandidateCancelLocked(
       "a state nobody can load" };
   }
 
+  // SERVER-DERIVED, from the state under the lock rather than from the caller's
+  // pre-lock snapshot. These used to be read off `args.input`, which is the
+  // provenance defect the handshake split closes: the audit records below name
+  // a ticket and an epoch, and naming the ones the caller happened to see
+  // before acquiring the lock would let the record disagree with what the
+  // transaction actually ran against.
+  const freshEpoch = parseClaimEpoch((fresh as Record<string, unknown>).claimEpoch);
+  const freshTicketId = fresh.ticket?.id ?? null;
+
   // THE INTENT, classified first (startup order: canonical intent, then the
   // transition record; archives are never consulted for authority).
   const intentRead = readCancellationIntent(sessionDir);
@@ -2485,10 +2777,17 @@ export async function commitCandidateCancelLocked(
 
   // PRE-WRITE-1: full validation, always, because everything from here mints
   // or advances durable records against the CURRENT state.
-  const authorization = await authorizeCandidateRecovery(sessionDir, {
-    ...args.input,
-    sessionRevision: fresh.revision,
-  }, deps.handshake);
+  const authorization = await authorizeCandidateCancel(sessionDir, args.input, deps.handshake);
+  // The cancel twin of the invariant guard documented at the takeover commit
+  // above, kept for the same reason and refused in the same distinguishable
+  // shape.
+  if (authorization.kind === "authorized" && authorization.operation !== "cancel") {
+    return { kind: "refused", stage: "invariant-violated", authorization, detail:
+      "PROGRAMMING ERROR, not a policy refusal: this cancellation commit received an authorization " +
+      `stamped "${authorization.operation}". The cancel entry point stamps its own tag, so this cannot ` +
+      "happen unless the call above has been repointed. Fix the wiring; do NOT loosen this check or " +
+      "the authorization policy." };
+  }
   if (authorization.kind !== "authorized") {
     return { kind: "refused", stage: "validation", authorization, detail:
       `re-validation under the lock returned ${authorization.kind}; the cancellation commits only what ` +
@@ -2619,7 +2918,7 @@ export async function commitCandidateCancelLocked(
       kind: "release",
       ticketId: preimage.ticketId,
       transitionId: intent.transitionId,
-      fromEpoch: args.input.claimEpoch,
+      fromEpoch: freshEpoch,
       toEpoch: null,
       fromBusiness: preimage,
       toBusiness: releasedPostimageOf(preimage),
@@ -2712,9 +3011,9 @@ export async function commitCandidateCancelLocked(
     : authorization.ticketWork.kind === "none"
       ? authorization.ticketWork.why === "no-ticket"
         ? { kind: "no-ticket" }
-        : { kind: "conflict", ticketId: args.input.ticket?.id ?? args.input.claimEpoch?.ticketId ?? "" }
+        : { kind: "conflict", ticketId: freshTicketId ?? freshEpoch?.ticketId ?? "" }
       : authorization.ticketWork.kind === "blocked"
-        ? { kind: "failed", ticketId: args.input.ticket?.id ?? args.input.claimEpoch?.ticketId ?? "" }
+        ? { kind: "failed", ticketId: freshTicketId ?? freshEpoch?.ticketId ?? "" }
         : { kind: "no-ticket" };
 
   // WRITES 1-4 AND THE TAIL. The state must not have moved since validation:

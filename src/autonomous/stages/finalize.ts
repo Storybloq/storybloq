@@ -429,7 +429,7 @@ export class FinalizeStage implements WorkflowStage {
     // Verify staged set is still intact after hooks
     const stagedResult = await gitDiffCachedNames(ctx.root);
     if (!stagedResult.ok || stagedResult.data.length === 0) {
-      ctx.writeState({ finalizeCheckpoint: null });
+      ctx.writeState({ finalizeCheckpoint: null, finalizedItem: null });
       return { action: "retry", instruction: 'Pre-commit hooks appear to have cleared the staging area. Re-stage your changes and call me with completedAction: "files_staged".' };
     }
 
@@ -447,7 +447,7 @@ export class FinalizeStage implements WorkflowStage {
           (f: string) => baselineUntracked.includes(f) && f !== sessionTicketPath && f !== sessionIssuePath,
         );
         if (overlap.length > 0) {
-          ctx.writeState({ finalizeCheckpoint: null });
+          ctx.writeState({ finalizeCheckpoint: null, finalizedItem: null });
           return { action: "retry", instruction: `Pre-commit hooks staged pre-existing untracked files: ${overlap.join(", ")}. Unstage them and re-stage, then call with completedAction: "files_staged".` };
         }
       }
@@ -613,6 +613,9 @@ export class FinalizeStage implements WorkflowStage {
       const issueDisplayId = (currentIssue as Record<string, unknown>).displayId as string | undefined;
       ctx.writeState({
         finalizeCheckpoint: "committed",
+        // T-450 step 7a: recorded in the SAME write that clears currentIssue
+        // below, because after this write nothing else identifies the item.
+        finalizedItem: { kind: "issue", id: currentIssue.id, commitHash: normalizedHash },
         resolvedIssues: [...(ctx.state.resolvedIssues ?? []), currentIssue.id],
         resolvedIssueDisplayIds: {
           ...(ctx.state.resolvedIssueDisplayIds ?? {}),
@@ -649,6 +652,14 @@ export class FinalizeStage implements WorkflowStage {
 
     ctx.writeState({
       finalizeCheckpoint: "committed",
+      // T-450 step 7a: same write that clears `ticket` below. The no-item
+      // re-entry shape is recorded as `none` rather than left null, because
+      // null is indistinguishable from a state written before this field and
+      // would send the reader into the legacy fallback, which would name an
+      // OLDER completed item as the one this checkpoint committed.
+      finalizedItem: completedTicket
+        ? { kind: "ticket" as const, id: completedTicket.id, commitHash: normalizedHash }
+        : { kind: "none" as const, commitHash: normalizedHash },
       completedTickets: completedTicket
         ? [...ctx.state.completedTickets, completedTicket]
         : ctx.state.completedTickets,

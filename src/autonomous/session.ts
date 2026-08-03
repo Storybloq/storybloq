@@ -105,6 +105,7 @@ export function createSession(
     reviews: { plan: [], code: [] },
     completedTickets: [],
     finalizeCheckpoint: null,
+    finalizedItem: null,
     git: { branch: null, mergeBase: null },
     lease: {
       workspaceId,

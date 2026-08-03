@@ -839,6 +839,54 @@ export const SessionStateSchema = z.object({
   // FINALIZE checkpoint
   finalizeCheckpoint: z.enum(["staged", "staged_override", "precommit_passed", "committed"]).nullable().default(null),
 
+  /**
+   * T-450 step 7a: WHICH item the `committed` checkpoint committed.
+   *
+   * It exists because at that checkpoint nothing else can say. FinalizeStage
+   * clears the item identity in the SAME write that records `committed` --
+   * `currentIssue: null` for an issue, `ticket: undefined` for a ticket -- and
+   * the advance to COMPLETE happens after, so a process death in between leaves
+   * a legitimate session with neither field. Candidate takeover has to decide
+   * that session's authority, and every attempt to INFER the item from the
+   * surviving fields is unsound: `completedTickets[].commitHash` stores
+   * `normalizedHash` while `git.itemBaseHead` stores `fullHead`, and those
+   * differ whenever the accepted commit is an ancestor of HEAD rather than HEAD
+   * itself, at which point a residual rule reads a ticket completion as an older
+   * resolved issue. The session events cannot stand in either: they carry no
+   * revision, so in the very window this answers, the last `commit` event still
+   * belongs to the PREVIOUS item.
+   *
+   * INVARIANT: written only beside `finalizeCheckpoint: "committed"`, and nulled
+   * at every site that nulls `finalizeCheckpoint`. Clearing it at COMPLETE alone
+   * would not be enough -- a FINALIZE that resets its own checkpoint, or a
+   * HEAD-drift recovery that routes back to IMPLEMENT, would carry a stale item
+   * into later work, which is worse than having no field at all.
+   */
+  finalizedItem: z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("ticket"),
+      id: z.string().min(1),
+      commitHash: z.string().min(1),
+    }),
+    z.object({
+      kind: z.literal("issue"),
+      id: z.string().min(1),
+      commitHash: z.string().min(1),
+    }),
+    // The re-entry shape: FINALIZE reached `committed` with neither a ticket
+    // nor an issue to attribute. Recorded POSITIVELY rather than as null,
+    // because null is also how a state written before this field appears, and
+    // the legacy fallback then guesses from `completedTickets` /
+    // `resolvedIssues` -- which on a no-item commit would name an OLDER item
+    // and authorize a takeover against work this checkpoint is not about.
+    // Every newly written `committed` checkpoint carries a non-null value; null
+    // means legacy and nothing else.
+    z.object({
+      kind: z.literal("none"),
+      commitHash: z.string().min(1),
+    }),
+  ]).nullable().default(null),
+
   // Git state.
   //
   // ISS-922: each of these four commits answers a DIFFERENT question, and
@@ -1222,6 +1270,35 @@ export const SessionStateSchema = z.object({
    * distinct from absent-means-underivable.
    */
   candidateTakeover: z.unknown().optional(),
+
+  /**
+   * T-450: the heartbeat generation this session's owner is bound to, published
+   * by `commitCandidateTakeoverLocked` in the same atomic write as the
+   * ownership rebind. `readOwnerLiveness` resolves the telemetry directory from
+   * it, so an owner's liveness evidence is scoped to the generation that owner
+   * established rather than shared with every owner in turn.
+   *
+   * DECLARED, not merely tolerated. It has been persisted since step 6b and
+   * survived a schema round-trip only because this object ends `.passthrough()`
+   * -- while its two untyped neighbours above are each declared with a reason.
+   * A later tightening of that passthrough would have silently dropped the one
+   * field the whole generation feature rests on, and the failure would have
+   * been a session reading its own liveness out of the previous owner's
+   * directory.
+   *
+   * Declaring it now cannot break a migration, because there is nothing to
+   * migrate: `candidate-recovery.ts` has ZERO importers in `src`, so nothing
+   * persisted anywhere carries this field yet. That is the same safety argument
+   * that made the REQUIRED `cycleNonce` acceptable under ruling ea611619, and it
+   * is why this is a declaration rather than a filed schema risk.
+   *
+   * `z.unknown()` for the same reason as those neighbours: the strict reader is
+   * `resolveTelemetryLocation`, which deliberately takes `unknown` and refuses
+   * anything that is not a valid id rather than falling back to the legacy
+   * directory. A typed field here would move that refusal into the whole-session
+   * parse, bricking a session over one damaged value.
+   */
+  heartbeatGeneration: z.unknown().optional(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;

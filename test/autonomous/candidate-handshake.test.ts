@@ -1,5 +1,11 @@
 /**
- * T-450 step 6b: `authorizeCandidateRecovery`, the five-step handshake.
+ * T-450 step 6b: `authorizeCandidateCancel`, the five-step handshake.
+ *
+ * The CANCEL variant is what this suite drives, deliberately. The handshake now
+ * has two entry points over one core, and only cancel is the matrix-free one:
+ * `authorizeCandidateTakeover` runs the per-state takeover authority matrix on
+ * top, which is a separate question with its own tests. Pointing these at the
+ * takeover variant would quietly turn handshake tests into posture tests.
  *
  * This is the gate between "a human was shown an owner-gone offer" and "a
  * takeover or cancellation may be committed". Two checks carry it, and keeping
@@ -24,7 +30,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { authorizeCandidateRecovery } from "../../src/autonomous/candidate-recovery.js";
+import { authorizeCandidateCancel } from "../../src/autonomous/candidate-recovery.js";
 import {
   evidenceFingerprint,
   readOwnerLiveness,
@@ -32,6 +38,7 @@ import {
   OWNER_STALE_MS,
   type OwnableLivenessState,
 } from "../../src/autonomous/liveness.js";
+import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import type { SuccessorServers, RegisteredServer } from "../../src/autonomous/mcp-registry.js";
 
 const NOW = Date.parse("2026-08-02T12:00:00.000Z");
@@ -111,7 +118,24 @@ function shown(state: OwnableLivenessState = candidateState()) {
   return { verdict, fingerprint: evidenceFingerprint(verdict.signals) };
 }
 
-function depsFor(state: OwnableLivenessState, over: Record<string, unknown> = {}) {
+/** The revision every test here confirms against, and the one the session
+ * state reports unless a test moves it on purpose. */
+const REVISION = 4;
+
+/**
+ * THE SERVER-DERIVED HALF of the picture.
+ *
+ * `sessionRevision`, `ticket` and `claimEpoch` used to travel in the handshake
+ * INPUT, alongside what the caller confirmed. They are now read by the
+ * handshake itself out of `deps.readSessionState()`, so the fixture carries
+ * them here instead: the value a test used to pass is still the value the code
+ * decides on, it just arrives by the provenance the split established.
+ */
+function depsFor(
+  state: OwnableLivenessState,
+  over: Record<string, unknown> = {},
+  session: Record<string, unknown> = {},
+) {
   return {
     now: () => NOW,
     staleThresholdMs: OWNER_STALE_MS,
@@ -121,6 +145,8 @@ function depsFor(state: OwnableLivenessState, over: Record<string, unknown> = {}
     readLifecycle: () => ({ state: "IMPLEMENT", status: "active" }),
     readSuccessors: () => NO_SERVERS,
     loadTicket: async () => null,
+    readSessionState: () =>
+      ({ revision: REVISION, ticket: null, claimEpoch: null, ...session }) as unknown as FullSessionState,
     ...over,
   };
 }
@@ -146,14 +172,11 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION,
       clientTaskId: CALLER,
       confirmedSessionRevision: 4,
       confirmedFingerprint: fingerprint,
-      sessionRevision: 4,
-      ticket: null,
-      claimEpoch: null,
     }, depsFor(state));
 
     expect(result.kind).toBe("authorized");
@@ -174,9 +197,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const { fingerprint } = shown(state);
     const before = readdirSync(telemetryDirPath(sessDir)).sort();
 
-    await authorizeCandidateRecovery(sessDir, {
+    await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state));
 
     expect(readdirSync(telemetryDirPath(sessDir)).sort()).toEqual(before);
@@ -189,10 +212,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     // was shown. The refusal carries the CURRENT evidence so the caller can
     // re-present rather than starting over blind.
     const state = candidateState();
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: "fp-from-a-different-picture", sessionRevision: 4,
-      ticket: null, claimEpoch: null,
+      confirmedFingerprint: "fp-from-a-different-picture",
     }, depsFor(state));
 
     expect(result.kind).toBe("re-confirm");
@@ -208,10 +230,12 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     // session invalidates the confirmation here rather than at the write.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 7, ticket: null, claimEpoch: null,
-    }, depsFor(state));
+      confirmedFingerprint: fingerprint,
+      // The state's revision differs from the confirmed one, which is the
+      // whole staging: the session moved between being shown and confirmed.
+    }, depsFor(state, {}, { revision: 7 }));
 
     expect(result.kind).toBe("re-confirm");
     if (result.kind !== "re-confirm") return;
@@ -229,9 +253,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state, { staleThresholdMs: 60 * 60_000 }));
 
     expect(result.kind).toBe("ineligible");
@@ -249,10 +273,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const verdict = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => NO_SERVERS);
     expect(verdict.kind).toBe("undetermined");
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: evidenceFingerprint(verdict.signals), sessionRevision: 4,
-      ticket: null, claimEpoch: null,
+      confirmedFingerprint: evidenceFingerprint(verdict.signals),
     }, depsFor(state));
 
     expect(result.kind).toBe("ineligible");
@@ -274,10 +297,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const verdict = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => successors);
     expect(verdict.kind).toBe("contradicted");
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: evidenceFingerprint(verdict.signals), sessionRevision: 4,
-      ticket: null, claimEpoch: null,
+      confirmedFingerprint: evidenceFingerprint(verdict.signals),
     }, depsFor(state, { readSuccessors: () => successors }));
 
     expect(result.kind).toBe("ineligible");
@@ -301,10 +323,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     };
     const verdict = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => tooMany);
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: evidenceFingerprint(verdict.signals), sessionRevision: 4,
-      ticket: null, claimEpoch: null,
+      confirmedFingerprint: evidenceFingerprint(verdict.signals),
     }, depsFor(state, { readSuccessors: () => tooMany }));
 
     expect(result.kind).toBe("refused");
@@ -318,10 +339,10 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     // over another. The directory's own name is the binding.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: "11111111-2222-4333-8444-555555555555",
       clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state));
 
     expect(result.kind).toBe("refused");
@@ -332,9 +353,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
   it("refuses a caller with no task identity: candidate authority is task-bound", async () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: undefined, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state));
 
     expect(result.kind).toBe("refused");
@@ -348,9 +369,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     // candidate authority for a session that was never anyone else's.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: OWNER.id, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state));
 
     expect(result.kind).toBe("refused");
@@ -372,9 +393,9 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
       { state: "SESSION_END", status: "active" },
       { state: "IMPLEMENT", status: "completed" },
     ]) {
-      const result = await authorizeCandidateRecovery(sessDir, {
+      const result = await authorizeCandidateCancel(sessDir, {
         sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-        confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+        confirmedFingerprint: fingerprint,
       }, depsFor(state, { readLifecycle: () => lifecycle }));
 
       expect(result.kind).toBe("refused");
@@ -394,12 +415,12 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     const deps = depsFor(state, { readLifecycle: () => lifecycle });
     const input = {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     };
 
-    expect((await authorizeCandidateRecovery(sessDir, input, deps)).kind).toBe("authorized");
+    expect((await authorizeCandidateCancel(sessDir, input, deps)).kind).toBe("authorized");
     lifecycle = { state: "SESSION_END", status: "completed" };
-    const second = await authorizeCandidateRecovery(sessDir, input, deps);
+    const second = await authorizeCandidateCancel(sessDir, input, deps);
     expect(second.kind).toBe("refused");
     if (second.kind === "refused") expect(second.reason).toBe("session-terminal");
   });
@@ -426,10 +447,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     // than re-read from a ticket the first attempt may already have changed.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET, claimEpoch: EPOCH,
-    }, depsFor(state, { loadTicket: async () => heldTicket() }));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, { loadTicket: async () => heldTicket() }, { ticket: TICKET, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -452,10 +473,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     const state = candidateState();
     const { fingerprint } = shown(state);
     const foreign = { ...heldTicket(), claimedBySession: "someone-else" };
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET, claimEpoch: EPOCH,
-    }, depsFor(state, { loadTicket: async () => foreign }));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, { loadTicket: async () => foreign }, { ticket: TICKET, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -468,9 +489,9 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
   it("carries no preimage when the session holds no ticket at all", async () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state));
 
     expect(result.kind).toBe("authorized");
@@ -489,10 +510,11 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     // ticket exists to remove.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET, claimEpoch: EPOCH,
-    }, depsFor(state, { loadTicket: async () => { throw new Error("ledger unreadable"); } }));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, { loadTicket: async () => { throw new Error("ledger unreadable"); } },
+      { ticket: TICKET, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -506,10 +528,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
   it("reports a MISSING ticket as blocked too: absence from the ledger is not proof of release", async () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET, claimEpoch: EPOCH,
-    }, depsFor(state, { loadTicket: async () => null }));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, { loadTicket: async () => null }, { ticket: TICKET, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -524,10 +546,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     // owed", which is a positive claim the inputs do not support.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: EPOCH,
-    }, depsFor(state));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, {}, { ticket: null, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -539,11 +561,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
   it("reports an epoch naming a DIFFERENT ticket than the session's as blocked", async () => {
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4,
-      ticket: { id: "T-999" }, claimEpoch: EPOCH,
-    }, depsFor(state));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, {}, { ticket: { id: "T-999" }, claimEpoch: EPOCH }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -559,10 +580,10 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
     // failure to look.
     const state = candidateState();
     const { fingerprint } = shown(state);
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET, claimEpoch: null,
-    }, depsFor(state));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, {}, { ticket: TICKET, claimEpoch: null }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -596,11 +617,11 @@ describe("T-450 6b: the handshake reconciles the claim before authorizing", () =
       claim: { ...held, note: "an extra key the strict schema refuses" },
       claimedBySession: SESSION,
     };
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: TICKET,
-      claimEpoch: { ...EPOCH, ...held },
-    }, depsFor(state, { loadTicket: async () => unpersistable }));
+      confirmedFingerprint: fingerprint,
+    }, depsFor(state, { loadTicket: async () => unpersistable },
+      { ticket: TICKET, claimEpoch: { ...EPOCH, ...held } }));
 
     expect(result.kind).toBe("authorized");
     if (result.kind !== "authorized") return;
@@ -662,9 +683,9 @@ describe("T-450 6b: the digest excludes our own entry, and nothing more than our
     const fresh = readOwnerLiveness(sessDir, () => state, NOW, OWNER_STALE_MS, () => churned);
     expect(fresh.signals.markerValidity).toEqual(shown(state).verdict.signals.markerValidity);
 
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: fingerprint,
     }, depsFor(state, { readSuccessors: () => churned }));
 
     expect(result.kind).toBe("authorized");
@@ -705,9 +726,9 @@ describe("T-450 6b: the digest excludes our own entry, and nothing more than our
 
     // And end to end: check 1 refuses, nothing is mutated.
     const before = readdirSync(sessDir).sort();
-    const result = await authorizeCandidateRecovery(sessDir, {
+    const result = await authorizeCandidateCancel(sessDir, {
       sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
-      confirmedFingerprint: confirmed.fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      confirmedFingerprint: confirmed.fingerprint,
     }, depsFor(state, { readSuccessors: () => ownerStamped }));
 
     expect(result.kind).toBe("re-confirm");

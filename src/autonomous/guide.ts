@@ -2239,6 +2239,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       resumeBlocked: false,
       ...CLEARED_LIMIT_FIELDS,
       finalizeCheckpoint: null,
+      finalizedItem: null,
       landingDecision: null,
       reviews: recoveryReviews,
       ticket: recoveryTicket,

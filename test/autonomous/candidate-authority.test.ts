@@ -332,6 +332,57 @@ describe("T-450 7a: post-completion, the regression that took two rounds to kill
     expect(d.kind).toBe("permitted");
   });
 
+  it("PERMITS a ticket carrying a FOREIGN stamp: that is proof this session let go", () => {
+    // The chain is reachable, not theoretical. A session completes T-1 and SKIPS
+    // T-2; releaseSessionClaim strips T-2's claim keys and reopens it; the
+    // session reaches HANDOVER still carrying T-2's epoch, which is what the
+    // identity fallback resolves to. Another session then picks T-2 and stamps
+    // it. Reading that stamp as residue would deny recovery of the FIRST session
+    // by citing the SECOND session's legitimate claim as the first one's.
+    const d = decide({
+      state: state({ state: "HANDOVER", ticket: undefined, claimEpoch: EPOCH, completedTickets: [{ id: "T-77" }] }),
+      ticket: found(ticket({ status: "inprogress", claimedBySession: "another-session", claim: undefined })),
+      reconciliation: "not-checked",
+    });
+    expect(d.kind).toBe("permitted");
+  });
+
+  it("PERMITS a foreign stamp TOGETHER with its claim record", () => {
+    // The claim belongs with the stamp. Refusing on the claim half would
+    // reinstate the same false refusal one field over.
+    const d = decide({
+      state: state({ state: "HANDOVER", ticket: undefined, claimEpoch: EPOCH }),
+      ticket: found(ticket({ status: "inprogress", claimedBySession: "another-session", claim: { user: "someone", branch: "b", since: "x" } })),
+      reconciliation: "not-checked",
+    });
+    expect(d.kind).toBe("permitted");
+  });
+
+  it("REFUSES an OURS stamp: that is this session's own residue", () => {
+    const d = decide({
+      state: state({ state: "HANDOVER", ticket: undefined, claimEpoch: EPOCH }),
+      ticket: found(ticket({ status: "complete", claimedBySession: SESSION, claim: undefined })),
+      reconciliation: "not-checked",
+    });
+    expect(d.kind).toBe("refused");
+    if (d.kind === "refused") {
+      expect(d.reason).toBe("residual-claim");
+      expect(d.detail).toContain("naming this session");
+    }
+  });
+
+  it("REFUSES an unattributable claim record, which stays conservative", () => {
+    // `claim` carries user/branch/since and no session id, so a claim with no
+    // stamp beside it is not provably foreign and may still be ours.
+    const d = decide({
+      state: state({ state: "HANDOVER", ticket: undefined, claimEpoch: EPOCH }),
+      ticket: found(ticket({ status: "complete", claimedBySession: undefined })),
+      reconciliation: "not-checked",
+    });
+    expect(d.kind).toBe("refused");
+    if (d.kind === "refused") expect(d.reason).toBe("residual-claim");
+  });
+
   it("still REFUSES a ticket that has NOT been let go", () => {
     const d = decide({
       state: state({ state: "HANDOVER", ticket: undefined, claimEpoch: EPOCH }),

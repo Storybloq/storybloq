@@ -192,6 +192,11 @@ function handshakeDeps(over: Partial<CandidateHandshakeDeps> = {}): CandidateHan
     },
     readSuccessors: () => NO_SERVERS,
     loadTicket: async () => null,
+    // REQUIRED, not optional: the matrix's issue rows must be able to tell a
+    // failed read from a positive absence, and a missing loader is a failed
+    // read. `null` is the positive answer for every fixture here, none of
+    // which sits at an issue-bearing posture.
+    loadIssue: async () => null,
     // THE SERVER-DERIVED HALF. `sessionRevision`, `ticket` and `claimEpoch`
     // used to ride in the handshake INPUT; the handshake now reads them out of
     // the session state itself, and this is the same state.json the commit
@@ -921,6 +926,116 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
       // WHY the ledger could not be read rather than only that it could not.
       expect(authority.detail, spelling.name).toContain(spelling.detail);
     }
+  });
+
+  /**
+   * THE FRESH-LOAD BRANCH, which no claim-bearing test can reach.
+   *
+   * `readLedgerTicket` has four exits, and which one runs is decided by the
+   * POSTURE. At a claim-bearing state the claim path has already loaded the
+   * ticket, so the reuse branch always answers and the loader inside
+   * `readLedgerTicket` is never called; with no target id the early return
+   * wins. Every commit-driver test above sits at IMPLEMENT, so between them
+   * they pin neither. Replacing that loader's whole body with
+   * `return { kind: "absent" }` leaves them all green -- the gap is structural,
+   * not a coverage number.
+   *
+   * POST-COMPLETION is where it actually runs, and it is the first posture a
+   * 7b caller meets. The session has let go of its ticket (`ticket` cleared)
+   * but still carries the epoch, so the identity fallback resolves a ticket id
+   * that the claim path never loaded: `loadedRead` is undefined and the fresh
+   * load is the only thing that can answer.
+   *
+   * Three of the four exits are asserted here, each with the observable that
+   * only it produces. The two unreadable spellings are the load-bearing ones --
+   * an unreadable ledger reaching the matrix as `absent` would tell an operator
+   * the ticket is gone -- and `found` is included because it is the exit that
+   * proves the branch delivers the ticket VALUE, not merely a kind: the
+   * residual-claim row can only fire if the matrix actually sees this session's
+   * stamp on it.
+   */
+  it("POST-COMPLETION: the authority read loads the ticket ITSELF, and each outcome keeps its own reason", async () => {
+    const cases: Array<{
+      readonly name: string;
+      readonly loadTicket: CandidateHandshakeDeps["loadTicket"];
+      readonly reason: string;
+      readonly detail: string;
+    }> = [
+      {
+        name: "a throwing ledger read",
+        loadTicket: async () => { throw new Error("ledger unreadable: EIO"); },
+        reason: "ledger-unreadable",
+        detail: "ledger unreadable: EIO",
+      },
+      {
+        name: "a read that did not answer",
+        loadTicket: async () => undefined,
+        reason: "ledger-unreadable",
+        detail: "the ledger read did not answer",
+      },
+      {
+        // The `found` exit. This session's OWN stamp is still on the ticket at
+        // a posture whose claim lifecycle has ended, which is the one residue
+        // that still refuses after the foreign-stamp row was corrected.
+        name: "a ticket still stamped by this very session",
+        loadTicket: async () => {
+          const tickets = ticketFixture();
+          tickets.bind();
+          return tickets.io.load() as never;
+        },
+        reason: "residual-claim",
+        detail: "session stamp naming this session",
+      },
+    ];
+
+    for (const c of cases) {
+      // HANDOVER: post-completion-boundary. The ticket is cleared and the
+      // epoch retained, which is exactly what a session that finished (or
+      // skipped) its item carries, and it is what makes the identity fallback
+      // resolve a ticket the claim path never touched.
+      const state = plantLive({ state: "HANDOVER" });
+      writeMarker();
+      setTicketAxis({ ticket: undefined, claimEpoch: epochFor() });
+
+      const result = await commitCandidateTakeoverLocked(root, sessDir, {
+        input: inputFor(state), callerTask: CALLER,
+      }, takeoverDeps({ handshake: handshakeDeps({ loadTicket: c.loadTicket }) }));
+
+      expect(result.kind, c.name).toBe("refused");
+      if (result.kind !== "refused") continue;
+      expect(result.stage, c.name).toBe("validation");
+      const authorization = result.authorization;
+      if (authorization?.kind !== "refused") {
+        throw new Error(`${c.name}: expected a refused authorization, got ${authorization?.kind}`);
+      }
+      expect(authorization.reason, c.name).toBe("takeover-unauthorized");
+      const authority = authorization.authority;
+      if (authority?.kind !== "refused") {
+        throw new Error(`${c.name}: expected a refused authority, got ${authority?.kind}`);
+      }
+      expect(authority.posture, c.name).not.toBe("claim-bearing");
+      expect(authority.reason, c.name).toBe(c.reason);
+      expect(authority.detail, c.name).toContain(c.detail);
+    }
+  });
+
+  it("POST-COMPLETION: an ABSENT ticket is a positive finding, and the takeover proceeds", async () => {
+    // The fourth exit, and the control for the three above. A ledger that
+    // POSITIVELY answers "no such ticket" leaves no residue to contradict the
+    // stage, so the takeover is authorized -- which is what makes the two
+    // unreadable spellings' refusals meaningful rather than a posture that
+    // refuses everything.
+    const state = plantLive({ state: "HANDOVER" });
+    writeMarker();
+    setTicketAxis({ ticket: undefined, claimEpoch: epochFor() });
+
+    const result = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps({ handshake: handshakeDeps({ loadTicket: async () => null }) }));
+
+    expect(result.kind).toBe("committed");
+    if (result.kind !== "committed") return;
+    expect(result.postimage.clientTaskId).toBe(CALLER.id);
   });
 });
 

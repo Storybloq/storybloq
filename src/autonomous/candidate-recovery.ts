@@ -1303,8 +1303,16 @@ export interface CandidateHandshakeDeps {
   readonly loadTicket: (ticketId: string) => Promise<Ticket | null | undefined>;
   /** The ledger issue behind `state.currentIssue`, for the ISSUE_FIX authority
    * row. Same three-way contract as `loadTicket`: `undefined` means the read
-   * FAILED, `null` means it positively resolved to nothing. */
-  readonly loadIssue?: (issueId: string) => Promise<IssueAuthorityView | null | undefined>;
+   * FAILED, `null` means it positively resolved to nothing.
+   *
+   * REQUIRED, deliberately, and required BEFORE the first caller exists because
+   * the type change is free now and costly later. Optional, it was a wiring
+   * trap: a caller supplying only `loadTicket` would compile clean and then
+   * refuse EVERY ISSUE_FIX takeover and every FINALIZE issue arm with
+   * "ledger-unreadable", because the reader below cannot distinguish a missing
+   * loader from a failed read and must fail closed. Diagnosable from the detail
+   * string, but only after someone hits it. */
+  readonly loadIssue: (issueId: string) => Promise<IssueAuthorityView | null | undefined>;
   /**
    * The session state RIGHT NOW. A provider, never a snapshot, and the single
    * source of every SERVER-DERIVED value the handshake decides on -- see the

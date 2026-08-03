@@ -209,10 +209,14 @@ export interface ClaimSignals {
    * disagreement as a refusal would refuse takeover on every multi-item session
    * between PICK_TICKET and the next mint.
    *
-   * A disagreement DOES matter where the session no longer names its own item --
-   * post-completion and FINALIZE/`committed` -- because there two independent
-   * records describe the same finished work. That case is already caught by
-   * `resolveTicketIdentity`'s conflict arm, which is the only place it is real.
+   * NOR does a disagreement matter where the session no longer names its own
+   * item. An earlier revision refused there, on the theory that post-completion
+   * the epoch and the completed list describe the same finished work; they do
+   * not. The SKIP path MANUFACTURES the disagreement legitimately -- a session
+   * that completed T-1 and then skipped T-2 arrives carrying T-2's epoch and a
+   * completed list ending in T-1 -- so `resolveTicketIdentity` is pure
+   * PRECEDENCE (the epoch wins, the completed list is the fallback) and has no
+   * conflict arm to return. Its return type cannot express a refusal, by design.
    */
   readonly epochProvesCurrent: boolean;
 }
@@ -551,13 +555,34 @@ export function decideTakeoverAuthority(input: TakeoverAuthorityInput): Takeover
     }
 
     case "post-completion-boundary": {
-      if (signals.ledgerSessionStamp !== null || signals.ledgerClaim) {
+      // THE QUESTION IS WHETHER *THIS* SESSION LET GO, and the session stamp is
+      // three-valued, so `!== null` answers a different question than the one
+      // being asked. A FOREIGN stamp is positive proof this session let go: the
+      // ticket has since been picked up by someone else, which cannot happen
+      // while this session still holds it. Reading it as residue refuses a
+      // recovery because of another session's legitimate work.
+      //
+      // The chain is reachable, not theoretical: a session completes T-1 and
+      // SKIPS T-2 (code-review.ts:162), `releaseSessionClaim` strips T-2's claim
+      // keys and reopens it (claims.ts:101/:129), and the session reaches
+      // HANDOVER still carrying T-2's epoch, which is what the identity fallback
+      // resolves to. Another session then picks T-2 and stamps it. Refusing here
+      // would deny recovery of the FIRST session by citing the SECOND session's
+      // claim as the first one's residue.
+      //
+      // A claim record with NO stamp at all stays conservative and refuses: it
+      // cannot be attributed to anyone (`claim` carries user/branch/since and no
+      // session id), so it is not provably foreign and may still be ours.
+      const residue =
+        signals.ledgerSessionStamp === "ours"
+          ? "a session stamp naming this session"
+          : signals.ledgerSessionStamp === null && signals.ledgerClaim
+            ? "a claim record that cannot be attributed to another session"
+            : null;
+      if (residue !== null) {
         return refuse(posture, "residual-claim",
-          `the ledger ticket still carries ${[
-            signals.ledgerSessionStamp ? `a ${signals.ledgerSessionStamp} session stamp` : null,
-            signals.ledgerClaim ? "a claim record" : null,
-          ].filter(Boolean).join(" and ")} at ${workflowState}, where the claim lifecycle has already ` +
-          "ended; the ledger contradicts the stage");
+          `the ledger ticket still carries ${residue} at ${workflowState}, where this session's claim ` +
+          "lifecycle has already ended; the ledger contradicts the stage");
       }
       // Deliberately NOT also requiring `complete`. The residual-claim question
       // is whether this session let go, and both exits from a ticket satisfy it:

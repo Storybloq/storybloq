@@ -145,6 +145,9 @@ function depsFor(
     readLifecycle: () => ({ state: "IMPLEMENT", status: "active" }),
     readSuccessors: () => NO_SERVERS,
     loadTicket: async () => null,
+    // Required by the deps contract. This suite drives the CANCEL variant,
+    // which never consults the issue rows, so the positive `null` is exact.
+    loadIssue: async () => null,
     readSessionState: () =>
       ({ revision: REVISION, ticket: null, claimEpoch: null, ...session }) as unknown as FullSessionState,
     ...over,

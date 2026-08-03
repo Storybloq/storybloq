@@ -116,6 +116,9 @@ function depsFor(state: OwnableLivenessState, over: Record<string, unknown> = {}
     now: () => NOW,
     staleThresholdMs: OWNER_STALE_MS,
     readState: () => state,
+    // A LIVE session by default: the terminal gate (C3) has its own tests,
+    // and every other test here is about a session that is still running.
+    readLifecycle: () => ({ state: "IMPLEMENT", status: "active" }),
     readSuccessors: () => NO_SERVERS,
     loadTicket: async () => null,
     ...over,
@@ -353,6 +356,52 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
     expect(result.kind).toBe("refused");
     if (result.kind !== "refused") return;
     expect(result.reason).toBe("caller-is-owner");
+  });
+
+  it("refuses a TERMINAL session even when every liveness signal would authorize (C3)", async () => {
+    // The eligibility gate judges the OWNER's liveness, and a cleanly ended
+    // session's owner is legitimately gone -- so without this gate a terminal
+    // session is a PERFECT candidate: stale activity, surviving death marker,
+    // nothing to contradict. Ruling ea611619 C3: cancellation ends a session
+    // and this one already ended; takeover continues a live session, and a
+    // terminal one has nothing to continue. Both lifecycle spellings refuse.
+    const state = candidateState();
+    const { fingerprint } = shown(state);
+    for (const lifecycle of [
+      { state: "SESSION_END", status: "completed" },
+      { state: "SESSION_END", status: "active" },
+      { state: "IMPLEMENT", status: "completed" },
+    ]) {
+      const result = await authorizeCandidateRecovery(sessDir, {
+        sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
+        confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+      }, depsFor(state, { readLifecycle: () => lifecycle }));
+
+      expect(result.kind).toBe("refused");
+      if (result.kind !== "refused") continue;
+      expect(result.reason).toBe("session-terminal");
+      expect(result.detail).toContain(lifecycle.state);
+    }
+  });
+
+  it("the terminal gate is a PROVIDER read at authorize time, not a snapshot", async () => {
+    // A session can end between two authorizations. The first call sees the
+    // live session and authorizes; the second sees the terminal one and
+    // refuses. A captured snapshot could not tell them apart.
+    const state = candidateState();
+    const { fingerprint } = shown(state);
+    let lifecycle = { state: "IMPLEMENT", status: "active" };
+    const deps = depsFor(state, { readLifecycle: () => lifecycle });
+    const input = {
+      sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
+      confirmedFingerprint: fingerprint, sessionRevision: 4, ticket: null, claimEpoch: null,
+    };
+
+    expect((await authorizeCandidateRecovery(sessDir, input, deps)).kind).toBe("authorized");
+    lifecycle = { state: "SESSION_END", status: "completed" };
+    const second = await authorizeCandidateRecovery(sessDir, input, deps);
+    expect(second.kind).toBe("refused");
+    if (second.kind === "refused") expect(second.reason).toBe("session-terminal");
   });
 });
 

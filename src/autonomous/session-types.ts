@@ -1205,6 +1205,23 @@ export const SessionStateSchema = z.object({
   // does transfer is the principle stated at session.ts:388-396, that
   // historical metadata must not make a live session unreachable.
   cancellationTransition: z.unknown().optional(),
+  /**
+   * THE TAKEOVER POSTIMAGE (T-450 6b, ruling ea611619 B5/B6): the durable
+   * proof that a candidate takeover was COMMITTED, written by
+   * commitCandidateTakeover atomically with the ownership fields it proves,
+   * in the SAME state write. One field, not an array: retirement is the only
+   * exit from `closed`, so a cycle's proof is always consumed before the next
+   * cycle could overwrite it, and every archived cycle's audit link survives
+   * in the archive's raw bytes.
+   *
+   * `z.unknown()` for the same reason as cancellationTransition above: a
+   * typed-strict sub-record would brick the whole session parse on one
+   * malformed field. The dedicated strict reader is
+   * `CandidateTakeoverPostimageSchema`, and a value that fails it is
+   * "takeover-postimage-unreadable", which is a REFUSAL, deliberately
+   * distinct from absent-means-underivable.
+   */
+  candidateTakeover: z.unknown().optional(),
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
@@ -1618,11 +1635,78 @@ export const PersistedClaimTxnSchema = z.discriminatedUnion("phase", [
 ]);
 export type PersistedClaimTxn = z.infer<typeof PersistedClaimTxnSchema>;
 
+/**
+ * The takeover's evidence bundle: what the auditor reads, and what the
+ * derivability proof deliberately does NOT. `argvProof` lives here per
+ * liveness.ts's sidecar-termination contract (a degraded-unknown acceptance
+ * must be visible to an auditor), and the proof never reads it: a
+ * degraded-unknown takeover retires on identical proof to a proven one,
+ * because derivability asks whether the record exists and names this cycle,
+ * not how strongly the takeover was authorized.
+ */
+export const CandidateRecoveryEvidenceSchema = z.object({
+  /** How the sidecar-termination authorization was proven, per liveness.ts. */
+  argvProof: z.enum(["proven", "degraded-unknown"]),
+  /** The liveness picture the human confirmed, persisted verbatim. */
+  liveness: PersistedLivenessEvidenceSchema,
+}).strict();
+
+export type CandidateRecoveryEvidence = z.infer<typeof CandidateRecoveryEvidenceSchema>;
+
+/**
+ * The DEDICATED STRICT READER for `state.candidateTakeover` (ruling ea611619
+ * B5/B6). Proof fields are strict; `evidence` is opaque (`z.unknown()`) to
+ * the PROOF, though writers validate it against
+ * CandidateRecoveryEvidenceSchema before writing, because no writer may
+ * produce a record its own reader refuses.
+ *
+ * `takeoverKind`, not `disposition`: the name deliberately avoids colliding
+ * with PersistedTicketDispositionSchema's `disposition`, whose values mean
+ * something else entirely. `confirmationEpoch` is AUDIT ONLY and is never
+ * compared by any proof: adoption is legal after the postimage is written,
+ * so the closed intent may legitimately sit at a higher epoch than the
+ * postimage captured, and comparing would make exactly those recovery
+ * histories permanently unretirable. NO revision field, so nothing here can
+ * disagree with `committedRevision`.
+ */
+export const CandidateTakeoverPostimageSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("candidate_takeover_committed"),
+  /** DECISIVE for the proof: equality with the closed intent's cycleNonce. */
+  cycleNonce: z.string().uuid(),
+  takeoverKind: z.literal("owner_gone_candidate_takeover"),
+  /** Corroboration, by reference so writer and reader share one predicate. */
+  intentTransitionId: TransitionIdSchema,
+  clientTaskId: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+  confirmationEpoch: z.number().int().min(0),
+  evidence: z.unknown(),
+}).strict();
+
+export type CandidateTakeoverPostimage = z.infer<typeof CandidateTakeoverPostimageSchema>;
+
 const intentCommon = {
   schemaVersion: z.literal(1),
   /** Pre-minted at authorize; write 1 carries it verbatim. Superseded only
    * while ticket work has not begun (the R2 adoption rule). */
   transitionId: z.string().uuid(),
+  /**
+   * THE CYCLE'S OWN IDENTITY, minted internally by the writer that births the
+   * cycle (create, supersession's replacement, retirement's replacement) and
+   * NEVER accepted from a caller. It exists because nothing else can serve:
+   * a revision counter is satisfied by any later write, a transitionId can be
+   * copied off an archived record, and an epoch legally drifts under R2
+   * adoption. The takeover postimage records this nonce, and retirement's
+   * derivability proof matches on it DECISIVELY, so a doctored copy of an old
+   * cycle's record can never make a new cycle's takeover look committed.
+   *
+   * REQUIRED, not optional, and that is safe: candidate-recovery has zero
+   * production callers on origin/main, so no nonce-less persisted intent
+   * exists anywhere. Collision-negligible randomUUID entropy is load-bearing,
+   * since it is what lets the postimage omit sessionId/sessionStartedAt
+   * (incarnation provenance is subsumed by nonce freshness: createSession
+   * always mints a fresh uuid directory and fresh state).
+   */
+  cycleNonce: z.string().uuid(),
   /** Monotonic, bumped on EVERY re-authorization including
    * transitionId-preserving ones, so two confirmations can never collide on
    * the archive pathname their supersession writes. */

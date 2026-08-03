@@ -101,6 +101,17 @@ function txnFixture() {
 
 let sessDir: string;
 
+/**
+ * A fixture carrying the CANONICAL's minted cycleNonce. Advancement and
+ * adoption pin the whole record, and the nonce is minted inside the writers,
+ * so a test that advances must thread the nonce exactly the way a real
+ * consumer does: by reading the record it was returned. Never used for the
+ * new-cycle writers, whose inputs are nonce-less by type and by guard.
+ */
+function nonced(over: Partial<Record<string, unknown>> = {}): CancellationIntent {
+  return { ...intentFixture(over), cycleNonce: intentOnDisk().cycleNonce } as unknown as CancellationIntent;
+}
+
 function intentOnDisk(): CancellationIntent {
   const read = readCancellationIntent(sessDir);
   if (read.kind !== "valid") throw new Error(`expected valid intent, got ${read.kind}`);
@@ -143,10 +154,12 @@ function assertCanonicalInvariants(liveTids: readonly string[]): void {
 beforeEach(() => {
   sessDir = mkdtempSync(join(tmpdir(), "t450-intent-"));
   __intentTesting.at = () => undefined;
+  __intentTesting.tempSuffix = null;
 });
 
 afterEach(() => {
   __intentTesting.at = () => undefined;
+  __intentTesting.tempSuffix = null;
   rmSync(sessDir, { recursive: true, force: true });
 });
 
@@ -237,11 +250,11 @@ describe("T-450 6b: only an adoption may write the adoption receipt", () => {
     // fields the phase arms legitimately vary, so only the schema knows which
     // arm may carry one.
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     }));
-    const strayTxn = intentFixture({
+    const strayTxn = nonced({
       phase: "claim_cleared", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     });
     const result = advanceCancellationIntent(sessDir, strayTxn);
@@ -265,8 +278,8 @@ describe("T-450 6b: only an adoption may write the adoption receipt", () => {
 
   it("refuses an ADOPTED record that would not parse", () => {
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     }));
     const before = readFileSync(join(sessDir, CANCELLATION_INTENT_FILE), "utf-8");
@@ -296,8 +309,8 @@ describe("T-450 6b: only an adoption may write the adoption receipt", () => {
     // real receipt forward, and the whole-record pin already forbids it
     // changing one. Both halves are asserted here.
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     }));
     readoptCancellationIntent(sessDir, {
@@ -556,7 +569,7 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     };
     expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
     expect(advanceCancellationIntent(
-      sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }),
+      sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }),
     ).ok).toBe(true);
     __intentTesting.at = () => undefined;
 
@@ -564,6 +577,9 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     expect(new Set(seen).size).toBe(2);
     expect(seen[0]).toContain(".creating.");
     expect(seen[1]).toContain(".tmp.");
+    // Target-derivation, not just distinctness: both writers here target the
+    // canonical, so every captured temp must be derived from its name.
+    for (const name of seen) expect(name.startsWith(CANCELLATION_INTENT_FILE)).toBe(true);
     expect(lingeringTemps()).toEqual([]);
   });
 
@@ -791,8 +807,12 @@ describe("T-450 6b: reading and classifying the intent", () => {
     // the phase precisely because the postimage-without-nonce observation is
     // only legal under ticket_applied. The schema binds them so the
     // contradiction is unrepresentable rather than merely unwritten.
+    // The nonce is spelled out because the schema REQUIRES it: a record
+    // missing it is malformed for that reason alone, which would leave this
+    // test green even if the two phases were no longer bound at all.
     const contradictory = {
       ...intentFixture({ phase: "prepared" }),
+      cycleNonce: "55555555-5555-4555-8555-555555555555",
       claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     };
     writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify(contradictory));
@@ -802,7 +822,7 @@ describe("T-450 6b: reading and classifying the intent", () => {
   it("round-trips an absent field and an explicit null as DIFFERENT states", () => {
     const txn = txnFixture();
     createCancellationIntent(sessDir, intentFixture({ phase: "authorized" }));
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txn }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txn }));
     const read = readCancellationIntent(sessDir);
     if (read.kind !== "valid" || read.intent.phase !== "prepared") throw new Error("expected prepared");
     const from = read.intent.claimTxn.fromBusiness;
@@ -826,10 +846,10 @@ describe("T-450 6b: phase advancement takes exactly the allowed edges", () => {
 
   it("walks authorized -> prepared -> ticket_applied -> claim_cleared -> closed", () => {
     const txn = txnFixture();
-    expect(advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txn })).ok).toBe(true);
-    expect(advanceCancellationIntent(sessDir, intentFixture({ phase: "ticket_applied", claimTxn: { ...txn, phase: "ticket_applied" } })).ok).toBe(true);
-    expect(advanceCancellationIntent(sessDir, intentFixture({ phase: "claim_cleared" })).ok).toBe(true);
-    expect(advanceCancellationIntent(sessDir, intentFixture({
+    expect(advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txn })).ok).toBe(true);
+    expect(advanceCancellationIntent(sessDir, nonced({ phase: "ticket_applied", claimTxn: { ...txn, phase: "ticket_applied" } })).ok).toBe(true);
+    expect(advanceCancellationIntent(sessDir, nonced({ phase: "claim_cleared" })).ok).toBe(true);
+    expect(advanceCancellationIntent(sessDir, nonced({
       phase: "closed", outcome: { kind: "cancellation", transitionId: TID },
     })).ok).toBe(true);
     expect(intentOnDisk().phase).toBe("closed");
@@ -838,10 +858,10 @@ describe("T-450 6b: phase advancement takes exactly the allowed edges", () => {
   it("refuses every skipped edge: each phase's durable obligations exist for the next", () => {
     for (const phase of ["ticket_applied", "claim_cleared", "closed"] as const) {
       const next = phase === "closed"
-        ? intentFixture({ phase, outcome: { kind: "cancellation", transitionId: TID } })
+        ? nonced({ phase, outcome: { kind: "cancellation", transitionId: TID } })
         : phase === "ticket_applied"
-          ? intentFixture({ phase, claimTxn: { ...txnFixture(), phase: "ticket_applied" } })
-          : intentFixture({ phase });
+          ? nonced({ phase, claimTxn: { ...txnFixture(), phase: "ticket_applied" } })
+          : nonced({ phase });
       const result = advanceCancellationIntent(sessDir, next);
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("edge-refused");
@@ -850,7 +870,7 @@ describe("T-450 6b: phase advancement takes exactly the allowed edges", () => {
   });
 
   it("a same-phase advance refuses: idempotent reads are reads, not advancements", () => {
-    const result = advanceCancellationIntent(sessDir, intentFixture());
+    const result = advanceCancellationIntent(sessDir, nonced());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("edge-refused");
   });
@@ -874,7 +894,7 @@ describe("T-450 6b: phase advancement takes exactly the allowed edges", () => {
   it("a crash at every advance seam leaves exactly one valid canonical intent, and the retry completes", () => {
     for (const point of ["advance:tmp-written", "advance:tmp-fsynced", "advance:renamed", "advance:dir-fsynced"]) {
       __intentTesting.at = (p) => { if (p === point) throw new Error(`injected at ${p}`); };
-      expect(() => advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() })))
+      expect(() => advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() })))
         .toThrow(/injected/);
       __intentTesting.at = () => undefined;
 
@@ -885,7 +905,7 @@ describe("T-450 6b: phase advancement takes exactly the allowed edges", () => {
       // The retry: from `authorized` the same advance re-runs; from `prepared`
       // (crash after the rename landed) the work is already done.
       if (phase === "authorized") {
-        expect(advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() })).ok).toBe(true);
+        expect(advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() })).ok).toBe(true);
       }
       expect(intentOnDisk().phase).toBe("prepared");
 
@@ -941,8 +961,8 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
   });
 
   it("refuses once ticket work has begun: the transitionId IS that work's audit identity", () => {
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" } }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" } }));
     const result = supersedeCancellationIntent(sessDir, replacement());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("ticket-work-begun");
@@ -1039,6 +1059,69 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
     expect(intentOnDisk().transitionId).toBe(TID);
   });
 
+  it("EVERY new cycle mints a FRESH nonce: collision-negligible entropy is what subsumes provenance", () => {
+    // Two cycles sharing a nonce would let one cycle's postimage prove the
+    // other's outcome; the entropy claim is load-bearing (it is why the
+    // postimage omits sessionId/sessionStartedAt), so freshness is pinned
+    // across both new-cycle writers reachable from here.
+    const before = intentOnDisk().cycleNonce;
+    expect(supersedeCancellationIntent(sessDir, replacement()).ok).toBe(true);
+    const superseded = intentOnDisk().cycleNonce;
+    expect(superseded).not.toBe(before);
+
+    const dir2 = mkdtempSync(join(tmpdir(), "t450-nonce-"));
+    try {
+      const created = createCancellationIntent(dir2, intentFixture());
+      expect(created.ok).toBe(true);
+      if (created.ok) {
+        expect(created.intent.cycleNonce).not.toBe(before);
+        expect(created.intent.cycleNonce).not.toBe(superseded);
+      }
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it("H2: a DOCTORED ARCHIVE COPY, nonce and all, refuses as nonce-not-writable on every writer", () => {
+    // THE ATTACK THE NONCE GATE EXISTS FOR (ruling ea611619 B3). An archived
+    // intent carries its cycle's nonce in raw bytes, so a caller can copy one
+    // and present it as a replacement: every field self-consistent, the
+    // predecessor triple naming a real archive. Without the gate, the copied
+    // nonce would match a lingering postimage and a close could succeed with
+    // no commit ever running. The gate sits BELOW the retry shortcut, so a
+    // genuine crash-after-rename retry (which never learned the minted
+    // nonce) is untouched, while any record that CARRIES a nonce -- and
+    // every on-disk copy necessarily does -- is refused on the full path.
+    expect(supersedeCancellationIntent(sessDir, replacement()).ok).toBe(true);
+    const archived = JSON.parse(readFileSync(join(sessDir, ARCHIVE), "utf-8")) as Record<string, unknown>;
+    expect(typeof archived.cycleNonce).toBe("string");
+
+    // Supersede: the copy is doctored to look like a fresh next cycle.
+    const doctored = {
+      ...archived,
+      transitionId: TID3,
+      confirmationEpoch: 7,
+      predecessor: {
+        predecessorTransitionId: intentOnDisk().transitionId,
+        predecessorEpoch: intentOnDisk().confirmationEpoch,
+        predecessorFingerprint: intentOnDisk().confirmedFingerprint,
+      },
+    };
+    const superseded = supersedeCancellationIntent(sessDir, doctored as unknown as CancellationIntent);
+    expect(superseded.ok).toBe(false);
+    if (!superseded.ok) expect(superseded.reason).toBe("nonce-not-writable");
+
+    // Create: an absent canonical must still refuse a nonce-bearing record.
+    const dir2 = mkdtempSync(join(tmpdir(), "t450-h2-"));
+    try {
+      const created = createCancellationIntent(dir2, archived as unknown as CancellationIntent);
+      expect(created.ok).toBe(false);
+      if (!created.ok) expect(created.reason).toBe("nonce-not-writable");
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
   it("refuses a superseding intent that reuses the canonical transitionId", () => {
     const result = supersedeCancellationIntent(sessDir, intentFixture({
       confirmationEpoch: 1,
@@ -1084,9 +1167,17 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
     // archive its predecessor names does not exist.
     expect(supersedeCancellationIntent(sessDir, replacement()).ok).toBe(true);
     rmSync(join(sessDir, ARCHIVE));
-    const canonical = intentOnDisk();
+    // NONCE-STRIPPED: modulo-nonce equality is what a real crash-after-rename
+    // retry presents (the caller never learned the minted nonce), and it is
+    // the ONLY shape that reaches the archive half. Handing back the
+    // canonical nonce and all differs by that key, so equality answers first
+    // and the archive proof is never consulted.
+    const { cycleNonce: _n, ...canonical } = intentOnDisk() as unknown as Record<string, unknown>;
 
-    const result = supersedeCancellationIntent(sessDir, canonical);
+    // The refusal itself is the kill: with the archive half dropped the
+    // shortcut would answer `ok` here. Past it, the reuse guard is what
+    // speaks, since a self-replacement reuses its own transitionId.
+    const result = supersedeCancellationIntent(sessDir, canonical as unknown as CancellationIntent);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("transition-id-reused");
   });
@@ -1103,7 +1194,10 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
     const bare = intentOnDisk();
     expect(bare.transitionId).toBe(TID2);
     expect(bare.predecessor).toBeUndefined();
-    const result = supersedeCancellationIntent(sessDir, bare);
+    // Nonce-stripped for the same reason as the archive test above: only a
+    // modulo-nonce-equal replacement reaches the proof this test is about.
+    const { cycleNonce: _n, ...spoof } = bare as unknown as Record<string, unknown>;
+    const result = supersedeCancellationIntent(sessDir, spoof as unknown as CancellationIntent);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("transition-id-reused");
   });
@@ -1115,12 +1209,15 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
     // satisfied and the phase condition the only thing standing between a
     // mid-cycle self-replacement and a false success.
     expect(supersedeCancellationIntent(sessDir, replacement()).ok).toBe(true);
-    advanceCancellationIntent(sessDir, { ...replacement(), phase: "prepared", claimTxn: { ...txnFixture(), transitionId: TID2 } } as CancellationIntent);
+    advanceCancellationIntent(sessDir, { ...intentOnDisk(), phase: "prepared", claimTxn: { ...txnFixture(), transitionId: TID2 } } as CancellationIntent);
     const midCycle = intentOnDisk();
     expect(midCycle.phase).toBe("prepared");
     expect(existsSync(join(sessDir, ARCHIVE))).toBe(true);
 
-    const result = supersedeCancellationIntent(sessDir, midCycle);
+    // Hand back the canonical MINUS its nonce: the caller-supplied shape a
+    // genuine retry would carry, so the phase condition alone decides.
+    const { cycleNonce: _n, ...midCycleBare } = midCycle as Record<string, unknown> & { cycleNonce: string };
+    const result = supersedeCancellationIntent(sessDir, midCycleBare as unknown as CancellationIntent);
     expect(result.ok).toBe(false);
     expect(intentOnDisk().phase).toBe("prepared");
   });
@@ -1136,11 +1233,12 @@ describe("T-450 6b: supersession never frees the canonical pathname", () => {
 describe("T-450 6b: adoption re-mints the confirmation pair, never the identity", () => {
   beforeEach(() => {
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" } }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" } }));
   });
 
   it("keeps the transitionId and phase, bumps the epoch, replaces the confirmation pair and evidence", () => {
+    const nonceBefore = intentOnDisk().cycleNonce;
     const result = readoptCancellationIntent(sessDir, {
       transitionId: TID,
       confirmationEpoch: 1,
@@ -1155,6 +1253,9 @@ describe("T-450 6b: adoption re-mints the confirmation pair, never the identity"
     expect(now.confirmationEpoch).toBe(1);
     expect(now.confirmedSessionRevision).toBe(5);
     expect(now.confirmedFingerprint).toBe("fp-3");
+    // The CYCLE identity survives adoption: adoption re-mints confirmation,
+    // never identity, and the takeover close gates on this exact value.
+    expect(now.cycleNonce).toBe(nonceBefore);
   });
 
   it("refuses before ticket work exists: that is supersession's territory", () => {
@@ -1250,9 +1351,9 @@ describe("T-450 6b: advancement pins the WHOLE record, not a chosen few fields",
     // The edge itself is legal and the phases line up, so the schema is happy;
     // without the payload pin the recovery table would reconstruct a release
     // for a ticket nobody ever prepared.
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
     const swapped = { ...txnFixture(), phase: "ticket_applied" as const, ticketId: "T-999" };
-    const result = advanceCancellationIntent(sessDir, intentFixture({ phase: "ticket_applied", claimTxn: swapped }));
+    const result = advanceCancellationIntent(sessDir, nonced({ phase: "ticket_applied", claimTxn: swapped }));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("identity-mismatch");
@@ -1266,9 +1367,13 @@ describe("T-450 6b: advancement pins the WHOLE record, not a chosen few fields",
     // A confirmation that drifted through an advancement would leave the
     // record claiming a world nobody re-checked, which is precisely what the
     // candidate invariant rests on not happening.
+    // NONCED, so the drift is the ONLY difference from the canonical. A
+    // record built without the canonical's minted nonce differs on the nonce
+    // too, and the whole-record pin then refuses for THAT, leaving this test
+    // green while the confirmation pin itself is gone.
     for (const drift of [{ confirmedFingerprint: "fp-drift" }, { confirmedSessionRevision: 99 }]) {
       const result = advanceCancellationIntent(
-        sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture(), ...drift }),
+        sessDir, nonced({ phase: "prepared", claimTxn: txnFixture(), ...drift }),
       );
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.reason).toBe("identity-mismatch");
@@ -1281,7 +1386,7 @@ describe("T-450 6b: advancement pins the WHOLE record, not a chosen few fields",
     // The pin must compare VALUES. A merge driver or formatter that rewrote
     // the record with identical content in another key order would otherwise
     // wedge every advancement from that point on.
-    const canonical = intentFixture({ phase: "prepared", claimTxn: txnFixture() }) as Record<string, unknown>;
+    const canonical = nonced({ phase: "prepared", claimTxn: txnFixture() }) as unknown as Record<string, unknown>;
     const reordered: Record<string, unknown> = {};
     for (const key of Object.keys(canonical).reverse()) reordered[key] = canonical[key];
     const result = advanceCancellationIntent(sessDir, reordered as unknown as CancellationIntent);
@@ -1304,8 +1409,8 @@ describe("T-450 6b: adoption survives a crash and its verbatim retry", () => {
       if (f.startsWith("cancellation-intent")) rmSync(join(sessDir, f), { force: true });
     }
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     }));
   }
@@ -1353,12 +1458,12 @@ describe("T-450 6b: adoption survives a crash and its verbatim retry", () => {
       }
       createCancellationIntent(sessDir, intentFixture());
       if (stage === "closed") {
-        advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-        advanceCancellationIntent(sessDir, intentFixture({
+        advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+        advanceCancellationIntent(sessDir, nonced({
           phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
         }));
-        advanceCancellationIntent(sessDir, intentFixture({ phase: "claim_cleared" }));
-        advanceCancellationIntent(sessDir, intentFixture({
+        advanceCancellationIntent(sessDir, nonced({ phase: "claim_cleared" }));
+        advanceCancellationIntent(sessDir, nonced({
           phase: "closed", outcome: { kind: "cancellation", transitionId: TID },
         }));
       }
@@ -1467,8 +1572,8 @@ describe("T-450 6b: adoption survives a crash and its verbatim retry", () => {
   });
 
   it("says closed is FINISHED, not before-begun: retirement is the only route out", () => {
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "claim_cleared" }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "claim_cleared" }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "closed", outcome: { kind: "cancellation", transitionId: TID },
     }));
     const result = readoptCancellationIntent(sessDir, adoption);
@@ -1533,12 +1638,12 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
       if (f.startsWith("cancellation-intent")) rmSync(join(sessDir, f), { force: true });
     }
     createCancellationIntent(sessDir, intentFixture());
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
-    advanceCancellationIntent(sessDir, intentFixture({
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
       phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
     }));
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "claim_cleared" }));
-    advanceCancellationIntent(sessDir, intentFixture({ phase: "closed", outcome }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "claim_cleared" }));
+    advanceCancellationIntent(sessDir, nonced({ phase: "closed", outcome }));
   }
 
   it("retires a closed cancellation whose transition IS published in state", () => {
@@ -1556,14 +1661,13 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
     expect(now.predecessor?.predecessorTransitionId).toBe(TID);
   });
 
-  it("REFUSES a closed takeover: a revision counter is not proof that it happened", () => {
+  it("REFUSES a closed takeover with NO postimage: a revision counter is not proof that it happened", () => {
     // `sessionRevision >= committedRevision` is satisfied by any later write
     // for any reason, so it cannot establish that this takeover was ever
     // committed -- and retirement discards the record, so a weak proof here
     // loses the only trace of it. The real proof is the durable takeover
-    // postimage naming this transitionId, which the consumer functions write
-    // and which does not exist yet. Refusing costs nothing real: no takeover
-    // has been committed, so no closed takeover intent exists to retire.
+    // postimage `commitCandidateTakeover` writes (ruling ea611619 B10);
+    // absent, the outcome is underivable, never an error.
     stageClosed({ kind: "takeover", committedRevision: 7 });
     for (const sessionRevision of [7, 8, 10_000]) {
       const result = retireClosedIntent(sessDir, replacement(), {
@@ -1573,6 +1677,174 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
       if (!result.ok) expect(result.reason).toBe("outcome-underivable");
       expect(intentOnDisk().phase).toBe("closed");
     }
+  });
+
+  /** The postimage that PROVES the staged closed takeover, built from the
+   * closed intent's own identity so the nonce and corroboration agree. */
+  function provingPostimage(over: Record<string, unknown> = {}): Record<string, unknown> {
+    const c = intentOnDisk();
+    return {
+      schemaVersion: 1,
+      kind: "candidate_takeover_committed",
+      cycleNonce: c.cycleNonce,
+      takeoverKind: "owner_gone_candidate_takeover",
+      intentTransitionId: c.transitionId,
+      clientTaskId: c.clientTaskId,
+      confirmationEpoch: c.confirmationEpoch,
+      evidence: {},
+      ...over,
+    };
+  }
+
+  it("B10: RETIRES a closed takeover whose postimage matches on nonce and corroboration", () => {
+    stageClosed({ kind: "takeover", committedRevision: 7 });
+    const before = readFileSync(join(sessDir, CANCELLATION_INTENT_FILE), "utf-8");
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: undefined, candidateTakeover: provingPostimage(), sessionRevision: 7,
+    });
+    expect(result.ok).toBe(true);
+    expect(readFileSync(join(sessDir, ARCHIVE), "utf-8")).toBe(before);
+    expect(intentOnDisk().transitionId).toBe(TID2);
+    expect(intentOnDisk().phase).toBe("authorized");
+  });
+
+  it("B10: the revision precondition refuses BEFORE the postimage is even consulted", () => {
+    stageClosed({ kind: "takeover", committedRevision: 7 });
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: undefined, candidateTakeover: provingPostimage(), sessionRevision: 6,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("outcome-underivable");
+    expect(intentOnDisk().phase).toBe("closed");
+  });
+
+  it("B10: a postimage with ANOTHER cycle's nonce is a stale value, underivable and never an error", () => {
+    stageClosed({ kind: "takeover", committedRevision: 7 });
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: undefined,
+      candidateTakeover: provingPostimage({ cycleNonce: "99999999-9999-4999-8999-999999999999" }),
+      sessionRevision: 7,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("outcome-underivable");
+  });
+
+  it("B10: a nonce match with contradicting corroboration is CORRUPTION, its own refusal", () => {
+    for (const conflict of [
+      { intentTransitionId: TID3 },
+      { clientTaskId: "task-somebody-else" },
+    ]) {
+      stageClosed({ kind: "takeover", committedRevision: 7 });
+      const result = retireClosedIntent(sessDir, replacement(), {
+        cancellationTransition: undefined,
+        candidateTakeover: provingPostimage(conflict),
+        sessionRevision: 7,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("takeover-postimage-conflict");
+      expect(intentOnDisk().phase).toBe("closed");
+    }
+  });
+
+  it("B10: a MALFORMED postimage refuses as unreadable, distinct from underivable", () => {
+    stageClosed({ kind: "takeover", committedRevision: 7 });
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: undefined,
+      candidateTakeover: { schemaVersion: 1, kind: "not-a-postimage" },
+      sessionRevision: 7,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("takeover-postimage-unreadable");
+    expect(intentOnDisk().phase).toBe("closed");
+  });
+
+  it("B10: an ADOPTED cycle still retires: adoption re-mints the confirmation, never the identity", () => {
+    // Raised in review as a permanent foreclosure: if adoption rebound the
+    // cycle to the adopting candidate, the postimage's clientTaskId would
+    // disagree with the intent's forever and an adopted takeover could never
+    // be retired, being read as corruption instead.
+    //
+    // It does not. Adoption spreads the canonical and overrides only the
+    // confirmation quartet plus its own receipt. Every operation that DOES
+    // set clientTaskId -- creation and supersession -- mints a fresh nonce,
+    // so the nonce gate answers "different cycle" before corroboration is
+    // ever reached. Corroboration therefore only ever runs inside one cycle,
+    // where the identity is by construction unchanged. Pinned here so the
+    // property is enforced rather than argued.
+    for (const f of readdirSync(sessDir)) {
+      if (f.startsWith("cancellation-intent")) rmSync(join(sessDir, f), { force: true });
+    }
+    createCancellationIntent(sessDir, intentFixture());
+    const born = intentOnDisk();
+    advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
+    advanceCancellationIntent(sessDir, nonced({
+      phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
+    }));
+
+    // A REAL adoption, legal at ticket_applied.
+    const adopted = readoptCancellationIntent(sessDir, {
+      transitionId: born.transitionId,
+      confirmationEpoch: born.confirmationEpoch + 1,
+      confirmedSessionRevision: 9,
+      confirmedFingerprint: "fp-adopted",
+      evidence: minimalEvidence(),
+    });
+    expect(adopted.ok).toBe(true);
+    const after = intentOnDisk();
+    expect(after.cycleNonce).toBe(born.cycleNonce);
+    expect(after.clientTaskId).toBe(born.clientTaskId);
+    expect(after.adoptedFromEpoch).toBe(born.confirmationEpoch);
+
+    // Finish the cycle as a takeover.
+    const cleared = { ...intentOnDisk(), phase: "claim_cleared" } as Record<string, unknown>;
+    delete cleared.claimTxn;
+    expect(advanceCancellationIntent(sessDir, cleared as unknown as CancellationIntent).ok).toBe(true);
+    expect(advanceCancellationIntent(sessDir, {
+      ...intentOnDisk(), phase: "closed", outcome: { kind: "takeover", committedRevision: 7 },
+    } as unknown as CancellationIntent).ok).toBe(true);
+
+    // The postimage the commit wrote, carrying the PRE-adoption epoch and the
+    // cycle's original identity, which adoption left alone.
+    const post = provingPostimage({ confirmationEpoch: born.confirmationEpoch });
+    const closed = intentOnDisk();
+    const result = retireClosedIntent(sessDir, {
+      ...replacement(),
+      confirmationEpoch: closed.confirmationEpoch + 1,
+      predecessor: {
+        predecessorTransitionId: closed.transitionId,
+        predecessorEpoch: closed.confirmationEpoch,
+        predecessorFingerprint: closed.confirmedFingerprint,
+      },
+    } as CancellationIntent, {
+      cancellationTransition: undefined, candidateTakeover: post, sessionRevision: 7,
+    });
+    expect(result.ok).toBe(true);
+    expect(intentOnDisk().transitionId).toBe(TID2);
+  });
+
+  it("B10: EPOCH IS NEVER COMPARED: a postimage behind the intent's epoch still proves it", () => {
+    // The post-postimage adoption history: the intent re-minted its
+    // confirmation after the commit, so the postimage's audit epoch is
+    // behind. Retirement must still derive, or those recovery histories
+    // would be permanently unretirable.
+    stageClosed({ kind: "takeover", committedRevision: 7 });
+    const drifted = provingPostimage({ confirmationEpoch: 0 });
+    const canonical = intentOnDisk();
+    writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify({
+      ...canonical, confirmationEpoch: canonical.confirmationEpoch + 5,
+    }, null, 2));
+    const result = retireClosedIntent(sessDir, {
+      ...replacement(),
+      confirmationEpoch: canonical.confirmationEpoch + 6,
+      predecessor: {
+        predecessorTransitionId: canonical.transitionId,
+        predecessorEpoch: canonical.confirmationEpoch + 5,
+        predecessorFingerprint: canonical.confirmedFingerprint,
+      },
+    } as CancellationIntent, {
+      cancellationTransition: undefined, candidateTakeover: drifted, sessionRevision: 7,
+    });
+    expect(result.ok).toBe(true);
   });
 
   it("refuses a cancellation the state does not carry as published", () => {
@@ -1713,22 +1985,61 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
     }
   });
 
+  it("refuses the CLOSED canonical handed back nonce-stripped as its own replacement", () => {
+    // The one spoof the predecessor-and-archive proof cannot refuse on its
+    // own: retire once for real, close the SECOND generation, then hand its
+    // canonical back minus the nonce. Every half of the shortcut's proof is
+    // genuinely true -- modulo-nonce equality holds because the copy IS the
+    // canonical, and the predecessor triple names a real archive because a
+    // real cycle minted it. Only `c.phase !== "closed"` tells this apart
+    // from a crash-after-rename retry, whose canonical is never closed.
+    // Without it the shortcut reports the finished cycle as live.
+    stageClosed({ kind: "cancellation", transitionId: TID });
+    expect(retireClosedIntent(sessDir, replacement(), cancelled).ok).toBe(true);
+
+    // Close the second generation by hand: same record, phase closed, its
+    // own published outcome. The nonce and predecessor are preserved.
+    const second = intentOnDisk();
+    writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify({
+      ...second, phase: "closed", outcome: { kind: "cancellation", transitionId: TID2 },
+    }, null, 2));
+
+    const { cycleNonce: _n, ...spoof } = intentOnDisk() as unknown as Record<string, unknown>;
+    const result = retireClosedIntent(sessDir, spoof as unknown as CancellationIntent, {
+      cancellationTransition: publishedTransition({ transitionId: TID2 }), sessionRevision: 6,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // WHICH downstream guard answers is not pinned; that the shortcut did
+      // NOT answer with success is.
+      expect(["not-closed", "epoch-not-monotonic", "predecessor-mismatch", "transition-id-reused"])
+        .toContain(result.reason);
+    }
+    expect(intentOnDisk().phase).toBe("closed");
+  });
+
   it("refuses the retry shortcut for an archive that does not PROVE the prior cycle", () => {
     // Existence at the pathname is not the proof; content is. An empty file,
     // an unparseable one, and a perfectly valid intent that is somebody
     // else's must all fail to open the shortcut, because the shortcut runs
     // ahead of every guard and a false positive there reports a retirement
     // that never happened.
-    const foreign = JSON.stringify({ ...intentFixture({ transitionId: TID2, confirmationEpoch: 5 }) }, null, 2);
+    const foreign = JSON.stringify({
+      ...intentFixture({ transitionId: TID2, confirmationEpoch: 5 }),
+      cycleNonce: "77777777-7777-4777-8777-777777777777",
+    }, null, 2);
     for (const bytes of ["", "{not json", foreign]) {
       for (const f of readdirSync(sessDir)) {
         if (f.startsWith("cancellation-intent")) rmSync(join(sessDir, f), { force: true });
       }
       stageClosed({ kind: "cancellation", transitionId: TID });
-      // Stage the canonical file AS the replacement, which is the state a
-      // crash after the rename leaves, then seed a non-proving archive.
+      // Stage the canonical file AS the replacement (plus the nonce the real
+      // rename would have carried), which is the state a crash after the
+      // rename leaves, then seed a non-proving archive.
       const repl = replacement();
-      writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify(repl, null, 2));
+      writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify(
+        { ...repl, cycleNonce: "88888888-8888-4888-8888-888888888888" }, null, 2,
+      ));
       writeFileSync(join(sessDir, ARCHIVE), bytes);
 
       const result = retireClosedIntent(sessDir, repl, cancelled);
@@ -1754,6 +2065,37 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
     }
   });
 
+  it("H2: retirement refuses a doctored archive copy on the full path (nonce-not-writable)", () => {
+    // The retirement spelling of the same attack: retire once so a real
+    // archive exists, restore the closed canonical, then present a copy of
+    // the archived bytes (nonce included) doctored into a plausible next
+    // cycle. The shortcut cannot open (the extra nonce key breaks
+    // modulo-nonce equality), and the full path must refuse on the nonce
+    // BEFORE any other gate can be talked into it.
+    stageClosed({ kind: "cancellation", transitionId: TID });
+    const closedBytes = readFileSync(join(sessDir, CANCELLATION_INTENT_FILE), "utf-8");
+    expect(retireClosedIntent(sessDir, replacement(), cancelled).ok).toBe(true);
+    const archivedCopy = JSON.parse(readFileSync(join(sessDir, ARCHIVE), "utf-8")) as Record<string, unknown>;
+    writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), closedBytes);
+
+    const doctored = {
+      ...archivedCopy,
+      phase: "authorized",
+      transitionId: TID3,
+      confirmationEpoch: 9,
+      predecessor: {
+        predecessorTransitionId: TID,
+        predecessorEpoch: (JSON.parse(closedBytes) as { confirmationEpoch: number }).confirmationEpoch,
+        predecessorFingerprint: (JSON.parse(closedBytes) as { confirmedFingerprint: string }).confirmedFingerprint,
+      },
+    };
+    delete (doctored as Record<string, unknown>).outcome;
+    const result = retireClosedIntent(sessDir, doctored as unknown as CancellationIntent, cancelled);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("nonce-not-writable");
+    expect(intentOnDisk().phase).toBe("closed");
+  });
+
   it("refuses the CLOSED intent handed back as its own replacement, at any generation", () => {
     // The second-generation spoof. A canonical minted by a prior cycle
     // carries a predecessor triple naming a real archive, so handing it back
@@ -1771,12 +2113,23 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
       predecessor: { predecessorTransitionId: TID2, predecessorEpoch: 0, predecessorFingerprint: "fp-0" },
     } as CancellationIntent;
     writeFileSync(join(sessDir, CANCELLATION_INTENT_FILE), JSON.stringify(withPred, null, 2));
+    // The archive carries a nonce of its own so it PARSES: an archive the
+    // strict reader rejects fails the proof for that reason instead, and the
+    // phase gate this test exists for would never be reached.
     writeFileSync(
       join(sessDir, `cancellation-intent.superseded.${TID2}.0.json`),
-      JSON.stringify(intentFixture({ transitionId: TID2, confirmedFingerprint: "fp-0" }), null, 2),
+      JSON.stringify({
+        ...intentFixture({ transitionId: TID2, confirmedFingerprint: "fp-0" }),
+        cycleNonce: "66666666-6666-4666-8666-666666666666",
+      }, null, 2),
     );
 
-    const result = retireClosedIntent(sessDir, withPred, cancelled);
+    // Handed back NONCE-STRIPPED, which is the only shape that can satisfy
+    // modulo-nonce equality: a replacement still carrying the canonical's
+    // nonce differs from it by that key and is refused on equality alone,
+    // leaving the phase gate untested.
+    const { cycleNonce: _n, ...spoof } = withPred as unknown as Record<string, unknown>;
+    const result = retireClosedIntent(sessDir, spoof as unknown as CancellationIntent, cancelled);
     expect(result.ok).toBe(false);
     expect(intentOnDisk().phase).toBe("closed");
   });
@@ -1823,15 +2176,15 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
       }
       createCancellationIntent(sessDir, intentFixture());
       if (phase !== "authorized") {
-        advanceCancellationIntent(sessDir, intentFixture({ phase: "prepared", claimTxn: txnFixture() }));
+        advanceCancellationIntent(sessDir, nonced({ phase: "prepared", claimTxn: txnFixture() }));
       }
       if (phase === "ticket_applied" || phase === "claim_cleared") {
-        advanceCancellationIntent(sessDir, intentFixture({
+        advanceCancellationIntent(sessDir, nonced({
           phase: "ticket_applied", claimTxn: { ...txnFixture(), phase: "ticket_applied" },
         }));
       }
       if (phase === "claim_cleared") {
-        advanceCancellationIntent(sessDir, intentFixture({ phase: "claim_cleared" }));
+        advanceCancellationIntent(sessDir, nonced({ phase: "claim_cleared" }));
       }
       const result = retireClosedIntent(sessDir, replacement(), cancelled);
       expect(result.ok).toBe(false);

@@ -12,6 +12,10 @@ import {
   lstatSync,
   type Stats,
   truncateSync,
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import lockfile from "proper-lockfile";
@@ -489,6 +493,108 @@ function toPersistedSessionState(state: FullSessionState): Record<string, unknow
     ...(state as unknown as Record<string, unknown>),
     resolvedBranchStrategy: toPersistedBranchStrategy(strategy),
   };
+}
+
+/**
+ * Crash-injection seams for the DURABLE state writer below, the same
+ * discipline as candidate-recovery's `__intentTesting`: each barrier is
+ * followed by an injection point so a suite can stop the world after every
+ * filesystem operation and assert what survives.
+ */
+export const __stateWriteTesting = {
+  at: (_point: string): void => undefined,
+};
+
+/**
+ * Write session state atomically AND durably (T-450 6b, ruling ea611619 B7).
+ *
+ * `writeSessionSync` below gives ORDERING, not durability: no temp fsync, no
+ * directory fsync, so a power loss can drop the rename while later writes
+ * survive. That is tolerable for ordinary state updates and NOT tolerable for
+ * exactly two writes, which are this function's only permitted callers:
+ *
+ *   1. the takeover postimage (`commitCandidateTakeover`), where the proof
+ *      must be inseparable from the fact it proves, and
+ *   2. the cancellation write-4 barrier (`commitCandidateCancel`), because
+ *      the intent CLOSE fsyncs file and directory while writes 1/3/4 do not,
+ *      so power loss could otherwise keep a closed cancellation intent whose
+ *      published transition evaporated: permanent foreclosure.
+ *
+ * Same encode as writeSessionSync (`toPersistedSessionState`, preserving the
+ * ISS-902 single-encode boundary) and the same revision-plus-exactly-one
+ * contract, so `committedRevision` precomputation holds identically. The 15
+ * ordinary call sites are untouched on purpose; the GENERAL hardening of the
+ * shared writer is ISS-958, out of this ticket.
+ */
+/**
+ * Thrown when the rename SUCCEEDED and a later barrier did not.
+ *
+ * The distinction is not pedantry. Before the rename, a throw means nothing
+ * was published and the caller may truthfully discard everything it staged.
+ * After it, the new state is already visible to every reader in every process;
+ * only its survival across power loss is unproven. A caller that treats the
+ * two alike reports "nothing was published" over a state that WAS published,
+ * and then discards resources the persisted state now names.
+ *
+ * `published` carries the state as written so a caller can name the revision
+ * it must reconcile against. Durability is deliberately NOT re-attempted here:
+ * a retried fsync that fails again proves nothing new, and the honest recovery
+ * is the caller's crash-retry path, which re-reads the state and resumes.
+ */
+export class StateWriteUndurableError extends Error {
+  readonly published: FullSessionState;
+  constructor(published: FullSessionState, cause: unknown) {
+    super(
+      `session state revision ${published.revision} was published by rename but its durability ` +
+      `barriers did not complete: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "StateWriteUndurableError";
+    this.published = published;
+    this.cause = cause;
+  }
+}
+
+export function writeSessionDurableSync(dir: string, state: FullSessionState): FullSessionState {
+  const path = statePath(dir);
+  const updated = { ...state, revision: state.revision + 1 };
+  const content = JSON.stringify(toPersistedSessionState(updated), null, 2) + "\n";
+  const tmp = `${path}.${process.pid}.durable.tmp`;
+  let renamed = false;
+  try {
+    const fd = openSync(tmp, "w");
+    try {
+      const bytes = Buffer.from(content, "utf-8");
+      const written = writeSync(fd, bytes);
+      // Checked because this temp is renamed over the canonical state: a short
+      // write here becomes a permanently malformed state.json.
+      if (written !== bytes.length) {
+        throw new Error(`state write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
+      }
+      __stateWriteTesting.at("state:tmp-written");
+      fsyncSync(fd);
+      __stateWriteTesting.at("state:tmp-fsynced");
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+    renamed = true;
+    __stateWriteTesting.at("state:renamed");
+    // The rename orders old-state/new-state; only this makes the ordering
+    // reach the drive (as far as the device's own cache guarantees, the same
+    // stated limit as the intent protocol's barriers).
+    const dirFd = openSync(dir, "r");
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+    __stateWriteTesting.at("state:dir-fsynced");
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* ignore */ }
+    if (renamed) throw new StateWriteUndurableError(updated, err);
+    throw err;
+  }
+  return updated;
 }
 
 /** Write session state atomically (write tmp, rename). Increments revision. Returns the written state. */

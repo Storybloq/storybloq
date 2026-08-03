@@ -42,7 +42,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import {
   CANCELLATION_INTENT_FILE,
@@ -51,23 +51,50 @@ import {
   PersistedTicketSnapshotSchema,
   type CancellationAuthority,
   type CancellationIntent,
+  type CancellationTransition,
+  type FullSessionState,
   type PersistedLivenessEvidence,
   type PersistedTicketSnapshot,
+  CandidateRecoveryEvidenceSchema,
+  CandidateTakeoverPostimageSchema,
+  type CandidateTakeoverPostimage,
 } from "./session-types.js";
 import {
   evidenceFingerprint,
   permitsRecoveryOffer,
   readOwnerLiveness,
+  stageHeartbeatGeneration,
+  discardStagedGeneration,
+  validateStagedGeneration,
   OWNER_STALE_MS,
   type OwnableLivenessState,
   type OwnerLivenessSignals,
+  type StagedHeartbeatGeneration,
+  type StagedGenerationValidation,
 } from "./liveness.js";
 import type { SuccessorServers } from "./mcp-registry.js";
-import { reconcileClaim, type ClaimEpoch, type ClaimReconciliation } from "./claim-reconciliation.js";
+import {
+  reconcileClaim,
+  recoverClaimTransaction,
+  type ClaimEpoch,
+  type ClaimReconciliation,
+  type ClaimTxn,
+  type TicketSnapshot,
+} from "./claim-reconciliation.js";
 import { readTicketClaimState } from "./claim-preflight.js";
 import type { Ticket } from "../models/ticket.js";
-import { canonicalStartedAt } from "./cancellation-core.js";
-import { readCancellationTransition } from "./cancellation-transition.js";
+import type { OwnerTask } from "./client-profile.js";
+import {
+  applyCancellationTransition,
+  canonicalStartedAt,
+  classifyTailRecovery,
+  runCancellationTail,
+  transitionBelongsTo,
+  type TailOutcome,
+} from "./cancellation-core.js";
+import { readCancellationTransition, type TicketDisposition } from "./cancellation-transition.js";
+import { readSession, withSessionLock, StateWriteUndurableError } from "./session.js";
+import { writeSessionAndRefresh } from "./guide-effects.js";
 
 /** Crash-injection seam. Production is a no-op; the intent suite replaces it
  * to throw after a named filesystem operation. Same shape as liveness's
@@ -439,6 +466,10 @@ export type IntentWrite =
       | "archive-conflict"
       | "not-closed"
       | "outcome-underivable"
+      | "nonce-not-writable"
+      | "takeover-postimage-unreadable"
+      | "takeover-postimage-conflict"
+      | "not-committed"
       | "receipt-not-writable"
       | "transition-id-reused";
       readonly detail: string };
@@ -510,22 +541,76 @@ function refuseCallerSuppliedReceipt(intent: CancellationIntent, what: string): 
     "make a first re-authorization indistinguishable from the retry of one that already landed" };
 }
 
+/**
+ * What a caller may hand a NEW-CYCLE writer: everything except the cycle's
+ * own identity. Distributive on purpose, since a plain Omit over the
+ * discriminated union would collapse the phase arms.
+ *
+ * The nonce is minted INSIDE create, supersession and retirement (the three
+ * writers that birth a cycle; retirement births cycle N+1) and nowhere else.
+ * The type makes fabrication unnecessary; `refuseCallerSuppliedNonce` makes
+ * it refused, because the type system does not survive JSON.parse.
+ */
+export type NewCycleIntent = CancellationIntent extends infer T
+  ? T extends CancellationIntent ? Omit<T, "cycleNonce"> : never
+  : never;
+
+/**
+ * LOAD-BEARING, not hygiene, and deliberately BELOW the retry shortcuts,
+ * exactly where `refuseReusedTransitionId` sits and for the same reason.
+ * Without this gate a doctored COPY of an archived record, carrying the old
+ * cycle's nonce, passes every supersession gate; the postimage field still
+ * matching that copied nonce would then let a close succeed with no commit
+ * ever having run, and retirement would wrongfully derive. Any replayed
+ * on-disk record necessarily carries a nonce, so this also closes the
+ * documented authorized-phase self-spoof residual.
+ */
+function refuseCallerSuppliedNonce(record: NewCycleIntent, what: string): IntentWrite | null {
+  if (!("cycleNonce" in (record as Record<string, unknown>))) return null;
+  return { ok: false, reason: "nonce-not-writable", detail:
+    `${what} carries a cycleNonce, which only the writer that births a cycle may mint; a caller-supplied ` +
+    "nonce is how a copied record impersonates a cycle it did not begin" };
+}
+
+/** The one place a cycle's identity comes from. Minted BEFORE the
+ * `refuseUnwritableRecord` parse, or a required schema field would deadlock
+ * every writer. */
+function mintCycle(record: NewCycleIntent): CancellationIntent {
+  return { ...(record as Record<string, unknown>), cycleNonce: randomUUID() } as unknown as CancellationIntent;
+}
+
+/** Shortcut equality for crash-after-rename retries: the caller never learned
+ * the nonce the crashed attempt minted, so the comparison EXCLUDES it; every
+ * other byte must match. */
+function equalsModuloNonce(canonical: CancellationIntent, replacement: NewCycleIntent): boolean {
+  const { cycleNonce: _n, ...rest } = canonical as Record<string, unknown> & { cycleNonce: string };
+  return deepEquals(rest, replacement);
+}
+
 /** The only way an intent comes into existence: exclusive create. A present
- * intent, whatever its state, routes through classification. */
-export function createCancellationIntent(sessionDir: string, intent: CancellationIntent): IntentWrite {
-  const forged = refuseCallerSuppliedReceipt(intent, "the intent being created");
+ * intent, whatever its state, routes through classification. Takes a
+ * NONCE-LESS record and mints the cycle identity itself; the returned intent
+ * carries the minted nonce, and a crash-after-create retry needs no byte
+ * rule, because EEXIST resolves to "exists" and ownership classification
+ * resumes the existing canonical, whose nonce was validly minted by the same
+ * cycle's crashed attempt. */
+export function createCancellationIntent(sessionDir: string, intent: NewCycleIntent): IntentWrite {
+  const noncedByCaller = refuseCallerSuppliedNonce(intent, "the intent being created");
+  if (noncedByCaller) return noncedByCaller;
+  const minted = mintCycle(intent);
+  const forged = refuseCallerSuppliedReceipt(minted, "the intent being created");
   if (forged) return forged;
-  const unwritable = refuseUnwritableRecord(intent, "the intent being created");
+  const unwritable = refuseUnwritableRecord(minted, "the intent being created");
   if (unwritable) return unwritable;
   try {
-    createExclusiveDurable(sessionDir, intentPath(sessionDir), serialize(intent), "create");
+    createExclusiveDurable(sessionDir, intentPath(sessionDir), serialize(minted), "create");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       return { ok: false, reason: "exists", detail: "an intent already exists at the canonical pathname" };
     }
     throw err;
   }
-  return { ok: true, intent };
+  return { ok: true, intent: minted };
 }
 
 /**
@@ -684,7 +769,7 @@ function priorCycleIsArchived(sessionDir: string, replacement: CancellationInten
  * strictly match the current canonical intent, then continuing. A mismatched
  * archive at that name is someone else's evidence and refuses.
  */
-export function supersedeCancellationIntent(sessionDir: string, replacement: CancellationIntent): IntentWrite {
+export function supersedeCancellationIntent(sessionDir: string, replacement: NewCycleIntent): IntentWrite {
   const current = readCancellationIntent(sessionDir);
   if (current.kind === "absent") {
     return { ok: false, reason: "nothing-to-supersede", detail:
@@ -695,14 +780,13 @@ export function supersedeCancellationIntent(sessionDir: string, replacement: Can
   }
   const c = current.intent;
 
-  const supersedeForged = refuseCallerSuppliedReceipt(replacement, "the superseding intent");
+  const supersedeForged = refuseCallerSuppliedReceipt(replacement as CancellationIntent, "the superseding intent");
   if (supersedeForged) return supersedeForged;
-  const supersedeUnwritable = refuseUnwritableRecord(replacement, "the superseding intent");
-  if (supersedeUnwritable) return supersedeUnwritable;
 
   // Crash-after-rename retry, under two requirements that answer two
-  // different questions. `deepEquals` asks whether the canonical file IS the
-  // postimage being requested -- the WHOLE record, because a replacement
+  // different questions. `equalsModuloNonce` asks whether the canonical file
+  // IS the postimage being requested -- the WHOLE record save the minted
+  // nonce (the MODULO paragraph below says why), because a replacement
   // sharing only the transitionId and epoch while differing in evidence,
   // confirmation, ticket preimage or predecessor is a DIFFERENT record, and
   // reporting success for it would claim durable facts nobody ever wrote.
@@ -725,8 +809,13 @@ export function supersedeCancellationIntent(sessionDir: string, replacement: Can
   // boundary just occurred here. The residual is a zero-write false success
   // on a pure read path; the catastrophe class, discarding a record, is
   // unreachable through it.
-  if (deepEquals(c, replacement) && replacement.phase === "authorized"
-    && priorCycleIsArchived(sessionDir, replacement)) {
+  // MODULO cycleNonce, and only that: the caller never learned the nonce a
+  // crashed attempt minted, so requiring it would make every genuine retry
+  // die at transition-id-reused, the exact already-done-versus-defect
+  // confusion the contracts forbid. On match the CANONICAL is returned,
+  // carrying its already-minted nonce.
+  if (equalsModuloNonce(c, replacement) && replacement.phase === "authorized"
+    && priorCycleIsArchived(sessionDir, replacement as CancellationIntent)) {
     return { ok: true, intent: c };
   }
 
@@ -739,8 +828,10 @@ export function supersedeCancellationIntent(sessionDir: string, replacement: Can
   // crash-after-rename retry finds the canonical already equal to the
   // replacement, so it "reuses" that id by construction and would be refused
   // here. Reuse is only a defect when a NEW cycle is being written.
-  const supersedeReused = refuseReusedTransitionId(c, replacement);
+  const supersedeReused = refuseReusedTransitionId(c, replacement as CancellationIntent);
   if (supersedeReused) return supersedeReused;
+  const supersedeNonced = refuseCallerSuppliedNonce(replacement, "the superseding intent");
+  if (supersedeNonced) return supersedeNonced;
 
   const pred = replacement.predecessor;
   if (!pred || pred.predecessorTransitionId !== c.transitionId
@@ -756,6 +847,13 @@ export function supersedeCancellationIntent(sessionDir: string, replacement: Can
   if (replacement.phase !== "authorized") {
     return { ok: false, reason: "edge-refused", detail: "a superseding intent starts over at authorized" };
   }
+
+  // The new cycle's identity, minted here and nowhere the caller can reach,
+  // BEFORE the unwritable parse (a required schema field would otherwise
+  // refuse every legitimate replacement).
+  const minted = mintCycle(replacement);
+  const supersedeUnwritable = refuseUnwritableRecord(minted, "the superseding intent");
+  if (supersedeUnwritable) return supersedeUnwritable;
 
   // ARCHIVE FIRST. The archive carries the canonical bytes verbatim, at a name
   // keyed by (transitionId, epoch), which the monotonic epoch makes unique per
@@ -794,8 +892,8 @@ export function supersedeCancellationIntent(sessionDir: string, replacement: Can
   fsyncPath(sessionDir);
   __intentTesting.at("supersede:dir-fsynced-after-archive");
 
-  replaceDurable(sessionDir, serialize(replacement), "supersede");
-  return { ok: true, intent: replacement };
+  replaceDurable(sessionDir, serialize(minted), "supersede");
+  return { ok: true, intent: minted };
 }
 
 /**
@@ -910,23 +1008,31 @@ export function readoptCancellationIntent(
  * is the one thing that must not be retired, because then the intent IS the
  * only record.
  *
- * A closed TAKEOVER is therefore not retirable yet, and refuses. Its
- * `committedRevision` is a precondition, never a proof: a revision counter
- * advances for any write for any reason, so it cannot establish that this
- * takeover was committed. The proof is an identity-bearing durable postimage
- * naming this intent, which the commit path that writes takeovers owns and
- * which does not exist yet. Refusing costs nothing while no takeover has ever
- * been committed, and refusing never discards a record.
+ * A closed TAKEOVER derives from `state.candidateTakeover`, the postimage
+ * `commitCandidateTakeover` writes atomically with the ownership fields it
+ * proves (ruling ea611619 B10). Its `committedRevision` stays a precondition,
+ * never a proof: a revision counter advances for any write for any reason.
+ * The proof is the CYCLE NONCE, decisive on equality with the closed
+ * intent's, corroborated by the intent's transitionId and clientTaskId; a
+ * nonce match with contradicting corroboration is corruption and refuses.
+ * The epoch is never compared (adoption is legal after the postimage) and
+ * argvProof is never read (a degraded-unknown takeover retires on identical
+ * proof to a proven one).
  *
  * The shape is supersession's, for the same reason: archive first, replace
  * second, canonical pathname never freed.
  */
 export function retireClosedIntent(
   sessionDir: string,
-  replacement: CancellationIntent,
+  replacement: NewCycleIntent,
   durable: {
     /** The session's `cancellationTransition` as persisted, unparsed. */
     readonly cancellationTransition: unknown;
+    /** The session's `candidateTakeover` as persisted, UNPARSED, read by the
+     * caller under the held lock and passed as a VALUE, never a reader:
+     * retirement discovers nothing itself, exactly as it does not for the
+     * cancellation arm. Absent means the takeover arm is underivable. */
+    readonly candidateTakeover: unknown;
     readonly sessionRevision: number;
   },
 ): IntentWrite {
@@ -940,10 +1046,8 @@ export function retireClosedIntent(
   }
   const c = current.intent;
 
-  const retireForged = refuseCallerSuppliedReceipt(replacement, "the new cycle's intent");
+  const retireForged = refuseCallerSuppliedReceipt(replacement as CancellationIntent, "the new cycle's intent");
   if (retireForged) return retireForged;
-  const retireUnwritable = refuseUnwritableRecord(replacement, "the new cycle's intent");
-  if (retireUnwritable) return retireUnwritable;
 
   // Crash-after-rename retry, the same two-part proof supersession carries
   // and for the same reasons: whole-record equality so no unwritten durable
@@ -964,8 +1068,11 @@ export function retireClosedIntent(
   //
   // The same contract as supersession's applies: `ok: true` says the
   // canonical record IS this intent, not that a retirement occurred here.
-  if (deepEquals(c, replacement) && c.phase !== "closed"
-    && priorCycleIsArchived(sessionDir, replacement)) {
+  // MODULO cycleNonce, same reasoning as supersession's shortcut: the caller
+  // never learned the nonce the crashed attempt minted, and on match the
+  // CANONICAL is returned carrying it.
+  if (equalsModuloNonce(c, replacement) && c.phase !== "closed"
+    && priorCycleIsArchived(sessionDir, replacement as CancellationIntent)) {
     return { ok: true, intent: c };
   }
 
@@ -1032,31 +1139,61 @@ export function retireClosedIntent(
         `session is at ${durable.sessionRevision}; the outcome is not durable yet` };
     }
   } else {
-    // THE TAKEOVER ARM IS DELIBERATELY UNPROVABLE HERE, so it refuses.
+    // THE TAKEOVER ARM (ruling ea611619 B10). The proof is the durable
+    // takeover postimage, matched on the CYCLE NONCE, which only the writer
+    // that birthed this cycle could have minted and only
+    // commitCandidateTakeover writes into state, atomically with the
+    // ownership fields it proves.
     //
-    // A revision counter is not evidence. `sessionRevision >= committedRevision`
-    // is satisfied by ANY later write for any reason, so it would let a
-    // schema-valid closed intent be retired -- discarding the only record
-    // naming the takeover -- on the strength of an unrelated state write. The
-    // check is kept as a precondition, and failing it is reported first
-    // because it is the cheaper and more specific answer, but passing it is
-    // explicitly NOT treated as proof.
-    //
-    // The real proof is an identity: the durable takeover postimage
-    // (`owner_gone_candidate_takeover` plus its CandidateRecoveryEvidence)
-    // naming this intent's transitionId. That postimage is written by the
-    // consumer functions, which do not exist yet, and inventing its shape
-    // here would mean this module deciding a record another one owns. Until
-    // it lands, refusing is correct and costs nothing real: no takeover has
-    // ever been committed, so no closed takeover intent exists to retire.
+    // A revision counter is not evidence: `sessionRevision >= committedRevision`
+    // is satisfied by ANY later write for any reason. The check is kept as a
+    // PRECONDITION, reported first as the cheaper and more specific refusal,
+    // and passing it is explicitly not treated as proof.
     if (durable.sessionRevision < c.outcome.committedRevision) {
       return { ok: false, reason: "outcome-underivable", detail:
         `the closed intent points at a takeover committed at revision ${c.outcome.committedRevision}, and the ` +
         `session is at ${durable.sessionRevision}; the outcome is not confirmed in durable state` };
     }
-    return { ok: false, reason: "outcome-underivable", detail:
-      "a closed takeover cannot yet be proved derivable: the revision counter alone does not establish that " +
-      "this takeover was committed, and the durable takeover postimage that would is not written yet" };
+    // ABSENT is underivable, never an error: no postimage means no committed
+    // takeover, which is the answer, not a failure to look.
+    if (durable.candidateTakeover === undefined || durable.candidateTakeover === null) {
+      return { ok: false, reason: "outcome-underivable", detail:
+        "the session state carries no takeover postimage; a takeover that was never committed cannot be " +
+        "proved, and retiring on the revision counter alone would discard the only record naming it" };
+    }
+    // MALFORMED is a REFUSAL, deliberately distinct from underivable: a value
+    // that exists but cannot be read is not absence, and treating it as
+    // absence would let corruption stand in for "never happened".
+    const post = CandidateTakeoverPostimageSchema.safeParse(durable.candidateTakeover);
+    if (!post.success) {
+      return { ok: false, reason: "takeover-postimage-unreadable", detail:
+        "the session state carries a takeover postimage that does not parse; it can neither prove nor " +
+        "disprove this intent's outcome, so nothing may be discarded against it" };
+    }
+    // THE NONCE IS DECISIVE. A mismatch means the postimage belongs to a
+    // different cycle (a consumed predecessor's stale value, legal under the
+    // consumed-before-overwrite invariant), which proves nothing about THIS
+    // intent: underivable, not an error.
+    if (post.data.cycleNonce !== c.cycleNonce) {
+      return { ok: false, reason: "outcome-underivable", detail:
+        "the takeover postimage names a different cycle; this intent's takeover has no durable proof" };
+    }
+    // CORROBORATION must agree once the nonce matches. A record carrying this
+    // cycle's nonce but another intent's identity is CORRUPTION, not absence
+    // and not a different cycle; nothing may be retired or trusted against it.
+    if (post.data.intentTransitionId !== c.transitionId || post.data.clientTaskId !== c.clientTaskId) {
+      return { ok: false, reason: "takeover-postimage-conflict", detail:
+        "the takeover postimage matches this cycle's nonce but contradicts its identity; a record that " +
+        "disagrees with itself is corruption and proves nothing" };
+    }
+    // EPOCH IS NEVER COMPARED, and argvProof is NEVER READ. Adoption is legal
+    // after the postimage is written, so the closed intent may sit at a
+    // higher epoch than the postimage captured; comparing would foreclose
+    // exactly those recovery histories. And a degraded-unknown takeover
+    // retires on identical proof to a proven one, because derivability asks
+    // whether the record exists and names this cycle, not how strongly the
+    // takeover was authorized. The proof passes: fall through to the new
+    // cycle's own gates.
   }
 
   if (replacement.confirmationEpoch <= c.confirmationEpoch) {
@@ -1070,8 +1207,10 @@ export function retireClosedIntent(
   // crash-after-rename retry finds the canonical already equal to the
   // replacement, so it "reuses" that id by construction and would be refused
   // here. Reuse is only a defect when a NEW cycle is being written.
-  const retireReused = refuseReusedTransitionId(c, replacement);
+  const retireReused = refuseReusedTransitionId(c, replacement as CancellationIntent);
   if (retireReused) return retireReused;
+  const retireNonced = refuseCallerSuppliedNonce(replacement, "the new cycle's intent");
+  if (retireNonced) return retireNonced;
 
   const pred = replacement.predecessor;
   if (!pred || pred.predecessorTransitionId !== c.transitionId
@@ -1090,6 +1229,12 @@ export function retireClosedIntent(
   // impossible for the same reason as supersession's: an intent is archived
   // once, under the identity it carried, and the epoch is monotonic within an
   // identity.
+  // The new cycle's identity, minted beyond the caller's reach, BEFORE the
+  // unwritable parse for the same reason as supersession's.
+  const minted = mintCycle(replacement);
+  const retireUnwritable = refuseUnwritableRecord(minted, "the new cycle's intent");
+  if (retireUnwritable) return retireUnwritable;
+
   const archive = archivePathFor(sessionDir, c.transitionId, c.confirmationEpoch);
   try {
     createExclusiveDurable(sessionDir, archive, current.raw, "retire:archive");
@@ -1116,8 +1261,8 @@ export function retireClosedIntent(
   fsyncPath(sessionDir);
   __intentTesting.at("retire:dir-fsynced-after-archive");
 
-  replaceDurable(sessionDir, serialize(replacement), "retire");
-  return { ok: true, intent: replacement };
+  replaceDurable(sessionDir, serialize(minted), "retire");
+  return { ok: true, intent: minted };
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,6 +1284,13 @@ export interface CandidateHandshakeDeps {
   readonly now?: () => number;
   readonly staleThresholdMs?: number;
   readonly readState: () => OwnableLivenessState;
+  /**
+   * The session's lifecycle RIGHT NOW, read under the held lock (ruling
+   * ea611619 C3). A PROVIDER, never a snapshot, for the same reason as
+   * `readState`: terminal-ness can change under us, and a gate that cannot
+   * re-ask would be theatre at exactly the boundary it exists for.
+   */
+  readonly readLifecycle: () => { readonly state: string; readonly status: string };
   readonly readSuccessors: () => SuccessorServers;
   readonly loadTicket: (ticketId: string) => Promise<Ticket | null | undefined>;
   readonly claimStalenessHours?: number;
@@ -1198,7 +1350,12 @@ export type CandidateAuthorization =
   | { readonly kind: "ineligible"; readonly verdict: string; readonly detail: string }
   | {
       readonly kind: "refused";
-      readonly reason: "no-caller-identity" | "caller-is-owner" | "unpersistable-evidence" | "session-mismatch";
+      readonly reason:
+        | "no-caller-identity"
+        | "caller-is-owner"
+        | "unpersistable-evidence"
+        | "session-mismatch"
+        | "session-terminal";
       readonly detail: string;
     };
 
@@ -1266,6 +1423,22 @@ export async function authorizeCandidateRecovery(
   if (recordedOwner && recordedOwner.id === input.clientTaskId) {
     return { kind: "refused", reason: "caller-is-owner", detail:
       "this caller IS the recorded owner, so the ordinary resume applies; owner-gone recovery is for another task" };
+  }
+
+  // C3 (ruling ea611619): a TERMINAL session refuses candidate authorization
+  // categorically. Cancellation ends a session and this one already ended;
+  // takeover exists to continue a live session its owner abandoned, and a
+  // terminal session has nothing to continue. `permitsRecoveryOffer` cannot
+  // catch this: it judges the OWNER's liveness, and a cleanly ended session's
+  // owner is legitimately gone. With write 4 bundling SESSION_END atomically
+  // into the published transition, this gate is what keeps the cancellation
+  // arm cycle-bound: no new cycle can be authorized against a session a
+  // published transition already terminalized.
+  const lifecycle = deps.readLifecycle();
+  if (lifecycle.state === "SESSION_END" || lifecycle.status === "completed") {
+    return { kind: "refused", reason: "session-terminal", detail:
+      `the session is terminal (state ${lifecycle.state}, status ${lifecycle.status}); owner-gone ` +
+      "recovery applies only to a live session, and a terminal one has nothing to recover" };
   }
 
   const verdict = readOwnerLiveness(sessionDir, deps.readState, now, staleThresholdMs, deps.readSuccessors);
@@ -1415,4 +1588,1178 @@ function fieldOf(ticket: object, key: string): { present: boolean; value: string
   if (!(key in ticket)) return { present: false, value: null };
   const value = (ticket as Record<string, unknown>)[key];
   return { present: true, value: typeof value === "string" ? value : null };
+}
+
+// ---------------------------------------------------------------------------
+// The takeover commit (T-450 step 6b, ruling ea611619 Parts B5-B8)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE CONTENT-GATED CLOSE for a takeover cycle (ruling ea611619 B8).
+ *
+ * Closing the intent is the statement "this cycle's outcome is derivable",
+ * and for a takeover the derivation source is `state.candidateTakeover`, so
+ * the close verifies THAT RECORD before writing anything: strict parse, then
+ * cycleNonce equality with the live intent, DECISIVE, never revision math.
+ * The gate itself never writes session state; its one write is the intent's
+ * own closed record, and only after the proof holds.
+ *
+ * `durable.candidateTakeover` must be the RE-READ persisted value, read by
+ * the caller under the held lock after its commit write returned -- never
+ * the in-memory object it intended to write. That is the difference between
+ * proving the postimage is durable and assuming it (the same value-not-reader
+ * discipline as `retireClosedIntent`'s injection).
+ *
+ * The takeover close leaves from `authorized` ONLY. The ticket phases belong
+ * to the cancellation path: a takeover does no ticket work (the new owner
+ * adopts the claim), so an intent at prepared/ticket_applied/claim_cleared is
+ * a cancellation in flight, and a takeover may not close somebody's
+ * half-done cancellation. This writer is deliberately OUTSIDE
+ * `advanceCancellationIntent`'s edge table: that table orders the
+ * cancellation phases, and folding `authorized -> closed` into it would hand
+ * every advancement caller an edge only this gate may take.
+ */
+export function closeTakeoverIntent(
+  sessionDir: string,
+  durable: { readonly candidateTakeover: unknown; readonly committedRevision: number },
+): IntentWrite {
+  const current = readCancellationIntent(sessionDir);
+  if (current.kind === "absent") {
+    return { ok: false, reason: "not-found", detail: "no intent exists to close" };
+  }
+  if (current.kind === "unreadable" || current.kind === "malformed") {
+    return { ok: false, reason: current.kind, detail: current.detail };
+  }
+  const c = current.intent;
+
+  // THE GATE, before any phase arithmetic: the proof must name THIS cycle.
+  // Absent is "the commit never happened" (not-committed), a parse failure is
+  // corruption-adjacent and gets its own reason, a foreign nonce is a
+  // consumed cycle's stale value (B9) and proves nothing about this one, and
+  // a nonce match with contradicting corroboration is CORRUPTION: the nonce
+  // is collision-negligible, so agreement on it with disagreement on the
+  // fields it travels with cannot be two honest cycles.
+  if (durable.candidateTakeover === undefined || durable.candidateTakeover === null) {
+    return { ok: false, reason: "not-committed", detail:
+      "the persisted state carries no candidateTakeover postimage, so no takeover commit is durable " +
+      "and the intent may not close on one" };
+  }
+  const post = CandidateTakeoverPostimageSchema.safeParse(durable.candidateTakeover);
+  if (!post.success) {
+    return { ok: false, reason: "takeover-postimage-unreadable", detail:
+      "the persisted candidateTakeover does not parse as a takeover postimage; refusing to close " +
+      "an intent on a record whose own reader rejects it" };
+  }
+  if (post.data.cycleNonce !== c.cycleNonce) {
+    return { ok: false, reason: "not-committed", detail:
+      "the persisted postimage carries another cycle's nonce, so it is a consumed cycle's stale value " +
+      "and proves nothing about this intent's commit" };
+  }
+  if (post.data.intentTransitionId !== c.transitionId || post.data.clientTaskId !== c.clientTaskId) {
+    return { ok: false, reason: "takeover-postimage-conflict", detail:
+      "the postimage matches this cycle's nonce but contradicts its corroboration " +
+      "(transitionId/clientTaskId); nonce agreement with corroboration disagreement is corruption, not a retry" };
+  }
+
+  if (c.phase === "closed") {
+    // The crash-between-close-and-return retry. The gate above already proved
+    // the postimage is this cycle's, so a closed takeover outcome naming the
+    // same committed write is this exact close having already run.
+    if (c.outcome.kind === "takeover" && c.outcome.committedRevision === durable.committedRevision) {
+      return { ok: true, intent: c };
+    }
+    return { ok: false, reason: "takeover-postimage-conflict", detail:
+      c.outcome.kind === "takeover"
+        ? `the intent is already closed on committedRevision ${c.outcome.committedRevision}, not ` +
+          `${durable.committedRevision}; two commits cannot both own one cycle`
+        : "the intent is already closed as a cancellation, and a matching takeover postimage for the same " +
+          "cycle means two outcomes claim one cycle: corruption, not a retry" };
+  }
+  if (c.phase !== "authorized") {
+    return { ok: false, reason: "edge-refused", detail:
+      `a takeover closes an intent from authorized only; this one is at ${c.phase}, which is a ` +
+      "cancellation in flight, and a takeover may not close another path's half-done work" };
+  }
+
+  const next = {
+    ...c,
+    phase: "closed",
+    outcome: { kind: "takeover", committedRevision: durable.committedRevision },
+  } as CancellationIntent;
+  const unwritable = refuseUnwritableRecord(next, "the closed takeover intent");
+  if (unwritable) return unwritable;
+  replaceDurable(sessionDir, serialize(next), "close");
+  return { ok: true, intent: next };
+}
+
+/**
+ * Injection seams for `commitCandidateTakeover`. Everything a test must be
+ * able to fail INDIVIDUALLY (staging, project lock, generation validation,
+ * the state write) is a named dependency with a production default, per the
+ * staged-generation ownership rule: `discard` runs on every exit that does
+ * not commit, so each injected failure also proves the discard.
+ */
+export interface CandidateTakeoverDeps {
+  readonly handshake: CandidateHandshakeDeps;
+  readonly stage?: () => StagedHeartbeatGeneration | null;
+  readonly validateStaged?: (staged: StagedHeartbeatGeneration) => StagedGenerationValidation;
+  readonly discardStaged?: (staged: StagedHeartbeatGeneration) => void;
+  /** Acquire the PROJECT lock and run the body under it. The session lock is
+   * the caller's (the `Locked` suffix is that contract); this seam exists so
+   * tests can fail acquisition deterministically. */
+  readonly withProjectLock?: (fn: () => Promise<void>) => Promise<void>;
+  /** Fresh session state, read under the held locks. A provider, never a
+   * snapshot: the already-committed check and the postimage's base state
+   * must both come from what is on disk NOW. Defaults to `readSession` on
+   * the session directory. */
+  readonly readState?: () => FullSessionState | null;
+  /** The durable state write (ruling B7). Defaults to the durable variant
+   * through `writeSessionAndRefresh`; injectable so a write failure is
+   * testable without breaking a real filesystem. */
+  readonly writeState?: (state: FullSessionState) => FullSessionState;
+  readonly nowIso?: () => string;
+}
+
+export type CandidateTakeoverCommit =
+  | {
+      readonly kind: "committed";
+      readonly state: FullSessionState;
+      readonly postimage: CandidateTakeoverPostimage;
+      /** The content-gated close's own verdict. A refusal here does NOT undo
+       * the commit: the postimage is durable and the intent stays open for a
+       * verified retry, which is exactly the crash contract. */
+      readonly close: IntentWrite;
+      /** True when this call found the postimage already durable and only
+       * verified and closed (the crash-retry path): verify, never redo. */
+      readonly resumed: boolean;
+    }
+  | {
+      readonly kind: "refused";
+      readonly stage:
+        | "staging"
+        | "state-unreadable"
+        | "validation"
+        | "intent"
+        | "generation"
+        | "write"
+        | "project-lock";
+      readonly detail: string;
+      /** Present when the refusal came from the re-validation, so the caller
+       * can re-present fresh evidence instead of starting over blind. */
+      readonly authorization?: CandidateAuthorization;
+    };
+
+/**
+ * COMMIT an owner-gone candidate takeover (ruling ea611619 B5-B8; plan
+ * step 6b). Requires the ALREADY-HELD session lock; acquires only the
+ * project lock. `commitCandidateTakeoverWithSessionLock` wraps this for
+ * non-guide callers and tests.
+ *
+ * ORDER, and why each step sits where it does:
+ *
+ *   1. STAGE the heartbeat generation OUTSIDE the project lock: staging
+ *      blocks on readiness acknowledgement, and holding the lock across it
+ *      would stall every project write for the readiness timeout.
+ *   2. Under the project lock, CHECK FOR AN ALREADY-DURABLE COMMIT first:
+ *      a crashed prior attempt left the postimage in state and the intent
+ *      open, and re-validation would refuse that retry as caller-is-owner
+ *      (the crashed attempt's write made this caller the owner). The proof
+ *      of "already committed" is the B8 gate itself: strict parse plus
+ *      nonce equality with the live intent. Verify, never redo: the retry
+ *      closes the intent and returns; it never re-writes state, and its own
+ *      staged generation is discarded.
+ *   3. Otherwise RE-RUN THE FULL VALIDATION against state loaded under the
+ *      lock (the same five-step handshake, same providers), then settle the
+ *      intent (create it, or resume this task's own authorized intent),
+ *      then `validateStagedGeneration` IMMEDIATELY before the write: the
+ *      staged child can exit, or its directory be replaced, between
+ *      readiness and lock acquisition, so a readiness result from before
+ *      the lock is not evidence of liveness at write time.
+ *   4. ONE atomic durable postimage (B5/B7): ownerTask, the generation, the
+ *      refreshed mcpServerPid/mcpGuideCallAt pair, and `candidateTakeover`
+ *      in the SAME write, so a crash cannot produce a completed takeover
+ *      with no audit record, or a proof without its fact.
+ *   5. The content-gated close (B8), against the RE-READ persisted state.
+ *
+ * The staged generation is OWNED by this attempt from the moment staging
+ * returns: `discard` runs on EVERY exit that does not flip `committed`,
+ * structurally in a `finally`.
+ */
+export async function commitCandidateTakeoverLocked(
+  root: string,
+  sessionDir: string,
+  args: {
+    readonly input: CandidateHandshakeInput;
+    readonly callerTask: OwnerTask;
+  },
+  deps: CandidateTakeoverDeps,
+): Promise<CandidateTakeoverCommit> {
+  const stage = deps.stage ?? (() => stageHeartbeatGeneration(sessionDir));
+  const validateStaged = deps.validateStaged ?? validateStagedGeneration;
+  const discardStaged = deps.discardStaged ?? discardStagedGeneration;
+  const readState = deps.readState ?? (() => readSession(sessionDir));
+  const nowIso = deps.nowIso ?? (() => new Date().toISOString());
+  const writeState = deps.writeState
+    ?? ((state: FullSessionState) => writeSessionAndRefresh(root, sessionDir, state, "if-active", "durable"));
+  const underProjectLock = deps.withProjectLock
+    ?? (async (fn: () => Promise<void>) => {
+      const { withProjectLock } = await import("../core/project-loader.js");
+      await withProjectLock(root, { strict: false }, async () => fn());
+    });
+
+  const staged = stage();
+  if (staged === null) {
+    return { kind: "refused", stage: "staging", detail:
+      "the heartbeat generation could not be staged, so the takeover would publish an ownership " +
+      "record with no liveness behind it; nothing was mutated" };
+  }
+
+  let committed = false;
+  // Separate from `committed` on purpose: the postimage-published-but-
+  // undurable path is NOT a commit (the intent stays open, so a retry must
+  // re-enter), yet the persisted state names this generation, so it survives.
+  let keepStaged = false;
+  let result: CandidateTakeoverCommit | null = null;
+  try {
+    await underProjectLock(async () => {
+      const fresh = readState();
+      if (fresh === null) {
+        result = { kind: "refused", stage: "state-unreadable", detail:
+          "the session state could not be read under the lock; a takeover cannot be validated against " +
+          "a state nobody can load" };
+        return;
+      }
+
+      // STEP 2: the crash-retry path, BEFORE re-validation (which would
+      // refuse it as caller-is-owner). The gate is nonce equality against
+      // the live intent, so a lingering postimage from a CONSUMED cycle
+      // (B9) falls through to the fresh-commit path and is overwritten.
+      const existing = readCancellationIntent(sessionDir);
+      if (existing.kind === "valid" && existing.intent.clientTaskId === args.callerTask.id) {
+        const durablePost = CandidateTakeoverPostimageSchema.safeParse(
+          (fresh as Record<string, unknown>).candidateTakeover,
+        );
+        if (durablePost.success && durablePost.data.cycleNonce === existing.intent.cycleNonce) {
+          const close = closeTakeoverIntent(sessionDir, {
+            candidateTakeover: (fresh as Record<string, unknown>).candidateTakeover,
+            // The pointer names a revision the caller can PROVE carries the
+            // proof. The postimage's own write revision is unrecoverable by
+            // design (the postimage carries NO revision field, B5), so a
+            // resumed close uses: the closed outcome's recorded value when
+            // the close already ran (making the idempotent arm's equality
+            // hold), else the revision of the very state this postimage was
+            // just parsed from -- which satisfies retirement's revision
+            // precondition, since that state is durable at that revision.
+            committedRevision:
+              existing.intent.phase === "closed" && existing.intent.outcome.kind === "takeover"
+                ? existing.intent.outcome.committedRevision
+                : fresh.revision,
+          });
+          result = {
+            kind: "committed",
+            state: fresh,
+            postimage: durablePost.data,
+            close,
+            resumed: true,
+          };
+          return;
+        }
+      }
+      if (existing.kind === "unreadable" || existing.kind === "malformed") {
+        result = { kind: "refused", stage: "intent", detail:
+          `the durable intent is ${existing.kind}; an unreadable intent is never absence, and a takeover ` +
+          "may not write past evidence it cannot read" };
+        return;
+      }
+      if (existing.kind === "valid" && existing.intent.clientTaskId !== args.callerTask.id) {
+        result = { kind: "refused", stage: "intent", detail:
+          "a durable intent from another task exists; it is that attempt's evidence, and this takeover " +
+          "may not adopt or overwrite it" };
+        return;
+      }
+      if (existing.kind === "valid" && existing.intent.phase !== "authorized") {
+        result = { kind: "refused", stage: "intent", detail:
+          `this task's own intent is at ${existing.intent.phase}: a cancellation is in flight, and the ` +
+          "takeover may not close another path's half-done work" };
+        return;
+      }
+
+      // STEP 3a: FULL re-validation against the state under the lock. The
+      // sessionRevision is read HERE, not taken from the caller: the
+      // confirmation was made against a number, and the number that counts
+      // is the one the postimage write is about to build on.
+      const authorization = await authorizeCandidateRecovery(sessionDir, {
+        ...args.input,
+        sessionRevision: fresh.revision,
+      }, deps.handshake);
+      if (authorization.kind !== "authorized") {
+        result = { kind: "refused", stage: "validation", authorization, detail:
+          `re-validation under the lock returned ${authorization.kind}; the takeover commits only what ` +
+          "a fresh five-step handshake would authorize right now" };
+        return;
+      }
+
+      // STEP 3b: settle the intent. Absent creates (minting the cycle
+      // nonce); this task's own authorized intent resumes verbatim.
+      let intent: CancellationIntent;
+      if (existing.kind === "valid") {
+        intent = existing.intent;
+      } else {
+        // Provenance is REQUIRED: an intent without a usable start time could
+        // be matched by a later incarnation of the same directory. The same
+        // refusal applyCancellationTransition makes for candidates, made
+        // here for the same reason.
+        const startedAt = canonicalStartedAt((fresh as Record<string, unknown>).startedAt);
+        if (startedAt === null) {
+          result = { kind: "refused", stage: "intent", detail:
+            "this session's start time is unusable, so no durable intent can bind provenance and no " +
+            "takeover cycle can be minted for it" };
+          return;
+        }
+        const created = createCancellationIntent(sessionDir, {
+          schemaVersion: 1,
+          transitionId: randomUUID(),
+          confirmationEpoch: 0,
+          clientTaskId: args.callerTask.id,
+          sessionId: args.input.sessionId,
+          sessionStartedAt: startedAt,
+          confirmedSessionRevision: authorization.authority.confirmedSessionRevision,
+          confirmedFingerprint: authorization.authority.confirmedFingerprint,
+          evidence: authorization.authority.evidence,
+          ticketPreimage: authorization.ticketWork.kind === "release" ? authorization.ticketWork.preimage : null,
+          phase: "authorized",
+        } as NewCycleIntent);
+        if (!created.ok) {
+          result = { kind: "refused", stage: "intent", detail:
+            `the durable intent could not be created (${created.reason}): ${created.detail}` };
+          return;
+        }
+        intent = created.intent;
+      }
+
+      // STEP 3c: re-prove the staged generation IMMEDIATELY before the write.
+      const generation = validateStaged(staged);
+      if (!generation.ok) {
+        result = { kind: "refused", stage: "generation", detail:
+          `the staged generation failed re-validation (${generation.reason}); a readiness result from ` +
+          "before lock acquisition is not evidence of liveness at write time" };
+        return;
+      }
+
+      // STEP 4: the one atomic durable postimage (B5/B7). The evidence
+      // bundle is validated by ITS OWN schema before the write, because no
+      // writer may produce a record its own reader refuses; the reader keeps
+      // it opaque (B6).
+      const evidence = CandidateRecoveryEvidenceSchema.safeParse({
+        argvProof: generation.argvProof,
+        liveness: authorization.authority.evidence,
+      });
+      if (!evidence.success) {
+        result = { kind: "refused", stage: "write", detail:
+          "the takeover evidence bundle does not fit its persisted schema, so no auditable postimage " +
+          "can be written" };
+        return;
+      }
+      const postimage: CandidateTakeoverPostimage = {
+        schemaVersion: 1,
+        kind: "candidate_takeover_committed",
+        cycleNonce: intent.cycleNonce,
+        takeoverKind: "owner_gone_candidate_takeover",
+        intentTransitionId: intent.transitionId,
+        clientTaskId: args.callerTask.id,
+        confirmationEpoch: intent.confirmationEpoch,
+        evidence: evidence.data,
+      };
+      const written = CandidateTakeoverPostimageSchema.safeParse(postimage);
+      if (!written.success) {
+        result = { kind: "refused", stage: "write", detail:
+          "the takeover postimage does not fit its own schema; refusing to write a record its reader " +
+          "would reject" };
+        return;
+      }
+
+      let after: FullSessionState;
+      try {
+        after = writeState({
+          ...(fresh as unknown as Record<string, unknown>),
+          ownerTask: args.callerTask,
+          heartbeatGeneration: staged.id,
+          mcpServerPid: process.pid,
+          mcpGuideCallAt: nowIso(),
+          candidateTakeover: written.data,
+        } as unknown as FullSessionState);
+      } catch (err) {
+        // A POST-RENAME failure is not a failed write. The state carrying the
+        // rebind and this postimage is already visible to every reader; only
+        // its survival across power loss is unproven. Two things must then
+        // NOT happen. The intent must not close, because a close that outlives
+        // the state write is the permanent foreclosure B7 exists to prevent.
+        // And the staged generation must not be discarded, because the
+        // persisted state now NAMES it, and discarding it would leave a
+        // session owned through a generation nobody can find.
+        //
+        // The retry is the recovery: it re-reads the state, finds the
+        // postimage, matches the nonce and closes through the already-
+        // committed path at STEP 2.
+        if (err instanceof StateWriteUndurableError) {
+          keepStaged = true;
+          result = { kind: "refused", stage: "write", detail:
+            `the postimage was published at revision ${err.published.revision} but its durability ` +
+            "barriers did not complete; the intent is deliberately left open and the staged generation " +
+            "kept, so a retry resumes this same commit rather than starting a second one" };
+          return;
+        }
+        result = { kind: "refused", stage: "write", detail:
+          `the postimage write failed (${err instanceof Error ? err.message : "unknown error"}); nothing ` +
+          "was published and the staged generation is discarded" };
+        return;
+      }
+      committed = true;
+
+      // STEP 5: the content-gated close, against the RE-READ persisted
+      // state, never the in-memory object this function just built.
+      const reread = readState();
+      const close = closeTakeoverIntent(sessionDir, {
+        candidateTakeover: reread === null
+          ? undefined
+          : (reread as Record<string, unknown>).candidateTakeover,
+        committedRevision: after.revision,
+      });
+      result = { kind: "committed", state: after, postimage: written.data, close, resumed: false };
+    });
+  } catch (err) {
+    if (result === null) {
+      result = { kind: "refused", stage: "project-lock", detail:
+        `the project lock could not be acquired or its body failed (${err instanceof Error ? err.message : "unknown error"})` };
+    }
+  } finally {
+    if (!committed && !keepStaged) discardStaged(staged);
+  }
+  return result ?? { kind: "refused", stage: "project-lock", detail:
+    "the project lock body never ran; nothing was mutated" };
+}
+
+/**
+ * The session-lock-acquiring wrapper for non-guide callers and tests.
+ * `commitCandidateTakeoverLocked` is what guide.ts imports (step 7), because
+ * the guide already holds the session lock and `withSessionLock` is not
+ * reentrant. Exactly one acquisition happens here and none in the locked
+ * form; a test pins both.
+ */
+export async function commitCandidateTakeoverWithSessionLock(
+  root: string,
+  sessionDir: string,
+  args: {
+    readonly input: CandidateHandshakeInput;
+    readonly callerTask: OwnerTask;
+  },
+  deps: CandidateTakeoverDeps,
+): Promise<CandidateTakeoverCommit> {
+  return withSessionLock(root, () => commitCandidateTakeoverLocked(root, sessionDir, args, deps));
+}
+
+// ---------------------------------------------------------------------------
+// The cancellation commit (T-450 step 6b, ruling ea611619 Part C)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE CONTENT-GATED CLOSE for a cancellation cycle (ruling ea611619 C2).
+ *
+ * Symmetric with `closeTakeoverIntent` and outside the advancement edge table
+ * for the same reason: closing is a statement of derivability, not a phase of
+ * the work, and its gate is the shipped published-transition conditions (the
+ * same ones retirement's cancellation arm applies): the RE-READ persisted
+ * transition parses, names THIS intent's transitionId, is `published`, and
+ * its `terminalRevision` is within the persisted revision, so the proof is
+ * durable before the intent stops being retryable.
+ *
+ * Legal FROM phases: `claim_cleared` (the ticket path ran) and `authorized`
+ * (the audited no-ticket-write path, where no ClaimTxn ever existed and the
+ * ticket phases would have nothing durable to record). `prepared` and
+ * `ticket_applied` REFUSE: a nested ClaimTxn is half-done ticket work, and
+ * closing over it would orphan the transaction the recovery table needs.
+ */
+export function closeCancellationIntentOnPublication(
+  sessionDir: string,
+  durable: { readonly cancellationTransition: unknown; readonly sessionRevision: number },
+): IntentWrite {
+  const current = readCancellationIntent(sessionDir);
+  if (current.kind === "absent") {
+    return { ok: false, reason: "not-found", detail: "no intent exists to close" };
+  }
+  if (current.kind === "unreadable" || current.kind === "malformed") {
+    return { ok: false, reason: current.kind, detail: current.detail };
+  }
+  const c = current.intent;
+
+  const read = readCancellationTransition(durable.cancellationTransition);
+  if (read.kind !== "valid") {
+    return { ok: false, reason: "not-committed", detail:
+      read.kind === "absent"
+        ? "the persisted state carries no cancellation transition, so no publication is durable and the " +
+          "intent may not close on one"
+        : `the persisted cancellation transition is malformed (${read.detail}); refusing to close an ` +
+          "intent on a record whose own reader rejects it" };
+  }
+  const t = read.transition;
+  if (t.transitionId !== c.transitionId) {
+    return { ok: false, reason: "not-committed", detail:
+      `the persisted transition is ${t.transitionId}, not this intent's ${c.transitionId}; another ` +
+      "transition's publication proves nothing about this cycle" };
+  }
+  if (t.phase !== "published") {
+    return { ok: false, reason: "not-committed", detail:
+      `the persisted transition is at ${t.phase}, not published; the intent closes only once the ` +
+      "terminal write is durable" };
+  }
+  if (t.terminalRevision > durable.sessionRevision) {
+    return { ok: false, reason: "not-committed", detail:
+      `the transition names terminalRevision ${t.terminalRevision} but the persisted session is at ` +
+      `${durable.sessionRevision}; the publication is not durable yet` };
+  }
+
+  if (c.phase === "closed") {
+    if (c.outcome.kind === "cancellation" && c.outcome.transitionId === t.transitionId) {
+      return { ok: true, intent: c };
+    }
+    return { ok: false, reason: "takeover-postimage-conflict", detail:
+      c.outcome.kind === "cancellation"
+        ? `the intent is already closed on cancellation ${c.outcome.transitionId}, not ${t.transitionId}; ` +
+          "two publications cannot both own one cycle"
+        : "the intent is already closed as a takeover, and a published cancellation for the same cycle " +
+          "means two outcomes claim one cycle: corruption, not a retry" };
+  }
+  if (c.phase === "prepared" || c.phase === "ticket_applied") {
+    return { ok: false, reason: "edge-refused", detail:
+      `the intent is at ${c.phase} with a nested claim transaction; closing over half-done ticket work ` +
+      "would orphan the transaction the recovery table needs, so the transaction resolves first" };
+  }
+
+  const next = {
+    ...c,
+    phase: "closed",
+    outcome: { kind: "cancellation", transitionId: t.transitionId },
+  } as CancellationIntent;
+  delete (next as unknown as Record<string, unknown>).claimTxn;
+  const unwritable = refuseUnwritableRecord(next, "the closed cancellation intent");
+  if (unwritable) return unwritable;
+  replaceDurable(sessionDir, serialize(next), "close");
+  return { ok: true, intent: next };
+}
+
+/** The ClaimTxn axes of a LIVE ledger ticket, projected the same way the
+ * persisted snapshot records them, so `recoverClaimTransaction` compares like
+ * with like. */
+function observedSnapshotOf(ticket: object, ticketId: string): TicketSnapshot {
+  const raw = ticket as Record<string, unknown>;
+  const field = <T>(key: string): { present: boolean; value: T | null } =>
+    key in raw ? { present: true, value: (raw[key] ?? null) as T | null } : { present: false, value: null };
+  return {
+    ticketId,
+    lifecycle: field<string>("lifecycle"),
+    status: field<string>("status"),
+    completedDate: field<string>("completedDate"),
+    claim: field<never>("claim") as TicketSnapshot["claim"],
+    claimedBySession: field<string>("claimedBySession"),
+  };
+}
+
+/** Materialize a snapshot's five axes onto a live ticket, preserving every
+ * field outside them. Absent means DELETE the key, per Field semantics. */
+function applySnapshotToTicket(ticket: object, snap: TicketSnapshot): Record<string, unknown> {
+  const out = { ...(ticket as Record<string, unknown>) };
+  const put = (key: string, f: { readonly present: boolean; readonly value: unknown }): void => {
+    if (f.present) out[key] = f.value;
+    else delete out[key];
+  };
+  put("lifecycle", snap.lifecycle);
+  put("status", snap.status);
+  put("completedDate", snap.completedDate);
+  put("claim", snap.claim);
+  put("claimedBySession", snap.claimedBySession);
+  return out;
+}
+
+/** The released postimage a candidate cancellation's release txn drives the
+ * ticket to: open, both ownership fields REMOVED (ISS-759/ISS-652: deleted
+ * keys, never explicit nulls). */
+function releasedPostimageOf(preimage: PersistedTicketSnapshot): PersistedTicketSnapshot {
+  return {
+    ticketId: preimage.ticketId,
+    lifecycle: preimage.lifecycle,
+    status: { present: true, value: "open" },
+    completedDate: preimage.completedDate,
+    claim: { present: false, value: null },
+    claimedBySession: { present: false, value: null },
+  };
+}
+
+/** What the ticket lock hands the transaction steps: a loader and a writer,
+ * both bound to the held project lock. */
+export interface CandidateTicketIO {
+  readonly load: (ticketId: string) => Ticket | null;
+  readonly write: (ticket: Record<string, unknown>) => Promise<void>;
+}
+
+export interface CandidateCancelDeps {
+  readonly handshake: CandidateHandshakeDeps;
+  /** Acquire the PROJECT lock and run the ticket transaction step under it.
+   * Two acquisitions per release (the mutate+stamp write and the nonce
+   * removal) is the five-step transaction's own shape. */
+  readonly withTicketLock?: (fn: (io: CandidateTicketIO) => Promise<void>) => Promise<void>;
+  /** Fresh session state under the held session lock; provider, never a
+   * snapshot. Defaults to `readSession`. */
+  readonly readState?: () => FullSessionState | null;
+  readonly nowIso?: () => string;
+  /** The shared core's writes 1-4. Injectable so a transition failure is one
+   * test, not one filesystem. */
+  readonly apply?: typeof applyCancellationTransition;
+  /** The published tail, for the post-publication recovery branch. */
+  readonly tail?: typeof runCancellationTail;
+}
+
+export type CandidateCancelCommit =
+  | {
+      readonly kind: "published";
+      readonly state: FullSessionState;
+      readonly tail: TailOutcome;
+      readonly close: IntentWrite;
+      /** True when this call resumed a crashed transition rather than
+       * minting one: verify and finish, never redo. */
+      readonly resumed: boolean;
+    }
+  | { readonly kind: "already-complete"; readonly close: IntentWrite; readonly detail: string }
+  | {
+      readonly kind: "refused";
+      readonly stage:
+        | "state-unreadable"
+        | "validation"
+        | "intent"
+        | "ticket-txn"
+        | "transition"
+        | "tail-gate"
+        | "resume-validation";
+      readonly detail: string;
+      readonly authorization?: CandidateAuthorization;
+    };
+
+/** The pre-publication resume checks (plan 6b, per-phase validation): the
+ * candidate invariant and the per-phase revision equation, fingerprint
+ * verbatim-equality against a FRESH probe (B-5), current eligibility, caller
+ * identity, and session binding. Returns null when every check holds, else
+ * the refusal detail. */
+function refuseStashPendingResume(
+  sessionDir: string,
+  fresh: FullSessionState,
+  t: Extract<CancellationTransition, { phase: "stash_pending" }>,
+  callerTaskId: string,
+  deps: CandidateHandshakeDeps,
+): string | null {
+  if (t.authority.kind !== "candidate") return "the recorded transition does not carry candidate authority";
+  if (t.authority.clientTaskId !== callerTaskId) {
+    return `the transition was recorded for task ${t.authority.clientTaskId}, not this caller`;
+  }
+  const belongs = transitionBelongsTo(fresh, t);
+  if (!belongs.ok) return `the transition does not belong to this session: ${belongs.detail}`;
+  if (t.transitionStartedRevision !== t.authority.confirmedSessionRevision + 1) {
+    return `the candidate invariant fails on the record itself (transitionStartedRevision ` +
+      `${t.transitionStartedRevision}, confirmedSessionRevision ${t.authority.confirmedSessionRevision})`;
+  }
+  const expected = t.stash.outcome === null ? t.transitionStartedRevision : t.transitionStartedRevision + 1;
+  if (fresh.revision !== expected) {
+    return `the session is at revision ${fresh.revision}, not the ${expected} the ` +
+      `${t.stash.outcome === null ? "null" : "concrete"}-outcome equation requires; something else wrote ` +
+      "this session after the crash, and resuming would publish over it";
+  }
+  const now = (deps.now ?? Date.now)();
+  const verdict = readOwnerLiveness(
+    sessionDir, deps.readState, now, deps.staleThresholdMs ?? OWNER_STALE_MS, deps.readSuccessors,
+  );
+  if (evidenceFingerprint(verdict.signals) !== t.authority.confirmedFingerprint) {
+    return "the liveness picture changed since the confirmation this transition was published under; " +
+      "re-authorization is required, not a blind resume";
+  }
+  if (!permitsRecoveryOffer(verdict)) {
+    return `the session is no longer an owner-gone candidate (verdict ${verdict.kind})`;
+  }
+  return null;
+}
+
+/** The post-publication resume checks: durable authority only, NO live
+ * eligibility re-evaluation (the session is terminal by this transition's own
+ * doing, and the authority to finish was durably established at publication;
+ * fingerprint inputs are not assumed stable across publication BY DESIGN). */
+function refusePublishedResume(
+  fresh: FullSessionState,
+  t: Extract<CancellationTransition, { phase: "published" }>,
+  callerTaskId: string,
+): string | null {
+  if (t.authority.kind !== "candidate") return "the recorded transition does not carry candidate authority";
+  if (t.authority.clientTaskId !== callerTaskId) {
+    return `the transition was recorded for task ${t.authority.clientTaskId}, not this caller`;
+  }
+  const belongs = transitionBelongsTo(fresh, t);
+  if (!belongs.ok) return `the transition does not belong to this session: ${belongs.detail}`;
+  if (t.transitionStartedRevision !== t.authority.confirmedSessionRevision + 1) {
+    return `the candidate invariant fails on the record itself (transitionStartedRevision ` +
+      `${t.transitionStartedRevision}, confirmedSessionRevision ${t.authority.confirmedSessionRevision})`;
+  }
+  if (t.terminalRevision !== t.transitionStartedRevision + 2) {
+    return `the record fails the published revision equation (terminalRevision ${t.terminalRevision}, ` +
+      `transitionStartedRevision ${t.transitionStartedRevision})`;
+  }
+  return null;
+}
+
+/**
+ * COMMIT an owner-gone candidate CANCELLATION (ruling ea611619 Part C; the
+ * plan-step6 phase table). Requires the ALREADY-HELD session lock; acquires
+ * only the project lock, and only for the two ticket-transaction writes.
+ *
+ * The driver is a resume-first state machine over two durable records:
+ *
+ *   TRANSITION IN STATE (write 1 landed)
+ *     stash_pending -> full pre-publication validation, then the shared
+ *                      core's resume path (writes 3/4 and the tail).
+ *     published     -> post-publication validation, the completion-marker
+ *                      gate, then the tail DIRECTLY in mode "recovery".
+ *   INTENT ONLY (pre-write-1)
+ *     authorized      -> ticket txn if release work is owed, else straight
+ *                        to the writes (the audited no-ticket-write path).
+ *     prepared /
+ *     ticket_applied  -> `recoverClaimTransaction` decides: redo the ticket
+ *                        write, commit the epoch, remove the nonce, or clear
+ *                        the intent; `recovery-required` refuses.
+ *     claim_cleared   -> straight to the writes.
+ *
+ * Ticket work never re-runs after `ticket_applied` (the R2 rule): a moved
+ * confirmation ADOPTS (same transitionId, re-minted pair, bumped epoch) when
+ * work exists, and SUPERSEDES (new id, predecessor triple) when it does not.
+ *
+ * C2: the intent closes ONLY after write 4 is locally durable. Write 4
+ * itself routes through the durable variant for candidate authority (the
+ * shared core's barrier), and the close verifies the RE-READ persisted
+ * transition, so a crash at any point leaves a retryable intent, never a
+ * closed intent whose publication evaporated.
+ */
+export async function commitCandidateCancelLocked(
+  root: string,
+  sessionDir: string,
+  args: {
+    readonly input: CandidateHandshakeInput;
+    readonly callerTask: OwnerTask;
+  },
+  deps: CandidateCancelDeps,
+): Promise<CandidateCancelCommit> {
+  const readState = deps.readState ?? (() => readSession(sessionDir));
+  const nowIso = deps.nowIso ?? (() => new Date().toISOString());
+  const apply = deps.apply ?? applyCancellationTransition;
+  const tail = deps.tail ?? runCancellationTail;
+  const withTicketLock = deps.withTicketLock
+    ?? (async (fn: (io: CandidateTicketIO) => Promise<void>) => {
+      const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
+      await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
+        await fn({
+          load: (ticketId: string) => (projectState.ticketByID(ticketId) ?? null) as Ticket | null,
+          write: async (ticket: Record<string, unknown>) => {
+            await writeTicketUnlocked(ticket as unknown as Ticket, root);
+          },
+        });
+      });
+    });
+
+  const fresh = readState();
+  if (fresh === null) {
+    return { kind: "refused", stage: "state-unreadable", detail:
+      "the session state could not be read under the lock; a cancellation cannot be validated against " +
+      "a state nobody can load" };
+  }
+
+  // THE INTENT, classified first (startup order: canonical intent, then the
+  // transition record; archives are never consulted for authority).
+  const intentRead = readCancellationIntent(sessionDir);
+  if (intentRead.kind === "unreadable" || intentRead.kind === "malformed") {
+    return { kind: "refused", stage: "intent", detail:
+      `the durable intent is ${intentRead.kind}; an unreadable intent is never absence, and a ` +
+      "cancellation may not write past evidence it cannot read" };
+  }
+  if (intentRead.kind === "valid" && intentRead.intent.clientTaskId !== args.callerTask.id) {
+    return { kind: "refused", stage: "intent", detail:
+      "a durable intent from another task exists; it is that attempt's evidence, and this cancellation " +
+      "may not adopt or overwrite it" };
+  }
+
+  // A CLOSED intent: this cycle already ended. Report which way, honestly.
+  if (intentRead.kind === "valid" && intentRead.intent.phase === "closed") {
+    const c = intentRead.intent;
+    if (c.outcome.kind === "takeover") {
+      return { kind: "refused", stage: "intent", detail:
+        "this cycle already closed as a TAKEOVER; a cancellation of the taken-over session is a new " +
+        "cycle and requires retirement first" };
+    }
+    const close = closeCancellationIntentOnPublication(sessionDir, {
+      cancellationTransition: (fresh as unknown as Record<string, unknown>).cancellationTransition,
+      sessionRevision: fresh.revision,
+    });
+    return { kind: "already-complete", close, detail:
+      `this cycle already closed on cancellation ${c.outcome.transitionId}` };
+  }
+
+  // TRANSITION-RECORD RESUME. Write 1 landing is the point of no return for
+  // the identity: from here every path finishes THIS transition or refuses.
+  const tRead = readCancellationTransition(
+    (fresh as unknown as Record<string, unknown>).cancellationTransition,
+  );
+  if (tRead.kind === "valid" && tRead.transition.authority.kind === "candidate") {
+    const t = tRead.transition;
+    if (intentRead.kind !== "valid" || intentRead.intent.transitionId !== t.transitionId) {
+      return { kind: "refused", stage: "resume-validation", detail:
+        "a candidate transition is recorded but the durable intent that minted it is " +
+        (intentRead.kind === "valid" ? "another cycle's" : "missing") +
+        "; finishing it blind would adopt a transition whose preparation cannot be checked" };
+    }
+    if (t.phase === "stash_pending") {
+      const refusal = refuseStashPendingResume(sessionDir, fresh, t, args.callerTask.id, deps.handshake);
+      if (refusal !== null) {
+        return { kind: "refused", stage: "resume-validation", detail: refusal };
+      }
+      let applied: Awaited<ReturnType<typeof applyCancellationTransition>>;
+      try {
+        applied = await apply(root, { dir: sessionDir, state: fresh }, t.disposition as TicketDisposition, t);
+      } catch (err) {
+        return { kind: "refused", stage: "transition", detail:
+          `the resumed transition failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
+          "record and intent are unchanged and the resume is retryable" };
+      }
+      const after = readState();
+      const close = closeCancellationIntentOnPublication(sessionDir, {
+        cancellationTransition: after === null
+          ? undefined
+          : (after as unknown as Record<string, unknown>).cancellationTransition,
+        sessionRevision: after?.revision ?? applied.written.revision,
+      });
+      return { kind: "published", state: applied.written, tail: applied.tail, close, resumed: true };
+    }
+    // published: tail-only recovery. The marker gate answers "may this tail
+    // re-run", and only the TEXT of each refusal is ours.
+    const refusal = refusePublishedResume(fresh, t, args.callerTask.id);
+    if (refusal !== null) {
+      return { kind: "refused", stage: "resume-validation", detail: refusal };
+    }
+    const gate = classifyTailRecovery(sessionDir, t.transitionId);
+    if (gate.kind === "already-complete") {
+      const close = closeCancellationIntentOnPublication(sessionDir, {
+        cancellationTransition: (fresh as unknown as Record<string, unknown>).cancellationTransition,
+        sessionRevision: fresh.revision,
+      });
+      return { kind: "already-complete", close, detail:
+        `transition ${t.transitionId} already completed; its marker is durable` };
+    }
+    if (gate.kind === "refuse") {
+      return { kind: "refused", stage: "tail-gate", detail:
+        gate.classification === "foreign"
+          ? `the completion marker names a DIFFERENT transition (${gate.owner}); finishing this one would ` +
+            "destroy the only trace of a conflict"
+          : `the completion marker is ${gate.classification} (${gate.detail}); ownership is unprovable, so ` +
+            "neither repairing nor declaring completion would be honest" };
+    }
+    const tailOutcome = tail(root, { dir: sessionDir, state: fresh }, {
+      published: t,
+      disposition: t.disposition as TicketDisposition,
+      stashPopFailed: t.stash.outcome === "failed",
+      previousState: (fresh as unknown as Record<string, unknown>).previousState as string ?? fresh.state,
+      terminalRevision: t.terminalRevision,
+      mode: "recovery",
+    });
+    const close = closeCancellationIntentOnPublication(sessionDir, {
+      cancellationTransition: (fresh as unknown as Record<string, unknown>).cancellationTransition,
+      sessionRevision: fresh.revision,
+    });
+    return { kind: "published", state: fresh, tail: tailOutcome, close, resumed: true };
+  }
+  if (tRead.kind === "valid") {
+    return { kind: "refused", stage: "resume-validation", detail:
+      "this session carries a NON-candidate cancellation transition; another path's work is in flight " +
+      "and the candidate driver may not finish it" };
+  }
+
+  // PRE-WRITE-1: full validation, always, because everything from here mints
+  // or advances durable records against the CURRENT state.
+  const authorization = await authorizeCandidateRecovery(sessionDir, {
+    ...args.input,
+    sessionRevision: fresh.revision,
+  }, deps.handshake);
+  if (authorization.kind !== "authorized") {
+    return { kind: "refused", stage: "validation", authorization, detail:
+      `re-validation under the lock returned ${authorization.kind}; the cancellation commits only what ` +
+      "a fresh five-step handshake would authorize right now" };
+  }
+  const authority = authorization.authority;
+
+  // SETTLE THE INTENT: create, resume, adopt, or supersede.
+  let intent: CancellationIntent;
+  if (intentRead.kind === "absent") {
+    const startedAt = canonicalStartedAt((fresh as unknown as Record<string, unknown>).startedAt);
+    if (startedAt === null) {
+      return { kind: "refused", stage: "intent", detail:
+        "this session's start time is unusable, so no durable intent can bind provenance; the candidate " +
+        "path refuses rather than degrading to a recordless cancel" };
+    }
+    const created = createCancellationIntent(sessionDir, {
+      schemaVersion: 1,
+      transitionId: randomUUID(),
+      confirmationEpoch: 0,
+      clientTaskId: args.callerTask.id,
+      sessionId: args.input.sessionId,
+      sessionStartedAt: startedAt,
+      confirmedSessionRevision: authority.confirmedSessionRevision,
+      confirmedFingerprint: authority.confirmedFingerprint,
+      evidence: authority.evidence,
+      ticketPreimage: authorization.ticketWork.kind === "release" ? authorization.ticketWork.preimage : null,
+      phase: "authorized",
+    } as NewCycleIntent);
+    if (!created.ok) {
+      return { kind: "refused", stage: "intent", detail:
+        `the durable intent could not be created (${created.reason}): ${created.detail}` };
+    }
+    intent = created.intent;
+  } else {
+    intent = intentRead.intent;
+    const confirmationMoved =
+      intent.confirmedSessionRevision !== authority.confirmedSessionRevision ||
+      intent.confirmedFingerprint !== authority.confirmedFingerprint;
+    // THE TICKET IS A SECOND, INDEPENDENT AXIS. The confirmation pair
+    // describes the SESSION; the claim lives in a ticket file that can change
+    // without moving either field, so a resume that consults only the
+    // confirmation can inherit a `ticketPreimage` the live ledger contradicts.
+    // Both directions are wrong in the same way. A null preimage against
+    // fresh release work skips the transaction and publishes `no-ticket` over
+    // a claim still held; a recorded preimage against no fresh work abandons
+    // a release the record promised. Either way the audit record and the
+    // ticket disagree, which is the one thing this whole path exists to
+    // prevent.
+    //
+    // ONLY WHILE `authorized`. Once work has begun the preimage is the audit
+    // identity of writes that already happened, and re-deriving it would
+    // rewrite their history; that phase is adoption's territory, and a ticket
+    // that no longer matches either side of the recorded transaction is
+    // answered by `recoverClaimTransaction` with recovery-required, which is
+    // the honest refusal.
+    const freshPreimage = authorization.ticketWork.kind === "release"
+      ? authorization.ticketWork.preimage
+      : null;
+    const ticketWorkMoved = intent.phase === "authorized"
+      && !deepEquals(intent.ticketPreimage ?? null, freshPreimage ?? null);
+    if (confirmationMoved || ticketWorkMoved) {
+      const workBegun = intent.phase === "ticket_applied" || intent.phase === "claim_cleared";
+      if (workBegun) {
+        // R2 ADOPTION: the id is the audit identity of work that exists.
+        const adopted = readoptCancellationIntent(sessionDir, {
+          transitionId: intent.transitionId,
+          confirmationEpoch: intent.confirmationEpoch + 1,
+          confirmedSessionRevision: authority.confirmedSessionRevision,
+          confirmedFingerprint: authority.confirmedFingerprint,
+          evidence: authority.evidence,
+        });
+        if (!adopted.ok) {
+          return { kind: "refused", stage: "intent", detail:
+            `adoption of the moved confirmation failed (${adopted.reason}): ${adopted.detail}` };
+        }
+        intent = adopted.intent;
+      } else {
+        // SUPERSESSION: work has not begun, so the id retires with its
+        // confirmation. Archive-first; the canonical pathname is never freed.
+        const superseded = supersedeCancellationIntent(sessionDir, {
+          schemaVersion: 1,
+          transitionId: randomUUID(),
+          confirmationEpoch: intent.confirmationEpoch + 1,
+          clientTaskId: args.callerTask.id,
+          sessionId: intent.sessionId,
+          sessionStartedAt: intent.sessionStartedAt,
+          confirmedSessionRevision: authority.confirmedSessionRevision,
+          confirmedFingerprint: authority.confirmedFingerprint,
+          evidence: authority.evidence,
+          ticketPreimage: authorization.ticketWork.kind === "release" ? authorization.ticketWork.preimage : null,
+          predecessor: {
+            predecessorTransitionId: intent.transitionId,
+            predecessorEpoch: intent.confirmationEpoch,
+            predecessorFingerprint: intent.confirmedFingerprint,
+          },
+          phase: "authorized",
+        } as NewCycleIntent);
+        if (!superseded.ok) {
+          return { kind: "refused", stage: "intent", detail:
+            `supersession of the moved confirmation failed (${superseded.reason}): ${superseded.detail}` };
+        }
+        intent = superseded.intent;
+      }
+    }
+  }
+
+  // THE TICKET TRANSACTION. Entered when release work is owed and the intent
+  // has not yet cleared it; every step is decided by `recoverClaimTransaction`
+  // so a fresh pass and a crash retry are the same code path.
+  //
+  // SEEDED FROM THE DURABLE PHASE, not from `false`. A retry can arrive with
+  // the transaction already cleared, in which case neither the opener nor the
+  // loop below runs and a `false` seed would publish a disposition denying a
+  // release the previous pass really performed -- an audit record contradicted
+  // by the ticket it describes. `claim_cleared` is reachable only through this
+  // transaction, so the phase IS the record that the release happened, and
+  // the preimage is what names the ticket it happened to.
+  let released = intent.phase === "claim_cleared" && intent.ticketPreimage !== null;
+  // DRIVEN BY THE DURABLE INTENT, not by a second reading of the
+  // authorization. Settlement above guarantees that an `authorized` intent's
+  // preimage agrees with what a fresh authorization just found, so gating
+  // here on `authorization.ticketWork.kind` again would only reintroduce the
+  // chance for the two to disagree.
+  if (intent.phase === "authorized" && intent.ticketPreimage) {
+    const preimage = intent.ticketPreimage;
+    const txn = {
+      kind: "release",
+      ticketId: preimage.ticketId,
+      transitionId: intent.transitionId,
+      fromEpoch: args.input.claimEpoch,
+      toEpoch: null,
+      fromBusiness: preimage,
+      toBusiness: releasedPostimageOf(preimage),
+      startedAt: nowIso(),
+      phase: "prepared",
+    };
+    const advanced = advanceCancellationIntent(sessionDir, {
+      ...intent, phase: "prepared", claimTxn: txn,
+    } as unknown as CancellationIntent);
+    if (!advanced.ok) {
+      return { kind: "refused", stage: "intent", detail:
+        `the intent could not record the prepared transaction (${advanced.reason}): ${advanced.detail}` };
+    }
+    intent = advanced.intent;
+  }
+  while (intent.phase === "prepared" || intent.phase === "ticket_applied") {
+    const txn = intent.claimTxn as unknown as ClaimTxn;
+    let stepRefusal: string | null = null;
+    let nextPhase: "ticket_applied" | "claim_cleared" | null = null;
+    try {
+      await withTicketLock(async (io) => {
+        const live = io.load(txn.ticketId);
+        if (live === null) {
+          stepRefusal = `ticket ${txn.ticketId} could not be loaded under the lock`;
+          return;
+        }
+        const observed = observedSnapshotOf(live, txn.ticketId);
+        const nonce = (live as unknown as Record<string, unknown>).claimTxnId;
+        const verdict = recoverClaimTransaction(
+          { ...txn, phase: intent.phase as "prepared" | "ticket_applied" },
+          { observed, nonce: typeof nonce === "string" ? nonce : null },
+        );
+        switch (verdict.action) {
+          case "apply-mutation": {
+            const mutated = applySnapshotToTicket(live, txn.toBusiness as unknown as TicketSnapshot);
+            mutated.claimTxnId = txn.transitionId;
+            await io.write(mutated);
+            nextPhase = "ticket_applied";
+            return;
+          }
+          case "commit-epoch":
+            nextPhase = "ticket_applied";
+            return;
+          case "remove-nonce": {
+            const cleared = { ...(live as unknown as Record<string, unknown>) };
+            delete cleared.claimTxnId;
+            await io.write(cleared);
+            nextPhase = "claim_cleared";
+            return;
+          }
+          case "clear-intent":
+            nextPhase = "claim_cleared";
+            return;
+          case "recovery-required":
+            stepRefusal =
+              `the ticket does not match either side of the ${intent.phase} transaction; something ` +
+              "else moved it, and neither redoing nor skipping the write would be honest";
+            return;
+        }
+      });
+    } catch (err) {
+      return { kind: "refused", stage: "ticket-txn", detail:
+        `the ticket transaction failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
+        "durable intent still records the phase, so a retry resumes exactly here" };
+    }
+    if (stepRefusal !== null) {
+      return { kind: "refused", stage: "ticket-txn", detail: stepRefusal };
+    }
+    if (nextPhase === null) {
+      return { kind: "refused", stage: "ticket-txn", detail:
+        "the ticket transaction step decided nothing; refusing rather than guessing" };
+    }
+    const advanced = advanceCancellationIntent(sessionDir, (nextPhase === "ticket_applied"
+      ? { ...intent, phase: "ticket_applied", claimTxn: { ...(intent.claimTxn as object), phase: "ticket_applied" } }
+      : (() => {
+          const { claimTxn: _txn, ...rest } = intent as unknown as Record<string, unknown> & { claimTxn: unknown };
+          return { ...rest, phase: "claim_cleared" };
+        })()) as unknown as CancellationIntent);
+    if (!advanced.ok) {
+      return { kind: "refused", stage: "intent", detail:
+        `the intent could not record the ${nextPhase} step (${advanced.reason}): ${advanced.detail}` };
+    }
+    intent = advanced.intent;
+    if (nextPhase === "claim_cleared") released = true;
+  }
+
+  // THE DISPOSITION, from what actually happened, never from a belief.
+  const disposition: TicketDisposition = released
+    ? { kind: "released", ticketId: intent.ticketPreimage!.ticketId }
+    : authorization.ticketWork.kind === "none"
+      ? authorization.ticketWork.why === "no-ticket"
+        ? { kind: "no-ticket" }
+        : { kind: "conflict", ticketId: args.input.ticket?.id ?? args.input.claimEpoch?.ticketId ?? "" }
+      : authorization.ticketWork.kind === "blocked"
+        ? { kind: "failed", ticketId: args.input.ticket?.id ?? args.input.claimEpoch?.ticketId ?? "" }
+        : { kind: "no-ticket" };
+
+  // WRITES 1-4 AND THE TAIL. The state must not have moved since validation:
+  // the candidate invariant is checked by the shared core against the
+  // snapshot we hand it, so hand it the freshest one and let a mismatch
+  // refuse there (that refusal is the invariant doing its job).
+  const now = readState();
+  if (now === null) {
+    return { kind: "refused", stage: "state-unreadable", detail:
+      "the session state disappeared between validation and the transition; nothing was published" };
+  }
+  let applied: Awaited<ReturnType<typeof applyCancellationTransition>>;
+  try {
+    applied = await apply(root, { dir: sessionDir, state: now }, disposition, undefined, {
+      transitionId: intent.transitionId,
+      action: "candidate_recovery_takeover",
+      authority,
+    });
+  } catch (err) {
+    return { kind: "refused", stage: "transition", detail:
+      `the transition refused or failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
+      "durable intent is unchanged, so re-authorization and retry remain available" };
+  }
+
+  // C2: close ONLY against the RE-READ persisted publication.
+  const after = readState();
+  const close = closeCancellationIntentOnPublication(sessionDir, {
+    cancellationTransition: after === null
+      ? undefined
+      : (after as unknown as Record<string, unknown>).cancellationTransition,
+    sessionRevision: after?.revision ?? applied.written.revision,
+  });
+  return { kind: "published", state: applied.written, tail: applied.tail, close, resumed: false };
+}
+
+/** The session-lock-acquiring wrapper, mirroring the takeover's: exactly one
+ * acquisition here, none in the locked form. */
+export async function commitCandidateCancelWithSessionLock(
+  root: string,
+  sessionDir: string,
+  args: {
+    readonly input: CandidateHandshakeInput;
+    readonly callerTask: OwnerTask;
+  },
+  deps: CandidateCancelDeps,
+): Promise<CandidateCancelCommit> {
+  return withSessionLock(root, () => commitCandidateCancelLocked(root, sessionDir, args, deps));
 }

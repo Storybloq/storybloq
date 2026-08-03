@@ -27,7 +27,7 @@
  * which mocks `status-writer.js` and `telemetry-writer.js` BY PATH; this move
  * touches neither path, so those interceptions keep working unchanged.
  */
-import { writeSessionSync } from "./session.js";
+import { writeSessionSync, writeSessionDurableSync } from "./session.js";
 import { refreshStatusForSession, isSessionActiveForStatus } from "./status-writer.js";
 import { writeEvent, writeCheckpoint, markEnded, type TelemetryLayer, type EndedMarkerOutcome } from "./telemetry-writer.js";
 import type { FullSessionState } from "./session-types.js";
@@ -48,8 +48,19 @@ export function writeSessionAndRefresh(
   dir: string,
   state: FullSessionState,
   mode: RefreshMode = "if-active",
+  /**
+   * `durable` routes the state write through `writeSessionDurableSync`
+   * (descriptor fsync, rename, directory fsync) instead of the ordinary
+   * writer. Reserved for the two callers ruling ea611619 B7/C2 names: the
+   * candidate takeover postimage and the candidate cancellation's write-4
+   * barrier. Every ordinary call site omits it and is byte-unchanged; the
+   * GENERAL hardening of `writeSessionSync` is ISS-958, out of T-450.
+   */
+  durability: "ordinary" | "durable" = "ordinary",
 ): FullSessionState {
-  const written = writeSessionSync(dir, state);
+  const written = durability === "durable"
+    ? writeSessionDurableSync(dir, state)
+    : writeSessionSync(dir, state);
   if (mode === "never") return written;
   if (mode === "if-active" && !isSessionActiveForStatus(written)) return written;
   try { refreshStatusForSession(root, dir, written, "guide"); } catch { /* best-effort */ }

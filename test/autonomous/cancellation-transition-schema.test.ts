@@ -261,6 +261,48 @@ describe("T-450: action and authority cannot contradict each other", () => {
     }
   });
 
+  it("names the OFFENDING ACTION in its message rather than one fixed literal", () => {
+    // T-450 step 8.1 (H2). The rule fires in two directions and one sentence
+    // could not honestly describe both. It used to say
+    // "ordinary_cancellation cannot carry candidate authority" for EVERY
+    // violation, so a `candidate_recovery_cancellation` record rejected for
+    // MISSING candidate authority was told about an action it did not carry
+    // and a pairing it did not attempt -- the message pointing away from the
+    // defect. This is a validation error read in isolation, which is the same
+    // reason the action field exists at all.
+    const msgFor = (rec: unknown) => {
+      const parsed = CancellationTransitionSchema.safeParse(rec);
+      expect(parsed.success).toBe(false);
+      return JSON.stringify(parsed.error?.issues ?? []);
+    };
+
+    const missingAuthority = msgFor(stashPending({
+      action: "candidate_recovery_cancellation",
+      authority: { kind: "legacy" },
+    }));
+    expect(missingAuthority).toContain("candidate_recovery_cancellation requires candidate authority");
+
+    const takeoverMissingAuthority = msgFor(stashPending({
+      action: "candidate_recovery_takeover",
+      authority: { kind: "legacy" },
+    }));
+    expect(takeoverMissingAuthority).toContain("candidate_recovery_takeover requires candidate authority");
+
+    // The other direction keeps its own sentence: here the action IS the
+    // problem, so naming it as a requirement would be backwards.
+    const ordinaryWithCandidate = msgFor(stashPending({
+      action: "ordinary_cancellation",
+      authority: {
+        kind: "candidate",
+        clientTaskId: "task-1",
+        confirmedSessionRevision: 6,
+        confirmedFingerprint: "fp",
+        evidence: EVIDENCE,
+      },
+    }));
+    expect(ordinaryWithCandidate).toContain("ordinary_cancellation cannot carry candidate authority");
+  });
+
   it("rejects a task authority with an empty caller id", () => {
     // The arm exists precisely to make `basis: task` + no id unrepresentable.
     expect(CancellationAuthoritySchema.safeParse({ kind: "task", callerTaskId: "" }).success).toBe(false);

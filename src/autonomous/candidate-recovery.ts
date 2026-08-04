@@ -1411,6 +1411,7 @@ export type CandidateAuthorization =
         | "unpersistable-evidence"
         | "session-mismatch"
         | "session-terminal"
+        | "session-compact"
         | "state-unreadable"
         | "takeover-unauthorized";
       readonly detail: string;
@@ -1513,6 +1514,53 @@ async function authorizeCandidateRecoveryCore(
     return { kind: "refused", reason: "session-terminal", detail:
       `the session is terminal (state ${lifecycle.state}, status ${lifecycle.status}); owner-gone ` +
       "recovery applies only to a live session, and a terminal one has nothing to recover" };
+  }
+
+  // A COMPACT SESSION IS NOT A FRESH OWNER-GONE RECOVERY CANDIDATE, whichever
+  // operation asks (T-450 step 8.1).
+  //
+  // COMPACT already HAS a designed recovery for a dead owner: `{ sessionId,
+  // action: "resume", takeover: true }`, which the ordinary cancel path
+  // prescribes by name (guide.ts, the foreign-COMPACT cancel refusal). The
+  // remedy below is rendered in that same shape, `sessionId` included, because
+  // `handleResume` requires an explicit one -- a remedy a caller cannot follow
+  // verbatim is not a remedy. The takeover door refuses COMPACT at the guide for exactly that
+  // reason. The cancel door routed on field presence alone, so a confirmed
+  // picture could END a COMPACT session instead -- a destructive shortcut past
+  // a designed recovery, available for roughly the 35 minutes between
+  // OWNER_STALE_MS and lease expiry during which the verdict reads
+  // gone-candidate.
+  //
+  // REFUSING COSTS NOTHING, which is what makes this the right answer rather
+  // than a narrowing of the operator's options: take the session over, then
+  // cancel it as its owner through the ordinary path. Two steps, nothing
+  // stranded.
+  //
+  // PLACEMENT IS THE POINT. This is a FRESH-path check, deliberately not a
+  // guide-level gate. Fresh-only lifecycle checks are precisely the class the
+  // resume validators skip, so an open cycle on a COMPACT session is finished
+  // by its own durable intent and never reaches here. A gate in the guide would
+  // have stranded it, which is the error this ticket's plan review removed
+  // twice.
+  //
+  // The cycle that needs this is one MINTED BEFORE THIS GATE EXISTED, when
+  // nothing refused a COMPACT session -- not one whose session went COMPACT
+  // afterwards. That second case is not a resumable cycle at all: the resume
+  // path requires the session to sit exactly at the record's
+  // `transitionStartedRevision`, so any other write between write 1 and the
+  // retry is already refused as a foreign write, by name.
+  // OPERATION-AGNOSTIC ON PURPOSE. On the takeover path the guide refuses
+  // COMPACT first, so this arm is reachable only by a DIRECT core caller; it
+  // exists anyway because the invariant belongs to the handshake rather than to
+  // one door. A future third door inherits the refusal instead of re-deriving
+  // it, and the takeover path stays refused here if that guide-level check is
+  // ever refactored away. Pinned by a core-direct test over both doors.
+  if (lifecycle.state === "COMPACT") {
+    return { kind: "refused", reason: "session-compact", detail:
+      "the session is in COMPACT, where the designed owner-gone recovery is to take it over from this " +
+      "task once the recorded owner is confirmed gone: " +
+      `{ "sessionId": "${input.sessionId}", "action": "resume", "takeover": true }. ` +
+      "Recover it that way; as its owner you can then end it with an ordinary cancel" };
   }
 
   const verdict = readOwnerLiveness(sessionDir, deps.readState, now, staleThresholdMs, deps.readSuccessors);

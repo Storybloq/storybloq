@@ -2485,7 +2485,9 @@ async function handleCandidateCancel(
   const sessionId = args.sessionId!;
   const callerTask = ownerTaskForCurrentClient(args.clientTaskId);
   if (!callerTask) {
-    // THE SAME SENTENCE the other candidate door gives, so the two say one thing.
+    // The same SHAPE as the other candidate door's refusal, differing only in
+    // what the identity is needed FOR: takeover rebinds ownership, a
+    // cancellation is attributed to the task that ended the session.
     return guideError(new Error(
       `Recovering session ${sessionId} requires a valid clientTaskId so the cancellation can be attributed.`,
     ));
@@ -2531,9 +2533,15 @@ async function handleCandidateCancel(
         // still closes the durable intent, so claiming nothing was written
         // would be false -- and a close that FAILED is a live recovery concern
         // the operator needs told about, not swallowed by a success sentence.
+        // "VERIFIED", not "closed on this retry". On this path the cycle was
+        // already complete when the call arrived, so the close is a no-op that
+        // confirms an existing closed intent rather than an action this call
+        // performed. Claiming the retry closed it would credit this call with
+        // work it did not do -- the same rendered-prose truthfulness problem as
+        // the resumed sentences above.
         commit.close.ok
-          ? "No cancellation work was repeated; the durable intent was closed on this retry."
-          : `No cancellation work was repeated, but the durable intent could NOT be closed: ${commit.close.reason}. The cycle remains retryable.`,
+          ? "No cancellation work was repeated, and the durable intent was verified already closed."
+          : `No cancellation work was repeated, and the durable intent could NOT be verified closed: ${commit.close.reason}. The cycle remains retryable.`,
       ].join("\n"),
       reminders: ["A completed cancellation is idempotent: retrying it verifies, it does not repeat."],
     });

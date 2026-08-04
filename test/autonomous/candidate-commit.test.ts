@@ -272,14 +272,30 @@ describe("T-450 7b: the fence refreshes ownership, not progress", () => {
     //
     // Every existing fence assertion passes under a refactor to `refreshLease`,
     // which is exactly why this one exists: it is the only assertion that fails.
-    const state = plantLive();
+    plantLive();
     writeMarker();
 
-    const preimage = currentState() as unknown as Record<string, unknown>;
-    const before = (preimage.contextPressure as Record<string, unknown> | undefined)?.guideCallCount ?? null;
+    // SEEDED NONZERO, and the preimage asserted. `createSession` seeds
+    // `guideCallCount: 0`, so an equality assertion against the default would
+    // read 0 === 0 and pass a regression that rebuilt contextPressure from
+    // defaults -- catching only the increment, which is not the whole claim.
+    //
+    // Seeded BEFORE the confirmation is computed: the seed write bumps the
+    // revision, and a confirmation captured earlier would then be refused as
+    // re-confirm rather than reaching the fence at all.
+    const seeded = currentState() as unknown as Record<string, unknown>;
+    writeSessionSync(sessDir, {
+      ...(seeded as never),
+      contextPressure: { ...(seeded.contextPressure as Record<string, unknown>), guideCallCount: 7 },
+    } as never);
+
+    const preimage = currentState();
+    const before = ((preimage as unknown as Record<string, unknown>)
+      .contextPressure as Record<string, unknown> | undefined)?.guideCallCount ?? null;
+    expect(before).toBe(7);
 
     const result = await commitCandidateTakeoverLocked(root, sessDir, {
-      input: inputFor(state), callerTask: CALLER,
+      input: inputFor(preimage as FullSessionState), callerTask: CALLER,
     }, takeoverDeps());
 
     expect(result.kind).toBe("committed");
@@ -1699,6 +1715,78 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(t.data.transitionId).toBe(midT.transitionId);
     const intent = readCancellationIntent(sessDir);
     if (intent.kind === "valid") expect(intent.intent.phase).toBe("closed");
+  });
+
+  it("CRASH AFTER WRITE 1 ON A COMPACT SESSION: the durable cycle finishes, the fresh COMPACT gate is never consulted", async () => {
+    // T-450 step 8.1. The COMPACT gate added to the fresh authorization path
+    // must be UNREACHABLE from the resume path, and this is the case that
+    // proves it through the commit driver itself, on the same crash seam the
+    // sibling write-1 test uses, rather than through a state assembled by hand
+    // to look crashed.
+    //
+    // The picture is a cycle MINTED BEFORE 8.1 EXISTED, when nothing refused a
+    // COMPACT session. Its durable intent is what authorizes the retry, so
+    // re-asking a fresh lifecycle question answers wrong by construction -- and
+    // answering it would strand the cycle permanently, since nothing else can
+    // finish it.
+    // THE SESSION IS COMPACT BEFORE THE CYCLE STARTS, which is the only way
+    // this picture is reachable. The resume path's revision equation refuses a
+    // session written by anything else after write 1, so a session that goes
+    // COMPACT AFTER write 1 is not a resumable cycle at all -- it is a foreign
+    // write, and it is already refused as one.
+    const planted = plantLive();
+    writeSessionSync(sessDir, { ...planted, state: "COMPACT", status: "active" } as FullSessionState);
+    writeMarker();
+    const state = currentState();
+    const input = inputFor(state);
+
+    const { applyCancellationTransition: realApply } = await import("../../src/autonomous/cancellation-core.js");
+    const crashingApply = (async (...applyArgs: Parameters<typeof realApply>) => {
+      const session = applyArgs[1];
+      const init = applyArgs[4]!;
+      const raw = session.state as unknown as Record<string, unknown>;
+      writeSessionSync(sessDir, {
+        ...raw,
+        cancellationTransition: {
+          transitionId: init.transitionId,
+          action: init.action,
+          authority: init.authority,
+          disposition: { kind: "no-ticket" },
+          sessionId: session.state.sessionId,
+          sessionStartedAt: new Date(Date.parse(raw.startedAt as string)).toISOString(),
+          transitionStartedRevision: session.state.revision + 1,
+          phase: "stash_pending",
+          stash: { outcome: null },
+        },
+      } as unknown as FullSessionState);
+      throw new Error("simulated crash after write 1");
+    }) as typeof realApply;
+
+    // The first attempt authorizes as PRE-8.1 CODE DID: the injected lifecycle
+    // reader reports the state the gate did not look at. Nothing else about the
+    // authorization or the intent is faked. The write-1 record itself is
+    // constructed by the injected apply -- the same seam, and the same
+    // construction, the sibling crash tests use: built from ITS OWN inputs the
+    // way the shared core builds it, with the identity from state and the
+    // transition revision the write produces.
+    const first = await commitCandidateCancelLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, cancelDeps({
+      handshake: handshakeDeps({ readLifecycle: () => ({ state: "IMPLEMENT", status: "active" }) }),
+      apply: crashingApply,
+    }));
+    expect(first.kind).toBe("refused");
+    expect(currentState().state).toBe("COMPACT");
+
+    // THE RETRY runs on the SHIPPED deps, so its fresh path carries the gate.
+    // Reaching `published` is the proof it was never consulted.
+    const retry = await commitCandidateCancelLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, cancelDeps());
+    expect(retry.kind, JSON.stringify(retry)).toBe("published");
+    if (retry.kind !== "published") return;
+    expect(retry.resumed).toBe(true);
+    expect(currentState().state).toBe("SESSION_END");
   });
 
   it("CRASH AFTER WRITE 4: the published record finishes tail-only, and never re-evaluates eligibility", async () => {

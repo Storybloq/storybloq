@@ -29,7 +29,7 @@
  *    to ADOPT a session they had confirmed they wanted ENDED.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, utimesSync, rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -220,6 +220,22 @@ const textOf = (r: { content: readonly { text?: string }[] }): string =>
   r.content.map((c) => c.text ?? "").join("\n");
 
 const rawState = (): string => readFileSync(join(sessDir, "state.json"), "utf-8");
+const ticketBytes = (): string => readFileSync(join(root, ".story", "tickets", "T-001.json"), "utf-8");
+/** The whole telemetry directory, by name and bytes -- the tail's artifacts
+ * plus the fixture files that were already there (the shutdown marker, the
+ * sidecar pid). Snapshotting the directory rather than a named list is
+ * deliberate: a repeat that wrote a NEW artifact would be missed by a list
+ * written today. The session revision cannot see any of it, and it is what "no
+ * cancellation work was repeated" is really a claim about. */
+const tailBytes = (): Record<string, string> => {
+  const dir = join(sessDir, "telemetry");
+  const out: Record<string, string> = {};
+  for (const name of readdirSync(dir).sort()) {
+    const full = join(dir, name);
+    if (statSync(full).isFile()) out[name] = readFileSync(full, "utf-8");
+  }
+  return out;
+};
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "t450-8-"));
@@ -329,6 +345,34 @@ describe("T-450 8.2: presence of the field selects the candidate handler", () =>
     expect(transition?.authority?.clientTaskId).toBe(CALLER);
   });
 
+  it("REFUSES a COMPACT session, which has its own designed owner-gone recovery", async () => {
+    // T-450 step 8.1. COMPACT already has a designed path for a dead owner --
+    // `{ action: "resume", takeover: true }`, which the ordinary cancel path
+    // prescribes by name, and which the takeover door refuses COMPACT in favour
+    // of. Routing on field presence alone let a confirmed picture END such a
+    // session instead: a destructive shortcut past a designed recovery,
+    // available throughout the window where the verdict reads gone-candidate.
+    //
+    // Refusing costs nothing, which is what makes it right rather than a
+    // narrowing: take the session over, then cancel it as its owner.
+    makeCandidateSession({ state: "COMPACT", compactPending: true, preCompactState: "IMPLEMENT" } as never);
+    const before = rawState();
+    const r = await guide({ sessionId, action: "cancel", ownerGoneCandidateCancel: pictureNow() });
+
+    expect(r.isError).toBe(true);
+    const text = textOf(r);
+    expect(text).toContain("COMPACT");
+    // The refusal must NAME the designed path, not merely decline. An operator
+    // who is told no and not told where to go next reaches for the admin CLI,
+    // which is the fail-open ISS-904 was filed about.
+    // The WHOLE object, sessionId included. `handleResume` requires an
+    // explicit sessionId, so a remedy rendered without one cannot be followed
+    // verbatim -- and a remedy an operator cannot follow sends them to the
+    // admin CLI, which is the fail-open this door exists to close.
+    expect(text).toContain(`{ "sessionId": "${sessionId}", "action": "resume", "takeover": true }`);
+    expect(rawState()).toBe(before);
+  });
+
   it("RESUMES a crashed cycle on a TERMINAL session instead of refusing it", async () => {
     // THE REGRESSION TEST for a draft that refused terminal sessions in the
     // guide. Write 4 bundles SESSION_END, `status: completed` and the published
@@ -363,6 +407,10 @@ describe("T-450 8.2: presence of the field selects the candidate handler", () =>
     // when the cancellation published. A pre-check would refuse this as
     // `re-confirm`, which is exactly why there is no pre-check -- the durable
     // record is what authorizes the retry.
+    //
+    // This fixture is SESSION_END, so it pins the TERMINAL half of the
+    // resume-first rule. The COMPACT half is pinned separately below, because
+    // a gate placed before the resume branch would still pass here.
     const second = await guide({ sessionId, action: "cancel", ownerGoneCandidateCancel: confirmed });
     expect(second.isError, textOf(second)).toBeFalsy();
     const text = textOf(second);
@@ -378,6 +426,75 @@ describe("T-450 8.2: presence of the field selects the candidate handler", () =>
     // And the cycle is actually FINISHED, not merely un-refused.
     const intent = JSON.parse(readFileSync(join(sessDir, "cancellation-intent.json"), "utf-8"));
     expect(intent.phase).toBe("closed");
+  });
+
+  // WHERE THE COMPACT RESUME CASE IS PINNED, and why it is not pinned here.
+  //
+  // The gate added in 8.1 refuses COMPACT on the FRESH path only, so a cycle
+  // minted before it existed -- legitimately open on a COMPACT session -- must
+  // still finish through the resume branch. That is pinned at the commit layer,
+  // through the commit driver and its crash seam: candidate-commit.test.ts,
+  // "CRASH AFTER WRITE 1 ON A COMPACT SESSION".
+  //
+  // It is not reproducible at THIS layer. The guide takes no dependency seam,
+  // so the only route would be to forge the durable picture, and it cannot be
+  // forged consistently: the resume path requires the session to sit exactly at
+  // the record's `transitionStartedRevision`, and the candidate invariant ties
+  // that revision to the intent authority's `confirmedSessionRevision`. Winding
+  // a completed cycle back to its write-1 shape satisfies one and breaks the
+  // other, and satisfying both would mean hand-writing the authority as well --
+  // a state no production sequence produces, which proves nothing about a
+  // production path.
+  //
+  // WHAT THAT LEAVES UNCOVERED, stated rather than glossed: a COMPACT gate
+  // hoisted into THIS guide, ahead of the resume-first commit, would strand
+  // exactly those cycles, and nothing would fail -- not this file, and not the
+  // commit-layer test either, which never executes the guide. That is a real
+  // gap, recorded here rather than papered over with a test that cannot see it.
+
+  it("VERIFIES an already-complete cycle without claiming this call closed it", async () => {
+    // T-450 step 8.1 (H4). The sibling of the test above, and the same fixture
+    // MINUS the crash: nothing is removed, nothing is reopened, so the retry
+    // arrives at a cycle that was already complete when it was made.
+    //
+    // On this path the close is a NO-OP -- it confirms an intent that is
+    // already closed -- so the earlier wording, which said the intent "was
+    // closed on this retry", credited this call with work it did not do. That
+    // is the same rendered-prose truthfulness problem the `resumed` union was
+    // introduced to remove one layer down, so leaving it in the renderer would
+    // have kept the defect alive in the one place an operator reads.
+    makeCandidateSession();
+    const confirmed = shown();
+    const first = await guide({ sessionId, action: "cancel", ownerGoneCandidateCancel: confirmed });
+    expect(first.isError).toBeFalsy();
+    // Parsed, not `rawState()`: that helper returns the raw file TEXT, so a
+    // `.revision` on it is `undefined` on both sides and the equality below
+    // would pass vacuously -- the exact defect H3 was fixing one file over.
+    const afterFirst = readSession(sessDir);
+    expect(typeof afterFirst?.revision).toBe("number");
+    const ticketBefore = ticketBytes();
+    const tailBefore = tailBytes();
+    // Non-degenerate by construction: an empty tail snapshot would compare
+    // equal to anything and prove nothing.
+    expect(Object.keys(tailBefore).length).toBeGreaterThan(0);
+
+    const second = await guide({ sessionId, action: "cancel", ownerGoneCandidateCancel: confirmed });
+    expect(second.isError, textOf(second)).toBeFalsy();
+    const text = textOf(second);
+    expect(text).toContain("was already ended");
+    expect(text).toContain("verified already closed");
+    // The exact wording that was wrong. Kept as a negative assertion because a
+    // reworded-but-still-crediting sentence is the failure mode.
+    expect(text).not.toContain("closed on this retry");
+
+    // "No cancellation work was repeated" is a CLAIM, so it is checked rather
+    // than taken from the prose. The session revision alone would NOT prove it:
+    // tail work (the ticket write, the shutdown artifact, the completion
+    // marker) can repeat without touching the session file. So the durable
+    // artifacts the tail produces are compared byte for byte as well.
+    expect(readSession(sessDir)?.revision).toBe(afterFirst?.revision);
+    expect(ticketBytes()).toBe(ticketBefore);
+    expect(tailBytes()).toEqual(tailBefore);
   });
 });
 

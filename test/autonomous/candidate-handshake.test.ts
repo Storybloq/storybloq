@@ -30,7 +30,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-import { authorizeCandidateCancel } from "../../src/autonomous/candidate-recovery.js";
+import { authorizeCandidateCancel, authorizeCandidateTakeover } from "../../src/autonomous/candidate-recovery.js";
 import {
   evidenceFingerprint,
   readOwnerLiveness,
@@ -405,6 +405,42 @@ describe("T-450 6b: the handshake authorizes only what was confirmed", () => {
       if (result.kind !== "refused") continue;
       expect(result.reason).toBe("session-terminal");
       expect(result.detail).toContain(lifecycle.state);
+    }
+  });
+
+  it("refuses a COMPACT session on BOTH doors, takeover included (step 8.1)", async () => {
+    // The gate is OPERATION-AGNOSTIC, and the takeover arm is the reason this
+    // test exists rather than a cancel-only one. On the takeover path the
+    // guide refuses COMPACT first (guide.ts, "the candidate handshake is for
+    // LIVE non-COMPACT sessions"), so the core's arm is reachable only by a
+    // DIRECT core caller -- which is exactly what this test is. Without it the
+    // arm would be unpinned code whose removal no test notices.
+    //
+    // It is kept anyway because the invariant belongs to the handshake, not to
+    // one door: a COMPACT session is not a FRESH owner-gone recovery candidate
+    // whichever operation asks, so a future third door inherits the refusal
+    // instead of re-deriving it, and the takeover path stays refused in the
+    // core if the guide-level check is ever refactored away.
+    const state = candidateState();
+    const { fingerprint } = shown(state);
+    const input = {
+      sessionId: SESSION, clientTaskId: CALLER, confirmedSessionRevision: 4,
+      confirmedFingerprint: fingerprint,
+    };
+    const deps = depsFor(state, { readLifecycle: () => ({ state: "COMPACT", status: "active" }) });
+
+    for (const [label, authorize] of [
+      ["cancel", authorizeCandidateCancel],
+      ["takeover", authorizeCandidateTakeover],
+    ] as const) {
+      const result = await authorize(sessDir, input, deps);
+      expect(result.kind, `${label} did not refuse a COMPACT session`).toBe("refused");
+      if (result.kind !== "refused") continue;
+      expect(result.reason).toBe("session-compact");
+      // The remedy, in full. A refusal that does not name a followable next
+      // step sends the operator to the admin CLI, which is the fail-open this
+      // whole ticket exists to close.
+      expect(result.detail).toContain(`{ "sessionId": "${SESSION}", "action": "resume", "takeover": true }`);
     }
   });
 

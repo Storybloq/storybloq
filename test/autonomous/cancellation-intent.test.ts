@@ -1941,6 +1941,32 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
     }
   });
 
+  it("ISS-967: its refusal names BOTH accepted records, not the takeover one alone", () => {
+    // Ride-along pin. This message is the only place the gate explains WHICH
+    // records it accepts, and before the fix it said a candidate intent is
+    // "proved by a candidate_recovery_takeover" -- teaching the exact
+    // misreading the issue is about, inside the refusal an operator reads when
+    // a retirement is stuck.
+    //
+    // The fixture is ordinary + legacy DELIBERATELY: it is the only wrong-kind
+    // case above that is schema-VALID, so it is the only one that reaches this
+    // gate at all. The others refuse one gate earlier, at the unreadable
+    // record, with a different message.
+    stageClosed({ kind: "cancellation", transitionId: TID });
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: publishedTransition({
+        action: "ordinary_cancellation", authority: { kind: "legacy" },
+      }),
+      sessionRevision: 6,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("outcome-underivable");
+      expect(result.detail).toContain("candidate_recovery_cancellation");
+      expect(result.detail).toContain("pre-fix candidate-cancellation records");
+    }
+  });
+
   it("refuses while the session has not reached the publication's terminal revision", () => {
     // Publication is not durability. `terminalRevision` is the revision the
     // publishing write produces, so a state behind it is a state where the

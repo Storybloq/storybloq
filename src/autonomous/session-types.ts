@@ -1341,10 +1341,11 @@ export type StashPopOutcome = z.infer<typeof StashPopOutcomeSchema>;
  * Added ADDITIVELY: nothing is removed or repurposed, so every record already
  * written stays readable, and the takeover literal remains accepted wherever a
  * pre-fix cycle recorded one. The cross-field `superRefine` below needed no
- * change, which was verified rather than assumed: it enforces the pairing in
- * BOTH directions -- `ordinary_cancellation` may not carry candidate authority,
- * and either candidate action requires it -- and a third non-ordinary value
- * satisfies that on both sides.
+ * change to its PAIRING LOGIC, which was verified rather than assumed: it
+ * enforces the pairing in BOTH directions -- `ordinary_cancellation` may not
+ * carry candidate authority, and either candidate action requires it -- and a
+ * third non-ordinary value satisfies that on both sides. Its refusal MESSAGE
+ * did need changing, because it named one action unconditionally.
  */
 export const CancellationActionSchema = z.enum([
   "ordinary_cancellation",
@@ -1652,9 +1653,16 @@ export const CancellationTransitionSchema = z.discriminatedUnion("phase", [
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["authority", "kind"],
+      // ACTION-AWARE (ISS-967 follow-up). This branch used to name
+      // `candidate_recovery_takeover` unconditionally, so a
+      // `candidate_recovery_cancellation` record carrying legacy or task
+      // authority was correctly rejected while the diagnostic named an action
+      // the record does not contain. This schema exists for records read in
+      // ISOLATION, so a message that misnames the record it is refusing is the
+      // same class of defect as the record misnaming itself.
       message: ordinary
         ? "ordinary_cancellation cannot carry candidate authority"
-        : "candidate_recovery_takeover requires candidate authority",
+        : `${value.action} requires candidate authority`,
     });
   }
 });

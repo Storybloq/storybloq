@@ -1159,8 +1159,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     const current = readSessionResilient(stale.dir);
     if (current && current.status !== "active") continue; // already handled or raced away
     if (!current) {
-      // findStaleSessions already skips unreadable dirs (session.ts:875,
-      // `if (!session) continue`), so a PERSISTENTLY unreadable directory
+      // findStaleSessions already skips unreadable dirs (session.ts:875-876,
+      // `readSessionResilient` then `if (!session) continue`), so a PERSISTENTLY unreadable directory
       // never reaches staleSessions in the first place -- this rereadFailed
       // case can only arise from a transient change between that read and
       // this one, and the resulting refusal clears on the next start attempt.
@@ -1179,7 +1179,14 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           ? "current record could not be re-read; treating as unresolved"
           : b.liveness === "alive"
             ? `last-serving MCP process (pid ${b.current.mcpServerPid}) is still alive`
-            : "no usable liveness evidence recorded";
+            // "unknown" collapses two different operator situations: no pid
+            // was ever recorded, versus a pid was recorded but the probe
+            // itself could not resolve alive/dead. Distinguish them here
+            // (from the pid already on hand) rather than leaving one vague
+            // sentence to cover both.
+            : !b.current.mcpServerPid
+              ? "no MCP server pid was recorded for this session"
+              : `liveness probe for its recorded pid (${b.current.mcpServerPid}) returned an inconclusive result`;
         // ISS-941 (Codex code-review round 1 on this fix): "storybloq
         // session stop <id>" resolves sessionDir(root, id) -- a direct
         // basename lookup. When a directory's own basename does not match its

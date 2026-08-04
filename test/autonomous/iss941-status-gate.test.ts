@@ -10,7 +10,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,15 @@ import { join } from "node:path";
 // initial lookup that already succeeded moments earlier in the same call.
 const rereadOverride: { failForDir: string | null } = { failForDir: null };
 
+// Counts guide.ts's calls to the imported `refreshLease` binding (a
+// cross-module call, unlike session.ts's own internal self-calls -- this one
+// IS interceptable via vi.mock). Codex code-review round on 941.1: an
+// expired-lease fixture alone proves nothing about gate ordering unless
+// something observable pins that refreshLease was never reached, since
+// refreshLease's return value is otherwise only an in-memory object that may
+// never reach disk before an unrelated later error.
+const refreshLeaseCallCount = { count: 0 };
+
 vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/autonomous/session.js")>();
   return {
@@ -29,6 +38,10 @@ vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
     readSessionResilient: (dir: string) => {
       if (rereadOverride.failForDir && dir === rereadOverride.failForDir) return null;
       return actual.readSessionResilient(dir);
+    },
+    refreshLease: (state: FullSessionState) => {
+      refreshLeaseCallCount.count++;
+      return actual.refreshLease(state);
     },
   };
 });
@@ -98,6 +111,24 @@ function writeTicket(root: string, id: string, status: "open" | "inprogress" | "
   }));
 }
 
+function writeIssue(root: string, id: string, status: "open" | "resolved"): void {
+  writeFileSync(join(root, ".story", "issues", `${id}.json`), JSON.stringify({
+    id,
+    title: `Issue ${id}`,
+    status,
+    severity: "medium",
+    components: [],
+    impact: "test",
+    resolution: status === "resolved" ? "fixed in fixture" : null,
+    location: [],
+    discoveredDate: "2026-08-04",
+    resolvedDate: status === "resolved" ? "2026-08-04" : null,
+    relatedTickets: [],
+    order: 10,
+    phase: "p1",
+  }));
+}
+
 interface BuildOpts {
   state: string;
   status: "active" | "completed" | "superseded";
@@ -146,6 +177,7 @@ function build(opts: BuildOpts): Built {
 }
 
 afterEach(() => {
+  refreshLeaseCallCount.count = 0;
   while (createdRoots.length) {
     const dir = createdRoots.pop()!;
     killSidecarsInRoot(dir);
@@ -345,5 +377,73 @@ describe("ISS-941 half 1: status gate refuses non-active sessions", () => {
     const s2After = readSession(s2Dir);
     expect(s2After!.ticket?.id).toBe("T-001");
     expect(s2After!.revision).toBe(s2Before.revision);
+  });
+
+  it("refuses report against an expired-lease superseded zombie without adopting or refreshing its lease (pen byte-review 941.1 T-A)", async () => {
+    // Every other fixture in this file pins a LIVE lease, which leaves
+    // adoptExpiredLease and refreshLease's fallback branch unreachable by
+    // them -- a refactor moving the status gate BELOW those calls would pass
+    // this file green while a superseded zombie past lease expiry got its
+    // lease silently extended before the (relocated) refusal landed.
+    const built = build({ state: "FINALIZE", status: "superseded" });
+    const expiredAt = new Date(Date.now() - 90 * 60_000).toISOString();
+    const before = writeSessionSync(built.sessionDir, {
+      ...built.before,
+      lease: { ...built.before.lease, expiresAt: expiredAt },
+    } as FullSessionState);
+
+    const result = await handleAutonomousGuide(built.root, {
+      sessionId: built.sessionId,
+      action: "report",
+      report: { completedAction: "commit_done" },
+    });
+
+    expect(result.isError).toBe(true);
+    const after = readSession(built.sessionDir);
+    expect(after!.lease.expiresAt).toBe(expiredAt);
+    expect(after!.revision).toBe(before.revision);
+    expect(after!.ownerTask).toBeNull();
+    // The disk-state assertions above hold even if the gate ran AFTER
+    // refreshLease (its result just never reached a persist point on this
+    // particular error path) -- this is the assertion that actually pins
+    // ordering: refreshLease must never be REACHED at all.
+    expect(refreshLeaseCallCount.count).toBe(0);
+  });
+
+  it("refuses report against a superseded session without replaying its pendingProjectMutation (pen byte-review 941.1 T-A)", async () => {
+    // recoverPendingMutation is the one call in this seam that WRITES to
+    // disk on its own (writeSessionAndRefresh inside it, unconditional once
+    // a mutation is present) -- unlike refreshLease, whose result only
+    // reaches disk via a later persist. A gate moved to run after this call
+    // would let a superseded session's stale mutation apply to the live
+    // ledger before the (relocated) refusal ever landed.
+    const built = build({ state: "FINALIZE", status: "superseded" });
+    writeIssue(built.root, "ISS-9101", "open");
+    const mutation = {
+      type: "issue_update",
+      target: "ISS-9101",
+      value: "resolved",
+      expectedCurrent: "open",
+      transitionId: "iss941-941.1-t-a",
+    };
+    const before = writeSessionSync(built.sessionDir, {
+      ...built.before,
+      pendingProjectMutation: mutation,
+    } as FullSessionState);
+
+    const result = await handleAutonomousGuide(built.root, {
+      sessionId: built.sessionId,
+      action: "report",
+      report: { completedAction: "commit_done" },
+    });
+
+    expect(result.isError).toBe(true);
+    const after = readSession(built.sessionDir);
+    expect(after!.revision).toBe(before.revision);
+    expect(after!.pendingProjectMutation).toEqual(mutation);
+    const issueRaw = JSON.parse(
+      readFileSync(join(built.root, ".story", "issues", "ISS-9101.json"), "utf-8"),
+    );
+    expect(issueRaw.status).toBe("open");
   });
 });

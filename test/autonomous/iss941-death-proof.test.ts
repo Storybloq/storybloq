@@ -15,9 +15,10 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { telemetryDirPath } from "../../src/autonomous/liveness.js";
 
 // guide.ts's fallback loop calls readSessionResilient via the imported
 // binding (session.ts's OWN internal callers -- findActiveSessionFull,
@@ -112,6 +113,32 @@ function commitOnMain(root: string, marker: string): string {
   run(`git add ${marker}.txt`, root);
   run(`git commit -q -m "${marker}"`, root);
   return run("git rev-parse HEAD", root);
+}
+
+/**
+ * Pre-seed a session's telemetry dir with an `alive` timestamp and a fake
+ * `sidecar.pid`, so a regression that lets `writeShutdownMarker` run against
+ * a session the death-proof pass must not touch is directly observable:
+ * `writeShutdownMarker` overwrites `alive` to "0", writes `shutdown`, and
+ * unlinks `sidecar.pid` (liveness.ts). The zero-writes oracle on the SESSION
+ * record alone (`readSession(dir)` equality) cannot see any of that -- these
+ * files live outside state.json.
+ */
+function seedTelemetry(dir: string): { aliveContent: string; pidContent: string } {
+  const tDir = telemetryDirPath(dir);
+  mkdirSync(tDir, { recursive: true });
+  const aliveContent = String(Date.now());
+  const pidContent = String(process.pid);
+  writeFileSync(join(tDir, "alive"), aliveContent);
+  writeFileSync(join(tDir, "sidecar.pid"), pidContent);
+  return { aliveContent, pidContent };
+}
+
+function assertTelemetryUntouched(dir: string, seeded: { aliveContent: string; pidContent: string }): void {
+  const tDir = telemetryDirPath(dir);
+  expect(existsSync(join(tDir, "shutdown"))).toBe(false);
+  expect(readFileSync(join(tDir, "alive"), "utf-8")).toBe(seeded.aliveContent);
+  expect(readFileSync(join(tDir, "sidecar.pid"), "utf-8")).toBe(seeded.pidContent);
 }
 
 /** Allocate a pid known to be absent, verified rather than guessed. */
@@ -222,6 +249,11 @@ describe("ISS-941 half 2: death proof on the start-path fallback supersede", () 
     ]);
     const s1Before = readSession(fix.dirs[0]!);
     const s2Before = readSession(fix.dirs[1]!);
+    // Both sessions' telemetry must survive too -- the all-or-nothing
+    // refusal must not run writeShutdownMarker against the dead-pid session
+    // either, since the batch is refused before the write pass ever starts.
+    const s1Telem = seedTelemetry(fix.dirs[0]!);
+    const s2Telem = seedTelemetry(fix.dirs[1]!);
     const result = await handleAutonomousGuide(fix.root, { action: "start", sessionId: null });
     expect(result.isError).toBe(true);
     const s1 = readSession(fix.dirs[0]!);
@@ -229,11 +261,14 @@ describe("ISS-941 half 2: death proof on the start-path fallback supersede", () 
     // Zero writes to EITHER session -- not just status, the whole record.
     expect(s1).toEqual(s1Before);
     expect(s2).toEqual(s2Before);
+    assertTelemetryUntouched(fix.dirs[0]!, s1Telem);
+    assertTelemetryUntouched(fix.dirs[1]!, s2Telem);
   });
 
   it("refuses start when the fallback pass's own re-read fails after the initial scan observed the session (fail-closed, not fail-open)", async () => {
     const fix = buildStale([{ targetWork: ["ISS-9007"], mcpServerPid: deadPid() }]);
     const before = readSession(fix.dirs[0]!);
+    const telem = seedTelemetry(fix.dirs[0]!);
     rereadOverride.failForDir = fix.dirs[0]!;
     const result = await handleAutonomousGuide(fix.root, { action: "start", sessionId: null });
     expect(result.isError).toBe(true);
@@ -241,6 +276,7 @@ describe("ISS-941 half 2: death proof on the start-path fallback supersede", () 
     expect(text).toMatch(/could not be re-read|unresolved/i);
     const state = readSession(fix.dirs[0]!);
     expect(state).toEqual(before);
+    assertTelemetryUntouched(fix.dirs[0]!, telem);
   });
 
   it("a verifiably finished orphan whose recorded pid probes alive is still auto-superseded, and start proceeds (T-250 contract untouched by the new gate)", async () => {
@@ -403,11 +439,23 @@ describe("ISS-941 half 2: death proof on the start-path fallback supersede", () 
 
     const text = (result.content[0] as { text: string }).text;
     // Nothing from the hostile basename survives unescaped: no raw ESC, no
-    // raw bidi override, and the raw newline does not fabricate an extra
-    // bullet row in the blocker list.
+    // raw bidi override.
     expect(text).not.toContain("\u001b");
     expect(text).not.toContain("\u202E");
-    expect(text.split("\n").filter((l) => l.startsWith("- ")).length).toBe(1);
+    // Non-vacuous line-count pin (pen byte-review finding T-C): a filter for
+    // lines starting "- " passes trivially even with a broken sanitizer,
+    // since nothing in the hostile payload happens to start a line with
+    // "- " on its own. Pin the EXACT structure instead -- intro line,
+    // exactly one blocker bullet, closing line -- so the raw embedded
+    // newline in the basename provably did not fabricate a 4th line.
+    const lines = text.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^\[autonomous_guide error\] Cannot start: the following stale session\(s\)/);
+    expect(lines[1]).toMatch(/^- /);
+    expect(lines[2]).toBe("Refusing to silently reclaim this workspace slot.");
+    // No raw control byte from the hostile payload survives inside the
+    // sanitized blocker line itself.
+    expect(lines[1]).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
     // The Markdown link shape is neutralized (escaped brackets/parens), not
     // rendered as a live `[text](javascript:...)` link.
     expect(text).not.toMatch(/\[click me\]\(javascript:/);

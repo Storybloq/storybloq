@@ -21,6 +21,7 @@ import {
   readAliveTimestamp,
   computeBinaryFingerprint,
   captureClaudeCodeSessionId,
+  probeRecordedMcpServer,
   __testing,
 } from "../../src/autonomous/liveness.js";
 
@@ -675,5 +676,54 @@ describePosix("T-283 spawnAliveSidecar dedup + lock", () => {
     } finally {
       killSpy.mockRestore();
     }
+  });
+
+  // ISS-941: probeRecordedMcpServer, the thin start-path wrapper over the
+  // same probeApi.killProbe semantics readMarkerValidity's branch (a) uses.
+  describe("probeRecordedMcpServer (ISS-941)", () => {
+    const original = __testing.probeApi.killProbe;
+    afterEach(() => { __testing.probeApi.killProbe = original; });
+
+    const err = (code: string) => () => { const e: any = new Error(code); e.code = code; throw e; };
+
+    it("no recorded pid is unknown", () => {
+      expect(probeRecordedMcpServer(null)).toBe("unknown");
+      expect(probeRecordedMcpServer(undefined)).toBe("unknown");
+    });
+
+    it("a non-positive or non-integer pid is unknown without probing", () => {
+      const killSpy = vi.spyOn(process, "kill");
+      try {
+        expect(probeRecordedMcpServer(0)).toBe("unknown");
+        expect(probeRecordedMcpServer(-1)).toBe("unknown");
+        expect(probeRecordedMcpServer(1.5)).toBe("unknown");
+        expect(killSpy).not.toHaveBeenCalled();
+      } finally {
+        killSpy.mockRestore();
+      }
+    });
+
+    it("a live pid (probe succeeds) is alive", () => {
+      __testing.probeApi.killProbe = () => { /* alive */ };
+      expect(probeRecordedMcpServer(1234)).toBe("alive");
+    });
+
+    it("EPERM is alive (something else holds that pid)", () => {
+      __testing.probeApi.killProbe = err("EPERM");
+      expect(probeRecordedMcpServer(1234)).toBe("alive");
+    });
+
+    it("ESRCH is the only death proof", () => {
+      __testing.probeApi.killProbe = err("ESRCH");
+      expect(probeRecordedMcpServer(1234)).toBe("dead");
+    });
+
+    it.each([["EIO"], ["EINVAL"], ["EACCES"]])(
+      "an unexpected %s from the probe is unknown, never corroborating death",
+      (code) => {
+        __testing.probeApi.killProbe = err(code);
+        expect(probeRecordedMcpServer(1234)).toBe("unknown");
+      },
+    );
   });
 });

@@ -1,7 +1,7 @@
 import { displayIdOf } from "../core/resolver.js";
 import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   deriveWorkspaceId,
   WORKFLOW_STATES,
@@ -81,6 +81,8 @@ import {
   computeBinaryFingerprint,
   captureClaudeCodeSessionId,
   telemetryDirPath,
+  probeRecordedMcpServer,
+  type RecordedMcpServerLiveness,
 } from "./liveness.js";
 import { parseBranchStrategy, parseBranchStrategyOrDefault } from "./branch-strategy.js";
 import { gitHead, gitHeadHash, gitStatus, gitMergeBase, gitDiffStat, gitDiffNames, gitDiffCachedNames, gitBlobHash, gitStash, gitStashPop, gitIsAncestor } from "./git-inspector.js";
@@ -130,6 +132,8 @@ import {
   handleHandoverCreate,
 } from "../cli/commands/handover.js";
 import type { CommandContext } from "../cli/types.js";
+import { sanitizeDisplayPath, sanitizeDisplayText } from "../core/display-text.js";
+import { escapeMarkdownDocumentStrict } from "../core/output-formatter.js";
 
 /**
  * ISS-899: whether this caller is refused, and WHY, which the call sites need
@@ -1115,20 +1119,100 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       // load on demand per session, matching pre-ISS-383 behavior.
     }
   }
-  const autoSupersededIds = new Set<string>();
+  // ISS-941: keyed on directory, not sessionId. Duplicate sessionIds across
+  // distinct directories are a recognized state in this codebase (ISS-914's
+  // collision handling) -- keying on id would let one directory's successful
+  // finished-orphan supersede also skip a DIFFERENT directory sharing that
+  // id in the death-proof pass below, silently leaving it active while start
+  // proceeded anyway. This is a live-but-narrow fix: today's shipped code
+  // already has this gap for the duplicate-id case, not merely this draft.
+  const autoSupersededDirs = new Set<string>();
   for (const stale of staleSessions) {
     const result = await trySupersedeFinishedOrphan(stale, root, staleOrphanCtx);
-    if (result) autoSupersededIds.add(stale.state.sessionId);
+    if (result) autoSupersededDirs.add(stale.dir);
   }
+
+  // ISS-941 half 2: the generic fallback no longer supersedes on lease
+  // expiry alone -- an expired lease is not proof the owning process is
+  // dead. Two passes over the remaining stale directories: pass A probes
+  // every one and writes nothing; pass B either refuses `start` entirely
+  // (any entry is not provably dead) or supersedes every probed entry (all
+  // are provably dead). All-or-nothing rather than order-dependent: either
+  // every probed directory is provably dead and all get reclaimed, or start
+  // refuses with zero writes and names every blocker in one message.
+  //
+  // A failed re-read is its OWN case and is ALWAYS a blocker -- silently
+  // `continue`ing past it like a successful "not active" read would let a
+  // session vanish from consideration while start proceeds regardless,
+  // reopening the exact double-driver bug this gate exists to close, through
+  // an error path instead of a status value.
+  type ProbedStale =
+    | { readonly dir: string; readonly sessionId: string; readonly kind: "rereadFailed" }
+    | { readonly dir: string; readonly sessionId: string; readonly kind: "checked"; readonly current: FullSessionState; readonly liveness: RecordedMcpServerLiveness };
+
+  const probed: ProbedStale[] = [];
   for (const stale of staleSessions) {
-    if (autoSupersededIds.has(stale.state.sessionId)) continue;
+    if (autoSupersededDirs.has(stale.dir)) continue;
     // ISS-556: MCP-facing stale-session cleanup. A single peer session with
     // historical lensReviewHistory disposition corruption must not block
     // supersede -- use resilient read.
     const current = readSessionResilient(stale.dir);
-    if (!current || current.status !== "active") continue;
-    writeSessionAndRefresh(root, stale.dir, { ...current, status: "superseded" as const } as FullSessionState, "always");
-    writeShutdownMarker(stale.dir);
+    if (current && current.status !== "active") continue; // already handled or raced away
+    if (!current) {
+      // findStaleSessions already skips unreadable dirs (session.ts:875,
+      // `if (!session) continue`), so a PERSISTENTLY unreadable directory
+      // never reaches staleSessions in the first place -- this rereadFailed
+      // case can only arise from a transient change between that read and
+      // this one, and the resulting refusal clears on the next start attempt.
+      probed.push({ dir: stale.dir, sessionId: stale.state.sessionId, kind: "rereadFailed" });
+      continue;
+    }
+    probed.push({ dir: stale.dir, sessionId: current.sessionId, kind: "checked", current, liveness: probeRecordedMcpServer(current.mcpServerPid) });
+  }
+
+  const blockers = probed.filter((p) => p.kind === "rereadFailed" || p.liveness !== "dead");
+  if (blockers.length > 0) {
+    return guideError(new Error(
+      "Cannot start: the following stale session(s) have an expired lease but cannot be proven dead:\n" +
+      blockers.map((b) => {
+        const evidence = b.kind === "rereadFailed"
+          ? "current record could not be re-read; treating as unresolved"
+          : b.liveness === "alive"
+            ? `last-serving MCP process (pid ${b.current.mcpServerPid}) is still alive`
+            : "no usable liveness evidence recorded";
+        // ISS-941 (Codex code-review round 1 on this fix): "storybloq
+        // session stop <id>" resolves sessionDir(root, id) -- a direct
+        // basename lookup. When a directory's own basename does not match its
+        // recorded sessionId (a duplicate-id sibling directory, ISS-914's
+        // collision shape, is exactly this case), that command would silently
+        // resolve to a DIFFERENT directory -- possibly one already handled --
+        // and never reach the actual blocker. Only recommend it when the
+        // basename and the recorded id agree; otherwise point at the real path.
+        //
+        // dirBase is a raw filesystem basename, not trusted input -- a
+        // directory can be named with control/bidi characters or
+        // Markdown-shaped text. The RAW value is used only for the identity
+        // check below; every rendered occurrence goes through the same
+        // sanitize-then-escape convention session-guard.ts uses: a LABEL
+        // (naming the item) is lossy via sanitizeDisplayText, an ADDRESS
+        // (something to go open) is reversible via sanitizeDisplayPath.
+        const dirBase = basename(b.dir);
+        const dirLabel = escapeMarkdownDocumentStrict(sanitizeDisplayText(dirBase));
+        const dirAddress = escapeMarkdownDocumentStrict(sanitizeDisplayPath(join(".story/sessions", dirBase)));
+        const remedy = dirBase === b.sessionId
+          ? `if it is genuinely gone: run "storybloq session stop ${b.sessionId}"`
+          : `its directory name ("${dirLabel}") does not match its recorded session id, so "storybloq session stop ${b.sessionId}" would not resolve to it -- inspect ${dirAddress} directly, or run "storybloq session list"`;
+        return `- ${b.sessionId} (${dirLabel}): ${evidence}. If that task is still running, continue from its owning client -- its next guide call will refresh the lease. Otherwise, ${remedy}.`;
+      }).join("\n") +
+      "\nRefusing to silently reclaim this workspace slot.",
+    ));
+  }
+
+  // blockers is empty, so every probed entry is kind:"checked" with liveness:"dead".
+  for (const p of probed) {
+    if (p.kind !== "checked") continue; // unreachable given the guard above; keeps the compiler honest
+    writeSessionAndRefresh(root, p.dir, { ...p.current, status: "superseded" as const } as FullSessionState, "always");
+    writeShutdownMarker(p.dir);
   }
 
   // ISS-076: Version mismatch advisory

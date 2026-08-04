@@ -52,6 +52,12 @@ interface FixtureOpts {
   skipCompletedTicketsEntry?: boolean; // for regression test #6
   mode?: "auto" | "review" | "plan" | "guided"; // default auto
   corruptEventsLog?: "garbage_line" | "invalid_commit_shape"; // for fail-closed tests
+  // ISS-941: the generic (non-orphan) stale-supersede pass now requires
+  // death proof. Tests that exercise that pass and expect the supersede to
+  // still succeed must record a provably-dead pid; a real dedicated pid
+  // fixture lives in iss941-death-proof.test.ts, this is only for keeping
+  // pre-existing T-250 coverage of the generic pass compatible.
+  mcpServerPid?: number;
 }
 
 interface Fixture {
@@ -131,6 +137,16 @@ function writeIssue(root: string, id: string, status: "open" | "inprogress" | "r
 
 function run(cmd: string, cwd: string): string {
   return execSync(cmd, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+/** Allocate a pid known to be absent, verified rather than guessed (ISS-941). */
+function deadPid(): number {
+  for (let candidate = 900_000; candidate < 900_200; candidate++) {
+    try { process.kill(candidate, 0); } catch (e: any) {
+      if (e?.code === "ESRCH") return candidate;
+    }
+  }
+  throw new Error("could not find a dead pid for the fixture");
 }
 
 /** Initialise a real throwaway git repo and return the initial HEAD sha. */
@@ -221,6 +237,9 @@ function buildFixture(opts: FixtureOpts): Fixture {
     ...session,
     ...posture,
     mode: opts.mode ?? "auto",
+    ...(opts.mcpServerPid !== undefined
+      ? { mcpServerPid: opts.mcpServerPid, mcpGuideCallAt: new Date().toISOString() }
+      : {}),
     lease: {
       ...session.lease,
       expiresAt: leaseExpiresAt,
@@ -575,6 +594,12 @@ describe("T-250 auto-supersede finished orphan sessions", () => {
       compactPending: false,
       onDisk: [{ id: "ISS-1400", kind: "issue", status: "open" }],
       commits: [],
+      // ISS-941: the generic pass now requires death proof. A provably-dead
+      // pid keeps this test's original intent (the generic pass still works
+      // for a non-orphan-eligible session) rather than accidentally
+      // exercising the new refusal path, which has its own dedicated
+      // coverage in iss941-death-proof.test.ts.
+      mcpServerPid: deadPid(),
     }));
 
     const result = await handleAutonomousGuide(fix.root, { action: "start", sessionId: null });

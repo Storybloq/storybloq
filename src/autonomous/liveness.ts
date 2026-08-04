@@ -2420,6 +2420,33 @@ function readMarkerValidity(
   return { kind: "not-invalidated", pid: mcpServerPid, recordedAt };
 }
 
+export type RecordedMcpServerLiveness = "alive" | "dead" | "unknown";
+
+/**
+ * ISS-941: a THIN start-path wrapper over the same probeApi.killProbe
+ * semantics readMarkerValidity's branch (a) uses -- ESRCH is the only death
+ * proof, EPERM means something else holds that pid (alive), anything else is
+ * unknown. Deliberately simpler than readMarkerValidity: there is no
+ * successors/ownerTask context here, because nothing has asked a human to
+ * confirm anything yet. This is deciding whether to STAY silent (an
+ * autonomous start-path reclaim), not adjudicating a confirmed recovery
+ * claim, so absence of proof must fail the exact same way as proof of life --
+ * "unknown" is never a corroborating signal.
+ */
+export function probeRecordedMcpServer(
+  pid: number | null | undefined,
+): RecordedMcpServerLiveness {
+  if (!pid || !Number.isInteger(pid) || pid <= 0) return "unknown";
+  try {
+    probeApi.killProbe(pid);
+    return "alive";
+  } catch (e: any) {
+    if (e && e.code === "EPERM") return "alive";
+    if (e && e.code === "ESRCH") return "dead";
+    return "unknown";
+  }
+}
+
 /**
  * Mutable indirection, same pattern as `fsApi` above and for the same reason.
  *

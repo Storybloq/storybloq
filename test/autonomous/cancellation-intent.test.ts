@@ -1609,7 +1609,11 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
    */
   const publishedTransition = (over: Record<string, unknown> = {}) => ({
     transitionId: TID,
-    action: "candidate_recovery_takeover",
+    // ISS-967: this models a published candidate CANCELLATION, so it carries
+    // the cancellation action. It used to carry the takeover value, because
+    // that was the only candidate value the enum had -- the same defect the
+    // issue is about, reproduced in a fixture.
+    action: "candidate_recovery_cancellation",
     authority: {
       kind: "candidate",
       clientTaskId: TASK,
@@ -1659,6 +1663,23 @@ describe("T-450 6b: retirement is the way out of closed, and only when the outco
     expect(now.transitionId).toBe(TID2);
     expect(now.phase).toBe("authorized");
     expect(now.predecessor?.predecessorTransitionId).toBe(TID);
+  });
+
+  // ISS-967: the gate was WIDENED, not switched. A cancellation published
+  // before the fix carries the takeover literal, and those records still exist
+  // wherever one was written; refusing them would strand exactly the crashed
+  // cycles this gate exists to let finish. Each value gets its own case so a
+  // successful retirement in one cannot disturb the other's fixture.
+  it.each([
+    ["the new cancellation value", "candidate_recovery_cancellation"],
+    ["the pre-fix takeover value", "candidate_recovery_takeover"],
+  ])("ISS-967: accepts %s as proof of a candidate cancellation", (_label, action) => {
+    stageClosed({ kind: "cancellation", transitionId: TID });
+    const result = retireClosedIntent(sessDir, replacement(), {
+      cancellationTransition: publishedTransition({ action }),
+      sessionRevision: 6,
+    });
+    expect(result.ok, `refused a ${action} record`).toBe(true);
   });
 
   it("REFUSES a closed takeover with NO postimage: a revision counter is not proof that it happened", () => {

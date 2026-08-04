@@ -17,6 +17,8 @@ import {
   CANCELLATION_SHUTDOWN_ARTIFACT,
   OwnerGoneCandidateTakeoverSchema,
   type OwnerGoneCandidateTakeover,
+  OwnerGoneCandidateCancelSchema,
+  type OwnerGoneCandidateCancel,
 } from "./session-types.js";
 import {
   reconcileSessionReality,
@@ -31,9 +33,13 @@ import { reassertMcpServerIdentity, liveMcpServers } from "./mcp-registry.js";
 import {
   authorizeCandidateTakeover,
   commitCandidateTakeoverLocked,
+  commitCandidateCancelLocked,
   type CandidateHandshakeDeps,
   type CandidateHandshakeInput,
   type CandidateAuthorization,
+  type CandidateOperation,
+  type CandidateTicketWork,
+  type CandidateCancelCommit,
 } from "./candidate-recovery.js";
 import type { IssueAuthorityView } from "./candidate-authority.js";
 import type { Ticket } from "../models/ticket.js";
@@ -786,6 +792,22 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
   if (args.targetWork?.length && args.action !== "start") {
     return guideError(new Error(`targetWork is only valid with action "start". Got action "${args.action}".`));
   }
+  // T-450 step 8. MUTUAL EXCLUSION FIRST, before every per-field check.
+  //
+  // Placed here rather than alongside the two field blocks below because each
+  // of those refuses its field on the wrong action, and the two fields demand
+  // DIFFERENT actions: on `cancel` the takeover block would fire first, on
+  // `resume` the cancel block would, and a caller who sent both would be told
+  // about an action mismatch instead of about the contradiction they actually
+  // sent. This can only trigger when `ownerGoneCandidateCancel` is present,
+  // which is a field no shipped caller can have been sending, so no existing
+  // input's message moves.
+  if (args.ownerGoneCandidateCancel !== undefined && args.ownerGoneCandidateTakeover !== undefined) {
+    return guideError(new Error(
+      "ownerGoneCandidateTakeover and ownerGoneCandidateCancel are mutually exclusive: one adopts a session " +
+      "and the other ends it. Send exactly one, for the operation the human actually confirmed.",
+    ));
+  }
   if (args.takeover && args.action !== "resume") {
     return guideError(new Error(`takeover is only valid with action "resume". Got action "${args.action}".`));
   }
@@ -808,6 +830,38 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
     if (!parsed.success) {
       return guideError(new Error(
         `ownerGoneCandidateTakeover is malformed: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
+      ));
+    }
+  }
+  // T-450 step 8.1, the cancel door's boundary. Same discipline as 7b's: every
+  // check runs BEFORE any mutation and the field is never silently ignored,
+  // because a confirmation object accepted and discarded means a human was
+  // told a cancellation was authorized on a picture nothing ever checked.
+  if (args.ownerGoneCandidateCancel !== undefined) {
+    if (args.action !== "cancel") {
+      return guideError(new Error(
+        `ownerGoneCandidateCancel is only valid with action "cancel". Got action "${args.action}".`,
+      ));
+    }
+    const parsed = OwnerGoneCandidateCancelSchema.safeParse(args.ownerGoneCandidateCancel);
+    if (!parsed.success) {
+      return guideError(new Error(
+        `ownerGoneCandidateCancel is malformed: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
+      ));
+    }
+    // THE SESSION-ID REQUIREMENT, and it is a substitution guard rather than a
+    // tidiness rule. `handleCancel` auto-selects an active session when
+    // `sessionId` is absent, and this object names a revision and a fingerprint
+    // but NO session. The commit's input id would then be derived from whatever
+    // was auto-selected, so the handshake's session check would compare two
+    // values that came from the same wrong session and agree. A human who
+    // confirmed an owner-gone picture for session A could end session B, and
+    // nothing downstream could tell. Refused here, before any selection happens.
+    if (!args.sessionId) {
+      return guideError(new Error(
+        "ownerGoneCandidateCancel requires an explicit sessionId. The confirmed picture names a revision and " +
+        "a fingerprint but not a session, so allowing the active-session fallback here would let a " +
+        "confirmation made about one session end a different one.",
       ));
     }
   }
@@ -2102,31 +2156,115 @@ function candidateHandshakeDeps(root: string, sessionDir: string): CandidateHand
   };
 }
 
-/** One sentence per refusal, naming its OWN condition. */
+/**
+ * One sentence per refusal, naming its OWN condition.
+ *
+ * OPERATION-AWARE since T-450 step 8, and that is a correctness property rather
+ * than a matter of tone. Every arm here used to be written for takeover, and the
+ * `re-confirm` arm instructs the caller to retry with a NAMED FIELD. Handed to a
+ * cancel caller unchanged it would tell them to send `ownerGoneCandidateTakeover`
+ * -- following that instruction would attempt to ADOPT a session the human had
+ * confirmed they wanted ENDED. A wrong remedy is worse than a vague one.
+ *
+ * The takeover wording is preserved byte for byte; step 8 added a caller, it did
+ * not move a message.
+ */
 function describeCandidateAuthorizationRefusal(
   sessionId: string,
   authorization: CandidateAuthorization,
+  operation: CandidateOperation = "takeover",
 ): string {
+  const takeover = operation === "takeover";
+  const noun = takeover ? "takeover" : "cancellation";
+  const Noun = takeover ? "Takeover" : "Cancellation";
+  const field = takeover ? "ownerGoneCandidateTakeover" : "ownerGoneCandidateCancel";
   switch (authorization.kind) {
     case "re-confirm":
       // Fresh evidence goes BACK, so the client re-presents the current picture
       // rather than starting over blind.
       return (
-        `The picture changed before this takeover of ${sessionId} was authorized (${authorization.reason}). ` +
+        `The picture changed before this ${noun} of ${sessionId} was authorized (${authorization.reason}). ` +
         `${authorization.detail}\n` +
         `Re-confirm against the current evidence, then retry with ` +
-        `ownerGoneCandidateTakeover: { sessionRevision: <the session's current revision>, ` +
+        `${field}: { sessionRevision: <the session's current revision>, ` +
         `evidenceFingerprint: "${authorization.fresh.fingerprint}" }.`
       );
     case "ineligible":
       return `Session ${sessionId} is not an owner-gone candidate (${authorization.verdict}). ${authorization.detail}`;
     case "refused":
+      // `caller-is-owner` gets its own sentence rather than the generic one,
+      // because the handshake's own detail says "the ordinary resume applies",
+      // which is the TAKEOVER remedy. An owner ending their own session wants
+      // an ordinary cancel, and telling them to resume would send them to the
+      // opposite operation.
+      if (!takeover && authorization.reason === "caller-is-owner") {
+        return (
+          `Cancellation of session ${sessionId} refused: this caller IS the recorded owner, so owner-gone ` +
+          `recovery does not apply. Retry as an ordinary cancellation, with ` +
+          `{ "sessionId": "${sessionId}", "action": "cancel" } and no ${field}.`
+        );
+      }
       return authorization.authority
-        ? `Takeover of session ${sessionId} refused: ${authorization.detail} ` +
+        ? `${Noun} of session ${sessionId} refused: ${authorization.detail} ` +
           `(posture: ${authorization.authority.posture}).`
-        : `Takeover of session ${sessionId} refused: ${authorization.detail}`;
-    default:
-      return `Takeover of session ${sessionId} was not authorized.`;
+        : `${Noun} of session ${sessionId} refused: ${authorization.detail}`;
+    case "authorized":
+      // DELIBERATELY THE PRE-EXISTING WORDING, not a clearer sentence.
+      //
+      // This arm is reachable: the commit's `invariant-violated` stage carries
+      // an authorized object into this renderer. Before step 8 it fell to the
+      // `default` and produced exactly the string below, so rewording it would
+      // change a shipped takeover message -- the one thing making this helper
+      // operation-aware was required NOT to do. It is broken out from
+      // `default` only so the `never` check below covers genuinely new arms.
+      return `${Noun} of session ${sessionId} was not authorized.`;
+    default: {
+      // EXHAUSTIVE. A new `CandidateAuthorization` arm fails to compile here
+      // instead of silently collecting the generic sentence, which is the
+      // whole point: a refusal an operator cannot act on is a dead end.
+      const never: never = authorization;
+      return `${Noun} of session ${sessionId} was not authorized (${JSON.stringify(never)}).`;
+    }
+  }
+}
+
+/** Exported for test: the `authorized` arm is reachable through the commit's
+ * `invariant-violated` stage, and its wording is a shipped takeover message
+ * that step 8 was required to leave unchanged. Contriving a programming-error
+ * commit result to reach it would pin the path rather than the string. */
+export const __refusalRenderingTesting = {
+  describe: describeCandidateAuthorizationRefusal,
+};
+
+/**
+ * One sentence per cancel-commit refusal STAGE, exhaustive over the union.
+ *
+ * The stage name alone is an internal label; on its own it tells an operator
+ * nothing about what to do next. Each arm says what the stage means and
+ * whether a retry is worth anything.
+ */
+function describeCancelRefusalStage(stage: Extract<CandidateCancelCommit, { kind: "refused" }>["stage"]): string {
+  switch (stage) {
+    case "state-unreadable":
+      return "the session state could not be read under the lock";
+    case "validation":
+      return "re-validation under the lock did not authorize this cancellation";
+    case "invariant-violated":
+      return "an internal invariant was violated, which is a programming error rather than a policy refusal";
+    case "intent":
+      return "the durable cancellation intent could not be established or trusted";
+    case "ticket-txn":
+      return "the ticket transaction did not complete, so no cancellation was published";
+    case "transition":
+      return "the transition write refused or failed; the durable intent is unchanged and retry remains available";
+    case "tail-gate":
+      return "the publication landed but its completion gate refused, so the tail was not run";
+    case "resume-validation":
+      return "the interrupted cycle could not be validated for resumption, so finishing it here would not be safe";
+    default: {
+      const never: never = stage;
+      return `an unrecognized stage (${String(never)})`;
+    }
   }
 }
 
@@ -2291,6 +2429,184 @@ async function handleCandidateTakeoverResume(
     reminders: [
       "You are now the owner. Nothing about the work changed -- only who is driving it.",
       "The takeover established a fresh ownership lease; your next ordinary guide call renews it as usual.",
+    ],
+  });
+}
+
+/** What the ticket side of a cancellation may HONESTLY be said to have done. */
+function describeCancelTicketWork(work: CandidateTicketWork): string {
+  switch (work.kind) {
+    case "release":
+      return `- Ticket: claim released (${work.preimage.ticketId}).`;
+    case "none":
+      return work.why === "no-ticket"
+        ? "- Ticket: none was held, so nothing was owed."
+        : `- Ticket: the claim was not held by this session, so nothing was owed (${work.detail}).`;
+    case "blocked":
+      // The distinction this whole three-arm type exists for. "Nothing was
+      // owed" is a POSITIVE finding; this is the absence of a finding, and
+      // reporting the second as the first would quietly assert that a ticket
+      // was checked and found unowned when in fact it could not be read.
+      return `- Ticket: LEFT ALONE because it could not be determined what was owed (${work.why}: ${work.detail}).`;
+  }
+}
+
+/**
+ * END a session whose recorded owner is confirmed gone (T-450 step 8.3).
+ *
+ * The second door onto the step-6b authority layer. 7b's door ADOPTS such a
+ * session; this one terminates it, for the case where there is nothing worth
+ * continuing and the only alternatives were the dead owning task and the admin
+ * CLI.
+ *
+ * NO PRE-CHECK, and the divergence from 7b's shape is what the bytes support
+ * rather than a simplification. 7b runs one for exactly one reason: its commit's
+ * first act stages a heartbeat generation, which spawns a child and blocks on
+ * readiness, so committing before the handshake is plausible would
+ * spawn-and-kill a process on every refusal. The cancel commit stages nothing
+ * and spawns nothing, so that rationale is simply absent.
+ *
+ * It would also be ACTIVELY WRONG here. The handshake returns
+ * `re-confirm / revision-moved` whenever the session revision has moved off the
+ * confirmed one, and a cancellation whose write 1 landed sits at
+ * `confirmedSessionRevision + 1` BY CONSTRUCTION -- so a pre-check would refuse
+ * every crash retry. The commit is resume-first and returns from its
+ * transition-record branch BEFORE its own internal handshake call, which is
+ * precisely why the retry works: it is validated by the phase-specific resume
+ * validators instead, under the lock. Putting a gate in front of that would
+ * convert a refusal that is correct in context into a permanent stranding.
+ */
+async function handleCandidateCancel(
+  root: string,
+  args: GuideInput,
+  info: ActiveSessionInfo,
+  confirmed: OwnerGoneCandidateCancel,
+): Promise<McpToolResult> {
+  const sessionId = args.sessionId!;
+  const callerTask = ownerTaskForCurrentClient(args.clientTaskId);
+  if (!callerTask) {
+    // THE SAME SENTENCE the other candidate door gives, so the two say one thing.
+    return guideError(new Error(
+      `Recovering session ${sessionId} requires a valid clientTaskId so the cancellation can be attributed.`,
+    ));
+  }
+
+  const input: CandidateHandshakeInput = {
+    sessionId: info.state.sessionId,
+    clientTaskId: args.clientTaskId,
+    confirmedSessionRevision: confirmed.sessionRevision,
+    confirmedFingerprint: confirmed.evidenceFingerprint,
+  };
+  const handshake = candidateHandshakeDeps(root, info.dir);
+
+  // The Locked form: `handleAutonomousGuide` already holds the session lock, and
+  // the WithSessionLock variant would self-deadlock.
+  const commit = await commitCandidateCancelLocked(
+    root,
+    info.dir,
+    { input, callerTask },
+    { handshake },
+  );
+
+  if (commit.kind === "refused") {
+    const fresh = commit.authorization
+      ? `\n${describeCandidateAuthorizationRefusal(sessionId, commit.authorization, "cancel")}`
+      : "";
+    return guideError(new Error(
+      `Cancellation of session ${sessionId} did not commit at stage "${commit.stage}": ` +
+      `${describeCancelRefusalStage(commit.stage)}. ${commit.detail}${fresh}`,
+    ));
+  }
+
+  if (commit.kind === "already-complete") {
+    // A fact, not an error: the cycle this caller is holding had already been
+    // finished, and saying so is the honest answer to a retry.
+    return guideResult(info.state, info.state.state, {
+      instruction: [
+        `# Session ${sessionId} was already ended`,
+        "",
+        `The owner-gone cancellation for this session had already completed. ${commit.detail}`,
+        "",
+        // No cancellation WORK repeated, which is the guarantee. But the retry
+        // still closes the durable intent, so claiming nothing was written
+        // would be false -- and a close that FAILED is a live recovery concern
+        // the operator needs told about, not swallowed by a success sentence.
+        commit.close.ok
+          ? "No cancellation work was repeated; the durable intent was closed on this retry."
+          : `No cancellation work was repeated, but the durable intent could NOT be closed: ${commit.close.reason}. The cycle remains retryable.`,
+      ].join("\n"),
+      reminders: ["A completed cancellation is idempotent: retrying it verifies, it does not repeat."],
+    });
+  }
+
+  // AUDIT, honest on both paths, and two event types for the same reason 7b has
+  // two: a resumed publication cannot supply what a fresh one can, and
+  // null-filling the difference invites a false reading.
+  try {
+    appendEvent(info.dir, commit.resumed
+      ? {
+          rev: commit.state.revision,
+          type: "candidate_cancel_resumed",
+          timestamp: new Date().toISOString(),
+          data: {
+            tailCompleted: commit.tail.completed,
+            tailUnmet: commit.tail.unmet,
+            intentClosed: commit.close.ok,
+          },
+        }
+      : {
+          rev: commit.state.revision,
+          type: "candidate_cancel_published",
+          timestamp: new Date().toISOString(),
+          data: {
+            cancelKind: "owner_gone_candidate_cancellation",
+            endedByTask: callerTask,
+            ticketWork: commit.ticketWork.kind,
+            tailCompleted: commit.tail.completed,
+            tailUnmet: commit.tail.unmet,
+            intentClosed: commit.close.ok,
+          },
+        });
+  } catch { /* events.log is supplementary */ }
+
+  const state = commit.state;
+  return guideResult(state, state.state, {
+    instruction: [
+      `# Session ${sessionId} has been ended`,
+      "",
+      // `resumed` covers BOTH resume branches, and they differ in what they
+      // did: the `published` branch finishes a cycle whose terminal write had
+      // already landed, while the `stash_pending` branch publishes it now. So
+      // the wording is phase-neutral and makes no "nothing was rewritten"
+      // claim, which would be false on the second branch and not quite true on
+      // the first either, where the tail and the intent close still write.
+      `The recorded owner was confirmed gone and the cancellation committed${commit.resumed ? " (this call finished an earlier attempt's durable cancellation cycle rather than starting a new one)" : ""}.`,
+      "",
+      `- State: ${state.state}`,
+      // The tail is the post-publication step list, not a stash outcome. What
+      // it can honestly report is whether every step completed and, when not,
+      // WHICH ones did not -- an unmet step is a real loose end an operator may
+      // need to finish by hand, so naming them beats a bare "incomplete".
+      commit.tail.completed
+        ? "- Shutdown steps: all completed."
+        : `- Shutdown steps: INCOMPLETE, unmet: ${commit.tail.unmet.join(", ") || "unspecified"}.`,
+      // WHAT MAY BE SAID depends on which arm this is, and the type enforces it
+      // rather than leaving the renderer to guess. A fresh publication carries
+      // the ticket finding; a resumed one genuinely does not have it, and
+      // inventing one would be the false reading the two audit types avoid.
+      commit.resumed
+        // PHASE-NEUTRAL, for the same reason the sentence above is: `resumed`
+        // spans both resume branches, and on the `stash_pending` one the
+        // publication had NOT landed before this call -- this call performs it.
+        // What is true on both is that the finding belonged to the earlier,
+        // crashed authorization and is not reconstructible here.
+        ? "- Ticket: the original authorization finding is unavailable, because this call resumed an earlier durable cancellation cycle rather than authorizing a new one."
+        : describeCancelTicketWork(commit.ticketWork),
+      "",
+      "This session is terminal. It was not advanced or re-entered.",
+    ].join("\n"),
+    reminders: [
+      "The session is ended. Start a new one for further work; this one cannot be resumed.",
     ],
   });
 }
@@ -3108,6 +3424,35 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     return guideError(new Error(describeSessionLookupFailure(args.sessionId!, cancelLookup)));
   }
   const info = cancelLookup.info;
+
+  // -------------------------------------------------------------------------
+  // T-450 step 8.2: the owner-gone candidate CANCELLATION.
+  //
+  // ROUTED ON FIELD PRESENCE ALONE. Two earlier drafts added conjuncts here --
+  // a foreign live-ownership conflict, and a terminal-session refusal -- and
+  // BOTH silently dropped the confirmed field in cases they had not thought of:
+  //
+  //   * `liveOwnershipConflict` returns null outright on an EXPIRED lease, so
+  //     gating on it sent an expired-lease foreign session down the ordinary
+  //     cancel path while the caller believed a confirmed owner-gone
+  //     cancellation had run.
+  //   * a terminal refusal here would have stranded the crash retry FOREVER.
+  //     Write 4 bundles SESSION_END, `status: completed` and the published
+  //     transition into ONE write, so a crash before the tail leaves a terminal
+  //     session carrying a published candidate transition, which is exactly
+  //     what the commit's published-resume branch exists to finish.
+  //
+  // Both were the same error: a gate in front of a RESUME-FIRST commit. A gate
+  // cannot see the durable records that make a retry legitimate, so it converts
+  // a refusal that is correct in context into a permanent stranding. Every
+  // question about whether this caller may proceed is answered by the commit,
+  // under the lock, from state it reads itself.
+  //
+  // The boundary above has already guaranteed an explicit sessionId, so no
+  // auto-selected session can reach here.
+  if (args.ownerGoneCandidateCancel !== undefined) {
+    return handleCandidateCancel(root, args, info, args.ownerGoneCandidateCancel);
+  }
 
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {

@@ -13,7 +13,7 @@ import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, type
 import { initProject } from "../core/init.js";
 import { handleNodeList } from "../cli/commands/node.js";
 import { resolveNodePath } from "../federation/resolver.js";
-import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS, OwnerGoneCandidateTakeoverSchema } from "../autonomous/session-types.js";
+import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS, OwnerGoneCandidateTakeoverSchema, OwnerGoneCandidateCancelSchema } from "../autonomous/session-types.js";
 import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
 import { evaluateSessionGuard } from "../core/session-guard.js";
 import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
@@ -1230,6 +1230,10 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       // the two boundaries cannot disagree about what a confirmation is.
       ownerGoneCandidateTakeover: OwnerGoneCandidateTakeoverSchema.optional()
         .describe("Resume only, with takeover: true. The confirmed owner-gone picture for a LIVE non-COMPACT session -- the session revision the confirmation was shown against, and the evidence fingerprint of that picture."),
+      // T-450 step 8: the cancel door's own schema, for the reason given where
+      // it is declared -- the two doors share a shape today but not a contract.
+      ownerGoneCandidateCancel: OwnerGoneCandidateCancelSchema.optional()
+        .describe("Cancel only, and requires an explicit sessionId. The confirmed owner-gone picture authorizing this task to END a session whose recorded owner is gone, rather than adopt it -- the session revision the confirmation was shown against, and the evidence fingerprint of that picture."),
       mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
       ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
       targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),

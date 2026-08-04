@@ -227,6 +227,40 @@ describe("T-450: action and authority cannot contradict each other", () => {
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
   });
 
+  // ISS-967 -------------------------------------------------------------
+  it("accepts candidate_recovery_cancellation under candidate authority", () => {
+    // The value that was MISSING. Without it the cancel commit stamped the
+    // takeover literal into the record of a session it had just ended, and
+    // `authority.kind` could not disambiguate because `candidate` is right for
+    // both operations.
+    const rec = stashPending({
+      action: "candidate_recovery_cancellation",
+      authority: {
+        kind: "candidate",
+        clientTaskId: "task-1",
+        confirmedSessionRevision: 6,
+        confirmedFingerprint: "fp",
+        evidence: EVIDENCE,
+      },
+    });
+    const parsed = CancellationTransitionSchema.safeParse(rec);
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+
+  it("rejects candidate_recovery_cancellation carrying legacy or task authority", () => {
+    // The cross-field rule needed NO edit to cover the new value, and it
+    // enforces BOTH directions: `ordinary_cancellation` may not carry candidate
+    // authority, and either candidate action REQUIRES it. This case pins the
+    // second direction for the new value; the case above pins the first.
+    for (const authority of [{ kind: "legacy" }, { kind: "task", callerTaskId: "task-1" }]) {
+      const rec = stashPending({ action: "candidate_recovery_cancellation", authority });
+      expect(
+        CancellationTransitionSchema.safeParse(rec).success,
+        `accepted cancellation with ${authority.kind} authority`,
+      ).toBe(false);
+    }
+  });
+
   it("rejects a task authority with an empty caller id", () => {
     // The arm exists precisely to make `basis: task` + no id unrepresentable.
     expect(CancellationAuthoritySchema.safeParse({ kind: "task", callerTaskId: "" }).success).toBe(false);

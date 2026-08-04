@@ -262,6 +262,34 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+describe("T-450 7b: the fence refreshes ownership, not progress", () => {
+  it("leaves contextPressure.guideCallCount UNCHANGED across a committed takeover", async () => {
+    // The other half of the fence decision, and the half nothing pinned. The
+    // fence is stamped deliberately WITHOUT `refreshLease`, because that helper
+    // also advances `contextPressure.guideCallCount`: a takeover is an
+    // ownership change, not a step of the work, and counting it as one would
+    // push the session toward a rotation it did not earn.
+    //
+    // Every existing fence assertion passes under a refactor to `refreshLease`,
+    // which is exactly why this one exists: it is the only assertion that fails.
+    const state = plantLive();
+    writeMarker();
+
+    const preimage = currentState() as unknown as Record<string, unknown>;
+    const before = (preimage.contextPressure as Record<string, unknown> | undefined)?.guideCallCount ?? null;
+
+    const result = await commitCandidateTakeoverLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, takeoverDeps());
+
+    expect(result.kind).toBe("committed");
+    const postimage = currentState() as unknown as Record<string, unknown>;
+    const after = (postimage.contextPressure as Record<string, unknown> | undefined)?.guideCallCount ?? null;
+
+    expect(after).toBe(before);
+  });
+});
+
 describe("T-450 7b: the fence is one normalized instant", () => {
   it("an EXTREME but parseable clock does not abort the takeover mid-commit", async () => {
     // `Number.isFinite` alone accepts JavaScript's maximum Date, and the expiry
@@ -311,6 +339,13 @@ describe("T-450 7b: the fence is one normalized instant", () => {
     expect(Number.isFinite(Date.parse(lease.lastHeartbeat))).toBe(true);
     expect(Number.isFinite(Date.parse(raw.lastGuideCall as string))).toBe(true);
     expect(Number.isFinite(Date.parse(lease.expiresAt))).toBe(true);
+    // THE FOURTH TIMESTAMP, and it was the one this write left behind. It used
+    // to be stamped from a SECOND raw `nowIso()`, so under this exact injected
+    // clock it persisted the literal garbage while its three neighbours
+    // described wall time -- one record describing two times, inside the write
+    // whose whole contract is one instant.
+    expect(Number.isFinite(Date.parse(raw.mcpGuideCallAt as string))).toBe(true);
+    expect(raw.mcpGuideCallAt).toBe(lease.lastHeartbeat);
     // ONE instant: the two activity fields agree, and the fence is exactly the
     // canonical duration after it.
     expect(lease.lastHeartbeat).toBe(raw.lastGuideCall);
@@ -1316,7 +1351,13 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     if (!t.success || t.data.phase !== "published") return;
     // DELTA AMENDMENT (b): candidate action under candidate authority is
     // what persisted, and the pairing holds end to end.
-    expect(t.data.action).toBe("candidate_recovery_takeover");
+    //
+    // ISS-967: this assertion used to demand `candidate_recovery_takeover` on
+    // the CANCEL path, which is how the defect survived -- the test asserted
+    // the value the code was handing it rather than the operation that had
+    // actually run. A record read in isolation must say the session was ENDED.
+    expect(t.data.action).toBe("candidate_recovery_cancellation");
+    expect(t.data.action).not.toBe("candidate_recovery_takeover");
     expect(t.data.authority.kind).toBe("candidate");
     if (t.data.authority.kind !== "candidate") return;
     expect(t.data.authority.clientTaskId).toBe(CALLER.id);

@@ -1123,12 +1123,15 @@ export function retireClosedIntent(
     // same session under legacy or task authority proves something else
     // happened, not that this happened. Matching only the id and provenance
     // let an unrelated cancellation stand in as proof.
-    if (read.transition.action !== "candidate_recovery_takeover"
+    if ((read.transition.action !== "candidate_recovery_takeover"
+      && read.transition.action !== "candidate_recovery_cancellation")
       || read.transition.authority.kind !== "candidate"
       || read.transition.authority.clientTaskId !== c.clientTaskId) {
       return { ok: false, reason: "outcome-underivable", detail:
         "the published transition is not the candidate cancellation this intent authorized: a candidate " +
-        "intent is proved by a candidate_recovery_takeover held by the same client task, not by any " +
+        "intent is proved by a candidate recovery record (candidate_recovery_cancellation, or " +
+        "candidate_recovery_takeover for pre-fix candidate-cancellation records) held by the same " +
+        "client task, not by any " +
         "cancellation that happens to share the id" };
     }
     // The CONFIRMATION PAIR is deliberately NOT compared. The transition
@@ -2335,7 +2338,15 @@ export async function commitCandidateTakeoverLocked(
           ownerTask: args.callerTask,
           heartbeatGeneration: staged.id,
           mcpServerPid: process.pid,
-          mcpGuideCallAt: nowIso(),
+          // FROM THE SAME NORMALIZED INSTANT as the lease fields, not from a
+          // second raw `nowIso()`. This write's own contract is one instant,
+          // and a second call to the injected clock breaks it inside the very
+          // fix that established it: under an unparseable or extreme clock the
+          // neighbouring fields fall back to wall time while this one would
+          // persist the raw value, so one record would describe two times.
+          // `refreshLease` stamps this field from the lease instant too, so
+          // sharing it here is also what makes the two paths agree.
+          mcpGuideCallAt: leaseNow,
           candidateTakeover: written.data,
         } as unknown as FullSessionState);
       } catch (err) {
@@ -2568,16 +2579,45 @@ export interface CandidateCancelDeps {
   readonly tail?: typeof runCancellationTail;
 }
 
-export type CandidateCancelCommit =
+/**
+ * A published cancellation, split by whether it was FRESH or RESUMED.
+ *
+ * The split exists to carry one invariant in the TYPE rather than in the
+ * renderer's judgement: only a fresh publication holds the `CandidateTicketWork`
+ * finding, because it comes from the authorization this call performed. A
+ * resumed publication finishes a cycle authorized by an earlier, crashed call,
+ * and that call's finding is gone -- the persisted disposition records what was
+ * DONE, not the three-way reason behind it.
+ *
+ * An optional field would have admitted two states that cannot legitimately
+ * exist (a fresh publication missing evidence it necessarily holds, a resumed
+ * one carrying evidence it cannot reconstruct) and pushed the renderer into
+ * INFERRING whether an absence was legitimate. That is the same defect shape as
+ * a nullable accessor that cannot say "I could not tell".
+ */
+export type CandidateCancelPublished =
   | {
       readonly kind: "published";
       readonly state: FullSessionState;
       readonly tail: TailOutcome;
       readonly close: IntentWrite;
-      /** True when this call resumed a crashed transition rather than
-       * minting one: verify and finish, never redo. */
-      readonly resumed: boolean;
+      readonly resumed: false;
+      /** The finding this call's own authorization produced. Mandatory here. */
+      readonly ticketWork: CandidateTicketWork;
     }
+  | {
+      readonly kind: "published";
+      readonly state: FullSessionState;
+      readonly tail: TailOutcome;
+      readonly close: IntentWrite;
+      /** Resumed: verify and finish, never redo. */
+      readonly resumed: true;
+      /** Unrepresentable on this path, deliberately. */
+      readonly ticketWork?: never;
+    };
+
+export type CandidateCancelCommit =
+  | CandidateCancelPublished
   | { readonly kind: "already-complete"; readonly close: IntentWrite; readonly detail: string }
   | {
       readonly kind: "refused";
@@ -3098,7 +3138,10 @@ export async function commitCandidateCancelLocked(
   try {
     applied = await apply(root, { dir: sessionDir, state: now }, disposition, undefined, {
       transitionId: intent.transitionId,
-      action: "candidate_recovery_takeover",
+      // ISS-967: a CANCELLATION, recorded as one. This used to stamp the
+      // takeover value, so the durable record of an ended session asserted it
+      // had been adopted instead.
+      action: "candidate_recovery_cancellation",
       authority,
     });
   } catch (err) {
@@ -3115,7 +3158,16 @@ export async function commitCandidateCancelLocked(
       : (after as unknown as Record<string, unknown>).cancellationTransition,
     sessionRevision: after?.revision ?? applied.written.revision,
   });
-  return { kind: "published", state: applied.written, tail: applied.tail, close, resumed: false };
+  // The FRESH arm carries the ticket finding, because this call's own
+  // authorization produced it. The resumed arms cannot, and the type says so.
+  return {
+    kind: "published",
+    state: applied.written,
+    tail: applied.tail,
+    close,
+    resumed: false,
+    ticketWork: authorization.ticketWork,
+  };
 }
 
 /** The session-lock-acquiring wrapper, mirroring the takeover's: exactly one

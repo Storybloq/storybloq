@@ -1332,8 +1332,25 @@ export type StashPopOutcome = z.infer<typeof StashPopOutcomeSchema>;
  * `candidate_recovery_takeover` is declared here in 6a although only 6b writes
  * it, so 6b needs no schema migration, and so an unrecognized action can be
  * refused rather than guessed at.
+ *
+ * ISS-967: `candidate_recovery_cancellation` was MISSING, and the cancel commit
+ * therefore stamped the takeover value into the record of a session it had just
+ * ENDED. `authority.kind` cannot disambiguate the two, because `candidate` is
+ * correct for both operations, so the record read in isolation said the exact
+ * opposite of what happened -- the failure this docstring exists to prevent.
+ * Added ADDITIVELY: nothing is removed or repurposed, so every record already
+ * written stays readable, and the takeover literal remains accepted wherever a
+ * pre-fix cycle recorded one. The cross-field `superRefine` below needed no
+ * change, which was verified rather than assumed: it enforces the pairing in
+ * BOTH directions -- `ordinary_cancellation` may not carry candidate authority,
+ * and either candidate action requires it -- and a third non-ordinary value
+ * satisfies that on both sides.
  */
-export const CancellationActionSchema = z.enum(["ordinary_cancellation", "candidate_recovery_takeover"]);
+export const CancellationActionSchema = z.enum([
+  "ordinary_cancellation",
+  "candidate_recovery_takeover",
+  "candidate_recovery_cancellation",
+]);
 export type CancellationAction = z.infer<typeof CancellationActionSchema>;
 
 /**
@@ -1927,6 +1944,28 @@ export const OwnerGoneCandidateTakeoverSchema = z.object({
 
 export type OwnerGoneCandidateTakeover = z.infer<typeof OwnerGoneCandidateTakeoverSchema>;
 
+/**
+ * The CANCEL door's confirmation (T-450 step 8), same two fields for the same
+ * reasons, and deliberately its OWN schema rather than a reuse of the takeover
+ * one.
+ *
+ * The fields match today because the confirmed picture is the same artifact.
+ * They are not the same CONTRACT: sharing one object would make any later
+ * divergence (cancel gaining a disposition hint, say) a silent change to the
+ * takeover door's published input. Each door's schema is named after its door,
+ * so a change to one cannot reach the other by accident.
+ *
+ * Both doors validate at BOTH boundaries for the reason given above: the MCP
+ * schema alone would let a non-MCP caller push a negative, fractional or
+ * non-finite revision into a compare-and-swap.
+ */
+export const OwnerGoneCandidateCancelSchema = z.object({
+  sessionRevision: z.number().int().nonnegative().finite(),
+  evidenceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+
+export type OwnerGoneCandidateCancel = z.infer<typeof OwnerGoneCandidateCancelSchema>;
+
 export interface GuideInput {
   readonly sessionId: string | null;
   readonly action: GuideAction;
@@ -1954,6 +1993,25 @@ export interface GuideInput {
    * cancel is the only defensible shape.
    */
   readonly ownerGoneCandidateTakeover?: OwnerGoneCandidateTakeover;
+  /**
+   * T-450 step 8. The confirmed owner-gone picture authorizing a CANCELLATION
+   * of a session whose recorded owner is gone: the door that ENDS such a
+   * session rather than adopting it.
+   *
+   * NO SECOND FLAG accompanies this one, and the asymmetry with the takeover
+   * field is deliberate rather than an oversight. `takeover: true` is a real
+   * second decision on `resume` ("adopt rather than refuse"), and it is
+   * refused outright on any action but `resume`, so cancel could not require
+   * it without relaxing a shipped rule. On `cancel` the ACTION is already the
+   * destructive intent, so this field's presence plus the two values it
+   * carries is the whole request.
+   *
+   * Supplying it REQUIRES an explicit `sessionId`. `handleCancel` otherwise
+   * auto-selects an active session, and this object names a revision and a
+   * fingerprint but no session, so a human who confirmed a picture for one
+   * session could end another with nothing downstream able to notice.
+   */
+  readonly ownerGoneCandidateCancel?: OwnerGoneCandidateCancel;
 }
 
 // ---------------------------------------------------------------------------

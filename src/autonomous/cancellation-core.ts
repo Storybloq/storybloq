@@ -734,7 +734,9 @@ function anyJsonLineMatches(path: string, predicate: (entry: Record<string, unkn
 export interface CandidateCancellationInit {
   /** Pre-minted at authorize and carried by the durable intent, never fresh. */
   readonly transitionId: string;
-  readonly action: "candidate_recovery_takeover";
+  /** Either candidate action. ISS-967: a cancellation records itself as a
+   * cancellation; only a takeover records a takeover. */
+  readonly action: "candidate_recovery_takeover" | "candidate_recovery_cancellation";
   readonly authority: Extract<CancellationAuthority, { kind: "candidate" }>;
 }
 
@@ -805,9 +807,18 @@ export async function applyCancellationTransition(
     }
     // The schema's superRefine catches this pairing at READ time, but by then
     // the lie is on disk. This is the one place that refuses it pre-write.
-    if (init.action !== "candidate_recovery_takeover" || init.authority.kind !== "candidate") {
+    // WIDENED to the two-value candidate set (ISS-967), NOT narrowed per path.
+    // This guard is the only thing standing between candidate authority and an
+    // `ordinary_cancellation` record pre-write, so it still refuses that
+    // pairing; what it no longer does is force a cancellation to describe
+    // itself as a takeover.
+    if (
+      (init.action !== "candidate_recovery_takeover" && init.action !== "candidate_recovery_cancellation")
+      || init.authority.kind !== "candidate"
+    ) {
       throw new Error(
-        "applyCancellationTransition: init requires candidate_recovery_takeover under candidate authority",
+        "applyCancellationTransition: init requires a candidate recovery action " +
+        "(candidate_recovery_takeover or candidate_recovery_cancellation) under candidate authority",
       );
     }
     // The transitionId is the key every artifact and every future validation

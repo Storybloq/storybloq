@@ -230,6 +230,62 @@ function adoptExpiredLease(
   return { state: written, adopted: true };
 }
 
+/**
+ * ISS-941 half 1: a session whose ON-DISK status has moved off "active" --
+ * superseded by another session's start-path reclaim, or completed -- must
+ * never be advanced by report, resume, or pre_compact. Before this gate, each
+ * handler read the session once via its outer lookup and never re-checked
+ * `status`, so a superseded zombie kept refreshing its lease and advancing
+ * the pipeline right alongside its successor.
+ *
+ * The whole call is already inside the outer `withSessionLock` (see
+ * `handleAutonomousGuide`), so this is a plain re-read, not a second lock
+ * acquisition -- a nested `withSessionLock` on the same path from the same
+ * process would be a reentrant `lockfile.lock()` and would stall against its
+ * own retry/stale config. A failed or unparseable re-read is `"refused"`
+ * exactly like a genuinely inactive one: falling back to the caller's
+ * already-loaded state object would be the same fail-open this gate exists
+ * to close, arrived at through an error path instead of a status value.
+ */
+type SessionActivityCheck =
+  | { readonly kind: "active" }
+  | { readonly kind: "refused"; readonly reason: string };
+
+function checkSessionStillActive(dir: string): SessionActivityCheck {
+  const onDisk = readSessionResilient(dir);
+  if (!onDisk) {
+    return {
+      kind: "refused",
+      reason:
+        "this session's current record could not be re-read (missing or unreadable). " +
+        "Refusing without positive confirmation it is still active. " +
+        "Inspect `.story/sessions/` directly, or run `storybloq session list`.",
+    };
+  }
+  if (onDisk.status === "active") return { kind: "active" };
+  if (onDisk.status === "completed") {
+    return {
+      kind: "refused",
+      reason: "this session has already ended (status: completed); it was not superseded by anything.",
+    };
+  }
+  // status === "superseded"
+  const who = onDisk.supersededBy
+    ? `by session ${onDisk.supersededBy}`
+    : "by a newer session on this workspace (no successor session id was recorded)";
+  const cause =
+    onDisk.terminationReason === "auto_superseded_finished_orphan"
+      ? "auto-superseded because its targeted work was already verified complete and every recorded commit was already in HEAD"
+      : `superseded ${who}`;
+  return {
+    kind: "refused",
+    reason:
+      `this session was ${cause}. This guide call was not applied; any uncommitted work in its ` +
+      "working tree was intentionally left in place for inspection. Stop here and write a " +
+      "handover from the owning task instead of retrying.",
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Recovery mapping -- exported for test completeness checks (ISS-040)
 // ---------------------------------------------------------------------------
@@ -2003,6 +2059,13 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   }
   const info = lookup.info;
 
+  const activityCheck = checkSessionStillActive(info.dir);
+  if (activityCheck.kind === "refused") {
+    return guideError(new Error(
+      `Cannot report progress for session ${args.sessionId}: ${activityCheck.reason}`,
+    ));
+  }
+
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);
   if (ownershipConflict) {
     return guideError(new Error(
@@ -2629,6 +2692,13 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     return guideError(new Error(describeSessionLookupFailure(args.sessionId, resumeLookup)));
   }
   let info = resumeLookup.info;
+
+  const activityCheck = checkSessionStillActive(info.dir);
+  if (activityCheck.kind === "refused") {
+    return guideError(new Error(
+      `Cannot resume session ${args.sessionId}: ${activityCheck.reason}`,
+    ));
+  }
 
   // -------------------------------------------------------------------------
   // T-450 step 7b.2: the owner-gone candidate takeover of a LIVE, non-COMPACT
@@ -3278,6 +3348,13 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
     return guideError(new Error(describeSessionLookupFailure(args.sessionId, preCompactLookup)));
   }
   const info = preCompactLookup.info;
+
+  const activityCheck = checkSessionStillActive(info.dir);
+  if (activityCheck.kind === "refused") {
+    return guideError(new Error(
+      `Cannot prepare session ${args.sessionId} for compaction: ${activityCheck.reason}`,
+    ));
+  }
 
   const adoption = adoptExpiredLease(
     root,

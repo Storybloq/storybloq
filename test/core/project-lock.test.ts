@@ -4,6 +4,7 @@ import {
   rmSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
   unlinkSync,
   mkdirSync,
   existsSync,
@@ -27,6 +28,52 @@ vi.mock("../../src/core/limit-lock.js", async (importOriginal) => {
   return { ...actual, inspectProcessIdentitySync };
 });
 
+// ISS-942 942.1: a controllable one-shot override on verifyProjectLockOwnership
+// (checkProjectLockFencing's ONLY dependency in project-loader.ts) so tests can
+// drive REAL, lock-acquiring call sites (writeTicket, deleteTicket, team-mode
+// handover creation) through a genuine ownership-loss failure without racing a
+// real steal and without the reentrant-acquisition deadlock that tampering the
+// on-disk lock file from an OUTER withProjectLock would cause for a call site
+// that acquires its own lock. Defaults to delegating to the real
+// implementation, so every other test (including direct
+// verifyProjectLockOwnership calls elsewhere in this file) is unaffected.
+const fencingOverride = vi.hoisted(() => ({ failNextN: 0 }));
+vi.mock("../../src/core/project-lock.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/core/project-lock.js")>();
+  const verifyProjectLockOwnership = ((handle: unknown) => {
+    if (fencingOverride.failNextN > 0) {
+      fencingOverride.failNextN -= 1;
+      return false;
+    }
+    return actual.verifyProjectLockOwnership(handle as Parameters<typeof actual.verifyProjectLockOwnership>[0]);
+  }) as typeof actual.verifyProjectLockOwnership;
+  return { ...actual, verifyProjectLockOwnership };
+});
+
+// ISS-942 942.1: a one-shot, path-targeted override letting a single test
+// force `stat` to fail with a specific error code, proving loadProject's
+// .txn.json presence probe (R3) fails closed on a non-ENOENT stat error.
+// Path-targeted (matched by suffix) rather than a bare next-call flag,
+// because loadProject's own step 1 (`stat(wrapDir)`) runs first -- an
+// untargeted override would misfire there instead of the intended probe.
+// Not filesystem-permission-based (e.g. chmod) because permission checks are
+// bypassed when the test process runs as root (common in CI containers),
+// which would make that technique silently no-op rather than fail loudly.
+const statOverride = vi.hoisted(() => ({ failPathSuffix: null as string | null }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const stat = (async (path: unknown, opts?: unknown) => {
+    if (statOverride.failPathSuffix && typeof path === "string" && path.endsWith(statOverride.failPathSuffix)) {
+      statOverride.failPathSuffix = null;
+      const err = new Error("ISS-942 942.1 simulated EACCES") as NodeJS.ErrnoException;
+      err.code = "EACCES";
+      throw err;
+    }
+    return (actual.stat as (...a: unknown[]) => Promise<unknown>)(path, opts);
+  }) as typeof actual.stat;
+  return { ...actual, stat };
+});
+
 import {
   acquireProjectLockAsync,
   releaseProjectLock,
@@ -47,6 +94,7 @@ import {
   atomicCreate,
 } from "../../src/core/project-loader.js";
 import { ProjectLoaderError } from "../../src/core/errors.js";
+import { handleHandoverCreate } from "../../src/cli/commands/handover.js";
 
 function deadPid(): number {
   const r = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
@@ -512,34 +560,52 @@ describe("project-lock", () => {
 describe("project-lock integration (project-loader.ts wiring)", () => {
   let testRoot: string;
 
+  beforeEach(() => {
+    fencingOverride.failNextN = 0;
+    statOverride.failPathSuffix = null;
+  });
+
   afterEach(async () => {
+    // A leftover armed override would silently mask which fencing/stat check
+    // a later test actually exercised (or let it pass for the wrong reason).
+    expect(fencingOverride.failNextN).toBe(0);
+    expect(statOverride.failPathSuffix).toBe(null);
+    fencingOverride.failNextN = 0;
+    statOverride.failPathSuffix = null;
     if (testRoot) await rm(testRoot, { recursive: true, force: true });
   });
 
-  it("AsyncLocalStorage isolation: two concurrent withProjectLock calls on different roots each see only their own handle", async () => {
+  it("AsyncLocalStorage isolation: two concurrent withProjectLock calls on different roots each see only their own handle (forced ownership loss on A does not leak into B)", async () => {
     const rootA = await createProject();
     const rootB = await createProject();
     try {
-      const [a, b] = await Promise.all([
-        (async () => {
-          let seenTicket: unknown;
-          await withProjectLock(rootA, { strict: false }, async () => {
-            await writeTicketUnlocked(ticket("T-001"), rootA);
-            seenTicket = JSON.parse(await readFile(join(rootA, ".story", "tickets", "T-001.json"), "utf-8"));
-          });
-          return seenTicket;
-        })(),
-        (async () => {
-          let seenTicket: unknown;
-          await withProjectLock(rootB, { strict: false }, async () => {
-            await writeTicketUnlocked(ticket("T-002"), rootB);
-            seenTicket = JSON.parse(await readFile(join(rootB, ".story", "tickets", "T-002.json"), "utf-8"));
-          });
-          return seenTicket;
-        })(),
+      // ISS-942 942.1: the previous version of this test only asserted both
+      // roots' writes succeed, which also passes under a module-global or
+      // cross-wired handle store (a regression this test exists to catch).
+      // Force root A's OWN ambient handle to lose ownership -- tamper ONLY
+      // root A's on-disk lock file, concurrently with root B's untouched,
+      // healthy write. If the ALS store were global rather than isolated per
+      // async context, A's tampering would leak into B's concurrent write
+      // (or vice versa); real per-context isolation confines the failure to A.
+      const [aResult, bResult] = await Promise.allSettled([
+        withProjectLock(rootA, { strict: false }, async () => {
+          const lockPathA = join(rootA, ".story", ".lock");
+          const bodyA = JSON.parse(await readFile(lockPathA, "utf-8"));
+          await rm(lockPathA);
+          await writeFile(lockPathA, JSON.stringify({ ...bodyA, token: "stolen-by-test-root-a" }));
+          await writeTicketUnlocked(ticket("T-001"), rootA);
+        }),
+        withProjectLock(rootB, { strict: false }, async () => {
+          await writeTicketUnlocked(ticket("T-002"), rootB);
+        }),
       ]);
-      expect((a as { id: string }).id).toBe("T-001");
-      expect((b as { id: string }).id).toBe("T-002");
+      expect(aResult.status).toBe("rejected");
+      if (aResult.status === "rejected") {
+        expect(aResult.reason).toBeInstanceOf(ProjectLoaderError);
+      }
+      expect(existsSync(join(rootA, ".story", "tickets", "T-001.json"))).toBe(false);
+      expect(bResult.status).toBe("fulfilled");
+      expect(existsSync(join(rootB, ".story", "tickets", "T-002.json"))).toBe(true);
     } finally {
       await rm(rootA, { recursive: true, force: true });
       await rm(rootB, { recursive: true, force: true });
@@ -665,6 +731,54 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     expect(existsSync(join(testRoot, ".story", "tickets", "T-030.json"))).toBe(false);
   });
 
+  // ---- ISS-942 942.1: the four choke-point tests above drive the primitives
+  // (atomicWrite/atomicCreate/fencedUnlink/fencedLink) directly with synthetic
+  // paths. These four drive the actual NAMED real call sites the test plan
+  // requires (writeTicket, createOnly ticket creation, deleteTicket's
+  // hard-delete path, team-mode handover creation) through the identical
+  // ownership-loss failure, proving the ROUTING through each consumer, not
+  // just the helper in isolation. writeTicket/deleteTicket/handleHandoverCreate
+  // all acquire their OWN project lock, so forceOwnershipLossDuring's
+  // tamper-the-on-disk-file-from-an-outer-lock technique would deadlock/time
+  // out here (self-pid-held-lock reacquisition); the fencingOverride seam
+  // (module-mocked verifyProjectLockOwnership) fails the NEXT fencing check
+  // from inside the call site's own lock hold instead. ----
+
+  it("real call site: writeTicket aborts on ownership loss (fencingOverride drives atomicWrite's routing)", async () => {
+    testRoot = await createProject();
+    fencingOverride.failNextN = 1;
+    await expect(writeTicket(ticket("T-050"), testRoot)).rejects.toThrow(ProjectLoaderError);
+    expect(existsSync(join(testRoot, ".story", "tickets", "T-050.json"))).toBe(false);
+  });
+
+  it("real call site: ticket creation with createOnly aborts on ownership loss (fencingOverride drives atomicCreate's routing)", async () => {
+    testRoot = await createProject();
+    const err = await forceOwnershipLossDuring(testRoot, () =>
+      writeTicketUnlocked(ticket("T-051"), testRoot, { createOnly: true }),
+    );
+    expect(err).toBeInstanceOf(ProjectLoaderError);
+    expect(existsSync(join(testRoot, ".story", "tickets", "T-051.json"))).toBe(false);
+  });
+
+  it("real call site: deleteTicket's hard-delete path aborts on ownership loss (fencingOverride drives fencedUnlink's routing)", async () => {
+    testRoot = await createProject();
+    await writeTicket(ticket("T-052"), testRoot);
+    fencingOverride.failNextN = 1;
+    await expect(deleteTicket("T-052", testRoot, { hard: true })).rejects.toThrow(ProjectLoaderError);
+    expect(existsSync(join(testRoot, ".story", "tickets", "T-052.json"))).toBe(true); // survives -- the delete never committed
+  });
+
+  it("real call site: team-mode handover creation aborts on ownership loss (fencingOverride drives fencedLink's routing)", async () => {
+    testRoot = await createProject();
+    const wrapDir = join(testRoot, ".story");
+    await writeFile(join(wrapDir, "config.json"), JSON.stringify({ ...minimalConfig, team: { enabled: true } }, null, 2));
+    fencingOverride.failNextN = 1;
+    await expect(handleHandoverCreate("Session content.", "test-slug", "md", testRoot)).rejects.toThrow(ProjectLoaderError);
+    const handoversDir = join(wrapDir, "handovers");
+    const published = readdirSync(handoversDir).filter((f) => f.endsWith(".md"));
+    expect(published).toHaveLength(0); // the publish (fencedLink) step never committed
+  });
+
   // ---- forward-recovery fails closed on genuine errors (3 shapes) ----
 
   it("forward recovery fails closed on a genuine rename error, preserving temp + journal", async () => {
@@ -713,6 +827,60 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     await expect(loadProject(testRoot)).rejects.toThrow(/Transaction recovery failed applying delete/);
     expect(existsSync(target)).toBe(true); // not silently treated as already-gone
     expect(existsSync(join(wrapDir, ".txn.json"))).toBe(true); // journal preserved
+  });
+
+  // ---- ISS-942 942.1: R1's proving test, plus a pin for doRecoverTransaction's
+  // already-correct no-commit rollback arm (unpinned in the tree until now) ----
+
+  it("runTransactionUnlocked's OWN commit-loop delete branch fails closed on a genuine non-ENOENT delete error, journal preserved (R1)", async () => {
+    testRoot = await createProject();
+    const wrapDir = join(testRoot, ".story");
+    // A directory at the delete target makes unlink fail with EISDIR/EPERM, not
+    // ENOENT. Before the 942.1 fix, this branch's bare `catch { /* Target may
+    // already be gone */ }` swallowed the error, step 6 then removed the
+    // journal, and the transaction reported success while the target silently
+    // survived with no journal left to replay it.
+    const target = join(wrapDir, "tickets", "T-044-dir");
+    await mkdir(target);
+    await expect(
+      withProjectLock(testRoot, { strict: false }, () => runTransactionUnlocked(testRoot, [{ op: "delete", target }])),
+    ).rejects.toThrow(/Failed to delete .* during transaction commit; journal preserved for retry/);
+    expect(existsSync(target)).toBe(true); // not silently treated as already-gone
+    expect(existsSync(join(wrapDir, ".txn.json"))).toBe(true); // journal preserved for retry
+  });
+
+  it("doRecoverTransaction's no-commit rollback arm fails closed on a genuine non-ENOENT temp-unlink error (pins already-correct behavior)", async () => {
+    testRoot = await createProject();
+    const wrapDir = join(testRoot, ".story");
+    const target = join(wrapDir, "tickets", "T-043.json");
+    // A directory sits at the prepared temp path -> unlink fails EISDIR/EPERM,
+    // not ENOENT. commitStarted: false means the commit never began, so this
+    // exercises the "safe to clean up" rollback arm, not forward recovery.
+    const tempPath = join(wrapDir, "tickets", "T-043-tempdir");
+    await mkdir(tempPath);
+    const journal = { entries: [{ op: "write", target, tempPath }], commitStarted: false };
+    await writeFile(join(wrapDir, ".txn.json"), JSON.stringify(journal));
+    await expect(loadProject(testRoot)).rejects.toThrow(/Transaction recovery failed removing prepared temp/);
+    expect(existsSync(tempPath)).toBe(true); // not silently treated as already-gone
+    expect(existsSync(join(wrapDir, ".txn.json"))).toBe(true); // journal preserved for retry
+  });
+
+  it("loadProject's journal-presence probe fails closed on a non-ENOENT stat error instead of silently skipping recovery (R3)", async () => {
+    testRoot = await createProject();
+    const wrapDir = join(testRoot, ".story");
+    // A real, valid, commitStarted:true journal is present -- if the probe
+    // failure were silently swallowed (the pre-942.1 `existsSync` behavior),
+    // this journal would be silently skipped and orphaned rather than recovered.
+    const target = join(wrapDir, "tickets", "T-045.json");
+    const tempPath = `${target}.${process.pid}.tmp`;
+    await writeFile(tempPath, JSON.stringify(ticket("T-045")));
+    await writeFile(
+      join(wrapDir, ".txn.json"),
+      JSON.stringify({ entries: [{ op: "write", target, tempPath }], commitStarted: true }),
+    );
+    statOverride.failPathSuffix = ".txn.json";
+    await expect(loadProject(testRoot)).rejects.toThrow(/Failed to probe transaction journal presence/);
+    expect(existsSync(join(wrapDir, ".txn.json"))).toBe(true); // journal untouched, not silently skipped
   });
 
   // ---- reconcile-shaped duplicate-mint under concurrent stale-lock contention ----

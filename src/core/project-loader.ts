@@ -106,8 +106,27 @@ export async function loadProject(
     );
   }
 
-  // 2. Recover any incomplete transaction (under lock)
-  if (existsSync(join(wrapDir, ".txn.json"))) {
+  // 2. Recover any incomplete transaction (under lock). ISS-942 942.1:
+  // existsSync fails OPEN on any stat error (permissions, transient I/O), not
+  // just ENOENT -- a non-ENOENT failure here would silently read as "no
+  // journal" and skip recovery, permanently orphaning a pending transaction
+  // until something else happens to notice. Probe explicitly and fail closed.
+  let journalPresent: boolean;
+  try {
+    await stat(join(wrapDir, ".txn.json"));
+    journalPresent = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      journalPresent = false;
+    } else {
+      throw new ProjectLoaderError(
+        "io_error",
+        "Failed to probe transaction journal presence; refusing to silently skip recovery",
+        err,
+      );
+    }
+  }
+  if (journalPresent) {
     await withLock(wrapDir, () => doRecoverTransaction(wrapDir));
   }
 
@@ -915,6 +934,26 @@ export async function runTransactionUnlocked(
     ? { pid: lockHandle.pid, processSignature: lockHandle.processSignature, episodeId: randomUUID() }
     : undefined;
 
+  // ISS-942 942.1: journal removal routed through fencedUnlink (fencing +
+  // unlink) so both the commit-success removal (step 6) and the no-commit
+  // rollback removal benefit from the same ownership fencing as every other
+  // destructive choke point, instead of a bare unlink. ENOENT is tolerated
+  // (already gone -- fine); doRecoverTransaction's own unlinkJournalOrThrow
+  // documents the identical rationale -- the commit path should match its
+  // own recovery path's posture.
+  async function removeJournal(): Promise<void> {
+    try {
+      await fencedUnlink(journalPath);
+    } catch (err) {
+      const code =
+        err instanceof ProjectLoaderError
+          ? (err.cause as NodeJS.ErrnoException | undefined)?.code
+          : (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return;
+      throw err;
+    }
+  }
+
   try {
     // 1. Build entries
     for (const op of operations) {
@@ -956,14 +995,27 @@ export async function runTransactionUnlocked(
       } else if (entry.op === "delete") {
         try {
           await unlink(entry.target);
-        } catch {
-          // Target may already be gone
+        } catch (err) {
+          // ISS-942 942.1: only ENOENT ("already gone") is a genuine no-op.
+          // Any other failure (EPERM/EISDIR/EACCES/...) must NOT be swallowed
+          // here -- step 6 would then remove the journal, the transaction
+          // would report success, and the target would silently survive with
+          // no journal left to replay it. Fail closed instead: the journal
+          // (already durably marked commitStarted=true) is left in place for
+          // the next recovery pass to retry this exact entry.
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw new ProjectLoaderError(
+              "io_error",
+              `Failed to delete ${entry.target} during transaction commit; journal preserved for retry`,
+              err,
+            );
+          }
         }
       }
     }
 
     // 6. Remove journal
-    await unlink(journalPath);
+    await removeJournal();
   } catch (err) {
     if (!commitStarted) {
       // Safe to clean up -- no renames have happened
@@ -977,9 +1029,9 @@ export async function runTransactionUnlocked(
         }
       }
       try {
-        await unlink(journalPath);
+        await removeJournal();
       } catch {
-        /* ignore */
+        /* best-effort cleanup; the original error above is what propagates */
       }
     }
     // If commitStarted, leave journal for recovery on next load
@@ -1467,8 +1519,8 @@ export async function atomicWrite(
  * Fenced unlink: verifies the ambient lock (if any) still owns `.story/.lock`
  * immediately before removing `targetPath`. ISS-942 v6 choke point alongside
  * atomicWrite/atomicCreate, for direct-delete paths that don't go through
- * either (hard-deletes, gc tombstone removal, team handover creation's own
- * cleanup).
+ * either (hard-deletes, gc tombstone removal, transaction journal/temp-file
+ * cleanup in both the commit path and recovery).
  */
 export async function fencedUnlink(targetPath: string): Promise<void> {
   checkProjectLockFencing();

@@ -321,7 +321,18 @@ function inactivePayload(): StatusPayload {
   return buildInactivePayload();
 }
 
-function activePayload(session: Parameters<typeof buildActivePayload>[0], root: string): StatusPayload {
+/**
+ * EXPORTED for test. This is the fourth consumer of the step-7b heartbeat
+ * migration and was the only one with no test that could have failed: a revert
+ * to the pre-migration shape compiled cleanly and broke nothing, because
+ * `readAliveTimestamp` is still exported and `collectProbes`'s extra parameter
+ * is optional. It reads the heartbeat, last-MCP-call and subprocess artifacts
+ * from disk, so it is not pure, but it IS deterministic over the supplied
+ * snapshot plus that on-disk fixture. That is what makes it testable, and
+ * exporting it is the difference between the migration being pinned and merely
+ * being present.
+ */
+export function activePayload(session: Parameters<typeof buildActivePayload>[0], root: string): StatusPayload {
   const sDir = sessionDir(root, session.sessionId);
   const lastMcpCall = readLastMcpCall(sDir);
   // T-450 step 7b.4: same posture as status-writer -- the OWNER's heartbeat,

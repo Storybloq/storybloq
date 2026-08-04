@@ -1115,7 +1115,7 @@ export async function handleSessionClearCompact(
       if (hasKnownLiveOwner) {
         return `Compact markers cleared for session ${info.state.sessionId}. Ownership was not changed. ` +
           "Resume from the recorded owner task. Recovery elsewhere must use the client's " +
-          "explicit owner-gone confirmation flow." + finalizeNote;
+          "explicit owner-gone-candidate confirmation flow." + finalizeNote;
       }
       return `Compact markers cleared for session ${info.state.sessionId}. Resume with:\n` +
         `storybloq_autonomous_guide {"sessionId": "${info.state.sessionId}", "action": "resume"}` + finalizeNote;

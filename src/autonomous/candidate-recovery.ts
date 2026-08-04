@@ -2913,9 +2913,31 @@ export async function commitCandidateCancelLocked(
       try {
         applied = await apply(root, { dir: sessionDir, state: fresh }, t.disposition as TicketDisposition, t);
       } catch (err) {
+        // WHAT A THROW HERE DOES AND DOES NOT PROVE (T-450 step 9.1).
+        //
+        // This used to claim "the record and intent are unchanged". That is
+        // FALSE, and falsely reassuring in the one direction that matters.
+        // `applyCancellationTransition` performs write 4 -- the state write that
+        // carries the published transition -- and for a candidate transition it
+        // routes through the DURABLE writer precisely because the intent's close
+        // depends on that write having happened. A throw after that write leaves
+        // the cancellation visible on disk while this call reports a failure, so
+        // the record may well have changed.
+        //
+        // What IS true is the part that makes the retry safe, and it is a
+        // property of the resume path rather than of this catch: the retry
+        // re-reads the persisted record and RE-VALIDATES it, so it resumes a
+        // publication that landed instead of starting a new cancellation.
+        // Note what is deliberately NOT promised: that the retry COMPLETES.
+        // Re-validation can fail closed -- a malformed, foreign or concurrently
+        // advanced record is refused -- so retry SAFETY is guaranteed where
+        // completion is not, and a refusal text that promised completion would
+        // be the same over-claim in a new place.
         return { kind: "refused", stage: "transition", detail:
           `the resumed transition failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
-          "record and intent are unchanged and the resume is retryable" };
+          "cancellation may already have published before the failure, so this is safe to retry but not " +
+          "safe to assume undone -- the retry re-reads and re-validates the persisted record, then " +
+          "resumes it or refuses safely rather than starting a new cancellation" };
       }
       const after = readState();
       const close = closeCancellationIntentOnPublication(sessionDir, {

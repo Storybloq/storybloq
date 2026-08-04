@@ -751,7 +751,11 @@ describe("handleSessionClearCompact ownership guidance", () => {
     const output = await handleSessionClearCompact(real, sessionId);
 
     expect(output).toContain("Ownership was not changed");
-    expect(output).toContain("owner-gone confirmation flow");
+    // T-450 amendment D: the surface says CANDIDATE, because nothing on disk
+    // determines that an owner is gone -- every surface presents a candidate
+    // with its evidence, never a verdict. This assertion moved with the string
+    // rather than being loosened to a substring that both wordings satisfy.
+    expect(output).toContain("owner-gone-candidate confirmation flow");
     expect(output).not.toContain("takeover");
     expect(readSession(dir)?.ownerTask).toMatchObject({ client: "codex", id: "recorded-owner" });
   });

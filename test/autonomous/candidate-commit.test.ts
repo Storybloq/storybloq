@@ -1789,6 +1789,72 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(currentState().state).toBe("SESSION_END");
   });
 
+  it("T-450 step 9.1: a THROW during the resumed transition does not claim the record is unchanged", async () => {
+    // The refusal on this arm used to say "the record and intent are unchanged
+    // and the resume is retryable". The second half is true; the first is FALSE,
+    // and falsely reassuring in the one direction that matters.
+    // `applyCancellationTransition` performs write 4 -- the state write carrying
+    // the published transition -- and routes it through the DURABLE writer for a
+    // candidate transition precisely because the intent's close depends on that
+    // write having happened. A throw AFTER that write leaves the cancellation
+    // visible on disk while the call reports failure.
+    //
+    // An operator reading "unchanged" concludes nothing landed. The honest form
+    // states the retry-safety without asserting the record, which is what this
+    // pins: the exact old sentence must not come back, and the posture that
+    // makes a retry safe must be stated.
+    const state = plantLive();
+    writeMarker();
+    const input = inputFor(state);
+
+    // Get to a durable stash_pending record the same way the sibling tests do.
+    const { applyCancellationTransition: realApply } = await import("../../src/autonomous/cancellation-core.js");
+    const crashingApply = (async (...applyArgs: Parameters<typeof realApply>) => {
+      const session = applyArgs[1];
+      const init = applyArgs[4]!;
+      const raw = session.state as unknown as Record<string, unknown>;
+      writeSessionSync(sessDir, {
+        ...raw,
+        cancellationTransition: {
+          transitionId: init.transitionId,
+          action: init.action,
+          authority: init.authority,
+          disposition: { kind: "no-ticket" },
+          sessionId: session.state.sessionId,
+          sessionStartedAt: new Date(Date.parse(raw.startedAt as string)).toISOString(),
+          transitionStartedRevision: session.state.revision + 1,
+          phase: "stash_pending",
+          stash: { outcome: null },
+        },
+      } as unknown as FullSessionState);
+      throw new Error("simulated crash after write 1");
+    }) as typeof realApply;
+
+    const first = await commitCandidateCancelLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, cancelDeps({ apply: crashingApply }));
+    expect(first.kind).toBe("refused");
+
+    // THE RETRY takes the stash_pending resume branch and its apply throws.
+    const retry = await commitCandidateCancelLocked(root, sessDir, {
+      input, callerTask: CALLER,
+    }, cancelDeps({ apply: async () => { throw new Error("write 4 landed, then the process died"); } }));
+
+    expect(retry.kind).toBe("refused");
+    if (retry.kind !== "refused") return;
+    expect(retry.stage).toBe("transition");
+    // The exact claim that was wrong. A negative assertion, because a reworded
+    // sentence that still asserts an unchanged record is the failure mode.
+    expect(retry.detail).not.toContain("record and intent are unchanged");
+    expect(retry.detail).toContain("may already have published");
+    expect(retry.detail).toContain("re-reads and re-validates");
+    // Retry SAFETY is guaranteed; retry COMPLETION is not, because
+    // re-validation can fail closed on a malformed, foreign or concurrently
+    // advanced record. A refusal promising it would be the same over-claim
+    // this fix removes, wearing different words.
+    expect(retry.detail).toContain("resumes it or refuses safely");
+  });
+
   it("CRASH AFTER WRITE 4: the published record finishes tail-only, and never re-evaluates eligibility", async () => {
     const state = plantLive();
     writeMarker();

@@ -991,7 +991,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         return guideError(new Error(
           `Compacted session ${existing.state.sessionId} is owned by another live task. ` +
           "Open or message its owner first. Recovery from another task requires the " +
-          "explicit owner-gone confirmation flow.",
+          "explicit owner-gone-candidate confirmation flow.",
         ));
       }
       if (isStale) {
@@ -2751,7 +2751,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     return guideError(new Error(
       `Session ${args.sessionId} is owned by ${ownership.ownerDescription}. ` +
       "Open or message that task first. Recovery from another task requires the " +
-      "explicit owner-gone confirmation flow.",
+      "explicit owner-gone-candidate confirmation flow.",
     ));
   }
   const shouldRebindOwner = !!callerTask && (

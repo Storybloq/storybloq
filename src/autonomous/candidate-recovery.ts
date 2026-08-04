@@ -2476,11 +2476,13 @@ export async function commitCandidateTakeoverWithSessionLock(
  *
  * Symmetric with `closeTakeoverIntent` and outside the advancement edge table
  * for the same reason: closing is a statement of derivability, not a phase of
- * the work, and its gate is the shipped published-transition conditions (the
- * same ones retirement's cancellation arm applies): the RE-READ persisted
- * transition parses, names THIS intent's transitionId, is `published`, and
- * its `terminalRevision` is within the persisted revision, so the proof is
- * durable before the intent stops being retryable.
+ * the work, and its gate is the shipped published-transition conditions -- the
+ * same ones retirement's cancellation arm applies, which as of step 9 is true
+ * rather than merely claimed. The RE-READ persisted transition parses, names
+ * THIS intent's transitionId, names THIS session and incarnation, records one
+ * of the two candidate actions under this cycle's own candidate authority, is
+ * `published`, and its `terminalRevision` is within the persisted revision, so
+ * the proof is durable before the intent stops being retryable.
  *
  * Legal FROM phases: `claim_cleared` (the ticket path ran) and `authorized`
  * (the audited no-ticket-write path, where no ClaimTxn ever existed and the
@@ -2515,6 +2517,41 @@ export function closeCancellationIntentOnPublication(
     return { ok: false, reason: "not-committed", detail:
       `the persisted transition is ${t.transitionId}, not this intent's ${c.transitionId}; another ` +
       "transition's publication proves nothing about this cycle" };
+  }
+  // SESSION PROVENANCE AND RECORD KIND, the same pairing retirement's
+  // cancellation arm applies, and for the same reason: a transition record is a
+  // file an operator can edit, and this one is read out of session state, so
+  // the transitionId alone is not identity.
+  //
+  // Getting this wrong is worse than failing to catch a lie. Closing on a
+  // foreign or non-candidate record writes `phase: "closed"` with an outcome
+  // retirement will then REFUSE -- leaving the intent neither retryable nor
+  // retirable. The loose gate does not merely miss; it strands.
+  //
+  // The fail direction is safe, which is what makes these cheap: a close
+  // refusal is non-destructive. The commit reports the cycle as unverified and
+  // still retryable, so a wrongly strict check costs a retry where a wrongly
+  // loose one costs the cycle.
+  if (t.sessionId !== c.sessionId || t.sessionStartedAt !== c.sessionStartedAt) {
+    return { ok: false, reason: "not-committed", detail:
+      `the persisted transition names session ${t.sessionId} started ${t.sessionStartedAt}, and this ` +
+      `intent belongs to ${c.sessionId} started ${c.sessionStartedAt}; another session's publication ` +
+      "proves nothing about this cycle" };
+  }
+  // BOTH candidate literals, deliberately. A cycle minted before ISS-967 wrote
+  // `candidate_recovery_takeover` for a cancellation, so refusing it here would
+  // strand exactly the pre-fix cycles the readoption gate was widened to let
+  // finish. Same accepted set, same reason.
+  if (t.action !== "candidate_recovery_cancellation" && t.action !== "candidate_recovery_takeover") {
+    return { ok: false, reason: "not-committed", detail:
+      `the persisted transition records a ${t.action}, and a candidate intent closes only on a ` +
+      "candidate recovery record; an ordinary cancellation sharing this id proves something else " +
+      "happened" };
+  }
+  if (t.authority.kind !== "candidate" || t.authority.clientTaskId !== c.clientTaskId) {
+    return { ok: false, reason: "not-committed", detail:
+      "the persisted transition was not published under this cycle's candidate authority; a record " +
+      "held by another client task does not close this intent" };
   }
   if (t.phase !== "published") {
     return { ok: false, reason: "not-committed", detail:

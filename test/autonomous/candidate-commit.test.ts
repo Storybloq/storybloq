@@ -2034,6 +2034,83 @@ describe("T-450 6b: the content-gated cancellation close (C2)", () => {
     }
   });
 
+  it("T-450 step 9: refuses a TRANSPLANTED or non-candidate record, however well the id matches", () => {
+    // The gate close applies is retirement's, and until step 9 that was a claim
+    // in a docstring rather than a fact. Close read a record out of SESSION
+    // STATE -- a file an operator can edit -- and checked only that its
+    // transitionId was this intent's.
+    //
+    // WHY THAT IS WORSE THAN MISSING A LIE. Closing on a bad record writes
+    // `phase: "closed"` with an outcome that retirement then REFUSES, on the
+    // provenance and authority checks close did not make. The intent is left
+    // neither retryable nor retirable: the loose gate does not merely fail to
+    // catch, it strands.
+    //
+    // Every case below is SCHEMA-VALID and carries this intent's transitionId,
+    // so each one reaches the gate under test rather than dying at the reader.
+    const cases: Array<{ name: string; over: Record<string, unknown>; detail: string }> = [
+      { name: "foreign sessionId",
+        over: { sessionId: "cccccccc-1111-4222-8333-444444444444" },
+        detail: "another session's publication" },
+      { name: "foreign incarnation (sessionStartedAt)",
+        over: { sessionStartedAt: "2020-01-01T00:00:00.000Z" },
+        detail: "another session's publication" },
+      { name: "an ORDINARY cancellation under legacy authority",
+        over: { action: "ordinary_cancellation", authority: { kind: "legacy" } },
+        detail: "candidate recovery record" },
+      { name: "candidate authority held by a DIFFERENT client task",
+        over: { authority: { kind: "candidate", clientTaskId: "some-other-task",
+          confirmedSessionRevision: 1, confirmedFingerprint: "fp-1",
+          evidence: (publishedRecord().authority as { evidence: unknown }).evidence } },
+        detail: "another client task" },
+    ];
+    for (const c of cases) {
+      stagedIntent();
+      const result = closeCancellationIntentOnPublication(sessDir, {
+        cancellationTransition: publishedRecord(c.over), sessionRevision: 4,
+      });
+      expect(result.ok, c.name).toBe(false);
+      if (!result.ok) {
+        expect(result.reason, c.name).toBe("not-committed");
+        // WHERE it refused, not merely that it did: each detail belongs to one
+        // gate, so a case dying at the reader or at an earlier check would be
+        // caught here rather than counted as coverage.
+        expect(result.detail, c.name).toContain(c.detail);
+      }
+      // AND THE CYCLE IS STILL ALIVE. The refusal has to leave the intent
+      // retryable; that is the whole reason a strict check is affordable here.
+      // Validity is asserted rather than used as a guard: a regression that
+      // DELETED or corrupted the intent would skip a guarded phase check and
+      // leave this test green while contradicting its whole claim.
+      const intent = readCancellationIntent(sessDir);
+      expect(intent.kind, c.name).toBe("valid");
+      if (intent.kind !== "valid") continue;
+      expect(intent.intent.phase, c.name).toBe("claim_cleared");
+      rmSync(root, { recursive: true, force: true });
+      root = mkdtempSync(join(tmpdir(), "t450-commit-"));
+      setupProject(root);
+    }
+  });
+
+  it("T-450 step 9: a PRE-ISS-967 record carrying the takeover literal still closes", () => {
+    // The compatibility half, and the one a careless implementation of the
+    // check above breaks. Before ISS-967 the cancel commit stamped
+    // `candidate_recovery_takeover` into the record of a session it had ENDED,
+    // because that was the only candidate value the enum had. Those cycles are
+    // still out there, and a cancellation-only action check would strand
+    // exactly the ones the readoption gate was widened to let finish.
+    stagedIntent();
+    const result = closeCancellationIntentOnPublication(sessDir, {
+      cancellationTransition: publishedRecord({ action: "candidate_recovery_takeover" }),
+      sessionRevision: 4,
+    });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    const intent = readCancellationIntent(sessDir);
+    expect(intent.kind).toBe("valid");
+    if (intent.kind !== "valid") return;
+    expect(intent.intent.phase).toBe("closed");
+  });
+
   it("refuses to close over a nested claim transaction, and allows the no-ticket authorized close", () => {
     stagedIntent({
       phase: "prepared",

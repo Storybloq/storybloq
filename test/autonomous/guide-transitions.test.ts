@@ -104,7 +104,7 @@ describe("evaluatePressure (ISS-034)", () => {
       config: { maxTicketsPerSession: 0, compactThreshold: "critical", reviewBackends: ["codex", "agent"] },
       contextPressure: { level: "low", guideCallCount: 10, ticketsCompleted: 8, compactionCount: 0, eventsLogBytes: 0 },
     });
-    // 8 tickets in "critical" tier = high (not critical — threshold is 10)
+    // 8 tickets in "critical" tier = high (not critical -- threshold is 10)
     expect(evaluatePressure(state)).toBe("high");
   });
 
@@ -180,7 +180,7 @@ describe("review-depth helpers", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ISS-029: Review counter reset — verify the state shape expectations
+// ISS-029: Review counter reset -- verify the state shape expectations
 // ---------------------------------------------------------------------------
 
 describe("ticket-to-ticket state reset (ISS-029)", () => {
@@ -422,7 +422,7 @@ describe("plan fingerprint (ISS-035)", () => {
       ticket: { id: "T-001", title: "Test", claimed: true, lastPlanHash: hash },
     });
 
-    // Same plan resubmitted — fingerprint matches
+    // Same plan resubmitted -- fingerprint matches
     const newHash = simpleHash(planContent);
     const isUnchanged = state.ticket?.lastPlanHash === newHash;
     expect(isUnchanged).toBe(true);
@@ -459,7 +459,7 @@ describe("round/reviewer continuity after revise (ISS-035)", () => {
     expect(reviewer).toBe("codex"); // alternates back to codex
   });
 
-  it("after reject, reviews cleared — next round is 1", () => {
+  it("after reject, reviews cleared -- next round is 1", () => {
     // Reject clears reviews.plan to []
     const clearedReviews: readonly { reviewer: string }[] = [];
     const backends = ["codex", "agent"];
@@ -600,7 +600,7 @@ describe("cancel ticket release (ISS-027)", () => {
     const ticket = undefined;
     const ticketId = ticket?.id;
     expect(ticketId).toBeUndefined();
-    // handleCancel guards with `if (ticketId)` — skips release
+    // handleCancel guards with `if (ticketId)` -- skips release
   });
 
   it("cancel event includes ticketId and release status", () => {
@@ -663,7 +663,7 @@ describe("claimedBySession invariant (ISS-027)", () => {
     const legacyTicket = { id: "T-001", status: "open" };
     const claim = (legacyTicket as Record<string, unknown>).claimedBySession;
     expect(claim).toBeUndefined();
-    // Treated as unclaimed — no error
+    // Treated as unclaimed -- no error
   });
 });
 
@@ -826,7 +826,7 @@ describe("diff instructions (ISS-038)", () => {
 
   it("stay-in-CODE_REVIEW instruction includes diff command", () => {
     const mergeBase = "def456";
-    const instruction = `Capture diff with: \`git diff ${mergeBase}\`. Pass FULL output — do NOT compress or summarize.`;
+    const instruction = `Capture diff with: \`git diff ${mergeBase}\`. Pass FULL output -- do NOT compress or summarize.`;
     expect(instruction).toContain("git diff def456");
     expect(instruction).toContain("do NOT compress");
   });

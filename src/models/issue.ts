@@ -93,10 +93,10 @@ export const IssueSchema = z
     discoveredDate: DateSchema,
     resolvedDate: DateSchema.nullable(),
     relatedTickets: z.array(TicketIdSchema),
-    // Optional fields — older issues may omit these
+    // Optional fields -- older issues may omit these
     order: z.number().int().optional(),
     phase: z.string().nullable().optional(),
-    // Attribution fields — unused in v1
+    // Attribution fields -- unused in v1
     createdBy: z.string().nullable().optional(),
     assignedTo: z.string().nullable().optional(),
     lastModifiedBy: z.string().nullable().optional(),

@@ -1,5 +1,5 @@
 /**
- * Lesson digest builder — compiles active lessons into ranked markdown.
+ * Lesson digest builder -- compiles active lessons into ranked markdown.
  * Sorted by reinforcements descending, grouped by tag.
  */
 import type { Lesson } from "../models/lesson.js";

@@ -80,7 +80,7 @@ describe("buildLessonDigest", () => {
     expect(result).not.toContain("(×");
   });
 
-  it("starts with # heading (H1) — callers downgrade for context digest", () => {
+  it("starts with # heading (H1) -- callers downgrade for context digest", () => {
     const lessons = [
       makeLesson({ id: "L-001", title: "Test" }),
     ];

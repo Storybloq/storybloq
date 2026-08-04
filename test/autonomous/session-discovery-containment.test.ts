@@ -1,5 +1,5 @@
 /**
- * T-251: Bulk discovery containment — the five session enumerators must drop
+ * T-251: Bulk discovery containment -- the five session enumerators must drop
  * UUID-named symlinks that escape sessionsRoot before any filesystem write.
  *
  * Covers:
@@ -136,7 +136,7 @@ describe("T-251 bulk discovery containment", () => {
     const targetStateBefore = readFileSync(join(outside, "state.json"), "utf-8");
     const targetEventsBefore = readFileSync(join(outside, "events.log"), "utf-8");
 
-    // handleSessionStop(root) with no sessionId — routes through findActiveSessionFull.
+    // handleSessionStop(root) with no sessionId -- routes through findActiveSessionFull.
     await expect(handleSessionStop(root)).rejects.toThrow(/No active session found/);
 
     // Byte-for-byte unchanged.
@@ -172,7 +172,7 @@ describe("T-251 bulk discovery containment", () => {
     // Snapshot sibling state.json bytes to prove no write.
     const targetStateBefore = readFileSync(join(outside, "state.json"), "utf-8");
 
-    // handleSessionClearCompact(root) with no sessionId — routes through findResumableSession.
+    // handleSessionClearCompact(root) with no sessionId -- routes through findResumableSession.
     await expect(handleSessionClearCompact(root)).rejects.toThrow(/No compactPending session found/);
 
     // Target state byte-for-byte unchanged.

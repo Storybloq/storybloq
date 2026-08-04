@@ -59,12 +59,12 @@ export async function listHandovers(
     const dateB = b.slice(0, 10);
     if (dateA !== dateB) return dateB.localeCompare(dateA); // newest date first
 
-    // Same date — sequenced files sort before non-sequenced
+    // Same date -- sequenced files sort before non-sequenced
     const seqA = a.match(HANDOVER_SEQ_REGEX);
     const seqB = b.match(HANDOVER_SEQ_REGEX);
     if (seqA && !seqB) return -1; // a is sequenced, b is not → a first
     if (!seqA && seqB) return 1;  // b is sequenced, a is not → b first
-    // Both sequenced or both non-sequenced — reverse lex
+    // Both sequenced or both non-sequenced -- reverse lex
     return b.localeCompare(a);
   });
 

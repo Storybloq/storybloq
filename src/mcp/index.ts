@@ -3,7 +3,7 @@
  * storybloq MCP server entry point.
  *
  * Provides MCP tools for querying and modifying .story/ project state.
- * Uses direct handler imports — no subprocess spawning.
+ * Uses direct handler imports -- no subprocess spawning.
  * Stdio transport: reads JSON-RPC from stdin, writes to stdout.
  * All diagnostic output goes to stderr.
  *
@@ -51,7 +51,7 @@ const version = process.env.STORYBLOQ_VERSION ?? "0.0.0-dev";
 
 /**
  * Try to discover project root. Returns the root path or null.
- * Never exits — the server stays alive even without a project.
+ * Never exits -- the server stays alive even without a project.
  */
 function tryDiscoverRoot(): string | null {
   const envRoot = process.env[ENV_VAR] ?? process.env[LEGACY_ENV_VAR];
@@ -97,7 +97,7 @@ export function registerDegradedTools(rawServer: McpServer, root?: string): void
   const server = withStrictToolSchemas(rawServer);
 
   const degradedStatus = server.registerTool("storybloq_status", {
-    description: "Project summary — returns guidance if no .story/ project found",
+    description: "Project summary -- returns guidance if no .story/ project found",
     inputSchema: {
       format: z.enum(["md", "json"]).optional().describe("Output format (default: md)"),
     },
@@ -175,7 +175,7 @@ export function registerDegradedTools(rawServer: McpServer, root?: string): void
     } catch (swapErr: unknown) {
       process.stderr.write(`storybloq: tool-swap failed after init: ${swapErr instanceof Error ? swapErr.message : String(swapErr)}\n`);
       // Re-register degraded tools so the server isn't completely toolless.
-      // The project was created — user can restart for full access.
+      // The project was created -- user can restart for full access.
       try { registerDegradedTools(server); } catch { /* best effort */ }
       return { content: [{ type: "text" as const, text: `Initialized .story/ project "${args.name}" at ${result.root}\n\nWarning: tool registration failed. Restart the MCP server for full tool access.` }] };
     }
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
     process.stderr.write(`storybloq MCP server running (root: ${root})\n`);
   } else {
     registerDegradedTools(server);
-    process.stderr.write("storybloq MCP server running (no project — storybloq_init available)\n");
+    process.stderr.write("storybloq MCP server running (no project -- storybloq_init available)\n");
   }
 
   // Graceful shutdown: stop inbox watcher on process exit

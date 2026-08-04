@@ -627,7 +627,7 @@ export function appendEvent(dir: string, event: EventEntry): void {
     const line = JSON.stringify(event) + "\n";
     writeFileSync(path, line, { flag: "a", encoding: "utf-8" });
   } catch {
-    // Best-effort — events.log is supplementary
+    // Best-effort -- events.log is supplementary
   }
 }
 
@@ -659,13 +659,13 @@ export function writeSessionWithEvent(
     try {
       truncateSync(path, sizeBefore);
     } catch {
-      // best-effort — events.log may have been deleted or is unwritable
+      // best-effort -- events.log may have been deleted or is unwritable
     }
     throw err;
   }
 }
 
-/** Read events.log with tolerant parsing — skips malformed lines. */
+/** Read events.log with tolerant parsing -- skips malformed lines. */
 export function readEvents(dir: string): { events: EventEntry[]; malformedCount: number } {
   const path = eventsPath(dir);
   let raw: string;
@@ -805,9 +805,9 @@ export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
     if (!entry.isDirectory()) continue;
 
     const dir = join(sessDir, entry.name);
-    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    // T-251: containment guard -- reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    // ISS-556: hot MCP path — tolerate historical lensReviewHistory disposition corruption.
+    // ISS-556: hot MCP path -- tolerate historical lensReviewHistory disposition corruption.
     const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
@@ -869,9 +869,9 @@ export function findStaleSessions(root: string): ActiveSessionInfo[] {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(sessDir, entry.name);
-    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    // T-251: containment guard -- reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    // ISS-556: hot MCP path (handleStart supersede loop) — tolerate disposition corruption.
+    // ISS-556: hot MCP path (handleStart supersede loop) -- tolerate disposition corruption.
     const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
@@ -1133,7 +1133,7 @@ export function readSessionDetailed(dir: string): SessionLookup {
     }
   }
 
-  // ISS-556: hot MCP path (all report/resume/cancel handlers) — must tolerate
+  // ISS-556: hot MCP path (all report/resume/cancel handlers) -- must tolerate
   // historical lensReviewHistory disposition corruption or the session
   // appears "not reachable via MCP" and autonomous mode cannot progress.
   //
@@ -1219,7 +1219,7 @@ export function prepareForCompact(
   opts?: { expectedHead?: string },
 ): CompactPrepareResult {
   if (state.state === "SESSION_END") throw new Error("Session already ended");
-  if (state.state === "FINALIZE") throw new Error("Cannot compact during FINALIZE — complete the commit first");
+  if (state.state === "FINALIZE") throw new Error("Cannot compact during FINALIZE -- complete the commit first");
 
   // Idempotent: already pending → refresh timestamp + expectedHead.
   // ISS-922: expectedHead records an OBSERVATION for resume drift detection.
@@ -1460,7 +1460,7 @@ export function prepareForLimitStop(
  * Find a resumable session (compactPending + active + workspace match).
  * Used by session-resume-prompt CLI (SessionStart hook).
  * Separate from findActiveSessionFull to preserve single-session invariant.
- * Read-only — no lock needed.
+ * Read-only -- no lock needed.
  */
 export function findResumableSession(root: string): { info: ActiveSessionInfo; stale: boolean } | null {
   const sessDir = sessionsRoot(root);
@@ -1489,15 +1489,15 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(sessDir, entry.name);
-    // T-251: containment guard — reject symlink escapes before any filesystem read.
+    // T-251: containment guard -- reject symlink escapes before any filesystem read.
     if (!isContainedSessionDir(root, dir)) continue;
-    // ISS-556: hot MCP path (compact hook resume discovery) — tolerate disposition corruption.
+    // ISS-556: hot MCP path (compact hook resume discovery) -- tolerate disposition corruption.
     const session = readSessionResilient(dir);
     if (!session) continue;
     if (session.status !== "active") continue;
     if (!session.compactPending) continue;
     if (session.lease?.workspaceId && session.lease.workspaceId !== workspaceId) continue;
-    // No lease expiry check — compactPreparedAt freshness handles staleness.
+    // No lease expiry check -- compactPreparedAt freshness handles staleness.
     // Lease expiry is for session management (findActiveSessionFull), not hook discovery.
 
     const preparedAt = session.compactPreparedAt

@@ -148,7 +148,7 @@ export function recommend(
     }
   }
 
-  // ISS-018: Handover context boost — tickets referenced in actionable sections get +50
+  // ISS-018: Handover context boost -- tickets referenced in actionable sections get +50
   applyHandoverBoost(state, dedup, options);
 
   // Phase-distance penalty: tickets in future phases are penalized
@@ -208,7 +208,7 @@ function generateValidationSuggestions(
       kind: "action",
       title: "Run storybloq validate",
       category: "validation_errors",
-      reason: `${result.errorCount} validation error${result.errorCount === 1 ? "" : "s"} — fix before other work`,
+      reason: `${result.errorCount} validation error${result.errorCount === 1 ? "" : "s"} -- fix before other work`,
       score: 1000,
     },
   ];
@@ -234,8 +234,8 @@ function generateCriticalIssues(state: ProjectState): Recommendation[] {
     title: issue.title,
     category: "critical_issue" as const,
     reason: issue.status === "inprogress"
-      ? `${capitalize(issue.severity)} severity issue — in-progress, ensure it's being addressed`
-      : `${capitalize(issue.severity)} severity issue — address before new features`,
+      ? `${capitalize(issue.severity)} severity issue -- in-progress, ensure it's being addressed`
+      : `${capitalize(issue.severity)} severity issue -- address before new features`,
     score: 900 - Math.min(index, 99),
   }));
 }
@@ -256,7 +256,7 @@ function generateInProgressTickets(
     kind: "ticket" as const,
     title: ticket.title,
     category: "inprogress_ticket" as const,
-    reason: "In-progress — finish what's started",
+    reason: "In-progress -- finish what's started",
     score: 800 - Math.min(index, 99),
   }));
 }
@@ -337,7 +337,7 @@ function generateNearCompleteUmbrellas(
     kind: "ticket" as const,
     title: c.firstIncompleteLeaf.title,
     category: "near_complete_umbrella" as const,
-    reason: `${c.complete}/${c.total} complete in umbrella ${c.umbrellaId} — close it out`,
+    reason: `${c.complete}/${c.total} complete in umbrella ${c.umbrellaId} -- close it out`,
     score: 600 - Math.min(index, 99),
   }));
 }
@@ -378,7 +378,7 @@ function generateQuickWins(state: ProjectState, phaseIndex: Map<string, number>,
     kind: "ticket" as const,
     title: ticket.title,
     category: "quick_win" as const,
-    reason: "Chore — quick win",
+    reason: "Chore -- quick win",
     score: 400 - Math.min(index, 99),
   }));
 }
@@ -403,7 +403,7 @@ function generateOpenIssues(state: ProjectState): Recommendation[] {
     title: issue.title,
     category: "open_issue" as const,
     reason: issue.status === "inprogress"
-      ? `${capitalize(issue.severity)} severity issue — in-progress`
+      ? `${capitalize(issue.severity)} severity issue -- in-progress`
       : `${capitalize(issue.severity)} severity issue`,
     score: 300 - Math.min(index, 99),
   }));

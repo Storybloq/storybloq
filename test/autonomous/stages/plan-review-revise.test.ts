@@ -38,7 +38,7 @@ function makeRecipe(): ResolvedRecipe {
   };
 }
 
-describe("PlanReviewStage — ISS-048 revise routing", () => {
+describe("PlanReviewStage -- ISS-048 revise routing", () => {
   let testRoot: string;
   let sessionDir: string;
   const stage = new PlanReviewStage();

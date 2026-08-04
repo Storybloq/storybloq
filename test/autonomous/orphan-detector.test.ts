@@ -37,7 +37,7 @@ function run(cmd: string, cwd: string): string {
 
 function makeStateLike(overrides: Partial<FullSessionState>): FullSessionState {
   // Minimum shape isOrphanCandidate touches: mode, targetWork, lease.expiresAt.
-  // Cast through unknown — the precheck only reads four fields, so we don't
+  // Cast through unknown -- the precheck only reads four fields, so we don't
   // need a full FullSessionState here.
   return {
     mode: "auto",
@@ -172,11 +172,11 @@ describe("isFinishedOrphan with hoisted ctx (ISS-383)", () => {
   it("returns the same answer with and without an explicit ctx", async () => {
     const { root, dir, state } = buildResolvedFixture();
 
-    // Without ctx — current callers' single-call path.
+    // Without ctx -- current callers' single-call path.
     const withoutCtx = await isFinishedOrphan(state, dir, root);
     expect(withoutCtx).toBe(true);
 
-    // With ctx — hoisted path. Pre-load project + HEAD once and pass them in.
+    // With ctx -- hoisted path. Pre-load project + HEAD once and pass them in.
     const { state: projectState } = await loadProject(root);
     const headResult = await gitHeadHash(root);
     expect(headResult.ok).toBe(true);

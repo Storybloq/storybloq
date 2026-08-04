@@ -12,7 +12,7 @@ describe("nextTicketID", () => {
     expect(nextTicketID(tickets)).toBe("T-002");
   });
 
-  it("handles suffixed IDs — T-077a → numeric 77, returns T-078", () => {
+  it("handles suffixed IDs -- T-077a → numeric 77, returns T-078", () => {
     const tickets = [
       makeTicket({ id: "T-001" }),
       makeTicket({ id: "T-077" }),

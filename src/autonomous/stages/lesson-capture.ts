@@ -2,12 +2,12 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 
 /**
- * LESSON_CAPTURE — postComplete stage that instructs the agent to capture
+ * LESSON_CAPTURE -- postComplete stage that instructs the agent to capture
  * review patterns as structured lessons.
  *
  * Reads review history already in session state (reviews.plan, reviews.code).
  * Agent uses existing MCP tools (lesson_list, lesson_create, lesson_reinforce).
- * No new data structures — just orchestration.
+ * No new data structures -- just orchestration.
  */
 export class LessonCaptureStage implements WorkflowStage {
   readonly id = "LESSON_CAPTURE";
@@ -120,10 +120,10 @@ export class LessonCaptureStage implements WorkflowStage {
         '```',
       ].filter(Boolean).join("\n"),
       reminders: [
-        "Check existing lessons first — reinforce before creating duplicates.",
+        "Check existing lessons first -- reinforce before creating duplicates.",
         "Only capture patterns worth remembering across sessions.",
         ...(falsePositivePatterns.length > 0
-          ? ["Lens false positive patterns MUST be captured as lessons — they improve future reviews."]
+          ? ["Lens false positive patterns MUST be captured as lessons -- they improve future reviews."]
           : []),
       ],
     };

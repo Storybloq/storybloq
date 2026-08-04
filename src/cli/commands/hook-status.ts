@@ -30,7 +30,7 @@ import { BUSTOOL_SUBCOMMAND, formatHookCommand } from "../../core/hook-migration
 import { normalizeClientTaskId } from "../../autonomous/client-profile.js";
 
 // ---------------------------------------------------------------------------
-// Stdin reading — silent version (no throws, no validation)
+// Stdin reading -- silent version (no throws, no validation)
 // ---------------------------------------------------------------------------
 
 async function readStdinSilent(): Promise<string | null> {
@@ -357,7 +357,7 @@ export function activePayload(session: Parameters<typeof buildActivePayload>[0],
 }
 
 // ---------------------------------------------------------------------------
-// Gitignore — ensure ephemeral entries are gitignored
+// Gitignore -- ensure ephemeral entries are gitignored
 // ---------------------------------------------------------------------------
 
 function ensureGitignore(root: string): void {
@@ -376,7 +376,7 @@ function ensureGitignore(root: string): void {
   try {
     writeFileSync(gitignorePath, content, "utf-8");
   } catch {
-    // Best-effort — don't block status writing
+    // Best-effort -- don't block status writing
   }
 }
 
@@ -449,7 +449,7 @@ async function markLimitEvidenceAndRespawn(clientTaskId: string | null): Promise
     const { spawnWakerIfNeeded } = await import("../../autonomous/waker.js");
     spawnWakerIfNeeded();
   } catch {
-    // Best-effort — never delay or fail the Stop hook.
+    // Best-effort -- never delay or fail the Stop hook.
   }
 }
 
@@ -468,14 +468,14 @@ function writeStatus(root: string, payload: StatusPayload): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Stop hook handler — writes .story/status.json with current session state.
+ * Stop hook handler -- writes .story/status.json with current session state.
  *
  * Fast, standalone. Does NOT load ProjectState. Target <50ms (excluding Node startup).
  * Never exits non-zero. Never throws.
  */
 export async function handleHookStatus(options: { client?: BusClient } = {}): Promise<void> {
   try {
-    // TTY — manual invocation (no pipe). Scan for active session same as piped path.
+    // TTY -- manual invocation (no pipe). Scan for active session same as piped path.
     if (process.stdin.isTTY) {
       const root = discoverProjectRoot();
       if (root) {
@@ -489,7 +489,7 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
     // Read stdin (null = error reading, empty = no data)
     const raw = await readStdinSilent();
     if (raw === null || raw === "") {
-      // Can't determine project — preserve last good status
+      // Can't determine project -- preserve last good status
       process.exit(0);
     }
 
@@ -498,7 +498,7 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
     try {
       input = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      // Unparsable — preserve last good status
+      // Unparsable -- preserve last good status
       process.exit(0);
     }
 
@@ -542,7 +542,7 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
     const decision = await claimBusStopDelivery(root, input, options.client ?? "claude");
     if (decision) process.stdout.write(JSON.stringify(decision) + "\n");
   } catch {
-    // Catch-all — never crash
+    // Catch-all -- never crash
   }
 
   process.exit(0);

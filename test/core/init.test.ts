@@ -28,7 +28,7 @@ describe("initProject", () => {
     expect(existsSync(join(testRoot, ".story", "notes"))).toBe(true);
     expect(existsSync(join(testRoot, ".story", "lessons"))).toBe(true);
     expect(result.created).toHaveLength(7);
-    // /prime skill scaffolding removed — setup-skill replaces it
+    // /prime skill scaffolding removed -- setup-skill replaces it
     expect(result.created).not.toContain(".claude/skills/prime/SKILL.md");
     expect(existsSync(join(testRoot, ".claude", "skills", "prime", "SKILL.md"))).toBe(false);
   });

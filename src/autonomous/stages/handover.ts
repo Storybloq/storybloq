@@ -86,7 +86,7 @@ export class HandoverStage implements WorkflowStage {
       const popResult = await gitStashPop(ctx.root, autoStash.ref);
       if (!popResult.ok) {
         stashPopFailed = true;
-        // Leave stash intact — user can manually pop with: git stash pop
+        // Leave stash intact -- user can manually pop with: git stash pop
       }
     }
 
@@ -165,14 +165,14 @@ export class HandoverStage implements WorkflowStage {
     const ticketsDone = ctx.state.completedTickets.length;
     const issuesDone = (ctx.state.resolvedIssues ?? []).length;
     const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${ctx.state.resolvedIssueDisplayIds?.[id] ?? id} (resolved)`).join("\n");
-    // Terminal — return advance but the walker will see SESSION_END is terminal
+    // Terminal -- return advance but the walker will see SESSION_END is terminal
     return {
       action: "advance",
       result: {
         instruction: [
           "# Session Complete",
           "",
-          `${ticketsDone} ticket(s) and ${issuesDone} issue(s) completed.${handoverFailed ? " Handover creation failed — fallback saved to session directory." : " Handover written."}${stashPopFailed ? " Auto-stash pop failed — run `git stash pop` manually." : ""} Session ended.`,
+          `${ticketsDone} ticket(s) and ${issuesDone} issue(s) completed.${handoverFailed ? " Handover creation failed -- fallback saved to session directory." : " Handover written."}${stashPopFailed ? " Auto-stash pop failed -- run `git stash pop` manually." : ""} Session ended.`,
           "",
           ctx.state.completedTickets.map((t) => `- ${(t as Record<string, unknown>).displayId as string | undefined ?? t.id}${t.title ? `: ${t.title}` : ""} (${t.commitHash ?? "no commit"})`).join("\n"),
           ...(resolvedList ? [resolvedList] : []),

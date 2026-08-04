@@ -11,7 +11,7 @@ import {
 
 const MAX_VERIFY_RETRIES = 3;
 
-// Next.js App Router: app/**/api/**/route.ts → GET /api/... (requires api/ segment — skip page handlers)
+// Next.js App Router: app/**/api/**/route.ts → GET /api/... (requires api/ segment -- skip page handlers)
 const APP_ROUTER_RE = /^(?:src\/)?app\/((?:.*\/)?api\/.*?)\/route\.[jt]sx?$/;
 // Next.js Pages Router: pages/api/... → GET /api/...
 const PAGES_ROUTER_RE = /^(?:src\/)?pages\/(api\/.*?)\.[jt]sx?$/;
@@ -22,7 +22,7 @@ const ROUTE_GROUP_RE = /\([^)]+\)\/?/g;
 const CATCH_ALL_RE = /\[\[?\.\.\./;
 
 /**
- * VERIFY stage — smoke test HTTP endpoints after code review.
+ * VERIFY stage -- smoke test HTTP endpoints after code review.
  *
  * enter(): Instruct agent to start dev server, curl endpoints, report results.
  * report(): Evaluate status codes. 5xx/0 → back(IMPLEMENT). 2xx/3xx → advance.
@@ -75,7 +75,7 @@ export class VerifyStage implements WorkflowStage {
 
     return {
       instruction: [
-        `# Verify Endpoints ${retryCount > 0 ? `— Retry ${retryCount}` : ""}`,
+        `# Verify Endpoints ${retryCount > 0 ? ` -- Retry ${retryCount}` : ""}`,
         "",
         `Start the dev server and smoke test ${endpoints.length} endpoint(s).`,
         "",

@@ -43,7 +43,7 @@ function checkRoot(candidate: string): string | null {
   if (existsSync(join(candidate, CONFIG_PATH))) {
     return candidate;
   }
-  // .story/ exists but config.json not readable — check if it's a permission issue
+  // .story/ exists but config.json not readable -- check if it's a permission issue
   if (existsSync(join(candidate, STORY_DIR))) {
     try {
       accessSync(join(candidate, STORY_DIR), constants.R_OK);

@@ -469,7 +469,7 @@ describe("loadProject", () => {
       const start = performance.now();
       await loadProject(testRoot);
       const elapsed = performance.now() - start;
-      // Informational — just log, no hard assertion
+      // Informational -- just log, no hard assertion
       console.log(`loadProject took ${elapsed.toFixed(1)}ms`);
       expect(elapsed).toBeLessThan(5000); // sanity upper bound only
     });
@@ -883,7 +883,7 @@ describe("transaction recovery", () => {
       JSON.stringify(journal),
     );
 
-    // Load should recover — rename temp to target
+    // Load should recover -- rename temp to target
     const result = await loadProject(testRoot);
     expect(result.state.tickets).toHaveLength(2);
     expect(result.state.ticketByID("T-002")?.title).toBe("Recovered");
@@ -908,7 +908,7 @@ describe("transaction recovery", () => {
       JSON.stringify(journal),
     );
 
-    // Recovery should NOT delete T-001 — commit never started
+    // Recovery should NOT delete T-001 -- commit never started
     const result = await loadProject(testRoot);
     expect(result.state.tickets).toHaveLength(1);
     expect(result.state.ticketByID("T-001")).toBeDefined();

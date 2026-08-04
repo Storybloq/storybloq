@@ -589,7 +589,7 @@ export function formatStatus(
   for (const p of phases) {
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
     const summary = p.phase.summary ?? truncate(p.phase.description, 80);
-    lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) — ${escapeMarkdownInline(summary)}`);
+    lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) -- ${escapeMarkdownInline(summary)}`);
   }
 
   const resumableIds = new Set(resumableSessions.map((session) => session.sessionId));
@@ -826,7 +826,7 @@ export function formatPhaseList(
   const lines: string[] = [];
   for (const p of data) {
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
-    lines.push(`${indicator} **${escapeMarkdownInline(p.name)}** (${p.id}) — ${p.leafCount} tickets — ${escapeMarkdownInline(truncate(p.description, 80))}`);
+    lines.push(`${indicator} **${escapeMarkdownInline(p.name)}** (${p.id}) -- ${p.leafCount} tickets -- ${escapeMarkdownInline(truncate(p.description, 80))}`);
   }
   return lines.join("\n");
 }
@@ -898,7 +898,7 @@ export function formatNextTicketOutcome(
     case "found": {
       const t = outcome.ticket;
       const lines: string[] = [
-        `# Next: ${escapeMarkdownInline(displayIdOf(t))} — ${escapeMarkdownInline(t.title)}`,
+        `# Next: ${escapeMarkdownInline(displayIdOf(t))} -- ${escapeMarkdownInline(t.title)}`,
         "",
         `Phase: ${t.phase ?? "none"} | Order: ${t.order} | Type: ${t.type}`,
       ];
@@ -958,9 +958,9 @@ export function formatNextTicketsOutcome(
         // Single candidate: use # Next: format; multiple: use numbered format
         const tLabel = displayIdOf(t);
         if (candidates.length === 1) {
-          lines.push(`# Next: ${escapeMarkdownInline(tLabel)} — ${escapeMarkdownInline(t.title)}`);
+          lines.push(`# Next: ${escapeMarkdownInline(tLabel)} -- ${escapeMarkdownInline(t.title)}`);
         } else {
-          lines.push(`# ${i + 1}. ${escapeMarkdownInline(tLabel)} — ${escapeMarkdownInline(t.title)}`);
+          lines.push(`# ${i + 1}. ${escapeMarkdownInline(tLabel)} -- ${escapeMarkdownInline(t.title)}`);
         }
         lines.push("", `Phase: ${t.phase ?? "none"} | Order: ${t.order} | Type: ${t.type}`);
 
@@ -1096,7 +1096,7 @@ export function formatBlockedTickets(
         return `${bid} (unknown)`;
       })
       .join(", ");
-    lines.push(`${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} — blocked by: ${blockerInfo}`);
+    lines.push(`${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- blocked by: ${blockerInfo}`);
   }
   return lines.join("\n");
 }
@@ -1235,7 +1235,7 @@ export function formatBlockerList(
   const lines: string[] = [];
   for (const b of roadmap.blockers) {
     const status = isBlockerCleared(b) ? "[x]" : "[ ]";
-    const note = b.note ? ` — ${escapeMarkdownInline(b.note)}` : "";
+    const note = b.note ? ` -- ${escapeMarkdownInline(b.note)}` : "";
     lines.push(`${status} ${escapeMarkdownInline(b.name)}${note}`);
   }
   return lines.join("\n");
@@ -1249,7 +1249,7 @@ export function formatNote(
     return JSON.stringify(successEnvelope(note), null, 2);
   }
 
-  const title = note.title ?? `${note.createdDate} — ${displayIdOf(note)}`;
+  const title = note.title ?? `${note.createdDate} -- ${displayIdOf(note)}`;
   const statusBadge = note.status === "archived" ? " (archived)" : "";
   const lines: string[] = [
     `# ${escapeMarkdownInline(title)}${statusBadge}`,
@@ -1526,15 +1526,15 @@ export function formatRecap(
   const lines: string[] = [];
 
   if (!recap.snapshot) {
-    // No snapshot fallback — show status + note
-    lines.push(`# ${escapeMarkdownInline(state.config.project)} — Recap`);
+    // No snapshot fallback -- show status + note
+    lines.push(`# ${escapeMarkdownInline(state.config.project)} -- Recap`);
     lines.push("");
     lines.push("No snapshot found. Run `storybloq snapshot` to enable session diffs.");
     lines.push("");
     lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`);
     lines.push(`Issues: ${state.activeIssueCount} open`);
   } else {
-    lines.push(`# ${escapeMarkdownInline(state.config.project)} — Recap`);
+    lines.push(`# ${escapeMarkdownInline(state.config.project)} -- Recap`);
     lines.push("");
     lines.push(`Since snapshot: ${recap.snapshot.createdAt}`);
     if (recap.partial) {
@@ -1579,13 +1579,13 @@ export function formatRecap(
         lines.push("");
         lines.push("## Tickets");
         for (const t of ticketChanges.statusChanged) {
-          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} — ${t.from} → ${t.to}`);
+          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- ${t.from} → ${t.to}`);
         }
         for (const t of ticketChanges.added) {
-          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} — **new**`);
+          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- **new**`);
         }
         for (const t of ticketChanges.removed) {
-          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} — **removed**`);
+          lines.push(`- ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- **removed**`);
         }
         for (const t of ticketChanges.descriptionChanged) {
           lines.push(`- ${displayIdOf(t)}: description updated`);
@@ -1598,13 +1598,13 @@ export function formatRecap(
         lines.push("");
         lines.push("## Issues");
         for (const i of issueChanges.resolved) {
-          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} — **resolved**`);
+          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} -- **resolved**`);
         }
         for (const i of issueChanges.statusChanged) {
-          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} — ${i.from} → ${i.to}`);
+          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} -- ${i.from} → ${i.to}`);
         }
         for (const i of issueChanges.added) {
-          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} — **new**`);
+          lines.push(`- ${displayIdOf(i)}: ${escapeMarkdownInline(i.title)} -- **new**`);
         }
         for (const i of issueChanges.impactChanged) {
           lines.push(`- ${displayIdOf(i)}: impact updated`);
@@ -1616,10 +1616,10 @@ export function formatRecap(
         lines.push("");
         lines.push("## Blockers");
         for (const name of changes.blockers.cleared) {
-          lines.push(`- ${escapeMarkdownInline(name)} — **cleared**`);
+          lines.push(`- ${escapeMarkdownInline(name)} -- **cleared**`);
         }
         for (const name of changes.blockers.added) {
-          lines.push(`- ${escapeMarkdownInline(name)} — **new**`);
+          lines.push(`- ${escapeMarkdownInline(name)} -- **new**`);
         }
       }
 
@@ -1628,10 +1628,10 @@ export function formatRecap(
         lines.push("");
         lines.push("## Handovers");
         for (const h of changes.handovers.added) {
-          lines.push(`- ${h} — **new**`);
+          lines.push(`- ${h} -- **new**`);
         }
         for (const h of changes.handovers.removed) {
-          lines.push(`- ${h} — removed`);
+          lines.push(`- ${h} -- removed`);
         }
       }
 
@@ -1655,16 +1655,16 @@ export function formatRecap(
         lines.push("");
         lines.push("## Lessons");
         for (const l of changes.lessons.added) {
-          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} — **new**`);
+          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} -- **new**`);
         }
         for (const l of changes.lessons.removed) {
-          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} — removed`);
+          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} -- removed`);
         }
         for (const l of changes.lessons.updated) {
           lines.push(`- ${displayIdOf(l)}: updated (${l.changedFields.join(", ")})`);
         }
         for (const l of changes.lessons.reinforced) {
-          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} — reinforced (${l.from} → ${l.to})`);
+          lines.push(`- ${displayIdOf(l)}: ${escapeMarkdownInline(l.title)} -- reinforced (${l.from} → ${l.to})`);
         }
       }
     }
@@ -1676,12 +1676,12 @@ export function formatRecap(
   lines.push("## Suggested Actions");
 
   if (actions.nextTicket) {
-    lines.push(`- **Next:** ${displayIdOf(actions.nextTicket)} — ${escapeMarkdownInline(actions.nextTicket.title)}${actions.nextTicket.phase ? ` (${actions.nextTicket.phase})` : ""}`);
+    lines.push(`- **Next:** ${displayIdOf(actions.nextTicket)} -- ${escapeMarkdownInline(actions.nextTicket.title)}${actions.nextTicket.phase ? ` (${actions.nextTicket.phase})` : ""}`);
   }
 
   if (actions.highSeverityIssues.length > 0) {
     for (const i of actions.highSeverityIssues) {
-      lines.push(`- **${i.severity} issue:** ${displayIdOf(i)} — ${escapeMarkdownInline(i.title)}`);
+      lines.push(`- **${i.severity} issue:** ${displayIdOf(i)} -- ${escapeMarkdownInline(i.title)}`);
     }
   }
 
@@ -1813,7 +1813,7 @@ function formatPhaseExport(
     lines.push("");
     lines.push("## Active Blockers");
     for (const b of activeBlockers) {
-      lines.push(`- ${escapeMarkdownDocument(b.name)}${b.note ? ` — ${escapeMarkdownDocument(b.note)}` : ""}`);
+      lines.push(`- ${escapeMarkdownDocument(b.name)}${b.note ? ` -- ${escapeMarkdownDocument(b.note)}` : ""}`);
     }
   }
 
@@ -1873,7 +1873,7 @@ function formatFullExport(
   }
 
   const lines: string[] = [];
-  lines.push(`# ${escapeMarkdownDocument(state.config.project)} — Full Export`);
+  lines.push(`# ${escapeMarkdownDocument(state.config.project)} -- Full Export`);
   lines.push("");
   lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
   lines.push(`Issues: ${state.activeIssueCount} open`);
@@ -1936,7 +1936,7 @@ function formatFullExport(
     lines.push("## Blockers");
     for (const b of blockers) {
       const cleared = isBlockerCleared(b) ? "[x]" : "[ ]";
-      lines.push(`${cleared} ${escapeMarkdownDocument(b.name)}${b.note ? ` — ${escapeMarkdownDocument(b.note)}` : ""}`);
+      lines.push(`${cleared} ${escapeMarkdownDocument(b.name)}${b.note ? ` -- ${escapeMarkdownDocument(b.note)}` : ""}`);
     }
   }
 
@@ -1990,7 +1990,7 @@ export function formatSelftestResult(
     lines.push(`## ${entity.charAt(0).toUpperCase() + entity.slice(1)}`);
     for (const check of checks) {
       const mark = check.passed ? "[x]" : "[ ]";
-      const suffix = check.passed ? "" : ` — ${check.detail}`;
+      const suffix = check.passed ? "" : ` -- ${check.detail}`;
       lines.push(`- ${mark} ${check.step}${suffix}`);
     }
     lines.push("");
@@ -2088,8 +2088,8 @@ export function formatReference(
   lines.push("");
   lines.push("With no .story/ project on the path, the MCP server starts degraded and registers only:");
   lines.push("");
-  lines.push("- **storybloq_init** — bootstrap a .story/ project, then dynamically register the full tool set");
-  lines.push("- **storybloq_status** — returns setup guidance instead of a project summary");
+  lines.push("- **storybloq_init** -- bootstrap a .story/ project, then dynamically register the full tool set");
+  lines.push("- **storybloq_status** -- returns setup guidance instead of a project summary");
   lines.push("");
   lines.push("Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.");
 
@@ -2133,14 +2133,14 @@ export function formatReference(
   lines.push("## Common Workflows");
   lines.push("");
   lines.push("### Session Start");
-  lines.push("1. `storybloq status` — project overview");
-  lines.push("2. `storybloq recap` — what changed since last snapshot");
-  lines.push("3. `storybloq handover latest` — last session context");
-  lines.push("4. `storybloq ticket next` — what to work on");
+  lines.push("1. `storybloq status` -- project overview");
+  lines.push("2. `storybloq recap` -- what changed since last snapshot");
+  lines.push("3. `storybloq handover latest` -- last session context");
+  lines.push("4. `storybloq ticket next` -- what to work on");
   lines.push("");
   lines.push("### Session End");
-  lines.push("1. `storybloq snapshot` — save state for diffs");
-  lines.push("2. `storybloq handover create --content <md>` — write session handover");
+  lines.push("1. `storybloq snapshot` -- save state for diffs");
+  lines.push("2. `storybloq handover create --content <md>` -- write session handover");
   lines.push("");
   lines.push("### Project Setup");
   lines.push("1. `npm install -g @storybloq/storybloq` - install CLI");
@@ -2168,7 +2168,7 @@ export function formatRecommendations(
 
   if (result.recommendations.length === 0) {
     if (state.isEmptyScaffold) {
-      return "No recommendations yet — this project needs tickets and phases. Run the /story setup flow to get started.";
+      return "No recommendations yet -- this project needs tickets and phases. Run the /story setup flow to get started.";
     }
     if (state.config.type === "orchestrator") {
       return "No recommendations. Run storybloq status for federation overview.";
@@ -2181,7 +2181,7 @@ export function formatRecommendations(
   for (let i = 0; i < result.recommendations.length; i++) {
     const rec = result.recommendations[i]!;
     lines.push(
-      `${i + 1}. **${escapeMarkdownInline(displayIdOf(rec))}** (${rec.kind}) — ${escapeMarkdownInline(rec.title)}`,
+      `${i + 1}. **${escapeMarkdownInline(displayIdOf(rec))}** (${rec.kind}) -- ${escapeMarkdownInline(rec.title)}`,
     );
     lines.push(`   _${escapeMarkdownInline(rec.reason)}_`);
     lines.push("");

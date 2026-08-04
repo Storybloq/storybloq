@@ -1,5 +1,5 @@
 /**
- * Stage registration — imports all stage implementations and registers them.
+ * Stage registration -- imports all stage implementations and registers them.
  * Import this module once (in guide.ts) to populate the registry.
  */
 import { registerStage } from "./registry.js";

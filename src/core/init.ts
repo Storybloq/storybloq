@@ -22,7 +22,7 @@ export interface InitResult {
 /**
  * Scaffolds a new .story/ directory structure.
  * Refuses if .story/ already exists unless force is true.
- * Force mode overwrites config.json + roadmap.json only — preserves existing data files.
+ * Force mode overwrites config.json + roadmap.json only -- preserves existing data files.
  */
 export async function initProject(
   root: string,
@@ -124,7 +124,7 @@ export async function initProject(
   await ensureGitignoreEntries(gitignorePath, STORY_GITIGNORE_ENTRIES);
 
   // Validate existing data files when force-reinitializing.
-  // Uses loadProject (permissive) — catches both JSON parse errors AND Zod schema
+  // Uses loadProject (permissive) -- catches both JSON parse errors AND Zod schema
   // violations, matching exactly what strict mode will reject on future writes.
   const warnings: string[] = [];
   if (options.force && exists) {
@@ -136,7 +136,7 @@ export async function initProject(
         }
       }
     } catch {
-      // loadProject may throw on critical file errors (config/roadmap) —
+      // loadProject may throw on critical file errors (config/roadmap) --
       // we just wrote those, so this shouldn't happen, but don't let
       // validation failures block init.
     }
@@ -151,7 +151,7 @@ export async function initProject(
 
 /**
  * Ensures a .gitignore file contains the specified entries.
- * Creates the file if it doesn't exist. Idempotent — skips entries already present.
+ * Creates the file if it doesn't exist. Idempotent -- skips entries already present.
  */
 /** Ephemeral .story/ entries that should always be gitignored. Single source of truth. */
 // channel-inbox/ carries Mac-app event payloads (including the .failed/ quarantine):
@@ -160,7 +160,7 @@ export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/"
 
 /**
  * Ensures a .gitignore file contains the specified entries.
- * Creates the file if it doesn't exist. Idempotent — skips entries already present.
+ * Creates the file if it doesn't exist. Idempotent -- skips entries already present.
  */
 export async function ensureGitignoreEntries(
   gitignorePath: string,
@@ -170,7 +170,7 @@ export async function ensureGitignoreEntries(
   try {
     existing = await readFile(gitignorePath, "utf-8");
   } catch {
-    // File doesn't exist — will create
+    // File doesn't exist -- will create
   }
 
   const lines = existing.split("\n").map((l) => l.trim());

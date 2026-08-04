@@ -1,7 +1,7 @@
 import type { FullSessionState, PressureLevel } from "./session-types.js";
 
 // ---------------------------------------------------------------------------
-// Pressure thresholds — tier-based using config.compactThreshold (ISS-034)
+// Pressure thresholds -- tier-based using config.compactThreshold (ISS-034)
 // ---------------------------------------------------------------------------
 
 interface Limits { calls: number; tickets: number; bytes: number; }

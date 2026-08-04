@@ -2,7 +2,7 @@
  * ISS-552: Shared teardown helper for integration tests that spawn
  * liveness sidecars via `handleAutonomousGuide`.
  *
- * `rmSync` on the tmp session dir does NOT kill the sidecar subprocess —
+ * `rmSync` on the tmp session dir does NOT kill the sidecar subprocess --
  * the process holds no file lock and keeps running (its `ppid` liveness
  * check only fires once per intervalMs, defaulting to 10s). Repeated
  * test runs accumulate orphan Node processes writing heartbeats to
@@ -32,6 +32,6 @@ export function killSidecarsInRoot(root: string): void {
       const parsed = JSON.parse(raw) as { sidecarPid?: number | null };
       const pid = parsed.sidecarPid;
       if (typeof pid === "number" && pid > 0) killSidecar(pid);
-    } catch { /* best-effort: missing dir, bad json, stale pid — ignore */ }
+    } catch { /* best-effort: missing dir, bad json, stale pid -- ignore */ }
   }
 }

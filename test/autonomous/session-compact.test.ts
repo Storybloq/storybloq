@@ -276,9 +276,9 @@ describe("findResumableSession", () => {
 
     // findResumableSession needs to derive workspaceId from root, which depends on the path
     // Since we're using a temp dir, the workspaceId will be based on testRoot
-    // The test verifies the scan logic works — workspace matching is tested by the workspace mismatch test
+    // The test verifies the scan logic works -- workspace matching is tested by the workspace mismatch test
     const result = findResumableSession(testRoot);
-    // May return null if workspaceId doesn't match — that's OK, the function works
+    // May return null if workspaceId doesn't match -- that's OK, the function works
     // The important thing is it doesn't crash
   });
 
@@ -300,7 +300,7 @@ describe("findResumableSession", () => {
     if (result) {
       expect(result.stale).toBe(true);
     }
-    // If null, workspace mismatch — still passes (stale logic is separate from workspace logic)
+    // If null, workspace mismatch -- still passes (stale logic is separate from workspace logic)
   });
 
   it("returns null when no compactPending sessions exist", async () => {
@@ -1017,7 +1017,7 @@ describe("findActiveSessionFull with compactPending", () => {
 });
 
 describe("handleReportHandover always SESSION_END", () => {
-  it("no compact-continue branch — handover always ends session", () => {
+  it("no compact-continue branch -- handover always ends session", () => {
     // The compact-continue branch was removed in ISS-032
     // handleReportHandover now always transitions to SESSION_END
     const pressureLevel = "critical";
@@ -1036,15 +1036,15 @@ describe("handleReportHandover always SESSION_END", () => {
 // ---------------------------------------------------------------------------
 
 describe("handleResume HEAD validation", () => {
-  it("Branch A: HEAD match — normal restore", () => {
+  it("Branch A: HEAD match -- normal restore", () => {
     const expectedHead = "abc123";
     const actualHead = "abc123";
     const branch = expectedHead && actualHead === expectedHead ? "A" : "B";
     expect(branch).toBe("A");
   });
 
-  it("Branch B: HEAD mismatch — recovery mapping covers all resumable states", async () => {
-    // Import the real mapping — no local copy that can diverge
+  it("Branch B: HEAD mismatch -- recovery mapping covers all resumable states", async () => {
+    // Import the real mapping -- no local copy that can diverge
     // ISS-040: these states are NOT resumable (never in recoveryMapping)
     const NON_RESUMABLE: ReadonlySet<string> = new Set([
       "INIT", "LOAD_CONTEXT", "COMPACT", "SESSION_END",
@@ -1053,7 +1053,7 @@ describe("handleResume HEAD validation", () => {
     // The real mapping from guide.ts
     const { RECOVERY_MAPPING } = await import("../../src/autonomous/guide.js");
 
-    // Every WorkflowState must be in RECOVERY_MAPPING or NON_RESUMABLE — no gaps
+    // Every WorkflowState must be in RECOVERY_MAPPING or NON_RESUMABLE -- no gaps
     for (const ws of WORKFLOW_STATES) {
       const inMapping = ws in RECOVERY_MAPPING;
       const inNonResumable = NON_RESUMABLE.has(ws);
@@ -1098,7 +1098,7 @@ describe("handleResume HEAD validation", () => {
     expect(recoveryTicket.id).toBe("T-001"); // ticket preserved
   });
 
-  it("Branch C: cannot validate HEAD — keeps compactPending, sets resumeBlocked", () => {
+  it("Branch C: cannot validate HEAD -- keeps compactPending, sets resumeBlocked", () => {
     const expectedHead = undefined; // missing
     const canValidate = !!expectedHead;
 

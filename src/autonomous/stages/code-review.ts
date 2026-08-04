@@ -18,7 +18,7 @@ import {
 } from "./codex-native.js";
 
 /**
- * CODE_REVIEW stage — independent reviewer evaluates the implementation.
+ * CODE_REVIEW stage -- independent reviewer evaluates the implementation.
  *
  * enter(): Instruction to run code review with specified backend.
  * report(): Process verdict → advance (FINALIZE), retry (next round),
@@ -48,8 +48,8 @@ export class CodeReviewStage implements WorkflowStage {
       ? `\`git diff ${mergeBase}\``
       : `\`git diff HEAD\` AND \`git ls-files --others --exclude-standard\``;
     const diffReminder = mergeBase
-      ? `Run: git diff ${mergeBase} — pass FULL output to reviewer.`
-      : "Run: git diff HEAD + git ls-files --others --exclude-standard — pass FULL output to reviewer.";
+      ? `Run: git diff ${mergeBase} -- pass FULL output to reviewer.`
+      : "Run: git diff HEAD + git ls-files --others --exclude-standard -- pass FULL output to reviewer.";
 
     if (!ctx.state.currentReviewStartedAt) {
       ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
@@ -59,7 +59,7 @@ export class CodeReviewStage implements WorkflowStage {
     if (reviewer === "lenses") {
       return {
         instruction: [
-          `# Multi-Lens ${issueHeader} — Round ${roundNum} of ${rounds} minimum`,
+          `# Multi-Lens ${issueHeader} -- Round ${roundNum} of ${rounds} minimum`,
           "",
           `Capture the diff with: ${diffCommand}`,
           "",
@@ -109,7 +109,7 @@ export class CodeReviewStage implements WorkflowStage {
 
     return {
       instruction: [
-        `# ${issueHeader} — Round ${roundNum} of ${rounds} minimum`,
+        `# ${issueHeader} -- Round ${roundNum} of ${rounds} minimum`,
         "",
         `Capture the diff with: ${diffCommand}`,
         "",
@@ -421,7 +421,7 @@ export class CodeReviewStage implements WorkflowStage {
               "",
               `Code for **${ctx.state.ticket?.id}** has been approved after ${roundNum} review round(s).`,
               "",
-              "Session ending — review mode is complete. You can now proceed to commit.",
+              "Session ending -- review mode is complete. You can now proceed to commit.",
             ].join("\n"),
             reminders: [],
             transitionedFrom: "CODE_REVIEW",
@@ -439,7 +439,7 @@ export class CodeReviewStage implements WorkflowStage {
       instruction: [
         `Code review round ${roundNum} found issues. Fix them and re-review with **${nextReviewerName}**.`,
         "",
-        `Capture diff with: ${mergeBase ? `\`git diff ${mergeBase}\`` : "`git diff HEAD` + `git ls-files --others --exclude-standard`"}. Pass FULL output — do NOT compress or summarize.`,
+        `Capture diff with: ${mergeBase ? `\`git diff ${mergeBase}\`` : "`git diff HEAD` + `git ls-files --others --exclude-standard`"}. Pass FULL output -- do NOT compress or summarize.`,
       ].join("\n"),
       reminders: ["Pass FULL diff output to reviewer. Do NOT compress or summarize."],
     };

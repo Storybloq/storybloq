@@ -1,5 +1,5 @@
 /**
- * BUILD stage tests — skip logic, enter instruction, pass/fail/retry/exhaustion.
+ * BUILD stage tests -- skip logic, enter instruction, pass/fail/retry/exhaustion.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";

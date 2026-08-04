@@ -55,7 +55,7 @@ export function validTargets(from: WorkflowState): readonly WorkflowState[] {
   const allowed = TRANSITIONS[from];
   if (!allowed) return [];
   if (allowed.includes("*")) {
-    // COMPACT can go anywhere — return all states except itself
+    // COMPACT can go anywhere -- return all states except itself
     return Object.keys(TRANSITIONS).filter((s) => s !== from) as WorkflowState[];
   }
   return allowed as readonly WorkflowState[];

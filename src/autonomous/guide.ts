@@ -231,7 +231,7 @@ function adoptExpiredLease(
 }
 
 // ---------------------------------------------------------------------------
-// Recovery mapping — exported for test completeness checks (ISS-040)
+// Recovery mapping -- exported for test completeness checks (ISS-040)
 // ---------------------------------------------------------------------------
 
 export const RECOVERY_MAPPING: Readonly<Record<string, { state: string; resetPlan: boolean; resetCode: boolean }>> = {
@@ -576,7 +576,7 @@ async function recoverPendingMutation(
       if (!ticket) return;
 
       if (ticket.status === targetValue) {
-        // Project write already succeeded — clear marker
+        // Project write already succeeded -- clear marker
       } else if (expectedCurrent && ticket.status === expectedCurrent) {
         // Replay the write
         const updated = { ...ticket, status: targetValue as typeof ticket.status };
@@ -585,7 +585,7 @@ async function recoverPendingMutation(
         }
         await writeTicketUnlocked(updated, root);
       } else {
-        // Ticket in unexpected state — conflict: clear marker, do NOT apply postMutation
+        // Ticket in unexpected state -- conflict: clear marker, do NOT apply postMutation
         conflict = true;
         appendEvent(dir, {
           rev: state.revision,
@@ -597,14 +597,14 @@ async function recoverPendingMutation(
       }
     });
   } catch {
-    // Lock/IO failure — leave marker for next attempt
+    // Lock/IO failure -- leave marker for next attempt
     return state;
   }
 
-  // Conflict detected — marker cleared, no postMutation applied
+  // Conflict detected -- marker cleared, no postMutation applied
   if (conflict) {
     // Re-read the state we just wrote (with cleared marker).
-    // ISS-556: this is called from handleAutonomousGuide — the exact function
+    // ISS-556: this is called from handleAutonomousGuide -- the exact function
     // whose incident motivated this fix. Use resilient read so historical
     // lensReviewHistory disposition corruption does not wedge the handler.
     const { readSessionResilient } = await import("./session.js");
@@ -703,7 +703,7 @@ interface McpToolResult {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace mutex — in-process serialization
+// Workspace mutex -- in-process serialization
 // ---------------------------------------------------------------------------
 
 const workspaceLocks = new Map<string, Promise<void>>();
@@ -714,7 +714,7 @@ const workspaceLocks = new Map<string, Promise<void>>();
  *
  * Lock ordering note: The session lock (.story/sessions/.lock) is acquired first,
  * then loadProject/handleHandoverCreate may acquire the project lock (.story/.lock).
- * This ordering is consistent — no code path acquires them in reverse order.
+ * This ordering is consistent -- no code path acquires them in reverse order.
  * The plan's "NEVER nest locks" rule is relaxed here for V1 pragmatism. The phased
  * commit protocol (pendingProjectMutation) will be implemented when the guide matures.
  */
@@ -882,7 +882,7 @@ async function handleGuideInner(root: string, args: GuideInput): Promise<McpTool
 }
 
 // ---------------------------------------------------------------------------
-// T-250 — auto-supersede verifiably-finished orphan sessions
+// T-250 -- auto-supersede verifiably-finished orphan sessions
 // ---------------------------------------------------------------------------
 
 /**
@@ -951,7 +951,7 @@ async function trySupersedeFinishedOrphan(
 }
 
 // ---------------------------------------------------------------------------
-// start — INIT + LOAD_CONTEXT → PICK_TICKET
+// start -- INIT + LOAD_CONTEXT → PICK_TICKET
 // ---------------------------------------------------------------------------
 
 async function handleStart(root: string, args: GuideInput): Promise<McpToolResult> {
@@ -975,7 +975,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       ));
     }
     await recoverPendingMutation(existing.dir, existing.state, root);
-    // Re-read after recovery — session may have been ended by postMutation
+    // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);
   }
   if (existing && !isLeaseExpired(existing.state)) {
@@ -1020,7 +1020,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   if (!existing) {
     const resumable = findResumableSession(root);
     if (resumable) {
-      // T-250: finished-orphan auto-supersede — silently reclaim the slot if
+      // T-250: finished-orphan auto-supersede -- silently reclaim the slot if
       // every targeted work item is verifiably complete on disk and every
       // recorded commit is already in HEAD.
       const superseded = await trySupersedeFinishedOrphan(resumable.info, root);
@@ -1055,7 +1055,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         staleOrphanCtx = { projectState, headSha: headResult.data };
       }
     } catch {
-      // Fall through with undefined ctx — trySupersedeFinishedOrphan will
+      // Fall through with undefined ctx -- trySupersedeFinishedOrphan will
       // load on demand per session, matching pre-ISS-383 behavior.
     }
   }
@@ -1068,7 +1068,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     if (autoSupersededIds.has(stale.state.sessionId)) continue;
     // ISS-556: MCP-facing stale-session cleanup. A single peer session with
     // historical lensReviewHistory disposition corruption must not block
-    // supersede — use resilient read.
+    // supersede -- use resilient read.
     const current = readSessionResilient(stale.dir);
     if (!current || current.status !== "active") continue;
     writeSessionAndRefresh(root, stale.dir, { ...current, status: "superseded" as const } as FullSessionState, "always");
@@ -1174,7 +1174,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         sessionConfig.stageOverrides = overrides.stages as Record<string, Record<string, unknown>>;
       }
     }
-  } catch { /* best-effort — use defaults */ }
+  } catch { /* best-effort -- use defaults */ }
 
   // Guided mode: force single ticket
   if (mode === "guided") {
@@ -1199,7 +1199,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // T-183: Clean stale resume marker before creating a new session
   removeResumeMarker(root);
 
-  // Create session — wrapped in try/finally for cleanup on failure
+  // Create session -- wrapped in try/finally for cleanup on failure
   const session = createSession(root, recipe, wsId, sessionConfig);
   const dir = sessionDir(root, session.sessionId);
   const ownerTask = ownerTaskForCurrentClient(args.clientTaskId, session.startedAt);
@@ -1223,7 +1223,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       return guideError(new Error("This directory is not a git repository or git is not available. Autonomous mode requires git."));
     }
 
-    // Check for staged changes (review mode skips — dirty tree allowed)
+    // Check for staged changes (review mode skips -- dirty tree allowed)
     if (mode !== "review") {
       const stagedResult = await gitDiffCachedNames(root);
       if (stagedResult.ok && stagedResult.data.length > 0) {
@@ -1253,14 +1253,14 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       } else if (line.length > 3) {
         // Tracked file with modifications (M, A, D, R, C, etc.)
         const filePath = line.slice(3).trim();
-        // Skip .story/ files — managed by storybloq, always safe to have dirty
+        // Skip .story/ files -- managed by storybloq, always safe to have dirty
         if (filePath.startsWith(".story/")) continue;
         const hashResult = await gitBlobHash(root, filePath);
         dirtyTracked[filePath] = { blobHash: hashResult.ok ? hashResult.data : "" };
       }
     }
 
-    // T-125: Dirty-file handling — stash or block based on recipe config
+    // T-125: Dirty-file handling -- stash or block based on recipe config
     // Review mode: dirty tree allowed (user has code ready for review)
     if (Object.keys(dirtyTracked).length > 0 && mode !== "review") {
       const dirtyFileHandling = resolvedRecipe.dirtyFileHandling ?? "block";
@@ -1277,7 +1277,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         // Record stash ref in session for restore on completion/cancel
         autoStashRef = { ref: stashResult.data, stashedAt: new Date().toISOString() };
       } else {
-        // "block" (default) — existing behavior
+        // "block" (default) -- existing behavior
         abortSession();
         const dirtyFiles = Object.keys(dirtyTracked).join(", ");
         return guideError(new Error(
@@ -1331,7 +1331,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     const writeTestsConfig = resolvedRecipe.stages?.WRITE_TESTS as Record<string, unknown> | undefined;
     const testEnabled = testConfig?.enabled && resolvedRecipe.pipeline.includes("TEST");
     const writeTestsEnabled = writeTestsConfig?.enabled && resolvedRecipe.pipeline.includes("WRITE_TESTS");
-    // Skip baseline capture for plan mode — it exits at PLAN_REVIEW and never reaches TEST/WRITE_TESTS
+    // Skip baseline capture for plan mode -- it exits at PLAN_REVIEW and never reaches TEST/WRITE_TESTS
     if ((testEnabled || writeTestsEnabled) && mode !== "plan") {
       // T-139: Use WRITE_TESTS command when it's the requesting stage, else TEST command
       const writeTestsCommand = writeTestsConfig?.command as string | undefined;
@@ -1365,7 +1365,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           exitCode: err.code ?? 1,
         }));
         const exitCode = "exitCode" in result ? (result.exitCode as number) : 0;
-        // Parse combined stdout+stderr — test runners (Jest, Vitest, Mocha) print to stderr on failure
+        // Parse combined stdout+stderr -- test runners (Jest, Vitest, Mocha) print to stderr on failure
         const rawOut = "stdout" in result ? String(result.stdout) : "";
         const rawErr = "stderr" in result ? String((result as Record<string, unknown>).stderr) : "";
         const combined = rawOut + "\n" + rawErr;
@@ -1378,7 +1378,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         const output = combined.slice(-500);
         updated = { ...updated, testBaseline: { exitCode, passCount, failCount, summary: output } };
 
-        // T-139: WRITE_TESTS requires parseable baseline — fail fast if not available
+        // T-139: WRITE_TESTS requires parseable baseline -- fail fast if not available
         if (writeTestsEnabled && failCount < 0) {
           abortSession();
           return guideError(new Error(
@@ -1531,7 +1531,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       } else if (mode === "plan") {
         entryState = "PLAN";
       } else {
-        // guided — enters at PLAN like auto, but maxTickets=1 already set
+        // guided -- enters at PLAN like auto, but maxTickets=1 already set
         entryState = "PLAN";
       }
 
@@ -1583,7 +1583,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           ? `\`git diff ${mergeBase}\``
           : `\`git diff HEAD\` AND \`git ls-files --others --exclude-standard\``;
         instruction = [
-          `# ${modeLabels[mode]} — ${ticketResolution.displayId}: ${ticket.title}`,
+          `# ${modeLabels[mode]} -- ${ticketResolution.displayId}: ${ticket.title}`,
           "",
           `Reviewing code for ticket **${ticketResolution.displayId}**. Capture the diff and run a code review.`,
           "",
@@ -1598,7 +1598,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         ].join("\n");
       } else {
         instruction = [
-          `# ${modeLabels[mode]} — ${ticketResolution.displayId}: ${ticket.title}`,
+          `# ${modeLabels[mode]} -- ${ticketResolution.displayId}: ${ticket.title}`,
           "",
           `Write an implementation plan for ticket **${ticketResolution.displayId}**: ${ticket.title}`,
           ticket.description ? `\n**Description:**\n${ticket.description}` : "",
@@ -1616,10 +1616,10 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       const reminders = mode === "guided"
         ? [
             "Do NOT use client-native plan mode -- write plans as markdown files.",
-            "This is guided mode — single ticket, full pipeline.",
+            "This is guided mode -- single ticket, full pipeline.",
           ]
         : [
-            `This is ${mode} mode — session ends after ${mode === "review" ? "code review approval" : "plan review approval"}.`,
+            `This is ${mode} mode -- session ends after ${mode === "review" ? "code review approval" : "plan review approval"}.`,
           ];
 
       return guideResult(updated, entryState, {
@@ -1693,7 +1693,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     let candidatesText = "";
     if (nextResult.kind === "found") {
       candidatesText = nextResult.candidates.map((c, i) =>
-        `${i + 1}. **${displayTicket(c.ticket)}: ${c.ticket.title}** (${c.ticket.type}, phase: ${c.ticket.phase ?? "unphased"})${c.unblockImpact.wouldUnblock.length > 0 ? ` — unblocks ${c.unblockImpact.wouldUnblock.map((t) => displayTicket(t)).join(", ")}` : ""}`,
+        `${i + 1}. **${displayTicket(c.ticket)}: ${c.ticket.title}** (${c.ticket.type}, phase: ${c.ticket.phase ?? "unphased"})${c.unblockImpact.wouldUnblock.length > 0 ? ` -- unblocks ${c.unblockImpact.wouldUnblock.map((t) => displayTicket(t)).join(", ")}` : ""}`,
       ).join("\n");
     } else if (nextResult.kind === "all_complete") {
       candidatesText = "All tickets are complete. No work to do.";
@@ -1778,8 +1778,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       reminders: [
         "Do NOT use client-native plan mode -- write plans as markdown files.",
         "Do NOT ask the user for confirmation or approval.",
-        "Do NOT stop or summarize between tickets — call autonomous_guide IMMEDIATELY.",
-        "You are in autonomous mode — continue working until done.",
+        "Do NOT stop or summarize between tickets -- call autonomous_guide IMMEDIATELY.",
+        "You are in autonomous mode -- continue working until done.",
         "NEVER cancel due to context size. Storybloq's hooks compact context automatically and preserve all session state.",
         ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
       ],
@@ -1794,7 +1794,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline walker (T-128) — dispatches to registered WorkflowStage
+// Pipeline walker (T-128) -- dispatches to registered WorkflowStage
 // ---------------------------------------------------------------------------
 
 /** Reconstruct a ResolvedRecipe from persisted session state fields. */
@@ -1820,7 +1820,7 @@ function resolveRecipeFromState(state: FullSessionState): import("./stages/types
 
 const MAX_AUTO_ADVANCE_DEPTH = 10;
 
-/** Process a StageAdvance result — handles advance/retry/back/goto. */
+/** Process a StageAdvance result -- handles advance/retry/back/goto. */
 async function processAdvance(
   ctx: StageContext,
   currentStage: import("./stages/types.js").WorkflowStage,
@@ -1853,7 +1853,7 @@ async function processAdvance(
       const next = findNextStage(pipeline, currentStage.id, ctx);
 
       if (next.kind === "unregistered") {
-        // Hybrid dispatch: next pipeline stage not yet extracted — write transition.
+        // Hybrid dispatch: next pipeline stage not yet extracted -- write transition.
         // Use advance.result if present (stage pre-computed the instruction),
         // otherwise fall back to generic "report back" for the switch to handle.
         assertTransition(currentStage.id as WorkflowState, next.id as WorkflowState);
@@ -1865,7 +1865,7 @@ async function processAdvance(
       }
 
       if (next.kind === "exhausted") {
-        // Pipeline exhausted — check postComplete or route to HANDOVER
+        // Pipeline exhausted -- check postComplete or route to HANDOVER
         const postComplete = ctx.state.resolvedPostComplete ?? ctx.recipe.postComplete;
         // Use findNextPostComplete when current stage is in postComplete (avoids looping back to self)
         const isInPostComplete = postComplete.includes(currentStage.id);
@@ -1882,7 +1882,7 @@ async function processAdvance(
           return guideResult(ctx.state, post.stage.id, enterResult);
         }
         if (post.kind === "unregistered") {
-          // PostComplete stage not yet extracted — delegate to legacy
+          // PostComplete stage not yet extracted -- delegate to legacy
           assertTransition(currentStage.id as WorkflowState, post.id as WorkflowState);
           ctx.writeState({ state: post.id, previousState: currentStage.id });
           return guideResult(ctx.state, post.id, {
@@ -1890,7 +1890,7 @@ async function processAdvance(
             reminders: [],
           });
         }
-        // post.kind === "exhausted" — no postComplete, route to HANDOVER
+        // post.kind === "exhausted" -- no postComplete, route to HANDOVER
         const handoverStage = getStage("HANDOVER");
         if (handoverStage) {
           assertTransition(currentStage.id as WorkflowState, "HANDOVER");
@@ -1927,7 +1927,7 @@ async function processAdvance(
       const target = advance.target;
       const targetStage = getStage(target);
       if (!targetStage) {
-        // Target not registered — write transition. Use advance.result if provided,
+        // Target not registered -- write transition. Use advance.result if provided,
         // otherwise delegate to legacy switch on next report.
         assertTransition(currentStage.id as WorkflowState, target as WorkflowState);
         ctx.writeState({ state: target, previousState: currentStage.id });
@@ -1989,7 +1989,7 @@ async function runPipelineStage(
 }
 
 // ---------------------------------------------------------------------------
-// report — advance state machine
+// report -- advance state machine
 // ---------------------------------------------------------------------------
 
 async function handleReport(root: string, args: GuideInput): Promise<McpToolResult> {
@@ -2623,7 +2623,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   if (!args.sessionId) return guideError(new Error("sessionId is required for resume"));
 
   // ISS-902: a resume against a newer-schema session must say "restart the client",
-  // not "not found" — this is the exact path that stranded the T-328 session.
+  // not "not found" -- this is the exact path that stranded the T-328 session.
   const resumeLookup = findSessionByIdDetailed(root, args.sessionId);
   if (resumeLookup.kind !== "found") {
     return guideError(new Error(describeSessionLookupFailure(args.sessionId, resumeLookup)));
@@ -2784,7 +2784,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   }
 
   // ISS-037: drain pending deferrals from before compact
-  // Must capture return value — subsequent writes spread info.state as base
+  // Must capture return value -- subsequent writes spread info.state as base
   info = { ...info, state: await drainPendingDeferrals(root, info.dir, info.state) };
 
   // Revalidate after pending-mutation recovery in case it repaired state.
@@ -2794,7 +2794,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ));
   }
 
-  // Check compactPending — stale COMPACT sessions get a clear message
+  // Check compactPending -- stale COMPACT sessions get a clear message
   if (!info.state.compactPending) {
     return guideError(new Error(
       `Session ${args.sessionId} is in COMPACT state but compactPending is false (stale compact). ` +
@@ -2831,7 +2831,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // Branch C: Cannot validate HEAD (git unavailable)
   // Note: missing expectedHead with working git → skip validation (Branch A, backward compat)
   if (!headResult.ok) {
-    // Keep compactPending — session must remain discoverable
+    // Keep compactPending -- session must remain discoverable
     const blockedState = writeSessionAndRefresh(root, info.dir, {
       ...refreshedResumeState,
       resumeBlocked: true,
@@ -3068,7 +3068,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     });
   }
 
-  // Branch A: HEAD matches — normal resume (or own-commit drift from T-184)
+  // Branch A: HEAD matches -- normal resume (or own-commit drift from T-184)
   // Reset pressure only when SessionStart confirmed that client compaction occurred.
   const written = writeSessionAndRefresh(root, info.dir, {
     ...refreshedResumeState,
@@ -3172,7 +3172,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       reminders: [
         "Do NOT stop or summarize. Pick the next ticket IMMEDIATELY.",
         "Do NOT ask the user for confirmation.",
-        "You are in autonomous mode — continue working.",
+        "You are in autonomous mode -- continue working.",
         compactionObserved
           ? "Client compaction confirmed; all session state was preserved. Continue working."
           : "Compaction was not confirmed; pressure counters remain unchanged.",
@@ -3234,7 +3234,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     });
   }
 
-  // Stage not registered — fall back to generic instruction
+  // Stage not registered -- fall back to generic instruction
   return guideResult(written, resumeState, {
     instruction: [
       `# ${resumeHeading}`,
@@ -3405,7 +3405,7 @@ function buildCancelRefusal(state: FullSessionState): string {
   );
 
   return [
-    "# Cancel Refused — this session is mid-pipeline and healthy",
+    "# Cancel Refused -- this session is mid-pipeline and healthy",
     "",
     `**Condition that refused it:** an auto-mode session in \`${workflowState}\` with work remaining (${progress}). ` +
       "It is not stuck, and no claim-loss condition was detected, so nothing that permits cancel applies.",
@@ -3420,7 +3420,7 @@ function buildCancelRefusal(state: FullSessionState): string {
 
 async function handleCancel(root: string, args: GuideInput): Promise<McpToolResult> {
   if (!args.sessionId) {
-    // Cancel without session ID — check for any active session
+    // Cancel without session ID -- check for any active session
     const active = findActiveSessionFull(root);
     if (!active) return guideError(new Error("No active session to cancel"));
     args = { ...args, sessionId: active.state.sessionId };
@@ -3641,7 +3641,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     };
   }
 
-  // T-178: Soft gate — reject context-motivated cancel in active auto sessions
+  // T-178: Soft gate -- reject context-motivated cancel in active auto sessions
   const isAutoMode = info.state.mode === "auto" || !info.state.mode;
   // ISS-084: Count both tickets and issues toward session cap
   const totalDone = info.state.completedTickets.length + (info.state.resolvedIssues?.length ?? 0);
@@ -3827,7 +3827,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     reportSection = "\n\n" + formatCompactReport({ state: written, endedAt: new Date().toISOString(), remainingWork });
   } catch { /* best-effort */ }
 
-  const stashNote = stashPopFailed ? " Auto-stash pop failed — run `git stash pop` manually." : "";
+  const stashNote = stashPopFailed ? " Auto-stash pop failed -- run `git stash pop` manually." : "";
   // F1 (pen byte-review of 1091b226): the resumed path must not assert a
   // completion it never checked -- the same honesty rule the terminal branch
   // already follows. Scoped to RESUME: the fresh-cancel reply predates the

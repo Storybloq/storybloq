@@ -84,7 +84,7 @@ import {
 
 import { withProjectLock } from "../core/project-loader.js";
 
-// Handler imports — pure functions, no run.ts side effects
+// Handler imports -- pure functions, no run.ts side effects
 import { handleStatus } from "../cli/commands/status.js";
 import { handleValidateWithSourceRefs } from "../cli/commands/validate.js";
 import {
@@ -422,7 +422,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       phaseId: z.string().describe("Phase ID (e.g. p5b, dogfood)"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => {
-    // Check phase existence — return not_found for unknown phase
+    // Check phase existence -- return not_found for unknown phase
     const phaseExists = ctx.state.roadmap.phases.some((p) => p.id === args.phaseId);
     if (!phaseExists) {
       return {
@@ -545,7 +545,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- T-084: Recap + Snapshot + Export ---
 
   server.registerTool("storybloq_recap", {
-    description: "Session diff — changes since last snapshot + suggested next actions. Shows what changed and what to work on.",
+    description: "Session diff -- changes since last snapshot + suggested next actions. Shows what changed and what to work on.",
   }, () => runMcpReadTool(pinnedRoot, handleRecap));
 
   server.registerTool("storybloq_recommend", {
@@ -880,14 +880,14 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleLessonGet(args.id, ctx)));
 
   server.registerTool("storybloq_lesson_digest", {
-    description: "Compiled ranked digest of active lessons — primary read interface for context loading",
+    description: "Compiled ranked digest of active lessons -- primary read interface for context loading",
     inputSchema: {},
   }, () => runMcpReadTool(pinnedRoot, (ctx) => handleLessonDigest(ctx)));
 
   server.registerTool("storybloq_lesson_create", {
     description: "Create a new lesson. ID assignment is serialized under the project lock, so concurrent creates that acquire the lock receive distinct sequential IDs.",
     inputSchema: {
-      title: z.string().describe("Lesson title — concise lesson name"),
+      title: z.string().describe("Lesson title -- concise lesson name"),
       content: z.string().describe("The actionable rule (1-3 sentences)"),
       context: z.string().describe("What happened that produced this lesson (evidence, ticket/issue refs)"),
       source: z.enum(LESSON_SOURCES).describe("Lesson source: review, correction, postmortem, manual"),
@@ -936,7 +936,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   ));
 
   server.registerTool("storybloq_lesson_reinforce", {
-    description: "Reinforce a lesson — increment reinforcement count and update lastValidated date",
+    description: "Reinforce a lesson -- increment reinforcement count and update lastValidated date",
     inputSchema: {
       id: LessonIdSchema.describe("Lesson ID (e.g. L-001 or l-[canonical])"),
     },
@@ -949,7 +949,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_phase_create", {
     description: "Create a new phase in the roadmap. Exactly one of after or atStart is required for positioning.",
     inputSchema: {
-      id: z.string().describe("Phase ID — lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
+      id: z.string().describe("Phase ID -- lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
       name: z.string().describe("Phase display name"),
       label: z.string().describe("Phase label (e.g. 'PHASE 1')"),
       description: z.string().describe("Phase description"),
@@ -973,7 +973,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     ),
   ));
 
-  // No MCP delete tools for any entity — deletion is destructive and stays CLI-only (human-gated).
+  // No MCP delete tools for any entity -- deletion is destructive and stays CLI-only (human-gated).
 
   // --- Federation bootstrap ---
 
@@ -1120,7 +1120,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Selftest ---
 
   server.registerTool("storybloq_selftest", {
-    description: "Integration smoke test — creates, updates, and deletes test entities to verify the full pipeline",
+    description: "Integration smoke test -- creates, updates, and deletes test entities to verify the full pipeline",
   }, () => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleSelftest(root, format),
   ));
@@ -1128,7 +1128,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Session report ---
 
   server.registerTool("storybloq_session_report", {
-    description: "Generate a structured analysis of an autonomous session — works even if project state is corrupted",
+    description: "Generate a structured analysis of an autonomous session -- works even if project state is corrupted",
     inputSchema: {
       sessionId: z.string().uuid().describe("Session ID to analyze"),
     },
@@ -1170,7 +1170,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, (args) => {
     try {
       const sDir = sessionDir(pinnedRoot, args.sessionId);
-      // ISS-556: resilient read — subprocess registration must not be wedged
+      // ISS-556: resilient read -- subprocess registration must not be wedged
       // by historical lensReviewHistory disposition corruption.
       const session = readSessionResilient(sDir);
       if (!session) return { content: [{ type: "text" as const, text: withStalenessNote("Error: session not found or corrupt") }], isError: true };
@@ -1202,7 +1202,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, (args) => {
     try {
       const sDir = sessionDir(pinnedRoot, args.sessionId);
-      // ISS-556: resilient read — cleanup must work even when the session's
+      // ISS-556: resilient read -- cleanup must work even when the session's
       // lensReviewHistory has historical disposition corruption.
       const session = readSessionResilient(sDir);
       if (!session) return { content: [{ type: "text" as const, text: withStalenessNote("Error: session not found or corrupt") }], isError: true };
@@ -1240,7 +1240,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       report: z.object({
         completedAction: z.string().describe("What was completed"),
         ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),
-        issueId: z.string().optional().describe("Issue ID (for issue_picked) — T-153"),
+        issueId: z.string().optional().describe("Issue ID (for issue_picked) -- T-153"),
         commitHash: z.string().optional().describe("Git commit hash (for commit_done)"),
         handoverContent: z.string().optional().describe("Handover markdown content"),
         verdict: z.string().optional().describe("Review verdict: approve|revise|request_changes|reject"),

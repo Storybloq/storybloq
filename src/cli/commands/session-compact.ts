@@ -1,9 +1,9 @@
 /**
  * CLI handlers for hook-driven compaction (ISS-032).
  *
- * - session-compact-prepare: PreCompact hook entry — prepares session for compaction
- * - session-resume-prompt: SessionStart hook entry — outputs resume instruction after compaction
- * - session-clear-compact: Admin escape hatch — clears stale compact markers
+ * - session-compact-prepare: PreCompact hook entry -- prepares session for compaction
+ * - session-resume-prompt: SessionStart hook entry -- outputs resume instruction after compaction
+ * - session-clear-compact: Admin escape hatch -- clears stale compact markers
  */
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import {
@@ -113,7 +113,7 @@ export async function handleSessionCompactPrepare(
   options: SessionCompactPrepareOptions = {},
 ): Promise<void> {
   const root = discoverProjectRoot(options.cwd);
-  if (!root) return; // No .story/ — silent no-op
+  if (!root) return; // No .story/ -- silent no-op
 
   const client = options.client ?? "claude";
   const environmentTaskId = client === "codex"
@@ -138,7 +138,7 @@ export async function handleSessionCompactPrepare(
   try {
     await withSessionLock(root, async () => {
       const active = findActiveSessionFull(root);
-      if (!active) return; // No active session — silent no-op
+      if (!active) return; // No active session -- silent no-op
 
       // ISS-899: was one of five hand-rolled copies of the ownership
       // precedence. Behaviour is unchanged -- callerMayAct is exactly the old
@@ -155,7 +155,7 @@ export async function handleSessionCompactPrepare(
         return;
       }
 
-      // prepareForCompact FIRST (fast state.json write — ensures compactPending persisted)
+      // prepareForCompact FIRST (fast state.json write -- ensures compactPending persisted)
       try {
         prepareForCompact(active.dir, refreshLease(active.state));
       } catch (err) {
@@ -171,17 +171,17 @@ export async function handleSessionCompactPrepare(
         preCompactState: active.state.preCompactState ?? active.state.state,
       });
 
-      // THEN snapshot (slower, can fail — compactPending is already set)
+      // THEN snapshot (slower, can fail -- compactPending is already set)
       try {
         const loadResult = await loadProject(root);
         const { saveSnapshot } = await import("../../core/snapshot.js");
         await saveSnapshot(root, loadResult);
       } catch {
-        // Snapshot failure is recoverable — compactPending is set, resume will work
+        // Snapshot failure is recoverable -- compactPending is set, resume will work
       }
     });
   } catch (err) {
-    // Lock acquisition or other failure — emit stderr, exit 0
+    // Lock acquisition or other failure -- emit stderr, exit 0
     process.stderr.write(`[storybloq] compact-prepare failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 
@@ -1150,7 +1150,7 @@ export async function handleSessionClearCompact(
     // T-183: Clean resume marker (session is terminal)
     removeResumeMarker(root);
 
-    return `Session ${info.state.sessionId} ended (unrecoverable — invalid preCompactState: ${preCompactState ?? "null"}). Run "start" for a new session.`;
+    return `Session ${info.state.sessionId} ended (unrecoverable -- invalid preCompactState: ${preCompactState ?? "null"}). Run "start" for a new session.`;
   });
 
   const pendingCancel = cancelHolder.pending;
@@ -1172,7 +1172,7 @@ export async function handleSessionClearCompact(
 /**
  * Admin command to cleanly stop an active session. Releases ticket claim,
  * clears compact metadata, writes SESSION_END with admin_recovery.
- * CLI-only (not MCP) — autonomous agent cannot invoke.
+ * CLI-only (not MCP) -- autonomous agent cannot invoke.
  */
 export async function handleSessionStop(root: string, sessionId?: string): Promise<string> {
   // Same deferred completion protocol as clear-compact: complete the ledger
@@ -1222,7 +1222,7 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
       } catch { /* best-effort */ }
     }
 
-    // Flag unfiled deferrals — drain is in guide.ts (not importable from CLI)
+    // Flag unfiled deferrals -- drain is in guide.ts (not importable from CLI)
     // The deferralsUnfiled flag signals that manual issue filing is needed
     const hasUnfiledDeferrals = (info.state.pendingDeferrals ?? []).length > 0;
 

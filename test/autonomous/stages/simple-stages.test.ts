@@ -141,7 +141,7 @@ describe("ImplementStage", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     const advance = await stage.report(ctx, { completedAction: "implementation_done" });
     expect(advance.action).toBe("advance");
-    // T-139: ImplementStage no longer hardcodes next stage instruction —
+    // T-139: ImplementStage no longer hardcodes next stage instruction --
     // the pipeline walker calls nextStage.enter() instead.
     expect("result" in advance).toBe(false);
   });
@@ -232,7 +232,7 @@ describe("PlanStage", () => {
     const planContent = "# Same Plan\n\nNothing changed.";
     writeFileSync(join(sessionDir, "plan.md"), planContent, "utf-8");
 
-    // Compute the expected hash (DJB2 — must match guide.ts simpleHash: & 0xffffffff + base 36)
+    // Compute the expected hash (DJB2 -- must match guide.ts simpleHash: & 0xffffffff + base 36)
     let hash = 5381;
     for (let i = 0; i < planContent.length; i++) {
       hash = ((hash << 5) + hash + planContent.charCodeAt(i)) & 0xffffffff;

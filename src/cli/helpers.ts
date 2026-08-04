@@ -233,7 +233,7 @@ export async function parseHandoverFilename(
     }
   } catch (err: unknown) {
     if (err instanceof CliValidationError) throw err;
-    // ENOENT is fine — file might not exist yet, will fail at read time
+    // ENOENT is fine -- file might not exist yet, will fail at read time
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw new CliValidationError(
         "io_error",

@@ -1,5 +1,5 @@
 /**
- * Session report handler — structured analysis of an autonomous session.
+ * Session report handler -- structured analysis of an autonomous session.
  * Decoupled from ProjectState: reads session files directly.
  * Works even if .story/ project state is corrupted.
  */
@@ -166,7 +166,7 @@ export async function handleSessionReport(
   const planResult = tryReadFile(join(dir, "plan.md"));
   if (planResult.ok) planContent = planResult.content;
 
-  // 7. Git log for session range (best-effort — requires both refs)
+  // 7. Git log for session range (best-effort -- requires both refs)
   let gitLog: string[] | null = null;
   const initHead = state.git.initHead ?? null;
   const lastCommit = state.completedTickets.length > 0

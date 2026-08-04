@@ -1,7 +1,7 @@
 import type { DiffStats, ReviewRecord } from "./session-types.js";
 
 // ---------------------------------------------------------------------------
-// Sensitive paths — files that escalate risk by one level
+// Sensitive paths -- files that escalate risk by one level
 // ---------------------------------------------------------------------------
 
 const SENSITIVE_PATTERNS = [

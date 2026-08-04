@@ -6,7 +6,7 @@ import { resolve } from "node:path";
  * T-282: Narrow FileWatcher reload scope + lightweight health refresh path.
  *
  * Source-contract tests that assert the key Swift APIs and invariants added by
- * T-282 are present. These are crude substring checks on the Swift source —
+ * T-282 are present. These are crude substring checks on the Swift source --
  * they fail before implementation and pass after.
  *
  * This sidesteps the fact that the Swift test target isn't driven by `npm test`;

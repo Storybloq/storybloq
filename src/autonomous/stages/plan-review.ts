@@ -17,7 +17,7 @@ import {
 } from "./codex-native.js";
 
 /**
- * PLAN_REVIEW stage — independent reviewer evaluates the plan.
+ * PLAN_REVIEW stage -- independent reviewer evaluates the plan.
  *
  * enter(): Instruction to run plan review with specified backend.
  * report(): Process verdict → advance (IMPLEMENT), retry (next round),
@@ -43,7 +43,7 @@ export class PlanReviewStage implements WorkflowStage {
     if (reviewer === "lenses") {
       return {
         instruction: [
-          `# Multi-Lens Plan Review — Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
+          `# Multi-Lens Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
           "",
           "This round uses the **multi-lens review orchestrator** backed by @storybloq/lenses for plan review. It fans out to specialized review agents (Security, Error Handling, Clean Code, Concurrency, and more) in parallel, then merges findings programmatically. There is NO merger agent and NO judge agent.",
           "",
@@ -92,7 +92,7 @@ export class PlanReviewStage implements WorkflowStage {
     const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";
     return {
       instruction: [
-        `# Plan Review — Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
+        `# Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
         "",
         `Run a plan review using **${reviewer}**.`,
         "",
@@ -336,7 +336,7 @@ export class PlanReviewStage implements WorkflowStage {
       };
     }
 
-    // ISS-048: Revise stays in PLAN_REVIEW — retry with findings summary
+    // ISS-048: Revise stays in PLAN_REVIEW -- retry with findings summary
     if (isRevise) {
       const findingSummary = findings.length > 0
         ? findings.slice(0, 5).map((f) => `- [${f.severity}] ${f.description}`).join("\n")
@@ -344,7 +344,7 @@ export class PlanReviewStage implements WorkflowStage {
       return {
         action: "retry",
         instruction: [
-          `# Plan Review — Round ${roundNum} requested changes`,
+          `# Plan Review -- Round ${roundNum} requested changes`,
           "",
           "Update the plan to address these findings, then call me with completedAction: \"plan_review_round\" and the new review verdict.",
           "",
@@ -371,7 +371,7 @@ export class PlanReviewStage implements WorkflowStage {
               "",
               `Plan for **${ctx.state.ticket?.id}** has been approved after ${roundNum} review round(s).`,
               "",
-              "Session ending — plan mode is complete.",
+              "Session ending -- plan mode is complete.",
             ].join("\n"),
             reminders: [],
             transitionedFrom: "PLAN_REVIEW",
@@ -381,12 +381,12 @@ export class PlanReviewStage implements WorkflowStage {
       return { action: "advance" };
     }
 
-    // Stay in PLAN_REVIEW — next round
+    // Stay in PLAN_REVIEW -- next round
     const nextReviewerName = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     return {
       action: "retry",
       instruction: [
-        `# Plan Review — Round ${roundNum + 1}`,
+        `# Plan Review -- Round ${roundNum + 1}`,
         "",
         hasCriticalOrMajor
           ? `Round ${roundNum} found ${findings.filter((f) => f.severity === "critical" || f.severity === "major").length} critical/major finding(s). Address them, then re-review with **${nextReviewerName}**.`

@@ -1,8 +1,8 @@
 /**
- * T-251: resolveSessionSelector — tri-state session ID resolver.
+ * T-251: resolveSessionSelector -- tri-state session ID resolver.
  *
  * Exercises the new resolver helper in storybloq/src/autonomous/session-selector.ts
- * against real on-disk fixtures. No mocking — we want realpath + readdirSync
+ * against real on-disk fixtures. No mocking -- we want realpath + readdirSync
  * semantics tested end-to-end, including the symlink-escape guard.
  *
  * These tests MUST fail before session-selector.ts ships.
@@ -148,7 +148,7 @@ describe("T-251 resolveSessionSelector", () => {
     // And the isContainedSessionDir guard should return false for the symlink directly.
     expect(isContainedSessionDir(root, linkPath)).toBe(false);
 
-    // Target must be byte-identical — no accidental write.
+    // Target must be byte-identical -- no accidental write.
     const targetStateAfter = readFileSync(join(outside, "state.json"), "utf-8");
     expect(targetStateAfter).toBe(targetStateBefore);
   });

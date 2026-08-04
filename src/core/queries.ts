@@ -225,7 +225,7 @@ export function blockedTickets(state: ProjectState): readonly Ticket[] {
 
 /**
  * Tickets that would become unblocked if ticketId were completed.
- * Direct unblocking only — no transitive chains.
+ * Direct unblocking only -- no transitive chains.
  */
 export function ticketsUnblockedBy(
   ticketId: string,

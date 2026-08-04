@@ -3,7 +3,7 @@
  *
  * Each register*Command function wires up yargs command definitions with
  * the corresponding handler from the commands/ directory. This file imports
- * from run.ts (EPIPE listener) and is therefore CLI-only — MCP must never
+ * from run.ts (EPIPE listener) and is therefore CLI-only -- MCP must never
  * import this module.
  */
 import type { Argv } from "yargs";
@@ -49,7 +49,7 @@ import { formatError, formatLedgerIntegrity, noProjectFoundOutput, ExitCode } fr
 import { discoverIntegrityRoot, scanLedgerIntegrity } from "../core/ledger-integrity.js";
 import type { IssueSourceRefInput } from "../models/issue.js";
 
-// Handler imports — read handlers
+// Handler imports -- read handlers
 import { handleStatus } from "./commands/status.js";
 import { handleValidateWithSourceRefs } from "./commands/validate.js";
 import { handleRepair, computeRepairs } from "./commands/repair.js";
@@ -2446,7 +2446,7 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
 export function registerRecapCommand(yargs: Argv): Argv {
   return yargs.command(
     "recap",
-    "Session diff — changes since last snapshot + suggested actions",
+    "Session diff -- changes since last snapshot + suggested actions",
     (y) => addFormatOption(y),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
@@ -3145,7 +3145,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
         )
         .command(
           "reinforce <id>",
-          "Reinforce a lesson — increment reinforcement count and update lastValidated",
+          "Reinforce a lesson -- increment reinforcement count and update lastValidated",
           (y2) =>
             addFormatOption(
               y2.positional("id", {
@@ -3545,7 +3545,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
 export function registerSelftestCommand(yargs: Argv): Argv {
   return yargs.command(
     "selftest",
-    "Run integration smoke test — create/update/delete cycle across all entity types",
+    "Run integration smoke test -- create/update/delete cycle across all entity types",
     (y) => addFormatOption(y),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
@@ -3687,7 +3687,7 @@ export function registerSetupSkillCommand(yargs: Argv): Argv {
 export function registerHookStatusCommand(yargs: Argv): Argv {
   return yargs.command(
     "hook-status",
-    false as unknown as string, // hidden — machine-facing, not shown in --help
+    false as unknown as string, // hidden -- machine-facing, not shown in --help
     (y) => y.option("client", {
       type: "string",
       choices: ["claude", "codex"] as const,
@@ -3904,7 +3904,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
 export function registerSessionCommand(yargs: Argv): Argv {
   return yargs.command(
     "session",
-    false as unknown as string, // hidden — machine-facing
+    false as unknown as string, // hidden -- machine-facing
     (y) =>
       y
         .command(
@@ -3985,7 +3985,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
             y2
               .positional("sessionId", {
                 type: "string",
-                describe: "Session ID (optional — scans for compactPending session if omitted)",
+                describe: "Session ID (optional -- scans for compactPending session if omitted)",
               })
               .option("force", {
                 type: "boolean",
@@ -4018,7 +4018,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
           (y2) =>
             y2.positional("sessionId", {
               type: "string",
-              describe: "Session ID (optional — stops active session if omitted)",
+              describe: "Session ID (optional -- stops active session if omitted)",
             }),
           async (argv) => {
             const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
@@ -4146,7 +4146,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
             y2
               .positional("sessionId", {
                 type: "string",
-                describe: "Session ID or unique prefix (optional — scans for orphans if omitted)",
+                describe: "Session ID or unique prefix (optional -- scans for orphans if omitted)",
               })
               .option("dry-run", {
                 type: "boolean",

@@ -682,8 +682,8 @@ The base tools below are registered in full mode (inside a .story/ project). The
 
 With no .story/ project on the path, the MCP server starts degraded and registers only:
 
-- **storybloq_init** — bootstrap a .story/ project, then dynamically register the full tool set
-- **storybloq_status** — returns setup guidance instead of a project summary
+- **storybloq_init** -- bootstrap a .story/ project, then dynamically register the full tool set
+- **storybloq_status** -- returns setup guidance instead of a project summary
 
 Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.
 
@@ -726,14 +726,14 @@ Read `bus-mode.md` for setup, endpoint binding, authority boundaries, acknowledg
 ## Common Workflows
 
 ### Session Start
-1. `storybloq status` — project overview
-2. `storybloq recap` — what changed since last snapshot
-3. `storybloq handover latest` — last session context
-4. `storybloq ticket next` — what to work on
+1. `storybloq status` -- project overview
+2. `storybloq recap` -- what changed since last snapshot
+3. `storybloq handover latest` -- last session context
+4. `storybloq ticket next` -- what to work on
 
 ### Session End
-1. `storybloq snapshot` — save state for diffs
-2. `storybloq handover create --content <md>` — write session handover
+1. `storybloq snapshot` -- save state for diffs
+2. `storybloq handover create --content <md>` -- write session handover
 
 ### Project Setup
 1. `npm install -g @storybloq/storybloq` - install CLI

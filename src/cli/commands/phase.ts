@@ -47,7 +47,7 @@ export function handlePhaseCurrent(ctx: CommandContext): CommandResult {
       return { output: JSON.stringify(successEnvelope(phase), null, 2) };
     }
     const summary = phase.summary ?? phase.description;
-    return { output: `${phase.name} (${phase.id}) — ${summary}` };
+    return { output: `${phase.name} (${phase.id}) -- ${summary}` };
   }
 
   // Differentiate: no phases with leaves vs all complete
@@ -81,7 +81,7 @@ export function handlePhaseTickets(
   phaseId: string,
   ctx: CommandContext,
 ): CommandResult {
-  // Check phase existence — return not_found for unknown phase
+  // Check phase existence -- return not_found for unknown phase
   const phaseExists = ctx.state.roadmap.phases.some((p) => p.id === phaseId);
   if (!phaseExists) {
     return {

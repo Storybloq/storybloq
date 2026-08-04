@@ -12,7 +12,7 @@ export type PhaseStatus = "notstarted" | "inprogress" | "complete";
 
 /**
  * Pure derived-data container. All derivation happens eagerly in the constructor.
- * Direct port of Swift `ProjectState` — same 7-step pipeline, same query semantics.
+ * Direct port of Swift `ProjectState` -- same 7-step pipeline, same query semantics.
  */
 export class ProjectState {
   // --- Public raw inputs (readonly) ---

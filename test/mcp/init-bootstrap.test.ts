@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import { loadProject } from "../../src/core/project-loader.js";
 
-describe("init bootstrap — MCP degraded mode flow", () => {
+describe("init bootstrap -- MCP degraded mode flow", () => {
   const tmpDirs: string[] = [];
 
   afterEach(async () => {

@@ -15,7 +15,7 @@ import { CliValidationError } from "../../src/cli/helpers.js";
 
 /**
  * Wraps a handler for testing without filesystem. We call the handler
- * function directly with a manufactured context — bypassing loadProject.
+ * function directly with a manufactured context -- bypassing loadProject.
  */
 function makeHandler(
   result: CommandResult,
@@ -25,7 +25,7 @@ function makeHandler(
 
 // --- Happy path: verify handler output flows through ---
 
-describe("runMcpReadTool — happy path", () => {
+describe("runMcpReadTool -- happy path", () => {
   // We can't directly test runMcpReadTool with a mock state without the
   // filesystem, so we test the handlers directly through the MCP pipeline
   // by calling them with manufactured contexts.
@@ -168,7 +168,7 @@ describe("runMcpReadTool — happy path", () => {
     };
     const result = handleTicketNext(ctx);
     expect(result.output).toContain("T-001");
-    // ticket_next has no errorCode even when no tickets found — it's informational
+    // ticket_next has no errorCode even when no tickets found -- it's informational
     expect(result.errorCode).toBeUndefined();
   });
 
@@ -224,7 +224,7 @@ describe("runMcpReadTool — happy path", () => {
 
 // --- Error classification matrix ---
 
-describe("runMcpReadTool — error classification", () => {
+describe("runMcpReadTool -- error classification", () => {
   it("ProjectLoaderError → isError: true", async () => {
     // Simulate by using a non-existent root
     const result = await runMcpReadTool("/tmp/nonexistent-project-root", () => ({
@@ -240,7 +240,7 @@ describe("runMcpReadTool — error classification", () => {
       errorCode: "io_error" as const,
     }));
     // This will actually throw because /tmp/test doesn't have .story/
-    // so it'll be a ProjectLoaderError. That's fine — it's still isError: true.
+    // so it'll be a ProjectLoaderError. That's fine -- it's still isError: true.
     expect(result.isError).toBe(true);
   });
 
@@ -297,7 +297,7 @@ describe("runMcpReadTool — error classification", () => {
 
 // --- Integrity warnings ---
 
-describe("runMcpReadTool — integrity warnings", () => {
+describe("runMcpReadTool -- integrity warnings", () => {
   it("prepends warning notice when integrity warnings present", async () => {
     const { handleStatus } = await import("../../src/cli/commands/status.js");
     const state = makeState({
@@ -316,7 +316,7 @@ describe("runMcpReadTool — integrity warnings", () => {
 
     // Calling handler directly to verify the warning prefix logic
     const result = await handleStatus(ctx);
-    // The handler itself doesn't add the warning — the pipeline does.
+    // The handler itself doesn't add the warning -- the pipeline does.
     // We test the handler output is clean:
     expect(result.output).toBeDefined();
   });

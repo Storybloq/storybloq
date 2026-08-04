@@ -1,5 +1,5 @@
 /**
- * T-251: `storybloq session` CLI — list, show, repair, delete.
+ * T-251: `storybloq session` CLI -- list, show, repair, delete.
  *
  * Exercises the four new CLI handlers against real on-disk .story/ trees.
  * Real git only in tests that need finished-orphan classification.
@@ -205,7 +205,7 @@ function plantFinishedOrphan(root: string, sessionId: string): { dir: string; co
   const commitHash = commitOnMain(root, "fix_iss_999");
   const dir = plantSession(root, {
     sessionId,
-    leaseMinutesAgo: 180, // 3 hours ago — past the 60-minute orphan buffer
+    leaseMinutesAgo: 180, // 3 hours ago -- past the 60-minute orphan buffer
     mode: "auto",
     targetWork: [issueId],
   });
@@ -323,7 +323,7 @@ describe("T-251 session list", () => {
     expect(first).toHaveProperty("mode");
   });
 
-  // Test 4 — bulk discovery containment
+  // Test 4 -- bulk discovery containment
   it("listIgnoresSymlinkEscape: UUID-named symlink outside sessionsRoot is not surfaced by list", async () => {
     const root = setupRoot();
     const real = "66666666-6666-6666-6666-666666666666";
@@ -468,7 +468,7 @@ describe("T-251 session repair", () => {
     const dir = plantSession(root, {
       sessionId: id,
       status: "active",
-      leaseMinutesAgo: -30, // fresh — lease not expired
+      leaseMinutesAgo: -30, // fresh -- lease not expired
     });
     const stateBefore = readFileSync(join(dir, "state.json"), "utf-8");
 
@@ -495,7 +495,7 @@ describe("T-251 session repair", () => {
     // No-op write to bump revision.
     writeSessionSync(dir, { ...current });
 
-    // Now the under-lock revision mismatch path should fire — but because candidate
+    // Now the under-lock revision mismatch path should fire -- but because candidate
     // collection re-reads outside the lock, the new write is seen before mutation.
     // The handler must detect that the current revision doesn't match the previously
     // scanned revision and skip. We assert by comparing state remains active OR by
@@ -571,7 +571,7 @@ describe("T-251 session repair", () => {
     expect(after2.terminationReason).toBe("admin_recovery");
   });
 
-  // Test 15 — bulk discovery containment
+  // Test 15 -- bulk discovery containment
   it("repairAllSkipsSymlinkEscape: repair --all drops symlink-escape candidates before write", async () => {
     const root = setupRoot();
     writeTicket(root, "T-502", "open");

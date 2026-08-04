@@ -1,5 +1,5 @@
 /**
- * ISS-377: Startup-time invariant — every WorkflowState must be either a
+ * ISS-377: Startup-time invariant -- every WorkflowState must be either a
  * registered pipeline stage or an explicitly documented transient state.
  *
  * This catches the class of bug where a new WorkflowState is added but the
@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from "vitest";
 
-// CRITICAL: side-effect import — populates the stage registry. Without this,
+// CRITICAL: side-effect import -- populates the stage registry. Without this,
 // importing hasStage alone leaves the registry empty and the invariant test
 // would fail for reasons unrelated to the thing it's checking.
 import "../../src/autonomous/stages/index.js";

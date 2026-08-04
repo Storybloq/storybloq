@@ -146,7 +146,7 @@ function canonicalSessionsRoot(root: string): string | null {
  * Shared containment guard. Returns true iff `dir` lives inside the
  * canonical sessions root. Fails closed on any realpath error other than
  * ENOENT on the candidate itself (in which case the non-existent candidate
- * is verified lexically — a not-yet-existing path cannot be a symlink).
+ * is verified lexically -- a not-yet-existing path cannot be a symlink).
  */
 export function isContainedSessionDir(root: string, dir: string): boolean {
   return probeContainment(root, dir) === "contained";
@@ -198,7 +198,7 @@ export function probeContainment(root: string, dir: string): ContainmentProbe {
 /**
  * Enumerate the direct child directory names under sessionsRoot(root).
  * Callers MUST pass each candidate through isContainedSessionDir before
- * touching it. This helper does NOT filter symlinks itself — it returns the
+ * touching it. This helper does NOT filter symlinks itself -- it returns the
  * raw set of directory-like entries so callers can decide whether to apply
  * containment + readSession checks.
  *

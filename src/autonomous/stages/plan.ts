@@ -30,7 +30,7 @@ function simpleHash(content: string): string {
 }
 
 /**
- * PLAN stage — Claude writes an implementation plan.
+ * PLAN stage -- Claude writes an implementation plan.
  *
  * enter(): Instruction to write a plan.
  * report(): Validate plan exists/changed, claim ticket, advance to PLAN_REVIEW.
@@ -127,7 +127,7 @@ export class PlanStage implements WorkflowStage {
       return { action: "retry", instruction: "Plan file is empty. Write your implementation plan and call me again." };
     }
 
-    // Plan fingerprint — detect unchanged plan after revise (ISS-035)
+    // Plan fingerprint -- detect unchanged plan after revise (ISS-035)
     const planHash = simpleHash(planContent);
     if (ctx.state.ticket?.lastPlanHash && ctx.state.ticket.lastPlanHash === planHash) {
       return { action: "retry", instruction: "Plan has not changed since the last review. Address the review findings, then revise the plan and call me again." };
@@ -180,7 +180,7 @@ export class PlanStage implements WorkflowStage {
           };
         });
       } catch {
-        // Best-effort — don't block plan review if ticket update fails
+        // Best-effort -- don't block plan review if ticket update fails
       }
       // Persisted immediately rather than at the stage advance below. A crash in
       // between would otherwise leave a session that OWNS the ticket but carries
@@ -255,7 +255,7 @@ export class PlanStage implements WorkflowStage {
             nativeCodexReportInstruction(ctx.state.sessionId),
           ].join("\n")
           : [
-            `# Plan Review — Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
+            `# Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
             "",
             `Run a plan review using **${reviewer}**.`,
             "",

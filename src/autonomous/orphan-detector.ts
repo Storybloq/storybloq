@@ -3,7 +3,7 @@
  * session describes a targeted auto session whose work is verifiably finished
  * on disk AND whose recorded commits are reachable from the current HEAD.
  *
- * Fails closed on any uncertainty — used by both guide.ts (auto-supersede) and
+ * Fails closed on any uncertainty -- used by both guide.ts (auto-supersede) and
  * cli/commands/session.ts (manual repair).
  */
 import { readEvents } from "./session.js";
@@ -19,7 +19,7 @@ type LoadedProjectState = Awaited<ReturnType<typeof loadProject>>["state"];
 /**
  * ISS-383: pre-loaded project state + git HEAD hash that callers can hoist out
  * of a per-session loop to avoid re-running loadProject + git rev-parse on
- * every iteration. Optional — when omitted, isFinishedOrphan loads on demand
+ * every iteration. Optional -- when omitted, isFinishedOrphan loads on demand
  * for backward compatibility with single-call sites.
  */
 export interface OrphanCheckContext {
@@ -46,7 +46,7 @@ export function isOrphanCandidate(state: FullSessionState): boolean {
 /**
  * Build a map of issueId → recorded commit hashes from a session's event log,
  * validating every commit-event payload along the way. Returns null when any
- * event is malformed or has the wrong shape — fails closed so the caller
+ * event is malformed or has the wrong shape -- fails closed so the caller
  * treats the session as not-finished rather than silently dropping commits.
  */
 function buildIssueCommitMap(dir: string): Map<string, string[]> | null {

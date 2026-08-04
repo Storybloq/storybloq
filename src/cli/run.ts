@@ -17,7 +17,7 @@ process.stdout.on("error", (err: NodeJS.ErrnoException) => {
     process.exitCode = ExitCode.OK;
     return;
   }
-  // Other stdout errors — set exit code but don't crash
+  // Other stdout errors -- set exit code but don't crash
   process.exitCode = ExitCode.USER_ERROR;
 });
 

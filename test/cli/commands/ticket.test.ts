@@ -452,7 +452,7 @@ describe("handleTicketUpdate", () => {
     ticket.customField = "preserved";
     const { writeFile: wf } = await import("node:fs/promises");
     await wf(join(dir, ".story", "tickets", "T-001.json"), JSON.stringify(ticket, null, 2));
-    // Update title — should preserve customField
+    // Update title -- should preserve customField
     const result = await handleTicketUpdate("T-001", { title: "New Title" }, "json", dir);
     const parsed = JSON.parse(result.output);
     expect(parsed.data.customField).toBe("preserved");

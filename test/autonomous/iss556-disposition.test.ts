@@ -97,7 +97,7 @@ function writeStateFile(dir: string, state: Record<string, unknown>): void {
 }
 
 // ---------------------------------------------------------------------------
-// 1. MCP input schema — disposition enum rejects unknown values
+// 1. MCP input schema -- disposition enum rejects unknown values
 // ---------------------------------------------------------------------------
 
 describe("ISS-556 Layer 1: disposition enum at input boundary", () => {
@@ -240,7 +240,7 @@ describe("ISS-556 Layer 2: readSessionResilient disposition-only recovery", () =
     // Codex round-1 finding: the recovery predicate must distinguish
     // "invalid enum value" (the one recoverable case) from other zod errors
     // at the same path. A null or wrong-type disposition is structural
-    // corruption, not the ISS-556 incident pattern — must NOT silent-recover.
+    // corruption, not the ISS-556 incident pattern -- must NOT silent-recover.
     const dir = makeSessionDir();
     writeStateFile(
       dir,

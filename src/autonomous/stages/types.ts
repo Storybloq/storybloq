@@ -14,7 +14,7 @@ import { loadProject } from "../../core/project-loader.js";
 import type { ProjectState } from "../../core/project-state.js";
 
 // ---------------------------------------------------------------------------
-// Stage result — returned by enter() when the stage needs Claude to act
+// Stage result -- returned by enter() when the stage needs Claude to act
 // ---------------------------------------------------------------------------
 
 export interface StageResult {
@@ -25,7 +25,7 @@ export interface StageResult {
 }
 
 // ---------------------------------------------------------------------------
-// Stage advance — returned by report() and optionally by enter()
+// Stage advance -- returned by report() and optionally by enter()
 // ---------------------------------------------------------------------------
 
 export type StageAdvance =
@@ -37,7 +37,7 @@ export type StageAdvance =
   | { action: "goto"; target: string; result: StageResult };
 
 // ---------------------------------------------------------------------------
-// Type guard — discriminates StageResult from StageAdvance
+// Type guard -- discriminates StageResult from StageAdvance
 // ---------------------------------------------------------------------------
 
 export function isStageAdvance(value: StageResult | StageAdvance): value is StageAdvance {
@@ -45,7 +45,7 @@ export function isStageAdvance(value: StageResult | StageAdvance): value is Stag
 }
 
 // ---------------------------------------------------------------------------
-// Resolved recipe — frozen pipeline + config for a session
+// Resolved recipe -- frozen pipeline + config for a session
 // ---------------------------------------------------------------------------
 
 import type { BranchStrategy } from "../branch-strategy.js";
@@ -66,7 +66,7 @@ export interface ResolvedRecipe {
 }
 
 // ---------------------------------------------------------------------------
-// Stage context — stateful wrapper passed to stage enter/report methods
+// Stage context -- stateful wrapper passed to stage enter/report methods
 // ---------------------------------------------------------------------------
 
 /**
@@ -88,7 +88,7 @@ export class StageContext {
     this.recipe = recipe;
   }
 
-  /** Current session state — always reflects the latest writeState() call. */
+  /** Current session state -- always reflects the latest writeState() call. */
   get state(): FullSessionState {
     return this._state;
   }
@@ -162,7 +162,7 @@ export class StageContext {
   }
 
   /**
-   * Drain pending deferrals — attempt to file each as an issue.
+   * Drain pending deferrals -- attempt to file each as an issue.
    * Updates state with filed/remaining deferrals. Returns true if all filed.
    */
   async drainDeferrals(): Promise<boolean> {

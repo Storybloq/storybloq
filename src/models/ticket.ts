@@ -28,13 +28,13 @@ export const TicketSchema = z
     completedDate: DateSchema.nullable(),
     blockedBy: z.array(TicketIdSchema),
     parentTicket: TicketIdSchema.nullable().optional(),
-    // Attribution fields — unused in v1, baked in to avoid future migration
+    // Attribution fields -- unused in v1, baked in to avoid future migration
     createdBy: z.string().nullable().optional(),
     assignedTo: z.string().nullable().optional(),
     lastModifiedBy: z.string().nullable().optional(),
     updatedDate: DateSchema.nullable().optional(),
     updatedAt: TimestampSchema,
-    // ISS-027: Autonomous session ownership — set when ticket claimed as inprogress
+    // ISS-027: Autonomous session ownership -- set when ticket claimed as inprogress
     claimedBySession: z.string().nullable().optional(),
     crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX, "Cross-node ref must match node:ID format")).optional(),
     displayId: z.string().optional(),

@@ -1,5 +1,5 @@
 /**
- * T-139: Tests for WriteTestsStage (TDD — write failing tests before implementation).
+ * T-139: Tests for WriteTestsStage (TDD -- write failing tests before implementation).
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -256,7 +256,7 @@ describe("WriteTestsStage", () => {
       notes: "exit code: 0, 10 passed, 0 failed",
     });
     expect(advance.action).toBe("advance");
-    // Must NOT include result — let ImplementStage.enter() run
+    // Must NOT include result -- let ImplementStage.enter() run
     expect("result" in advance).toBe(false);
   });
 

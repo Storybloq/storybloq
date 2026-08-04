@@ -17,7 +17,7 @@ import { initProject } from "../../src/core/init.js";
 
 const FIXTURES_DIR = join(import.meta.dirname, "..", "fixtures", "valid", "basic");
 
-describe("MCP integration — real filesystem", () => {
+describe("MCP integration -- real filesystem", () => {
   const tmpDirs: string[] = [];
   afterEach(async () => {
     for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
@@ -32,7 +32,7 @@ describe("MCP integration — real filesystem", () => {
     return dir;
   }
 
-  it("storybloq_status — full pipeline", async () => {
+  it("storybloq_status -- full pipeline", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, handleStatus);
     expect(result.isError).toBeUndefined();
@@ -48,29 +48,29 @@ describe("MCP integration — real filesystem", () => {
     expect(parsed.data.project).toBeDefined();
   });
 
-  it("storybloq_ticket_get — valid ticket", async () => {
+  it("storybloq_ticket_get -- valid ticket", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, (ctx) => handleTicketGet("T-001", ctx));
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toBeDefined();
   });
 
-  it("storybloq_ticket_get — not found (informational, not isError)", async () => {
+  it("storybloq_ticket_get -- not found (informational, not isError)", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, (ctx) => handleTicketGet("T-999", ctx));
-    // not_found is informational — NOT isError
+    // not_found is informational -- NOT isError
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("not found");
   });
 
-  it("storybloq_phase_list — lists phases", async () => {
+  it("storybloq_phase_list -- lists phases", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, handlePhaseList);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text.length).toBeGreaterThan(0);
   });
 
-  it("storybloq_issue_list — lists issues", async () => {
+  it("storybloq_issue_list -- lists issues", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, (ctx) =>
       handleIssueList({}, ctx),
@@ -78,19 +78,19 @@ describe("MCP integration — real filesystem", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it("storybloq_validate — validates project", async () => {
+  it("storybloq_validate -- validates project", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, handleValidate);
     expect(result.isError).toBeUndefined();
   });
 
-  it("storybloq_blocker_list — lists blockers", async () => {
+  it("storybloq_blocker_list -- lists blockers", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, handleBlockerList);
     expect(result.isError).toBeUndefined();
   });
 
-  it("storybloq_handover_list — lists handovers", async () => {
+  it("storybloq_handover_list -- lists handovers", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, handleHandoverList);
     expect(result.isError).toBeUndefined();
@@ -198,14 +198,14 @@ describe("MCP integration — real filesystem", () => {
   });
 });
 
-describe("MCP integration — phase_create write pipeline", () => {
+describe("MCP integration -- phase_create write pipeline", () => {
   const tmpDirs: string[] = [];
   afterEach(async () => {
     for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
     tmpDirs.length = 0;
   });
 
-  it("storybloq_phase_create — creates phase via write pipeline", async () => {
+  it("storybloq_phase_create -- creates phase via write pipeline", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
     tmpDirs.push(dir);
     await initProject(dir, { name: "test" });
@@ -223,7 +223,7 @@ describe("MCP integration — phase_create write pipeline", () => {
     expect(roadmap.phases[1].id).toBe("alpha");
   });
 
-  it("storybloq_phase_create — duplicate ID returns error", async () => {
+  it("storybloq_phase_create -- duplicate ID returns error", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
     tmpDirs.push(dir);
     await initProject(dir, { name: "test" });
@@ -237,7 +237,7 @@ describe("MCP integration — phase_create write pipeline", () => {
     expect(result.content[0].text).toContain("already exists");
   });
 
-  it("storybloq_phase_create — missing positioning returns error", async () => {
+  it("storybloq_phase_create -- missing positioning returns error", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mcp-phase-"));
     tmpDirs.push(dir);
     await initProject(dir, { name: "test" });
@@ -252,7 +252,7 @@ describe("MCP integration — phase_create write pipeline", () => {
   });
 });
 
-describe("MCP integration — root pinning", () => {
+describe("MCP integration -- root pinning", () => {
   const tmpDirs: string[] = [];
   afterEach(async () => {
     for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
@@ -271,7 +271,7 @@ describe("MCP integration — root pinning", () => {
     const dir = await mkdtemp(join(tmpdir(), "mcp-envroot-"));
     tmpDirs.push(dir);
     await cp(FIXTURES_DIR, join(dir, ".story"), { recursive: true });
-    // runMcpReadTool takes root directly — env var is handled by the entry point
+    // runMcpReadTool takes root directly -- env var is handled by the entry point
     const result = await runMcpReadTool(dir, handleStatus);
     expect(result.isError).toBeUndefined();
   });

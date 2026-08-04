@@ -1177,7 +1177,7 @@ describe("registerPreCompactHook", () => {
     expect(preCompact[0]!.hooks).toHaveLength(2);
   });
 
-  it("is idempotent — second run returns exists", async () => {
+  it("is idempotent -- second run returns exists", async () => {
     const register = await importHook();
     await register(settingsPath);
     const result = await register(settingsPath);

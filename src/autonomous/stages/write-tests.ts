@@ -6,7 +6,7 @@ const EXIT_CODE_REGEX = /exit\s*(?:code[:\s]*)?\s*(\d+)/i;
 const FAIL_COUNT_REGEX = /(\d+)\s*fail/i;
 
 /**
- * WRITE_TESTS stage — TDD: write failing tests before implementation.
+ * WRITE_TESTS stage -- TDD: write failing tests before implementation.
  *
  * enter(): Instruct agent to write tests from the approved plan. Tests MUST fail.
  * report(): Verify tests fail with NEW failures (baseline-aware). Advance to IMPLEMENT
@@ -33,12 +33,12 @@ export class WriteTestsStage implements WorkflowStage {
 
     return {
       instruction: [
-        `# Write Failing Tests (TDD) ${retryCount > 0 ? `— Retry ${retryCount}` : ""}`,
+        `# Write Failing Tests (TDD) ${retryCount > 0 ? ` -- Retry ${retryCount}` : ""}`,
         "",
         "Write tests based on the approved plan. These tests define the contract for the implementation.",
         "",
         "**Critical: Tests MUST fail.** You are writing tests for behavior that does not exist yet.",
-        "Do NOT implement the feature — only write tests.",
+        "Do NOT implement the feature -- only write tests.",
         "",
         `Plan: \`${planPath}\``,
         `Test command: \`${command}\``,
@@ -52,11 +52,11 @@ export class WriteTestsStage implements WorkflowStage {
         "",
         "**If your approved plan requires no code changes** (e.g., the bug is already fixed), update the ticket status to complete in .story/ and report:",
         '```json',
-        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "no_tests_needed", "notes": "No code changes needed — ticket resolved without implementation." } }`,
+        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "no_tests_needed", "notes": "No code changes needed -- ticket resolved without implementation." } }`,
         '```',
       ].join("\n"),
       reminders: [
-        "Tests MUST fail — they define unimplemented behavior.",
+        "Tests MUST fail -- they define unimplemented behavior.",
         "Do NOT write implementation code. Only tests.",
         "Include exit code and pass/fail counts in your report notes.",
       ],
@@ -65,7 +65,7 @@ export class WriteTestsStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
-    // ISS-069: No-op escape hatch — ticket needs no code changes
+    // ISS-069: No-op escape hatch -- ticket needs no code changes
     if (report.completedAction === "no_tests_needed") {
       ctx.writeState({ writeTestsRetryCount: 0 });
       ctx.appendEvent("write_tests", { result: "skipped", reason: "no_changes_needed" });
@@ -98,7 +98,7 @@ export class WriteTestsStage implements WorkflowStage {
       ctx.writeState({ writeTestsRetryCount: nextRetry });
       return {
         action: "retry",
-        instruction: "Cannot validate TDD results — test baseline was not captured with parseable fail counts. Re-run tests and include explicit pass/fail counts in your report notes (e.g. 'exit code: 1, 10 passed, 3 failed').",
+        instruction: "Cannot validate TDD results -- test baseline was not captured with parseable fail counts. Re-run tests and include explicit pass/fail counts in your report notes (e.g. 'exit code: 1, 10 passed, 3 failed').",
       };
     }
 
@@ -126,7 +126,7 @@ export class WriteTestsStage implements WorkflowStage {
       return { action: "advance" };
     }
 
-    // Tests pass or same/decreased failures — no new tests written
+    // Tests pass or same/decreased failures -- no new tests written
     ctx.appendEvent("write_tests", {
       exitCode,
       baselineFailCount,
@@ -143,9 +143,9 @@ export class WriteTestsStage implements WorkflowStage {
     // Fix 4: Different guidance for decreased vs unchanged fail count
     let guidance: string;
     if (currentFailCount < baselineFailCount) {
-      guidance = `Fail count decreased (${currentFailCount} vs baseline ${baselineFailCount}) — you may have fixed pre-existing failures. Add new failing tests WITHOUT fixing existing ones.`;
+      guidance = `Fail count decreased (${currentFailCount} vs baseline ${baselineFailCount}) -- you may have fixed pre-existing failures. Add new failing tests WITHOUT fixing existing ones.`;
     } else if (exitCode === 0) {
-      guidance = "All tests pass — you need to write tests for behavior that doesn't exist yet. The tests should FAIL before implementation.";
+      guidance = "All tests pass -- you need to write tests for behavior that doesn't exist yet. The tests should FAIL before implementation.";
     } else {
       guidance = `Fail count (${currentFailCount}) has not increased vs baseline (${baselineFailCount}). Write tests for NEW unimplemented behavior, not existing failures.`;
     }
@@ -153,7 +153,7 @@ export class WriteTestsStage implements WorkflowStage {
     return {
       action: "retry",
       instruction: [
-        `# Write Failing Tests — Retry ${retryCount + 1}`,
+        `# Write Failing Tests -- Retry ${retryCount + 1}`,
         "",
         guidance,
         "",
@@ -173,8 +173,8 @@ function exhaustionAction(ctx: StageContext): StageAdvance {
   ctx.appendEvent("write_tests", { result: "exhaustion", onExhaustion });
 
   if (onExhaustion === "advance") {
-    // Return plain advance — let ImplementStage.enter() provide its own instruction.
-    // Do NOT include advance.result — it bypasses the next stage's enter().
+    // Return plain advance -- let ImplementStage.enter() provide its own instruction.
+    // Do NOT include advance.result -- it bypasses the next stage's enter().
     return { action: "advance" };
   }
 

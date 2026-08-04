@@ -1,7 +1,7 @@
 import type { WorkflowStage, StageContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Stage registry — maps stage IDs to WorkflowStage implementations
+// Stage registry -- maps stage IDs to WorkflowStage implementations
 // ---------------------------------------------------------------------------
 
 const stages = new Map<string, WorkflowStage>();
@@ -62,7 +62,7 @@ export function findNextStage(
   for (let i = currentIndex + 1; i < pipeline.length; i++) {
     const stage = stages.get(pipeline[i]);
     if (!stage) {
-      // Pipeline entry not registered — cannot advance past it
+      // Pipeline entry not registered -- cannot advance past it
       return { kind: "unregistered", id: pipeline[i] };
     }
     if (stage.skip?.(ctx)) continue;
@@ -74,7 +74,7 @@ export function findNextStage(
 
 /**
  * Find the first non-skipping stage in the postComplete pipeline.
- * Same discriminated result as findNextStage — stops at unregistered entries.
+ * Same discriminated result as findNextStage -- stops at unregistered entries.
  */
 export function findFirstPostComplete(
   postComplete: readonly string[],

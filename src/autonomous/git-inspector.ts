@@ -4,7 +4,7 @@ import type { GitResult, DiffStats } from "./session-types.js";
 const GIT_TIMEOUT = 10_000;
 
 // ---------------------------------------------------------------------------
-// Core executor — async execFile with timeout, returns GitResult<T>
+// Core executor -- async execFile with timeout, returns GitResult<T>
 // ---------------------------------------------------------------------------
 
 async function git<T>(
@@ -101,7 +101,7 @@ export async function gitDiffCachedNames(cwd: string): Promise<GitResult<string[
 
 /**
  * Stash dirty tracked files with a descriptive message.
- * Returns the stash commit hash (stable identifier — won't shift if other stashes are created).
+ * Returns the stash commit hash (stable identifier -- won't shift if other stashes are created).
  */
 export async function gitStash(cwd: string, message: string): Promise<GitResult<string>> {
   // Push the stash
@@ -111,17 +111,17 @@ export async function gitStash(cwd: string, message: string): Promise<GitResult<
   // Capture the commit hash of the stash we just created (it's at stash@{0} right now)
   const hashResult = await git(cwd, ["rev-parse", "stash@{0}"], (out) => out.trim());
   if (!hashResult.ok) {
-    // Stash was created but we can't identify it — try to find by message, or pop it to restore workspace
+    // Stash was created but we can't identify it -- try to find by message, or pop it to restore workspace
     const listResult = await git(cwd, ["stash", "list", "--format=%gd %s"], (out) =>
       out.split("\n").filter(l => l.includes(message)),
     );
     if (listResult.ok && listResult.data.length > 0) {
-      // Found by message — extract ref from first match
+      // Found by message -- extract ref from first match
       const ref = listResult.data[0]!.split(" ")[0]!;
       const refHash = await git(cwd, ["rev-parse", ref], (out) => out.trim());
       if (refHash.ok) return { ok: true, data: refHash.data };
     }
-    // Can't identify — do NOT pop blindly (could pop wrong stash if concurrent operations)
+    // Can't identify -- do NOT pop blindly (could pop wrong stash if concurrent operations)
     return { ok: false, reason: "stash_hash_failed", message: "Stash created but could not be identified. Run `git stash list` to find and pop it manually." };
   }
 
@@ -145,7 +145,7 @@ export async function gitStashPop(cwd: string, commitHash?: string): Promise<Git
     }),
   );
   if (!listResult.ok) {
-    // Cannot list stashes — do NOT fall back to git stash pop (might pop wrong entry)
+    // Cannot list stashes -- do NOT fall back to git stash pop (might pop wrong entry)
     return { ok: false, reason: "stash_list_failed", message: `Cannot list stash entries to find ${commitHash}. Run \`git stash list\` and pop manually.` };
   }
 

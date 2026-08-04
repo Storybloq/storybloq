@@ -128,7 +128,7 @@ function itemArtifactPath(state: FullSessionState): string | null {
 }
 
 /**
- * FINALIZE stage — 3-checkpoint sub-machine for staging, pre-commit, and commit.
+ * FINALIZE stage -- 3-checkpoint sub-machine for staging, pre-commit, and commit.
  *
  * Checkpoints (tracked via state.finalizeCheckpoint):
  * 1. files_staged → verify staged files, overlap detection (ISS-025)
@@ -141,7 +141,7 @@ function itemArtifactPath(state: FullSessionState): string | null {
  * enter(): Instruction to stage files.
  * report(): Process checkpoint actions via retry (sub-steps) and advance (commit done).
  *
- * HIGHEST RISK extraction — copied verbatim from handleReportFinalize.
+ * HIGHEST RISK extraction -- copied verbatim from handleReportFinalize.
  */
 export class FinalizeStage implements WorkflowStage {
   readonly id = "FINALIZE";
@@ -231,7 +231,7 @@ export class FinalizeStage implements WorkflowStage {
     const action = report.completedAction;
     const checkpoint = ctx.state.finalizeCheckpoint;
 
-    // ISS-031: Already committed — advance regardless of action (re-entry guard)
+    // ISS-031: Already committed -- advance regardless of action (re-entry guard)
     if (checkpoint === "committed") {
       return { action: "advance" };
     }
@@ -294,7 +294,7 @@ export class FinalizeStage implements WorkflowStage {
       const headResult = await gitHead(ctx.root);
       const previousHead = itemBaseline(ctx.state);
       if (headResult.ok && previousHead && headResult.data.hash !== previousHead) {
-        // HEAD advanced — agent committed before reporting files_staged
+        // HEAD advanced -- agent committed before reporting files_staged
         // Validate commit contains ticket/issue file if applicable
         const treeResult = await gitDiffTreeNames(ctx.root, headResult.data.hash);
         const ticketId = ctx.state.ticket?.id;
@@ -318,7 +318,7 @@ export class FinalizeStage implements WorkflowStage {
             };
           }
         }
-        // Commit is valid — fast-forward checkpoint so handleCommit accepts it
+        // Commit is valid -- fast-forward checkpoint so handleCommit accepts it
         ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
         return this.handleCommit(ctx, { ...report, commitHash: headResult.data.hash });
       }
@@ -349,7 +349,7 @@ export class FinalizeStage implements WorkflowStage {
       };
     }
 
-    // ISS-025 + ISS-063: Overlap detection — block staging of pre-existing untracked files.
+    // ISS-025 + ISS-063: Overlap detection -- block staging of pre-existing untracked files.
     // Exclude the current session's ticket and issue files from overlap (the guide picked
     // this work, so its .story/ files are expected even if untracked at session start).
     const baselineUntracked = ctx.state.git.baseline?.untrackedPaths ?? [];

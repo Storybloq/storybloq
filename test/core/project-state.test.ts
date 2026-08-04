@@ -153,7 +153,7 @@ describe("ProjectState", () => {
       expect(state.phaseStatus("p1")).toBe("notstarted");
     });
 
-    it("ignores umbrella stored status — derives from leaves only", () => {
+    it("ignores umbrella stored status -- derives from leaves only", () => {
       const tickets = [
         makeTicket({ id: "T-001", phase: "p1", status: "complete" }), // umbrella, stored as complete
         makeTicket({ id: "T-002", phase: "p1", status: "open", parentTicket: "T-001" }), // leaf is open

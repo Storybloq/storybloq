@@ -28,7 +28,7 @@ export interface ValidationResult {
 
 /**
  * Validates a fully loaded ProjectState for reference integrity.
- * Pure function — no I/O. Returns structured findings, never throws.
+ * Pure function -- no I/O. Returns structured findings, never throws.
  */
 export function validateProject(state: ProjectState): ValidationResult {
   const findings: ValidationFinding[] = [];
@@ -219,7 +219,7 @@ export function validateProject(state: ProjectState): ValidationResult {
 
   // Ticket reference checks
   for (const t of state.tickets) {
-    // Phase ref (null is valid — unphased)
+    // Phase ref (null is valid -- unphased)
     if (t.phase !== null && !phaseIDs.has(t.phase)) {
       findings.push({
         level: "error",
@@ -339,7 +339,7 @@ export function validateProject(state: ProjectState): ValidationResult {
       }
     }
 
-    // Issue phase ref (null/undefined is valid — unphased)
+    // Issue phase ref (null/undefined is valid -- unphased)
     if (i.phase != null && !phaseIDs.has(i.phase)) {
       findings.push({
         level: "error",

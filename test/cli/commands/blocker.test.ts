@@ -97,7 +97,7 @@ describe("handleBlockerAdd", () => {
     await initProject(dir, { name: "test" });
     await handleBlockerAdd({ name: "temp-block" }, "md", dir);
     await handleBlockerClear("temp-block", undefined, "md", dir);
-    // Should succeed — original is cleared
+    // Should succeed -- original is cleared
     const result = await handleBlockerAdd({ name: "temp-block" }, "md", dir);
     expect(result.output).toContain("Added blocker: temp-block");
     const raw = await readFile(join(dir, ".story", "roadmap.json"), "utf-8");

@@ -1,6 +1,6 @@
 /**
  * ISS-050: CompleteStage must not crash on PICK_TICKET path.
- * Regression test — advice variable was removed in T-146 but one reference remained.
+ * Regression test -- advice variable was removed in T-146 but one reference remained.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ function makeRecipe(): ResolvedRecipe {
   };
 }
 
-describe("CompleteStage — ISS-050 regression", () => {
+describe("CompleteStage -- ISS-050 regression", () => {
   let testRoot: string;
   let sessionDir: string;
   const stage = new CompleteStage();

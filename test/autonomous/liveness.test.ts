@@ -538,7 +538,7 @@ describePosix("T-283 spawnAliveSidecar dedup + lock", () => {
     expect(pid).toBeGreaterThan(0);
 
     // Stub killPriorSidecar to return false (via test seam).
-    // NB: we can't reliably spy on child_process.spawn here — liveness.ts
+    // NB: we can't reliably spy on child_process.spawn here -- liveness.ts
     // imports it statically at module load, so vi.spyOn against the
     // node:child_process namespace wouldn't intercept the call. Instead we
     // assert the observable post-conditions: r is null, lock is released,
@@ -631,8 +631,8 @@ describePosix("T-283 spawnAliveSidecar dedup + lock", () => {
   // Covers the primary inode guard: when a concurrent holder has swapped the
   // file (unlink + recreate) before we opened our fd, fstat sees the new
   // inode and rejects the break. The later lstat-before-unlink check is a
-  // defence-in-depth for swaps happening AFTER fstat — hard to exercise
-  // deterministically without monkey-patching fs.lstatSync — so it is not
+  // defence-in-depth for swaps happening AFTER fstat -- hard to exercise
+  // deterministically without monkey-patching fs.lstatSync -- so it is not
   // covered here.
   it("#28 safeUnlinkLock refuses to unlink when expected inode does not match fd inode", () => {
     const lockPath = join(tDir, "sidecar.lock");

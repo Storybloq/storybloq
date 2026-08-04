@@ -2,7 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 
 /**
- * ISSUE_SWEEP stage — postComplete stage that sweeps open issues.
+ * ISSUE_SWEEP stage -- postComplete stage that sweeps open issues.
  *
  * Runs after all tickets are done. Partitions issues: session-created first
  * (guide has full context), then pre-existing. Each group sorted by severity
@@ -31,7 +31,7 @@ export class IssueSweepStage implements WorkflowStage {
     const allIssues = projectState.issues.filter(i => i.status === "open");
 
     if (allIssues.length === 0) {
-      // No open issues — goto HANDOVER directly (not advance, which would
+      // No open issues -- goto HANDOVER directly (not advance, which would
       // re-enter ISSUE_SWEEP via findFirstPostComplete and loop until depth limit)
       return { action: "goto", target: "HANDOVER" };
     }
@@ -64,7 +64,7 @@ export class IssueSweepStage implements WorkflowStage {
     const firstIssue = ordered[0]!;
     return {
       instruction: [
-        `# Issue Sweep — ${ordered.length} open issue(s)`,
+        `# Issue Sweep -- ${ordered.length} open issue(s)`,
         "",
         `Fix **${firstIssue.id}**: ${firstIssue.title}`,
         "",
@@ -86,7 +86,7 @@ export class IssueSweepStage implements WorkflowStage {
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
     const sweep = ctx.state.issueSweepState;
     if (!sweep) {
-      return { action: "advance" }; // No sweep state — skip to HANDOVER
+      return { action: "advance" }; // No sweep state -- skip to HANDOVER
     }
 
     const current = sweep.current;
@@ -107,7 +107,7 @@ export class IssueSweepStage implements WorkflowStage {
         };
       }
 
-      // Issue resolved — advance queue
+      // Issue resolved -- advance queue
       const resolved = [...sweep.resolved, current];
       const remaining = sweep.remaining.filter(id => id !== current);
       const next = remaining[0] ?? null;
@@ -138,7 +138,7 @@ export class IssueSweepStage implements WorkflowStage {
       return {
         action: "retry",
         instruction: [
-          `# Issue Sweep — ${remaining.length} remaining`,
+          `# Issue Sweep -- ${remaining.length} remaining`,
           "",
           nextIssue
             ? `Fix **${nextIssue.id}**: ${nextIssue.title}\nSeverity: ${nextIssue.severity}${nextIssue.impact ? `\nImpact: ${nextIssue.impact}` : ""}`
@@ -150,7 +150,7 @@ export class IssueSweepStage implements WorkflowStage {
       };
     }
 
-    // No current issue — sweep is done
+    // No current issue -- sweep is done
     ctx.appendEvent("issue_sweep_complete", { resolved: sweep.resolved.length });
     return { action: "goto", target: "HANDOVER" };
   }

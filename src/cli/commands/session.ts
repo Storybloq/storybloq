@@ -1,6 +1,6 @@
 import { displayIdOf } from "../../core/resolver.js";
 /**
- * T-251: `storybloq session` CLI — list, show, repair, delete.
+ * T-251: `storybloq session` CLI -- list, show, repair, delete.
  *
  * Four admin subcommands for inspecting and repairing session state. Every
  * user-supplied selector flows through resolveSessionSelector for path
@@ -1009,7 +1009,7 @@ export async function handleSessionDelete(
       return `Session ${res.sessionId} already deleted.`;
     }
 
-    // Always re-read under lock — the corrupt flag observed during resolution
+    // Always re-read under lock -- the corrupt flag observed during resolution
     // is stale by the time we hold the lock. A session that was corrupt at
     // resolution time may have been repaired in the gap; refuse to delete a
     // now-active session even if the pre-lock snapshot looked deletable.

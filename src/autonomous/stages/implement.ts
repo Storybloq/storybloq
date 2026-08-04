@@ -4,7 +4,7 @@ import { assessRisk, normalizeRiskLevel } from "../review-depth.js";
 import { gitDiffStat, gitDiffNames } from "../git-inspector.js";
 
 /**
- * IMPLEMENT stage — Claude writes code to implement the approved plan.
+ * IMPLEMENT stage -- Claude writes code to implement the approved plan.
  *
  * enter(): Instruction to implement the plan.
  * report(): Compute realized risk from actual diff, advance to next stage
@@ -18,7 +18,7 @@ export class ImplementStage implements WorkflowStage {
     const planPath = `.story/sessions/${ctx.state.sessionId}/plan.md`;
     return {
       instruction: [
-        `# Implement — ${ticket?.id ?? "unknown"}: ${ticket?.title ?? ""}`,
+        `# Implement -- ${ticket?.id ?? "unknown"}: ${ticket?.title ?? ""}`,
         "",
         `Implement the approved plan at \`${planPath}\`.`,
         "",
@@ -38,7 +38,7 @@ export class ImplementStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, _report: GuideReportInput): Promise<StageAdvance> {
-    // ISS-069: No-op escape hatch — ticket needs no code changes
+    // ISS-069: No-op escape hatch -- ticket needs no code changes
     if (_report.completedAction === "no_implementation_needed") {
       ctx.appendEvent("implement", { result: "skipped", reason: "no_changes_needed" });
       return { action: "goto", target: "COMPLETE" };
@@ -61,7 +61,7 @@ export class ImplementStage implements WorkflowStage {
       ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk } : ctx.state.ticket,
     });
 
-    // T-139: Return plain advance — let the next stage's enter() provide its own instruction.
+    // T-139: Return plain advance -- let the next stage's enter() provide its own instruction.
     // Previously hardcoded CODE_REVIEW instruction here, but this breaks when
     // TEST or WRITE_TESTS is inserted between IMPLEMENT and CODE_REVIEW.
     return { action: "advance" };

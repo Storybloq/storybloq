@@ -11,7 +11,7 @@ import {
 const MAX_TEST_RETRIES = 3;
 
 /**
- * TEST stage — run project tests between IMPLEMENT and CODE_REVIEW.
+ * TEST stage -- run project tests between IMPLEMENT and CODE_REVIEW.
  * Conditional: skip() returns true when not enabled in recipe config.
  *
  * enter(): Instruction to run the test command.
@@ -105,7 +105,7 @@ export class TestStage implements WorkflowStage {
       ctx.writeState({ testFreshnessRetryCount: 0 });
     }
 
-    // Parse exit code from notes — require explicit exit code, default to failure if ambiguous
+    // Parse exit code from notes -- require explicit exit code, default to failure if ambiguous
     const exitCodeMatch = notes.match(/exit\s*(?:code[:\s]*)?\s*(\d+)/i);
     if (!exitCodeMatch) {
       // ISS-053: Increment retry count on parse failure to prevent infinite loop
@@ -121,7 +121,7 @@ export class TestStage implements WorkflowStage {
     const exitCode = parseInt(exitCodeMatch[1]!, 10);
 
     if (exitCode === 0) {
-      // Tests passed — advance to CODE_REVIEW
+      // Tests passed -- advance to CODE_REVIEW
       ctx.writeState({ testRetryCount: 0 });
       ctx.appendEvent("tests_passed", { retryCount, notes: notes.slice(0, 200) });
       if (freshnessWaived) {
@@ -142,8 +142,8 @@ export class TestStage implements WorkflowStage {
       return { action: "advance" };
     }
 
-    // Tests failed — check if failures are pre-existing (baseline also failed)
-    // Only auto-advance if the baseline was also failing — new regressions still block
+    // Tests failed -- check if failures are pre-existing (baseline also failed)
+    // Only auto-advance if the baseline was also failing -- new regressions still block
     const baseline = ctx.state.testBaseline;
     if (baseline && baseline.exitCode !== 0) {
       // Try to parse current fail count to compare with baseline
@@ -156,10 +156,10 @@ export class TestStage implements WorkflowStage {
         ctx.appendEvent("tests_preexisting_failures", { baselineExitCode: baseline.exitCode, baselineFails: baseline.failCount, currentFails, notes: notes.slice(0, 200) });
         return { action: "advance" };
       }
-      // Failures are worse than baseline — treat as new regressions, fall through to retry
+      // Failures are worse than baseline -- treat as new regressions, fall through to retry
     }
 
-    // New failures — retry or document and advance
+    // New failures -- retry or document and advance
     if (retryCount < MAX_TEST_RETRIES) {
       ctx.writeState({ testRetryCount: retryCount + 1 });
       ctx.appendEvent("tests_failed_retry", { retryCount: retryCount + 1, notes: notes.slice(0, 200) });
@@ -170,14 +170,14 @@ export class TestStage implements WorkflowStage {
       };
     }
 
-    // Max retries exhausted — document and advance
+    // Max retries exhausted -- document and advance
     ctx.writeState({ testRetryCount: 0 });
     ctx.appendEvent("tests_failed_exhausted", { retryCount, notes: notes.slice(0, 200) });
     return {
       action: "advance",
       result: {
         instruction: [
-          "# Tests Failed — Proceeding to Code Review",
+          "# Tests Failed -- Proceeding to Code Review",
           "",
           `Tests failed after ${MAX_TEST_RETRIES} retries. Documenting failures and proceeding to code review.`,
           "",

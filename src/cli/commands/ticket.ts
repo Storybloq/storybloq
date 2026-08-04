@@ -169,12 +169,12 @@ export function handleTicketMetaGet(
 
 export function handleTicketNext(ctx: CommandContext, count: number = 1): CommandResult {
   if (count <= 1) {
-    // Existing path — unchanged behavior, uses nextTicket (early-stop at blocked phase)
+    // Existing path -- unchanged behavior, uses nextTicket (early-stop at blocked phase)
     const outcome = nextTicket(ctx.state);
     const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
     return { output: formatNextTicketOutcome(outcome, ctx.state, ctx.format), exitCode };
   }
-  // Multi-candidate path — continues across blocked phases
+  // Multi-candidate path -- continues across blocked phases
   const outcome = nextTickets(ctx.state, count);
   const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
   return { output: formatNextTicketsOutcome(outcome, ctx.state, ctx.format), exitCode };

@@ -184,7 +184,7 @@ describe("StatusPayload schema foundation (T-259)", () => {
       expect(payload.currentIssue).toBeNull();
     });
 
-    // T-277: session elapsed-time timer — startedAt on active payload
+    // T-277: session elapsed-time timer -- startedAt on active payload
     it("copies startedAt from session onto active payload", () => {
       const session: SessionState = {
         ...makeFullSessionState(),

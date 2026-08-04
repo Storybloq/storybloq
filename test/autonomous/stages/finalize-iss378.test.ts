@@ -120,7 +120,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     vi.restoreAllMocks();
   });
 
-  it("1. acceptsReportForHeadCommit — normal case, fast-path regression guard", async () => {
+  it("1. acceptsReportForHeadCommit -- normal case, fast-path regression guard", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
     const state = makeState();
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
@@ -137,7 +137,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(written.git.mergeBase).toBe(A40);
   });
 
-  it("2. acceptsReportForShortPrefixWhenHeadMatches — sub-4-char prefix regression guard", async () => {
+  it("2. acceptsReportForShortPrefixWhenHeadMatches -- sub-4-char prefix regression guard", async () => {
     const head = "abc" + "f".repeat(37);
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: head, branch: "main" } });
     const state = makeState({ git: { branch: "main", mergeBase: B40, expectedHead: B40, initHead: B40 } as FullSessionState["git"] });
@@ -153,7 +153,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(written.completedTickets[0]?.commitHash).toBe(head);
   });
 
-  it("3. acceptsReportForUppercasePrefixWhenHeadMatches — lowercase normalization guard", async () => {
+  it("3. acceptsReportForUppercasePrefixWhenHeadMatches -- lowercase normalization guard", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
     const state = makeState();
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
@@ -168,7 +168,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(written.completedTickets[0]?.commitHash).toBe(A40);
   });
 
-  it("4. acceptsReportForCommitInBranchHistory — core ISS-378 drift case", async () => {
+  it("4. acceptsReportForCommitInBranchHistory -- core ISS-378 drift case", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: true, data: [A40] });
@@ -198,7 +198,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(commitEvent?.data.ticketId).toBe("T-001");
   });
 
-  it("5. acceptsReportWhenMultipleCandidateCommitsTouchedArtifact — multiplicity is OK", async () => {
+  it("5. acceptsReportWhenMultipleCandidateCommitsTouchedArtifact -- multiplicity is OK", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: true, data: [A40, C40] });
@@ -215,7 +215,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(written.completedTickets[0]?.commitHash).toBe(A40);
   });
 
-  it("6. rejectsReportForCommitOutsideCandidateSet — slow-path membership check", async () => {
+  it("6. rejectsReportForCommitOutsideCandidateSet -- slow-path membership check", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: C40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: true, data: [A40] });
@@ -233,7 +233,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(advance.instruction).toContain(E40.slice(0, 7));
   });
 
-  it("7. rejectsReportWhenNoCommitTouchedArtifact — empty candidate set", async () => {
+  it("7. rejectsReportWhenNoCommitTouchedArtifact -- empty candidate set", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: C40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: true, data: [] });
@@ -250,7 +250,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(advance.instruction).toContain(".story/tickets/T-001.json");
   });
 
-  it("8. rejectsReportForNonexistentCommit — rev-parse fails", async () => {
+  it("8. rejectsReportForNonexistentCommit -- rev-parse fails", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: false, reason: "git_error", message: "unknown revision" });
 
@@ -266,7 +266,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(mockedGitRevListAncestryPath).not.toHaveBeenCalled();
   });
 
-  it("9. rejectsReportForPreviousHeadAsNewCommit — no-new-commit guard regression", async () => {
+  it("9. rejectsReportForPreviousHeadAsNewCommit -- no-new-commit guard regression", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: B40, branch: "main" } });
 
     const state = makeState({
@@ -280,7 +280,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(advance.instruction).toContain("No new commit detected");
   });
 
-  it("10. acceptsIssueFixReportForDriftCommit — issue-path variant (ISS-374 observed case)", async () => {
+  it("10. acceptsIssueFixReportForDriftCommit -- issue-path variant (ISS-374 observed case)", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: true, data: [A40] });
@@ -303,7 +303,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(written.git.mergeBase).toBe(E40);
   });
 
-  it("11. rejectsReportWhenGitHeadFails — gitHead failure branch", async () => {
+  it("11. rejectsReportWhenGitHeadFails -- gitHead failure branch", async () => {
     mockedGitHead.mockResolvedValue({ ok: false, reason: "git_error", message: "boom" });
 
     const state = makeState();
@@ -318,7 +318,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(mockedGitRevListAncestryPath).not.toHaveBeenCalled();
   });
 
-  it("12. rejectsReportWhenAncestryPathEnumerationFails — git error in slow path", async () => {
+  it("12. rejectsReportWhenAncestryPathEnumerationFails -- git error in slow path", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
     mockedGitRevListAncestryPath.mockResolvedValue({ ok: false, reason: "git_error", message: "rev-list crashed" });
@@ -336,7 +336,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     expect(advance.instruction).toContain("rev-list crashed");
   });
 
-  it("13. rejectsReportWhenInitHeadMissing — slow path without session baseline", async () => {
+  it("13. rejectsReportWhenInitHeadMissing -- slow path without session baseline", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: E40, branch: "main" } });
     mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
 

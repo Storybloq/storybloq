@@ -70,7 +70,7 @@ export function handleNoteList(
   if (filters.tag) {
     const normalized = normalizeTags([filters.tag]);
     if (normalized.length === 0) {
-      // Tag normalized to empty (e.g. "!!!") — no notes can match
+      // Tag normalized to empty (e.g. "!!!") -- no notes can match
       notes = [];
     } else {
       const tag = normalized[0]!;

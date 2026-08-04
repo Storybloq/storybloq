@@ -427,12 +427,12 @@ describe("handlePhaseDelete", () => {
       { id: "p1", name: "Target", label: "T", description: "T", after: "p0", atStart: false },
       "md", dir,
     );
-    // Create ticket in target phase (p1) — gets order 10
+    // Create ticket in target phase (p1) -- gets order 10
     await handleTicketCreate(
       { title: "Existing in p1", type: "task", phase: "p1", description: "", blockedBy: [], parentTicket: null },
       "md", dir,
     );
-    // Create two tickets in p0 — get order 10, 20
+    // Create two tickets in p0 -- get order 10, 20
     await handleTicketCreate(
       { title: "First in p0", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
       "md", dir,

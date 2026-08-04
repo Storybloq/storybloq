@@ -2,7 +2,7 @@
  * T-250: Auto-supersede verifiably-finished orphan sessions.
  *
  * Exercises handleAutonomousGuide with action: "start" against real on-disk
- * .story/ trees and real git repositories. git-inspector is NOT mocked — we
+ * .story/ trees and real git repositories. git-inspector is NOT mocked -- we
  * want real gitIsAncestor semantics because the orphan check is load-bearing.
  *
  * All 14 tests MUST fail before the production implementation lands. They
@@ -561,7 +561,7 @@ describe("T-250 auto-supersede finished orphan sessions", () => {
     expect(parsed).not.toBeNull();
     expect(parsed!.terminationReason).toBe("auto_superseded_finished_orphan");
 
-    // Second round-trip via raw JSON — schema must be expressible in JSON.
+    // Second round-trip via raw JSON -- schema must be expressible in JSON.
     const raw = JSON.parse(readFileSync(join(fix.sessionDir, "state.json"), "utf-8"));
     expect(raw.terminationReason).toBe("auto_superseded_finished_orphan");
     expect(raw.status).toBe("superseded");

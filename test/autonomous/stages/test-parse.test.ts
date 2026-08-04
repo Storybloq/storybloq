@@ -38,7 +38,7 @@ function makeRecipe(): ResolvedRecipe {
   };
 }
 
-describe("TestStage — ISS-053 parse-failure retry limit", () => {
+describe("TestStage -- ISS-053 parse-failure retry limit", () => {
   let testRoot: string;
   let sessionDir: string;
   const stage = new TestStage();

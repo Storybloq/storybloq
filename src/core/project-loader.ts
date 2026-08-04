@@ -186,7 +186,7 @@ export async function loadProject(
     fileClassifications,
   );
 
-  // 7c. Load lessons (best-effort — empty array if directory absent)
+  // 7c. Load lessons (best-effort -- empty array if directory absent)
   const lessons = await loadDirectory<Lesson>(
     join(wrapDir, "lessons"),
     absRoot,
@@ -876,7 +876,7 @@ interface TxnJournal {
 /**
  * Executes multiple file operations atomically with a transaction journal.
  * Forward-only recovery: if any rename succeeds, complete remaining.
- * Does NOT acquire the lock — caller must hold it.
+ * Does NOT acquire the lock -- caller must hold it.
  *
  * The journal persists a `commitStarted` flag so recovery can distinguish
  * "prepared" (safe to roll back) from "committing" (must complete forward).
@@ -938,7 +938,7 @@ export async function runTransactionUnlocked(
     await unlink(journalPath);
   } catch (err) {
     if (!commitStarted) {
-      // Safe to clean up — no renames have happened
+      // Safe to clean up -- no renames have happened
       for (const entry of entries) {
         if (entry.tempPath) {
           try {
@@ -981,7 +981,7 @@ export async function runTransaction(
  * Forward-only transaction recovery based on filesystem truth.
  * Called during loadProject before reading data.
  */
-/** Internal recovery — must be called under lock or when no concurrent access is possible. */
+/** Internal recovery -- must be called under lock or when no concurrent access is possible. */
 async function doRecoverTransaction(wrapDir: string): Promise<void> {
   const journalPath = join(wrapDir, ".txn.json");
 
@@ -994,7 +994,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
     // Support both old format (TxnEntry[]) and new format (TxnJournal)
     if (Array.isArray(parsed)) {
       // Legacy format: array of entries, no commitStarted marker
-      // Assume commit may have started (conservative — complete forward)
+      // Assume commit may have started (conservative -- complete forward)
       entries = parsed as TxnEntry[];
       commitStarted = true;
     } else if (
@@ -1007,7 +1007,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
       entries = journal.entries;
       commitStarted = journal.commitStarted;
     } else {
-      // Malformed journal — delete and return
+      // Malformed journal -- delete and return
       try {
         await unlink(journalPath);
       } catch {
@@ -1016,7 +1016,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
       return;
     }
   } catch {
-    // Invalid journal — just delete it
+    // Invalid journal -- just delete it
     try {
       await unlink(journalPath);
     } catch {
@@ -1026,7 +1026,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
   }
 
   if (!commitStarted) {
-    // Commit never started — safe to clean up temps and remove journal
+    // Commit never started -- safe to clean up temps and remove journal
     for (const entry of entries) {
       if (entry.op === "write" && entry.tempPath && existsSync(entry.tempPath)) {
         try {
@@ -1044,17 +1044,17 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
     return;
   }
 
-  // commitStarted=true — complete the transaction forward
+  // commitStarted=true -- complete the transaction forward
   for (const entry of entries) {
     if (entry.op === "write" && entry.tempPath) {
       const tempExists = existsSync(entry.tempPath);
 
       if (tempExists) {
-        // Temp exists — complete the rename (whether or not target exists)
+        // Temp exists -- complete the rename (whether or not target exists)
         try {
           await rename(entry.tempPath, entry.target);
         } catch {
-          /* ignore — clean up below */
+          /* ignore -- clean up below */
         }
         // Clean up any leftover temp
         try {
@@ -1068,7 +1068,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
       try {
         await unlink(entry.target);
       } catch {
-        // Target may already be gone — that's fine
+        // Target may already be gone -- that's fine
       }
     }
   }
@@ -1082,7 +1082,7 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
 }
 
 /**
- * Internal load without lock acquisition or recovery — used by deleteTicket
+ * Internal load without lock acquisition or recovery -- used by deleteTicket
  * which already holds the lock.
  */
 async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
@@ -1398,7 +1398,7 @@ export async function guardPath(
   try {
     resolvedDir = await realpath(targetDir);
   } catch {
-    // Parent dir doesn't exist — check that the grandparent resolves under root
+    // Parent dir doesn't exist -- check that the grandparent resolves under root
     resolvedDir = targetDir;
   }
 
@@ -1422,7 +1422,7 @@ export async function guardPath(
       }
     } catch (err) {
       if (err instanceof ProjectLoaderError) throw err;
-      // lstat failed for other reason — continue
+      // lstat failed for other reason -- continue
     }
   }
 }

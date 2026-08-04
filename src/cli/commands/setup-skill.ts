@@ -320,7 +320,7 @@ async function registerHook(
     try {
       raw = await readFile(path, "utf-8");
     } catch {
-      process.stderr.write(`Could not read ${path} — skipping hook registration.\n`);
+      process.stderr.write(`Could not read ${path} -- skipping hook registration.\n`);
       return "skipped";
     }
   }
@@ -330,11 +330,11 @@ async function registerHook(
   try {
     settings = JSON.parse(raw) as Record<string, unknown>;
     if (typeof settings !== "object" || settings === null || Array.isArray(settings)) {
-      process.stderr.write(`${path} is not a JSON object — skipping hook registration.\n`);
+      process.stderr.write(`${path} is not a JSON object -- skipping hook registration.\n`);
       return "skipped";
     }
   } catch {
-    process.stderr.write(`${path} contains invalid JSON — skipping hook registration.\n`);
+    process.stderr.write(`${path} contains invalid JSON -- skipping hook registration.\n`);
     process.stderr.write("  Fix the file manually or delete it to reset.\n");
     return "skipped";
   }
@@ -342,7 +342,7 @@ async function registerHook(
   // Type guard: hooks must be object
   if ("hooks" in settings) {
     if (typeof settings.hooks !== "object" || settings.hooks === null || Array.isArray(settings.hooks)) {
-      process.stderr.write(`${path} has unexpected hooks format — skipping hook registration.\n`);
+      process.stderr.write(`${path} has unexpected hooks format -- skipping hook registration.\n`);
       return "skipped";
     }
   } else {
@@ -354,7 +354,7 @@ async function registerHook(
   // Type guard: hook type must be array
   if (hookType in hooks) {
     if (!Array.isArray(hooks[hookType])) {
-      process.stderr.write(`${path} has unexpected hooks.${hookType} format — skipping hook registration.\n`);
+      process.stderr.write(`${path} has unexpected hooks.${hookType} format -- skipping hook registration.\n`);
       return "skipped";
     }
   } else {
@@ -364,7 +364,7 @@ async function registerHook(
   const hookArray = hooks[hookType] as unknown[];
   const targetMatcher = matcher ?? "";
 
-  // Idempotency: scan for existing command (defensive — skip malformed entries)
+  // Idempotency: scan for existing command (defensive -- skip malformed entries)
   const hookCommand = hookEntry.command;
   if (hookCommand) {
     for (const group of hookArray) {
@@ -932,7 +932,7 @@ function pruneEmptyMatcherGroups(
  * 3. Optionally registers PreCompact hook in ~/.claude/settings.json
  * 4. Prints success message
  *
- * Idempotent — safe to re-run (overwrites with latest).
+ * Idempotent -- safe to re-run (overwrites with latest).
  */
 async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void> {
   const { skipHooks = false } = options;
@@ -1012,7 +1012,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     process.stderr.write("  This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq@latest\n");
   }
 
-  // Attempt MCP registration — requires both `storybloq` and `claude` in PATH.
+  // Attempt MCP registration -- requires both `storybloq` and `claude` in PATH.
   let mcpRegistered = false;
   let cliInPath = false;
   try {
@@ -1039,7 +1039,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
         log("  MCP server already registered globally");
       } else if (isNotFound) {
         log("");
-        log("MCP registration skipped — `claude` CLI not found in PATH.");
+        log("MCP registration skipped -- `claude` CLI not found in PATH.");
         log("  To register manually: claude mcp add storybloq -s user -- storybloq --mcp");
       } else {
         log("");
@@ -1049,14 +1049,14 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     }
   } else {
     log("");
-    log("MCP registration skipped — `storybloq` not found in PATH.");
+    log("MCP registration skipped -- `storybloq` not found in PATH.");
     log("Install globally first, then register MCP:");
     log("  npm install -g @storybloq/storybloq@latest");
     log("  claude mcp add storybloq -s user -- storybloq --mcp");
   }
 
   // Hook registration (ISS-032: hook-driven compaction; ISS-560: absolute bin path)
-  // Gate on `resolveStorybloqBin()` — Claude Code hooks run under a shell
+  // Gate on `resolveStorybloqBin()` -- Claude Code hooks run under a shell
   // whose PATH may differ from this process's at install time (nvm/fnm
   // switches mid-session). Baking the absolute path into the command string
   // removes that dependency.
@@ -1084,7 +1084,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     const precompactResult = await registerPreCompactHook(undefined, resolvedBin);
     switch (precompactResult) {
       case "registered":
-        log("  PreCompact hook registered — session compact preparation before context compaction");
+        log("  PreCompact hook registered -- session compact preparation before context compaction");
         break;
       case "exists":
         log("  PreCompact hook already configured");
@@ -1096,7 +1096,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     const sessionStartResult = await registerSessionStartHook(undefined, resolvedBin);
     switch (sessionStartResult) {
       case "registered":
-        log("  SessionStart hook registered — resume prompt after compaction");
+        log("  SessionStart hook registered -- resume prompt after compaction");
         break;
       case "exists":
         log("  SessionStart hook already configured");
@@ -1108,7 +1108,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     const stopResult = await registerStopHook(undefined, resolvedBin);
     switch (stopResult) {
       case "registered":
-        log("  Stop hook registered — status.json updated after every Claude response");
+        log("  Stop hook registered -- status.json updated after every Claude response");
         break;
       case "exists":
         log("  Stop hook already configured");
@@ -1130,7 +1130,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     log("  Hook registration skipped (--skip-hooks)");
   } else {
     log("");
-    log("Hook registration skipped — `storybloq` binary not found.");
+    log("Hook registration skipped -- `storybloq` binary not found.");
     log("Install globally first, then re-run setup-skill:");
     log("  npm install -g @storybloq/storybloq@latest");
     log("  storybloq setup-skill");

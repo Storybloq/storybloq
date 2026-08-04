@@ -86,7 +86,7 @@ export function resolveRecipe(
   try {
     raw = loadRecipe(recipeName);
   } catch (err: unknown) {
-    // Only fallback for missing file — re-throw parse errors and I/O failures
+    // Only fallback for missing file -- re-throw parse errors and I/O failures
     if (err && typeof err === "object" && "code" in err && (err as { code: string }).code === "ENOENT") {
       raw = {
         id: recipeName,
@@ -118,7 +118,7 @@ export function resolveRecipe(
     }
   }
 
-  // WRITE_TESTS: insert BEFORE IMPLEMENT (TDD — write failing tests first)
+  // WRITE_TESTS: insert BEFORE IMPLEMENT (TDD -- write failing tests first)
   if ((stages.WRITE_TESTS as Record<string, unknown>)?.enabled) {
     const implementIdx = pipeline.indexOf("IMPLEMENT");
     if (implementIdx !== -1 && !pipeline.includes("WRITE_TESTS")) {

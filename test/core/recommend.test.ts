@@ -130,7 +130,7 @@ describe("recommend", () => {
     expect(action!.reason).toContain("validation error");
   });
 
-  it("dedup keeps highest score — in-progress ticket also in phase_momentum", () => {
+  it("dedup keeps highest score -- in-progress ticket also in phase_momentum", () => {
     // Single in-progress ticket is both inprogress_ticket (800) and phase_momentum (500)
     const state = makeState({
       tickets: [
@@ -389,7 +389,7 @@ describe("recommend", () => {
     // Construct two recommendations that end up with identical scores.
     // phase_momentum gives exactly 500. A quick_win chore at index 0 gives 400.
     // These don't collide, so use a different approach: verify final sort is stable.
-    // Two open medium issues get scores 300, 299 — different scores, ordered by index.
+    // Two open medium issues get scores 300, 299 -- different scores, ordered by index.
     // The generator sorts by severity desc then discoveredDate asc.
     // With same severity/date, array order determines index → score.
     const state = makeState({

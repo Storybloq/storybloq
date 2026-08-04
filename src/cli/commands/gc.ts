@@ -1,5 +1,4 @@
 import { resolve, join } from "node:path";
-import { unlink } from "node:fs/promises";
 import { computeGcPlan, type GcPlan } from "../../core/gc.js";
 import type { CommandResult } from "../types.js";
 
@@ -29,7 +28,7 @@ export async function handleGc(
     const errors: Array<{ id: string; error: string }> = [];
 
     await withProjectLock(root, { strict: false }, async ({ state }) => {
-      const { guardPath } = await import("../../core/project-loader.js");
+      const { guardPath, fencedUnlink } = await import("../../core/project-loader.js");
       plan = computeGcPlan(state, { retentionDays });
 
       // ISS-704: --force must NOT physically purge tombstones that active items
@@ -59,7 +58,7 @@ export async function handleGc(
         const targetPath = join(wrapDir, subdir, `${c.id}.json`);
         try {
           await guardPath(targetPath, wrapDir);
-          await unlink(targetPath);
+          await fencedUnlink(targetPath);
           applied.push(c.id);
         } catch (err) {
           errors.push({ id: c.id, error: err instanceof Error ? err.message : String(err) });

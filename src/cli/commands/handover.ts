@@ -12,6 +12,7 @@ import {
 import {
   withProjectLock,
   atomicWrite,
+  fencedLink,
   guardPath,
   detectTeamModeFromDisk,
 } from "../../core/project-loader.js";
@@ -163,7 +164,7 @@ export async function handleHandoverCreate(
 
     if (isTeamMode) {
       const { generateTeamHandoverFilename } = await import("../../core/handover-filename.js");
-      const { writeFileSync, linkSync, unlinkSync } = await import("node:fs");
+      const { writeFileSync, unlinkSync } = await import("node:fs");
       const { randomBytes } = await import("node:crypto");
       let attempt = 0;
       while (attempt < 5) {
@@ -176,7 +177,7 @@ export async function handleHandoverCreate(
           await guardPath(candidatePath, wrapDir);
           writeFileSync(tmpPath, content, "utf-8");
           tmpCreated = true;
-          linkSync(tmpPath, candidatePath);
+          await fencedLink(tmpPath, candidatePath);
           filename = candidate;
           try { unlinkSync(tmpPath); } catch {}
           tmpCreated = false;

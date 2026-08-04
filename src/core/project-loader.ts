@@ -13,8 +13,9 @@ import {
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
-import lockfile from "proper-lockfile";
+import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "./project-lock.js";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
 import { NoteSchema, type Note } from "../models/note.js";
@@ -514,7 +515,7 @@ export async function deleteTicket(
       raw.deletedBy = await resolveActor(root, options?.actor);
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
-      await unlink(targetPath);
+      await fencedUnlink(targetPath);
     }
     return { alreadyDeleted: false };
   });
@@ -572,7 +573,7 @@ export async function deleteIssue(
       raw.deletedBy = await resolveActor(root, options?.actor);
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
-      await unlink(targetPath);
+      await fencedUnlink(targetPath);
     }
     return { alreadyDeleted: false };
   });
@@ -669,7 +670,7 @@ export async function deleteNote(
       raw.deletedBy = await resolveActor(root, options?.actor);
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
-      await unlink(targetPath);
+      await fencedUnlink(targetPath);
     }
     return { alreadyDeleted: false };
   });
@@ -767,7 +768,7 @@ export async function deleteLessonUnlocked(
     raw.deletedBy = await resolveActor(root, options?.actor);
     await atomicWrite(targetPath, serializeJSON(raw));
   } else {
-    await unlink(targetPath);
+    await fencedUnlink(targetPath);
   }
   return { alreadyDeleted: false };
 }
@@ -868,9 +869,26 @@ interface TxnEntry {
   tempPath?: string;
 }
 
+/**
+ * ISS-942: forensic-only owner record, additive and optional-on-read. NEVER a
+ * behavioral gate -- doRecoverTransaction's authorization to recover rests
+ * entirely on lock exclusivity (whoever holds the lock next), not on this
+ * field. A pid-liveness gate here would self-deadlock a long-lived MCP server
+ * on its own voluntarily-released journals (its pid never dies while the
+ * server runs). `episodeId` is a fresh randomUUID() per runTransactionUnlocked
+ * call (not derived from the lock token) so two attempts by the same
+ * long-lived pid within one lock hold remain forensically distinguishable.
+ */
+interface TxnOwner {
+  pid: number;
+  processSignature: string | null;
+  episodeId: string;
+}
+
 interface TxnJournal {
   entries: TxnEntry[];
   commitStarted: boolean;
+  owner?: TxnOwner;
 }
 
 /**
@@ -892,6 +910,10 @@ export async function runTransactionUnlocked(
   const journalPath = join(wrapDir, ".txn.json");
   const entries: TxnEntry[] = [];
   let commitStarted = false;
+  const lockHandle = projectLockContext.getStore();
+  const owner: TxnOwner | undefined = lockHandle
+    ? { pid: lockHandle.pid, processSignature: lockHandle.processSignature, episodeId: randomUUID() }
+    : undefined;
 
   try {
     // 1. Build entries
@@ -905,7 +927,7 @@ export async function runTransactionUnlocked(
     }
 
     // 2. Write journal with commitStarted=false (fsync'd for durability)
-    const journal: TxnJournal = { entries, commitStarted: false };
+    const journal: TxnJournal = { entries, commitStarted: false, owner };
     await fsyncWrite(journalPath, JSON.stringify(journal, null, 2));
 
     // 3. Write temp files
@@ -921,8 +943,14 @@ export async function runTransactionUnlocked(
     await fsyncWrite(journalPath, JSON.stringify(journal, null, 2));
     commitStarted = true;
 
-    // 5. Commit: rename all temps, delete targets
+    // 5. Commit: rename all temps, delete targets. Fenced per-entry (ISS-942):
+    // on ownership loss, stop immediately -- don't attempt the current or
+    // remaining entries -- and throw. Safe because the journal was already
+    // durably marked commitStarted=true above, so the next holder's (hardened)
+    // forward recovery completes the remainder or fails loudly rather than
+    // silently losing data.
     for (const entry of entries) {
+      checkProjectLockFencing();
       if (entry.op === "write" && entry.tempPath) {
         await rename(entry.tempPath, entry.target);
       } else if (entry.op === "delete") {
@@ -985,100 +1013,170 @@ export async function runTransaction(
 async function doRecoverTransaction(wrapDir: string): Promise<void> {
   const journalPath = join(wrapDir, ".txn.json");
 
+  // ISS-942 v4: only ENOENT means "absent, nothing to recover" or "already
+  // handled". Any other error (permissions, transient I/O) is preserved and
+  // thrown rather than silently treated as success -- a real error here used
+  // to be misread as "already applied", discarding a genuinely-pending write.
+  async function probeExists(path: string, what: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw new ProjectLoaderError(
+        "io_error",
+        `Transaction recovery failed probing ${what}; journal and temp file(s) preserved for retry`,
+        err,
+      );
+    }
+  }
+
   let entries: TxnEntry[];
   let commitStarted = false;
-  try {
-    const raw = await readFile(journalPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
 
-    // Support both old format (TxnEntry[]) and new format (TxnJournal)
-    if (Array.isArray(parsed)) {
-      // Legacy format: array of entries, no commitStarted marker
-      // Assume commit may have started (conservative -- complete forward)
-      entries = parsed as TxnEntry[];
-      commitStarted = true;
-    } else if (
-      parsed != null &&
-      typeof parsed === "object" &&
-      Array.isArray((parsed as Record<string, unknown>).entries) &&
-      typeof (parsed as Record<string, unknown>).commitStarted === "boolean"
-    ) {
-      const journal = parsed as TxnJournal;
-      entries = journal.entries;
-      commitStarted = journal.commitStarted;
-    } else {
-      // Malformed journal -- delete and return
-      try {
-        await unlink(journalPath);
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-  } catch {
-    // Invalid journal -- just delete it
+  let raw: string;
+  try {
+    raw = await readFile(journalPath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // nothing to recover
+    throw new ProjectLoaderError("io_error", "Transaction recovery failed reading journal; journal preserved for retry", err);
+  }
+
+  // ISS-942 code-review fix: a malformed-journal delete that fails for a
+  // non-ENOENT reason must NOT be swallowed as success -- that would leave
+  // `.txn.json` behind while the caller believes recovery is done, the exact
+  // silent-discard shape this whole hardening pass exists to remove. Routed
+  // through fencedUnlink so recovery's own deletes are fenced identically to
+  // every other choke point (defense-in-depth once ownership is lost, e.g. to
+  // manual intervention or the accepted signature-collision residual).
+  async function unlinkJournalOrThrow(what: string): Promise<void> {
     try {
-      await unlink(journalPath);
-    } catch {
-      /* ignore */
+      await fencedUnlink(journalPath);
+    } catch (err) {
+      if (err instanceof ProjectLoaderError) {
+        const code = (err.cause as NodeJS.ErrnoException | undefined)?.code;
+        if (code === "ENOENT") return;
+        throw err;
+      }
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new ProjectLoaderError("io_error", `Transaction recovery failed removing ${what}; journal preserved for retry`, err);
     }
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Genuinely malformed (unparseable) journal -- nothing recoverable from
+    // garbage; still fail closed if the cleanup delete itself errors for a
+    // real reason rather than silently reporting success.
+    await unlinkJournalOrThrow("malformed journal");
+    return;
+  }
+
+  // Support both old format (TxnEntry[]) and new format (TxnJournal)
+  if (Array.isArray(parsed)) {
+    // Legacy format: array of entries, no commitStarted marker
+    // Assume commit may have started (conservative -- complete forward)
+    entries = parsed as TxnEntry[];
+    commitStarted = true;
+  } else if (
+    parsed != null &&
+    typeof parsed === "object" &&
+    Array.isArray((parsed as Record<string, unknown>).entries) &&
+    typeof (parsed as Record<string, unknown>).commitStarted === "boolean"
+  ) {
+    const journal = parsed as TxnJournal;
+    entries = journal.entries;
+    commitStarted = journal.commitStarted;
+  } else {
+    // Malformed journal shape -- delete and return
+    await unlinkJournalOrThrow("malformed-shape journal");
     return;
   }
 
   if (!commitStarted) {
-    // Commit never started -- safe to clean up temps and remove journal
+    // Commit never started -- safe to clean up temps and remove journal.
+    // Fenced throughout (ISS-942 code-review fix): these are our own
+    // prepared-but-never-committed artifacts, so fencing costs nothing here
+    // and keeps every destructive syscall in this function under the same
+    // ownership check, not just the forward-recovery path.
     for (const entry of entries) {
-      if (entry.op === "write" && entry.tempPath && existsSync(entry.tempPath)) {
+      if (entry.op === "write" && entry.tempPath && (await probeExists(entry.tempPath, entry.tempPath))) {
         try {
-          await unlink(entry.tempPath);
-        } catch {
-          /* ignore */
+          await fencedUnlink(entry.tempPath);
+        } catch (err) {
+          const code =
+            err instanceof ProjectLoaderError
+              ? (err.cause as NodeJS.ErrnoException | undefined)?.code
+              : (err as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT") {
+            if (err instanceof ProjectLoaderError) throw err;
+            throw new ProjectLoaderError(
+              "io_error",
+              `Transaction recovery failed removing prepared temp ${entry.tempPath}; journal and temp file(s) preserved for retry`,
+              err,
+            );
+          }
         }
       }
     }
-    try {
-      await unlink(journalPath);
-    } catch {
-      /* ignore */
-    }
+    await unlinkJournalOrThrow("journal");
     return;
   }
 
-  // commitStarted=true -- complete the transaction forward
+  // commitStarted=true -- complete the transaction forward. On any non-ENOENT
+  // failure applying an entry (including lock-ownership loss, fenced below),
+  // stop recovering immediately: do not unlink that temp, do not process
+  // remaining entries, do not delete the journal.
   for (const entry of entries) {
     if (entry.op === "write" && entry.tempPath) {
-      const tempExists = existsSync(entry.tempPath);
-
+      const tempExists = await probeExists(entry.tempPath, entry.tempPath);
       if (tempExists) {
-        // Temp exists -- complete the rename (whether or not target exists)
+        // Temp still exists -- complete the rename (whether or not target
+        // exists). A successful rename moves the temp away; nothing further
+        // to clean up. A failure means the write is still pending: preserve
+        // both the temp and the journal and fail loudly instead of silently
+        // discarding it.
         try {
+          checkProjectLockFencing();
           await rename(entry.tempPath, entry.target);
-        } catch {
-          /* ignore -- clean up below */
-        }
-        // Clean up any leftover temp
-        try {
-          await unlink(entry.tempPath);
-        } catch {
-          /* ignore */
+        } catch (err) {
+          if (err instanceof ProjectLoaderError) throw err;
+          throw new ProjectLoaderError(
+            "io_error",
+            `Transaction recovery failed applying ${entry.target}; journal and temp file(s) preserved for retry`,
+            err,
+          );
         }
       }
+      // tempExists === false (ENOENT): a prior attempt already applied it --
+      // nothing to do.
     } else if (entry.op === "delete") {
-      // Replay delete entries that didn't complete
+      // Replay delete entries that didn't complete.
       try {
-        await unlink(entry.target);
-      } catch {
-        // Target may already be gone -- that's fine
+        await fencedUnlink(entry.target);
+      } catch (err) {
+        const code =
+          err instanceof ProjectLoaderError
+            ? (err.cause as NodeJS.ErrnoException | undefined)?.code
+            : (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") {
+          if (err instanceof ProjectLoaderError) throw err;
+          throw new ProjectLoaderError(
+            "io_error",
+            `Transaction recovery failed applying delete of ${entry.target}; journal and temp file(s) preserved for retry`,
+            err,
+          );
+        }
+        // ENOENT: target already gone -- that's fine.
       }
     }
   }
 
-  // Delete journal
-  try {
-    await unlink(journalPath);
-  } catch {
-    /* ignore */
-  }
+  // Delete journal -- only reached once every entry above has genuinely
+  // succeeded (or was already applied).
+  await unlinkJournalOrThrow("journal after successful replay");
 }
 
 /**
@@ -1315,10 +1413,12 @@ export async function atomicCreate(
     await fd.sync();
     await fd.close();
     fd = undefined;
+    checkProjectLockFencing();
     await link(tempPath, targetPath);
     const parentFd = await open(dirname(targetPath), "r");
     try { await parentFd.sync(); } finally { await parentFd.close(); }
   } catch (err) {
+    if (err instanceof ProjectLoaderError) throw err;
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EEXIST") {
       throw new ProjectLoaderError(
@@ -1346,6 +1446,7 @@ export async function atomicWrite(
   const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(tempPath, content, "utf-8");
+    checkProjectLockFencing();
     await rename(tempPath, targetPath);
   } catch (err) {
     try {
@@ -1353,12 +1454,36 @@ export async function atomicWrite(
     } catch {
       /* ignore cleanup errors */
     }
+    if (err instanceof ProjectLoaderError) throw err;
     throw new ProjectLoaderError(
       "io_error",
       `Failed to write ${basename(targetPath)}`,
       err,
     );
   }
+}
+
+/**
+ * Fenced unlink: verifies the ambient lock (if any) still owns `.story/.lock`
+ * immediately before removing `targetPath`. ISS-942 v6 choke point alongside
+ * atomicWrite/atomicCreate, for direct-delete paths that don't go through
+ * either (hard-deletes, gc tombstone removal, team handover creation's own
+ * cleanup).
+ */
+export async function fencedUnlink(targetPath: string): Promise<void> {
+  checkProjectLockFencing();
+  await unlink(targetPath);
+}
+
+/**
+ * Fenced link: verifies the ambient lock (if any) still owns `.story/.lock`
+ * immediately before linking `tempPath` onto `targetPath`. ISS-942 v6 choke
+ * point alongside atomicWrite/atomicCreate, for direct-link paths (team
+ * handover creation) that don't go through either.
+ */
+export async function fencedLink(tempPath: string, targetPath: string): Promise<void> {
+  checkProjectLockFencing();
+  await link(tempPath, targetPath);
 }
 
 /** Write with fsync for durability (used for journal files). */
@@ -1427,35 +1552,38 @@ export async function guardPath(
   }
 }
 
+// ISS-942: the ambient lock handle, propagated to atomicWrite/atomicCreate/
+// fencedUnlink/fencedLink/runTransactionUnlocked via AsyncLocalStorage so they
+// can fence their commit syscall without changing withLock's ~13 internal call
+// sites or withProjectLock/runTransactionUnlocked's external ones.
+const projectLockContext = new AsyncLocalStorage<ProjectLockHandle>();
+
+/**
+ * Fencing check for a commit syscall: does the ambient lock (if any) still
+ * verifiably own `.story/.lock`? Throws on loss so the caller's write never
+ * lands. When no handle is in scope (a caller not running under withLock --
+ * shouldn't happen for any real call site, but defensive), the check is
+ * skipped, matching runTransactionUnlocked's existing "caller must hold the
+ * lock" contract.
+ */
+function checkProjectLockFencing(): void {
+  const handle = projectLockContext.getStore();
+  if (!handle) return;
+  if (!verifyProjectLockOwnership(handle)) {
+    throw new ProjectLoaderError("io_error", "Lock ownership lost before commit; write was not applied");
+  }
+}
+
 /** Acquires a project lock, executes fn, releases in finally. */
 async function withLock<T>(
   wrapDir: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  let release: (() => Promise<void>) | undefined;
+  const lockPath = join(wrapDir, ".lock");
+  const handle = await acquireProjectLockAsync(lockPath);
   try {
-    release = await lockfile.lock(wrapDir, {
-      retries: { retries: 3, minTimeout: 100, maxTimeout: 1000 },
-      stale: 10000,
-      lockfilePath: join(wrapDir, ".lock"),
-    });
-  } catch (err) {
-    if (err instanceof ProjectLoaderError) throw err;
-    throw new ProjectLoaderError(
-      "io_error",
-      `Lock acquisition failed for ${wrapDir}`,
-      err,
-    );
-  }
-  try {
-    return await fn();
+    return await projectLockContext.run(handle, fn);
   } finally {
-    if (release) {
-      try {
-        await release();
-      } catch {
-        /* ignore unlock errors */
-      }
-    }
+    releaseProjectLock(handle);
   }
 }

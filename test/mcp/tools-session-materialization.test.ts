@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { toolSchema } from "./tool-schema-helpers.js";
 import { initProject } from "../../src/core/init.js";
-import { createSession, sessionDir, deleteSessionDir } from "../../src/autonomous/session.js";
+import { createSession, sessionDir, deleteSessionDir, withSessionLock } from "../../src/autonomous/session.js";
 import { deriveWorkspaceId } from "../../src/autonomous/session-types.js";
 import { readLastMcpCall, telemetryDirPath } from "../../src/autonomous/liveness.js";
 import * as guideModule from "../../src/autonomous/guide.js";
@@ -351,7 +351,16 @@ describe("ISS-945: positive controls -- a real, live session is unaffected", () 
     expect(existsSync(join(dir, "filed-preexisting.json"))).toBe(true);
   });
 
-  it("orders concurrent guide calls and touches a queued call only after its predecessor settles", async () => {
+  // F1 (byte-review on 42583850): this test can only go RED at parent
+  // because it mocks handleAutonomousGuide away, which removes the real
+  // per-workspace serialization (guide.ts:944-952's `prev.then(...)` chain,
+  // enqueued synchronously with no await before it) that already gave call 2
+  // this exact ordering at parent, before this change existed. So this test
+  // pins runGuideCallInOrder's OWN ordering contract as exercised through the
+  // mock -- it is not evidence that this ordering is new production
+  // behavior. The test below pins the ordering property that IS new: why the
+  // queue needs to fully settle rather than advance early.
+  it("runGuideCallInOrder enqueues calls in order (pins the wrapper's own contract via the mock, not a new production behavior)", async () => {
     const root = await mkdtemp(join(tmpdir(), "iss945-order-"));
     roots.push(root);
     await initProject(root, { name: "iss945" });
@@ -406,4 +415,73 @@ describe("ISS-945: positive controls -- a real, live session is unaffected", () 
     expect((r1 as { content: Array<{ text: string }> }).content[0]!.text).toBe("call1 done");
     expect((r2 as { content: Array<{ text: string }> }).content[0]!.text).toBe("call2 done");
   });
+
+  // F2 (byte-review on 42583850, the required fixup): the queue's real
+  // justification is that handleAutonomousGuide holds withSessionLock for
+  // its whole inner call (guide.ts:947), so an early-advancing queue would
+  // let a queued call's touch contend for that same lock -- and
+  // withSessionLock gives up after 3 retries (~1.5s) and throws, silently
+  // dropped by the gate's `catch { /* best-effort */ }`. This test pins that
+  // a queued call's touch happens only after its predecessor releases the
+  // real session lock, so it never attempts that lock while contended and is
+  // never dropped this way. Unlike the test above, call 1's mock acquires
+  // the REAL withSessionLock (not a bare stub) so the contention it guards
+  // against is genuine, mirroring handleGuideInner's actual shape rather
+  // than mocking the serialization away.
+  it(
+    "a queued call's touch happens only after its predecessor releases the real session lock, so it never contends for it",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "iss945-order-lock-"));
+      roots.push(root);
+      await initProject(root, { name: "iss945" });
+      const session = createSession(root, "coding", deriveWorkspaceId(root));
+      const touchFile = join(telemetryDirPath(sessionDir(root, session.sessionId)), "lastMcpCall");
+
+      let releaseCall1Lock: () => void;
+      const call1LockHeld = new Promise<void>((resolve) => { releaseCall1Lock = resolve; });
+      let call1LockAcquired: () => void;
+      const call1LockAcquiredPromise = new Promise<void>((resolve) => { call1LockAcquired = resolve; });
+
+      vi.mocked(guideModule.handleAutonomousGuide)
+        .mockImplementationOnce(async () => {
+          // call 1's OWN touch (the queued task's gate step, run just before
+          // this mock) already succeeded uncontended. Clear it so the
+          // assertions below can only be satisfied by call 2's touch.
+          rmSync(touchFile, { force: true });
+          return withSessionLock(root, async () => {
+            call1LockAcquired();
+            await call1LockHeld;
+            return { content: [{ type: "text" as const, text: "call1 done" }] };
+          });
+        })
+        .mockImplementationOnce(async () => ({ content: [{ type: "text" as const, text: "call2 done" }] }));
+
+      const guide = captureTools(root).get("storybloq_autonomous_guide")!;
+      const args1 = parsedArgs(guide, { sessionId: session.sessionId, action: "report", report: { completedAction: "f2-probe-1" } });
+      const args2 = parsedArgs(guide, { sessionId: session.sessionId, action: "report", report: { completedAction: "f2-probe-2" } });
+
+      const p1 = guide.handler(args1);
+      await call1LockAcquiredPromise;
+
+      const p2 = guide.handler(args2);
+
+      try {
+        // Held well past withSessionLock's own retry-exhaustion window so a
+        // call 2 that wrongly attempted the real lock while call 1 held it
+        // would already have exhausted its retries and silently given up by
+        // now -- a discriminating wait, not a cosmetic one.
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        expect(existsSync(touchFile)).toBe(false);
+      } finally {
+        // Always release, even if the assertion above throws -- otherwise a
+        // failing run leaves the real session lock held past this test,
+        // wedging every test that follows it.
+        releaseCall1Lock!();
+      }
+
+      await Promise.all([p1, p2]);
+      expect(existsSync(touchFile)).toBe(true);
+    },
+    10000,
+  );
 });

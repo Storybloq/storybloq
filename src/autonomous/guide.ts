@@ -570,7 +570,17 @@ async function terminalizeCompletedSession(
 
   try { refreshStatusForSession(root, dir, written, "guide"); } catch { /* best-effort */ }
 
-  return { content: [{ type: "text", text: renderTerminalHandoverInstruction(written) }] };
+  // ISS-965 F5 (byte-review fixup): route through guideResult like every other
+  // instruction in this file (including the sibling claim-lost error two lines
+  // above claimPreflightBlock), instead of returning a bare content block. The
+  // bare form carried no session footer and never named the sessionId, while
+  // itself instructing the agent to "Call me with completedAction:
+  // handover_written" -- exactly the id an agent needs and exactly the moment
+  // (end of a long, compaction-prone session) it is least likely to still hold.
+  return guideResult(written, "HANDOVER", {
+    instruction: renderTerminalHandoverInstruction(written),
+    reminders: [],
+  });
 }
 
 /** Instruction text for a session routed to ISS-965 terminal handover. */
@@ -3163,6 +3173,25 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       mapping = { state: "ISSUE_FIX", resetPlan: false, resetCode: true };
     }
 
+    // ISS-965 F2 (byte-review fixup): RECOVERY_MAPPING.HANDOVER -> SESSION_END
+    // was dead code before terminal routing existed (preCompactState could
+    // never BE "HANDOVER" -- both compact-prep writers rewrote it to
+    // PICK_TICKET). session.ts's resolveCompactResumeTarget now preserves it
+    // for a terminalized session, which makes this reachable: a terminalized
+    // session that drifts to a non-descendant commit during its park would
+    // otherwise land in SESSION_END with no status change, no handover, no
+    // shutdown marker, and no registered stage to receive its next report --
+    // a permanent dead end, since findActiveSessionFull still counts it as
+    // active. The drift itself is irrelevant here: the ticket is already
+    // complete and the session is only ending, so it must still land at
+    // HANDOVER to write its handover. Discriminate on the marker, exactly as
+    // Change 5 does -- never on resumeState alone, so an ordinary (non-
+    // terminalized) HANDOVER resume is untouched should some other path ever
+    // make it reachable.
+    if (info.state.terminalDisposition?.kind === "completion-observed" && resumeState === "HANDOVER") {
+      mapping = { state: "HANDOVER", resetPlan: false, resetCode: false };
+    }
+
     const recoveryReviews = {
       plan: mapping.resetPlan ? [] : info.state.reviews.plan,
       code: mapping.resetCode ? [] : info.state.reviews.code,
@@ -3339,6 +3368,27 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
           reminders: enterResult.reminders ?? [],
         });
       }
+    }
+
+    // ISS-965 F2 (Codex round on the fixup): landing driftWritten.state at
+    // "HANDOVER" is not enough on its own -- falling through to the generic
+    // "Recovered to state: HANDOVER. Continue from here." fallback below
+    // leaves the session technically reportable but never actually tells the
+    // agent to write a handover, which is the one thing left to do. Return
+    // the SAME terminal instruction the non-drift path gives (the ticket is
+    // complete either way; the drift is irrelevant to what the agent needs to
+    // do next), so a real agent -- not just a manually-issued follow-up call
+    // in a test -- has the protocol needed to advance.
+    if (mapping.state === "HANDOVER" && driftWritten.terminalDisposition?.kind === "completion-observed") {
+      return guideResult(driftWritten, "HANDOVER", {
+        instruction: [
+          `# ${resumeHeading} -- HEAD Mismatch`,
+          "",
+          driftPreamble,
+          renderTerminalHandoverInstruction(driftWritten),
+        ].join("\n"),
+        reminders: [],
+      });
     }
 
     // Fallback for unmapped states
@@ -3959,12 +4009,26 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // but not yet cleared the session draft.
   const preflight = await reconcileClaimForGuide(root, info.state);
   const claimLost = preflight !== null && isClaimLost(preflight);
+  // ISS-965 F3 (byte-review fixup): "completed-consistent" makes isClaimLost
+  // false BY DESIGN (it is not a loss), which means claimLost alone can no
+  // longer stand for "nothing unusual here" -- it now also covers a session
+  // whose OWN ticket has already completed out from under it (pre-
+  // terminalization: claimPreflightBlock has not yet run for this stage, or
+  // this is a state outside RECONCILED_STATES where it never will). Refusing
+  // to cancel that session with "no claim-loss condition was detected, continue
+  // the pipeline" is wrong -- there is no pipeline left to continue, the ticket
+  // is done. Stand the soft gate down for this shape specifically, same as a
+  // genuine loss, WITHOUT touching cancelClaimPosture: mayWriteTicket below is
+  // computed independently and stays "lost" for this posture (D4/Ruling-3),
+  // so standing the gate down here only lets the session END; it grants no
+  // additional ledger-write permission.
+  const consistentCompletion = preflight?.reconciliation?.status === "completed-consistent";
   const posture = await cancelClaimPosture(root, info.state);
   const mayWriteTicket = posture === "held" || posture === "no-epoch";
   // `!resume`: the soft gate exists to stop a cancel from STARTING, and this
   // cancellation already started. Refusing here would strand a session that is
   // durably mid-transition, with no route to finish it.
-  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost) {
+  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion) {
     return {
       content: [{
         type: "text",

@@ -85,7 +85,11 @@ function readTicketRaw(root: string): string {
   return readFileSync(join(root, ".story", "tickets", "T-001.json"), "utf-8");
 }
 
-function plantSession(root: string, state: string): { sessionId: string; sessDir: string } {
+function plantSession(
+  root: string,
+  state: string,
+  extra: Partial<FullSessionState> = {},
+): { sessionId: string; sessDir: string } {
   const session = createSession(root, "coding", "test-workspace");
   const sessDir = join(root, ".story", "sessions", session.sessionId);
   const epoch = {
@@ -101,6 +105,7 @@ function plantSession(root: string, state: string): { sessionId: string; sessDir
     claimEpoch: epoch,
     git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
     reviews: { plan: [], code: [] },
+    ...extra,
   } as unknown as FullSessionState);
   return { sessionId: session.sessionId, sessDir };
 }
@@ -165,6 +170,14 @@ describe("ISS-965 T8: cancel posture after terminalization", () => {
   });
 
   it("no pending mutation is replayed on cancel after terminalization (already discarded at terminalize time)", async () => {
+    // F6 (byte-review fixup): added the audit-surface assertion below. Without
+    // it, this test survived the file's own named reverse-fix mutant (map
+    // completed-consistent into cancelClaimPosture's held branch) -- the
+    // "not-inprogress" guard blocks the actual ticket byte-write under EITHER
+    // posture, so a ticket-bytes-only check duplicated T7's mutation-discard
+    // pin without discriminating anything of its own. The ticketId field in
+    // the cancelled event is the same non-ticket-bytes observable T8's first
+    // test uses, applied here with a pending mutation additionally in play.
     writeTicket(root, { status: "complete", completedDate: "2026-08-05" });
     const { sessionId, sessDir } = plantSession(root, "WRITE_TESTS");
     // Simulate a mutation that was pending when the ticket finished elsewhere.
@@ -189,5 +202,75 @@ describe("ISS-965 T8: cancel posture after terminalization", () => {
     const cancelResult = await handleAutonomousGuide(root, { action: "cancel", sessionId });
     expect(cancelResult.isError).toBeFalsy();
     expect(readTicketRaw(root)).toBe(beforeTicket);
+
+    const data = cancelledEventData(sessDir);
+    expect(data?.ticketId).toBeNull();
+    expect(data?.ticketReleased).toBe(false);
+    expect(data?.ticketConflict).toBe(false);
+  });
+});
+
+describe("F3 (byte-review fixup): T-178 soft gate and completed-consistent, PRE-terminalization", () => {
+  // Distinct from T8 above: T8's sessions are `mode: "guided"`, which bypasses
+  // the T-178 soft gate entirely (isAutoMode is false), so those tests never
+  // exercised the gate itself. These use `mode: "auto"` and call cancel
+  // WITHOUT a prior report/terminalize, driving handleCancel's own gate
+  // computation directly, on a session sitting mid-pipeline whose ticket has
+  // already reached the completed-consistent shape (e.g. finished by a
+  // concurrent path, or the guide has not yet been called since).
+  it("cancel is ALLOWED (soft gate stands down) on a completed-consistent shape, with no ticket write", async () => {
+    writeTicket(root, { status: "complete", completedDate: "2026-08-05" });
+    const { sessionId } = plantSession(root, "WRITE_TESTS", { mode: "auto" });
+
+    const before = readTicketRaw(root);
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+
+    // Before the fix: isClaimLost is false for completed-consistent (by
+    // design), so the T-178 gate read "nothing unusual" and refused with
+    // "no claim-loss condition was detected ... Continue the pipeline" --
+    // on a ticket that is already complete. That refusal text must NOT
+    // appear now.
+    expect(result.isError).toBeFalsy();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).not.toContain("no claim-loss condition was detected");
+
+    // Standing the gate down grants no additional WRITE permission --
+    // cancelClaimPosture is untouched (D4/Ruling-3) and still reads this
+    // shape as "lost", so mayWriteTicket stays false.
+    expect(readTicketRaw(root)).toBe(before);
+  });
+
+  it("genuine claim loss (foreign takeover) still stands the gate down, unchanged by this fix", async () => {
+    const OTHER = "ffffffff-0000-0000-0000-000000000009";
+    writeTicket(root, {
+      claimedBySession: OTHER,
+      claim: { user: "them@example.com", branch: "main", since: NOW },
+    });
+    const { sessionId } = plantSession(root, "WRITE_TESTS", { mode: "auto" });
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).not.toContain("no claim-loss condition was detected");
+  });
+
+  it("negative control: a NORMAL healthy auto-mode session (claim held, not complete) is still refused by the soft gate", async () => {
+    // Proves F3's new `!consistentCompletion` conjunct did not over-widen the
+    // standdown to ordinary in-progress work -- only completed-consistent and
+    // genuine loss stand the gate down. Claim keys must actually MATCH the
+    // session's own epoch (reconciling as "held"): a claim-free inprogress
+    // ticket reconciles as "released" (the ISS-784 merge-loser shape), which
+    // IS a claim loss and would stand the gate down for an unrelated reason,
+    // making this fixture no longer a "no loss" control.
+    const { sessionId } = plantSession(root, "WRITE_TESTS", { mode: "auto" });
+    writeTicket(root, {
+      claimedBySession: sessionId,
+      claim: { user: "me@example.com", branch: "main", since: NOW },
+    });
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("no claim-loss condition was detected");
   });
 });

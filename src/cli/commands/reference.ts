@@ -290,8 +290,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "limit-status",
     description: "Show pending usage-limit auto-resumes (global across projects); cancel or requeue records",
-    usage: "storybloq limit-status [--cancel <key>] [--requeue <key>] [--format json|md]",
-    flags: ["--cancel", "--requeue", "--format"],
+    usage: "storybloq limit-status [--cancel <key>] [--requeue <key>] [--recent] [--format json|md]",
+    flags: ["--cancel", "--requeue", "--recent", "--format"],
   },
   {
     name: "setup",

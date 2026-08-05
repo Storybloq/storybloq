@@ -360,7 +360,7 @@ storybloq codex-review plan|code --session <id> --format guide-report
 Show pending usage-limit auto-resumes (global across projects); cancel or requeue records
 
 ```
-storybloq limit-status [--cancel <key>] [--requeue <key>] [--format json|md]
+storybloq limit-status [--cancel <key>] [--requeue <key>] [--recent] [--format json|md]
 ```
 
 ### setup

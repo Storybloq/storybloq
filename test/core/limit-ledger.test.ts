@@ -35,6 +35,8 @@ import {
   limitRecordKey,
   isLimitResumeGloballyDisabled,
   deferBackoffMs,
+  listLimitStops,
+  MAX_DEFER_COUNT,
   INTERACTIVE_DEADLINE_MS,
   PRUNE_TERMINAL_AFTER_MS,
   PRUNE_MANUAL_AFTER_MS,
@@ -312,8 +314,10 @@ describe("limit-ledger", () => {
       expect(recordAttemptSpawn(r.key, "a1", { childPid: 4242, transcriptOffset: 10, stateRevision: 3 }, NOW)).toBe(true);
       expect(readLimitLedger().records[r.key]!.wakeAttempts).toBe(1);
 
-      expect(settleAttempt(r.key, "wrong-id", { status: "resumed" }, NOW)).toBe(false);
-      expect(settleAttempt(r.key, "a1", { status: "resumed" }, NOW)).toBe(true);
+      expect(settleAttempt(r.key, "wrong-id", { status: "resumed" }, NOW)).toBeNull();
+      expect(settleAttempt(r.key, "a1", { status: "resumed" }, NOW)).toEqual({
+        status: "resumed", reasonCode: null, deferCount: 0, preSpawnDeferCount: 0,
+      });
       const rec = readLimitLedger().records[r.key]!;
       expect(rec.status).toBe("resumed");
       expect(rec.attempt).toBeNull();
@@ -325,7 +329,7 @@ describe("limit-ledger", () => {
       recordAttemptSpawn(r1.key, "a1", { childPid: 1, transcriptOffset: 0, stateRevision: 0 }, NOW);
       // Re-limit: new generation while a1 is still registered.
       recordDirectStop(stopInput({ detectedAt: NOW + 5_000 }));
-      expect(settleAttempt(r1.key, "a1", { status: "resumed" }, NOW)).toBe(false);
+      expect(settleAttempt(r1.key, "a1", { status: "resumed" }, NOW)).toBeNull();
       expect(readLimitLedger().records[r1.key]!.status).toBe("stopped");
     });
 
@@ -343,6 +347,239 @@ describe("limit-ledger", () => {
       rec = readLimitLedger().records[r.key]!;
       expect(rec.nextAttemptAt).toBe(NOW + deferBackoffMs(2));
       expect(deferBackoffMs(99)).toBe(30 * 60_000); // capped
+    });
+  });
+
+  // ISS-944: the pre-spawn defer cap. Test numbers below trace the ratified
+  // plan (.story/sessions/b0366559-4d5d-452d-9881-2c89f684ef3d/
+  // plan-iss944-revised.md) so the mapping from spec to test is explicit.
+  describe("ISS-944: pre-spawn defer cap (preSpawnDeferCount)", () => {
+    /** Claim + settle "deferred" with preSpawnDefer: true, once, returning the SettleResult. */
+    function preSpawnDefer(key: string, attemptId: string, now = NOW): ReturnType<typeof settleAttempt> {
+      claimAttempt(key, { id: attemptId, token: attemptId, generation: 1 }, now);
+      return settleAttempt(key, attemptId, { status: "deferred", preSpawnDefer: true }, now);
+    }
+
+    it("test 1: reaches defer_exhausted on the (MAX_DEFER_COUNT+1)th pre-spawn defer, wakeAttempts untouched, deferCount driven by the ordinary ladder and frozen only on the cap-firing call", () => {
+      const r = recordDirectStop(stopInput());
+      let last: ReturnType<typeof settleAttempt> = null;
+      for (let i = 1; i <= MAX_DEFER_COUNT; i++) {
+        last = preSpawnDefer(r.key, `a${i}`);
+        expect(last?.status).toBe("deferred");
+        expect(last?.preSpawnDeferCount).toBe(i);
+        expect(last?.deferCount).toBe(i); // ordinary backoff increment, every non-capped call
+      }
+      // (MAX_DEFER_COUNT+1)th call: cap fires.
+      last = preSpawnDefer(r.key, `a${MAX_DEFER_COUNT + 1}`);
+      expect(last?.status).toBe("failed");
+      expect(last?.reasonCode).toBe("defer_exhausted");
+      expect(last?.preSpawnDeferCount).toBe(MAX_DEFER_COUNT); // not incremented further
+      expect(last?.deferCount).toBe(MAX_DEFER_COUNT); // NOT incremented on the cap-firing call
+      const rec = readLimitLedger().records[r.key]!;
+      expect(rec.wakeAttempts).toBe(0); // never counted a real spawn -- criterion 6
+      expect(rec.status).toBe("failed");
+    });
+
+    it("test 2b: a real spawn resets preSpawnDeferCount but leaves deferCount (backoff-driven) untouched", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT - 1; i++) preSpawnDefer(r.key, `a${i}`);
+      let rec = readLimitLedger().records[r.key]!;
+      expect(rec.preSpawnDeferCount).toBe(MAX_DEFER_COUNT - 1);
+      expect(rec.deferCount).toBe(MAX_DEFER_COUNT - 1);
+      expect(rec.wakeAttempts).toBe(0);
+
+      claimAttempt(r.key, { id: "spawn1", token: "t", generation: 1 }, NOW);
+      expect(recordAttemptSpawn(r.key, "spawn1", { childPid: 4242, transcriptOffset: 0, stateRevision: 0 }, NOW)).toBe(true);
+      rec = readLimitLedger().records[r.key]!;
+      expect(rec.preSpawnDeferCount).toBe(0); // reset by the real spawn
+      expect(rec.deferCount).toBe(MAX_DEFER_COUNT - 1); // UNCHANGED -- spawn never touches the backoff counter
+      expect(rec.wakeAttempts).toBe(1);
+    });
+
+    it("test 3a: a stale attempt generation is rejected by the CAS even when preSpawnDeferCount is already cap-eligible (nothing written)", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT; i++) preSpawnDefer(r.key, `a${i}`);
+      claimAttempt(r.key, { id: "aFinal", token: "t", generation: 1 }, NOW);
+      const before = readLimitLedger().records[r.key]!;
+      expect(before.preSpawnDeferCount).toBe(MAX_DEFER_COUNT);
+      expect(before.status).toBe("resuming");
+
+      // Isolate the GENERATION guard specifically (not a real re-limit, which
+      // legitimately resets preSpawnDeferCount itself -- see upsertStop): the
+      // record's generation moves on while this attempt still carries the old one.
+      mutateLimitLedger((ledger) => {
+        ledger.records[r.key]!.generation = 2;
+        return true;
+      });
+
+      const result = settleAttempt(r.key, "aFinal", { status: "deferred", preSpawnDefer: true }, NOW);
+      expect(result).toBeNull();
+      const after = readLimitLedger().records[r.key]!;
+      expect(after.preSpawnDeferCount).toBe(MAX_DEFER_COUNT); // unchanged -- CAS refused the write
+      expect(after.status).toBe("resuming"); // unchanged
+    });
+
+    it("test 3b: a second settle against an already-terminalized defer_exhausted record is refused by the status guard (idempotent)", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(r.key, `a${i}`);
+      const terminal = readLimitLedger().records[r.key]!;
+      expect(terminal.status).toBe("failed");
+      expect(terminal.reasonCode).toBe("defer_exhausted");
+
+      // status is "failed", not "resuming" -- there is no live attempt to re-settle,
+      // so this exercises the same status guard as any post-terminal settle attempt.
+      const result = settleAttempt(r.key, `a${MAX_DEFER_COUNT + 1}`, { status: "deferred", preSpawnDefer: true }, NOW);
+      expect(result).toBeNull();
+      expect(readLimitLedger().records[r.key]!).toEqual(terminal);
+    });
+
+    it("test 3c: the preSpawnDefer CONTRACT gates the cap, not the counter's bare value -- a post-spawn-shaped settle (no preSpawnDefer) never terminalizes even at a cap-eligible count", () => {
+      const r = recordDirectStop(stopInput());
+      claimAttempt(r.key, { id: "a1", token: "t1", generation: 1 }, NOW);
+      // Directly construct the cap-eligible-but-not-flagged scenario (migration,
+      // manual repair, or a future call path reaching a cap-eligible count at a
+      // post-spawn site) rather than reaching it through preSpawnDefer calls.
+      mutateLimitLedger((ledger) => {
+        ledger.records[r.key]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+        return true;
+      });
+      const before = readLimitLedger().records[r.key]!.deferCount;
+
+      // superviseAttempt's wrapper shape: no preSpawnDefer at all.
+      const result = settleAttempt(r.key, "a1", { status: "deferred" }, NOW);
+
+      expect(result?.status).toBe("deferred"); // NOT "failed"
+      expect(result?.reasonCode).toBeNull(); // NOT "defer_exhausted"
+      expect(result?.deferCount).toBe(before + 1); // ordinary backoff increment
+      expect(result?.preSpawnDeferCount).toBe(MAX_DEFER_COUNT); // unchanged -- never incremented without the flag
+      const rec = readLimitLedger().records[r.key]!;
+      expect(rec.status).toBe("deferred");
+      expect(rec.attempt).toBeNull();
+    });
+
+    it("test 4: requeueRecord on a defer_exhausted record resets preSpawnDeferCount (and deferCount) and makes it dispatchable again", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(r.key, `a${i}`);
+      expect(readLimitLedger().records[r.key]!.reasonCode).toBe("defer_exhausted");
+
+      expect(requeueRecord(r.key, NOW + 1000)).toBe(true);
+      const rec = readLimitLedger().records[r.key]!;
+      expect(rec.status).toBe("stopped");
+      expect(rec.preSpawnDeferCount).toBe(0);
+      expect(rec.deferCount).toBe(0);
+      expect(rec.wakeAttempts).toBe(0);
+      expect(rec.reasonCode).toBeNull();
+      expect(selectDueRecords(readLimitLedger(), NOW + 1000, 5).map((x) => x.key)).toContain(r.key);
+    });
+
+    it("test 4b (+ pen ratification condition 1): the cap-firing terminalize mutation carries the FULL persisted shape, including lastError from the spawn-failure diagnostic", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT; i++) preSpawnDefer(r.key, `a${i}`);
+      const preTerminal = readLimitLedger().records[r.key]!;
+
+      claimAttempt(r.key, { id: "aFinal", token: "t", generation: 1 }, NOW);
+      const result = settleAttempt(
+        r.key,
+        "aFinal",
+        { status: "deferred", preSpawnDefer: true, lastError: "spawn failed: ENOENT claude" },
+        NOW,
+      );
+      expect(result?.status).toBe("failed");
+      expect(result?.reasonCode).toBe("defer_exhausted");
+
+      const rec = readLimitLedger().records[r.key]!;
+      expect(rec.status).toBe("failed");
+      expect(rec.reasonCode).toBe("defer_exhausted");
+      expect(rec.attempt).toBeNull();
+      expect(rec.wakeAttempts).toBe(0);
+      expect(rec.deferCount).toBe(preTerminal.deferCount); // unchanged -- not incremented on the cap-firing call
+      expect(rec.preSpawnDeferCount).toBe(MAX_DEFER_COUNT);
+      expect(rec.nextAttemptAt).toBe(preTerminal.nextAttemptAt); // AS-IS, matching failRecord
+      expect(rec.lastError).toBe("spawn failed: ENOENT claude"); // NOT discarded by the cap branch
+    });
+
+    it("test 7: defer_exhausted round-trips through a LimitStopSummary read directly", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(r.key, `a${i}`);
+      const summary = listLimitStops({ includeTerminal: true }).find((s) => s.key === r.key);
+      expect(summary).toBeDefined();
+      expect(summary!.status).toBe("failed");
+      expect(summary!.reasonCode).toBe("defer_exhausted");
+      expect(summary!.wakeAttempts).toBe(0);
+    });
+
+    it("test 8a: listLimitStops() excludes a defer_exhausted record by default; includeTerminal:true includes it with reasonCode intact", () => {
+      const r = recordDirectStop(stopInput());
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(r.key, `a${i}`);
+
+      expect(listLimitStops().find((s) => s.key === r.key)).toBeUndefined();
+      const withTerminal = listLimitStops({ includeTerminal: true }).find((s) => s.key === r.key);
+      expect(withTerminal).toBeDefined();
+      expect(withTerminal!.reasonCode).toBe("defer_exhausted");
+    });
+
+    it("test 8b: includeTerminal orders active-by-nextAttemptAt-asc FIRST, then terminal-by-updatedAt-desc -- never a mixed comparator", () => {
+      // Active records: b's nextAttemptAt is earlier than a's.
+      const a = recordDirectStop(stopInput({ clientTaskId: "ord-a", resetAt: RESET + 120_000 }));
+      const b = recordDirectStop(stopInput({ clientTaskId: "ord-b", resetAt: RESET + 60_000 }));
+      // Terminal records: constructed so naive nextAttemptAt sorting would put
+      // them BEFORE the active ones (small nextAttemptAt) and so a naive
+      // updatedAt sort within "all records" would misorder them relative to
+      // the active group -- only a partition-then-concatenate is correct.
+      const c = recordDirectStop(stopInput({ clientTaskId: "ord-c" }));
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(c.key, `c${i}`, NOW + 1_000);
+      const d = recordDirectStop(stopInput({ clientTaskId: "ord-d" }));
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(d.key, `d${i}`, NOW + 5_000);
+      // c terminalized at NOW+1000 (earlier), d at NOW+5000 (later) -- updatedAt desc means d before c.
+      mutateLimitLedger((ledger) => {
+        ledger.records[b.key]!.nextAttemptAt = RESET + 60_000;
+        ledger.records[a.key]!.nextAttemptAt = RESET + 120_000;
+        return true;
+      });
+
+      const keys = listLimitStops({ includeTerminal: true }).map((s) => s.key);
+      const activeKeys = keys.slice(0, 2);
+      const terminalKeys = keys.slice(2);
+      expect(activeKeys).toEqual([b.key, a.key]); // active group, nextAttemptAt ascending
+      expect(terminalKeys).toEqual([d.key, c.key]); // terminal group, updatedAt descending
+    });
+
+    it("test 8b tie-break: equal nextAttemptAt (active) and equal updatedAt (terminal) fall back to key-ascending, not insertion order", () => {
+      // Active records with an IDENTICAL nextAttemptAt: without the key
+      // tie-breaker, `.sort` order would depend on object property insertion
+      // order rather than being deterministic.
+      const activeY = recordDirectStop(stopInput({ clientTaskId: "tie-y", resetAt: RESET + 90_000 }));
+      const activeX = recordDirectStop(stopInput({ clientTaskId: "tie-x", resetAt: RESET + 90_000 }));
+      // Terminal records terminalized at the SAME instant.
+      const termY = recordDirectStop(stopInput({ clientTaskId: "tie-term-y" }));
+      const termX = recordDirectStop(stopInput({ clientTaskId: "tie-term-x" }));
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(termY.key, `ty${i}`, NOW + 9_000);
+      for (let i = 1; i <= MAX_DEFER_COUNT + 1; i++) preSpawnDefer(termX.key, `tx${i}`, NOW + 9_000);
+
+      const keys = listLimitStops({ includeTerminal: true }).map((s) => s.key);
+      const activeKeys = keys.slice(0, 2);
+      const terminalKeys = keys.slice(2);
+      expect(activeKeys).toEqual([activeX.key, activeY.key]); // "claude:tie-x" < "claude:tie-y"
+      expect(terminalKeys).toEqual([termX.key, termY.key]); // "claude:tie-term-x" < "claude:tie-term-y"
+    });
+
+    it("test 9 (+ pen ratification condition 1 precision): a legacy record missing preSpawnDeferCount entirely defaults to 0 and can complete a preSpawnDefer:true settle normally", () => {
+      const r = recordDirectStop(stopInput());
+      claimAttempt(r.key, { id: "legacy1", token: "t", generation: 1 }, NOW);
+      // Simulate the real shape of every record written before this issue: the
+      // field is entirely absent from the persisted JSON, not merely 0.
+      mutateLimitLedger((ledger) => {
+        const rec = ledger.records[r.key] as Record<string, unknown>;
+        delete rec.preSpawnDeferCount;
+        return true;
+      });
+      const loaded = readLimitLedger().records[r.key]!;
+      expect(loaded.preSpawnDeferCount).toBe(0); // schema default applied, not undefined
+
+      const result = settleAttempt(r.key, "legacy1", { status: "deferred", preSpawnDefer: true }, NOW);
+      expect(result).not.toBeNull();
+      expect(result?.preSpawnDeferCount).toBe(1);
+      expect(readLimitLedger().records[r.key]!.preSpawnDeferCount).toBe(1);
     });
   });
 
@@ -563,7 +800,7 @@ describe("limit-ledger", () => {
       recordAttemptSpawn(r.key, "a1", { childPid: 777, transcriptOffset: 0, stateRevision: 0 }, NOW);
       markInteractive(r.key, NOW);
       // A waker that lost the wake-claim race tries to requeue its attempt.
-      expect(settleAttempt(r.key, "a1", { status: "stopped" }, NOW)).toBe(false);
+      expect(settleAttempt(r.key, "a1", { status: "stopped" }, NOW)).toBeNull();
       expect(readLimitLedger().records[r.key]!.status).toBe("interactive");
     });
 

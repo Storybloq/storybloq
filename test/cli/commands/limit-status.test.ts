@@ -187,6 +187,24 @@ describe("limit-status list", () => {
     const result = await handleLimitStatus();
     expect(result.output).toContain("No pending limit auto-resumes");
   });
+
+  it("ISS-944 test 8c: --recent surfaces a terminal defer_exhausted record that the default listing hides", async () => {
+    recordDirectStop(baseStop());
+    mutateLimitLedger((ledger) => {
+      const rec = ledger.records[KEY]!;
+      rec.status = "failed";
+      rec.reasonCode = "defer_exhausted";
+      rec.updatedAt = Date.now();
+      return true;
+    });
+
+    const withoutFlag = await handleLimitStatus();
+    expect(withoutFlag.output).toContain("No pending limit auto-resumes");
+
+    const withFlag = await handleLimitStatus({ recent: true });
+    expect(withFlag.output).toContain(KEY);
+    expect(withFlag.output).toContain("defer_exhausted");
+  });
 });
 
 describe("limit-status --cancel", () => {

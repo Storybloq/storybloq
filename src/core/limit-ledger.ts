@@ -78,6 +78,19 @@ export const CLAIM_SPAWN_STALE_MS = 120_000;
 export const STALE_ATTEMPT_MS = 30 * 60_000;
 /** Deferral backoff ladder (waker re-checks): 5 -> 10 -> 20 -> 30min capped. */
 export const DEFER_BACKOFF_MS = [5 * 60_000, 10 * 60_000, 20 * 60_000, 30 * 60_000] as const;
+/**
+ * ISS-944: cap on consecutive PRE-SPAWN defers (the four dispatchClaimed
+ * sites -- claude-missing, telemetry-unreadable, alive-fresh, spawn-failure
+ * -- all of which run before recordAttemptSpawn for the CURRENT claimed
+ * attempt; the record's wakeAttempts can already be positive from an earlier
+ * attempt in the same episode). Governs `preSpawnDeferCount`, a field
+ * structurally distinct from `deferCount` (which drives the backoff ladder
+ * above and is never touched by this cap). Fixed constant, mirroring
+ * `maxAttempts`'s default of 5 -- not a config field: a knob nobody has asked
+ * to tune is public surface, a migration, and a support burden bought with no
+ * evidence anyone wants it.
+ */
+export const MAX_DEFER_COUNT = 5;
 
 export type LimitRecordStatus =
   | "preparing"
@@ -105,7 +118,15 @@ export type LimitReasonCode =
   // terminal -- an assertion this code cannot make from evidence it failed to
   // read.
   | "telemetry_unreadable"
-  | "cancellation_blocked";
+  | "cancellation_blocked"
+  // ISS-944: a pre-spawn site (claude-missing / telemetry-unreadable /
+  // alive-fresh / spawn-failure) deferred MAX_DEFER_COUNT consecutive times
+  // SINCE THE LAST REAL SPAWN (recordAttemptSpawn resets preSpawnDeferCount,
+  // so wakeAttempts can be positive here if an earlier spawn happened before
+  // this run of pre-spawn defers began). Distinct from `attempts_exhausted`,
+  // which is governed by the separate `maxAttempts` config and counts real
+  // spawns, never pre-spawn deferrals.
+  | "defer_exhausted";
 
 export interface LimitStatusMeta {
   /** Due-scan may claim this record for a wake attempt. */
@@ -184,6 +205,11 @@ const LimitRecordSchema = z
     generation: z.number().int().min(1),
     wakeAttempts: z.number().int().min(0).default(0),
     deferCount: z.number().int().min(0).default(0),
+    // ISS-944: cap counter for the four PRE-SPAWN defer sites only, structurally
+    // distinct from deferCount (which drives the backoff ladder and is never
+    // touched by the cap). Additive/nullable-by-default for back-compat -- every
+    // record written before this issue lacks the field and defaults to 0 here.
+    preSpawnDeferCount: z.number().int().min(0).default(0),
     nextAttemptAt: z.number().default(0),
     limitType: z.enum(["session", "weekly", "unknown"]).default("unknown"),
     transcriptPath: z.string().nullable().default(null),
@@ -550,6 +576,10 @@ function upsertStop(
     generation,
     wakeAttempts,
     deferCount: 0,
+    // ISS-944: a genuine re-limit starts a fresh episode -- the pre-spawn
+    // stall budget resets exactly like deferCount does, for the same reason
+    // (a new episode gets a fresh ladder/budget, not a carried-over one).
+    preSpawnDeferCount: 0,
     nextAttemptAt: input.resetAt,
     limitType: input.limitType,
     transcriptPath: input.transcriptPath,
@@ -763,6 +793,11 @@ export function recordAttemptSpawn(
     rec.attempt.stateRevision = details.stateRevision;
     rec.attempt.lastProgressAt = now;
     rec.wakeAttempts += 1;
+    // ISS-944: a REAL spawn resets the pre-spawn stall budget -- a prior
+    // near-miss must not carry across a spawn that actually happened. This
+    // deliberately does NOT touch deferCount (it drives the backoff ladder
+    // and is a separate concern -- see settleAttempt).
+    rec.preSpawnDeferCount = 0;
     rec.lastAttemptAt = now;
     rec.updatedAt = now;
     return true;
@@ -930,6 +965,26 @@ export interface AttemptOutcome {
   reasonCode?: LimitReasonCode | null;
   nextAttemptAt?: number;
   lastError?: string | null;
+  /**
+   * ISS-944: asserted ONLY by dispatchClaimed's pre-spawn `settle` wrapper
+   * (the four sites: claude-missing, telemetry-unreadable, alive-fresh,
+   * spawn-failure). superviseAttempt's post-spawn `settle` wrapper never sets
+   * it. This is what gates the `preSpawnDeferCount` cap EXPLICITLY, at the
+   * call site, rather than leaving the cap's blast radius to emerge from
+   * counter arithmetic -- a cap-eligible `preSpawnDeferCount` reached by any
+   * means at a post-spawn call site (corrupted state, a future code path,
+   * manual ledger repair) still cannot trigger `defer_exhausted` from a call
+   * that does not assert this flag.
+   */
+  preSpawnDefer?: boolean;
+}
+
+/** Discriminated settle result: the ACTUAL persisted mutation, not the requested outcome (they can differ when the cap converts "deferred" into "failed"/"defer_exhausted"). `null` = the CAS did not land (nothing written). */
+export interface SettleResult {
+  status: LimitRecordStatus;
+  reasonCode: LimitReasonCode | null;
+  deferCount: number;
+  preSpawnDeferCount: number;
 }
 
 /**
@@ -938,27 +993,56 @@ export interface AttemptOutcome {
  * `resuming` -- interactive/cancelling/blocked records own their attempt
  * through their own flows, and a waker losing the wake-claim race must not
  * clobber a fresh `interactive` takeover back to a dispatchable status.
+ *
+ * ISS-944: a "deferred" outcome asserting `preSpawnDefer: true` converts to a
+ * terminal `"failed"`/`"defer_exhausted"` once `preSpawnDeferCount` reaches
+ * `MAX_DEFER_COUNT` -- matching `failRecord`'s terminalize shape (status,
+ * reasonCode, attempt=null, updatedAt; `nextAttemptAt` and `deferCount` left
+ * AS-IS, `preSpawnDeferCount` left at its final value). `lastError` is
+ * applied unconditionally after the branch either way, so a cap-firing call
+ * never discards a real diagnostic (e.g. spawn-failure's).
  */
-export function settleAttempt(key: string, attemptId: string, outcome: AttemptOutcome, now = Date.now()): boolean {
+export function settleAttempt(key: string, attemptId: string, outcome: AttemptOutcome, now = Date.now()): SettleResult | null {
   const r = mutateLimitLedger((ledger) => {
     const rec = ledger.records[key];
     if (!rec || rec.status !== "resuming") return SKIP_WRITE;
     if (rec.attempt?.id !== attemptId) return SKIP_WRITE;
     if (rec.attempt.generation !== rec.generation) return SKIP_WRITE;
-    rec.status = outcome.status;
-    rec.reasonCode = outcome.reasonCode ?? null;
-    if (outcome.status === "deferred") {
-      rec.deferCount += 1;
-      rec.nextAttemptAt = outcome.nextAttemptAt ?? now + deferBackoffMs(rec.deferCount);
-    } else if (outcome.nextAttemptAt != null) {
-      rec.nextAttemptAt = outcome.nextAttemptAt;
+
+    const capFires = outcome.status === "deferred" && outcome.preSpawnDefer === true && rec.preSpawnDeferCount >= MAX_DEFER_COUNT;
+
+    if (capFires) {
+      rec.status = "failed";
+      rec.reasonCode = "defer_exhausted";
+      // deferCount, preSpawnDeferCount, and nextAttemptAt deliberately left
+      // AS-IS -- the terminal record's own fields show how it got here, and
+      // a stale nextAttemptAt is inert (LIMIT_STATUS_META.failed.dispatchable
+      // is false).
+    } else {
+      rec.status = outcome.status;
+      rec.reasonCode = outcome.reasonCode ?? null;
+      if (outcome.status === "deferred") {
+        rec.deferCount += 1;
+        rec.nextAttemptAt = outcome.nextAttemptAt ?? now + deferBackoffMs(rec.deferCount);
+        if (outcome.preSpawnDefer) rec.preSpawnDeferCount += 1;
+      } else if (outcome.nextAttemptAt != null) {
+        rec.nextAttemptAt = outcome.nextAttemptAt;
+      }
     }
+    // Unconditional either way: the cap branch must not bypass this, or a
+    // cap-firing call (e.g. spawn-failure's real diagnostic) silently
+    // discards lastError at exactly the moment the terminal record needs it.
     if (outcome.lastError !== undefined) rec.lastError = outcome.lastError;
     rec.attempt = null;
     rec.updatedAt = now;
-    return true;
+    return {
+      status: rec.status as LimitRecordStatus,
+      reasonCode: rec.reasonCode as LimitReasonCode | null,
+      deferCount: rec.deferCount,
+      preSpawnDeferCount: rec.preSpawnDeferCount,
+    };
   });
-  return r === true;
+  return r === SKIP_WRITE ? null : r;
 }
 
 export function deferBackoffMs(deferCount: number): number {
@@ -1142,6 +1226,7 @@ export function requeueRecord(key: string, now = Date.now()): boolean {
     rec.reasonCode = null;
     rec.wakeAttempts = 0;
     rec.deferCount = 0;
+    rec.preSpawnDeferCount = 0;
     rec.nextAttemptAt = now;
     rec.lastError = null;
     rec.updatedAt = now;
@@ -1228,12 +1313,36 @@ function toLimitStopSummary(rec: LimitRecord): LimitStopSummary {
   };
 }
 
-/** All non-terminal records, cross-project (the `limit-status` CLI view). */
-export function listLimitStops(): LimitStopSummary[] {
-  return Object.values(readLimitLedger().records)
+export interface ListLimitStopsOptions {
+  /**
+   * ISS-944: include terminal records (defer_exhausted, attempts_exhausted,
+   * etc.) so an operator can find them without already knowing the record
+   * key. Omitted/false preserves today's non-terminal-only behavior exactly.
+   */
+  includeTerminal?: boolean;
+}
+
+/**
+ * Non-terminal records, cross-project (the `limit-status` CLI view), sorted
+ * by `nextAttemptAt` ascending. With `includeTerminal: true`, terminal
+ * records are appended after, sorted by `updatedAt` descending (most
+ * recently terminalized first). One explicit TOTAL ORDER: every record falls
+ * into exactly one group, each group has its own well-defined sort key, and
+ * the boundary is fixed (active always precedes terminal) -- no comparator
+ * ever compares a `nextAttemptAt` against an `updatedAt`. `key` breaks ties
+ * within a group so equal timestamps still produce a deterministic order,
+ * not one dependent on object property insertion order.
+ */
+export function listLimitStops(opts?: ListLimitStopsOptions): LimitStopSummary[] {
+  const records = Object.values(readLimitLedger().records);
+  const active = records
     .filter((rec) => !LIMIT_STATUS_META[rec.status as LimitRecordStatus]?.terminal)
-    .sort((a, b) => a.nextAttemptAt - b.nextAttemptAt)
-    .map(toLimitStopSummary);
+    .sort((a, b) => a.nextAttemptAt - b.nextAttemptAt || a.key.localeCompare(b.key));
+  if (!opts?.includeTerminal) return active.map(toLimitStopSummary);
+  const terminal = records
+    .filter((rec) => LIMIT_STATUS_META[rec.status as LimitRecordStatus]?.terminal)
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key));
+  return [...active, ...terminal].map(toLimitStopSummary);
 }
 
 /** Non-terminal records for one project (the storybloq_status section). Realpath-tolerant. */

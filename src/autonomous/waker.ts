@@ -59,6 +59,7 @@ import {
   type LimitAttempt,
   type SessionLimitSnapshot,
   type ReconcileAction,
+  type SettleResult,
 } from "../core/limit-ledger.js";
 import {
   acquireLimitLock,
@@ -230,7 +231,8 @@ function notifyMoment(
     | "claude-missing"
     | "gave-up"
     | "resumed"
-    | "cancellation-blocked",
+    | "cancellation-blocked"
+    | "defer-exhausted",
   extra?: string,
 ): void {
   if (!cfg.notify) return;
@@ -252,6 +254,12 @@ function notifyMoment(
     "gave-up": `Gave up auto-resuming the session in ${proj} after ${rec.wakeAttempts} attempts. Resume manually: ${resumeCmd}`,
     resumed: `Auto-resumed the session in ${proj} after its usage limit reset.`,
     "cancellation-blocked": `Could not stop the auto-resume child for ${proj} (pid ${extra ?? rec.attempt?.childPid ?? "?"}). It stays tracked; terminate it manually if needed.`,
+    // ISS-944: distinct from "gave-up", which names rec.wakeAttempts -- this
+    // fires from preSpawnDeferCount, which counts consecutive pre-spawn
+    // defers SINCE THE LAST REAL SPAWN (recordAttemptSpawn resets it), not
+    // since record creation. wakeAttempts can be positive here if an earlier
+    // spawn happened before this run of pre-spawn defers began.
+    "defer-exhausted": `Gave up auto-resuming the session in ${proj} after ${extra ?? "several"} deferred attempts with no spawn since. Resume manually: ${resumeCmd}`,
   };
   deps.notify(texts[moment]);
 }
@@ -294,13 +302,19 @@ async function dispatchClaimed(
   deps: WakerDeps,
 ): Promise<DispatchOutcome> {
   const now = deps.now();
+  // ISS-944: this wrapper covers dispatchClaimed's four PRE-SPAWN sites --
+  // the CURRENT claimed attempt has not spawned yet; this wrapper runs before
+  // recordAttemptSpawn for it. (The record's wakeAttempts can already be
+  // positive from an earlier attempt in the same episode; this makes no
+  // episode-wide claim about it.) Always asserts preSpawnDefer: true so a
+  // "deferred" outcome is eligible for the preSpawnDeferCount cap; harmless
+  // for every other status, which the cap check ignores.
   const settle = (
     status: "resumed" | "deferred" | "failed" | "manual" | "stopped",
     reasonCode?: LimitReasonCode | null,
     lastError?: string | null,
-  ): void => {
-    settleAttempt(rec.key, attempt.id, { status, reasonCode: reasonCode ?? null, lastError }, now);
-  };
+  ): SettleResult | null =>
+    settleAttempt(rec.key, attempt.id, { status, reasonCode: reasonCode ?? null, lastError, preSpawnDefer: true }, now);
 
   if (!fs.existsSync(join(rec.projectRoot, ".story"))) {
     settle("failed", "project_gone");
@@ -308,8 +322,12 @@ async function dispatchClaimed(
   }
 
   if (deps.detectClaude() === null) {
-    if (rec.deferCount === 0) notifyMoment(deps, cfg, rec, "claude-missing");
-    settle("deferred");
+    const deferResult = settle("deferred");
+    if (deferResult?.reasonCode === "defer_exhausted") {
+      notifyMoment(deps, cfg, rec, "defer-exhausted", String(deferResult.preSpawnDeferCount));
+    } else if (rec.deferCount === 0) {
+      notifyMoment(deps, cfg, rec, "claude-missing");
+    }
     return { spawned: false };
   }
 
@@ -357,8 +375,12 @@ async function dispatchClaimed(
         notifyMoment(deps, cfg, rec, "telemetry-unreadable-manual", heartbeat.reason);
         settle("manual", "telemetry_unreadable");
       } else {
-        if (rec.deferCount === 0) notifyMoment(deps, cfg, rec, "telemetry-unreadable", heartbeat.reason);
-        settle("deferred");
+        const deferResult = settle("deferred");
+        if (deferResult?.reasonCode === "defer_exhausted") {
+          notifyMoment(deps, cfg, rec, "defer-exhausted", String(deferResult.preSpawnDeferCount));
+        } else if (rec.deferCount === 0) {
+          notifyMoment(deps, cfg, rec, "telemetry-unreadable", heartbeat.reason);
+        }
       }
       return { spawned: false };
     }
@@ -368,8 +390,12 @@ async function dispatchClaimed(
         notifyMoment(deps, cfg, rec, "alive-blocked-manual");
         settle("manual", "blocked_client");
       } else {
-        if (rec.deferCount === 0) notifyMoment(deps, cfg, rec, "alive-blocked");
-        settle("deferred");
+        const deferResult = settle("deferred");
+        if (deferResult?.reasonCode === "defer_exhausted") {
+          notifyMoment(deps, cfg, rec, "defer-exhausted", String(deferResult.preSpawnDeferCount));
+        } else if (rec.deferCount === 0) {
+          notifyMoment(deps, cfg, rec, "alive-blocked");
+        }
       }
       return { spawned: false };
     }
@@ -422,17 +448,20 @@ async function dispatchClaimed(
     cwd = fs.existsSync(rec.cwd) ? rec.cwd : rec.projectRoot;
   }
 
-  const result = deps.spawnChild("claude", args, { cwd, env });
-  if (result.pid === null) {
+  const spawnResult = deps.spawnChild("claude", args, { cwd, env });
+  if (spawnResult.pid === null) {
     if (sessionDir) clearWakeClaim(sessionDir);
-    settle("deferred", null, result.error ?? "spawn failed");
+    const deferResult = settle("deferred", null, spawnResult.error ?? "spawn failed");
+    if (deferResult?.reasonCode === "defer_exhausted") {
+      notifyMoment(deps, cfg, rec, "defer-exhausted", String(deferResult.preSpawnDeferCount));
+    }
     return { spawned: false };
   }
 
   const recorded = recordAttemptSpawn(
     rec.key,
     attempt.id,
-    { childPid: result.pid, transcriptOffset: transcriptSize(rec.transcriptPath), stateRevision: spawnBaselineRevision },
+    { childPid: spawnResult.pid, transcriptOffset: transcriptSize(rec.transcriptPath), stateRevision: spawnBaselineRevision },
     now,
   );
   if (!recorded) {
@@ -447,17 +476,17 @@ async function dispatchClaimed(
     // promptness and to prevent a headless child driving the transcript beside
     // an interactive takeover.
     const markers = wakeChildMarkers(rec.clientTaskId, attempt.id);
-    attachOrphanChildPid(rec.key, attempt.id, result.pid, now);
+    attachOrphanChildPid(rec.key, attempt.id, spawnResult.pid, now);
     if (sessionDir) {
       writeWakeClaim(sessionDir, {
         attemptId: attempt.id,
         token: attempt.token,
         generation: rec.generation,
-        childPid: result.pid,
+        childPid: spawnResult.pid,
         createdAt: now,
       });
     }
-    if (await terminateConfirmed(result.pid, markers, deps)) {
+    if (await terminateConfirmed(spawnResult.pid, markers, deps)) {
       // Death CONFIRMED: the lingering attempt PID self-clears on the owning
       // flow's next tick (probe absent -> confirmed -> cleared); drop the claim.
       if (sessionDir) clearWakeClaim(sessionDir);
@@ -465,7 +494,7 @@ async function dispatchClaimed(
       // Unconfirmed even after SIGKILL (kernel anomaly): LEAVE every durable
       // artifact (attempt PID + wake claim) so the next supervision/
       // cancellation tick retries termination, and surface the orphan.
-      notifyMoment(deps, cfg, rec, "cancellation-blocked", String(result.pid));
+      notifyMoment(deps, cfg, rec, "cancellation-blocked", String(spawnResult.pid));
     }
     return { spawned: false };
   }
@@ -474,7 +503,7 @@ async function dispatchClaimed(
       attemptId: attempt.id,
       token: attempt.token,
       generation: rec.generation,
-      childPid: result.pid,
+      childPid: spawnResult.pid,
       createdAt: now,
     });
   }
@@ -583,11 +612,18 @@ async function superviseAttempt(rec: LimitRecord, cfg: LimitResumeConfig, deps: 
   if (rec.status !== "resuming") return;
   if (attempt.spawnedAt == null) return; // claimed-but-not-spawned: reconcile's stale window owns it
 
+  // ISS-944 Amendment A: this wrapper covers superviseAttempt's five
+  // POST-SPAWN sites (a real spawn already counted -- wakeAttempts >= 1).
+  // Never asserts preSpawnDefer, so the preSpawnDeferCount cap cannot fire
+  // from any call through this wrapper, structurally -- these sites stay
+  // bounded by the existing wakeAttempts/maxAttempts gate. Return type
+  // changes from boolean to the discriminated result for consistency across
+  // every settleAttempt caller, not because the cap can fire here.
   const settle = (
     status: "resumed" | "deferred" | "failed" | "manual" | "stopped",
     reasonCode?: LimitReasonCode | null,
     lastError?: string | null,
-  ): boolean => settleAttempt(rec.key, attempt.id, { status, reasonCode: reasonCode ?? null, lastError }, now);
+  ): SettleResult | null => settleAttempt(rec.key, attempt.id, { status, reasonCode: reasonCode ?? null, lastError }, now);
 
   // "unknown" identity (pid exists, argv unreadable) counts as ALIVE for
   // supervision: settling on it would clear a possibly-live child's evidence.
@@ -612,14 +648,14 @@ async function superviseAttempt(rec: LimitRecord, cfg: LimitResumeConfig, deps: 
         // handleResume's git branch rejected the resume. Same rule: confirm
         // the child's death before the terminal settle clears its evidence.
         if (await terminateConfirmed(attempt.childPid, markers, deps)) {
-          if (settle("failed", "resume_blocked")) notifyMoment(deps, cfg, rec, "resume-blocked");
+          if (settle("failed", "resume_blocked") !== null) notifyMoment(deps, cfg, rec, "resume-blocked");
         }
         return;
       }
       if (!sessionStillPending(rec, snap)) {
         // The session moved on -- the wake worked (or the user beat us to it).
         // The child IS the resumed session; leave it running.
-        if (settle("resumed")) notifyMoment(deps, cfg, rec, "resumed");
+        if (settle("resumed") !== null) notifyMoment(deps, cfg, rec, "resumed");
         return;
       }
       // Still pending: state-revision movement counts as progress.
@@ -658,8 +694,8 @@ async function superviseAttempt(rec: LimitRecord, cfg: LimitResumeConfig, deps: 
       const turnLanded = attempt.spawnedAt != null &&
         transcriptHasTurnAfter(rec.transcriptPath, attempt.spawnedAt, { sessionId: rec.clientTaskId });
       if (turnLanded) {
-        if (settle("resumed")) notifyMoment(deps, cfg, rec, "resumed");
-      } else if (settle("deferred", null, "wake produced no attributable turn")) {
+        if (settle("resumed") !== null) notifyMoment(deps, cfg, rec, "resumed");
+      } else if (settle("deferred", null, "wake produced no attributable turn") !== null) {
         notifyMoment(deps, cfg, rec, "approvals-blocked");
       }
       return;
@@ -670,7 +706,7 @@ async function superviseAttempt(rec: LimitRecord, cfg: LimitResumeConfig, deps: 
     if (now - attempt.spawnedAt < SPAWN_SETTLE_GRACE_MS) return; // judge on the next poll
     // Child exited with the session still parked / no transcript movement:
     // approvals denied or posture too restrictive.
-    if (settle("deferred", null, "wake child exited without progress")) {
+    if (settle("deferred", null, "wake child exited without progress") !== null) {
       notifyMoment(deps, cfg, rec, "approvals-blocked");
     }
     return;

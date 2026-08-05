@@ -43,6 +43,8 @@ export interface LimitStatusOptions {
   cancel?: string;
   requeue?: string;
   format?: "json" | "md";
+  /** ISS-944: include terminal records (defer_exhausted, attempts_exhausted, etc.) without needing the key. */
+  recent?: boolean;
 }
 
 export interface LimitStatusResult {
@@ -79,8 +81,15 @@ function formatList(stops: LimitStopSummary[], format: "json" | "md"): string {
             ? "auto-resume in progress"
             : s.status === "interactive"
               ? "interactive resume in progress"
-              // Only stopped/deferred are actually SCHEDULED for a future moment.
-              : `${s.mode === "headless" ? "auto-resumes" : "notifies"} ~${when}`;
+              // ISS-944: --recent surfaces terminal records too; they are not
+              // scheduled for anything further. Only "failed" is requeueable
+              // (LIMIT_STATUS_META) -- resumed/notified/cancelled are done.
+              : s.status === "failed"
+                ? `terminal -- requeue: storybloq limit-status --requeue ${s.key}`
+                : s.status === "resumed" || s.status === "notified" || s.status === "cancelled"
+                  ? "terminal, episode complete"
+                  // Only stopped/deferred are actually SCHEDULED for a future moment.
+                  : `${s.mode === "headless" ? "auto-resumes" : "notifies"} ~${when}`;
     lines.push(`- ${s.key}`);
     lines.push(`    ${s.sessionType} session in ${s.projectRoot}`);
     lines.push(
@@ -241,5 +250,7 @@ export async function handleLimitStatus(options: LimitStatusOptions = {}): Promi
   }
   if (options.cancel) return cancelRecord(normalizeKey(options.cancel));
   if (options.requeue) return requeue(normalizeKey(options.requeue));
-  return { output: formatList(listLimitStops(), options.format ?? "md") };
+  return {
+    output: formatList(listLimitStops(options.recent ? { includeTerminal: true } : undefined), options.format ?? "md"),
+  };
 }

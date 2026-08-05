@@ -43,6 +43,7 @@ import {
   wakerLockPath,
   DEFER_BACKOFF_MS,
   DEDUPE_WINDOW_MS,
+  MAX_DEFER_COUNT,
   type LimitRecord,
   type LimitStopInput,
 } from "../../src/core/limit-ledger.js";
@@ -808,6 +809,155 @@ describe("wakerTick headless dispatch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ISS-944: pre-spawn defer cap -- site wiring (mechanism itself is proven at
+// the settleAttempt level in test/core/limit-ledger.test.ts). Test numbers
+// trace the ratified plan (.story/sessions/b0366559-4d5d-452d-9881-2c89f684ef3d/
+// plan-iss944-revised.md).
+// ---------------------------------------------------------------------------
+
+describe("wakerTick pre-spawn defer cap (ISS-944)", () => {
+  it("test 1: claude-missing reaches defer_exhausted after MAX_DEFER_COUNT+1 consecutive pre-spawn defers, wakeAttempts stays 0 throughout", async () => {
+    makeAutonomousStop();
+    const deps = makeDeps({ detectClaude: () => null });
+
+    for (let i = 0; i < MAX_DEFER_COUNT; i++) {
+      await wakerTick(deps);
+      const mid = record();
+      expect(mid?.status).toBe("deferred");
+      expect(mid?.wakeAttempts).toBe(0);
+      // Force immediately due again -- the cap loop, not backoff timing, is under test.
+      mutateLimitLedger((ledger) => {
+        ledger.records[KEY]!.nextAttemptAt = Date.now() - 1_000;
+        return true;
+      });
+    }
+    await wakerTick(deps);
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted");
+    expect(rec?.wakeAttempts).toBe(0);
+    expect(deps.spawns).toHaveLength(0);
+    expect(deps.notifications.at(-1)).toContain("deferred attempts with no spawn since");
+  });
+
+  it("test 5a: the wall-clock grace terminalizes to manual BEFORE the count cap would have (grace elapsed, preSpawnDeferCount one below the cap)", async () => {
+    const resetAt = Date.now() - BLOCKED_GRACE_MS - 60_000;
+    const { sessDir } = makeAutonomousStop({ resetAt });
+    const tDir = telemetryDirPath(sessDir);
+    mkdirSync(tDir, { recursive: true });
+    writeFileSync(join(tDir, "alive"), String(Date.now()));
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT - 1; // one defer away from the cap
+      return true;
+    });
+
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("manual");
+    expect(rec?.reasonCode).toBe("blocked_client"); // grace won, cap never got the chance to fire
+  });
+
+  it("test 5b: the count cap terminalizes to defer_exhausted BEFORE the wall-clock grace would have (grace not elapsed, preSpawnDeferCount already at the cap)", async () => {
+    const { sessDir } = makeAutonomousStop({ resetAt: Date.now() - 1_000 }); // just past reset, well under grace
+    const tDir = telemetryDirPath(sessDir);
+    mkdirSync(tDir, { recursive: true });
+    writeFileSync(join(tDir, "alive"), String(Date.now()));
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+      return true;
+    });
+
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted"); // cap won, grace had not elapsed
+  });
+
+  it("test 6a: cap-firing at claude-missing emits defer-exhausted only, never the ordinary claude-missing moment (pen ratification: fixture pins deferCount:0 so the pre-existing once-per-episode guard cannot suppress the ordinary moment for free)", async () => {
+    makeAutonomousStop();
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+      ledger.records[KEY]!.deferCount = 0;
+      return true;
+    });
+    const deps = makeDeps({ detectClaude: () => null });
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted");
+    expect(deps.notifications).toHaveLength(1);
+    expect(deps.notifications[0]).toContain("deferred attempts with no spawn since");
+    expect(deps.notifications[0]).not.toContain("claude CLI was not found");
+  });
+
+  it("test 6b: cap-firing at alive-fresh emits defer-exhausted only, never the ordinary alive-blocked moment", async () => {
+    const { sessDir } = makeAutonomousStop({ resetAt: Date.now() - 1_000 });
+    const tDir = telemetryDirPath(sessDir);
+    mkdirSync(tDir, { recursive: true });
+    writeFileSync(join(tDir, "alive"), String(Date.now()));
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+      ledger.records[KEY]!.deferCount = 0;
+      return true;
+    });
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted");
+    expect(deps.notifications).toHaveLength(1);
+    expect(deps.notifications[0]).toContain("deferred attempts with no spawn since");
+    expect(deps.notifications[0]).not.toContain("still open in a terminal");
+  });
+
+  it("test 6c: cap-firing at telemetry-unreadable emits defer-exhausted only, never the ordinary telemetry-unreadable moment", async () => {
+    const { sessDir } = makeAutonomousStop({ sessionOverrides: { heartbeatGeneration: "not-a-generation" } as any });
+    mkdirSync(telemetryDirPath(sessDir), { recursive: true });
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+      ledger.records[KEY]!.deferCount = 0;
+      return true;
+    });
+    const deps = makeDeps();
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted");
+    expect(deps.notifications).toHaveLength(1);
+    expect(deps.notifications[0]).toContain("deferred attempts with no spawn since");
+    expect(deps.notifications[0]).not.toContain("heartbeat");
+  });
+
+  it("test 6d: cap-firing at spawn-failure emits defer-exhausted, wakeAttempts stays 0, and the terminal record preserves the real spawn error in lastError", async () => {
+    makeAutonomousStop();
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT;
+      ledger.records[KEY]!.deferCount = 0;
+      return true;
+    });
+    const deps = makeDeps({
+      spawnChild: () => ({ pid: null, error: "spawn failed: ENOENT claude" }),
+    });
+    await wakerTick(deps);
+
+    const rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("defer_exhausted");
+    expect(rec?.wakeAttempts).toBe(0);
+    expect(rec?.lastError).toBe("spawn failed: ENOENT claude");
+    expect(deps.notifications).toHaveLength(1);
+    expect(deps.notifications[0]).toContain("deferred attempts with no spawn since");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Supervision / verify
 // ---------------------------------------------------------------------------
 
@@ -837,6 +987,32 @@ describe("wakerTick supervision", () => {
       return true;
     });
   }
+
+  it("ISS-944 test 2: post-spawn defers stay bounded by the EXISTING wakeAttempts/maxAttempts gate and never reach defer_exhausted", async () => {
+    makeAutonomousStop({ resetAt: Date.now() + 3_600_000 });
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.wakeAttempts = 5; // already at maxAttempts (default 5)
+      return true;
+    });
+    primeResumingAttempt({ spawnedAgoMs: 60_000 });
+
+    const deps = makeDeps({ isChildAlive: () => false });
+    await wakerTick(deps); // superviseAttempt: "wake child exited without progress" -> deferred, never asserts preSpawnDefer
+    let rec = record();
+    expect(rec?.status).toBe("deferred");
+    expect(rec?.reasonCode).not.toBe("defer_exhausted");
+    expect(rec?.wakeAttempts).toBe(5); // untouched by the post-spawn settle
+
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.nextAttemptAt = Date.now() - 1_000;
+      return true;
+    });
+    await wakerTick(deps); // due again; the give-up gate fires BEFORE dispatch since wakeAttempts >= maxAttempts
+    rec = record();
+    expect(rec?.status).toBe("failed");
+    expect(rec?.reasonCode).toBe("attempts_exhausted"); // NOT defer_exhausted
+    expect(deps.notifications.some((n) => n.includes("Gave up"))).toBe(true);
+  });
 
   it("settles resumed (with notification) when the parked session moves on", async () => {
     const { sessDir } = makeAutonomousStop({ resetAt: Date.now() + 3_600_000 });

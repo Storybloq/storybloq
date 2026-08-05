@@ -3733,6 +3733,10 @@ export function registerLimitStatusCommand(yargs: Argv): Argv {
         .option("requeue", {
           type: "string",
           describe: "Return a manual/failed record to the wake queue",
+        })
+        .option("recent", {
+          type: "boolean",
+          describe: "ISS-944: also list terminal records (defer_exhausted, attempts_exhausted, etc.)",
         }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
     async (argv) => {
       const { handleLimitStatus } = await import("./commands/limit-status.js");
@@ -3741,6 +3745,7 @@ export function registerLimitStatusCommand(yargs: Argv): Argv {
           cancel: argv.cancel as string | undefined,
           requeue: argv.requeue as string | undefined,
           format: argv.format as "json" | "md",
+          recent: argv.recent as boolean | undefined,
         });
         // ISS-910: all output through writeOutput, never process.stdout. This
         // command does NOT register --raw (its JSON shape is deviant, so the

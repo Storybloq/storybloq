@@ -41,6 +41,7 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { CLIENT_TASK_ID_PATTERN, type OwnerTask } from "./client-profile.js";
+import { STORY_GITIGNORE_ENTRIES } from "../core/init.js";
 
 const SERVERS_DIRNAME = "servers";
 
@@ -97,6 +98,36 @@ function serversDir(root: string): string {
 
 function entryPath(root: string, pid: number): string {
   return join(serversDir(root), String(pid));
+}
+
+/**
+ * ISS-947: self-heal `.story/.gitignore` at registration time, for checkouts
+ * that never re-run `init` after `STORY_GITIGNORE_ENTRIES` gains an entry.
+ * Mirrors hook-status.ts's `ensureGitignore` (same tolerate-ENOENT read,
+ * trim-line membership test, append-only write) but stays fully synchronous:
+ * `registerMcpServer` and `ServerRegistryBinder.bind` must never become async.
+ * Every error is swallowed here, never thrown -- a gitignore write failure
+ * must degrade soft and never turn into a registration failure.
+ */
+function ensureStoryRuntimeGitignored(root: string): void {
+  const gitignorePath = join(root, ".story", ".gitignore");
+  let existing = "";
+  try {
+    existing = fs.readFileSync(gitignorePath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return;
+  }
+  const lines = existing.split("\n").map((l) => l.trim());
+  const missing = STORY_GITIGNORE_ENTRIES.filter((e) => !lines.includes(e));
+  if (missing.length === 0) return;
+  let content = existing;
+  if (content.length > 0 && !content.endsWith("\n")) content += "\n";
+  content += missing.join("\n") + "\n";
+  try {
+    fs.writeFileSync(gitignorePath, content, "utf-8");
+  } catch {
+    // Best-effort -- never block registration.
+  }
 }
 
 /**
@@ -237,6 +268,10 @@ export function registerMcpServer(
   try {
     const dir = serversDir(root);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // ISS-947: `.story/` is guaranteed to exist from here on (the recursive
+    // mkdir above creates it), which is what this self-heal needs -- calling
+    // it any earlier would ENOENT-fail silently on a bare mkdtemp root.
+    ensureStoryRuntimeGitignored(root);
     fs.writeFileSync(entryPath(root, pid), payload);
   } catch {
     return false;

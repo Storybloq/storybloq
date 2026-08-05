@@ -360,7 +360,8 @@ export function activePayload(session: Parameters<typeof buildActivePayload>[0],
 // Gitignore -- ensure ephemeral entries are gitignored
 // ---------------------------------------------------------------------------
 
-function ensureGitignore(root: string): void {
+/** EXPORTED for test (ISS-947): self-heals every STORY_GITIGNORE_ENTRIES line, including servers/. */
+export function ensureGitignore(root: string): void {
   const gitignorePath = join(root, ".story", ".gitignore");
 
   const readResult = tryReadFile(gitignorePath);

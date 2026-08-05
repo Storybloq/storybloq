@@ -156,7 +156,7 @@ export async function initProject(
 /** Ephemeral .story/ entries that should always be gitignored. Single source of truth. */
 // channel-inbox/ carries Mac-app event payloads (including the .failed/ quarantine):
 // machine-local file IPC that must never become team-visible (ISS-754).
-export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/", "federation-cache.json", "channel-inbox/"];
+export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/", "federation-cache.json", "channel-inbox/", "servers/"];
 
 /**
  * Ensures a .gitignore file contains the specified entries.

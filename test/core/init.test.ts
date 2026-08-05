@@ -144,6 +144,12 @@ describe("initProject", () => {
     expect(STORY_GITIGNORE_ENTRIES).toContain("channel-inbox/");
   });
 
+  // ISS-947: .story/servers/ holds machine-local MCP registration pid files;
+  // every registration dirtied porcelain without this entry.
+  it("STORY_GITIGNORE_ENTRIES includes servers/ (ISS-947)", () => {
+    expect(STORY_GITIGNORE_ENTRIES).toContain("servers/");
+  });
+
   it("init writes .story/.gitignore containing every ephemeral entry (ISS-754 coverage lock)", async () => {
     testRoot = await mkdtemp(join(tmpdir(), "storybloq-init-"));
     await initProject(testRoot, { name: "test" });

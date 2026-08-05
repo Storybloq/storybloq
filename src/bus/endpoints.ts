@@ -11,7 +11,7 @@ import { canonicalHash, sha256 } from "./canonical.js";
 import { assertBusEnabled } from "./config.js";
 import { BusError } from "./errors.js";
 import { durableCreate, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow, rejectPathSymlink, syncDirectory } from "./io.js";
-import { captureProcessSignature, inspectProcessIdentity, withHardenedLock } from "./lock.js";
+import { acquireHardenedLock, captureProcessSignature, inspectProcessIdentity, releaseHardenedLock, withHardenedLock } from "./lock.js";
 import { assertBusLayout, endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
 import { normalizeBusText } from "./security.js";
 import {
@@ -96,7 +96,26 @@ async function removeEmptyOrphanMailboxes(
   }
 }
 
-interface ProcessCandidate {
+// ISS-940: removes the mailbox created during joinEndpoint's unlocked prep when a
+// later, routine failure inside the replace path's inner-lock tail (acquisition
+// error, a fresh conflict re-check, or a propagated read error) means the new
+// endpoint's own record will never be created. The mailbox is provably unregistered
+// at every one of those exits (the endpoints/<id>.json durableCreate for it is never
+// reached), so this mirrors removeEmptyOrphanMailboxes' own safety bar rather than a
+// bare recursive removal: reject a symlinked mailbox path, and remove only a mailbox
+// proven empty via the same orphanIsProvablyEmpty check the crash-recovery sweep
+// already uses. Best-effort: every call site swallows errors from this function so a
+// cleanup failure can never mask the real error being thrown; an unremoved mailbox in
+// that rare case still self-heals via removeEmptyOrphanMailboxes on the next join.
+async function cleanupOrphanMailbox(paths: BusPaths, endpointId: string): Promise<void> {
+  const orphan = endpointMailboxPath(paths, endpointId);
+  await rejectPathSymlink(orphan);
+  if (!(await orphanIsProvablyEmpty(orphan))) return;
+  await rm(orphan, { recursive: true, force: true });
+  await syncDirectory(paths.mailboxes);
+}
+
+export interface ProcessCandidate {
   readonly pid: number;
   readonly command: string;
 }
@@ -166,6 +185,30 @@ async function findClientProcess(client: BusClient): Promise<{ surface: BusSurfa
 export async function detectClientSurface(client: BusClient): Promise<BusSurface | null> {
   return (await findClientProcess(client)).surface;
 }
+
+// Test-only seam (ISS-940): findClientProcess scans real OS process ancestry and
+// ignores clientTaskId, so its outcome is environment-dependent -- not something a
+// test can rely on deterministically. When set, this override replaces ONLY the
+// detection step at refreshEndpointForSessionStart's call site; the downstream
+// surface-validation and processRefFor logic built on top of the detection result is
+// untouched. Null in production (never in the refresh path's cost).
+let processDetectionOverride:
+  | ((client: BusClient) => Promise<{ surface: BusSurface | null; process: ProcessCandidate | null }>)
+  | null = null;
+
+async function detectClientProcess(client: BusClient): Promise<{ surface: BusSurface | null; process: ProcessCandidate | null }> {
+  if (processDetectionOverride) return processDetectionOverride(client);
+  return findClientProcess(client);
+}
+
+// Test-only seams (ISS-940), both null in production. afterEndpointReadHook fires in
+// withEndpointLock immediately after its locked read, before the handler runs -- used
+// to pause the refresh side mid-critical-section. afterReplaceReadHook fires in
+// joinEndpoint's replace branch immediately after its fresh re-read under the inner
+// lock, before the liveness re-check -- used to pause the replace side. Both take the
+// endpointId so a shared installed hook can filter to the endpoint under test.
+let afterEndpointReadHook: ((endpointId: string) => Promise<void>) | null = null;
+let afterReplaceReadHook: ((endpointId: string) => Promise<void>) | null = null;
 
 async function gitOutput(root: string, args: string[]): Promise<string | null> {
   try {
@@ -238,7 +281,7 @@ export async function refreshEndpointForSessionStart(
   clientTaskId: string,
 ): Promise<BusEndpoint> {
   const endpoint = await assertEndpointCaller(root, endpointId, clientTaskId);
-  const detected = await findClientProcess(endpoint.client);
+  const detected = await detectClientProcess(endpoint.client);
   if (detected.process && detected.surface && detected.surface !== endpoint.surface) {
     throw new BusError("conflict", `Endpoint surface changed from ${endpoint.surface} to ${detected.surface}`);
   }
@@ -448,15 +491,125 @@ export async function joinEndpoint(root: string, input: JoinEndpointInput): Prom
     // endpoints, and re-running `bus setup` performs a fresh same-task join that
     // mints a new endpoint. A full durable-intent transaction is intentionally
     // not used for this pass.
+    //
+    // ISS-940: this retire write and SessionStart's refresh (which holds
+    // endpoint-<id>.lock for its own read-check-write) previously synchronized on
+    // disjoint locks, letting a concurrent refresh's unconditional rename clobber a
+    // just-landed retire, or vice versa. The replace path now also holds
+    // endpoint-<id>.lock around its own decide-and-write, forcing strict ordering
+    // against refresh's one continuous hold of that same lock -- mirroring
+    // consumeCompactionSuccession's existing outer-endpoints.lock/inner-endpoint-lock
+    // nesting. Successor creation happens after the inner lock is released (a NEW
+    // file -- durableCreate/link, not a rename over an existing target -- needs no
+    // exclusion against the incumbent's lock), gated on an explicit `retired` flag
+    // rather than on release succeeding, so a release error can never skip the
+    // paired successor write once retire has genuinely committed.
     if (replaceIncumbent) {
-      const retiredAt = new Date().toISOString();
-      await durableWrite(join(paths.endpoints, `${replaceIncumbent.endpointId}.json`), JSON.stringify({
-        ...replaceIncumbent,
-        state: "offline",
-        retiredAt,
-        retiredReason: "replaced",
-        lastSeenAt: retiredAt,
-      }, null, 2) + "\n");
+      let handle;
+      try {
+        handle = await acquireHardenedLock(
+          join(paths.locks, `endpoint-${replaceIncumbent.endpointId}.lock`),
+          { timeoutMs: ENDPOINT_LOCK_TIMEOUT_MS },
+        );
+      } catch (err) {
+        // Every acquisition failure -- not just lock_timeout -- leaves the new
+        // endpoint's mailbox from unlocked prep orphaned (no lock was ever
+        // acquired, nothing to release, nothing to gate on `retired`). Clean up
+        // unconditionally, then decide whether to remap the error.
+        await cleanupOrphanMailbox(paths, endpoint.endpointId).catch(() => {});
+        if (err instanceof BusError && err.code === "lock_timeout") {
+          // A timeout is not positive liveness proof, but --replace requires
+          // POSITIVE offline proof; failing to establish exclusive access within
+          // this generous window is not that proof either, so refusing is correct
+          // regardless of which is true. Maps to conflict (not the generic
+          // internal_failure a raw lock_timeout would fall through to in
+          // auto-attach.ts) so a detached auto-attach child gets the existing,
+          // already-tested race_lost handling.
+          throw new BusError(
+            "conflict",
+            `Endpoint ${replaceIncumbent.endpointId} changed or remained busy while replacement was being verified; retry replacement.`,
+          );
+        }
+        throw err;
+      }
+      // If durableWrite below throws AMBIGUOUSLY (the retire landed on disk but
+      // reporting the write failed), `retired` stays false here, cleanup fires, and
+      // the error propagates below -- a genuinely-landed retire with no successor.
+      // That is the SAME crash-window outcome the pre-existing back-to-back writes
+      // documented above already accept (degraded-but-recoverable via a fresh
+      // same-task join). This fix neither narrows nor widens that envelope.
+      let retired = false;
+      let pendingError: unknown = null;
+      try {
+        // Fresh re-read under the inner lock -- NEVER reuse `replaceIncumbent`
+        // above (captured from the outer-lock-held `listed` snapshot near the top
+        // of this function). That snapshot is exactly what a concurrent
+        // refreshEndpointForSessionStart could have changed between the outer
+        // lock's read and this inner lock's acquisition; deciding from it instead
+        // of a fresh read would still be check-then-act. No swallow on this read --
+        // schema corruption or an I/O failure must propagate as-is, not collapse
+        // into an ordinary conflict.
+        const incumbentPath = join(paths.endpoints, `${replaceIncumbent.endpointId}.json`);
+        const fresh = await readJsonNoFollow(incumbentPath, BusEndpointSchema);
+        if (afterReplaceReadHook) await afterReplaceReadHook(replaceIncumbent.endpointId);
+        if (fresh.retiredAt) {
+          throw new BusError("conflict", `Endpoint ${replaceIncumbent.endpointId} is no longer an active incumbent.`);
+        }
+        const liveness = await endpointLiveness(fresh);
+        if (liveness !== "offline") {
+          throw new BusError(
+            "conflict",
+            `Endpoint ${fresh.endpointId} changed or remained busy while replacement was being verified; retry replacement.`,
+          );
+        }
+        const retiredAt = new Date().toISOString();
+        await durableWrite(incumbentPath, JSON.stringify({
+          ...fresh,
+          state: "offline",
+          retiredAt,
+          retiredReason: "replaced",
+          lastSeenAt: retiredAt,
+        }, null, 2) + "\n");
+        retired = true;
+      } catch (err) {
+        pendingError = err;
+      }
+      // Deliberately NOT a `finally` -- a release failure can never silently
+      // replace `pendingError` (the classic finally-overwrites-the-real-error
+      // hazard); its own outcome is captured, not thrown immediately.
+      let releaseError: unknown = null;
+      try {
+        await releaseHardenedLock(handle);
+      } catch (err) {
+        releaseError = err;
+      }
+      if (!retired) {
+        // Every non-retired exit -- acquisition failure aside, handled above --
+        // lands here: already-retired conflict, still-live conflict, or a
+        // propagated read/liveness error. One centralized cleanup, strictly after
+        // the lock is released.
+        await cleanupOrphanMailbox(paths, endpoint.endpointId).catch(() => {});
+        // A double-failure (the critical section threw AND release also failed)
+        // preserves the release error as supplementary diagnostic data -- must NOT
+        // change pendingError's identity/.code, since callers (auto-attach.ts)
+        // branch on that exact BusError code. Guarded: attaching a property can
+        // itself throw on a frozen/non-extensible object, and that must never mask
+        // the primary error thrown unconditionally below.
+        if (releaseError && pendingError && typeof pendingError === "object" && Object.isExtensible(pendingError)) {
+          try {
+            (pendingError as { releaseError?: unknown }).releaseError = releaseError;
+          } catch {
+            // best-effort only; pendingError is still thrown unmodified below.
+          }
+        }
+        throw pendingError;
+      }
+      // Retire write committed. Attempt the paired successor write regardless of a
+      // release error -- releasing a lock this call no longer needs is orthogonal
+      // to the two-file crash doctrine documented above.
+      await durableCreate(join(paths.endpoints, `${endpoint.endpointId}.json`), JSON.stringify(endpoint, null, 2) + "\n");
+      if (releaseError) throw releaseError;
+      return { endpoint, existing: false };
     }
     await durableCreate(join(paths.endpoints, `${endpoint.endpointId}.json`), JSON.stringify(endpoint, null, 2) + "\n");
     return { endpoint, existing: false };
@@ -505,6 +658,7 @@ async function withEndpointLock<T>(
   return withHardenedLock(join(paths.locks, `endpoint-${endpointId}.lock`), async () => {
     const path = join(paths.endpoints, `${endpointId}.json`);
     let current = await readJsonNoFollow(path, BusEndpointSchema);
+    if (afterEndpointReadHook) await afterEndpointReadHook(endpointId);
     const persist: EndpointPersist = async (update) => {
       const next = BusEndpointSchema.parse(update(current));
       await durableWrite(path, JSON.stringify(next, null, 2) + "\n");
@@ -684,3 +838,26 @@ export async function consumeCompactionSuccession(input: {
     });
   });
 }
+
+// ISS-940 test-only seams. All null in production (never in any hot path's cost).
+export const __testing = {
+  // Fires in withEndpointLock immediately after its locked read, before the
+  // handler runs. Pass null to clear.
+  setAfterEndpointReadHook(hook: ((endpointId: string) => Promise<void>) | null): void {
+    afterEndpointReadHook = hook;
+  },
+  // Fires in joinEndpoint's replace branch immediately after its fresh re-read
+  // under the inner lock, before the liveness re-check. Pass null to clear.
+  setAfterReplaceReadHook(hook: ((endpointId: string) => Promise<void>) | null): void {
+    afterReplaceReadHook = hook;
+  },
+  // Replaces the findClientProcess call in refreshEndpointForSessionStart with a
+  // deterministic stub (findClientProcess scans real OS process ancestry and
+  // ignores clientTaskId, so its outcome is otherwise environment-dependent). Pass
+  // null to clear (falls through to the real findClientProcess).
+  setProcessDetectionOverride(
+    override: ((client: BusClient) => Promise<{ surface: BusSurface | null; process: ProcessCandidate | null }>) | null,
+  ): void {
+    processDetectionOverride = override;
+  },
+};

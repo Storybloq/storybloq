@@ -262,6 +262,16 @@ type AttemptResult =
 // published lock. Null in production (never in the acquisition path's cost).
 let afterPrimaryLinkHook: (() => Promise<void>) | null = null;
 
+// Test-only seam: fires inside acquireHardenedLock's retry loop immediately after an
+// attempt yields the "busy" outcome (a live-or-unknown holder, or an unavailable
+// reaper guard), before the poll-wait. Never fires on a stale-holder reclaim retry.
+// Proves genuine contention on the target acquisition -- NOT confirmed holder
+// liveness -- unlike a hook placed before the acquisition call, which could race
+// against when that call actually runs. Fires on EVERY busy poll iteration, not just
+// the first; consumers must guard for idempotent handling of a possibly-repeated
+// signal. Null in production (never in the acquisition path's cost). ISS-940.
+let afterBusyAcquireAttemptHook: ((lockPath: string) => Promise<void>) | null = null;
+
 // One full acquisition attempt shared by the deadline loop and the try-lock: a single link,
 // and on contention one readLock + identity check. A positively-dead holder is reclaimed via
 // the caller-supplied reaper (waiting for acquireHardenedLock, non-waiting for the try-lock),
@@ -341,7 +351,10 @@ export async function acquireHardenedLock(
       if (result.status === "acquired") return result.handle;
       // "retry" (missing lock / just-reclaimed dead holder) loops immediately; "busy"
       // (live/unknown holder) backs off a poll interval, exactly as the original loop did.
-      if (result.status === "busy") await delay(pollMs);
+      if (result.status === "busy") {
+        if (afterBusyAcquireAttemptHook) await afterBusyAcquireAttemptHook(lockPath);
+        await delay(pollMs);
+      }
     }
     throw new BusError("lock_timeout", `Timed out acquiring lock ${basename(lockPath)}`);
   } catch (err) {
@@ -409,5 +422,11 @@ export const __testing = {
   // syncDirectory) to force a post-link failure. Pass null to clear.
   setAfterPrimaryLinkHook(hook: (() => Promise<void>) | null): void {
     afterPrimaryLinkHook = hook;
+  },
+  // Test-only: inject a callback that fires on every "busy" (genuine contention)
+  // outcome inside acquireHardenedLock's retry loop, before the poll-wait. Pass null
+  // to clear. ISS-940.
+  setAfterBusyAcquireAttemptHook(hook: ((lockPath: string) => Promise<void>) | null): void {
+    afterBusyAcquireAttemptHook = hook;
   },
 };

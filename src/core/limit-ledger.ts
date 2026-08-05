@@ -1317,7 +1317,11 @@ export interface ListLimitStopsOptions {
   /**
    * ISS-944: include terminal records (defer_exhausted, attempts_exhausted,
    * etc.) so an operator can find them without already knowing the record
-   * key. Omitted/false preserves today's non-terminal-only behavior exactly.
+   * key. Omitted/false preserves today's non-terminal-only FILTER exactly.
+   * The active group's ORDER is not preserved bit-for-bit in either mode: the
+   * new key tie-breaker (below) applies to equal-`nextAttemptAt` records
+   * regardless of `includeTerminal`, which is a deliberate, desirable
+   * determinism fix, not scoped to this option.
    */
   includeTerminal?: boolean;
 }

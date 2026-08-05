@@ -1002,6 +1002,12 @@ describe("wakerTick supervision", () => {
     expect(rec?.status).toBe("deferred");
     expect(rec?.reasonCode).not.toBe("defer_exhausted");
     expect(rec?.wakeAttempts).toBe(5); // untouched by the post-spawn settle
+    // Pen byte-review F2: the give-up gate must terminalize a maxed-out record
+    // WITHOUT dispatching a fresh headless child first -- a give-up-gate
+    // regression that dispatches then terminalizes the same tick would pass
+    // every status/reasonCode assertion here while leaking one real claude
+    // child per exhausted episode.
+    expect(deps.spawns).toHaveLength(0);
 
     mutateLimitLedger((ledger) => {
       ledger.records[KEY]!.nextAttemptAt = Date.now() - 1_000;
@@ -1012,6 +1018,24 @@ describe("wakerTick supervision", () => {
     expect(rec?.status).toBe("failed");
     expect(rec?.reasonCode).toBe("attempts_exhausted"); // NOT defer_exhausted
     expect(deps.notifications.some((n) => n.includes("Gave up"))).toBe(true);
+    expect(deps.spawns).toHaveLength(0); // still no dispatch across either tick
+  });
+
+  it("ISS-944 test 2b (pen byte-review F1): a cap-eligible preSpawnDeferCount is inert at a post-spawn site -- superviseAttempt's deferred settle never asserts preSpawnDefer, so the counter is UNCHANGED at MAX_DEFER_COUNT and the record stays plain \"deferred\", never defer_exhausted. Evidence-honesty note: this test cannot be RED at the shipped 7069388d bytes (they are correct); its teeth are the reverse-fix mutant -- adding preSpawnDefer: true to superviseAttempt's settle wrapper must make it fail.", async () => {
+    makeAutonomousStop({ resetAt: Date.now() + 3_600_000 });
+    mutateLimitLedger((ledger) => {
+      ledger.records[KEY]!.preSpawnDeferCount = MAX_DEFER_COUNT; // cap-eligible, if the flag ever leaked here
+      return true;
+    });
+    primeResumingAttempt({ spawnedAgoMs: 60_000 });
+
+    const deps = makeDeps({ isChildAlive: () => false });
+    await wakerTick(deps); // superviseAttempt: "wake child exited without progress" -> deferred
+    const rec = record();
+    expect(rec?.status).toBe("deferred");
+    expect(rec?.reasonCode).not.toBe("defer_exhausted");
+    expect(rec?.preSpawnDeferCount).toBe(MAX_DEFER_COUNT); // unchanged -- never incremented without the flag
+    expect(deps.spawns).toHaveLength(0);
   });
 
   it("settles resumed (with notification) when the parked session moves on", async () => {

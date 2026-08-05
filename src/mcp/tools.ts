@@ -16,7 +16,7 @@ import { resolveNodePath } from "../federation/resolver.js";
 import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS, OwnerGoneCandidateTakeoverSchema, OwnerGoneCandidateCancelSchema } from "../autonomous/session-types.js";
 import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
 import { evaluateSessionGuard } from "../core/session-guard.js";
-import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired } from "../autonomous/session.js";
+import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired, withSessionLock } from "../autonomous/session.js";
 import { withStalenessNote } from "../autonomous/binary-staleness.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
@@ -312,6 +312,50 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // silently dropped one. Shadowing the parameter is deliberate: there is no
   // unshimmed `server` left in scope to reach for by accident.
   const server = withStrictToolSchemas(rawServer);
+
+  // ISS-945: a session-scoped write must never materialize a
+  // `.story/sessions/<id>/` directory for an id that does not resolve to a
+  // real session -- that debris has no age-out and no cleanup command that
+  // will touch it (session-scan.ts classifies it as "possibly mid-creation"
+  // forever). Gate every such write behind the same existence check
+  // `storybloq_register_subprocess` already uses (readSessionResilient).
+  function resolveGatedSessionDir(
+    sessionId: string | null | undefined,
+  ): { dir: string | undefined; unknownId?: string } {
+    if (!sessionId) return { dir: undefined };
+    const dir = sessionDir(pinnedRoot, sessionId);
+    return readSessionResilient(dir) ? { dir } : { dir: undefined, unknownId: sessionId };
+  }
+
+  // ISS-945: orders the gate+touch+enqueue-into-handleAutonomousGuide step of
+  // concurrent `storybloq_autonomous_guide` calls by CALL order, not by how
+  // fast each call's internal `withSessionLock` acquisition happens to
+  // resolve. `guideCallQueue` is read and replaced synchronously (no `await`
+  // in between), mirroring the same synchronous-enqueue shape guide.ts's own
+  // `workspaceLocks` relies on -- so an existence-check gate placed before
+  // `handleAutonomousGuide` cannot let a later call's touch overtake an
+  // earlier call's and enter the guide's per-workspace queue out of order.
+  //
+  // This queue waits for each task's ENTIRE `handleAutonomousGuide` call to
+  // settle before advancing, not just its gate/touch step. That is a
+  // deliberate choice, not an oversight: while call 1 is processing,
+  // `lastMcpCall` already reflects call 1's own start-of-turn touch, an
+  // accurate "this session had recent MCP activity" signal for the whole
+  // window call 1 is legitimately running. A queued call 2 performs its own
+  // touch at the start of ITS OWN turn, once call 1 fully settles -- the same
+  // liveness guarantee (a call's own touch races its own processing time)
+  // that existed before this fix. Splitting the queue to advance early was
+  // tried and rejected: call 2's touch would still contend for the same
+  // `withSessionLock` call 1's real processing holds for the duration of its
+  // work, so an early-advancing queue does not actually deliver a prompt
+  // touch in production -- it only appears to under a mock that removes that
+  // contention.
+  let guideCallQueue: Promise<unknown> = Promise.resolve();
+  function runGuideCallInOrder<T>(task: () => Promise<T>): Promise<T> {
+    const started = guideCallQueue.then(task, task);
+    guideCallQueue = started.then(() => {}, () => {});
+    return started;
+  }
 
   // D6: the five Bus tools always register for a full project (degraded no-project
   // mode keeps its two-tool surface elsewhere). When Bus is disabled or the
@@ -1287,8 +1331,18 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       }).optional().describe("Report data (required for report action)"),
     },
   }, (args) => {
-    try { const sid = (args as Record<string, unknown>).sessionId as string | null; if (sid) touchLastMcpCallFile(sessionDir(pinnedRoot, sid)); } catch { /* best-effort */ }
-    return handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]);
+    return runGuideCallInOrder(async () => {
+      try {
+        const sid = (args as Record<string, unknown>).sessionId as string | null;
+        if (sid) {
+          await withSessionLock(pinnedRoot, async () => {
+            const { dir } = resolveGatedSessionDir(sid);
+            if (dir) touchLastMcpCallFile(dir);
+          });
+        }
+      } catch { /* best-effort */ }
+      return handleAutonomousGuide(pinnedRoot, args as Parameters<typeof handleAutonomousGuide>[1]);
+    });
   });
 
   // ── T-189: Multi-lens review MCP tools ─────────────────────
@@ -1306,10 +1360,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     },
   }, (args) => {
     try {
-      const sessionDir = args.sessionId
-        ? join(pinnedRoot, ".story", "sessions", args.sessionId)
-        : undefined;
-      const result = handlePrepare({ ...args, projectRoot: pinnedRoot, sessionDir });
+      const { dir: sDir, unknownId } = resolveGatedSessionDir(args.sessionId);
+      if (unknownId) {
+        return { content: [{ type: "text" as const, text: withStalenessNote(`Error: session ${unknownId} not found or corrupt`) }], isError: true };
+      }
+      const result = handlePrepare({ ...args, projectRoot: pinnedRoot, sessionDir: sDir });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message.replace(/\/[^\s]+/g, "<path>") : "unknown error";
@@ -1337,10 +1392,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     },
   }, async (args) => {
     try {
-      const sessionDir = args.sessionId
-        ? join(pinnedRoot, ".story", "sessions", args.sessionId)
-        : undefined;
-      const result = handleSynthesize({
+      // ISS-945: `handleSynthesize`'s cache write-back (writeToCache,
+      // lens-harness/cache.ts) mkdirs the session directory unconditionally
+      // when harness meta was read, so an unknown/deleted sessionId must never
+      // reach it. The existence check and the handleSynthesize call that may
+      // write both run inside ONE withSessionLock acquisition so a concurrent
+      // session delete cannot land between them. A sessionless call (no
+      // sessionId at all) takes no lock at all -- it never touches a session
+      // directory, gated or not.
+      const runSynthesize = (dir: string | undefined) => handleSynthesize({
         stage: args.stage,
         // Re-shape at the wire boundary: z.unknown() infers `output` as an
         // optional property; the harness contract requires it present.
@@ -1364,20 +1424,36 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         },
         projectRoot: pinnedRoot,
         sessionId: args.sessionId,
-        sessionDir,
+        sessionDir: dir,
         diff: args.diff,
         changedFiles: args.changedFiles,
       });
+
+      let sDir: string | undefined;
+      let result: ReturnType<typeof runSynthesize>;
+
+      if (args.sessionId) {
+        const sid = args.sessionId;
+        const gate = await withSessionLock(pinnedRoot, async () => {
+          const dir = sessionDir(pinnedRoot, sid);
+          if (!readSessionResilient(dir)) return { ok: false as const, unknownId: sid };
+          return { ok: true as const, dir, result: runSynthesize(dir) };
+        });
+        if (!gate.ok) {
+          return { content: [{ type: "text" as const, text: withStalenessNote(`Error: session ${gate.unknownId} not found or corrupt`) }], isError: true };
+        }
+        sDir = gate.dir;
+        result = gate.result;
+      } else {
+        result = runSynthesize(undefined);
+      }
 
       // T-192: Auto-file pre-existing findings as issues
       const filedIssues: { issueKey: string; issueId: string }[] = [];
       const filingWarnings: { issueKey: string; code: string; message: string }[] = [];
       const filingErrors: { issueKey: string; code: string; message: string }[] = [];
       if (result.preExistingFindings.length > 0) {
-        const sessionDir = args.sessionId
-          ? join(pinnedRoot, ".story", "sessions", args.sessionId)
-          : null;
-        const alreadyFiled = sessionDir ? readFiledPreexisting(sessionDir) : new Set<string>();
+        const alreadyFiled = sDir ? readFiledPreexisting(sDir) : new Set<string>();
         const sizeBeforeLoop = alreadyFiled.size;
 
         for (const f of result.preExistingFindings) {
@@ -1453,8 +1529,19 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           }
         }
 
-        if (sessionDir && alreadyFiled.size > sizeBeforeLoop) {
-          writeFiledPreexisting(sessionDir, alreadyFiled);
+        if (sDir && alreadyFiled.size > sizeBeforeLoop) {
+          const dirForWrite = sDir;
+          // ISS-945: re-check existence under the same lock as the write --
+          // the filing loop above may have taken a while (one withProjectLock
+          // round trip per handleIssueCreate call), long enough for a
+          // concurrent session delete to have landed in the meantime. If the
+          // session is gone now, skip the write rather than recreating debris;
+          // writeFiledPreexisting is already a best-effort dedup file ("dedup
+          // may miss on next round, no data loss"), so skipping here is
+          // consistent with its existing contract.
+          await withSessionLock(pinnedRoot, async () => {
+            if (readSessionResilient(dirForWrite)) writeFiledPreexisting(dirForWrite, alreadyFiled);
+          });
         }
       }
 

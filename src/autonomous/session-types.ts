@@ -959,6 +959,21 @@ export const SessionStateSchema = z.object({
   // Pending project mutation (for crash recovery)
   pendingProjectMutation: z.any().nullable().default(null),
 
+  /**
+   * ISS-965: set when claimPreflightBlock terminalizes a session that observed
+   * its own consistent completion (status "complete", claim keys stripped).
+   * Marks the HANDOVER transition as ISS-965 terminal routing rather than an
+   * ordinary handover, so compaction/limit-parking preserve HANDOVER as the
+   * resume target instead of rewriting it to PICK_TICKET (session.ts) -- an
+   * ordinary handover still resumes at PICK_TICKET, unchanged. Discriminates
+   * on this marker ONLY, never on anything the agent can write directly.
+   */
+  terminalDisposition: z.object({
+    kind: z.literal("completion-observed"),
+    ticketId: z.string(),
+    observedAt: z.string(),
+  }).nullable().default(null),
+
   // Pending mutations that recovery refused to replay or confirm. `z.any()`
   // entries for the same reason `pendingProjectMutation` is: this array is an
   // audit trail, and a strict inner schema would fail the whole state.json

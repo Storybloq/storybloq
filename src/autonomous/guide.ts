@@ -471,18 +471,137 @@ async function reconcileClaimForGuide(
 
 async function claimPreflightBlock(
   root: string,
+  dir: string,
   state: FullSessionState,
 ): Promise<McpToolResult | null> {
   const result = await reconcileClaimForGuide(root, state);
-  if (!result || !isClaimLost(result)) return null;
+  if (!result) return null;
+
+  // ISS-965: this session's own authorized completion, not a foreign loss.
+  // MUST be checked before the isClaimLost gate below. isClaimLost is false
+  // for this status by design (the claim really is gone, but it is not a
+  // loss to report), so placing this branch after that gate would make it
+  // unreachable and let the session fall through into the pipeline with a
+  // stale claim on an already-finished ticket -- the exact reachability the
+  // round-4 gate found and this ordering exists to close.
+  if (result.reconciliation?.status === "completed-consistent") {
+    const ticketId = state.ticket?.displayId ?? state.ticket?.id ?? result.epoch?.ticketId ?? "unknown";
+    return terminalizeCompletedSession(root, dir, state, ticketId);
+  }
+
+  if (!isClaimLost(result)) return null;
 
   const ticketId = state.ticket?.displayId ?? state.ticket?.id ?? result.epoch?.ticketId ?? "unknown";
   return guideError(new Error(
     `Claim lost on ${ticketId}: ${describeClaimLoss(result)}. ` +
-    "This session can no longer prove it owns the ticket, so it will not advance or complete it (ISS-784). " +
+    "This session can no longer prove it owns the ticket, so it will not advance or complete it " +
+    "(claim lost -- merge-loser or takeover detection, T-442). " +
     `Write a handover, then cancel this session with { "sessionId": "${state.sessionId}", "action": "cancel" } ` +
     "and start a new session to pick different work.",
   ));
+}
+
+/**
+ * ISS-965: this session's own completion left the ticket claim-stripped
+ * (status "complete", both ownership keys gone) -- consistent, not a foreign
+ * loss. Route to a clean terminal handover instead of letting the session
+ * read that shape and either die on it (the field bug: four reproductions
+ * across two clients) or continue into the pipeline holding a stale epoch
+ * that still names a finished ticket (the ISS-981/ISS-982 reachability the
+ * round-2 gate found when the earlier design let it proceed).
+ *
+ * Idempotent by construction for the common case: once this succeeds,
+ * state.state is "HANDOVER", which is outside RECONCILED_STATES, so a later
+ * report/resume never reaches claimPreflightBlock's completed-consistent
+ * branch again for this session -- reconcileSessionReality short-circuits to
+ * NOT_CHECKED first. The one window that does not cover is a crash between
+ * this function's event append and its state rename, which leaves state.state
+ * at its OLD (pre-terminal) value on disk. The next report/resume reconciles
+ * the SAME shape (the ledger has not changed) and re-enters here; re-running
+ * is safe because every field this function writes is idempotent to repeat --
+ * the transition target and disposition marker are the same each time, and
+ * the pending mutation is only ever driven to null.
+ */
+async function terminalizeCompletedSession(
+  root: string,
+  dir: string,
+  state: FullSessionState,
+  ticketId: string,
+): Promise<McpToolResult> {
+  const hadPendingMutation = state.pendingProjectMutation != null;
+
+  // Validated goto, same idiom runPipelineStage uses for its own HANDOVER
+  // transitions (guide.ts processAdvance). Throws if state-machine.ts's table
+  // does not list this edge -- a real bug, not a caller error, so it is not
+  // caught here.
+  assertTransition(state.state as WorkflowState, "HANDOVER");
+
+  const observedAt = new Date().toISOString();
+  const nextState: FullSessionState = {
+    ...state,
+    state: "HANDOVER",
+    previousState: state.state,
+    terminalDisposition: { kind: "completion-observed", ticketId, observedAt },
+    // ISS-965: never replay a pending mutation past a session's own completed
+    // ticket. Terminalization is the last write this session's claim can
+    // legitimately authorize; recoverPendingMutation is never reached on this
+    // path (claimPreflightBlock returns before it runs), so the discard has
+    // to happen here or the marker would linger unresolved.
+    pendingProjectMutation: null,
+  };
+
+  // ISS-965 D5: ONE composite event carries the whole transition, coupled to
+  // the atomic state write by writeSessionWithEvent (event append, then
+  // rename; rolled back together if the rename throws). Two separate calls
+  // would coupled only one event to the write and leave the other best-effort
+  // and uncoupled, overstating what is actually atomic here.
+  //
+  // rev is the PROSPECTIVE POST-write revision (state.revision + 1), matching
+  // writeSessionWithEvent's other caller (trySupersedeFinishedOrphan): the
+  // event append happens before writeSessionSync's internal +1 bump, so the
+  // event must record the revision the state will actually carry once
+  // persisted, not the revision it carried before this write.
+  const written = writeSessionWithEvent(dir, nextState, {
+    rev: state.revision + 1,
+    type: "claim_terminalized",
+    timestamp: observedAt,
+    data: { from: state.state, to: "HANDOVER", ticketId, discardedPendingMutation: hadPendingMutation },
+  });
+
+  try { refreshStatusForSession(root, dir, written, "guide"); } catch { /* best-effort */ }
+
+  return { content: [{ type: "text", text: renderTerminalHandoverInstruction(written) }] };
+}
+
+/** Instruction text for a session routed to ISS-965 terminal handover. */
+function renderTerminalHandoverInstruction(state: FullSessionState): string {
+  const ticketId = state.terminalDisposition?.ticketId
+    ?? state.ticket?.displayId ?? state.ticket?.id ?? "unknown";
+  const doneIds = new Set<string>([
+    ...(state.completedTickets ?? []).map((t) => t.id),
+    ...(state.resolvedIssues ?? []),
+    ...(state.ticket ? [state.ticket.id] : []),
+  ]);
+  const remaining = (state.targetWork ?? [])
+    .filter((id) => !doneIds.has(id))
+    .map((id) => state.targetWorkDisplayIds?.[id] ?? id);
+
+  return [
+    `# ${ticketId} Complete -- Session Ending (ISS-965)`,
+    "",
+    `Ticket ${ticketId} is complete in the ledger and this session's claim on it has been released. ` +
+      "Treat it as finished: do not re-check its status or write to it again.",
+    "",
+    remaining.length > 0
+      ? `Remaining targeted work for the next session: ${remaining.join(", ")}.`
+      : "No targeted work remains.",
+    "",
+    "Write a session handover summarizing what was accomplished" +
+      (remaining.length > 0 ? ", including the remaining targeted work above so the next session can pick it up" : "") +
+      ".",
+    "",
+    'Call me with completedAction: "handover_written" and include the content in handoverContent.',
+  ].join("\n");
 }
 
 /**
@@ -2177,7 +2296,7 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   let state = adoption.adopted ? adoption.state : refreshLease(adoption.state);
 
   // T-442: reconcile before recovery, so a lost claim cannot be written to once more.
-  const reportBlock = await claimPreflightBlock(root, state);
+  const reportBlock = await claimPreflightBlock(root, info.dir, state);
   if (reportBlock) return reportBlock;
 
   // ISS-024: recover any pending mutation before processing
@@ -2934,7 +3053,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     : null;
 
   // T-442: reconcile before recovery, so a lost claim cannot be written to once more.
-  const resumeBlock = await claimPreflightBlock(root, info.state);
+  const resumeBlock = await claimPreflightBlock(root, info.dir, info.state);
   if (resumeBlock) return resumeBlock;
 
   // ISS-024: recover any pending mutation before processing

@@ -53,6 +53,17 @@ export interface ClaimConflictDetail {
 
 export type ClaimReconciliation =
   | { readonly status: "held" }
+  /**
+   * ISS-965: the epoch had a claim, the ledger has neither key, and the ticket
+   * is `complete` -- the shape a session's OWN authorized completion leaves
+   * (clearClaimOnComplete strips both keys on success). This is deliberately
+   * its own status, not "held": the claim is genuinely gone, so telling a
+   * caller it is still held would be false. It exists so guide.ts can route a
+   * session that observes it to a clean terminal handover instead of reading
+   * it as a foreign loss (which cited a resolved issue and forced typed
+   * cancellation -- ISS-965's four field reproductions).
+   */
+  | { readonly status: "completed-consistent" }
   | { readonly status: "conflicted"; readonly detail: ClaimConflictDetail }
   | { readonly status: "recovery-required"; readonly reason: "target-unreadable" | "epoch-unverifiable" };
 
@@ -83,6 +94,30 @@ export function reconcileClaim(input: ReconcileClaimInput): ClaimReconciliation 
   // two independent disagreements, and reporting it as `inconsistent` would name
   // holders that do not exist.
   if (epochHadClaim && ledgerHasNothing) {
+    // ISS-965: a released ticket that is ALSO `complete` is the shape this
+    // session's own authorized completion leaves (clearClaimOnComplete strips
+    // both keys on success, guide.ts's completion path). Foreign arms are
+    // untouched -- open/inprogress with both keys gone stays "released"
+    // exactly as before, which is the merge-loser detection ISS-784 relies on.
+    //
+    // ACCEPTED RESIDUAL (ISS-965 plan-gate ruling, 2026-08-05): an
+    // administrative --force completion by a different actor also lands this
+    // shape and reads as consistent. Force is an explicit admin act; this is
+    // not the hazard the classifier exists to catch.
+    //
+    // A merge-loser that observes the WINNER's already-completed ticket also
+    // reads as consistent-completion rather than dying here. This was
+    // ratified and then RESCINDED (round-2 gate: the loser retained a
+    // reachable public write path and could reach FINALIZE and attribute the
+    // winner's commit to itself -- ISS-981, ISS-982). The current design does
+    // NOT rely on this shape being harmless in isolation: guide.ts's
+    // claimPreflightBlock routes it to a terminal HANDOVER that never
+    // re-enters the pipeline, which is what actually closes the loser's
+    // reachability. See ISS-981/ISS-982 for the pre-existing hazards this
+    // fix does not, and is not scoped to, repair.
+    if (ticket.status === "complete") {
+      return { status: "completed-consistent" };
+    }
     return {
       status: "conflicted",
       detail: { kind: "released", sessionHolder: null, userHolder: null, since: null },

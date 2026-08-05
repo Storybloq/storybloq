@@ -5,6 +5,7 @@ import {
   reconcileSessionReality,
   isClaimLost,
   describeClaimLoss,
+  type ClaimPreflightResult,
 } from "../../src/autonomous/claim-preflight.js";
 import type { SessionState } from "../../src/autonomous/session-types.js";
 import type { Ticket } from "../../src/models/ticket.js";
@@ -235,5 +236,55 @@ describe("reconcileSessionReality", () => {
   it("returns an empty description for a held claim", async () => {
     const r = await reconcileSessionReality(session(), deps(ticket()));
     expect(describeClaimLoss(r)).toBe("");
+  });
+});
+
+describe("isClaimLost / describeClaimLoss NON_LOSS_STATUSES allow-list (ISS-965)", () => {
+  // Direct constructions, not routed through reconcileSessionReality: the
+  // routing tests in iss965-terminal-routing.test.ts cannot catch a regression
+  // here, because claimPreflightBlock's completed-consistent branch runs
+  // BEFORE isClaimLost is ever consulted (D1's ordering), and the cancel-path
+  // test runs after state has moved outside RECONCILED_STATES. This is the
+  // only place that exercises the allow-list itself, on every member of the
+  // ClaimReconciliation union plus a cast unknown future status.
+  const held: ClaimPreflightResult = { checked: true, epoch: null, reconciliation: { status: "held" } };
+  const completedConsistent: ClaimPreflightResult = {
+    checked: true, epoch: null, reconciliation: { status: "completed-consistent" },
+  };
+  const conflicted: ClaimPreflightResult = {
+    checked: true, epoch: null,
+    reconciliation: { status: "conflicted", detail: { kind: "released", sessionHolder: null, userHolder: null, since: null } },
+  };
+  const recoveryRequired: ClaimPreflightResult = {
+    checked: true, epoch: null, reconciliation: { status: "recovery-required", reason: "target-unreadable" },
+  };
+  const unknownFuture: ClaimPreflightResult = {
+    checked: true, epoch: null,
+    reconciliation: { status: "some-future-status" } as unknown as ClaimPreflightResult["reconciliation"],
+  };
+
+  it("is NOT a loss for held", () => {
+    expect(isClaimLost(held)).toBe(false);
+  });
+
+  it("is NOT a loss for completed-consistent", () => {
+    expect(isClaimLost(completedConsistent)).toBe(false);
+  });
+
+  it("IS a loss for conflicted", () => {
+    expect(isClaimLost(conflicted)).toBe(true);
+  });
+
+  it("IS a loss for recovery-required", () => {
+    expect(isClaimLost(recoveryRequired)).toBe(true);
+  });
+
+  it("fails CLOSED (reads as a loss) for an unknown future status -- the allow-list's whole point", () => {
+    expect(isClaimLost(unknownFuture)).toBe(true);
+  });
+
+  it("describeClaimLoss returns empty for completed-consistent, matching held", () => {
+    expect(describeClaimLoss(completedConsistent)).toBe("");
+    expect(describeClaimLoss(held)).toBe("");
   });
 });

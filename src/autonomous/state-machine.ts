@@ -10,12 +10,12 @@ const TRANSITIONS: Record<WorkflowState, readonly (WorkflowState | "*")[]> = {
   PICK_TICKET:   ["PLAN", "ISSUE_FIX", "COMPLETE", "SESSION_END", "HANDOVER", "PICK_TICKET"],  // COMPLETE for ISS-075 (nothing left to do); HANDOVER for T-328 branch mismatch; self for T-328 skip_ticket, which re-enters to rebuild the candidate list without the skipped item
   PLAN:          ["PLAN_REVIEW", "HANDOVER", "PICK_TICKET"],  // HANDOVER for skip_ticket; PICK_TICKET for ISS-759/ISS-767 claim-lost re-pick
   PLAN_REVIEW:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "PLAN_REVIEW", "SESSION_END", "HANDOVER", "PICK_TICKET"],   // approve → IMPLEMENT/WRITE_TESTS, reject → PLAN, stay for next round; SESSION_END for tiered exit; HANDOVER for skip_ticket; PICK_TICKET for ISS-904 park_item
-  IMPLEMENT:     ["CODE_REVIEW", "TEST", "COMPLETE"],  // TEST when test stage enabled, COMPLETE for no-op tickets (ISS-069)
-  WRITE_TESTS:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "COMPLETE"],  // advance → IMPLEMENT, retry stays, exhaustion → PLAN, no-op → COMPLETE (ISS-069)
-  TEST:          ["CODE_REVIEW", "IMPLEMENT", "TEST"],  // pass → CODE_REVIEW, fail → IMPLEMENT, retry
+  IMPLEMENT:     ["CODE_REVIEW", "TEST", "COMPLETE", "HANDOVER"],  // TEST when test stage enabled, COMPLETE for no-op tickets (ISS-069); HANDOVER: ISS-965 terminal routing (completion observed)
+  WRITE_TESTS:   ["IMPLEMENT", "WRITE_TESTS", "PLAN", "COMPLETE", "HANDOVER"],  // advance → IMPLEMENT, retry stays, exhaustion → PLAN, no-op → COMPLETE (ISS-069); HANDOVER: ISS-965 terminal routing (completion observed)
+  TEST:          ["CODE_REVIEW", "IMPLEMENT", "TEST", "HANDOVER"],  // pass → CODE_REVIEW, fail → IMPLEMENT, retry; HANDOVER: ISS-965 terminal routing (completion observed)
   CODE_REVIEW:   ["VERIFY", "BUILD", "FINALIZE", "IMPLEMENT", "PLAN", "CODE_REVIEW", "SESSION_END", "ISSUE_FIX", "HANDOVER"], // approve → VERIFY/BUILD/FINALIZE, reject → IMPLEMENT/PLAN, stay for next round; SESSION_END for tiered exit; T-208: ISSUE_FIX for issue-fix reviews; HANDOVER for skip
-  VERIFY:        ["BUILD", "FINALIZE", "IMPLEMENT", "VERIFY"],  // pass → BUILD/FINALIZE, fail → IMPLEMENT, retry
-  BUILD:         ["FINALIZE", "IMPLEMENT", "BUILD"],  // pass → FINALIZE, fail → IMPLEMENT, retry
+  VERIFY:        ["BUILD", "FINALIZE", "IMPLEMENT", "VERIFY", "HANDOVER"],  // pass → BUILD/FINALIZE, fail → IMPLEMENT, retry; HANDOVER: ISS-965 terminal routing (completion observed)
+  BUILD:         ["FINALIZE", "IMPLEMENT", "BUILD", "HANDOVER"],  // pass → FINALIZE, fail → IMPLEMENT, retry; HANDOVER: ISS-965 terminal routing (completion observed)
   FINALIZE:      ["COMPLETE", "PICK_TICKET"],  // ISS-084: issues now route through COMPLETE too; PICK_TICKET kept for in-flight session compat
   COMPLETE:      ["PICK_TICKET", "HANDOVER", "ISSUE_SWEEP", "SESSION_END"],
   ISSUE_FIX:     ["FINALIZE", "PICK_TICKET", "ISSUE_FIX", "CODE_REVIEW"],  // T-153: fix done → FINALIZE, cancel → PICK_TICKET, retry self; T-208: optional code review

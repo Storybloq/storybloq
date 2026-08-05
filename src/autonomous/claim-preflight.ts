@@ -169,15 +169,29 @@ export async function reconcileSessionReality(
   return { checked: true, epoch, reconciliation };
 }
 
+/**
+ * Statuses that are NOT a claim loss. An allow-list rather than `!== "held"`
+ * so an unknown future status fails CLOSED (reads as a loss) by construction,
+ * instead of silently passing until someone remembers to update this check.
+ *
+ * ISS-965: "completed-consistent" MUST be here. It means the session's own
+ * authorized completion left the ticket claim-stripped -- the claim really is
+ * gone, but this is not a foreign loss, so it must not read as one.
+ */
+const NON_LOSS_STATUSES: ReadonlySet<string> = new Set(["held", "completed-consistent"]);
+
 /** True when the preflight found the session no longer provably owns its ticket. */
 export function isClaimLost(result: ClaimPreflightResult): boolean {
-  return result.checked && result.reconciliation !== null && result.reconciliation.status !== "held";
+  return result.checked && result.reconciliation !== null
+    && !NON_LOSS_STATUSES.has(result.reconciliation.status);
 }
 
 /** Human-readable one-liner for the park handover and the guide instruction. */
 export function describeClaimLoss(result: ClaimPreflightResult): string {
   const r = result.reconciliation;
-  if (!r || r.status === "held") return "";
+  // Literal comparisons, not NON_LOSS_STATUSES.has(): Set.has() doesn't narrow
+  // the discriminated union, so TS can't see r.detail exists past this point.
+  if (!r || r.status === "held" || r.status === "completed-consistent") return "";
   if (r.status === "recovery-required") {
     return r.reason === "target-unreadable"
       ? "the ticket could not be read from the ledger"

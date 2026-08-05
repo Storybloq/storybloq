@@ -190,8 +190,18 @@ describe("reconcileClaim (T-442)", () => {
         expect(result, `status ${status}`).toMatchObject({ status: "recovery-required", reason: "epoch-unverifiable" });
       }
     });
+  });
 
-    it("still reports a release when no transaction evidence explains it", () => {
+  describe("completed-consistent (ISS-965)", () => {
+    // ISS-965, 2026-08-05: this used to be "fail closed"'s "still reports a
+    // release when no transaction evidence explains it", asserting
+    // conflicted/released for this exact shape. A `complete` ticket with both
+    // claim keys stripped is what a session's OWN authorized completion leaves
+    // (clearClaimOnComplete strips both keys on success) -- reading it as a
+    // foreign loss forced a live session into typed cancellation over its own
+    // successful completion. Moved here, not left under "fail closed": this
+    // shape is no longer a failure mode, it is the expected consistent case.
+    it("reports completed-consistent when the ticket is complete and both claim keys are gone", () => {
       const result = reconcileClaim({
         epoch: epoch(),
         ticket: {
@@ -203,7 +213,7 @@ describe("reconcileClaim (T-442)", () => {
         claimStalenessHours: 48,
         now: NOW,
       });
-      expect(result).toMatchObject({ status: "conflicted", detail: { kind: "released" } });
+      expect(result).toMatchObject({ status: "completed-consistent" });
     });
   });
 

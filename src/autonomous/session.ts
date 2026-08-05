@@ -1207,6 +1207,25 @@ export function markCompactionObserved(
 }
 
 /**
+ * ISS-965: where a compaction/limit-park should resume this session. Ordinary
+ * HANDOVER rewrites to PICK_TICKET so a session that ends normally does not
+ * resume back into a stage with no work left to do -- unchanged. A HANDOVER
+ * reached via ISS-965 terminal routing (completion-observed) is different: it
+ * exists specifically so the session ends at that clean boundary, so resuming
+ * it must land BACK at HANDOVER, never at PICK_TICKET, or a compaction/park
+ * cycle would silently let the session pick another item -- the exact
+ * pipeline re-entry ISS-965's terminal routing exists to close (round-3 gate
+ * finding). Discriminates on the marker only, never on anything the agent
+ * writes directly.
+ */
+function resolveCompactResumeTarget(state: FullSessionState): FullSessionState["state"] {
+  if (state.state === "HANDOVER" && state.terminalDisposition?.kind === "completion-observed") {
+    return "HANDOVER";
+  }
+  return state.state === "HANDOVER" ? "PICK_TICKET" : state.state;
+}
+
+/**
  * Prepare a session for compaction. Used by BOTH the CLI hook (session-compact-prepare)
  * and the guide's handlePreCompact action. Sets state=COMPACT with compactPending marker.
  *
@@ -1249,7 +1268,7 @@ export function prepareForCompact(
     throw new Error("Session is in COMPACT state but not pending. Call resume or clear-compact.");
   }
 
-  const resumeTarget = state.state === "HANDOVER" ? "PICK_TICKET" : state.state;
+  const resumeTarget = resolveCompactResumeTarget(state);
 
   const written = writeSessionSync(dir, {
     ...state,
@@ -1433,7 +1452,7 @@ export function prepareForLimitStop(
     throw new Error("Session is in COMPACT state but not pending. Call resume or clear-compact.");
   }
 
-  const resumeTarget = state.state === "HANDOVER" ? "PICK_TICKET" : state.state;
+  const resumeTarget = resolveCompactResumeTarget(state);
 
   const written = writeSessionSync(dir, {
     ...state,

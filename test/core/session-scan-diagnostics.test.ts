@@ -589,7 +589,19 @@ describe("lease state", () => {
   it.each([
     ["missing", {}],
     ["invalid", { lease: { expiresAt: "not-a-date" } }],
-  ])("an unadmitted record with a %s lease IS reported -- it vanishes and was never established", (state, over) => {
+  ])("an unadmitted record with a %s lease IS reported -- it vanishes and was never established, and never joins expiredLeaseSessions (pen byte-review F1)", (state, over) => {
+    // The determinacy contract `expiredLeaseSessions`'s own doc comment
+    // promises: membership proves the lease is DETERMINATELY expired, never
+    // merely undetermined. `missing` and `invalid` mean the record's liveness
+    // was never established -- that is why they get a diagnostic instead of
+    // silence -- and leaking them into `expiredLeaseSessions` would make the
+    // array assert a determinate observation it does not have, and would make
+    // the guard's rationale (ISS-943) claim "determinately expired leases"
+    // for records with no readable lease at all. Named reverse-fix mutant:
+    // push `summary` from the `!leaseDeterminate` branch (`session-scan.ts`,
+    // alongside the `unadmitted-lease-undetermined` diagnostic) instead of
+    // only from the determinate `else` branch -- both cases here must die on
+    // an AssertionError against that mutant, not a TypeError.
     const root = makeRoot();
     const s = activeState(over);
     if (state === "missing") delete s.lease;
@@ -597,6 +609,7 @@ describe("lease state", () => {
     const r = scan(root);
     expect(r.activeSessions).toEqual([]);
     expect(r.resumableSessions).toEqual([]);
+    expect(r.expiredLeaseSessions).toEqual([]);
     const [d] = r.diagnostics;
     expect(d?.kind).toBe("unadmitted-lease-undetermined");
     expect(d?.category).toBe("omission");

@@ -509,6 +509,35 @@ function sessionDiagnosticLines(diagnostics: readonly SessionScanDiagnostic[]): 
   ];
 }
 
+/**
+ * Markdown for records the scan observed but could place in neither
+ * `activeSessions` nor `resumableSessions` because their lease is
+ * determinately expired (ISS-943).
+ *
+ * Membership proves only that the LEASE is expired, never that the owning
+ * process is dead -- worded accordingly, and rendered through
+ * `safeSessionFields` exactly as the other two session populations are,
+ * since this shares the identical `ActiveSessionSummary` shape and the
+ * identical hostile-field exposure.
+ */
+function expiredLeaseSessionsSection(expiredLeaseSessions: readonly ActiveSessionSummary[]): string[] {
+  if (expiredLeaseSessions.length === 0) return [];
+  const lines = ["", "## Expired-Lease Sessions", ""];
+  const rows = expiredLeaseSessions.map((s) => {
+    const f = safeSessionFields(s);
+    const ticket = f.ticket || `session ${f.shortId}`;
+    return `- ${ticket} -- ${f.state} (${f.mode} mode), lease determinately expired; process liveness not established`;
+  });
+  lines.push(
+    ...boundedLines(rows, {
+      maxLines: MAX_SESSION_ROWS,
+      noun: "expired-lease sessions",
+      fullSetHint: "The complete set is in `expiredLeaseSessions` of the JSON output.",
+    }),
+  );
+  return lines;
+}
+
 export function formatStatus(
   state: ProjectState,
   format: OutputFormat,
@@ -517,6 +546,12 @@ export function formatStatus(
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
   limitStops: readonly LimitStopSummary[] = [],
   sessionDiagnostics?: readonly SessionScanDiagnostic[],
+  // ISS-943, APPENDED LAST and deliberately not inserted beside
+  // `activeSessions`/`resumableSessions`: `formatStatus` is positional and
+  // exported from the package root (`core/index.ts` -> `src/index.ts`), so
+  // inserting a parameter anywhere but the end would shift `bus`/`limitStops`/
+  // `sessionDiagnostics` for any external caller still using positional args.
+  expiredLeaseSessions: readonly ActiveSessionSummary[] = [],
 ): string {
   const phases = phasesWithStatus(state);
   const data = {
@@ -545,6 +580,10 @@ export function formatStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // ISS-943: same always-present, empty-when-none contract as the two
+    // populations above -- a record whose lease is determinately expired but
+    // whose process may still be alive, held in neither of those two.
+    expiredLeaseSessions,
     // ISS-897: everything the scan could NOT account for.
     //
     // Serialized ONLY when the caller actually supplied it, which is why this
@@ -643,6 +682,7 @@ export function formatStatus(
     );
   }
 
+  lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
 
@@ -666,6 +706,13 @@ export function formatFederatedStatus(
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
   limitStops: readonly LimitStopSummary[] = [],
   sessionDiagnostics?: readonly SessionScanDiagnostic[],
+  // ISS-943: appended last, matching `formatStatus`'s placement, for signature
+  // symmetry between the two -- this function is not in `core/index.ts`'s
+  // export list and has exactly one in-repo call site, so it carries no
+  // external-compatibility risk of its own, but drifting the two functions
+  // into different parameter orders for the same concept would be its own
+  // hazard.
+  expiredLeaseSessions: readonly ActiveSessionSummary[] = [],
 ): string {
   const sanitizedNodes = fedState.nodes.map((node) => ({
     name: node.name,
@@ -688,6 +735,9 @@ export function formatFederatedStatus(
     // signal and the contents are the answer.
     activeSessions,
     resumableSessions,
+    // ISS-943: same always-present, empty-when-none contract as the two
+    // populations above.
+    expiredLeaseSessions,
     // ISS-897: everything the scan could NOT account for.
     //
     // Serialized ONLY when the caller actually supplied it, which is why this
@@ -799,6 +849,7 @@ export function formatFederatedStatus(
     );
   }
 
+  lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
 

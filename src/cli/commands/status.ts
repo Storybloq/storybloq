@@ -12,8 +12,12 @@ import { busSummary } from "../../bus/store.js";
 import { BusError } from "../../bus/errors.js";
 
 export async function handleStatus(ctx: CommandContext): Promise<CommandResult> {
-  const { activeSessions, resumableSessions, diagnostics: sessionDiagnostics = [] } =
-    scanSessionSummaries(ctx.root);
+  const {
+    activeSessions,
+    resumableSessions,
+    expiredLeaseSessions = [],
+    diagnostics: sessionDiagnostics = [],
+  } = scanSessionSummaries(ctx.root);
   const config = ctx.state.config;
 
   // T-424: pending limit auto-resumes for this project (best-effort).
@@ -61,8 +65,31 @@ export async function handleStatus(ctx: CommandContext): Promise<CommandResult> 
       // best-effort cache write
     }
 
-    return { output: formatFederatedStatus(fedState, config, ctx.format, activeSessions, resumableSessions, bus, limitStops, sessionDiagnostics) };
+    return {
+      output: formatFederatedStatus(
+        fedState,
+        config,
+        ctx.format,
+        activeSessions,
+        resumableSessions,
+        bus,
+        limitStops,
+        sessionDiagnostics,
+        expiredLeaseSessions,
+      ),
+    };
   }
 
-  return { output: formatStatus(ctx.state, ctx.format, activeSessions, resumableSessions, bus, limitStops, sessionDiagnostics) };
+  return {
+    output: formatStatus(
+      ctx.state,
+      ctx.format,
+      activeSessions,
+      resumableSessions,
+      bus,
+      limitStops,
+      sessionDiagnostics,
+      expiredLeaseSessions,
+    ),
+  };
 }

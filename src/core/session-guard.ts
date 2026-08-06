@@ -2144,13 +2144,23 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     // carrying one did not come from this build's scanner.
     const versionUnknown = versionUnsupported.length > 0;
     const zeroClean = clean && !collapsed && !repeated && !ownerUnknown && !versionUnknown;
+    // ISS-943: read-only, rationale-composition-only. Never widens `overallAction`
+    // or `scanCompleteness` -- an ordinary stale session must not demote `free`
+    // to `unverifiable`, which is exactly what the scanner's silent-drop branch
+    // was protecting. What changes is the SENTENCE: "no session is running" is
+    // false once a determinately-expired-lease record was observed, and
+    // qualifying that false claim after the fact does not make it true, so the
+    // truthful case gets its own sentence instead of an appended qualifier.
+    const expiredLeaseCount = (summaries.expiredLeaseSessions ?? []).length;
     return {
       primary: null,
       sessions: [],
       overallAction: zeroClean ? "free" : "unverifiable",
       overallRationale:
         zeroClean
-          ? "No autonomous session is running."
+          ? expiredLeaseCount > 0
+            ? `No live-lease or resumable session was classified. ${expiredLeaseCount} active-status session record(s) with determinately expired leases were also observed; their process liveness is not established. See expiredLeaseSessions in storybloq_status for detail.`
+            : "No autonomous session is running."
           : [
               clean ? null : incompleteRationale(),
               collapsed

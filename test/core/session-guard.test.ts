@@ -1400,6 +1400,66 @@ describe("aggregate: population count x scan completeness (ISS-897)", () => {
     });
   });
 
+  describe("expiredLeaseSessions rationale correction, rationale-only (ISS-943)", () => {
+    const expiredRecord = () => summary({ sessionId: "c", sourceDir: "c" });
+
+    it("zero verdicts + a co-present expiredLeaseSessions record -> overallAction stays free, but the rationale names it instead of asserting nothing is running", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [],
+          resumableSessions: [],
+          expiredLeaseSessions: [expiredRecord()],
+          diagnostics: [],
+        },
+        caller,
+      );
+      // overallAction and scanCompleteness are UNCHANGED by this population --
+      // that is the whole point of the ISS-943 fix being rationale-only.
+      expect(v.overallAction).toBe("free");
+      expect(v.scanCompleteness).toBe("complete");
+      // The rationale must never assert the blanket false claim, not even as a
+      // prefix to a qualifier -- Codex round 2 caught exactly that mistake in
+      // an earlier draft of this fix.
+      expect(v.overallRationale).not.toBe("No autonomous session is running.");
+      expect(v.overallRationale).not.toContain("No autonomous session is running.");
+      expect(v.overallRationale).toContain("1");
+      expect(v.overallRationale).toContain("expiredLeaseSessions");
+    });
+
+    it("non-regression pin (a): a truly EMPTY project keeps the ORIGINAL unqualified rationale", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [], resumableSessions: [], expiredLeaseSessions: [], diagnostics: [] },
+        caller,
+      );
+      expect(v.overallAction).toBe("free");
+      expect(v.overallRationale).toBe("No autonomous session is running.");
+    });
+
+    it("non-regression pin (a'): omitting expiredLeaseSessions entirely behaves identically to an empty array", () => {
+      const v = classifySessionGuard({ activeSessions: [], resumableSessions: [], diagnostics: [] }, caller);
+      expect(v.overallAction).toBe("free");
+      expect(v.overallRationale).toBe("No autonomous session is running.");
+    });
+
+    it("non-regression pin (b): a project WITH an admitted live session keeps that session's own verdict, unaffected by a co-present expiredLeaseSessions record", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          expiredLeaseSessions: [expiredRecord()],
+          diagnostics: [],
+        },
+        caller,
+      );
+      // The rationale correction is wired ONLY into the zero-verdicts branch;
+      // a one-verdict scan never returns "free" in the first place (see "one
+      // session visible" above), so a co-present expiredLeaseSessions record
+      // must not perturb this session's own action or rationale at all.
+      expect(v.overallAction).toBe("continue");
+      expect(v.primary?.action).toBe("continue");
+    });
+  });
+
   describe("categories other than omission never change a verdict", () => {
     // `collision` is deliberately NOT in this list, and its exclusion is not a
     // fail-open. The aggregate is withheld on the observed DEDUPLICATION EVENT,

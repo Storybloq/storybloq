@@ -1106,4 +1106,97 @@ describe("session rows carry UNTRUSTED content (ISS-897)", () => {
       expect(parsed.data.activeSessions, label).toEqual([hostile]);
     }
   });
+
+  describe("expiredLeaseSessions (ISS-943)", () => {
+    const fed = {
+      orchestratorProject: "orch",
+      nodeCount: 0,
+      reachableCount: 0,
+      unreachableCount: 0,
+      nodes: [],
+      totalTickets: 0,
+      totalOpenTickets: 0,
+      totalCompleteTickets: 0,
+      totalIssues: 0,
+      totalOpenIssues: 0,
+      lastScanTimestamp: "2026-01-01T00:00:00.000Z",
+    };
+
+    it.each([
+      ["standard", (rows: unknown[]) => formatStatus(state, "md", [], [], undefined, [], undefined, rows as never)],
+      [
+        "federated",
+        (rows: unknown[]) =>
+          formatFederatedStatus(fed as never, state.config, "md", [], [], undefined, [], undefined, rows as never),
+      ],
+    ])("neutralizes hostile fields in the Expired-Lease Sessions rows (%s)", (label, render) => {
+      assertClean(render([hostile]), `${label} expired-lease`);
+    });
+
+    it.each([
+      ["standard", (rows: unknown[]) => formatStatus(state, "json", [], [], undefined, [], undefined, rows as never)],
+      [
+        "federated",
+        (rows: unknown[]) =>
+          formatFederatedStatus(fed as never, state.config, "json", [], [], undefined, [], undefined, rows as never),
+      ],
+    ])("empty-vs-non-empty JSON contract: field always present, unmodified when supplied (%s)", (label, render) => {
+      const empty = JSON.parse(render([])) as { data: { expiredLeaseSessions: unknown[] } };
+      expect(empty.data.expiredLeaseSessions, `${label}: empty`).toEqual([]);
+      const nonEmpty = JSON.parse(render([hostile])) as { data: { expiredLeaseSessions: unknown[] } };
+      // JSON is not a Markdown sink -- the raw value survives unmodified, same
+      // as `activeSessions`/`resumableSessions` above.
+      expect(nonEmpty.data.expiredLeaseSessions, `${label}: non-empty`).toEqual([hostile]);
+    });
+  });
+});
+
+describe("formatStatus positional compatibility (ISS-943, Codex round 4)", () => {
+  // `formatStatus` is positional and re-exported from the package root
+  // (`core/index.ts` -> `src/index.ts`), so an external caller may still be
+  // invoking it with the pre-ISS-943 argument count. Appending
+  // `expiredLeaseSessions` LAST must leave that shape byte-identical.
+  it("an existing-shape positional call omitting the new final argument is unaffected", () => {
+    const state = makeState();
+    const bus = { enabled: true, error: undefined } as never;
+    const limitStops = [
+      {
+        key: "k1",
+        sessionType: "autonomous",
+        storybloqSessionId: "sess-1",
+        clientTaskId: "task-1",
+        status: "deferred",
+        limitType: "usage",
+        reasonCode: null,
+        mode: "headless",
+        nextAttemptAt: "2026-01-01T00:00:00.000Z",
+        wakeAttempts: 1,
+      },
+    ] as never;
+    const diagnostics = [
+      {
+        kind: "state-unreadable",
+        category: "omission",
+        sourceDir: "broken",
+        sourcePath: "/p/.story/sessions/broken/state.json",
+        sessionId: null,
+        reason: "unreadable",
+      },
+    ] as never;
+
+    const withoutNewArg = formatStatus(state, "json", [], [], bus, limitStops, diagnostics);
+    const withExplicitEmptyNewArg = formatStatus(state, "json", [], [], bus, limitStops, diagnostics, []);
+
+    // Byte-identical: the appended parameter defaults to `[]`, so omitting it
+    // is indistinguishable from passing an empty array explicitly, and every
+    // pre-existing field (bus, limitStops, sessionDiagnostics) is unaffected.
+    expect(withoutNewArg).toBe(withExplicitEmptyNewArg);
+    const parsed = JSON.parse(withoutNewArg) as {
+      data: { expiredLeaseSessions: unknown[]; limitStops: unknown[]; bus: unknown; sessionDiagnostics: unknown[] };
+    };
+    expect(parsed.data.expiredLeaseSessions).toEqual([]);
+    expect(parsed.data.limitStops).toEqual(limitStops);
+    expect(parsed.data.sessionDiagnostics).toEqual(diagnostics);
+    expect(parsed.data.bus).toEqual(bus);
+  });
 });

@@ -48,6 +48,54 @@ describe("MCP integration -- real filesystem", () => {
     expect(parsed.data.project).toBeDefined();
   });
 
+  it("storybloq_status -- expiredLeaseSessions is populated through the real MCP boundary for a determinately-expired, non-COMPACT session (ISS-943)", async () => {
+    const root = await setupProject();
+    const sessDir = join(root, ".story", "sessions", "stale-worker");
+    await mkdir(sessDir, { recursive: true });
+    await writeFile(
+      join(sessDir, "state.json"),
+      JSON.stringify({
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        status: "active",
+        state: "IMPLEMENT",
+        mode: "auto",
+        lease: { expiresAt: new Date(Date.now() - 60_000).toISOString() },
+      }),
+    );
+    const result = await runMcpReadTool(root, handleStatus, undefined, "json");
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    // Through the ACTUAL registered tool's pipeline, not a scanner-function
+    // unit test -- this is the consequence acceptance 5 pins: a monitor
+    // reading the real storybloq_status output can tell "no session" from
+    // "lease lapsed, record present".
+    expect(parsed.data.expiredLeaseSessions).toHaveLength(1);
+    expect(parsed.data.expiredLeaseSessions[0].sessionId).toBe("22222222-2222-4222-8222-222222222222");
+    expect(parsed.data.activeSessions).toEqual([]);
+    expect(parsed.data.resumableSessions).toEqual([]);
+  });
+
+  it("storybloq_status -- expiredLeaseSessions stays empty through the real MCP boundary for an ordinary live-lease session (ISS-943)", async () => {
+    const root = await setupProject();
+    const sessDir = join(root, ".story", "sessions", "live-worker");
+    await mkdir(sessDir, { recursive: true });
+    await writeFile(
+      join(sessDir, "state.json"),
+      JSON.stringify({
+        sessionId: "33333333-3333-4333-8333-333333333333",
+        status: "active",
+        state: "IMPLEMENT",
+        mode: "auto",
+        lease: { expiresAt: new Date(Date.now() + 600_000).toISOString() },
+      }),
+    );
+    const result = await runMcpReadTool(root, handleStatus, undefined, "json");
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.data.expiredLeaseSessions).toEqual([]);
+    expect(parsed.data.activeSessions).toHaveLength(1);
+  });
+
   it("storybloq_ticket_get -- valid ticket", async () => {
     const root = await setupProject();
     const result = await runMcpReadTool(root, (ctx) => handleTicketGet("T-001", ctx));

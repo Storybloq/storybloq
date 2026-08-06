@@ -530,16 +530,27 @@ describe("lease state", () => {
     expect(d?.category).toBe("undetermined");
   });
 
-  it("an unadmitted record with an EXPIRED lease AND a known state is SILENT -- determinate, and ubiquitous", () => {
-    // Narrow on purpose: silence here is earned by BOTH axes being determinate.
-    // The state axis is exercised separately below, because that is where the
-    // exclusion was over-broad.
+  it("an unadmitted record with an EXPIRED lease AND a known state is DIAGNOSTIC-silent but surfaced via expiredLeaseSessions (ISS-943)", () => {
+    // Narrow on purpose: determinacy on both axes is earned by BOTH being
+    // determinate. The state axis is exercised separately below, because that
+    // is where the exclusion was over-broad.
+    //
+    // `diagnostics` stays empty by design -- this is a determinate, ubiquitous
+    // shape and diagnosing it would flip every project with an ordinary stale
+    // session directory to `unverifiable`. Before ISS-943 the record was also
+    // admitted to neither `activeSessions` nor `resumableSessions`, so it was
+    // completely invisible; a monitor could not tell "no session" from "a
+    // session exists, its lease lapsed, its process may still be alive".
+    // `expiredLeaseSessions` closes that gap without touching the diagnostic
+    // silence.
     const root = makeRoot();
     writeState(root, "stale", activeState(expired));
     const r = scan(root);
     expect(r.activeSessions).toEqual([]);
     expect(r.resumableSessions).toEqual([]);
     expect(r.diagnostics).toEqual([]);
+    expect(r.expiredLeaseSessions).toHaveLength(1);
+    expect(r.expiredLeaseSessions?.[0]!.sessionId).toBe(UUID);
   });
 
   /**
@@ -633,7 +644,7 @@ describe("compactPending is a third membership axis", () => {
     ["a string", "true"],
     ["a number", 1],
     ["an object", { pending: true }],
-  ])("%s compactPending on an expired NON-COMPACT record stays SILENT", (_label, value) => {
+  ])("%s compactPending on an expired NON-COMPACT record stays diagnostic-SILENT, but lands in expiredLeaseSessions (ISS-943)", (_label, value) => {
     // The field cannot have changed either population here: `isResumable` is
     // already false because the state is not COMPACT, and the expired lease
     // determinately excludes it from `activeSessions`. Diagnosing it would be a
@@ -645,6 +656,7 @@ describe("compactPending is a third membership axis", () => {
     expect(r.activeSessions).toEqual([]);
     expect(r.resumableSessions).toEqual([]);
     expect(r.diagnostics).toEqual([]);
+    expect(r.expiredLeaseSessions).toHaveLength(1);
   });
 
   it("an UNKNOWN state wins over a malformed compactPending", () => {
@@ -660,13 +672,15 @@ describe("compactPending is a third membership axis", () => {
   });
 
   it.each([["absent", undefined], ["boolean false", false]])(
-    "%s compactPending stays SILENT -- both are determinate observations",
+    "%s compactPending stays diagnostic-SILENT -- both are determinate observations, but the stale-manual-COMPACT shape lands in expiredLeaseSessions (ISS-943)",
     (_label, value) => {
       // The distinction the new axis draws is determinate-vs-not, not
       // admitted-vs-not. An expired COMPACT record that is genuinely not pending
       // is a shape every project accumulates: all three axes read cleanly, it
-      // belongs in neither population, and reporting it would be the false
-      // positive that makes an operator stop trusting the warnings.
+      // belongs in neither `activeSessions` nor `resumableSessions`, and
+      // diagnosing it would be the false positive that makes an operator stop
+      // trusting the warnings. It is exactly the "stale-manual-COMPACT" shape
+      // ISS-943's fix covers alongside the plain non-COMPACT case above.
       const root = makeRoot();
       const s = activeState({ ...expired, state: "COMPACT", compactPending: value });
       if (value === undefined) delete s.compactPending;
@@ -675,6 +689,7 @@ describe("compactPending is a third membership axis", () => {
       expect(r.activeSessions).toEqual([]);
       expect(r.resumableSessions).toEqual([]);
       expect(r.diagnostics).toEqual([]);
+      expect(r.expiredLeaseSessions).toHaveLength(1);
     },
   );
 
@@ -684,6 +699,29 @@ describe("compactPending is a third membership axis", () => {
     const r = scan(root);
     expect(r.resumableSessions).toHaveLength(1);
     expect(r.diagnostics).toEqual([]);
+  });
+});
+
+describe("expiredLeaseSessions is sorted (ISS-943)", () => {
+  const expired = { lease: { expiresAt: new Date(Date.now() - 60_000).toISOString() } };
+
+  it("comes back sorted by sessionId regardless of directory-creation order", () => {
+    // Filesystem enumeration order is not stable, unlike `activeSessions`/
+    // `resumableSessions`/`diagnostics`, which are all sorted before return.
+    // Directory names are written in non-alphabetical order on purpose so a
+    // scanner that forgot to sort this array would still pass a
+    // creation-order-coincidence run.
+    const root = makeRoot();
+    const ids = [
+      "33333333-3333-4333-8333-333333333333",
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ];
+    writeState(root, "z-dir", activeState({ ...expired, sessionId: ids[0] }));
+    writeState(root, "a-dir", activeState({ ...expired, sessionId: ids[1] }));
+    writeState(root, "m-dir", activeState({ ...expired, sessionId: ids[2] }));
+    const r = scan(root);
+    expect(r.expiredLeaseSessions?.map((s) => s.sessionId)).toEqual([...ids].sort());
   });
 });
 

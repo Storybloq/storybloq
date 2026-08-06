@@ -360,6 +360,24 @@ export interface SessionScanResult {
    */
   readonly resumableSessions: readonly ActiveSessionSummary[];
   /**
+   * Active-status, determinately-expired-lease, non-COMPACT (or stale-manual-
+   * COMPACT) records the scan observed but could not place in either
+   * `activeSessions` or `resumableSessions` (ISS-943).
+   *
+   * Membership proves only that the LEASE is determinately expired -- never
+   * that the owning process is dead. A live process mid-long-turn, or one
+   * whose PreCompact hook failed before writing COMPACT, legitimately holds
+   * an expired lease. Do not name a consumer-facing concept from this
+   * population that implies owner death; that inference belongs to
+   * `readOwnerLiveness`, not to lease timing.
+   *
+   * OPTIONAL for the same reason `diagnostics` is: `classifySessionGuard` and
+   * other consumers take a plain `SessionScanResult` that callers and tests
+   * construct by hand; `?? []` at each consumer keeps those inputs valid.
+   * `scanSessionSummaries` always populates it, sorted, empty when none.
+   */
+  readonly expiredLeaseSessions?: readonly ActiveSessionSummary[];
+  /**
    * Everything the scan could not account for (ISS-897).
    *
    * OPTIONAL because `classifySessionGuard` is exported and takes a plain
@@ -681,11 +699,12 @@ export function scanSessionSummaries(root: string, now: number = Date.now()): Se
             : `The sessions directory could not be read (${(err as NodeJS.ErrnoException).code ?? "unknown error"}), so no session could be observed at all.`,
       );
     }
-    return { activeSessions: [], resumableSessions: [], diagnostics };
+    return { activeSessions: [], resumableSessions: [], expiredLeaseSessions: [], diagnostics };
   }
 
   const activeSessions: ActiveSessionSummary[] = [];
   const resumableSessions: ActiveSessionSummary[] = [];
+  const expiredLeaseSessions: ActiveSessionSummary[] = [];
 
   for (const entry of entries) {
     const statePath = join(sessDir, entry.name, "state.json");
@@ -1317,12 +1336,24 @@ export function scanSessionSummaries(root: string, now: number = Date.now()): Se
           summary.sessionId,
           `This session is active and not terminal, but its lease is \`${leaseState}\` and it is not a COMPACT recovery candidate, so it appears in neither reported population and no verdict covers it.`,
         );
+      } else {
+        // Determinate on every axis that could have excluded it: the lease
+        // reads positively `expired`, the state is a known workflow state,
+        // and (for COMPACT specifically) `compactPending` was read
+        // successfully. This is the cell ISS-943 exists to close -- previously
+        // fell all the way through this chain in complete silence, admitted to
+        // neither population, with no diagnostic and no trace. Membership here
+        // proves only that the LEASE is expired; see the field's doc comment
+        // on `SessionScanResult` for why this is not "orphaned" or "stale" in
+        // the `findStaleSessions` sense.
+        expiredLeaseSessions.push(summary);
       }
     }
   }
 
   activeSessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
   resumableSessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  expiredLeaseSessions.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
 
   // Two directories carrying one embedded id. Reported here with BOTH
   // directories; `classifySessionGuard` still collapses them to one verdict,
@@ -1390,5 +1421,5 @@ export function scanSessionSummaries(root: string, now: number = Date.now()): Se
   diagnostics.sort(
     (a, b) => (a.sourceDir ?? "").localeCompare(b.sourceDir ?? "") || a.kind.localeCompare(b.kind),
   );
-  return { activeSessions, resumableSessions, diagnostics };
+  return { activeSessions, resumableSessions, expiredLeaseSessions, diagnostics };
 }

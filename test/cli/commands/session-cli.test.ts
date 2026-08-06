@@ -740,6 +740,34 @@ describe("T-251 session delete", () => {
     await handleSessionDelete(root, id, { yes: true });
     expect(existsSync(dir)).toBe(false);
   });
+
+  /**
+   * The permanent regression form of a check that was, until now, only ever
+   * run once by hand (ISS-945): `describeAddressableAgedAnomaly`'s advice text
+   * promises that `storybloq session delete <id> --yes` removes a bare,
+   * `state.json`-less session directory. `deleteAllowsCorruptSession` above
+   * proves deletion tolerates a garbage FILE; it says nothing about a
+   * directory with no file in it at all, which is `readSession(res.dir) ===
+   * null` rather than a parse failure, and `handleSessionDelete` treats that
+   * shape differently (skips the "is active" check entirely rather than
+   * finding it inactive). Age is irrelevant to whether delete itself
+   * succeeds -- the window only gates what advice text gets PRINTED -- so this
+   * directory is deliberately left fresh; unaged/aged is a distinction for the
+   * corruptRemedy tests, not for this one.
+   */
+  it("deleteRemovesBareStateJsonLessDirectory: no state.json at all, not merely an unparsable one", async () => {
+    const root = setupRoot();
+    const id = "eeee0006-0000-0000-0000-000000000001";
+    const dir = join(root, ".story", "sessions", id);
+    mkdirSync(dir, { recursive: true });
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(dir, "state.json"))).toBe(false);
+
+    const result = await handleSessionDelete(root, id, { yes: true });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(result).toContain("deleted");
+  });
 });
 
 describe("ISS-911: leaseState and Compact columns", () => {

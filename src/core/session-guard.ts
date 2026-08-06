@@ -18,6 +18,7 @@ import {
 } from "../autonomous/client-profile.js";
 import { WORKFLOW_STATES } from "../autonomous/session-types.js";
 import { sanitizeDisplayText, sanitizeDisplayPath } from "./display-text.js";
+import { SESSION_ID_REGEX } from "../autonomous/session-selector.js";
 import { escapeMarkdownDocumentStrict } from "./output-formatter.js";
 import { CONTAINMENT_CHECKS } from "./containment-checks.js";
 import { safeJson, MAX_DISPLAY_SERIALIZED_LENGTH } from "./safe-json.js";
@@ -841,6 +842,7 @@ const DIAGNOSTIC_CATEGORIES: Record<SessionDiagnosticCategory, true> = {
   normalized: true,
   undetermined: true,
   collision: true,
+  "aged-anomaly": true,
 };
 const KNOWN_DIAGNOSTIC_CATEGORIES: ReadonlySet<string> = new Set(Object.keys(DIAGNOSTIC_CATEGORIES));
 
@@ -927,6 +929,38 @@ function isUsableDiagnostic(entry: unknown): entry is SessionScanDiagnostic {
     // job is to narrow the value for consumers downstream. `for..of` visits
     // holes as `undefined`.
     if (!allStrings(d.conflictingSourceDirs)) return false;
+  }
+  // `remedy` is optional-but-EXCLUSIVE (ISS-945): it is the one field in this
+  // union meant to be ACTED ON, not merely read, so compiler-level kind/category
+  // pairing is not enough at this caller-supplied seam -- it must be absent on
+  // every kind other than `state-missing-aged`, and even there the only legal
+  // value is `"session-delete"`. Present-and-wrong is treated the same as any
+  // other malformed field: unusable, not silently accepted or silently dropped.
+  //
+  // A SHAPE check on `sourceDir` rides along, and it is deliberately partial:
+  // this function has no `root` and no filesystem access, so it cannot repeat
+  // `isContainedSessionDir`'s real containment check -- only the scanner, which
+  // built `remedy` in the first place from `SESSION_ID_REGEX.test(entry.name) &&
+  // isContainedSessionDir(...)`, can do that. What this function CAN do for
+  // free is the syntactic half: a `remedy`-bearing entry whose `sourceDir` is
+  // not even session-id-SHAPED could never have been produced by that scanner
+  // logic, so rejecting it here closes the cheapest half of the gap without
+  // pretending to close the expensive half. The expensive half -- does a
+  // directory at this path actually exist, actually be a directory rather
+  // than a file or symlink, and actually lack a state.json (conclusively,
+  // not merely "unreadable") -- is why SKILL.md still requires an independent
+  // UUID-shape, real-directory, containment, and conclusive-absence check
+  // before relaying this remedy to a human, well beyond the plain basename
+  // check it already required for a `collisions` participant.
+  if (d.remedy !== undefined) {
+    if (
+      d.kind !== "state-missing-aged" ||
+      d.remedy !== "session-delete" ||
+      typeof d.sourceDir !== "string" ||
+      !SESSION_ID_REGEX.test(d.sourceDir)
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -1165,11 +1199,13 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     // `scanCompleteness: "unknown"`) that the aggregate is withheld because of it.
     notes.push(
       `${unclassifiableCount} scan diagnostic${unclassifiableCount === 1 ? "" : "s"} could not be read by this build and ` +
-        "were not returned in `diagnostics`. An entry is dropped when it is not an object; carries a `category` outside the four " +
+        "were not returned in `diagnostics`. An entry is dropped when it is not an object; carries a `category` outside the five " +
         "this build knows; carries a `kind` this build does not know; carries a known `kind` paired with the WRONG category (one " +
         "kind means one category, and validating the two separately is how a concealing kind slips through wearing a benign one); " +
-        "is missing or mistypes a field every consumer reads (`kind`, `sourceDir`, `sourcePath`, `sessionId`, `reason`); or " +
-        "carries a `conflictingSourceDirs` that is not an array of strings. The aggregate is " +
+        "is missing or mistypes a field every consumer reads (`kind`, `sourceDir`, `sourcePath`, `sessionId`, `reason`); carries a " +
+        "`conflictingSourceDirs` that is not an array of strings; or carries a `remedy` on any kind other than `state-missing-aged`, " +
+        "a `remedy` value other than `session-delete`, or `remedy: \"session-delete\"` paired with a `sourceDir` that is not " +
+        "session-id-shaped. The aggregate is " +
         `withheld either way; scan completeness is \`${scanCompleteness}\` -- \`incomplete\` if one of them was a recognized ` +
         "`omission`, whose category is trusted even when the rest of the entry is not, and `unknown` otherwise. Something other " +
         "than this build's scanner produced it -- a newer writer, a hand-assembled payload, or a malformed one, and nothing here " +

@@ -15,13 +15,14 @@
  * as root reads the file anyway and passes for the wrong reason.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifySessionGuard } from "../../src/core/session-guard.js";
 import { readSessionStrict } from "../../src/autonomous/session.js";
 import { scanSessionSummaries, type SessionScanDiagnostic } from "../../src/core/session-scan.js";
 import { WORKFLOW_STATES } from "../../src/autonomous/session-types.js";
+import { AGED_ANOMALY_WINDOW_MS } from "../../src/core/session-age.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -58,8 +59,8 @@ function activeState(over: Record<string, unknown> = {}): Record<string, unknown
 }
 
 const kinds = (d: readonly SessionScanDiagnostic[]): string[] => d.map((x) => x.kind).sort();
-const scan = (root: string) => {
-  const r = scanSessionSummaries(root);
+const scan = (root: string, now?: number) => {
+  const r = now === undefined ? scanSessionSummaries(root) : scanSessionSummaries(root, now);
   return { ...r, diagnostics: r.diagnostics ?? [] };
 };
 
@@ -352,6 +353,77 @@ describe("unreadable and unparseable state", () => {
       expect(kinds(scan(root).diagnostics)).toEqual(["state-not-an-object"]);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// A `state-missing` directory aged past the classification window (ISS-945)
+// ---------------------------------------------------------------------------
+
+describe("state-missing-aged / aged-anomaly", () => {
+  it("a fresh state-missing directory stays `state-missing`, not aged", () => {
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "sessions", UUID), { recursive: true });
+    const [d] = scan(root, Date.now()).diagnostics;
+    expect(d?.kind).toBe("state-missing");
+    expect(d?.category).toBe("omission");
+    expect(d?.remedy).toBeUndefined();
+  });
+
+  it("a UUID-named directory aged past the window is reported as aged-anomaly with a session-delete remedy", () => {
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "sessions", UUID), { recursive: true });
+    const t0 = Date.now();
+    const [d] = scan(root, t0 + AGED_ANOMALY_WINDOW_MS + 1000).diagnostics;
+    expect(d?.kind).toBe("state-missing-aged");
+    expect(d?.category).toBe("aged-anomaly");
+    expect(d?.remedy).toBe("session-delete");
+    expect(d?.reason).toContain(`storybloq session delete ${UUID} --yes`);
+    // MAJOR 3 (round 4/5): never "correct and authorized" on its own.
+    expect(d?.reason).toContain("does not prove no session is being created here");
+    expect(d?.reason).not.toMatch(/correct and authorized/i);
+  });
+
+  it("classifies exactly at the boundary as aged (>=, not >)", () => {
+    // `t0 = Date.now()` captured AFTER `mkdirSync` is not actually AT the
+    // boundary: the directory's real mtime/ctime lands slightly before `t0`,
+    // so `now = t0 + WINDOW` computes an age strictly GREATER than the window,
+    // and a `>` mutant of the `>=` comparison would still pass here (round-6
+    // finding). Reading the directory's own timestamp directly and deriving
+    // `now` from THAT is what actually lands on the boundary: age is then
+    // exactly `WINDOW`, `>=` includes it and `>` excludes it.
+    const root = makeRoot();
+    const dir = join(root, ".story", "sessions", UUID);
+    mkdirSync(dir, { recursive: true });
+    const st = lstatSync(dir);
+    const newestMs = Math.max(Math.floor(st.mtimeMs), Math.floor(st.ctimeMs));
+    const [d] = scan(root, newestMs + AGED_ANOMALY_WINDOW_MS).diagnostics;
+    expect(d?.kind).toBe("state-missing-aged");
+  });
+
+  it("a non-canonical directory name aged past the window carries NO remedy -- session delete cannot address it", () => {
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "sessions", "legacy-session-dir"), { recursive: true });
+    const t0 = Date.now();
+    const [d] = scan(root, t0 + AGED_ANOMALY_WINDOW_MS + 1000).diagnostics;
+    expect(d?.kind).toBe("state-missing-aged");
+    expect(d?.category).toBe("aged-anomaly");
+    expect(d?.remedy).toBeUndefined();
+    expect(d?.reason).toContain("not a valid session id");
+    expect(d?.reason).not.toContain("storybloq session delete");
+  });
+
+  it("is the only diagnostic reported for the directory, carrying category aged-anomaly (not omission)", () => {
+    // scanCompleteness/concealing derivation lives downstream in
+    // session-guard.ts (completenessFromDiagnostics) -- see
+    // test/core/session-guard.test.ts for the end-to-end proof that this
+    // category does not force `incomplete`.
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "sessions", UUID), { recursive: true });
+    const t0 = Date.now();
+    const r = scan(root, t0 + AGED_ANOMALY_WINDOW_MS + 1000);
+    expect(r.diagnostics).toHaveLength(1);
+    expect(r.diagnostics[0]!.category).toBe("aged-anomaly");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -105,6 +105,7 @@ interface Fixture {
       undetermined: string[];
       normalized: string[];
       collision: string[];
+      "aged-anomaly": string[];
       examples: { payload: string; completeness: string; note: string }[];
     };
     unknownRemedy: string;
@@ -428,6 +429,7 @@ ${fixture.scanCompletenessRule.kindCategoryTable.purpose}
 | \`undetermined\` | ${fixture.scanCompletenessRule.kindCategoryTable.undetermined.map((k) => `\`${k}\``).join(", ")} |
 | \`normalized\` | ${fixture.scanCompletenessRule.kindCategoryTable.normalized.map((k) => `\`${k}\``).join(", ")} |
 | \`collision\` | ${fixture.scanCompletenessRule.kindCategoryTable.collision.map((k) => `\`${k}\``).join(", ")} |
+| \`aged-anomaly\` | ${fixture.scanCompletenessRule.kindCategoryTable["aged-anomaly"].map((k) => `\`${k}\``).join(", ")} |
 
 | Mismatched payload | Completeness | Why |
 |---|---|---|

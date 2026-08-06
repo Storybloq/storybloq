@@ -1419,6 +1419,7 @@ describe("aggregate: population count x scan completeness (ISS-897)", () => {
     it.each([
       ["session-id-invalid", "normalized"],
       ["lease-undetermined", "undetermined"],
+      ["state-missing-aged", "aged-anomaly"],
     ])("%s/%s alone leaves the action alone", (kind, category) => {
       const v = classifySessionGuard(
         {
@@ -1496,6 +1497,116 @@ describe("aggregate: population count x scan completeness (ISS-897)", () => {
         caller,
       );
       expect(v.scanCompleteness).toBe("incomplete");
+    });
+
+    /**
+     * `remedy` (ISS-945): the one field this guard reads specifically to relay
+     * to a human as a command to run, so it gets its own pass-through/drop pair
+     * rather than riding along in a generic malformed-field test.
+     */
+    it("a well-formed remedy on state-missing-aged survives to v.diagnostics untouched", () => {
+      // A CANONICAL, session-id-shaped `sourceDir` -- not `benign`'s "broken",
+      // which is exactly the non-addressable shape the scanner never pairs
+      // with `remedy: "session-delete"` (it only sets `remedy` after
+      // `SESSION_ID_REGEX.test(entry.name)` passes). Using a real UUID here is
+      // load-bearing: it is what makes this a WELL-FORMED positive case rather
+      // than one that happens to pass only because the shape check did not
+      // exist yet (round-6 finding).
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              sourceDir: "22222222-3333-4444-8555-666666666666",
+              kind: "state-missing-aged",
+              category: "aged-anomaly",
+              remedy: "session-delete",
+            },
+          ] as never,
+        },
+        caller,
+      );
+      expect(v.overallAction).toBe("continue");
+      expect(v.scanCompleteness).toBe("complete");
+      expect(v.diagnostics).toHaveLength(1);
+      expect((v.diagnostics[0] as { remedy?: string }).remedy).toBe("session-delete");
+    });
+
+    /**
+     * The scanner only ever sets `remedy: "session-delete"` after
+     * `SESSION_ID_REGEX.test(entry.name)` passes, so a `remedy`-bearing entry
+     * whose `sourceDir` is not even session-id-shaped could not have come from
+     * this build's scanner. This is only the SHAPE half of what the scanner
+     * checked (the other half, real containment on disk, needs a `root` this
+     * pure function does not have) -- but it is free, and it is exactly the
+     * gap a round-6 review found: a caller-supplied diagnostic could otherwise
+     * carry `remedy: "session-delete"` beside an arbitrary `sourceDir` and
+     * have it survive as "usable," authorizing deletion advice for a name the
+     * CLI selector could never even resolve.
+     */
+    it("a remedy on state-missing-aged with a non-session-id-shaped sourceDir is dropped, not trusted", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              sourceDir: "not-a-session-id",
+              kind: "state-missing-aged",
+              category: "aged-anomaly",
+              remedy: "session-delete",
+            },
+          ] as never,
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("unknown");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
+    });
+
+    it("a remedy value other than session-delete is dropped, even on the one kind that allows the field", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            {
+              ...benign,
+              kind: "state-missing-aged",
+              category: "aged-anomaly",
+              remedy: "session-gc --yes",
+            },
+          ] as never,
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("unknown");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
+    });
+
+    it("a remedy field present on any OTHER kind is dropped, even though that kind's own category is otherwise harmless", () => {
+      // `session-id-invalid`/`normalized` alone is harmless (pinned above). A
+      // `remedy` riding along on it is not a value this build ever produces for
+      // that kind, so it is treated the same as any other malformed field:
+      // unusable, not silently stripped and not silently honoured.
+      const v = classifySessionGuard(
+        {
+          activeSessions: [mine()],
+          resumableSessions: [],
+          diagnostics: [
+            { ...benign, kind: "session-id-invalid", category: "normalized", remedy: "session-delete" },
+          ] as never,
+        },
+        caller,
+      );
+      expect(v.scanCompleteness).toBe("unknown");
+      expect(v.overallAction).toBe("unverifiable");
+      expect(v.diagnostics).toHaveLength(0);
     });
   });
 
@@ -3188,6 +3299,52 @@ describe("completenessFromDiagnostics (typed derivation)", () => {
     expect(completenessFromDiagnostics([{ category: "omission" }, null, { category: "??" }])).toBe(
       "incomplete",
     );
+  });
+
+  /**
+   * ISS-945: `aged-anomaly` (kind `state-missing-aged`) admits no session
+   * record at all -- unlike `normalized`/`undetermined`/`collision`, which
+   * annotate one the scan OBSERVED -- but it must NOT behave like `omission`
+   * either, or an aged directory would wedge every guard call on its account
+   * forever, which is the exact defect this category exists to relieve.
+   */
+  it("aged-anomaly is clean when usable, just like the other non-omission categories", () => {
+    const addressable = {
+      category: "aged-anomaly",
+      kind: "state-missing-aged",
+      sourceDir: "11111111-2222-4333-8444-555555555555",
+      sourcePath: "/p/state.json",
+      sessionId: null,
+      reason: "aged past the classification window",
+      remedy: "session-delete",
+    };
+    expect(completenessFromDiagnostics([addressable])).toBe("complete");
+
+    const unaddressable = { ...addressable, sourceDir: "legacy-name", remedy: undefined };
+    expect(completenessFromDiagnostics([unaddressable])).toBe("complete");
+  });
+
+  it("aged-anomaly with a malformed remedy is unusable, exactly like any other malformed field", () => {
+    const base = {
+      category: "aged-anomaly",
+      kind: "state-missing-aged",
+      sourceDir: "d",
+      sourcePath: "/p",
+      sessionId: null,
+      reason: "r",
+    };
+    // `remedy` present on the WRONG kind.
+    expect(
+      completenessFromDiagnostics([{ ...base, kind: "state-missing", category: "omission", remedy: "session-delete" }]),
+    ).toBe("incomplete"); // still `omission` on category alone, per rule (1) -- but see the isUsableDiagnostic test below for the dropped-entry proof.
+    // A value other than the one legal literal.
+    expect(completenessFromDiagnostics([{ ...base, remedy: "session-gc --yes" }])).toBe("unknown");
+    expect(completenessFromDiagnostics([{ ...base, remedy: true }])).toBe("unknown");
+    // The legal value, but `base.sourceDir` ("d") is not session-id-shaped: the
+    // scanner never pairs `remedy: "session-delete"` with a name that could not
+    // have passed `SESSION_ID_REGEX.test`, so this combination did not come
+    // from this build's scanner and is unusable rather than trusted.
+    expect(completenessFromDiagnostics([{ ...base, remedy: "session-delete" }])).toBe("unknown");
   });
 });
 

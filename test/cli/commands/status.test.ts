@@ -6,6 +6,7 @@ import { handleStatus } from "../../../src/cli/commands/status.js";
 import { MAX_PROSE_LENGTH } from "../../../src/core/display-text.js";
 import { formatStatus, formatFederatedStatus } from "../../../src/core/output-formatter.js";
 import { makeState, makeTicket, makeRoadmap, makePhase } from "../../core/test-factories.js";
+import { describeAddressableAgedAnomaly } from "../../../src/core/session-age.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "../../../src/core/session-scan.js";
 import type { LimitStopSummary } from "../../../src/core/limit-ledger.js";
@@ -537,6 +538,37 @@ describe("sessionDiagnostics is only claimed when a scan supplied it (ISS-897)",
 
   it("adds nothing to Markdown when the scan was clean", () => {
     expect(formatStatus(makeState(), "md", [], [], undefined, [], [])).not.toContain("Session Scan Warnings");
+  });
+
+  /**
+   * ISS-945: `aged-anomaly` admits NO record at all, same as `omission` does --
+   * but unlike `omission` it must not be treated as a concealment GAP, or an
+   * aged debris directory would print the same "cannot be established" warning
+   * an actual unread session does, which is exactly the false alarm this
+   * category exists to relieve.
+   */
+  it("renders an aged-anomaly diagnostic without concealment language, with its full remedy text intact", () => {
+    const reason = describeAddressableAgedAnomaly("11111111-2222-4333-8444-555555555555");
+    const diagnostic = {
+      kind: "state-missing-aged" as const,
+      category: "aged-anomaly" as const,
+      sourceDir: "11111111-2222-4333-8444-555555555555",
+      sourcePath: "/p/.story/sessions/11111111-2222-4333-8444-555555555555/state.json",
+      sessionId: null,
+      reason,
+      remedy: "session-delete" as const,
+    };
+    const md = formatStatus(makeState(), "md", [], [], undefined, [], [diagnostic]);
+    expect(md).toContain("## Session Scan Warnings");
+    // The "gap"/"cannot be established" framing is `concealing`-only (omission),
+    // and this diagnostic is the ONLY one in the array -- so none of that
+    // framing may appear.
+    expect(md).not.toContain("cannot be established");
+    expect(md).not.toContain("gap");
+    expect(md).toContain("aged-anomaly");
+    expect(md).toContain("11111111-2222-4333-8444-555555555555");
+    expect(md).toContain("session delete 11111111-2222-4333-8444-555555555555 --yes");
+    expect(md).toContain("does not prove no session is being created here");
   });
 
   /**

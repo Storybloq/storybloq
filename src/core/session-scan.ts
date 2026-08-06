@@ -11,6 +11,12 @@
 import { statSync, lstatSync, readdirSync, readFileSync, type Dirent, type Stats } from "node:fs";
 import { join, dirname } from "node:path";
 import { isContainedSessionDir, SESSION_ID_REGEX } from "../autonomous/session-selector.js";
+import {
+  computeSessionDirAge,
+  AGED_ANOMALY_WINDOW_MS,
+  describeAddressableAgedAnomaly,
+  describeUnaddressableAgedAnomaly,
+} from "./session-age.js";
 import { normalizeOwnerTask, type OwnerTask } from "../autonomous/client-profile.js";
 import { WORKFLOW_STATES, CURRENT_SESSION_SCHEMA_VERSION } from "../autonomous/session-types.js";
 import { CONTAINMENT_CHECKS } from "./containment-checks.js";
@@ -72,11 +78,16 @@ export interface ActiveSessionSummary {
 /**
  * How a diagnostic bears on ownership (ISS-897).
  *
- * The four are not stylistic. Only `omission` conceals: the record vanishes, so
- * a caller cannot tell "nothing is running" from "something is running and I
- * could not read it", which is ISS-554's failure one layer down. The other
- * three describe records the scanner ADMITTED to a reported population, so
- * treating them alike would fail closed with no hazard behind it.
+ * Only `omission` conceals: the record vanishes, so a caller cannot tell
+ * "nothing is running" from "something is running and I could not read it",
+ * which is ISS-554's failure one layer down. The next three describe records
+ * the scanner ADMITTED to a reported population, so treating them alike would
+ * fail closed with no hazard behind it. The fifth, `aged-anomaly`, is neither:
+ * it admits no session record at all (the scan found no readable state.json
+ * here), and once aged past the classification window it is TREATED as not
+ * concealing one, as a matter of policy rather than proof --
+ * see its own entry below and `AGED_ANOMALY_WINDOW_MS` (session-age.ts) for
+ * why "past the window" is a policy statement, not a proof.
  *
  * Admission is not survival. Deduplication runs downstream in
  * `classifySessionGuard`, after this scan, so an admitted record can still be
@@ -101,8 +112,24 @@ export interface ActiveSessionSummary {
  *                  still blocks when the record it names was dropped.
  * - `collision`    two directories carry the same embedded `sessionId`. Both
  *                  are reported here; the guard deduplicates them per Step 0.5.
+ * - `aged-anomaly` an observed filesystem anomaly -- a directory with no
+ *                  `state.json` and no descendant touched within the
+ *                  classification window -- that admits no session record and
+ *                  is treated by policy as non-blocking, WITHOUT asserting it
+ *                  conceals nothing. Age is not proof of debris and does not
+ *                  establish the absence of a suspended creator; it only
+ *                  stops this one directory from withholding the aggregate
+ *                  forever. Reported, never `concealing`, and never counted
+ *                  toward `incomplete` scan completeness -- unlike `omission`,
+ *                  which this would otherwise be indistinguishable from and
+ *                  would wedge every guard call on its account permanently.
  */
-export type SessionDiagnosticCategory = "omission" | "normalized" | "undetermined" | "collision";
+export type SessionDiagnosticCategory =
+  | "omission"
+  | "normalized"
+  | "undetermined"
+  | "collision"
+  | "aged-anomaly";
 
 /**
  * Every kind THIS build knows how to act on, WITH the category each one carries
@@ -170,6 +197,18 @@ export const DIAGNOSTIC_KIND_CATEGORY = {
   "mode-normalized": "normalized",
   "session-id-invalid": "normalized",
   "duplicate-session-id": "collision",
+  /**
+   * A `state-missing` directory aged past `AGED_ANOMALY_WINDOW_MS` (ISS-945).
+   *
+   * `aged-anomaly`, not `omission`: `completenessFromDiagnostics`
+   * (session-guard.ts) forces `incomplete` on ANY `omission` entry
+   * unconditionally, so a directory this old would wedge every
+   * `storybloq_session_guard` call forever -- the exact failure this kind
+   * exists to relieve. It is also not one of the three admitted-record
+   * categories: the scan found no readable state.json at this path. See
+   * `SessionDiagnosticCategory`'s doc for the full doctrine.
+   */
+  "state-missing-aged": "aged-anomaly",
 } as const satisfies Record<string, SessionDiagnosticCategory>;
 
 export type SessionScanDiagnosticKind = keyof typeof DIAGNOSTIC_KIND_CATEGORY;
@@ -244,6 +283,38 @@ interface SessionScanDiagnosticFields {
    * prose, and being an array does nothing to make its elements inert.
    */
   readonly conflictingSourceDirs?: readonly string[];
+  /**
+   * `state-missing-aged` only: a closed discriminator naming a CANDIDATE,
+   * CLI-addressable removal command, present only when the scanner believed
+   * one exists (ISS-945). A candidate, not a proof: this scanner's OWN
+   * `sourceDir`/containment check backs it at the moment of classification,
+   * but `SessionScanResult` arrives at a caller-supplied seam downstream, so a
+   * consumer holding this field has no guarantee it still describes a real,
+   * addressable, `state.json`-less directory -- it must independently
+   * re-validate (shape, containment, real-directory, conclusive absence)
+   * before treating it as authorization for anything, exactly as the skill's
+   * own pre-relay procedure requires.
+   *
+   * Optional-but-exclusive, not merely optional-when-absent: it MUST be
+   * absent on every kind other than `state-missing-aged`, and even on
+   * `state-missing-aged` it is populated only when `sourceDir` matches
+   * `SESSION_ID_REGEX` AND a fresh containment check still passes at
+   * classification time. A legacy or hand-created non-canonical name can
+   * carry this kind too (`RESERVED_SESSION_DIR_NAMES`'s doc above explains
+   * why any name is admitted here) and `resolveSessionSelector` can never
+   * resolve such a name -- advertising a command that cannot resolve would be
+   * worse than naming none. `session-guard.ts` validates this field at
+   * runtime in both directions; it is not enough that the type checker
+   * accepts it, because `SessionScanResult` arrives at a caller-supplied seam.
+   *
+   * A closed discriminator, not free text: this is a field a consumer is
+   * MEANT to act on, so `reason` (prose to quote, never an instruction to
+   * follow, per the skill's own rule) is the wrong shape for it. Trusted
+   * rendering code maps this discriminant to the full, caveated command text
+   * -- age does not prove debris or the absence of a suspended creator, so the
+   * rendered text is always conditional, never "correct and authorized".
+   */
+  readonly remedy?: "session-delete";
 }
 
 /**
@@ -516,7 +587,7 @@ function normalizeEmbeddedId(raw: unknown): string | null {
   return typeof raw === "string" && SESSION_ID_REGEX.test(raw) ? raw : null;
 }
 
-export function scanSessionSummaries(root: string): SessionScanResult {
+export function scanSessionSummaries(root: string, now: number = Date.now()): SessionScanResult {
   const sessDir = join(root, ".story", "sessions");
   const diagnostics: SessionScanDiagnostic[] = [];
 
@@ -537,6 +608,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
     sessionId: string | null,
     reason: string,
     conflictingSourceDirs?: readonly string[],
+    remedy?: "session-delete",
   ): void => {
     diagnostics.push({
       kind,
@@ -546,6 +618,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
       sessionId,
       reason,
       ...(conflictingSourceDirs ? { conflictingSourceDirs } : {}),
+      ...(remedy ? { remedy } : {}),
     } as SessionScanDiagnostic);
   };
 
@@ -725,24 +798,56 @@ export function scanSessionSummaries(root: string): SessionScanResult {
       const dirProbe = probe?.kind === "absent" ? probeEntryKind(join(sessDir, entry.name)) : null;
       if (dirProbe === "absent") continue;
       // `state-missing` is reserved for the ONE outcome that established the
-      // name is unused. Every other post-ENOENT outcome is `state-unreadable`
-      // with a reason describing what was actually seen. All of them are
-      // `omission` and all of them make the scan incomplete -- the kind and the
-      // reason are what an operator acts on, and neither may overclaim.
+      // name is unused; a PRESENT directory probe is what establishes it.
+      // Handled separately, and FIRST, because it alone sub-classifies by age
+      // into `state-missing-aged` (ISS-945) -- every other post-ENOENT outcome
+      // below stays plain `state-unreadable`, `omission`, scan-incomplete.
+      if (probe !== null && probe.kind === "absent" && dirProbe === "directory") {
+        const candidateDir = join(sessDir, entry.name);
+        const age = computeSessionDirAge(candidateDir, now);
+        const aged = age.kind === "known" && age.ageMs >= AGED_ANOMALY_WINDOW_MS;
+        if (!aged) {
+          note(
+            "state-missing",
+            entry.name,
+            statePath,
+            null,
+            "This session directory has no state.json. A session being created looks exactly like this, as does one whose state file was deleted.",
+          );
+          continue;
+        }
+        // Fresh, at classification time -- not trusted from anywhere else.
+        // `entry.name` can be a legacy or hand-created non-canonical name
+        // (RESERVED_SESSION_DIR_NAMES's doc above), and `resolveSessionSelector`
+        // can never resolve one, so `session delete` cannot address it either.
+        const addressable = SESSION_ID_REGEX.test(entry.name) && isContainedSessionDir(root, candidateDir);
+        note(
+          "state-missing-aged",
+          entry.name,
+          statePath,
+          null,
+          addressable ? describeAddressableAgedAnomaly(entry.name) : describeUnaddressableAgedAnomaly(),
+          undefined,
+          addressable ? "session-delete" : undefined,
+        );
+        continue;
+      }
+      // Every other post-ENOENT outcome is `state-unreadable` with a reason
+      // describing what was actually seen. All of them are `omission` and all
+      // of them make the scan incomplete -- the kind and the reason are what
+      // an operator acts on, and neither may overclaim.
       const reason =
         probe === null
           ? `This session's state.json could not be read (${code ?? "unknown error"}), so whether a session is running here is unknown.`
           : probe.kind === "absent"
-            ? dirProbe === "directory"
-              ? "This session directory has no state.json. A session being created looks exactly like this, as does one whose state file was deleted."
-              : dirProbe === "other"
-                ? "This session's state.json is not there, and a second look found that the entry at this name is NOT a directory any more -- " +
-                  "`readdirSync` reported a directory and the probe did not, so the path was replaced between the two observations. Writing a " +
-                  "state.json here would follow whatever is there now. Inspect the path directly and rerun the scan. Do not delete anything."
-                : "This session's state.json is not there, and a second look could not establish whether the session DIRECTORY is there either " +
-                  "(the probe failed rather than answering). So this is not established as a directory missing its state file: the whole directory " +
-                  "may have gone, or an ancestor may be unreadable. Inspect the path directly and rerun the scan. Do not create a state.json here and " +
-                  "do not delete anything."
+            ? dirProbe === "other"
+              ? "This session's state.json is not there, and a second look found that the entry at this name is NOT a directory any more -- " +
+                "`readdirSync` reported a directory and the probe did not, so the path was replaced between the two observations. Writing a " +
+                "state.json here would follow whatever is there now. Inspect the path directly and rerun the scan. Do not delete anything."
+              : "This session's state.json is not there, and a second look could not establish whether the session DIRECTORY is there either " +
+                "(the probe failed rather than answering). So this is not established as a directory missing its state file: the whole directory " +
+                "may have gone, or an ancestor may be unreadable. Inspect the path directly and rerun the scan. Do not create a state.json here and " +
+                "do not delete anything."
             : probe.kind === "present-symlink"
               ? "This session's state.json could not be read, and a second look found a SYMLINK entry of that name. The file is NOT simply missing -- " +
                 "an entry by that name exists -- so writing a new state.json here would follow that link somewhere else. The two observations are not " +
@@ -754,21 +859,7 @@ export function scanSessionSummaries(root: string): SessionScanResult {
                   "determined. Nothing here is established as broken; rerun the scan. Do not delete anything."
                 : `This session's state.json could not be read, and a second look could not establish what is at that path either (${probe.code}). ` +
                   "Whether a session is running here is unknown. Inspect the path directly; do not delete anything.";
-      note(
-        // `state-missing` asserts the directory is there and the file is not,
-        // and only a PRESENT directory probe establishes that. An inconclusive
-        // one gets `state-unreadable`, which claims nothing beyond "unknown" --
-        // both are `omission` and both make the scan incomplete, so the guard
-        // stops either way; the difference is what the operator is told they
-        // are looking at.
-        probe !== null && probe.kind === "absent" && dirProbe === "directory"
-          ? "state-missing"
-          : "state-unreadable",
-        entry.name,
-        statePath,
-        null,
-        reason,
-      );
+      note("state-unreadable", entry.name, statePath, null, reason);
       continue;
     }
 

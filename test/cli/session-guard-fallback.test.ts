@@ -7,6 +7,9 @@ import { CODEX_READ_ONLY_APPROVAL_TOOLS } from "../../src/cli/commands/setup-ski
 import { WORKFLOW_STATES } from "../../src/autonomous/session-types.js";
 import { classifySessionGuard, PRE_OWNERSHIP_GATES, CONTAINMENT_CHECKS } from "../../src/core/session-guard.js";
 import { DIAGNOSTIC_KIND_CATEGORY } from "../../src/core/session-scan.js";
+import { formatStatus } from "../../src/core/output-formatter.js";
+import { describeAddressableAgedAnomaly } from "../../src/core/session-age.js";
+import { makeState } from "../core/test-factories.js";
 
 /**
  * T-446: the generated legacy-path file and the SKILL.md contract around it.
@@ -31,6 +34,7 @@ const fixture = JSON.parse(readFileSync(fixturePath, "utf-8")) as {
   entryModes: { id: string; name: string; mayCallStatus: boolean }[];
   validWorkflowStates: string[];
   actions: { id: string; instruction: string; source: string; note?: string; fallbackOnly?: boolean }[];
+  scanCompletenessRule: { kindCategoryTable: Record<string, string[]> };
 };
 
 function fallback(): string {
@@ -2431,5 +2435,160 @@ describe("the fallback file ships", () => {
     expect(paths, "session-guard-fallback.md is not in the packed tarball").toContain(
       "src/skill/session-guard-fallback.md",
     );
+  });
+});
+
+/**
+ * ISS-945: one `aged-anomaly` diagnostic, checked against every surface that
+ * describes it -- the status renderer, the guard's own verdict, the raw JSON
+ * passthrough, SKILL.md's doctrine prose, and the generated fallback/fixture --
+ * because each was edited independently and nothing before this test checked
+ * them against EACH OTHER for the same concrete example. All five must call it
+ * an aged anomaly; NONE may claim it is a reported/observed session, which is
+ * the false alarm this category exists to prevent.
+ */
+describe("aged-anomaly: one example, checked against all five surfaces (ISS-945)", () => {
+  const sourceDir = "11111111-2222-4333-8444-555555555555";
+  const diagnostic = {
+    kind: "state-missing-aged" as const,
+    category: "aged-anomaly" as const,
+    sourceDir,
+    sourcePath: `/p/.story/sessions/${sourceDir}/state.json`,
+    sessionId: null,
+    reason: describeAddressableAgedAnomaly(sourceDir),
+    remedy: "session-delete" as const,
+  };
+
+  it("1. status Markdown describes it as an aged anomaly, not a concealed/reported session", () => {
+    const md = formatStatus(makeState(), "md", [], [], undefined, [], [diagnostic]);
+    expect(md).toContain("aged-anomaly");
+    expect(md).toContain(sourceDir);
+    expect(md).not.toContain("may be concealed");
+    expect(md).not.toContain("cannot be established");
+  });
+
+  it("2. the guard's own verdict carries it without withholding the aggregate or flagging concealment", () => {
+    const caller = { task: { client: "claude", id: "caller-task", boundAt: "2026-01-01T00:00:00.000Z" }, client: "claude" } as const;
+    const v = classifySessionGuard({ activeSessions: [], resumableSessions: [], diagnostics: [diagnostic] }, caller);
+    expect(v.scanCompleteness).toBe("complete");
+    expect(v.overallAction).toBe("free");
+    expect(v.diagnostics).toHaveLength(1);
+    expect(v.diagnostics[0]?.category).toBe("aged-anomaly");
+    // No note claims a gap or gives collision-style concealment language; the
+    // only diagnostic present is the non-omission one under test.
+    expect(v.transcriptionNotes.join(" ")).not.toMatch(/concealed|gap under/i);
+  });
+
+  it("3. the raw structured diagnostics passthrough (JSON) carries the category and remedy verbatim", () => {
+    const parsed = JSON.parse(formatStatus(makeState(), "json", [], [], undefined, [], [diagnostic])) as {
+      data: { sessionDiagnostics: { category: string; kind: string; remedy?: string }[] };
+    };
+    expect(parsed.data.sessionDiagnostics).toHaveLength(1);
+    expect(parsed.data.sessionDiagnostics[0]?.category).toBe("aged-anomaly");
+    expect(parsed.data.sessionDiagnostics[0]?.kind).toBe("state-missing-aged");
+    expect(parsed.data.sessionDiagnostics[0]?.remedy).toBe("session-delete");
+  });
+
+  it("4. SKILL.md's doctrine prose describes aged-anomaly as admitting no record, not as a reported session", () => {
+    const text = readFileSync(skillPath, "utf-8");
+    expect(text).toContain("aged-anomaly");
+    expect(text).toContain("admits no record");
+    expect(text).toContain("session-delete");
+    // The prose must not describe this category as one the scan "observed" or
+    // "reported" a session for -- that language is reserved for the other four.
+    // Guard the anchor itself (round-6 finding): an unguarded `indexOf` that
+    // returns -1 would `.slice(-1)` to the LAST CHARACTER of the whole
+    // document, and the negative assertion below would then pass vacuously if
+    // this exact sentence were ever removed or reworded.
+    const agedIndex = text.indexOf("A fifth, `aged-anomaly`");
+    expect(agedIndex, "anchor sentence not found in SKILL.md").toBeGreaterThanOrEqual(0);
+    const agedSentence = text.slice(agedIndex);
+    expect(agedSentence.slice(0, 900)).not.toMatch(/observed a session|reports a session/i);
+
+    // A round-7 finding: an EARLIER, more generic sentence in the same step
+    // ("for an entry of any other category... those describe a record the
+    // scan OBSERVED, which is listed in `sessions`") predates `aged-anomaly`
+    // and, unscoped, directly contradicts the sentence just checked above --
+    // an agent reading top to bottom could report an aged-anomaly entry as an
+    // observed, listed session. It must now explicitly exclude `aged-anomaly`.
+    const genericIndex = text.indexOf("For an entry of any other category");
+    expect(genericIndex, "generic non-omission sentence not found in SKILL.md").toBeGreaterThanOrEqual(0);
+    expect(text.slice(genericIndex, genericIndex + 200)).toContain("EXCEPT `aged-anomaly`");
+  });
+
+  it("5. the fixture's kindCategoryTable and the generated fallback both name state-missing-aged under aged-anomaly", () => {
+    expect(fixture.scanCompletenessRule.kindCategoryTable["aged-anomaly"]).toEqual(["state-missing-aged"]);
+    const generated = readFileSync(fallbackPath, "utf-8");
+    expect(generated).toContain("aged-anomaly");
+    expect(generated).toContain("state-missing-aged");
+  });
+
+  /**
+   * A round-6 review finding: the fallback's OWN textual definition of "fully
+   * usable" originally omitted `remedy` entirely, so mode A (a reader with no
+   * runtime code, only this prose) would call a diagnostic carrying a garbage
+   * `remedy` value -- or a `remedy` riding on the wrong kind -- "complete",
+   * disagreeing with `isUsableDiagnostic`/`completenessFromDiagnostics`, which
+   * reject it as `unknown`. The 5-surface cross-check above only asserted the
+   * category/kind STRINGS were present, which stayed green through that gap.
+   * This test pins the actual RULE, not just the vocabulary.
+   */
+  it("the fallback's fully-usable definition requires remedy validation, matching isUsableDiagnostic", () => {
+    const generated = readFileSync(fallbackPath, "utf-8");
+    expect(generated).toContain("`remedy`, if present, requires `kind` to be EXACTLY `state-missing-aged`");
+    expect(generated).toContain("its own value to be EXACTLY `session-delete`");
+    expect(generated).toContain("match the canonical session-id shape");
+    // The "unknown" row's payload must name a malformed `remedy` as one of the
+    // ways an element fails to be fully usable, not just the four pre-existing
+    // shape faults.
+    expect(generated).toMatch(/remedy.*present on a kind other than `state-missing-aged`/);
+    // At least one concrete malformed-remedy example, so a reader sees the
+    // rule applied, not just stated in the abstract.
+    expect(generated).toContain("session-gc --yes");
+  });
+
+  /**
+   * A round-7 finding: the previous test pins ONLY the type-level shape rule
+   * (kind/value/sourceDir-shape), which `isUsableDiagnostic` can check without
+   * a filesystem. It does not pin the SEPARATE action-time procedure a human-
+   * facing reader must run before actually relaying the command -- real
+   * directory, containment, and CONCLUSIVE (not merely unreadable, and not
+   * fooled by a dangling `state.json` symlink) absence -- so removing those
+   * round-6/7 safety requirements from the generated text would leave the
+   * previous test green while the actual advice-relay procedure went unsafe.
+   *
+   * A directory-listing name match is itself fooled on a case-insensitive
+   * filesystem (default macOS), where `State.json` IS `state.json` to the OS
+   * but fails a literal string comparison -- fixed by requiring a probe of
+   * the exact `state.json` path instead of a listing-based name match.
+   *
+   * That exact-path probe is not itself sufficient: a bare existence check
+   * that FOLLOWS the final symlink (`test -e`, `os.path.exists`,
+   * `fs.existsSync`, `stat` in follow-symlinks mode) resolves a dangling
+   * `state.json` symlink to its nonexistent target and reports it as absent,
+   * reproducing the exact concealment the check exists to prevent. The
+   * procedure must explicitly require an LSTAT-EQUIVALENT, NO-FOLLOW probe --
+   * one that inspects the final path component itself without resolving a
+   * trailing symlink -- and state that only ENOENT from that no-follow probe
+   * passes.
+   */
+  it("the fallback's action-time procedure requires real-directory, containment, and a no-follow exact-path probe against absence", () => {
+    const generated = readFileSync(fallbackPath, "utf-8");
+    expect(generated).toContain("REAL DIRECTORY");
+    expect(generated).toMatch(/never a file, never a symlink/);
+    // Pins the lstat-equivalent/no-follow requirement specifically: an
+    // exact-path probe that does not name no-follow semantics can still be
+    // satisfied by a follow-symlinks check, which regresses the dangling-
+    // symlink bug in a new guise.
+    expect(generated).toMatch(/LSTAT-EQUIVALENT, NO-FOLLOW probe/);
+    expect(generated).toMatch(/WITHOUT following it if that component is a symlink/);
+    expect(generated).toMatch(/fs\.existsSync/);
+    expect(generated).toMatch(/follow-symlinks mode/);
+    expect(generated).toMatch(/dangling `state\.json` symlink/);
+    expect(generated).toMatch(/permission error, an I\/O error/);
+    // Pins the case-insensitivity fix specifically: a literal
+    // directory-listing string match must not silently regress back in.
+    expect(generated).toMatch(/case-insensitive filesystem/);
+    expect(generated).toContain("State.json");
   });
 });

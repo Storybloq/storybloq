@@ -34,9 +34,16 @@ import {
   describeIncompatible,
   incompatibleVersionDetail,
   SESSION_ID_REGEX,
+  isContainedSessionDir,
   type IncompatibleCause,
 } from "../../autonomous/session-selector.js";
 import { CURRENT_SESSION_SCHEMA_VERSION } from "../../autonomous/session-types.js";
+import {
+  computeSessionDirAge,
+  AGED_ANOMALY_WINDOW_MS,
+  describeAddressableAgedAnomaly,
+  describeUnaddressableAgedAnomaly,
+} from "../../core/session-age.js";
 import { isFinishedOrphan } from "../../autonomous/orphan-detector.js";
 import type { FullSessionState } from "../../autonomous/session-types.js";
 import { describeSchemaIssues } from "../../core/zod-issues.js";
@@ -294,7 +301,7 @@ export async function handleSessionList(root: string, opts: ListOpts): Promise<s
         "-".padEnd(6),
       ].join("  "),
       `    state.json ${describeCorruption(d.failure)}`,
-      `    ${corruptRemedy(safeDir, d.failure.kind === "unreadable" ? d.failure.reason : undefined)}`,
+      `    ${corruptRemedy(root, safeDir, d.dir, d.failure.kind === "unreadable" ? d.failure.reason : undefined)}`,
       addressLine(d.sourceDir, d.dir, safeDir),
     ]);
   }
@@ -479,19 +486,38 @@ type CorruptReason = "missing-state" | "unreadable-file" | "invalid-json" | "sch
  *    fault -- at incident time, when the operator is most likely to comply.
  *  - `missing-state`  covers a session mid-creation and a dangling directory
  *    symlink: deleting during the creation window races the writer, and "edit
- *    state.json by hand" through a broken link writes somewhere else.
+ *    state.json by hand" through a broken link writes somewhere else. AGED
+ *    past `AGED_ANOMALY_WINDOW_MS` (ISS-945), that advice is wrong for the
+ *    opposite reason -- it steers away from a command that is actually safe to
+ *    name -- so this branch alone re-checks age via the SAME shared helper
+ *    `scanSessionSummaries` uses, so the CLI and the MCP diagnostic cannot
+ *    describe the same directory two different ways.
  *
  * Shared by every command that reports a corrupt session, so one of them cannot
- * keep the destructive default after the others have dropped it.
+ * keep the destructive default after the others have dropped it. Takes `root`
+ * and `dir` (not just `sessionId`) purely for the `missing-state` age
+ * re-check -- neither `listAllSessionsDetailed` nor `resolveSessionSelector`
+ * hands this function a pre-computed age, so it computes its own rather than
+ * assuming data that is not there.
  */
-function corruptRemedy(sessionId: string, reason: CorruptReason | undefined): string {
+function corruptRemedy(root: string, sessionId: string, dir: string, reason: CorruptReason | undefined): string {
   switch (reason) {
     case "schema":
     case "invalid-json":
       // The only two that READ the bytes and found them wrong.
       return `Use 'storybloq session delete ${sessionId} --yes' to remove it, or edit state.json by hand.`;
-    case "missing-state":
-      return "Inspect the path directly. If a session is being created it will finish on its own -- retry in a moment. Do not delete it and do not write a state.json through it until you have confirmed what is at that path.";
+    case "missing-state": {
+      const age = computeSessionDirAge(dir, Date.now());
+      if (age.kind !== "known" || age.ageMs < AGED_ANOMALY_WINDOW_MS) {
+        return "Inspect the path directly. If a session is being created it will finish on its own -- retry in a moment. Do not delete it and do not write a state.json through it until you have confirmed what is at that path.";
+      }
+      // `sessionId` here can be a legacy or hand-created non-canonical
+      // directory name (any name is admitted -- see RESERVED_SESSION_DIR_NAMES's
+      // doc in session-scan.ts), and `resolveSessionSelector` can never resolve
+      // one, so `session delete` cannot address it either.
+      const addressable = SESSION_ID_REGEX.test(sessionId) && isContainedSessionDir(root, dir);
+      return addressable ? describeAddressableAgedAnomaly(sessionId) : describeUnaddressableAgedAnomaly();
+    }
     case "unreadable-file":
       return "The read itself failed, so the file may be intact. Check permissions and the underlying disk, then retry. Do not delete it until you have read it and confirmed the contents are bad.";
     case "unsupported-version":
@@ -558,7 +584,7 @@ export async function handleSessionShow(
     //  - `missing-state`  covers a session mid-creation and a dangling directory
     //    symlink: deleting during the creation window races the writer, and
     //    "edit state.json by hand" through a broken link writes somewhere else.
-    const remedy = corruptRemedy(res.sessionId, res.corruptFailure?.reason);
+    const remedy = corruptRemedy(root, res.sessionId, res.dir, res.corruptFailure?.reason);
     // `describeCorruption` returns a VERB PHRASE for the reasons that never read
     // the bytes ("could not be read"), so prefixing "is" produced "state.json is
     // could not be read" -- reachable on the `unreadable-file` path this change
@@ -739,7 +765,7 @@ export async function handleSessionRepair(
       throw new Error(
         `Session ${res.sessionId} state.json ${corruptFraming(res.corruptFailure?.reason)}; ` +
           "'session repair' can only operate on parseable sessions. " +
-          corruptRemedy(res.sessionId, res.corruptFailure?.reason),
+          corruptRemedy(root, res.sessionId, res.dir, res.corruptFailure?.reason),
       );
     }
     if (res.state!.status !== "active") {

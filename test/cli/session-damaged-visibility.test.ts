@@ -14,7 +14,7 @@
  *    which field failed, and throwing that away turns a one-line fix into
  *    twenty minutes of schema archaeology.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
   mkdirSync,
@@ -40,6 +40,7 @@ import {
   findSessionByIdDetailed,
   listAllSessions,
 } from "../../src/autonomous/session.js";
+import { AGED_ANOMALY_WINDOW_MS } from "../../src/core/session-age.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -744,6 +745,126 @@ describe("every surface distinguishes a missing state.json from an invalid one",
     writeFileSync(join(root, ".story", "sessions", ID, "state.json"), '{"truncated"');
     const res = await handleSessionReport(ID, root, "text");
     expect(res.output ?? "").toContain("not valid JSON");
+  });
+});
+
+/**
+ * `corruptRemedy`'s `missing-state` branch, aged past `AGED_ANOMALY_WINDOW_MS`
+ * (ISS-945), at all three call sites that reach it: `session list`, `session
+ * show`, `session repair`. "Reaches `corruptRemedy`" is not "reached the same
+ * way" -- each site resolves its directory through a different path (a bulk
+ * enumerator for `list`, `resolveSessionSelector` for `show`/`repair`), so each
+ * gets its own coverage rather than assuming one site's pass proves the others.
+ *
+ * The clock is advanced with `vi.setSystemTime`, not a backdated file
+ * timestamp: `computeSessionDirAge` takes `max(mtimeMs, ctimeMs)`, and
+ * `utimesSync` itself bumps `ctimeMs` to the real current time, defeating any
+ * backdate (see `test/core/session-age.test.ts`). Advancing `Date.now()`
+ * instead is the same technique used there.
+ *
+ * `session show` and `session repair` both resolve their selector through
+ * `resolveSessionSelector`, which accepts only hex+dash selectors and only
+ * ever resolves a `SESSION_ID_REGEX`-shaped directory name (session-selector.ts).
+ * A legacy/non-canonical directory name is therefore never reachable through
+ * either command -- `resolveSessionSelector` returns `not_found`/`invalid`
+ * before `corruptRemedy` is ever called -- so the aged+NON-addressable case is
+ * exercised only against `session list`, which enumerates a contained
+ * directory under any name.
+ */
+describe("corruptRemedy's missing-state branch, aged past the window, at all three call sites (ISS-945)", () => {
+  const UUID_ID = "88888888-2222-4333-8444-555555555555";
+
+  function halfCreated(root: string, name: string): string {
+    const dir = join(root, ".story", "sessions", name);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  function ageItPastTheWindow(): void {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + AGED_ANOMALY_WINDOW_MS + 60_000);
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe("session list", () => {
+    it("not aged: keeps the creation-race advice, not the aged-anomaly one", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      const out = await handleSessionList(root, { status: "all", format: "text" });
+      expect(out).toContain("If a session is being created it will finish on its own");
+      expect(out).not.toContain("session delete");
+      expect(out).not.toContain("classification window");
+    });
+
+    it("aged + addressable (UUID-shaped name): names the session delete command with its caveat", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      ageItPastTheWindow();
+      const out = await handleSessionList(root, { status: "all", format: "text" });
+      expect(out).toContain(`session delete ${UUID_ID} --yes`);
+      expect(out).toContain("does not prove no session is being created here");
+    });
+
+    it("aged + NON-addressable (legacy, non-UUID name): no command is named", async () => {
+      const root = makeRoot();
+      const legacyName = "legacy-session-dir";
+      halfCreated(root, legacyName);
+      ageItPastTheWindow();
+      const out = await handleSessionList(root, { status: "all", format: "text" });
+      expect(out).toContain("not a valid session id, so no storybloq command can address it directly");
+      expect(out).not.toContain("session delete");
+    });
+  });
+
+  describe("session show", () => {
+    it("not aged: keeps the creation-race advice, not the aged-anomaly one", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      await expect(handleSessionShow(root, UUID_ID, { format: "text" })).rejects.toThrow(
+        /If a session is being created it will finish on its own/,
+      );
+      await expect(handleSessionShow(root, UUID_ID, { format: "text" })).rejects.not.toThrow(/session delete/);
+    });
+
+    it("aged + addressable: names the session delete command with its caveat", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      ageItPastTheWindow();
+      await expect(handleSessionShow(root, UUID_ID, { format: "text" })).rejects.toThrow(
+        new RegExp(`session delete ${UUID_ID} --yes`),
+      );
+      await expect(handleSessionShow(root, UUID_ID, { format: "text" })).rejects.toThrow(
+        /does not prove no session is being created here/,
+      );
+    });
+  });
+
+  describe("session repair", () => {
+    it("not aged: keeps the creation-race advice, not the aged-anomaly one", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      await expect(
+        handleSessionRepair(root, { selector: UUID_ID, dryRun: false, all: false, yes: true }),
+      ).rejects.toThrow(/If a session is being created it will finish on its own/);
+      await expect(
+        handleSessionRepair(root, { selector: UUID_ID, dryRun: false, all: false, yes: true }),
+      ).rejects.not.toThrow(/session delete/);
+    });
+
+    it("aged + addressable: names the session delete command with its caveat", async () => {
+      const root = makeRoot();
+      halfCreated(root, UUID_ID);
+      ageItPastTheWindow();
+      await expect(
+        handleSessionRepair(root, { selector: UUID_ID, dryRun: false, all: false, yes: true }),
+      ).rejects.toThrow(new RegExp(`session delete ${UUID_ID} --yes`));
+      await expect(
+        handleSessionRepair(root, { selector: UUID_ID, dryRun: false, all: false, yes: true }),
+      ).rejects.toThrow(/does not prove no session is being created here/);
+    });
   });
 });
 

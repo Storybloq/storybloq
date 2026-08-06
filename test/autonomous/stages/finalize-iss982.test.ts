@@ -382,6 +382,7 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
 
     expect(advance.action).toBe("retry");
     expect(mockedGitUserEmail).not.toHaveBeenCalled();
+    expect(mockedGitCommitterEmail).not.toHaveBeenCalled();
   });
 
   it("8c. ticket-mode with a ticketId-mismatched claimEpoch is refused without falling back to the heuristic", async () => {
@@ -394,6 +395,7 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
 
     expect(advance.action).toBe("retry");
     expect(mockedGitUserEmail).not.toHaveBeenCalled();
+    expect(mockedGitCommitterEmail).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------

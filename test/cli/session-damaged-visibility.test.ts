@@ -817,6 +817,26 @@ describe("corruptRemedy's missing-state branch, aged past the window, at all thr
       expect(out).toContain("not a valid session id, so no storybloq command can address it directly");
       expect(out).not.toContain("session delete");
     });
+
+    // A pen byte-review finding (ISS-945 half-2a, F1): `corruptRemedy`'s
+    // `age.kind !== "known" || age.ageMs < AGED_ANOMALY_WINDOW_MS` guard is
+    // meant to keep an UNKNOWN age out of the aged-anomaly branch, but every
+    // test above only ever ages a directory that stays `known` -- none drives
+    // `computeSessionDirAge` itself to `unknown`. Mutating that guard to
+    // `age.kind === "known" && age.ageMs < AGED_ANOMALY_WINDOW_MS` (which
+    // treats `unknown` as satisfying "aged") left this whole file green. A
+    // descendant symlink forces a genuine `unknown` through the real helper,
+    // independent of how far the wall clock is advanced.
+    it("aged by wall-clock but UNKNOWN by computeSessionDirAge (a descendant symlink): keeps the creation-race advice, not the aged-anomaly one", async () => {
+      const root = makeRoot();
+      const dir = halfCreated(root, UUID_ID);
+      symlinkSync(join(root, "nowhere-at-all"), join(dir, "some-child"));
+      ageItPastTheWindow();
+      const out = await handleSessionList(root, { status: "all", format: "text" });
+      expect(out).toContain("If a session is being created it will finish on its own");
+      expect(out).not.toContain("session delete");
+      expect(out).not.toContain("classification window");
+    });
   });
 
   describe("session show", () => {

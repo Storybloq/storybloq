@@ -424,6 +424,29 @@ describe("state-missing-aged / aged-anomaly", () => {
     expect(r.diagnostics).toHaveLength(1);
     expect(r.diagnostics[0]!.category).toBe("aged-anomaly");
   });
+
+  // A pen byte-review finding (ISS-945 half-2a, F1): `session-age.ts`'s own
+  // header states the invariant that `computeSessionDirAge`'s `unknown` must
+  // never be treated as aged, but nothing exercised it THROUGH this caller --
+  // every prior test here ages a directory that stays `known` the whole time.
+  // Mutating `age.kind === "known" && age.ageMs >= AGED_ANOMALY_WINDOW_MS` to
+  // `age.kind !== "known" || age.ageMs >= AGED_ANOMALY_WINDOW_MS` left all
+  // eight targeted test files green, because none of them ever drove the
+  // scanner through a genuinely `unknown` age. A descendant symlink is the
+  // real, unstubbed way to force `computeSessionDirAge` itself to return
+  // `unknown` (see session-age.ts: "a symlink anywhere in the subtree...
+  // forces `unknown`"), independent of wall-clock age.
+  it("a directory whose age is UNKNOWN (a descendant symlink) never classifies as aged-anomaly, however far `now` is advanced", () => {
+    const root = makeRoot();
+    const dir = join(root, ".story", "sessions", UUID);
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(root, "nowhere-at-all"), join(dir, "some-child"));
+    const t0 = Date.now();
+    const [d] = scan(root, t0 + AGED_ANOMALY_WINDOW_MS + 1000).diagnostics;
+    expect(d?.kind).toBe("state-missing");
+    expect(d?.category).toBe("omission");
+    expect(d?.remedy).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

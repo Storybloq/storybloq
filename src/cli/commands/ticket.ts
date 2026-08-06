@@ -5,6 +5,7 @@ import { reserveDisplayId } from "../../core/remote-refs.js";
 import { resolveAndNormalizeTicketRef, RefResolutionError } from "../../core/ref-normalization.js";
 import {
   clearClaimOnComplete,
+  guardCompletedTicketMutation,
   buildClaim,
   canClaim,
   type CompletionGuardOptions,
@@ -498,13 +499,44 @@ export async function handleTicketUpdate(
       ...statusChanges,
     };
 
-    // T-442 / ISS-784: a completion must not clear a claim the caller cannot prove
-    // is theirs. Identity comes from git and from the LOCAL active session record,
-    // never from the ticket being updated -- that value identifies the current
-    // ledger winner, so using it to authorize would authorize the very party it is
-    // meant to exclude.
-    const guard = await resolveCompletionGuard(root, ticket, force);
-    const completion = clearClaimOnComplete(ticket, guard);
+    const isNoOpUpdate = JSON.stringify(ticket) === JSON.stringify(existing);
+
+    // T-442 / ISS-784 / ISS-981: a completion must not clear a claim the caller
+    // cannot prove is theirs, and any OTHER mutation of an already-complete
+    // ticket -- a transition out of complete, or a field change while it stays
+    // complete -- must prove ownership the same way, rather than bypassing the
+    // guard because clearClaimOnComplete only fires for completions INTO
+    // complete. This is deliberately NOT limited to tickets that still carry
+    // claim material: ISS-981's own filing names the claim-free case -- the
+    // common shape, since a successful completion strips claim keys -- as the
+    // defect ("no claim, no --force" reopens or rewrites a session's just-
+    // completed work). `--force` is the escape for a claim-free ticket, since
+    // there is no identity left to prove ownership against; a claim-bearing
+    // one must still match it. Identity comes from git and from the LOCAL
+    // active session record, never from the ticket being updated -- that
+    // value identifies the current ledger winner, so using it to authorize
+    // would authorize the very party it is meant to exclude.
+    const guard = await resolveCompletionGuard(root, existing, force);
+
+    if (!isNoOpUpdate && existing.status === "complete") {
+      const { authorized } = guardCompletedTicketMutation(existing, guard);
+      if (!authorized) {
+        throw new CliValidationError(
+          "invalid_input",
+          `Cannot modify ${displayIdOf(existing)}: it is complete and this caller cannot prove ownership` +
+            (guard.completingUser === null ? " (git user.email is not configured)" : "") +
+            `. If that is intended, re-run with --force.`,
+        );
+      }
+    }
+
+    // A genuine no-op never needs to prove anything -- and must not, since
+    // `clearClaimOnComplete` has no no-op awareness of its own: called
+    // unconditionally, it would independently reproduce the exact rejection
+    // `isNoOpUpdate` was meant to exempt above (ISS-981 [R5-F1] correction),
+    // because a no-op's `ticket` is content-identical to `existing` and so
+    // yields the identical verdict either guard would compute.
+    const completion = isNoOpUpdate ? { rejected: false as const, ticket } : clearClaimOnComplete(ticket, guard);
     if (completion.rejected) {
       throw new CliValidationError(
         "invalid_input",

@@ -222,6 +222,42 @@ export function clearClaimOnComplete(
   return { rejected: false, ticket: stripClaimKeys(ticket) };
 }
 
+/**
+ * Whether `guard` proves the caller may mutate an already-complete `existing`
+ * ticket -- a transition OUT of complete, or any field change while it stays
+ * complete (ISS-981). `clearClaimOnComplete` only runs its ownership check for
+ * transitions INTO complete; both other shapes bypass it entirely today.
+ *
+ * ISS-981's own filing names the claim-FREE case -- the common shape, since a
+ * successful completion strips claim keys -- as the headline defect: "no
+ * claim, no --force" lets any caller reopen or rewrite a ticket a session just
+ * finished. `clearClaimOnComplete`'s "legacy: nothing to authorize against"
+ * pass is correct for ITS OWN direction (completing an unclaimed ticket steals
+ * nothing from anyone), but reusing that polarity here would leave exactly
+ * the gap ISS-981 exists to close, so a claim-free ticket is NOT authorized
+ * by default -- `--force` (`guard.authorized`) is the only path for it.
+ *
+ * A claim-bearing ticket (the ISS-913 "contradictory" shape, or any other
+ * reason completion never stripped it) still delegates to
+ * `clearClaimOnComplete` against the UNCHANGED `existing` ticket: that asks
+ * exactly "would completing this ticket right now be authorized," the same
+ * proof a mutation of already-complete work should require, and reuses its
+ * proven-ownership/epoch-veto matrix rather than re-deriving it.
+ * `clearClaimOnComplete`'s own side effects (status/claim rewrite) are
+ * discarded; only its authorization verdict is used.
+ */
+export function guardCompletedTicketMutation(
+  existing: Ticket,
+  guard: CompletionGuardOptions,
+): { authorized: boolean } {
+  if (guard.authorized) return { authorized: true };
+  const hasClaim = existing.claim != null;
+  const hasSessionStamp = sessionOwnerOf(existing) !== null;
+  if (!hasClaim && !hasSessionStamp) return { authorized: false };
+  const probe = clearClaimOnComplete(existing, guard);
+  return { authorized: !probe.rejected };
+}
+
 // Claimed-by-others items are downranked far below unclaimed work but never
 // hidden (N-059 decision #22: claims are advisory, surfaced and downranked, not
 // removed). The max generator score is ~1000, so this penalty guarantees a

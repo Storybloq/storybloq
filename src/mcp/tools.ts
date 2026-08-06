@@ -692,6 +692,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       parentTicket: TicketRefSchema.nullable().optional().describe("Parent ticket ID (null to clear)"),
       blockedBy: z.array(TicketRefSchema).optional().describe("IDs of blocking tickets"),
       crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX)).nullable().optional().describe("Cross-node blocking refs (e.g. engine:T-061). Null to clear."),
+      force: z.boolean().optional().describe("Bypass ownership checks when reopening or editing an already-complete ticket you cannot otherwise prove ownership of (ISS-981). Does not take over a claim; reopening to a non-complete status leaves existing claim material unchanged."),
       node: nodeParam,
     },
   }, (args) => {
@@ -713,6 +714,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         },
         format,
         root,
+        args.force,
       ),
     eff.root);
   });

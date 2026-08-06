@@ -71,6 +71,7 @@ import {
   type ActiveSessionInfo,
 } from "./session.js";
 import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./orphan-detector.js";
+import { deriveLeaseState } from "../core/session-scan.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure, pressureAfterCompaction } from "./context-pressure.js";
 import { reviewRiskForTicket } from "./review-depth.js";
@@ -3028,26 +3029,39 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       "Retry without ownerGoneCandidateTakeover; the candidate handshake is for LIVE non-COMPACT sessions.",
     ));
   }
-  if (candidateRequest && args.takeover === true && !isLeaseExpired(info.state)) {
-    // THE LIVE-LEASE CONJUNCT IS THE SCOPE BOUNDARY, and only that.
+  const candidateLeaseState = deriveLeaseState(info.state.lease?.expiresAt);
+  if (
+    candidateRequest &&
+    args.takeover === true &&
+    (candidateLeaseState === "live" || candidateLeaseState === "expired")
+  ) {
+    // THE LEASE-STATE CONJUNCT IS THE SCOPE BOUNDARY, and only that (ISS-964).
     //
     // It is NOT what keeps a published takeover from being adoptable -- the
     // commit re-stamps the fence in its own atomic write, so a takeover
     // authorized here lands with a full lease however long the handshake took.
-    // What the conjunct does is hold this door to the case the ticket is
-    // about, a LIVE non-COMPACT lease. An EXPIRED lease is a different
-    // question with a different existing answer: `adoptExpiredLease` already
-    // rebinds ownership and refreshes the lease for any identified caller on
-    // `report` or `pre_compact`, deliberately bypassing foreign-owner
-    // precedence, so putting the five-step handshake in front of it would be
-    // ceremony over a gate that reaches the same place without it.
+    // What the conjunct does is hold this door to the two cases the ticket
+    // covers, a LIVE or a determinately EXPIRED non-COMPACT lease -- never a
+    // missing or invalid one, which fall through unadmitted below.
     //
-    // An expired-lease non-COMPACT session with a dead owner still has no
-    // non-destructive adoption path, because both of those doors require
-    // something to report. That hole is PRE-EXISTING (it holds on
-    // main today; this step neither creates nor widens it) and is the
-    // complement of this ticket's subject, "live non-COMPACT leases". Filed as
-    // ISS-964 with the mechanism and the scope boundary in both directions.
+    // The expired-lease admission closes what used to be a real hole: a
+    // non-COMPACT session with a dead owner and an expired lease had no
+    // non-destructive adoption path, because `adoptExpiredLease`'s own two
+    // doors (`report`, `pre_compact`) both require something to report or a
+    // willingness to compact. This reuses the SAME candidate machinery the
+    // live-lease case already uses -- `handleCandidateTakeoverResume` and
+    // everything downstream never reads lease state at all, so admitting the
+    // expired case here requires no other code change. Widening, not
+    // replacing: `candidateLeaseState === "live"` alone is byte-for-byte
+    // equivalent to the original `!isLeaseExpired(info.state)` check this
+    // conjunct used to be, so the live-lease path is unweakened.
+    //
+    // A missing or invalid lease is deliberately NOT admitted -- ISS-964 never
+    // asked for those shapes, and this wave's own "fail closed on unavailable
+    // signals" discipline argues against widening further than the ticket's
+    // subject. Filed as ISS-964; ships as an explicit PARTIAL, since no
+    // supported interface can yet construct the evidence this door requires
+    // in one call (see ISS-964's ledger record).
     return handleCandidateTakeoverResume(root, args, info, candidateRequest);
   }
 

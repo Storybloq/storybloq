@@ -323,14 +323,23 @@ describe("T-450 7b.2: the split", () => {
     expect(Date.parse(after.lastGuideCall!)).toBeGreaterThan(Date.now() - 60_000);
   });
 
-  it("falls through to the existing gate when the lease is EXPIRED", async () => {
-    // The live-lease conjunct is the SCOPE boundary, not a safety mechanism: an
-    // authorized candidate commit would re-stamp the fence either way. What it
-    // holds is that this door answers the question the ticket is about, a LIVE
-    // non-COMPACT lease. The expired-lease case already has `adoptExpiredLease`
-    // and stays with ISS-964.
+  it("commits ownership for a determinately EXPIRED lease too, matching the live-lease acceptance shape (ISS-964)", async () => {
+    // INVERTED FROM PRIOR BEHAVIOR, deliberately: until ISS-964, this exact
+    // fixture (expired lease, valid confirmation) was refused with "not in
+    // COMPACT state" -- the live-lease conjunct was the ENTIRE scope boundary,
+    // and an expired lease fell all the way through it into the ordinary
+    // non-candidate resume gate below. ISS-964 widens the routing conjunct at
+    // guide.ts to admit a determinately EXPIRED lease alongside the live one,
+    // reusing the SAME candidate machinery: `handleCandidateTakeoverResume`
+    // and everything downstream never reads lease state, so no other code
+    // changes. This is the live-lease acceptance test above ("replaces a
+    // near-expiry lease with the canonical ownership fence") with an expired
+    // lease substituted for a near-expiry one -- same shape, same assertions.
+    //
+    // A missing or invalid lease is NOT admitted by the widened conjunct and
+    // still falls through to the refusal this test used to assert; see the
+    // disclosed non-regression pins below.
     makeCandidateSession({ lease: { expiresAt: new Date(Date.now() - 60_000).toISOString(), lastHeartbeat: new Date(Date.now() - 90 * 60_000).toISOString() } } as never);
-    const before = rawState();
     const { revision, fingerprint } = shown();
 
     const r = await guide({
@@ -338,9 +347,131 @@ describe("T-450 7b.2: the split", () => {
       ownerGoneCandidateTakeover: { sessionRevision: revision, evidenceFingerprint: fingerprint },
     });
 
+    expect(textOf(r)).toContain("is now yours");
+    const after = readSession(sessDir)!;
+    // Re-stamped, not left expired: the takeover publishes its own fence
+    // unconditionally, the same reason the near-expiry case re-stamps.
+    expect(isLeaseExpired(after)).toBe(false);
+    expect(Date.parse(after.lease!.expiresAt!) - Date.now()).toBeGreaterThan(40 * 60_000);
+    expect(after.ownerTask?.id).toBe(CALLER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-964 -- refusal directions under the widened lease-state conjunct
+// ---------------------------------------------------------------------------
+
+describe("ISS-964: refusal directions under the widened lease-state conjunct", () => {
+  const expiredLease = () => ({
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    lastHeartbeat: new Date(Date.now() - 90 * 60_000).toISOString(),
+  });
+
+  it("still refuses a COMPACT session with an EXPIRED lease, same message as the live-lease case", async () => {
+    // Disclosed as green at parent: guide.ts's COMPACT check runs BEFORE the
+    // lease-state conjunct and is unconditional on lease state in both parent
+    // and this fix, so widening the conjunct cannot let an expired-lease
+    // COMPACT session slip past it. Own test anyway, since the combination
+    // (COMPACT + expired lease) was not previously exercised -- the existing
+    // COMPACT test above uses the fixture's default LIVE lease.
+    makeCandidateSession({
+      state: "COMPACT", compactPending: true, preCompactState: "IMPLEMENT",
+      lease: expiredLease(),
+    } as never);
+    const before = rawState();
+
+    const r = await guide({
+      sessionId, action: "resume", takeover: true,
+      ownerGoneCandidateTakeover: { sessionRevision: 1, evidenceFingerprint: A_VALID_FINGERPRINT },
+    });
+
     expect(r.isError).toBe(true);
-    // The EXISTING message, not a candidate refusal: this never reached the
-    // candidate handler at all.
+    expect(textOf(r)).toContain("already the confirmed-owner-gone path");
+    expect(rawState()).toBe(before);
+  });
+
+  it("refuses a SUPERSEDED session before candidate routing is ever reached, with an expired lease", async () => {
+    // Disclosed as green at parent: `checkSessionStillActive` refuses on
+    // `status` alone at the very top of `handleResume`, before the lease-state
+    // conjunct is ever evaluated, in both parent and this fix. Own test to
+    // confirm the earlier gate still takes precedence once the conjunct below
+    // it is widened.
+    makeCandidateSession({ status: "superseded", lease: expiredLease() } as never);
+    const before = rawState();
+
+    const r = await guide({
+      sessionId, action: "resume", takeover: true,
+      ownerGoneCandidateTakeover: { sessionRevision: 1, evidenceFingerprint: A_VALID_FINGERPRINT },
+    });
+
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("this session was superseded");
+    expect(rawState()).toBe(before);
+  });
+
+  it("refuses a terminal SESSION_END session via the shared core's session-terminal gate, with an expired lease", async () => {
+    // NOT green at parent. `checkSessionStillActive` checks only `status`, not
+    // `state`, so a `status: "active"`, `state: "SESSION_END"` record passes
+    // it and reaches the lease-state conjunct. At parent the conjunct excludes
+    // an expired lease, so this fixture falls through to the "not in COMPACT
+    // state" refusal instead -- never reaching the shared core at all. Only
+    // the widened conjunct routes it into `handleCandidateTakeoverResume`,
+    // where `authorizeCandidateRecoveryCore`'s pre-existing terminal gate
+    // refuses it. This is the test that actually exercises that gate for this
+    // new door.
+    makeCandidateSession({ state: "SESSION_END", lease: expiredLease() } as never);
+    const before = rawState();
+
+    const r = await guide({
+      sessionId, action: "resume", takeover: true,
+      ownerGoneCandidateTakeover: { sessionRevision: 1, evidenceFingerprint: A_VALID_FINGERPRINT },
+    });
+
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("the session is terminal");
+    expect(rawState()).toBe(before);
+  });
+
+  it("refuses without a caller identity, expired-lease variant, in the SAME words as the live-lease door", async () => {
+    // NOT green at parent. At parent an expired lease never reaches
+    // `handleCandidateTakeoverResume` (where the identity check lives) at
+    // all, so this fixture would instead produce the "not in COMPACT state"
+    // refusal there. Only the widened conjunct reaches the identity check.
+    makeCandidateSession({ lease: expiredLease() } as never);
+    const before = rawState();
+
+    const r = await handleAutonomousGuide(root, {
+      sessionId, action: "resume", takeover: true,
+      ownerGoneCandidateTakeover: { sessionRevision: 1, evidenceFingerprint: A_VALID_FINGERPRINT },
+    } as never);
+
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("requires a valid clientTaskId");
+    expect(rawState()).toBe(before);
+  });
+
+  it.each([
+    ["a MISSING lease (no expiresAt)", ""],
+    ["an INVALID (unparseable) lease", "not-a-real-date"],
+  ])("disclosed non-regression pin: %s is NOT admitted by the widened conjunct, falls through to the pre-existing gate", async (_label, expiresAt) => {
+    // Green at parent: parent's bare `!isLeaseExpired(info.state)` already
+    // refuses both shapes, since `isLeaseExpired` is true for missing AND
+    // invalid leases, not only expired ones -- these two tests exist to keep
+    // proving that stays true as the conjunct changes shape, not to newly
+    // establish it. Pins the Codex round-1 correction: a bare `isLeaseExpired`
+    // widening (rejected in favor of `deriveLeaseState`) would have wrongly
+    // admitted these too.
+    makeCandidateSession({
+      lease: { expiresAt, lastHeartbeat: new Date(Date.now() - 90 * 60_000).toISOString() },
+    } as never);
+    const before = rawState();
+
+    const r = await guide({
+      sessionId, action: "resume", takeover: true,
+      ownerGoneCandidateTakeover: { sessionRevision: 1, evidenceFingerprint: A_VALID_FINGERPRINT },
+    });
+
+    expect(r.isError).toBe(true);
     expect(textOf(r)).toContain("not in COMPACT state");
     expect(rawState()).toBe(before);
   });

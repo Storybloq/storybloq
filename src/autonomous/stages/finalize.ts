@@ -1,6 +1,7 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput, FullSessionState } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath } from "../git-inspector.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail } from "../git-inspector.js";
+import { parseClaimEpoch } from "../claim-preflight.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -118,6 +119,105 @@ function strandedEscape(
   ];
 }
 
+/**
+ * ISS-982: handleCommit's fast path (reported hash equals or prefixes HEAD)
+ * previously accepted a re-report with zero further validation -- an agent
+ * re-confirming the exact hash a refused auto-detect fast-forward had
+ * already observed took this path and bypassed both the ancestry-path
+ * enumeration and the artifact-tree check entirely. This decides whether
+ * `commitHash` can be attributed to THIS session before the fast path
+ * accepts it.
+ *
+ * Five-way split by CURRENT ITEM KIND, not epoch presence (R4-F2): FINALIZE's
+ * ticket-completion write and the issue-pick path both leave a prior item's
+ * `claimEpoch` sitting in state, unwritten, so selecting the check by
+ * "epoch present" reads a stale identity into an unrelated commit's check.
+ *
+ * Every unavailable or malformed signal fails CLOSED -- a deliberate
+ * asymmetry with `provenOwnership` (ISS-913), which fails closed on a
+ * malformed epoch for a different, already-covered reason. Treating
+ * unavailable evidence as a match here would silently reopen the gap this
+ * exists to close.
+ *
+ * Returns the refusal detail rather than throwing/returning a boolean alone,
+ * so the caller's refusal message can name the actual reason.
+ */
+async function checkCommitAttribution(
+  ctx: StageContext,
+  commitHash: string,
+): Promise<{ readonly attributable: boolean; readonly detail: string }> {
+  const state = ctx.state;
+  const ticket = state.ticket;
+  const currentIssue = state.currentIssue;
+
+  // Outcome 1: contradictory shape (both a current ticket and a current
+  // issue at once) should never occur and is not disambiguated by
+  // preferring one field -- fail closed unconditionally, before any
+  // identity signal is even read.
+  if (ticket && currentIssue) {
+    return {
+      attributable: false,
+      detail: "session state carries both a current ticket and a current issue at once, which should never happen",
+    };
+  }
+
+  // Outcomes 2/3: ticket mode. A ticket-mode session is supposed to have a
+  // valid, matching claim epoch; not having one does NOT fall back to the
+  // heuristic below -- that would readmit the exact stale-identity gap this
+  // check exists to close.
+  if (ticket) {
+    const rawEpoch = (state as Record<string, unknown>).claimEpoch;
+    const epoch = rawEpoch !== undefined && rawEpoch !== null ? parseClaimEpoch(rawEpoch) : null;
+    if (!epoch || epoch.ticketId !== ticket.id || !epoch.user) {
+      return {
+        attributable: false,
+        detail: "no valid claim epoch matching the current ticket is available to attribute this commit",
+      };
+    }
+    const committer = await gitCommitterEmail(ctx.root, commitHash);
+    if (!committer.ok) {
+      return {
+        attributable: false,
+        detail: `could not read commit ${commitHash.slice(0, 7)}'s committer (${committer.message ?? "git error"})`,
+      };
+    }
+    if (committer.data !== epoch.user) {
+      return {
+        attributable: false,
+        detail: `commit ${commitHash.slice(0, 7)}'s committer (${committer.data || "unknown"}) does not match the claim identity (${epoch.user})`,
+      };
+    }
+    return { attributable: true, detail: "" };
+  }
+
+  // Outcomes 4/5: issue mode, or neither item present. Neither shape has a
+  // claim model, so both fall back to the SAME heuristic -- committer
+  // against the live git identity -- explicitly heuristic-only, not
+  // session-bound proof. Any residual `claimEpoch` (left behind by a
+  // just-completed ticket) is ignored unconditionally here.
+  const committer = await gitCommitterEmail(ctx.root, commitHash);
+  if (!committer.ok) {
+    return {
+      attributable: false,
+      detail: `could not read commit ${commitHash.slice(0, 7)}'s committer (${committer.message ?? "git error"})`,
+    };
+  }
+  const liveEmail = await gitUserEmail(ctx.root);
+  if (!liveEmail) {
+    return {
+      attributable: false,
+      detail: "the local git identity (user.email) could not be resolved",
+    };
+  }
+  if (committer.data !== liveEmail) {
+    return {
+      attributable: false,
+      detail: `commit ${commitHash.slice(0, 7)}'s committer (${committer.data || "unknown"}) does not match the local git identity (${liveEmail}) -- heuristic only`,
+    };
+  }
+  return { attributable: true, detail: "" };
+}
+
 /** The ledger file this item's commit must contain, or null outside item work. */
 function itemArtifactPath(state: FullSessionState): string | null {
   const ticketId = state.ticket?.id;
@@ -169,8 +269,13 @@ export class FinalizeStage implements WorkflowStage {
         const ticketId = ctx.state.ticket?.id;
         if (ticketId) {
           const ticketPath = `.story/tickets/${ticketId}.json`;
-          if (treeResult.ok && !treeResult.data.includes(ticketPath)) {
-            // Commit exists but missing ticket file -- fall through to staging instruction
+          // ISS-982/R2-F1: `!treeResult.ok` must ALSO fall through, not just a
+          // confirmed miss -- the original `treeResult.ok && !includes` gate
+          // was fail-OPEN on a git error (false && x is false, taking the
+          // proceed branch with an unverified tree).
+          if (!treeResult.ok || !treeResult.data.includes(ticketPath)) {
+            // Commit exists but missing ticket file, or the tree could not be
+            // verified -- fall through to staging instruction.
           } else {
             ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
             return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
@@ -179,8 +284,10 @@ export class FinalizeStage implements WorkflowStage {
         const issueId = ctx.state.currentIssue?.id;
         if (issueId) {
           const issuePath = `.story/issues/${issueId}.json`;
-          if (treeResult.ok && !treeResult.data.includes(issuePath)) {
-            // Commit exists but missing issue file -- fall through to staging instruction
+          // ISS-982/R2-F1: same fail-open fix as the ticket branch above.
+          if (!treeResult.ok || !treeResult.data.includes(issuePath)) {
+            // Commit exists but missing issue file, or the tree could not be
+            // verified -- fall through to staging instruction.
           } else {
             ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
             return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
@@ -297,10 +404,20 @@ export class FinalizeStage implements WorkflowStage {
         // HEAD advanced -- agent committed before reporting files_staged
         // Validate commit contains ticket/issue file if applicable
         const treeResult = await gitDiffTreeNames(ctx.root, headResult.data.hash);
+        // ISS-982/R2-F1: a git error here must NOT silently fall through to
+        // "commit is valid" -- hoisted into its own diagnostic rather than
+        // reusing the ticket/issue "amend the commit" message, which would
+        // misdescribe a git error as a missing file.
+        if (!treeResult.ok) {
+          return {
+            action: "retry",
+            instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but its contents could not be verified (git error: ${treeResult.message ?? "unknown"}). Verify the commit yourself, then report completedAction: "commit_done" with the hash again.`,
+          };
+        }
         const ticketId = ctx.state.ticket?.id;
         if (ticketId) {
           const ticketPath = `.story/tickets/${ticketId}.json`;
-          if (treeResult.ok && !treeResult.data.includes(ticketPath)) {
+          if (!treeResult.data.includes(ticketPath)) {
             return {
               action: "retry",
               instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but ticket file ${ticketPath} is not in the commit. Amend the commit to include it: \`git add ${ticketPath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`,
@@ -311,7 +428,7 @@ export class FinalizeStage implements WorkflowStage {
         const earlyIssueId = ctx.state.currentIssue?.id;
         if (earlyIssueId) {
           const issuePath = `.story/issues/${earlyIssueId}.json`;
-          if (treeResult.ok && !treeResult.data.includes(issuePath)) {
+          if (!treeResult.data.includes(issuePath)) {
             return {
               action: "retry",
               instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but issue file ${issuePath} is not in the commit. Amend the commit to include it: \`git add ${issuePath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`,
@@ -526,10 +643,19 @@ export class FinalizeStage implements WorkflowStage {
     const reportedHash = commitHash.toLowerCase();
 
     let normalizedHash: string;
+    // ISS-982: the fast path below (reported hash equals or prefixes HEAD)
+    // skips the ancestry-path enumeration and artifact-tree check the slow
+    // path runs -- reporting the exact hash a refused auto-detect
+    // fast-forward already observed takes this path unconditionally. The
+    // attribution check after the ISS-925 guard is scoped to this path only;
+    // the slow path already proves session-ancestry membership independently.
+    let tookFastPath: boolean;
 
     if (fullHead === reportedHash || fullHead.startsWith(reportedHash)) {
       normalizedHash = fullHead;
+      tookFastPath = true;
     } else {
+      tookFastPath = false;
       const resolvedResult = await gitResolveCommit(ctx.root, reportedHash);
       if (!resolvedResult.ok) {
         return {
@@ -606,6 +732,28 @@ export class FinalizeStage implements WorkflowStage {
       };
     }
 
+    // ISS-982: attribution check, fast path only, override-gated. The
+    // identity-resolution work runs whenever the fast path was taken; the
+    // refusal itself is a SEPARATE, single conditional below it (kept apart
+    // so a mutant that deletes only the refusal cannot silently disable the
+    // resolution work too).
+    let attributionRefusal: string | null = null;
+    if (tookFastPath) {
+      const attribution = await checkCommitAttribution(ctx, normalizedHash);
+      if (!attribution.attributable) attributionRefusal = attribution.detail;
+    }
+    const overrideRequested = report.overrideAttribution === true;
+
+    if (attributionRefusal !== null && !overrideRequested) {
+      return {
+        action: "retry",
+        instruction: [
+          `Commit ${normalizedHash.slice(0, 7)} could not be attributed to this session: ${attributionRefusal}.`,
+          'If this is genuinely your work, report again with the same completedAction: "commit_done", the same commitHash, and overrideAttribution: true.',
+        ].join("\n"),
+      };
+    }
+
     // ISS-084: Issue-fix mode -- record resolved issue, route through COMPLETE
     // (so session limits and checkpoint handovers apply uniformly)
     const currentIssue = ctx.state.currentIssue;
@@ -621,6 +769,14 @@ export class FinalizeStage implements WorkflowStage {
           ...(ctx.state.resolvedIssueDisplayIds ?? {}),
           ...(issueDisplayId ? { [currentIssue.id]: issueDisplayId } : {}),
         },
+        // ISS-982: append-only audit trail, written in the SAME state write
+        // as the checkpoint (durable in the all-or-nothing application
+        // sense per ISS-958, not crash-durable). Written unconditionally,
+        // whether or not a mismatch was ever detected.
+        commitAttributionAudits: [
+          ...(ctx.state.commitAttributionAudits ?? []),
+          { commitHash: normalizedHash, itemKind: "issue" as const, itemId: currentIssue.id, overrideRequested, at: new Date().toISOString() },
+        ],
         currentIssue: null,
         ticketStartedAt: null,
         git: {
@@ -631,7 +787,7 @@ export class FinalizeStage implements WorkflowStage {
         },
       });
 
-      ctx.appendEvent("commit", { commitHash: normalizedHash, issueId: currentIssue.id });
+      ctx.appendEvent("commit", { commitHash: normalizedHash, issueId: currentIssue.id, attributionOverrideRequested: overrideRequested });
 
       return { action: "goto", target: "COMPLETE" };
     }
@@ -663,6 +819,17 @@ export class FinalizeStage implements WorkflowStage {
       completedTickets: completedTicket
         ? [...ctx.state.completedTickets, completedTicket]
         : ctx.state.completedTickets,
+      // ISS-982: same append-only audit trail as the issue path above.
+      commitAttributionAudits: [
+        ...(ctx.state.commitAttributionAudits ?? []),
+        {
+          commitHash: normalizedHash,
+          itemKind: completedTicket ? ("ticket" as const) : ("none" as const),
+          itemId: completedTicket ? completedTicket.id : null,
+          overrideRequested,
+          at: new Date().toISOString(),
+        },
+      ],
       ticket: undefined,
       ticketStartedAt: null,
       git: {
@@ -673,7 +840,7 @@ export class FinalizeStage implements WorkflowStage {
       },
     });
 
-    ctx.appendEvent("commit", { commitHash: normalizedHash, ticketId: completedTicket?.id });
+    ctx.appendEvent("commit", { commitHash: normalizedHash, ticketId: completedTicket?.id, attributionOverrideRequested: overrideRequested });
 
     return { action: "advance" };
   }

@@ -371,6 +371,19 @@ export async function gitUserEmail(cwd: string): Promise<string | null> {
   return result.ok && result.data ? result.data : null;
 }
 
+/**
+ * Committer email recorded ON a specific commit (ISS-982), as opposed to
+ * `gitUserEmail`'s live, ambient `user.email` config. No `--` separator: with
+ * one, git treats `hash` as a PATH FILTER rather than a revision and silently
+ * returns empty output for every real hash.
+ */
+export async function gitCommitterEmail(cwd: string, hash: string): Promise<GitResult<string>> {
+  if (!SAFE_REF.test(hash)) {
+    return { ok: false, reason: "git_error", message: "invalid ref format" };
+  }
+  return git(cwd, ["log", "-1", "--format=%ce", hash], (out) => out.trim());
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------

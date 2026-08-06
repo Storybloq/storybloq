@@ -110,6 +110,7 @@ export function createSession(
     mode: configOverrides?.mode ?? "auto",
     reviews: { plan: [], code: [] },
     completedTickets: [],
+    commitAttributionAudits: [],
     finalizeCheckpoint: null,
     finalizedItem: null,
     git: { branch: null, mergeBase: null },

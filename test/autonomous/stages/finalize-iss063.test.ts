@@ -18,11 +18,17 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   gitBlobHash: vi.fn().mockResolvedValue({ ok: false }),
   gitStash: vi.fn().mockResolvedValue({ ok: true }),
   gitStashPop: vi.fn().mockResolvedValue({ ok: true }),
+  // ISS-982: this file is not about attribution, so every commit_done report
+  // below passes overrideAttribution: true. These are still called
+  // unconditionally when the fast path fires (Mutant E's design), so they
+  // need a resolved value even though the override makes it moot.
+  gitCommitterEmail: vi.fn().mockResolvedValue({ ok: true, data: "unused@example.com" }),
+  gitUserEmail: vi.fn().mockResolvedValue("unused@example.com"),
 }));
 
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { FinalizeStage } from "../../../src/autonomous/stages/finalize.js";
-import { gitHead } from "../../../src/autonomous/git-inspector.js";
+import { gitHead, gitCommitterEmail, gitUserEmail } from "../../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
@@ -98,6 +104,9 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     sessionDir = join(testRoot, ".story", "sessions", "test-session");
     mkdirSync(sessionDir, { recursive: true });
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "def456" } });
+    // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
+    vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
+    vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
   });
 
   afterEach(() => {
@@ -113,7 +122,7 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456", overrideAttribution: true });
 
     expect(advance.action).toBe("advance");
     const written = JSON.parse(
@@ -132,7 +141,7 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456" });
+    await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456", overrideAttribution: true });
 
     const written = JSON.parse(
       readFileSync(join(sessionDir, "state.json"), "utf-8"),
@@ -146,7 +155,7 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456" });
+    await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456", overrideAttribution: true });
 
     const written = JSON.parse(
       readFileSync(join(sessionDir, "state.json"), "utf-8"),
@@ -166,7 +175,7 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await stage.report(ctx, { completedAction: "commit_done", commitHash: "ghi789" });
+    await stage.report(ctx, { completedAction: "commit_done", commitHash: "ghi789", overrideAttribution: true });
 
     const written = JSON.parse(
       readFileSync(join(sessionDir, "state.json"), "utf-8"),
@@ -202,6 +211,9 @@ describe("T-450 7a: FINALIZE records the item it committed", () => {
     sessionDir = join(testRoot, ".story", "sessions", "test-session");
     mkdirSync(sessionDir, { recursive: true });
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: "def456" } });
+    // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
+    vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
+    vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
   });
 
   afterEach(() => {
@@ -218,7 +230,7 @@ describe("T-450 7a: FINALIZE records the item it committed", () => {
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "ghi789" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "ghi789", overrideAttribution: true });
     expect(advance.action).toBe("goto");
 
     const written = JSON.parse(
@@ -243,7 +255,7 @@ describe("T-450 7a: FINALIZE records the item it committed", () => {
     const state = makeState({ finalizeCheckpoint: "precommit_passed" });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456", overrideAttribution: true });
     expect(advance.action).toBe("advance");
 
     const written = JSON.parse(
@@ -283,7 +295,7 @@ describe("T-450 7a: FINALIZE records the item it committed", () => {
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "def456", overrideAttribution: true });
     expect(advance.action).toBe("advance");
 
     const written = JSON.parse(

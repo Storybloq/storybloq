@@ -29,6 +29,11 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   gitStashPop: vi.fn().mockResolvedValue({ ok: true }),
   gitResolveCommit: vi.fn(),
   gitRevListAncestryPath: vi.fn(),
+  // ISS-982: this file is about hash-matching/drift, not attribution. Tests
+  // that reach the fast path pass overrideAttribution: true; these are still
+  // called unconditionally when the fast path fires (Mutant E's design).
+  gitCommitterEmail: vi.fn().mockResolvedValue({ ok: true, data: "unused@example.com" }),
+  gitUserEmail: vi.fn().mockResolvedValue("unused@example.com"),
 }));
 
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
@@ -37,6 +42,8 @@ import {
   gitHead,
   gitResolveCommit,
   gitRevListAncestryPath,
+  gitCommitterEmail,
+  gitUserEmail,
 } from "../../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 
@@ -113,6 +120,9 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     mockedGitHead.mockReset();
     mockedGitResolveCommit.mockReset();
     mockedGitRevListAncestryPath.mockReset();
+    // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
+    vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
+    vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
   });
 
   afterEach(() => {
@@ -125,7 +135,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     const state = makeState();
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "aaaaaaa" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "aaaaaaa", overrideAttribution: true });
 
     expect(advance.action).toBe("advance");
     expect(mockedGitResolveCommit).not.toHaveBeenCalled();
@@ -143,7 +153,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     const state = makeState({ git: { branch: "main", mergeBase: B40, expectedHead: B40, initHead: B40 } as FullSessionState["git"] });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "abc" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "abc", overrideAttribution: true });
 
     expect(advance.action).toBe("advance");
     expect(mockedGitResolveCommit).not.toHaveBeenCalled();
@@ -158,7 +168,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     const state = makeState();
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "AAAAAAA" });
+    const advance = await stage.report(ctx, { completedAction: "commit_done", commitHash: "AAAAAAA", overrideAttribution: true });
 
     expect(advance.action).toBe("advance");
     expect(mockedGitResolveCommit).not.toHaveBeenCalled();

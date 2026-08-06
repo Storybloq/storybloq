@@ -1288,6 +1288,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),
         issueId: z.string().optional().describe("Issue ID (for issue_picked) -- T-153"),
         commitHash: z.string().optional().describe("Git commit hash (for commit_done)"),
+        overrideAttribution: z.boolean().optional().describe("Explicit override for FINALIZE's commit-attribution check (ISS-982). When true, bypasses an attribution mismatch on a commit_done report; every use is recorded in the session's commitAttributionAudits trail and the commit event, override or not."),
         handoverContent: z.string().optional().describe("Handover markdown content"),
         verdict: z.string().optional().describe("Review verdict: approve|revise|request_changes|reject"),
         findings: z.array(z.object({

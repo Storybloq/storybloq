@@ -213,6 +213,21 @@ export interface SessionState {
   readonly claimEpoch?: ClaimEpoch | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string; readonly displayId?: string }>;
   readonly resolvedIssues?: ReadonlyArray<string>;
+  /**
+   * ISS-982: append-only, per-commit attribution audit trail. Written in the
+   * SAME `writeState` call as each commit's `finalizeCheckpoint: "committed"`
+   * write, never replaced or cleared -- following the `completedTickets` /
+   * `resolvedIssues` per-item-accumulation precedent, since a bare top-level
+   * boolean would be silently overwritten every time FINALIZE runs for a
+   * later item in a multi-item session.
+   */
+  readonly commitAttributionAudits?: ReadonlyArray<{
+    readonly commitHash: string;
+    readonly itemKind: "ticket" | "issue" | "none";
+    readonly itemId: string | null;
+    readonly overrideRequested: boolean;
+    readonly at: string;
+  }>;
   readonly resolvedIssueDisplayIds?: Readonly<Record<string, string>>;
   readonly targetWorkDisplayIds?: Readonly<Record<string, string>>;
   readonly contextPressure?: {
@@ -831,6 +846,18 @@ export const SessionStateSchema = z.object({
     realizedRisk: forgiveNull(z.string()),
     startedAt: forgiveNull(z.string()),
     completedAt: forgiveNull(z.string()),
+  })).default([]),
+
+  // ISS-982: per-commit attribution audit trail (see interface docstring
+  // above). `.default([])` is load-bearing: a session written to disk before
+  // this field existed must still parse -- ISS-902's exact shape -- and the
+  // default is what supplies `[]` for a key absent from the input.
+  commitAttributionAudits: z.array(z.object({
+    commitHash: z.string(),
+    itemKind: z.enum(["ticket", "issue", "none"]),
+    itemId: z.string().nullable(),
+    overrideRequested: z.boolean(),
+    at: z.string(),
   })).default([]),
 
   // T-187: Per-ticket timing -- set when ticket is picked, cleared on commit
@@ -1942,6 +1969,8 @@ export interface GuideReportInput {
   readonly findings?: readonly Finding[];
   readonly reviewerSessionId?: string;
   readonly overrideOverlap?: boolean;
+  /** ISS-982: explicit override for handleCommit's fast-path attribution check. */
+  readonly overrideAttribution?: boolean;
   readonly notes?: string;
   readonly reviewer?: string;  // ISS-102: actual reviewer backend used (overrides computed nextReviewer)
   readonly reviewId?: string;  // ISS-720: lens reviewId from prepare/synthesize; joins to verification telemetry to record the path actually taken

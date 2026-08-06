@@ -244,7 +244,18 @@ describe("ISS-965 T12: crash-point idempotent re-entry", () => {
 });
 
 describe("ISS-965 T13: start-in-crash-window boundedness (recoverPendingMutation's existing safe branches)", () => {
-  it("set-complete on an already-complete ticket is already-applied: marker cleared, no write", async () => {
+  it("a crash between this session's own completion write and the marker clear terminalizes cleanly on start, not a false mutation_conflict (ISS-913 round-2 fix)", async () => {
+    // This ticket's shape -- status "complete", no claim material -- is
+    // exactly what THIS session's own successful clearClaimOnComplete write
+    // leaves behind. ISS-913 widened recoverPendingMutation's "already
+    // applied" branch to fail closed on unproven ownership (a status match
+    // alone is not proof of WHO wrote it), and that gate cannot tell this
+    // shape apart from a foreign completion -- the ownership keys are gone
+    // either way. So handleStart now recognizes the "completed-consistent"
+    // shape (epoch had a claim, ledger has neither key, status complete) the
+    // SAME way report/resume already do via claimPreflightBlock, and
+    // terminalizes through it BEFORE recoverPendingMutation ever runs,
+    // instead of reaching the ownership gate and recording a false conflict.
     writeTicket(root, "T-001", { status: "complete", completedDate: "2026-08-05" });
     const { sessionId, sessDir } = plantPreTerminalSession(root, {
       type: "ticket_update", target: "T-001", value: "complete",
@@ -252,15 +263,17 @@ describe("ISS-965 T13: start-in-crash-window boundedness (recoverPendingMutation
     });
 
     const before = readTicketRaw(root, "T-001");
-    // handleStart runs recoverPendingMutation on an existing, unexpired-lease
-    // session before deciding whether to refuse or proceed.
     const result = await handleAutonomousGuide(root, { action: "start" });
-    expect(result.isError).toBe(true); // still refuses: an active session exists
+    expect(result.isError).toBeFalsy(); // terminalized cleanly, not refused
 
     expect(readTicketRaw(root, "T-001")).toBe(before);
     const after = readState(sessDir);
     expect(after.pendingProjectMutation).toBeNull();
     expect(after.sessionId).toBe(sessionId);
+    expect(after.state).toBe("HANDOVER");
+
+    expect(eventsOfType(sessDir, "mutation_conflict").length).toBe(0);
+    expect(eventsOfType(sessDir, "claim_terminalized").length).toBe(1);
   });
 
   it("an expectedCurrent mismatch against a ticket that is neither the target nor the expected value is a conflict: marker cleared, no write", async () => {

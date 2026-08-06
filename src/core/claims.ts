@@ -73,6 +73,22 @@ function claimMatchesEpoch(ticket: Ticket, epoch: ClaimEpoch): boolean {
 }
 
 /**
+ * Whether `ticket` provably matches `epoch` on BOTH ownership fields (T-442):
+ * the ticket id itself, the session stamp, and the `claim` block. Extracted
+ * from `releaseClaimIfOwned` (ISS-913) so a second caller -- the crash-recovery
+ * replay in `recoverPendingMutation` -- can run the identical proof inside its
+ * own project lock instead of trusting an `expectedCurrent` status match, which
+ * is not ownership: `{claimedBySession: us, claim.user: rival}` is reachable via
+ * the merge driver and passes a status-only check.
+ */
+export function provenOwnership(ticket: Ticket, epoch: ClaimEpoch): boolean {
+  if (ticket.id !== epoch.ticketId) return false;
+  if (sessionOwnerOf(ticket) !== epoch.sessionId) return false;
+  if (!claimMatchesEpoch(ticket, epoch)) return false;
+  return true;
+}
+
+/**
  * Releases a claim only when the caller provably owns BOTH ownership fields
  * (T-442). Six sites released claims before this existed, and every one of them
  * accepted `claimedBySession === sessionId` and then deleted BOTH keys. In the
@@ -90,11 +106,7 @@ export function releaseClaimIfOwned(
   ticket: Ticket,
   epoch: ClaimEpoch,
 ): { released: boolean; ticket: Ticket } {
-  if (ticket.id !== epoch.ticketId) return { released: false, ticket };
-
-  if (sessionOwnerOf(ticket) !== epoch.sessionId) return { released: false, ticket };
-
-  if (!claimMatchesEpoch(ticket, epoch)) return { released: false, ticket };
+  if (!provenOwnership(ticket, epoch)) return { released: false, ticket };
 
   // ISS-759/ISS-652: delete the keys rather than writing explicit nulls, so a
   // released ticket carries no residual state.

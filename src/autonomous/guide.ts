@@ -44,7 +44,8 @@ import {
 import type { IssueAuthorityView } from "./candidate-authority.js";
 import type { Ticket } from "../models/ticket.js";
 import { serverRegistryBinder } from "./mcp-binding.js";
-import { releaseClaimIfOwned } from "../core/claims.js";
+import { releaseClaimIfOwned, provenOwnership, clearClaimOnComplete } from "../core/claims.js";
+import { todayISO } from "../cli/helpers.js";
 import {
   createSession,
   deleteSession,
@@ -757,6 +758,23 @@ async function recoverPendingMutation(
   const expectedCurrent = m.expectedCurrent as string | undefined;
   const postMutation = m.postMutation as Record<string, unknown> | undefined;
 
+  // T-442 / ISS-913: a replay prepared while this session still believed it
+  // held the claim must prove that BEFORE writing, inside the SAME lock as the
+  // write -- an `expectedCurrent` status match is not ownership: the merge
+  // driver can reach `{claimedBySession: us, claim.user: rival}`, which still
+  // passes a status-only check. Absent epoch (a session that never gained the
+  // ability to prove ownership) keeps today's ungated behavior so pre-T-442
+  // crash recovery is not regressed. A PRESENT-but-malformed epoch is
+  // different: that session DID acquire a claim, so it is routed to conflict
+  // rather than folded into the legacy passthrough (claim-preflight.ts's
+  // parseClaimEpoch rejects absent, malformed, and partial epochs alike, and
+  // this is the one caller that must still tell "never had one" apart from
+  // "had one and it is corrupt").
+  const rawEpoch = (state as Record<string, unknown>).claimEpoch;
+  const epochPresent = rawEpoch !== undefined && rawEpoch !== null;
+  const epoch = epochPresent ? parseClaimEpoch(rawEpoch) : null;
+  const epochMalformed = epochPresent && epoch === null;
+
   let conflict = false;
   try {
     const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
@@ -764,17 +782,7 @@ async function recoverPendingMutation(
       const ticket = projectState.ticketByID(targetId);
       if (!ticket) return;
 
-      if (ticket.status === targetValue) {
-        // Project write already succeeded -- clear marker
-      } else if (expectedCurrent && ticket.status === expectedCurrent) {
-        // Replay the write
-        const updated = { ...ticket, status: targetValue as typeof ticket.status };
-        if (m.claimedBySession) {
-          (updated as Record<string, unknown>).claimedBySession = m.claimedBySession;
-        }
-        await writeTicketUnlocked(updated, root);
-      } else {
-        // Ticket in unexpected state -- conflict: clear marker, do NOT apply postMutation
+      const recordConflict = () => {
         conflict = true;
         appendEvent(dir, {
           rev: state.revision,
@@ -783,6 +791,66 @@ async function recoverPendingMutation(
           data: { targetId, expected: expectedCurrent, actual: ticket.status, transitionId: m.transitionId },
         });
         writeSessionAndRefresh(root, dir, { ...state, pendingProjectMutation: null } as FullSessionState, "if-active");
+      };
+
+      if (epochMalformed) {
+        recordConflict();
+        return;
+      }
+
+      // Gated for any valid (non-legacy) epoch only; a null epoch means no
+      // proof exists to check, so it passes through exactly as before.
+      const proven = epoch ? provenOwnership(ticket, epoch) : true;
+
+      if (ticket.status === targetValue) {
+        // Gated for EVERY target, completion included. Nothing is written on
+        // this branch, but clearing the marker also releases this session to
+        // apply `postMutation` as though ITS OWN write is what produced the
+        // match -- a status equal to the target is not proof of that, and a
+        // foreign completion (or a foreign write to any other status) can
+        // satisfy it just as well. Fail closed rather than let a foreign
+        // completion masquerade as this session's own success (Codex
+        // review-code round 1: completion status is not self-certifying).
+        // The one case this forecloses -- THIS session's own prior completion
+        // succeeded and a crash struck before the marker was cleared -- is
+        // already handled upstream of here for report/resume:
+        // claimPreflightBlock's "completed-consistent" branch recognizes
+        // exactly that shape (epoch had a claim, ledger now has neither key,
+        // status complete) and terminalizes cleanly before recovery ever
+        // runs. Only start/pre_compact/cancel reach this branch ungated by
+        // that check, and none of them depend on postMutation to make
+        // progress the way report/resume do.
+        if (!proven) { recordConflict(); return; }
+        // Project write already succeeded -- clear marker
+      } else if (expectedCurrent && ticket.status === expectedCurrent) {
+        if (!proven) { recordConflict(); return; }
+
+        if (epoch && targetValue === "complete") {
+          // ISS-913 (merged ISS-983): route a completion replay through the
+          // SAME guard the ordinary update path uses, rather than writing the
+          // status directly. That delivers the epoch proof already gated
+          // above AND the claim-key stripping a direct write skips -- without
+          // it, a replayed completion lands with status "complete" while
+          // still carrying a live claim, the "contradictory" shape
+          // candidate-authority.ts's finalizeTicketShape rejects.
+          const candidate: Ticket = { ...ticket, status: "complete" as const, completedDate: todayISO() };
+          const completion = clearClaimOnComplete(candidate, { completingUser: epoch.user, activeEpochs: [epoch] });
+          if (completion.rejected) {
+            recordConflict();
+            return;
+          }
+          await writeTicketUnlocked(completion.ticket, root);
+        } else {
+          // Replay the write
+          const updated = { ...ticket, status: targetValue as typeof ticket.status };
+          if (m.claimedBySession) {
+            (updated as Record<string, unknown>).claimedBySession = m.claimedBySession;
+          }
+          await writeTicketUnlocked(updated, root);
+        }
+      } else {
+        // Ticket in unexpected state -- conflict: clear marker, do NOT apply postMutation
+        recordConflict();
       }
     });
   } catch {
@@ -1163,6 +1231,28 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         unidentifiedCallerRemedy(existing.state.sessionId),
       ));
     }
+
+    // ISS-913 (Codex review-code round 2): recoverPendingMutation's
+    // "already applied" branch now fails closed when ownership cannot be
+    // proven, which is correct for a foreign or contradictory match but wrong
+    // for THIS session's own completion -- clearClaimOnComplete strips both
+    // ownership keys on success, so a crash between that write and the
+    // marker clear leaves exactly the shape provenOwnership cannot tell
+    // apart from a foreign one. report/resume already recognize that shape
+    // via claimPreflightBlock's "completed-consistent" branch and
+    // terminalize BEFORE recovery ever runs (ISS-965); start reaches
+    // recovery directly (the ISS-899 ordering above), so it needs the same
+    // narrow recognition here -- NOT the full claimPreflightBlock, which
+    // would also start refusing claim-LOST sessions here, a separate
+    // decision with its own breakage analysis (the existing comment above
+    // this block already declines that for the identified-foreign case).
+    const reconciled = await reconcileClaimForGuide(root, existing.state);
+    if (reconciled?.reconciliation?.status === "completed-consistent") {
+      const ticketId = existing.state.ticket?.displayId ?? existing.state.ticket?.id
+        ?? reconciled.epoch?.ticketId ?? "unknown";
+      return terminalizeCompletedSession(root, existing.dir, existing.state, ticketId);
+    }
+
     await recoverPendingMutation(existing.dir, existing.state, root);
     // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);

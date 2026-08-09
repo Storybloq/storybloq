@@ -325,7 +325,14 @@ describe("T-427 honest labels (never oversell as live/push)", () => {
     expect(busMode).toContain("on-stop");
     expect(busMode).toContain("on-tool");
     expect(busMode).toMatch(/no daemon and no push/i);
-    expect(busMode).toMatch(/no external process can inject/i);
+    // ISS-1001: the surviving constraint is scoped to a RUNNING TOOL CALL, and delivery
+    // rides the harness's own Stop/PostToolUse boundaries. The older, broader claim (that
+    // nothing external can reach a session at all) was false once Claude Code 2.1.224+
+    // shipped native cross-session messaging, which starts a new turn in an IDLE session.
+    // Pin the true statement and its mechanism, and keep the false one from returning.
+    expect(busMode).toMatch(/a running tool call is never interrupted/i);
+    expect(busMode).toMatch(/Stop and PostToolUse boundaries/i);
+    expect(busMode).not.toMatch(/no external process can inject/i);
   });
 });
 

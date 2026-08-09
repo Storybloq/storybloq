@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { initProject } from "../../src/core/init.js";
+import { currentCliVersion } from "../../src/core/team-capabilities.js";
 import { canonicalHash, hashWithoutKey } from "../../src/bus/canonical.js";
 import {
   BusInstanceSchema,
@@ -620,18 +621,31 @@ describe("Storybloq Bus v1 -> v2 migration (D5)", () => {
 
     // A higher minCliVersion on a still-valid v2 runtime (protocolVersion stays 2)
     // is fenced through resolveInitializedBusPaths, naming instance.json.
-    await writeFile(instancePath, JSON.stringify({ ...instance, minCliVersion: "1.9.0" }, null, 2) + "\n", "utf-8");
+    //
+    // DERIVED, not hardcoded. This literal used to be "1.9.0", which fenced
+    // correctly until the package version actually reached 1.9.0 -- at which
+    // point the fence stopped firing and the test failed during the release
+    // bump. A value computed from the CLI's own version is above it by
+    // construction, so no future bump can walk past it. The fence compares
+    // against currentCliVersion(), so deriving from that same source is what
+    // makes "strictly newer" true rather than merely likely.
+    const tooNew = (() => {
+      const major = Number.parseInt((currentCliVersion() ?? "0").split(".")[0] ?? "0", 10);
+      return `${(Number.isFinite(major) ? major : 0) + 1}.0.0`;
+    })();
+
+    await writeFile(instancePath, JSON.stringify({ ...instance, minCliVersion: tooNew }, null, 2) + "\n", "utf-8");
     await expect(pollBus(value.root, { endpointId: value.a.endpointId, clientTaskId: value.aTaskId }))
       .rejects.toMatchObject({ code: "upgrade_required", message: expect.stringContaining("instance.json") });
     await expect(pollBus(value.root, { endpointId: value.a.endpointId, clientTaskId: value.aTaskId }))
-      .rejects.toMatchObject({ message: expect.stringContaining("1.9.0") });
+      .rejects.toMatchObject({ message: expect.stringContaining(tooNew) });
 
     // The fence is centralized: the pure read surfaces (summary + doctor) refuse
     // the too-new minCliVersion too, not only the endpoint op (pollBus).
     await expect(busSummary(value.root))
-      .rejects.toMatchObject({ code: "upgrade_required", message: expect.stringContaining("1.9.0") });
+      .rejects.toMatchObject({ code: "upgrade_required", message: expect.stringContaining(tooNew) });
     await expect(busDoctor(value.root))
-      .rejects.toMatchObject({ code: "upgrade_required", message: expect.stringContaining("1.9.0") });
+      .rejects.toMatchObject({ code: "upgrade_required", message: expect.stringContaining(tooNew) });
   });
 
   it("refuses an unknown instance schema as corrupt and never routes it into migration (R12)", async () => {

@@ -514,6 +514,54 @@ describe("guardCompletedTicketMutation guard (ISS-981)", () => {
     return dir;
   }
 
+  // The claim-FREE complete ticket: the shape a normal completion actually
+  // leaves behind, since clearClaimOnComplete strips claim keys on success.
+  // No claim, no claimedBySession, so nothing for the guard to authorize
+  // against and no other party's ownership at stake.
+  async function setupCompletedUnclaimedTicket(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-guard-unclaimed-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    execFileSync("git", ["config", "user.email", "me@test.com"], { cwd: dir });
+    execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir });
+    await handleTicketCreate(
+      { title: "Original", type: "task", phase: "p0", description: "orig desc", blockedBy: [], parentTicket: null },
+      "md", dir,
+    );
+    const path = join(dir, ".story", "tickets", "T-001.json");
+    const ticket = JSON.parse(await readFile(path, "utf-8"));
+    ticket.status = "complete";
+    ticket.completedDate = "2026-05-26";
+    await writeFile(path, JSON.stringify(ticket, null, 2) + "\n", "utf-8");
+    return dir;
+  }
+
+  // 1.9.0 scope: ISS-981 guards the REOPEN direction, which is the defect its
+  // filing names ("reopens a completed ticket and erases its completion
+  // date"). A metadata edit erases nothing and takes nothing from anyone, so
+  // guarding it only broke a routine correction on finished work. These two
+  // pin both halves of that boundary on the claim-free shape.
+
+  it("[ISS-981 scope] allows a metadata edit on a claim-free complete ticket, preserving status and completedDate", async () => {
+    const dir = await setupCompletedUnclaimedTicket();
+    await handleTicketUpdate("T-001", { title: "Corrected" }, "json", dir);
+    const after = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8"));
+    expect(after.title).toBe("Corrected");
+    expect(after.status).toBe("complete"); // the edit must not reopen it
+    expect(after.completedDate).toBe("2026-05-26"); // and must not erase the date
+  });
+
+  it("[ISS-981 scope] still refuses to REOPEN a claim-free complete ticket without --force", async () => {
+    const dir = await setupCompletedUnclaimedTicket();
+    await expect(
+      handleTicketUpdate("T-001", { status: "open" }, "json", dir),
+    ).rejects.toThrow(/Cannot reopen/);
+    const after = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8"));
+    expect(after.status).toBe("complete");
+    expect(after.completedDate).toBe("2026-05-26");
+  });
+
   // test 1: RED-at-parent. Covers the missing-identity path specifically
   // (distinct from #4b's resolvable-but-mismatched identity): an explicit
   // repo-local `user.email ""` deterministically forces gitUserEmail to

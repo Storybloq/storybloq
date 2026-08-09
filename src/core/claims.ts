@@ -54,6 +54,21 @@ function stripClaimKeys(ticket: Ticket): Ticket {
 }
 
 /**
+ * Does this ticket carry anything to authorize against? False is the shape a
+ * normal completion leaves behind, since success strips both claim keys.
+ *
+ * Exported so callers can decide whether ownership EVIDENCE is needed at all
+ * before going out to git and the session store to gather it. That gathering
+ * fails closed by throwing when session state is unreadable, which is correct
+ * when a verdict depends on it and pure cost when no verdict does. This is the
+ * single source of the condition: clearClaimOnComplete's own early return uses
+ * it too, so the two cannot drift into disagreeing about when evidence matters.
+ */
+export function hasClaimMaterial(ticket: Ticket): boolean {
+  return ticket.claim != null || sessionOwnerOf(ticket) !== null;
+}
+
+/**
  * Exact match between a ticket's `claim` and the epoch that recorded it.
  *
  * A null-user epoch records that no claim key existed at acquisition, so it
@@ -185,7 +200,7 @@ export function clearClaimOnComplete(
 
   // Legacy: nothing to authorize against. Residual keys are still stripped so a
   // present-but-null claimedBySession does not survive on disk (ISS-759).
-  if (!hasClaim && sessionOwnerOf(ticket) === null) {
+  if (!hasClaimMaterial(ticket)) {
     return { rejected: false, ticket: hasAnyKey ? stripClaimKeys(ticket) : ticket };
   }
 
@@ -235,19 +250,32 @@ export function clearClaimOnComplete(
 }
 
 /**
- * Whether `guard` proves the caller may mutate an already-complete `existing`
- * ticket -- a transition OUT of complete, or any field change while it stays
- * complete (ISS-981). `clearClaimOnComplete` only runs its ownership check for
- * transitions INTO complete; both other shapes bypass it entirely today.
+ * Whether `guard` proves the caller may REOPEN an already-complete `existing`
+ * ticket, meaning a transition OUT of complete (ISS-981).
+ *
+ * `clearClaimOnComplete` cannot cover that direction itself: it returns early
+ * whenever the CANDIDATE's status is not "complete", which is precisely what a
+ * reopen produces. It does still cover a candidate that STAYS complete while
+ * carrying contradictory claim material (ISS-913), and that is what protects a
+ * claim-bearing ticket's fields, so this function is not the only guard on
+ * already-complete work.
+ *
+ * SCOPE (1.9.0): the caller invokes this for reopens ONLY, not for every edit
+ * of a complete ticket. ISS-981's filing names the harm as a reopen that
+ * "erases its completion date" and undoes a session's work; a title or
+ * description edit erases nothing and takes nothing from anyone. Guarding
+ * those too meant a routine correction on finished work failed with "cannot
+ * prove ownership" against a ticket that, post-completion, carries no
+ * ownership to prove.
  *
  * ISS-981's own filing names the claim-FREE case -- the common shape, since a
  * successful completion strips claim keys -- as the headline defect: "no
- * claim, no --force" lets any caller reopen or rewrite a ticket a session just
- * finished. `clearClaimOnComplete`'s "legacy: nothing to authorize against"
- * pass is correct for ITS OWN direction (completing an unclaimed ticket steals
- * nothing from anyone), but reusing that polarity here would leave exactly
- * the gap ISS-981 exists to close, so a claim-free ticket is NOT authorized
- * by default -- `--force` (`guard.authorized`) is the only path for it.
+ * claim, no --force" lets any caller reopen a ticket a session just finished.
+ * `clearClaimOnComplete`'s "legacy: nothing to authorize against" pass is
+ * correct for ITS OWN direction (completing an unclaimed ticket steals nothing
+ * from anyone), but reusing that polarity here would leave exactly the gap
+ * ISS-981 exists to close, so a claim-free ticket is NOT authorized by default
+ * on the reopen path -- `--force` (`guard.authorized`) is the only path for it.
  *
  * A claim-bearing ticket (the ISS-913 "contradictory" shape, or any other
  * reason completion never stripped it) still delegates to

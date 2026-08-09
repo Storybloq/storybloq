@@ -6,6 +6,7 @@ import { resolveAndNormalizeTicketRef, RefResolutionError } from "../../core/ref
 import {
   clearClaimOnComplete,
   guardCompletedTicketMutation,
+  hasClaimMaterial,
   buildClaim,
   canClaim,
   type CompletionGuardOptions,
@@ -502,28 +503,61 @@ export async function handleTicketUpdate(
     const isNoOpUpdate = JSON.stringify(ticket) === JSON.stringify(existing);
 
     // T-442 / ISS-784 / ISS-981: a completion must not clear a claim the caller
-    // cannot prove is theirs, and any OTHER mutation of an already-complete
-    // ticket -- a transition out of complete, or a field change while it stays
-    // complete -- must prove ownership the same way, rather than bypassing the
-    // guard because clearClaimOnComplete only fires for completions INTO
-    // complete. This is deliberately NOT limited to tickets that still carry
-    // claim material: ISS-981's own filing names the claim-free case -- the
-    // common shape, since a successful completion strips claim keys -- as the
-    // defect ("no claim, no --force" reopens or rewrites a session's just-
-    // completed work). `--force` is the escape for a claim-free ticket, since
-    // there is no identity left to prove ownership against; a claim-bearing
-    // one must still match it. Identity comes from git and from the LOCAL
-    // active session record, never from the ticket being updated -- that
-    // value identifies the current ledger winner, so using it to authorize
-    // would authorize the very party it is meant to exclude.
-    const guard = await resolveCompletionGuard(root, existing, force);
+    // cannot prove is theirs, and neither may a REOPEN bypass that guard.
+    // clearClaimOnComplete cannot cover the reopen direction itself: it returns
+    // early whenever the CANDIDATE's status is not "complete", which is exactly
+    // what a reopen produces. It does still cover a candidate that STAYS
+    // complete while carrying contradictory claim material (ISS-913), which is
+    // the mechanism that keeps a claim-bearing ticket's fields protected below.
+    // This is deliberately NOT limited to tickets that still carry claim
+    // material: ISS-981's own filing names the claim-free case -- the common
+    // shape, since a successful completion strips claim keys -- as the defect
+    // ("no claim, no --force" reopens a session's just-completed work).
+    // `--force` is the escape for a claim-free ticket, since there is no
+    // identity left to prove ownership against; a claim-bearing one must still
+    // match it. Identity comes from git and from the LOCAL active session
+    // record, never from the ticket being updated -- that value identifies the
+    // current ledger winner, so using it to authorize would authorize the very
+    // party it is meant to exclude.
+    //
+    // SCOPE (1.9.0): the guard covers the REOPEN direction only, not every edit
+    // of a complete ticket. ISS-981's stated defect is that a reopen "erases its
+    // completion date" and undoes a session's work; a title or description edit
+    // erases nothing and steals nothing. Guarding those too made a routine human
+    // correction on a finished ticket fail with "cannot prove ownership" against
+    // a ticket that, post-completion, carries no ownership to prove -- a
+    // breaking change with no integrity gain. Reopening still fails closed.
+    const isReopen =
+      existing.status === "complete" &&
+      statusChanges.status !== undefined &&
+      statusChanges.status !== "complete";
 
-    if (!isNoOpUpdate && existing.status === "complete") {
+    // Gathering ownership evidence costs a git identity lookup and a session
+    // scan, and resolveCompletionGuard fails closed by throwing rather than
+    // guessing when it cannot complete them. Resolve it only when something
+    // will actually consult the result: a reopen, an explicit --force, or a
+    // candidate still carrying claim material for clearClaimOnComplete to
+    // authorize. `hasClaimMaterial` is imported rather than re-derived so this
+    // cannot drift from the early return it mirrors.
+    //
+    // Scoped as an optimization, NOT as a fix for an observed failure. The
+    // throw is real but no trigger was demonstrated: findActiveSessionFull
+    // catches its own readdir and parse failures and returns null, so a
+    // malformed session record and a chmod 000 sessions directory both take the
+    // ordinary path. The realistic remaining trigger is a failed dynamic import
+    // or an unexpected internal error. Not consulting evidence no verdict needs
+    // is right on its own terms; do not read this as a reproduced bug.
+    const needsOwnershipEvidence = force || (!isNoOpUpdate && (isReopen || hasClaimMaterial(ticket)));
+    const guard: CompletionGuardOptions = needsOwnershipEvidence
+      ? await resolveCompletionGuard(root, existing, force)
+      : { completingUser: null, activeEpochs: [] };
+
+    if (!isNoOpUpdate && isReopen) {
       const { authorized } = guardCompletedTicketMutation(existing, guard);
       if (!authorized) {
         throw new CliValidationError(
           "invalid_input",
-          `Cannot modify ${displayIdOf(existing)}: it is complete and this caller cannot prove ownership` +
+          `Cannot reopen ${displayIdOf(existing)}: it is complete and this caller cannot prove ownership` +
             (guard.completingUser === null ? " (git user.email is not configured)" : "") +
             `. If that is intended, re-run with --force.`,
         );

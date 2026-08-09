@@ -1,6 +1,6 @@
 {
   "name": "@storybloq/storybloq",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "license": "PolyForm-Shield-1.0.0",
   "description": "Project memory for Claude Code and Codex. Storybloq stores tickets, issues, handovers, and lessons in a .story/ folder inside your repo so every session starts where the last one left off. Pairs with the Storybloq Mac app on the App Store.",
   "homepage": "https://storybloq.com",

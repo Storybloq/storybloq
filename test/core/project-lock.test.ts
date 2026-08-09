@@ -9,6 +9,9 @@ import {
   mkdirSync,
   existsSync,
   statSync,
+  lstatSync,
+  utimesSync,
+  symlinkSync,
 } from "node:fs";
 import { readFile, writeFile, rm, mkdtemp, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
@@ -161,12 +164,14 @@ describe("project-lock", () => {
     __projectLockTestHooks.duringSteal = null;
     __projectLockTestHooks.beforeStealUnlink = null;
     __projectLockTestHooks.beforeStealLink = null;
+    __projectLockTestHooks.beforeLegacyReclaimCheck = null;
   });
 
   afterEach(() => {
     __projectLockTestHooks.duringSteal = null;
     __projectLockTestHooks.beforeStealUnlink = null;
     __projectLockTestHooks.beforeStealLink = null;
+    __projectLockTestHooks.beforeLegacyReclaimCheck = null;
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -306,6 +311,94 @@ describe("project-lock", () => {
     expect(existsSync(lockPath)).toBe(true);
     expect(statSync(lockPath).isDirectory()).toBe(true); // untouched
   });
+
+  // ---- legacy directory lock: reclaim of an apparently-abandoned artifact ----
+  //
+  // Upgrade regression these pin: a pre-1.9.0 process killed mid-write leaves
+  // an empty `.story/.lock` DIRECTORY. pre-1.9.0 storybloq auto-healed it via
+  // proper-lockfile's own `stale: 10000` window; refusing it outright made a
+  // routine upgrade brick the project (5s stall, then a manual-removal error,
+  // on writes AND on reads that trigger journal recovery). Only the shape that
+  // looks abandoned on every inspectable axis is reclaimed; every other shape
+  // keeps failing explicit. That judgement is evidence-based, not proof: see
+  // LEGACY_LOCK_STALE_MS for the cases where a LIVE lock can still look old
+  // and for the residual those leave unmitigated.
+
+  const ageLegacyDir = (path: string, ageMs: number): void => {
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(path, when, when);
+  };
+
+  it("reclaims an EMPTY legacy directory whose mtime indicates no pre-1.9.0 holder is live", async () => {
+    mkdirSync(lockPath);
+    ageLegacyDir(lockPath, 120_000); // well past proper-lockfile's own 10s stale window
+    const handle = await acquireProjectLockAsync(lockPath, { deadlineMs: 2000, pollMs: 20 });
+    expect(handle).toBeTruthy();
+    expect(statSync(lockPath).isFile()).toBe(true); // reclaimed, then republished as our file lock
+    releaseProjectLock(handle);
+  });
+
+  it("does NOT reclaim an empty legacy directory with a fresh mtime (a healthy older-version holder)", async () => {
+    mkdirSync(lockPath); // fresh mtime by construction
+    await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 200, pollMs: 20 })).rejects.toThrow(/legacy-format lock/);
+    expect(statSync(lockPath).isDirectory()).toBe(true); // untouched
+  });
+
+  // Mutation evidence: neutralizing classifyLegacyLock's `entries.length > 0`
+  // guard leaves this test GREEN, because rmdir refuses a non-empty directory
+  // with ENOTEMPTY and attemptLegacyReclaim backs off on that code. The
+  // property below is therefore held by two independent layers, and this test
+  // pins the property (contents survive) rather than either layer. Do not read
+  // its passing as proof the empty-check specifically is still in place.
+  it("does NOT reclaim a NON-EMPTY legacy directory even when its mtime is old, and never deletes its contents", async () => {
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, "unexpected-payload"), "not proper-lockfile's shape");
+    ageLegacyDir(lockPath, 120_000);
+    await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 200, pollMs: 20 })).rejects.toThrow(/legacy-format lock/);
+    expect(statSync(lockPath).isDirectory()).toBe(true);
+    expect(readdirSync(lockPath)).toEqual(["unexpected-payload"]); // contents intact
+  });
+
+  it("never reclaims through a symlink pointing at an old empty directory: O_NOFOLLOW keeps it out of the legacy path entirely", async () => {
+    const realDir = join(dir, "elsewhere");
+    mkdirSync(realDir);
+    ageLegacyDir(realDir, 120_000);
+    symlinkSync(realDir, lockPath);
+    // inspectHolder opens O_NOFOLLOW, so a symlink yields ELOOP and classifies
+    // "poll" -- it is never even a legacy-lock candidate. Pin that specific
+    // outcome (the generic timeout, NOT the legacy message) so a future change
+    // that starts following symlinks here fails loudly instead of silently
+    // making an out-of-tree directory reclaimable.
+    await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 200, pollMs: 20 })).rejects.toThrow(
+      /Timed out acquiring project lock/,
+    );
+    expect(existsSync(realDir)).toBe(true); // the symlink target was never removed
+    expect(lstatSync(lockPath).isSymbolicLink()).toBe(true); // the link itself is intact
+  });
+
+  it("refuses to reclaim when the abandoned directory is swapped for a DIFFERENT one before removal (mixed-version race)", async () => {
+    mkdirSync(lockPath);
+    ageLegacyDir(lockPath, 120_000);
+    // Simulate a pre-1.9.0 process (which does not honor the steal-lock)
+    // releasing the abandoned directory and acquiring a fresh, LIVE one in the
+    // window the steal-lock cannot exclude. Same path, different inode.
+    __projectLockTestHooks.beforeLegacyReclaimCheck = () => {
+      rmSync(lockPath, { recursive: true, force: true });
+      mkdirSync(lockPath); // fresh holder, fresh mtime, new inode
+    };
+    await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 300, pollMs: 20 })).rejects.toThrow(/legacy-format lock/);
+    expect(statSync(lockPath).isDirectory()).toBe(true); // the LIVE holder's lock survived
+  });
+
+  // Mutation evidence for the inode-identity requirement in
+  // attemptLegacyReclaim: dropping it leaves this suite GREEN. The realistic
+  // mixed-version swap (a pre-1.9.0 process taking the lock) produces a FRESH
+  // mtime and is refused one check earlier, by the staleness test above. A
+  // replacement that is itself old and empty is legitimately reclaimable on
+  // its own merits, and the retry loop does reclaim it -- correctly. The inode
+  // check is therefore defense-in-depth matching attemptSteal's discipline,
+  // not an independently observable behavior; do not read this suite as
+  // covering it.
 
   it("legacy directory lock removed mid-poll (simulated old-version release) lets the pending acquire succeed", async () => {
     mkdirSync(lockPath);

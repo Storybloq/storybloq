@@ -33,9 +33,25 @@
  * bare directory with no identity information. Detecting one is not treated as
  * an immediate error -- a live older-version holder's directory lock is healthy,
  * transient contention during a mixed-version upgrade window, so it is polled
- * exactly like any other contended acquire and only reported (actionable error,
- * never auto-removed) once the deadline is exhausted with the directory still
- * present.
+ * exactly like any other contended acquire and only reported (actionable error)
+ * once the deadline is exhausted with the directory still present.
+ *
+ * One narrow, deliberately-bounded exception: an EMPTY legacy directory whose
+ * mtime is older than LEGACY_LOCK_STALE_MS is reclaimed under the steal-lock,
+ * with inode identity required across the decision (see classifyLegacyLock /
+ * attemptLegacyReclaim). This IS a relaxation of the fail-explicit posture, and
+ * it is taken knowingly: a pre-1.9.0 process killed mid-write leaves exactly
+ * that artifact, the pre-1.9.0 code auto-healed it via proper-lockfile's own
+ * `stale` window, and refusing it made a routine upgrade brick the project
+ * until an operator removed the directory by hand. The reclaim is strictly more
+ * conservative than what the predecessor does to its own locks, and its
+ * residual risk needs a live pre-1.9.0 process on the same project -- but that
+ * residual is NOT covered by the ordinary inode+token fencing, because a
+ * resumed pre-1.9.0 holder writes without disturbing our lock file. See
+ * LEGACY_LOCK_STALE_MS, which states the uncovered case in full. Every other
+ * shape --
+ * non-empty, fresh mtime, future mtime, non-directory, symlink -- keeps the
+ * unchanged manual-removal path.
  */
 
 import * as fs from "node:fs";
@@ -48,6 +64,41 @@ import { ProjectLoaderError } from "./errors.js";
 const LOCK_MAX_BYTES = 4_096;
 const DEFAULT_DEADLINE_MS = 5_000;
 const DEFAULT_POLL_MS = 50;
+/**
+ * Age past which an EMPTY legacy proper-lockfile directory is treated as
+ * abandoned rather than held.
+ *
+ * Pre-1.9.0 storybloq ran proper-lockfile with `stale: 10000` and refreshed the
+ * directory's mtime at half that interval while holding the lock, so a
+ * directory older than this is one the OLD version would itself have judged
+ * stale and stolen. 60s is six times that window on purpose: reclaiming here is
+ * strictly more conservative than what the predecessor does to its own locks.
+ *
+ * HONEST LIMIT: mtime age is evidence of abandonment, NOT proof, and this is a
+ * deliberate relaxation of the module's never-steal-live/unknown rule rather
+ * than an application of it. It is confined to the legacy directory format and
+ * taken because refusing outright turned a routine upgrade into a bricked
+ * project. A live lock can still look old here: a SIGSTOPped (or long-paused)
+ * pre-1.9.0 holder stops refreshing mtime; a FORWARD clock jump inflates the
+ * computed age; and NFS attribute-cache staleness can serve an old mtime. (A
+ * BACKWARD jump is safe by construction: it shrinks the age, or makes it
+ * negative, and the finite/threshold check then fails closed.)
+ *
+ * THE RESIDUAL, stated plainly: if a pre-1.9.0 holder is paused past this
+ * threshold and later resumes, it still believes it holds the lock. It writes
+ * through proper-lockfile without touching our file lock, so our inode+token
+ * fencing does NOT see it and both processes can write concurrently. Fencing
+ * only catches the narrower case where our own lock is replaced underneath us.
+ * Nothing here detects the resumed-holder case.
+ *
+ * What bounds it: the hazard requires MIXED-VERSION operation, a live pre-1.9.0
+ * process on the same project. 60s is six times proper-lockfile's own `stale`
+ * window, so a pre-1.9.0 process reaching the same directory would already have
+ * judged it stale and stolen it; this reclaim is strictly more conservative
+ * than what the predecessor does to its own locks. The reclaim additionally
+ * requires inode identity across the steal-lock (see attemptLegacyReclaim).
+ */
+const LEGACY_LOCK_STALE_MS = 60_000;
 const IDENTITY_CACHE_TTL_MS = 500;
 const IDENTITY_CACHE_PRUNE_AGE_MS = 5_000;
 
@@ -95,10 +146,18 @@ export const __projectLockTestHooks: {
   beforeStealUnlink: (() => void) | null;
   /** Fires once, immediately before the stealer's own link of its tmp onto the lock path. */
   beforeStealLink: (() => void) | null;
+  /**
+   * Fires once, under the steal-lock, immediately BEFORE the legacy directory
+   * is re-classified for reclaim. Exists so a test can simulate the one race
+   * the steal-lock cannot exclude: a pre-1.9.0 process (which does not honor
+   * the steal-lock) swapping the abandoned directory for a fresh live one.
+   */
+  beforeLegacyReclaimCheck: (() => void) | null;
 } = {
   duringSteal: null,
   beforeStealUnlink: null,
   beforeStealLink: null,
+  beforeLegacyReclaimCheck: null,
 };
 
 function fireOnce(key: keyof typeof __projectLockTestHooks): void {
@@ -282,6 +341,112 @@ function releaseStealLock(stealLockPath: string): void {
 type StealOutcome = "acquired" | "retry";
 
 /**
+ * Classify a legacy proper-lockfile directory at `lockPath`.
+ *
+ * "reclaimable" ONLY for a directory that looks abandoned on every available
+ * axis: EMPTY, which is the only shape proper-lockfile ever creates (it mkdirs
+ * the path and never writes inside it), AND whose mtime is older than
+ * LEGACY_LOCK_STALE_MS. See that constant for the strength of that evidence
+ * and, importantly, for its limits -- this is not a proof of death, and the
+ * caller is responsible for the inode re-check that bounds the race.
+ *
+ * Returns the observed inode alongside the verdict so the caller can require
+ * the SAME directory still be there when it commits to removing it.
+ *
+ * Everything else classifies "keep" and falls through to the unchanged
+ * poll-then-report-manually path: a NON-EMPTY directory was not produced by
+ * proper-lockfile and is not ours to interpret; a FRESH mtime is a healthy
+ * older-version holder mid-upgrade-window; an mtime in the future is clock
+ * skew we refuse to reason about; and an unreadable or non-directory path
+ * (including a symlink, which lstat reports as such) yields no evidence at
+ * all. "reclaimable" means every available signal points at abandonment, which
+ * is weaker than proof -- LEGACY_LOCK_STALE_MS documents exactly how much
+ * weaker and what the unmitigated residual is.
+ */
+type LegacyClassification = { state: "reclaimable"; ino: number } | { state: "keep" };
+
+function classifyLegacyLock(lockPath: string): LegacyClassification {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(lockPath);
+  } catch {
+    return { state: "keep" };
+  }
+  if (!st.isDirectory()) return { state: "keep" };
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(lockPath);
+  } catch {
+    return { state: "keep" };
+  }
+  if (entries.length > 0) return { state: "keep" };
+  const ageMs = Date.now() - st.mtimeMs;
+  if (!Number.isFinite(ageMs) || ageMs < LEGACY_LOCK_STALE_MS) return { state: "keep" };
+  return { state: "reclaimable", ino: st.ino };
+}
+
+/**
+ * Serialized reclaim of an abandoned legacy directory lock, structurally the
+ * same as attemptSteal and for the same reason: the classification that got us
+ * here was read WITHOUT the steal-lock and is advisory only, so it is
+ * re-checked under the steal-lock before anything is removed. Any change in
+ * the interval (a holder reappeared, the directory gained an entry, someone
+ * else already reclaimed it) backs off without touching anything.
+ *
+ * rmdir is the removal primitive on purpose: it fails with ENOTEMPTY rather
+ * than deleting content if the directory stopped being empty between the
+ * re-check and the call, so the empty-only guarantee is enforced by the
+ * syscall and not merely by the check preceding it.
+ */
+async function attemptLegacyReclaim(
+  lockPath: string,
+  stealLockPath: string,
+  tmpPath: string,
+  observedIno: number,
+  deadlineMs: number,
+  pollMs: number,
+  startedAt: number,
+): Promise<StealOutcome> {
+  await acquireStealLock(stealLockPath, deadlineMs, pollMs, startedAt);
+  try {
+    // Re-classify under the steal-lock AND require the same inode the advisory
+    // pass saw. A pre-1.9.0 process does not honor the steal-lock, so it can
+    // release the abandoned directory and mkdir a fresh, LIVE one in between;
+    // that replacement is a different inode and is refused here. The residual
+    // window is the syscall gap between this lstat and the rmdir below, with
+    // no await in it -- the same non-atomic shape attemptSteal's inspect-then-
+    // unlink has, and the narrowest achievable without an rmdir-by-fd.
+    fireOnce("beforeLegacyReclaimCheck");
+    const fresh = classifyLegacyLock(lockPath);
+    if (fresh.state !== "reclaimable" || fresh.ino !== observedIno) return "retry";
+    try {
+      fs.rmdirSync(lockPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOENT: already gone. ENOTEMPTY/EEXIST: it gained an entry after the
+      // re-check, so it no longer matches the empty shape the reclaim decision
+      // was based on. Both back off rather than escalating.
+      if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") return "retry";
+      throw new ProjectLoaderError("io_error", `Failed to remove abandoned legacy project lock at ${lockPath}`, err);
+    }
+    projectLockLog("legacy-lock-reclaimed", { path: lockPath });
+    try {
+      fs.linkSync(tmpPath, lockPath);
+      return "acquired";
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        // A fresh, ordinary acquirer slipped into the gap -- its lock is as
+        // valid as any uncontended acquire. Retry, do not touch it.
+        return "retry";
+      }
+      throw new ProjectLoaderError("io_error", `Failed to publish project lock at ${lockPath} after legacy reclaim`, err);
+    }
+  } finally {
+    releaseStealLock(stealLockPath);
+  }
+}
+
+/**
  * Serialized steal: acquire the steal-lock, re-verify (double-checked -- the
  * pre-lock read that triggered this call is advisory only) that the SAME
  * incarnation (matching inode+token) is still dead, then unlink+link under the
@@ -407,12 +572,32 @@ export async function acquireProjectLockAsync(lockPath: string, opts: ProjectLoc
       const holder = inspectHolder(lockPath);
 
       if (holder.state === "legacy") {
+        // Deadline first, so both paths below are bounded and the retry path
+        // cannot spin: every iteration either throws here, acquires, or loops
+        // back toward this check.
         if (Date.now() - startedAt >= deadlineMs) {
           throw new ProjectLoaderError(
             "io_error",
             `${lockPath} is a legacy-format lock (pre-1.9.0 storybloq, directory-based). Confirm no older-version ` +
               `storybloq process is running against this project, then remove ${lockPath} manually.`,
           );
+        }
+        const legacy = classifyLegacyLock(lockPath);
+        if (legacy.state === "reclaimable") {
+          const outcome = await attemptLegacyReclaim(
+            lockPath,
+            stealLockPath,
+            tmpPath,
+            legacy.ino,
+            deadlineMs,
+            pollMs,
+            startedAt,
+          );
+          if (outcome === "acquired") {
+            success = true;
+            break;
+          }
+          continue; // "retry": loop back to an ordinary link attempt immediately.
         }
         await sleep(pollMs);
         continue;

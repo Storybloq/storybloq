@@ -51,8 +51,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket update",
     description: "Update a ticket",
-    usage: "storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]",
-    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--blocked-by", "--parent-ticket"],
+    usage: "storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--force] [--format json|md]",
+    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--blocked-by", "--parent-ticket", "--force"],
   },
   {
     name: "ticket meta",
@@ -525,7 +525,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_note_create", description: "Create note", params: ["content", "title?", "tags?"] },
   { name: "storybloq_note_update", description: "Update note", params: ["id", "content?", "title?", "tags?", "status?"] },
   { name: "storybloq_ticket_create", description: "Create ticket", params: ["title", "type", "phase?", "description?", "blockedBy?", "parentTicket?"] },
-  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "type?", "order?", "description?", "phase?", "parentTicket?", "blockedBy?"] },
+  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id", "status?", "title?", "type?", "order?", "description?", "phase?", "parentTicket?", "blockedBy?", "force?"] },
   { name: "storybloq_ticket_meta_set", description: "Set custom passthrough metadata on a ticket", params: ["id", "path", "value"] },
   { name: "storybloq_ticket_meta_unset", description: "Unset custom passthrough metadata from a ticket", params: ["id", "path"] },
   { name: "storybloq_issue_create", description: "Create issue with optional durable review provenance and retry deduplication", params: ["title", "severity", "impact", "components?", "relatedTickets?", "location?", "sourceRefs?", "dedupeKey?", "createdBy?", "phase?"] },

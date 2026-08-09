@@ -59,7 +59,7 @@ storybloq ticket create --title <t> --type <type> [--phase <p>] [--description <
 Update a ticket
 
 ```
-storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--format json|md]
+storybloq ticket update <id> [--status <s>] [--title <t>] [--type <type>] [--phase <p>] [--order <n>] [--description <d>] [--blocked-by <ids>] [--parent-ticket <id>] [--force] [--format json|md]
 ```
 
 ### ticket meta
@@ -646,7 +646,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_note_create** (content, title?, tags?) - Create note
 - **storybloq_note_update** (id, content?, title?, tags?, status?) - Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?) - Create ticket
-- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?) - Update ticket
+- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, force?) - Update ticket
 - **storybloq_ticket_meta_set** (id, path, value) - Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path) - Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, sourceRefs?, dedupeKey?, createdBy?, phase?) - Create issue with optional durable review provenance and retry deduplication

@@ -134,9 +134,42 @@ Acknowledgment does not resolve ledger work. Resolve an `issue_notice` thread wi
 
 ## Convergence
 
-Actionable messages increment a deterministic hop count. The default cap is 8. A repeated actionable fingerprint in the same direction or an over-cap send parks the thread before another message is written. Reopening requires a previously unseen commit or CI reference. A resolved thread is terminal; new evidence creates a successor linked with `predecessorThreadId`.
+Actionable messages (`issue_notice`, `question`, `reply`, `patch_request`) increment a deterministic hop count; `status`, `claim`, and `release` never do. The default cap is 8 (`maxHops`, configurable). Four rules govern accounting:
 
-Run `storybloq bus check --ship` before release. Unacknowledged critical messages, parked unresolved critical threads, and quarantined critical threads block finalization.
+1. Only actionable kinds increment the hop count; non-actionable kinds never do and never park.
+2. A repeated actionable fingerprint in the same direction parks the thread before it is written.
+3. An over-cap actionable send parks the thread before it is written, rather than being delivered past the cap.
+4. `hopsRemaining` (`max(0, maxHops - hopCount)`) is derived identically on `bus_send`'s result and on `bus_thread_get`, is monotonically non-increasing across every observation of a thread including a replay, and reaches exactly 0 at the boundary where the next actionable send would park -- letting a sender roll to a successor thread at a natural boundary instead of discovering the cap only after tripping it.
+
+Reopening requires a previously unseen commit or CI reference. A resolved thread is terminal; new evidence creates a successor linked with `predecessorThreadId`. The evidence carried by a message a park just dropped counts as seen the moment the park lands, even though neither participant ever actually read it -- closing a staleness gap where the same evidence could otherwise be resubmitted later as if it were new. That marks it seen only; it does not admit the dropped content back into the conversation on its own (see Redelivering, below, for the sanctioned path back in).
+
+### Never-drop: parked content is preserved, not lost
+
+A park, on either trigger, never silently discards the message that caused it. Before branching between the two triggers, a single size check runs first: a message that would exceed the entry byte cap (32KB) is rejected outright as `invalid_input`, before any park or artifact write -- an oversized message never becomes a parked artifact in the first place. Past that check, the dropped message's exact content (kind, severity, body, refs) is written to a permanent, content-addressed artifact under `.story/bus/refused/`, hashed by its own canonical shape so byte-identical drops -- even across different threads or triggers -- share one file. The park's own state entry records the artifact's hash, the triggering endpoint, the dropped message's kind and severity, and (when its refs carry a commit or CI reference) the evidence keys those refs resolve to -- never the content inline. That kind/severity pair is a second, independently-stored copy of facts the artifact itself also carries; redelivery and refusal resolution cross-check the two, and a mismatch between them is treated as corruption rather than silently trusted from either side alone. `storybloq bus doctor` diagnoses a missing or corrupted artifact as its own distinct finding, and reports (never removes) an orphan artifact -- one no live thread's park entry references. Doctor is read-only for the refused-artifact store; there is no separate cleanup command yet, so nothing here ever deletes an artifact.
+
+Every park a thread has ever had, not only its currently-terminal one, stays visible as that thread's `refusals` history (an opt-in fold pass: `bus_thread_get`'s `refusals` field, and `bus export`). Each entry carries its trigger, the original sender, the artifact's resolution status, and a disposition of `redelivered` or `unresolved`.
+
+### Redelivering a hop-cap park (`hop_cap_successor`)
+
+A hop-cap park (never a duplicate-fingerprint park) on an `issue_notice`-kind thread can be redelivered onto a fresh successor thread with `storybloq_bus_redeliver` (`bus redeliver` on the CLI), input `{ endpointId, clientTaskId, predecessorThreadId, refusedEntryHash }` -- no caller-supplied content at all. The redelivered message is always the server-resolved refused artifact, never whatever the caller happens to pass. Conditions:
+
+- The successor's `threadKind` always inherits `issue_notice`, keeping it anchored to the same canonical issue as the predecessor, regardless of what kind the dropped message itself was.
+- The successor's first message is checked against the broader `ACTIONABLE_KINDS` set rather than an exact `threadKind` match -- the dropped content is very often a plain `reply` continuing an existing conversation, not a repeated `issue_notice`.
+- Authorization is restricted to the original sender: the caller's succession chain (itself, or an unbroken chain of proven-offline replacements) must reach the endpoint that actually authored the dropped message. A different participant's chain, however current, is refused.
+- The redelivered content is re-verified server-side against the resolved artifact -- kind, severity, body, and refs must match exactly.
+- Exactly one successor exists per refused park entry, structurally: a permanent redeliver marker under the predecessor thread's own directory names the successor, and every later call against the same entry resolves against that same marker rather than creating another.
+
+A hop-cap park's `nextAction` -- `{ procedure: "redeliver_on_hop_cap_successor", refusedEntryHash, predecessorThreadId }` -- names the exact call that redelivers it; it is `null` for a duplicate-fingerprint park (no redeliver path exists for that trigger) and for any non-parked result. A replay of an already-parked send recomputes this eligibility from the same durable park entry on every call, rather than caching the original result -- it returns the same `nextAction` only while the entry, its resolved artifact, and its linked issue all remain redeliverable, and returns `null` once any of them stops being true (for example, the artifact is later lost or corrupted, or the linked issue is resolved or removed), so a caller is never handed guidance for a redeliver call that would now be rejected.
+
+Redelivering the same entry again returns the same successor: answered directly from the marker when a different caller asks (for example, a successor endpoint after this task's own compaction), or through the ordinary receipt replay when the same caller repeats its own call. `BusSendResult.replaySource` (`"none" | "receipt" | "marker"`) makes that distinction explicit; `replayed` stays the simpler `replaySource !== "none"` for callers that only need to know whether anything new was actually created.
+
+A duplicate-fingerprint park, and a hop-cap park whose predecessor is not an `issue_notice` thread, have no redeliver path; their refusal disposition remains unresolved, while ship blocking can clear through direct evidenced thread resolution or, for an issue-linked thread, canonical issue resolution.
+
+### Ship gate on refusals
+
+`storybloq bus check --ship` scans every refusal on every thread, independent of the thread's current state and independent of the `critical`-severity gate used for the unacknowledged/parked-critical checks elsewhere. Two rules apply per refusal: an artifact that cannot be resolved (missing or corrupted) blocks unconditionally regardless of severity; a critical drop whose disposition is still `unresolved` blocks unless it clears through redelivery, the canonical issue being resolved, or the thread itself being resolved directly from parked with genuine evidence.
+
+Run `storybloq bus check --ship` before release. Unacknowledged critical messages, parked unresolved critical threads, quarantined Bus threads, and the refusal checks above all block finalization.
 
 ## Upgrading a v1 Runtime
 

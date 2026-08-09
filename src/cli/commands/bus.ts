@@ -18,6 +18,7 @@ import {
   findEndpointForTask,
   findV1EndpointForTask,
   getBusThread,
+  hopsRemainingFor,
   initializeBus,
   joinEndpoint,
   leaveEndpoint,
@@ -25,6 +26,7 @@ import {
   listV1Endpoints,
   pollBus,
   pollV1,
+  redeliverBusMessage,
   refreshEndpointForSessionStart,
   retireEndpoint,
   runtimeLostError,
@@ -309,10 +311,12 @@ function serializedThread(folded: FoldedBusThread) {
     lastHash: folded.lastHash,
     state: folded.state,
     hopCount: folded.hopCount,
+    hopsRemaining: hopsRemainingFor(folded),
     acknowledgments: Object.fromEntries(folded.acknowledgments),
     seenEvidence: [...folded.seenEvidence].sort(),
     integrity: folded.integrity,
     finding: folded.finding ?? null,
+    refusals: folded.refusals,
   };
 }
 
@@ -452,9 +456,16 @@ async function doctorEndpointRedactionSet(root: string, result: BusDoctorResult)
 function renderDoctorMarkdown(result: BusDoctorResult, endpointIds: ReadonlySet<string>): string {
   // D7: readiness is always rendered, separately from integrity.
   const readiness = renderReadiness(result.summary.setupState);
-  if (result.healthy) return `Storage healthy; ${readiness}`;
+  // ISS-1002 follow-up: notices render regardless of `healthy` -- they are
+  // non-gating BY DESIGN (see BusDoctorResult.notices), which means the
+  // early "healthy" return below must not skip them, or the signal is
+  // dropped as silently as the gating it was built to replace.
+  const notices = result.notices.length > 0
+    ? `\nNotice(s):\n${result.notices.map((notice) => `- ${redactEndpointUuids(notice, endpointIds)}`).join("\n")}`
+    : "";
+  if (result.healthy) return `Storage healthy; ${readiness}${notices}`;
   const findings = `Storage has ${result.findings.length} finding(s):\n${result.findings.map((finding) => `- ${redactEndpointUuids(finding, endpointIds)}`).join("\n")}`;
-  return `${findings}\nReadiness: ${readiness}`;
+  return `${findings}\nReadiness: ${readiness}${notices}`;
 }
 
 // FIX: `busDoctor` throws `bus_disabled` on a disabled project, which would
@@ -1470,9 +1481,36 @@ export function registerBusCommand(yargs: Argv): Argv {
             return deprecation ? { ...sent, deprecation } : sent;
           }, (result) => {
             const summary = result.parked
-              ? `Thread ${result.threadId} parked at hop ${result.hopCount}.`
+              ? `Thread ${result.threadId} parked at hop ${result.hopCount}.${result.nextAction ? ` Redeliver with: storybloq bus redeliver --predecessor-thread ${result.nextAction.predecessorThreadId} --refused-entry-hash ${result.nextAction.refusedEntryHash}` : ""}`
               : `${result.replayed ? "Replayed" : "Sent"} message ${result.messageId} in thread ${result.threadId}.`;
             return deprecation ? `${deprecation}\n${summary}` : summary;
+          });
+        },
+      )
+      .command(
+        "redeliver",
+        "Redeliver a hop-cap-parked, never-dropped Bus message onto a fresh successor thread",
+        (y2) => formatOption(identityOptions(y2)
+          .option("predecessor-thread", { type: "string", demandOption: true, describe: "The hop-capped thread whose park entry is being redelivered" })
+          .option("refused-entry-hash", { type: "string", demandOption: true, describe: "entryHash of the hop-cap automatic park entry on the predecessor thread" })),
+        async (argv) => {
+          const format = formatValue(argv.format);
+          await runBus(format, async (root) => {
+            const values = argv as Record<string, unknown>;
+            const owned = await resolveOwnedEndpoint(root, identityFrom(values));
+            return redeliverBusMessage(root, {
+              endpointId: owned.endpointId,
+              clientTaskId: owned.taskId,
+              predecessorThreadId: values["predecessor-thread"] as string,
+              refusedEntryHash: values["refused-entry-hash"] as string,
+            });
+          }, (result) => {
+            const via = result.replaySource === "marker"
+              ? " (answered from an existing redeliver marker; no new message sent)"
+              : result.replaySource === "receipt"
+                ? " (replayed from your own existing receipt)"
+                : "";
+            return `Redelivered onto thread ${result.threadId} as message ${result.messageId}${via}.`;
           });
         },
       )

@@ -669,6 +669,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_register_subprocess** (pid, cmd, category?, sessionId?) - Register a running subprocess so monitors can tell slow builds from hung agents
 - **storybloq_unregister_subprocess** (pid, sessionId?) - Unregister a subprocess after it completes (idempotent)
 - **storybloq_bus_send** (endpointId, clientTaskId, threadId?, threadKind?, predecessorThreadId?, toRole?, messageKind, severity, body, refs?, inReplyTo?, idempotencyKey) - Send a task-bound advisory peer message; routes to the sole peer (toRole is deprecated, optional, and ignored)
+- **storybloq_bus_redeliver** (endpointId, clientTaskId, predecessorThreadId, refusedEntryHash) - Redeliver a hop-cap-parked, never-dropped message onto a fresh successor thread; content is always the resolved refused artifact, never caller-supplied
 - **storybloq_bus_poll** (endpointId, clientTaskId, limit?) - Poll a task-bound endpoint mailbox with peer-authority envelopes
 - **storybloq_bus_ack** (endpointId, clientTaskId, messageId, disposition, reason?) - Record delivery disposition without resolving canonical work
 - **storybloq_bus_thread_get** (endpointId, clientTaskId, threadId) - Read a participant thread's verified prefix and folded state

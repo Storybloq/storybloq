@@ -5,8 +5,10 @@ import {
   assertBusEnabled,
   classifyBusRuntime,
   getBusThread,
+  hopsRemainingFor,
   pollBus,
   pollV1,
+  redeliverBusMessage,
   sendBusMessage,
   updateBusThread,
   updateV1Thread,
@@ -23,6 +25,7 @@ const ClientTaskIdSchema = z.string().regex(CLIENT_TASK_ID_PATTERN);
 // compatibility, ignored by the store.
 const DeprecatedRoleSchema = z.enum(["implementer", "reviewer"]);
 const ThreadKindSchema = z.enum(["issue_notice", "question", "coordination", "patch_request"]);
+const RefusedEntryHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const MessageKindSchema = z.enum(["issue_notice", "question", "reply", "status", "patch_request", "claim", "release"]);
 const SeveritySchema = z.enum(["critical", "high", "medium", "low", "info"]);
 const EvidenceSchema = z.object({
@@ -72,9 +75,11 @@ function serializedThread(folded: Awaited<ReturnType<typeof getBusThread>>) {
     lastHash: folded.lastHash,
     state: folded.state,
     hopCount: folded.hopCount,
+    hopsRemaining: hopsRemainingFor(folded),
     acknowledgments: Object.fromEntries(folded.acknowledgments),
     seenEvidence: [...folded.seenEvidence].sort(),
     finding: folded.finding ?? null,
+    refusals: folded.refusals,
   };
 }
 
@@ -107,6 +112,21 @@ export function registerBusTools(server: McpServer, pinnedRoot: string, onCall?:
     refs: args.refs,
     inReplyTo: args.inReplyTo,
     idempotencyKey: args.idempotencyKey,
+  }), onCall));
+
+  server.registerTool("storybloq_bus_redeliver", {
+    description: "Redeliver a hop-cap-parked, never-dropped Bus message onto a fresh successor thread. No caller-supplied content: the redelivered message is always the exact refused artifact the named park entry preserved. Idempotent -- repeat calls (including from a successor endpoint after compaction) return the same successor.",
+    inputSchema: {
+      endpointId: EndpointIdSchema.describe("Endpoint id from the Storybloq Bus SessionStart marker"),
+      clientTaskId: ClientTaskIdSchema.describe("Current validated client task id"),
+      predecessorThreadId: ThreadIdSchema.describe("The hop-capped thread whose park entry is being redelivered"),
+      refusedEntryHash: RefusedEntryHashSchema.describe("entryHash of the hop-cap automatic park entry on the predecessor thread"),
+    },
+  }, (args) => invoke(() => redeliverBusMessage(pinnedRoot, {
+    endpointId: args.endpointId,
+    clientTaskId: args.clientTaskId,
+    predecessorThreadId: args.predecessorThreadId,
+    refusedEntryHash: args.refusedEntryHash,
   }), onCall));
 
   server.registerTool("storybloq_bus_poll", {

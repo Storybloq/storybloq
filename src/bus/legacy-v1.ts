@@ -1323,6 +1323,11 @@ export interface V1DoctorResult {
   readonly healthy: boolean;
   readonly summary: BusSummary;
   readonly findings: readonly string[];
+  // ISS-1002 follow-up: always empty. A v1 runtime predates the redeliver-marker
+  // hop-cap-successor mechanism entirely, so no code path in this legacy drain
+  // report can ever produce a notice; the field exists only to satisfy the
+  // shared BusDoctorResult shape busDoctor's v1 branch returns.
+  readonly notices: readonly string[];
 }
 
 export async function doctorV1(root: string): Promise<V1DoctorResult> {
@@ -1352,5 +1357,5 @@ export async function doctorV1(root: string): Promise<V1DoctorResult> {
   }
   // A v1 runtime is a detected, actionable state, not a clean one.
   findings.push("v1 Bus runtime detected; run `storybloq bus setup` to drain and upgrade it.");
-  return { healthy: false, summary, findings };
+  return { healthy: false, summary, findings, notices: [] };
 }

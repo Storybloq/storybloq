@@ -548,6 +548,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_register_subprocess", description: "Register a running subprocess so monitors can tell slow builds from hung agents", params: ["pid", "cmd", "category?", "sessionId?"] },
   { name: "storybloq_unregister_subprocess", description: "Unregister a subprocess after it completes (idempotent)", params: ["pid", "sessionId?"] },
   { name: "storybloq_bus_send", description: "Send a task-bound advisory peer message; routes to the sole peer (toRole is deprecated, optional, and ignored)", params: ["endpointId", "clientTaskId", "threadId?", "threadKind?", "predecessorThreadId?", "toRole?", "messageKind", "severity", "body", "refs?", "inReplyTo?", "idempotencyKey"] },
+  { name: "storybloq_bus_redeliver", description: "Redeliver a hop-cap-parked, never-dropped message onto a fresh successor thread; content is always the resolved refused artifact, never caller-supplied", params: ["endpointId", "clientTaskId", "predecessorThreadId", "refusedEntryHash"] },
   { name: "storybloq_bus_poll", description: "Poll a task-bound endpoint mailbox with peer-authority envelopes", params: ["endpointId", "clientTaskId", "limit?"] },
   { name: "storybloq_bus_ack", description: "Record delivery disposition without resolving canonical work", params: ["endpointId", "clientTaskId", "messageId", "disposition", "reason?"] },
   { name: "storybloq_bus_thread_get", description: "Read a participant thread's verified prefix and folded state", params: ["endpointId", "clientTaskId", "threadId"] },

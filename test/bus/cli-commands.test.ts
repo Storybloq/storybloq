@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { initProject } from "../../src/core/init.js";
 import { canonicalHash, hashWithoutKey } from "../../src/bus/canonical.js";
 import { classifyBusRuntime, initializeBus } from "../../src/bus/index.js";
-import { createBusFixture, type BusFixture } from "./helpers.js";
+import { createBusFixture, createIssue, type BusFixture } from "./helpers.js";
 import { runBusCli } from "./cli-harness.js";
 
 // Bus CLI regression guards: the `--to` deprecation, `--force-archive` threading,
@@ -258,6 +258,66 @@ describe("Storybloq Bus CLI regressions", () => {
     // The deprecation does not block routing: a message was actually sent.
     expect(parsed.data.messageId).toMatch(/^[0-9a-f-]{36}$/);
     expect(parsed.data.threadId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // ISS-953 fix step 12+15: `bus redeliver` end-to-end through the real CLI, and
+  // `bus send`'s parked-result markdown rendering names the redeliver procedure in
+  // prose using the same structured nextAction MCP callers get directly.
+  it("names the redeliver procedure in prose on a parked `bus send`, and redelivers it through `bus redeliver` (ISS-953 fix step 12+15)", async () => {
+    const value = await fx();
+    const issueId = await createIssue(value.root, "medium");
+    const configPath = join(value.root, ".story", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf-8"));
+    config.bus = { maxHops: 2 };
+    await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+
+    const first = JSON.parse((await runBusCli(value.root, [
+      "bus", "send", "--format", "json",
+      "--client", "claude", "--task-id", value.bTaskId,
+      "--thread-kind", "issue_notice", "--kind", "issue_notice", "--severity", "medium",
+      "--body", "Opening the finding.", "--issue", issueId,
+      "--idempotency-key", "cli-redeliver-first",
+    ])).stdout).data;
+
+    await runBusCli(value.root, [
+      "bus", "send", "--format", "json",
+      "--client", "codex", "--task-id", value.aTaskId,
+      "--thread", first.threadId, "--kind", "reply", "--severity", "medium",
+      "--body", "Acknowledged, investigating.",
+      "--idempotency-key", "cli-redeliver-ack",
+    ]);
+
+    const { stdout: parkedMd } = await runBusCli(value.root, [
+      "bus", "send", "--format", "md",
+      "--client", "claude", "--task-id", value.bTaskId,
+      "--thread", first.threadId, "--kind", "reply", "--severity", "medium",
+      "--body", "One more check needed before this can close.",
+      "--idempotency-key", "cli-redeliver-over-cap",
+    ]);
+    expect(parkedMd).toContain("parked at hop");
+    expect(parkedMd).toContain("storybloq bus redeliver");
+    expect(parkedMd).toContain(`--predecessor-thread ${first.threadId}`);
+    const hashMatch = parkedMd.match(/--refused-entry-hash ([0-9a-f]{64})/);
+    expect(hashMatch).not.toBeNull();
+    const refusedEntryHash = hashMatch![1]!;
+
+    const redelivered = JSON.parse((await runBusCli(value.root, [
+      "bus", "redeliver", "--format", "json",
+      "--client", "claude", "--task-id", value.bTaskId,
+      "--predecessor-thread", first.threadId,
+      "--refused-entry-hash", refusedEntryHash,
+    ])).stdout).data;
+    expect(redelivered).toMatchObject({ replaySource: "none", replayed: false, parked: false });
+    expect(redelivered.messageId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(redelivered.threadId).not.toBe(first.threadId);
+
+    const { stdout: redeliverMd } = await runBusCli(value.root, [
+      "bus", "redeliver", "--format", "md",
+      "--client", "claude", "--task-id", value.bTaskId,
+      "--predecessor-thread", first.threadId,
+      "--refused-entry-hash", refusedEntryHash,
+    ]);
+    expect(redeliverMd).toContain("replayed from your own existing receipt");
   });
 
   it("initializes a fresh v2 runtime with `bus init`", async () => {

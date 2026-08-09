@@ -269,6 +269,66 @@ export async function findEndpointForTask(
   ) ?? null;
 }
 
+// ISS-872: a successor's bounded predecessor-chain walk is capped so a corrupt
+// on-disk record can never make the read seams loop or trust an unbounded lineage.
+// Rare in normal operation, not unreachable (ISS-953 Codex round 5 finding #3):
+// each hop requires a proven-offline replacement, but a legitimate chain of 65
+// sequential replacements over a long enough timeline is structurally reachable,
+// just uncommon; the cap deliberately fails closed for unusually deep or corrupt
+// lineages either way.
+const MAX_SUCCESSION_DEPTH = 64;
+
+// ISS-872: the set of recipient ids whose mail this endpoint may read/ack/administer
+// -- its own id plus its bounded predecessor CHAIN (the endpoint it replaced, that
+// endpoint's predecessor, ...). Authority propagates transitively across repeated
+// replacement (B->S->T) so a second replacement does not re-strand the original
+// recipient's mail (T must inherit B, not just S). A successor LEAVING without a
+// replacement is out of scope here (the deferred all-participants-retired case, ISS-873).
+// Pure over the already-loaded endpoint list (no I/O); every caller already has the
+// list. Security-sensitive:
+// a corrupt chain (cycle, missing ancestor, or over-depth) must NEVER grant
+// authority, so it fails CLOSED to self-only and reports `corrupt` for the caller
+// (doctor) to surface. Used by the read/ack/administer seams and by
+// verifiedSuccessorState's authorship binding (ISS-953 fix), never send/reply.
+export function endpointAddressees(
+  endpoint: BusEndpoint,
+  allEndpoints: readonly BusEndpoint[],
+): { ids: string[]; corrupt: string | null } {
+  const byId = new Map(allEndpoints.map((candidate) => [candidate.endpointId, candidate]));
+  const ids: string[] = [endpoint.endpointId];
+  const visited = new Set<string>([endpoint.endpointId]);
+  let current: BusEndpoint = endpoint;
+  let depth = 0;
+  while (current.predecessorEndpointId) {
+    const predecessorId = current.predecessorEndpointId;
+    if (visited.has(predecessorId)) {
+      return { ids: [endpoint.endpointId], corrupt: `predecessor chain cycles at ${predecessorId}` };
+    }
+    if (++depth > MAX_SUCCESSION_DEPTH) {
+      return { ids: [endpoint.endpointId], corrupt: `predecessor chain exceeds max depth ${MAX_SUCCESSION_DEPTH}` };
+    }
+    const ancestor = byId.get(predecessorId);
+    // A retired ancestor keeps its record (retire only sets retiredAt), so a MISSING
+    // ancestor means a deleted/tampered endpoint file -- corruption, not a normal end
+    // of chain. Fail closed rather than silently truncate the inherited authority.
+    if (!ancestor) {
+      return { ids: [endpoint.endpointId], corrupt: `predecessor chain references missing ancestor ${predecessorId}` };
+    }
+    // A legitimate predecessor was retired specifically BY replacement (joinEndpoint
+    // stamps retiredReason "replaced"). A link to an ACTIVE endpoint, or to one retired
+    // by `leave` or forced retirement, is NOT a real succession and must never grant
+    // authority over that endpoint's mail/threads -- fail closed to self-only. This is a
+    // security boundary: UUID existence alone cannot establish inherited authority.
+    if (!ancestor.retiredAt || ancestor.retiredReason !== "replaced") {
+      return { ids: [endpoint.endpointId], corrupt: `predecessor ${predecessorId} was not retired by replacement` };
+    }
+    visited.add(predecessorId);
+    ids.push(predecessorId);
+    current = ancestor;
+  }
+  return { ids, corrupt: null };
+}
+
 export async function endpointLiveness(endpoint: BusEndpoint): Promise<"attached" | "offline" | "unknown"> {
   if (endpoint.surface === "codex_desktop" || !endpoint.processRef) return "unknown";
   const state = await inspectProcessIdentity(endpoint.processRef.pid, endpoint.processRef.signature);

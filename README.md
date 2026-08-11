@@ -1,3 +1,5 @@
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2FStorybloq%2Fstorybloq.svg)](https://mcptoplist.com/server/glama%2FStorybloq%2Fstorybloq)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/logo.png" width="120" alt="Storybloq logo" />
 </p>

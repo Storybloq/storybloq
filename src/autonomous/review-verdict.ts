@@ -43,6 +43,9 @@ export interface ReviewVerdictArtifact {
   // skipped/bypassed. Optional and additive: only set for lenses reviews.
   readonly reviewId?: string;
   readonly reviewerPath?: "lenses-verified" | "lenses-unverified";
+  // T-461: the effort level this round ran at. Additive and optional, so a
+  // pre-dial artifact still parses and still hashes identically.
+  readonly effort?: string;
 }
 
 export interface Tier1ReviewVerdict {
@@ -56,6 +59,8 @@ export interface Tier1ReviewVerdict {
   readonly suggestionCount: number;
   readonly durationMs: number;
   readonly summary: string;
+  /** T-461: carried onto Tier1 so `lastReviewVerdict` discloses the level too. */
+  readonly effort?: string;
 }
 
 export type WriteVerdictResult =
@@ -86,12 +91,19 @@ export function computeContentHash(artifact: ReviewVerdictArtifact): string {
   // from the dedupe hash alongside timestamp/_contentHash/durationMs. Round is
   // already part of the hash, so excluding reviewId keeps hashes stable across
   // this additive schema change without risking cross-round collisions.
+  // T-461: `effort` joins them for the same reason and one more. It is
+  // disclosure metadata, not authored review content -- two rounds whose
+  // findings and verdict are identical are the same review whether one ran at
+  // light -- and including it would change every hash the moment the dial
+  // shipped, which is exactly the cross-version churn the exclusion list
+  // exists to prevent.
   const {
     timestamp: _ts,
     _contentHash: _ch,
     durationMs: _dur,
     reviewId: _rid,
     reviewerPath: _rpath,
+    effort: _effort,
     ...rest
   } = artifact as Record<string, unknown>;
   const canonical = canonicalize(rest);
@@ -201,6 +213,7 @@ export function buildTier1Verdict(artifact: ReviewVerdictArtifact): Tier1ReviewV
     suggestionCount: artifact.severityCounts.suggestion,
     durationMs: artifact.durationMs,
     summary: artifact.summary,
+    ...(artifact.effort === undefined ? {} : { effort: artifact.effort }),
   };
 }
 

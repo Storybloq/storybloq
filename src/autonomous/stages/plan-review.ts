@@ -202,6 +202,10 @@ export class PlanReviewStage implements WorkflowStage {
     // miscased value.
     const findings = (report.findings ?? []).map((f) => ({ ...f, severity: normalizeSeverity(f.severity) }));
     const backends = reviewBackendsForStage("PLAN_REVIEW", ctx.state);
+    // T-461: recorded per ROUND, not read back from the session, because the
+    // top-level pin is overwritten by the next pick and a ticket that ran at
+    // light would afterwards read as whatever the next one ran at.
+    const roundEffort = effectiveReviewEffort(ctx.state, "PLAN_REVIEW");
     const computedReviewer = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     // ISS-102: Use actual reviewer from report, infer from notes, or fall back to computed
     const reviewerBackend = report.reviewer
@@ -221,6 +225,7 @@ export class PlanReviewStage implements WorkflowStage {
       majorCount: findings.filter((f) => f.severity === "major").length,
       suggestionCount: findings.filter((f) => f.severity === "suggestion").length,
       codexSessionId: report.reviewerSessionId,
+      effort: roundEffort,
       timestamp: new Date().toISOString(),
     });
 
@@ -276,6 +281,7 @@ export class PlanReviewStage implements WorkflowStage {
       timestamp: new Date().toISOString(),
       ...(lensReviewId ? { reviewId: lensReviewId } : {}),
       ...(reviewerPath ? { reviewerPath } : {}),
+      effort: roundEffort,
     };
     const writeResult = writeReviewVerdict(ctx.dir, artifact);
 
@@ -346,6 +352,7 @@ export class PlanReviewStage implements WorkflowStage {
       round: roundNum,
       verdict,
       findingCount: findings.length,
+      effort: roundEffort,
     });
 
     // ISS-037: file deferred findings

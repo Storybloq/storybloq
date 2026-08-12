@@ -401,6 +401,8 @@ export interface ReviewRecord {
   readonly majorCount: number;
   readonly suggestionCount: number;
   readonly codexSessionId?: string;
+  /** T-461: the effort level this round ran at. Absent on pre-dial records. */
+  readonly effort?: string;
   readonly timestamp: string;
 }
 
@@ -835,6 +837,11 @@ export const SessionStateSchema = z.object({
       majorCount: z.number(),
       suggestionCount: z.number(),
       codexSessionId: forgiveNull(z.string()),
+      // T-461: the level this round actually ran at. A bare string, not an
+      // enum, for the reason branch-strategy.test.ts:13-15 records: an enum on
+      // a persisted field turns one unrecognized value into a session that
+      // cannot be read at all. Normalized on the way out, never on the way in.
+      effort: forgiveNull(z.string()).catch(undefined),
       timestamp: z.string(),
     })).default([]),
     code: z.array(z.object({
@@ -847,6 +854,8 @@ export const SessionStateSchema = z.object({
       majorCount: z.number(),
       suggestionCount: z.number(),
       codexSessionId: forgiveNull(z.string()),
+      // T-461: see the plan array above for why this is a bare string.
+      effort: forgiveNull(z.string()).catch(undefined),
       timestamp: z.string(),
     })).default([]),
   }).default({ plan: [], code: [] }),
@@ -893,6 +902,11 @@ export const SessionStateSchema = z.object({
     realizedRisk: forgiveNull(z.string()),
     startedAt: forgiveNull(z.string()),
     completedAt: forgiveNull(z.string()),
+    // T-461: the level this item was reviewed at, kept per item because the
+    // top-level `currentReviewEffort` is overwritten by the next pick. Without
+    // it a session that ran one ticket at light and the next at standard would
+    // report only the last one's level.
+    reviewEffort: forgiveNull(z.string()).catch(undefined),
   })).default([]),
 
   // ISS-982: per-commit attribution audit trail (see interface docstring
@@ -1325,6 +1339,12 @@ export const SessionStateSchema = z.object({
     suggestionCount: z.number(),
     durationMs: z.number(),
     summary: z.string(),
+    // T-461: without this key the Tier1 projection's `effort` is STRIPPED on
+    // every write -- a plain z.object drops what it does not declare -- so the
+    // artifact would carry the level and the session record a reader actually
+    // consults would not. Same trap as recipeOverrides.reviewEffort, which was
+    // dead for exactly this reason until an end-to-end test caught it.
+    effort: forgiveNull(z.string()).catch(undefined),
   }).nullish(),
   landingDecision: z.object({
     stage: z.string(),

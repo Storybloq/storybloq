@@ -227,6 +227,9 @@ export class CodeReviewStage implements WorkflowStage {
 
     const codeReviews = [...ctx.state.reviews.code];
     const roundNum = codeReviews.length + 1;
+    // T-461: see plan-review.ts -- the level belongs to the round, not to
+    // whatever the session happens to be pinned to when someone reads it back.
+    const roundEffort = effectiveReviewEffort(ctx.state, "CODE_REVIEW");
     // ISS-726: canonicalize severity up front so the suggestion-exemption and
     // critical/major contradiction guard below (and the per-severity counts and
     // lens history) cannot be bypassed by a miscased value.
@@ -251,6 +254,7 @@ export class CodeReviewStage implements WorkflowStage {
       majorCount: findings.filter((f) => f.severity === "major").length,
       suggestionCount: findings.filter((f) => f.severity === "suggestion").length,
       codexSessionId: report.reviewerSessionId,
+      effort: roundEffort,
       timestamp: new Date().toISOString(),
     });
 
@@ -341,6 +345,7 @@ export class CodeReviewStage implements WorkflowStage {
       timestamp: new Date().toISOString(),
       ...(lensReviewId ? { reviewId: lensReviewId } : {}),
       ...(reviewerPath ? { reviewerPath } : {}),
+      effort: roundEffort,
     };
     const writeResult = writeReviewVerdict(ctx.dir, artifact);
 
@@ -376,6 +381,7 @@ export class CodeReviewStage implements WorkflowStage {
         round: roundNum,
         verdict,
         findingCount: findings.length,
+        effort: roundEffort,
         redirectedTo: isIssueFix ? "ISSUE_FIX" : "PLAN",
       });
 
@@ -426,6 +432,7 @@ export class CodeReviewStage implements WorkflowStage {
       round: roundNum,
       verdict,
       findingCount: findings.length,
+      effort: roundEffort,
     });
 
     if (landingDecision) {

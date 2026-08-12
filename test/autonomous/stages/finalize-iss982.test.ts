@@ -186,6 +186,10 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     const written = readState(sessionDir);
     expect(written.finalizeCheckpoint).toBe("committed");
     expect(written.completedTickets[0]?.commitHash).toBe(A40);
+    // T-461: the level travels with the ITEM. `currentReviewEffort` is
+    // overwritten by the next pick, so this record is the only thing that can
+    // still say what this commit was reviewed at.
+    expect((written.completedTickets[0] as { reviewEffort?: string }).reviewEffort).toBe("standard");
   });
 
   // -------------------------------------------------------------------------

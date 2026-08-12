@@ -2,7 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput, FullSessionState } from "../session-types.js";
 import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
-import { effectiveReviewEffort, normalizeReviewEffortSource } from "../review-effort.js";
+import { effectiveReviewEffort, effortDisclosureLine, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -312,13 +312,31 @@ export class FinalizeStage implements WorkflowStage {
         ]
       : [];
 
+    // T-461: FINALIZE is the last point before the work becomes a commit, so a
+    // level below standard is stated here rather than left in a session file.
+    // `off` gets its own sentence because it is a different claim: not "this
+    // was reviewed less" but "no review verdict exists for this commit", which
+    // is what someone reading the history later needs to know.
+    const finalizeEffort = effectiveReviewEffort(ctx.state, "CODE_REVIEW");
+    const effortCopy = finalizeEffort === "off"
+      ? ["", `${effortDisclosureLine(ctx.state, "CODE_REVIEW")} Review stages were skipped for this item; no review verdict exists for this commit.`]
+      : finalizeEffort === "light"
+        ? ["", `${effortDisclosureLine(ctx.state, "CODE_REVIEW")} This item was reviewed at a lower depth than the project default.`]
+        : [];
+
     // ISS-099: Single combined instruction -- stage, verify, commit in one round-trip
     return {
       instruction: [
         "# Finalize",
         "",
-        "Code review passed. Time to commit.",
+        // T-461: an `off` item has no verdict to have passed, and saying it
+        // passed beside the sentence saying no verdict exists would hand the
+        // reader two contradictory claims at the commit boundary.
+        finalizeEffort === "off"
+          ? "Review stages were skipped. Time to commit."
+          : "Code review passed. Time to commit.",
         ...landingCopy,
+        ...effortCopy,
         "",
         "1. Run `git reset` to clear the staging area (ensures no stale files from prior operations)",
         ctx.state.ticket ? `2. Update ticket ${ticketLabel(ctx)} status to "complete" in .story/` : "",
@@ -821,6 +839,11 @@ export class FinalizeStage implements WorkflowStage {
           realizedRisk: ctx.state.ticket.realizedRisk,
           startedAt: ctx.state.ticketStartedAt ?? undefined,
           completedAt: new Date().toISOString(),
+          // T-461: pinned here because the top-level field is overwritten by
+          // the next pick. CODE_REVIEW is the stage whose level a reader of a
+          // completed item cares about, and it is the level the commit was
+          // actually reviewed at.
+          reviewEffort: effectiveReviewEffort(ctx.state, "CODE_REVIEW"),
         }
       : undefined;
 

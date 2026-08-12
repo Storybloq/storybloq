@@ -4,6 +4,7 @@ import { displayIdOf } from "./resolver.js";
  * All sections always present; missing data uses "Not available" placeholders.
  */
 import { analyzeSessionDiagnostics } from "../autonomous/session-diagnostics.js";
+import { effectiveReviewEffort, effortDisclosureLine, isReviewEffort } from "../autonomous/review-effort.js";
 import type { FullSessionState, EventEntry } from "../autonomous/session-types.js";
 import type { OutputFormat } from "../models/types.js";
 import { safeJson, MAX_DISPLAY_SERIALIZED_LENGTH } from "./safe-json.js";
@@ -231,6 +232,13 @@ function buildReviewSection(state: FullSessionState): string {
   const code = state.reviews.code;
 
   if (plan.length === 0 && code.length === 0) {
+    // T-461: an empty review section has two very different causes, and a
+    // reader deciding whether a commit was reviewed needs to be told which.
+    // "No reviews recorded" reads as an anomaly; a deliberate `off` is not one,
+    // and saying so here is the whole point of the dial being disclosed.
+    if (effectiveReviewEffort(state, "CODE_REVIEW") === "off") {
+      return `## Review Stats\n\n${effortDisclosureLine(state, "CODE_REVIEW")} Reviews were skipped for this work; no review verdict exists.`;
+    }
     return "## Review Stats\n\nNo reviews recorded.";
   }
 
@@ -238,9 +246,15 @@ function buildReviewSection(state: FullSessionState): string {
 
   // The ROUND COUNT stays outside the bound in both blocks: it is the answer
   // this section exists to give, and only the per-round detail is cut.
-  const roundLine = (r: { round: unknown; verdict: unknown; findingCount: number; criticalCount: number; majorCount: number; reviewer: unknown; unresolvedCriticalCount?: number }): string => {
+  const roundLine = (r: { round: unknown; verdict: unknown; findingCount: number; criticalCount: number; majorCount: number; reviewer: unknown; unresolvedCriticalCount?: number; effort?: unknown }): string => {
     const unresolved = r.unresolvedCriticalCount === undefined ? "" : `, ${r.unresolvedCriticalCount} unresolved critical`;
-    return `  - Round ${safe(r.round)}: ${safe(r.verdict)} (${r.findingCount} findings, ${r.criticalCount} critical${unresolved}, ${r.majorCount} major) -- ${safe(r.reviewer)}`;
+    // T-461: only levels OTHER than standard are named. Standard is what every
+    // pre-dial round ran at and what an unset dial still runs at, so annotating
+    // it would add a token to every line of every report to say "nothing
+    // changed". A round with no recorded level is a pre-dial record and is left
+    // alone for the same reason.
+    const effort = isReviewEffort(r.effort) && r.effort !== "standard" ? ` @ ${r.effort}` : "";
+    return `  - Round ${safe(r.round)}: ${safe(r.verdict)} (${r.findingCount} findings, ${r.criticalCount} critical${unresolved}, ${r.majorCount} major) -- ${safe(r.reviewer)}${effort}`;
   };
 
   if (plan.length > 0) {

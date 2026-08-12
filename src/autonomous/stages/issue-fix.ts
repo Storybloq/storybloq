@@ -1,6 +1,7 @@
 import { displayIdOf } from "../../core/resolver.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { effectiveReviewEffort } from "../review-effort.js";
 
 /**
  * ISSUE_FIX stage -- T-153: Fix a single issue picked from PICK_TICKET.
@@ -107,9 +108,12 @@ export class IssueFixStage implements WorkflowStage {
       };
     }
 
-    // T-208: Optional code review for issue fixes
+    // T-208: Optional code review for issue fixes.
+    // T-461: a goto jumps straight to a stage without consulting its skip(),
+    // so `reviewEffort: off` has to be checked here explicitly or this path
+    // would be the one route that still reviews when review is turned off.
     const enableCodeReview = !!(ctx.recipe.stages.ISSUE_FIX as Record<string, unknown> | undefined)?.enableCodeReview;
-    if (enableCodeReview) {
+    if (enableCodeReview && effectiveReviewEffort(ctx.state, "CODE_REVIEW") !== "off") {
       return { action: "goto", target: "CODE_REVIEW" };
     }
 

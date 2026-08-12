@@ -510,6 +510,60 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     // handleCommit's refusal fires before any ctx.writeState call for this shape.
     expect(readState(sessionDir)?.finalizeCheckpoint).not.toBe("committed");
   });
+
+  // -------------------------------------------------------------------------
+  // T-461: resolvedIssuesMeta is written in the SAME state write as
+  // resolvedIssues above, and it is a DURABLE record a person reads later as
+  // fact. Both dial fields it draws from are permissive persisted strings, so
+  // the record has to normalize rather than copy.
+  // -------------------------------------------------------------------------
+  it("T-461. records the review effort that governed the fix, not a corrupt persisted value", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/issues/ISS-999.json"] });
+    mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: LIVE_EMAIL });
+    mockedGitUserEmail.mockResolvedValue(LIVE_EMAIL);
+
+    const state = makeState({
+      ticket: undefined,
+      claimEpoch: undefined,
+      currentIssue: { id: "ISS-999", title: "fixture", severity: "high" },
+      currentReviewEffort: "corrupt",
+      currentReviewEffortSource: "nonsense",
+    } as Partial<FullSessionState>);
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
+    await stage.enter(ctx);
+
+    const written = readState(sessionDir);
+    expect(written.resolvedIssues).toContain("ISS-999");
+    // "corrupt" must never appear here: the fix was reviewed at standard, and
+    // that is what the audit record has to say.
+    expect(written.resolvedIssuesMeta).toEqual([
+      { id: "ISS-999", reviewEffort: "standard", source: "unknown" },
+    ]);
+  });
+
+  it("T-461. records a real level unchanged", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/issues/ISS-999.json"] });
+    mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: LIVE_EMAIL });
+    mockedGitUserEmail.mockResolvedValue(LIVE_EMAIL);
+
+    // The control: without it the assertion above would pass if the record
+    // simply hardcoded standard and stopped disclosing anything.
+    const state = makeState({
+      ticket: undefined,
+      claimEpoch: undefined,
+      currentIssue: { id: "ISS-999", title: "fixture", severity: "high" },
+      currentReviewEffort: "off",
+      currentReviewEffortSource: "item",
+    } as Partial<FullSessionState>);
+    const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
+    await stage.enter(ctx);
+
+    expect(readState(sessionDir).resolvedIssuesMeta).toEqual([
+      { id: "ISS-999", reviewEffort: "off", source: "item" },
+    ]);
+  });
 });
 
 function mockedGitDiffCachedNamesReturnsEmpty() {

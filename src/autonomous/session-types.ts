@@ -792,7 +792,36 @@ export const SessionStateSchema = z.object({
     realizedRisk: forgiveNull(z.string()),
     claimed: z.boolean().default(false),
     lastPlanHash: forgiveNull(z.string()),
+    // T-461: carried so the review-effort size mapping can read it.
+    // T-461 introduced this field for size mapping, so it carries the same
+    // catch as the other dial fields: a hand-edited non-string must cost the
+    // mapping (which then falls to standard), never the session.
+    type: forgiveNull(z.string()).catch(undefined),
   }).optional(),
+
+  // T-461: the current item's resolved review effort, and where it came from.
+  // Top-level rather than on the ticket projection because it must serve issue
+  // items too. Absent reads as "standard" everywhere, which is what keeps a
+  // session frozen before this feature behaving exactly as it did.
+  //
+  // Stored as a permissive string, NOT an enum, for the T-328 reason: this
+  // schema gates persisted session reads, so an enum here does not drop a
+  // corrupt value, it makes the whole session UNREADABLE and the resume fails.
+  // A dial field must never be able to cost someone their session. The value is
+  // normalized on read by effectiveReviewEffort, which fails closed to standard,
+  // so corruption costs today's review instead. The enum still guards the INPUT
+  // boundary (GuideInput.reviewEffort), where rejecting a bad value is correct.
+  //
+  // `.catch` on top of forgiveNull because the two forgive different things:
+  // forgiveNull admits a null, but a hand-edited `currentReviewEffort: 1` is
+  // still a type error that fails the whole parse. Both are corruption and
+  // neither may cost someone their session, so both land on undefined and the
+  // read-time normalizers resolve them to standard. NOTE: this is stricter than
+  // the ~67 other forgiveNull fields in this schema, which do still reject a
+  // type-mismatched value; that gap is pre-existing and filed separately rather
+  // than changed here under a dial ticket.
+  currentReviewEffort: forgiveNull(z.string()).catch(undefined),
+  currentReviewEffortSource: forgiveNull(z.string()).catch(undefined),
 
   // Review tracking
   reviews: z.object({
@@ -832,6 +861,24 @@ export const SessionStateSchema = z.object({
 
   // T-153: Issues resolved this session
   resolvedIssues: z.array(z.string()).default([]),
+
+  // T-461: per-issue review effort, kept durably because currentReviewEffort is
+  // overwritten by the next pick. Without this an issue fixed at `off` would
+  // lose its disclosure the moment the session moved on.
+  // The `.catch` on the ARRAY is the important one. This field is pure audit:
+  // nothing resumes work from it, so a damaged container (a non-array, or an
+  // entry whose id is not a string) must cost the DISCLOSURE and never the
+  // session. Discarding the history is recoverable; refusing to load the
+  // session is not. Per-member catches below apply the same rule one level in.
+  resolvedIssuesMeta: z.array(z.object({
+    id: z.string(),
+    // `.catch` as well as forgiveNull: forgiveNull admits null but still
+    // rejects a number or an object, and a dial field must never be the reason
+    // a session cannot be read. See currentReviewEffort below for the full
+    // reasoning. The read side normalizes whatever survives.
+    reviewEffort: forgiveNull(z.string()).catch(undefined),
+    source: forgiveNull(z.string()).catch(undefined),
+  })).catch([]).default([]),
 
   // T-382: Cached display IDs for resolved issues (canonical -> display)
   resolvedIssueDisplayIds: z.record(z.string()).default({}),
@@ -1197,6 +1244,37 @@ export const SessionStateSchema = z.object({
     codexReviewBackends: z.array(z.string()).optional(),
     handoverInterval: forgiveNull(z.number()),
   }).optional(),
+
+  // T-461: frozen at start alongside resolvedDefaults. Doubles as the marker
+  // that a session was created after the dial shipped: its ABSENCE is what
+  // keeps a legacy session on the pre-dial reviewer selection, which matters
+  // because legacy sessions persisted recipe stage backends that the stages
+  // of their era ignored.
+  //
+  // Every field inside is permissive for the same reason currentReviewEffort is:
+  // this schema gates persisted READS, so a required field here does not fail a
+  // corrupt marker gracefully, it makes the session unreadable and the resume
+  // dies. sessionEffortFromState resolves a marker missing its level (or
+  // carrying an unreadable one) to standard, and that recovery can only run if
+  // the parse lets the record through first. `.nullish()` rather than
+  // `.optional()` because a literal null must stay DISTINGUISHABLE from an
+  // absent key: absence is a pre-dial session, null is a post-dial record
+  // someone damaged, and only the first may be disclosed as `legacy`.
+  resolvedReviewEffort: z.object({
+    level: forgiveNull(z.string()),
+    source: forgiveNull(z.string()),
+    explicitKnobs: z.object({
+      codeReviewMaxRounds: forgiveNull(z.boolean()),
+      planReviewBackends: forgiveNull(z.boolean()),
+      codeReviewBackends: forgiveNull(z.boolean()),
+    }).catch({}).default({}),
+    // The CONTAINER gets the same treatment as its fields. Permissive fields
+    // inside a strict object still brick the session when the marker itself is
+    // damaged into a string or an array, which is the shape a partial write or
+    // a hand-edit produces just as easily as a missing field. An unusable
+    // container lands on null, which reads as a damaged marker (`unknown`)
+    // rather than as the absent key of a pre-dial session.
+  }).nullish().catch(null),
 
   // T-257: Verification counters (accumulated from telemetry JSONL)
   verificationCounters: z.object({
@@ -2024,6 +2102,8 @@ export interface GuideInput {
   readonly report?: GuideReportInput;
   /** Execution mode (default: "auto"). Only used with action: "start". */
   readonly mode?: SessionMode;
+  /** T-461: pin the session's review effort. Only used with action: "start". */
+  readonly reviewEffort?: "off" | "light" | "standard" | "thorough";
   /** Ticket ID for tiered modes (review, plan, guided). */
   readonly ticketId?: string;
   /** T-188: Target work items for targeted auto mode. Array of T-XXX and ISS-XXX IDs. */

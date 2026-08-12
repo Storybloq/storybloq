@@ -6,6 +6,7 @@ import type { GuideReportInput } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
+import { effectiveReviewEffort } from "../review-effort.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
@@ -25,6 +26,16 @@ import {
  */
 export class PlanReviewStage implements WorkflowStage {
   readonly id = "PLAN_REVIEW";
+
+  /**
+   * T-461: `reviewEffort: off` removes this stage from the walk. Pure, because
+   * findNextStage may call it more than once per transition; the disclosure was
+   * written at PICK_TICKET. A plan-mode session exists to produce a reviewed
+   * plan, so it still runs, at light.
+   */
+  skip(ctx: StageContext): boolean {
+    return effectiveReviewEffort(ctx.state, "PLAN_REVIEW") === "off";
+  }
 
   async enter(ctx: StageContext): Promise<StageResult> {
     const backends = reviewBackendsForClient(ctx.state.config);

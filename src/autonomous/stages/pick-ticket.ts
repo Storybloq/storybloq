@@ -15,6 +15,7 @@ import { gitUserEmail, gitHead } from "../git-inspector.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
+import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } from "../review-effort.js";
 import { entityFingerprint } from "../pending-artifacts.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
@@ -306,14 +307,31 @@ export class PickTicketStage implements WorkflowStage {
     const claimObj = email ? buildClaim(email, finalBranch, new Date().toISOString()) : undefined;
 
     // Stage field updates (persisted atomically with state transition by processAdvance)
+    // T-461: resolve this item's review effort once, here, and record where it
+    // came from. skip() must stay pure (the walker may call it repeatedly), so
+    // the disclosure has to be written at pick time rather than at skip time.
+    const ticketEffort = reviewEffortForTicket(
+      ticket as unknown as Record<string, unknown>,
+      sessionEffortFromState(ctx.state),
+    );
+    ctx.appendEvent("review_effort_resolved", {
+      item: ticket.displayId ?? ticket.id,
+      level: ticketEffort.level,
+      source: ticketEffort.source,
+      basis: { type: ticket.type ?? null, risk: reviewRiskForTicket(ticket) },
+    });
+
     ctx.updateDraft({
       ticket: {
         id: ticket.id,
         displayId: ticket.displayId,
         title: ticket.title,
         risk: reviewRiskForTicket(ticket),
+        type: ticket.type ?? undefined,
         claimed: true,
       },
+      currentReviewEffort: ticketEffort.level,
+      currentReviewEffortSource: ticketEffort.source,
       reviews: { plan: [], code: [] },
       git: { ...ctx.state.git, itemBaseHead: ticketBaseHead },
       // ISS-904: per-ticket, so a fresh pick never inherits the previous item's
@@ -459,9 +477,23 @@ export class PickTicketStage implements WorkflowStage {
     } catch { /* best-effort -- don't block on status update */ }
     ctx.writeState({ pendingProjectMutation: null });
 
+    // T-461: same resolution for issues, by severity instead of type.
+    const issueEffort = reviewEffortForIssue(
+      issue as unknown as Record<string, unknown>,
+      sessionEffortFromState(ctx.state),
+    );
+    ctx.appendEvent("review_effort_resolved", {
+      item: issue.displayId ?? issue.id,
+      level: issueEffort.level,
+      source: issueEffort.source,
+      basis: { severity: issue.severity ?? null },
+    });
+
     ctx.updateDraft({
       currentIssue: { id: issue.id, displayId: issue.displayId, title: issue.title, severity: issue.severity },
       ticket: undefined,
+      currentReviewEffort: issueEffort.level,
+      currentReviewEffortSource: issueEffort.source,
       reviews: { plan: [], code: [] },
       git: { ...ctx.state.git, itemBaseHead: issueBaseHead },
       finalizeCheckpoint: null,

@@ -2,6 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput, FullSessionState } from "../session-types.js";
 import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
+import { effectiveReviewEffort, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -769,6 +770,23 @@ export class FinalizeStage implements WorkflowStage {
           ...(ctx.state.resolvedIssueDisplayIds ?? {}),
           ...(issueDisplayId ? { [currentIssue.id]: issueDisplayId } : {}),
         },
+        // T-461: recorded here, beside resolvedIssues, so the list only ever
+        // describes issues that actually resolved. currentReviewEffort is
+        // overwritten by the next pick, so a skipped review has to be captured
+        // durably or its disclosure is lost the moment the session moves on.
+        resolvedIssuesMeta: [
+          ...(ctx.state.resolvedIssuesMeta ?? []).filter((m) => m.id !== currentIssue.id),
+          {
+            id: currentIssue.id,
+            // NORMALIZED, not copied. Both fields are permissive persisted
+            // strings, so a damaged session could otherwise write "corrupt"
+            // into a durable audit record that a person later reads as the
+            // level this issue was actually reviewed at. These record what
+            // GOVERNED the review, which is what the normalizers return.
+            reviewEffort: effectiveReviewEffort(ctx.state, "CODE_REVIEW"),
+            source: normalizeReviewEffortSource(ctx.state.currentReviewEffortSource),
+          },
+        ],
         // ISS-982: append-only audit trail, written in the SAME state write
         // as the checkpoint (durable in the all-or-nothing application
         // sense per ISS-958, not crash-durable). Written unconditionally,

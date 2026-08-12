@@ -1281,6 +1281,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       ownerGoneCandidateCancel: OwnerGoneCandidateCancelSchema.optional()
         .describe("Cancel only, and requires an explicit sessionId. The confirmed owner-gone picture authorizing this task to END a session whose recorded owner is gone, rather than adopt it -- the session revision the confirmation was shown against, and the evidence fingerprint of that picture."),
       mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
+      reviewEffort: z.enum(["off", "light", "standard", "thorough"]).optional().describe("Review intensity (start action only). Default: mapped per item from type and risk. Per-item reviewEffort metadata still wins; explicit project stage knobs always win."),
       ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
       targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),
       report: z.object({

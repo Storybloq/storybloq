@@ -55,6 +55,24 @@ export interface ResolvedRecipe {
   readonly pipeline: readonly string[];
   readonly postComplete: readonly string[];
   readonly stages: Readonly<Record<string, Record<string, unknown>>>;
+  /**
+   * T-461: the session's review-effort pin plus the provenance the dial needs.
+   * `explicitKnobs` records which review knobs the PROJECT set; the dial may
+   * supersede a recipe-shipped value but never a project-set one, and after
+   * the merge in resolveRecipe the two are otherwise indistinguishable.
+   */
+  readonly reviewEffort: {
+    readonly level: "off" | "light" | "standard" | "thorough" | "size-mapped";
+    // Includes the not-attributable values because a recipe reconstructed from
+    // a resumed session carries that session's provenance, and a legacy or
+    // damaged record must be able to say so rather than borrow "default".
+    readonly source: "start-call" | "project" | "default" | "legacy" | "unknown";
+    readonly explicitKnobs: {
+      readonly codeReviewMaxRounds: boolean;
+      readonly planReviewBackends: boolean;
+      readonly codeReviewBackends: boolean;
+    };
+  };
   readonly dirtyFileHandling: string;
   readonly branchStrategy: BranchStrategy;
   readonly defaults: {

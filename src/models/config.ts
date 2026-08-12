@@ -83,6 +83,17 @@ export const ConfigSchema = z
       // "current" when the recipe is resolved.
       branchStrategy: z.enum(["current", "per-ticket", "main", "none"]).optional(),
       maxParallelAgents: z.number().min(1).max(8).optional(),
+      // T-461: the review-effort dial. Declared here because this object is a
+      // plain z.object -- an undeclared key is STRIPPED by parse, which is what
+      // silently killed the project-default precedence level until an
+      // end-to-end start test caught it.
+      //
+      // Deliberately NOT an enum, unlike branchStrategy above. project-loader
+      // calls ConfigSchema.parse (not safeParse), so an enum would turn a typo
+      // in this one field into a THROW that breaks every command that loads the
+      // project. The dial's own normalizer fails an unreadable value closed to
+      // standard, which costs the project today's review instead of its config.
+      reviewEffort: z.unknown().optional(),
     }).optional(),
     nodes: z.record(z.string(), z.unknown()).optional(),
     orchestrator: z.string().optional(),

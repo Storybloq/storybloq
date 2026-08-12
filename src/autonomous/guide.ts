@@ -75,6 +75,7 @@ import { deriveLeaseState } from "../core/session-scan.js";
 import { assertTransition } from "./state-machine.js";
 import { evaluatePressure, pressureAfterCompaction } from "./context-pressure.js";
 import { reviewRiskForTicket } from "./review-depth.js";
+import { normalizeReviewEffortDefault, reviewEffortForTicket, sessionEffortFromState } from "./review-effort.js";
 import {
   spawnAliveSidecarFor,
   killSidecar,
@@ -1533,6 +1534,17 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
       if (Array.isArray(overrides.reviewBackends)) sessionConfig.reviewBackends = overrides.reviewBackends as string[];
       if (Array.isArray(overrides.codexReviewBackends)) sessionConfig.codexReviewBackends = overrides.codexReviewBackends as string[];
       if (typeof overrides.handoverInterval === "number") sessionConfig.handoverInterval = overrides.handoverInterval;
+      // T-461: a project default the start call can still override below.
+      // PRESENCE, not type, unlike its neighbours: a config that literally
+      // contains `"reviewEffort": null` has a value written into it (`meta
+      // unset` deletes the key instead), and a type filter would drop it, hand
+      // the resolver the "absent" signal, and let a low-risk chore size-map to
+      // LIGHT -- less review than the project gets today. Normalized HERE
+      // rather than carried raw, because sessionConfig.reviewEffort is a
+      // forgiveNull field: those widen READS and are never written null.
+      if (overrides.reviewEffort !== undefined) {
+        sessionConfig.reviewEffort = normalizeReviewEffortDefault(overrides.reviewEffort);
+      }
       // T-328: one parser instead of a hand-maintained value list, so a new
       // strategy cannot be accepted everywhere except here.
       const parsedStrategy = parseBranchStrategy(overrides.branchStrategy);
@@ -1553,6 +1565,10 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     sessionConfig.maxTicketsPerSession = validatedTargetWork.length;
   }
 
+  // T-461: an explicit start-call pin beats the project default.
+  const reviewEffortSource: "start-call" | "project" = args.reviewEffort ? "start-call" : "project";
+  if (args.reviewEffort) sessionConfig.reviewEffort = args.reviewEffort;
+
   // Resolve recipe into frozen pipeline configuration
   const resolvedRecipe = resolveRecipe(recipe, {
     maxTicketsPerSession: sessionConfig.maxTicketsPerSession,
@@ -1562,6 +1578,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     handoverInterval: sessionConfig.handoverInterval,
     stages: sessionConfig.stageOverrides,
     branchStrategy: sessionConfig.branchStrategy,
+    reviewEffort: sessionConfig.reviewEffort,
+    reviewEffortSource,
   });
 
   // The resolved recipe is the ONE source for these defaults. Previously
@@ -1704,6 +1722,13 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           ? [...resolvedRecipe.defaults.codexReviewBackends]
           : undefined,
         handoverInterval: resolvedRecipe.defaults.handoverInterval,
+      },
+      // T-461: frozen for the session, and the marker that this session was
+      // created after the dial shipped.
+      resolvedReviewEffort: {
+        level: resolvedRecipe.reviewEffort.level,
+        source: resolvedRecipe.reviewEffort.source,
+        explicitKnobs: { ...resolvedRecipe.reviewEffort.explicitKnobs },
       },
       ownerTask,
     };
@@ -1917,6 +1942,15 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         entryState = "PLAN";
       }
 
+      // T-461: tiered modes never reach PICK_TICKET, which is where an item's
+      // review effort is normally resolved. Without this the ticket's own
+      // reviewEffort metadata would be ignored in exactly the modes a caller
+      // reaches for when they want to control one item's review.
+      const tieredEffort = reviewEffortForTicket(
+        ticket as unknown as Record<string, unknown>,
+        sessionEffortFromState(updated),
+      );
+
       // Set ticket and transition to entry state
       updated = {
         ...updated,
@@ -1927,8 +1961,11 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           displayId: ticketResolution.displayId,
           title: ticket.title,
           risk: reviewRiskForTicket(ticket),
+          type: (ticket as { type?: string }).type ?? undefined,
           claimed: true,
         },
+        currentReviewEffort: tieredEffort.level,
+        currentReviewEffortSource: tieredEffort.source,
       };
 
       updated = refreshLease(updated);
@@ -1948,6 +1985,19 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
           canonicalTicketId: ticketResolution.canonicalId,
           displayId: ticketResolution.displayId,
         }),
+      });
+      // T-461: the same disclosure PICK_TICKET writes. A tiered session that
+      // skips review has to leave the same durable trace as an auto one.
+      appendEvent(dir, {
+        rev: written.revision,
+        type: "review_effort_resolved",
+        timestamp: new Date().toISOString(),
+        data: {
+          item: ticketResolution.displayId,
+          level: tieredEffort.level,
+          source: tieredEffort.source,
+          basis: { type: (ticket as { type?: string }).type ?? null, risk: reviewRiskForTicket(ticket) },
+        },
       });
       emitTelemetry(dir, "session_start", "guide", { recipe, branch: written.git.branch, mode, ticketId: ticketResolution.canonicalId });
 
@@ -2182,6 +2232,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 /** Reconstruct a ResolvedRecipe from persisted session state fields. */
 function resolveRecipeFromState(state: FullSessionState): import("./stages/types.js").ResolvedRecipe {
   const DEFAULT_PIPELINE = ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"];
+  const sessionEffort = sessionEffortFromState(state);
   return {
     id: state.resolvedRecipeId ?? state.recipe,
     pipeline: state.resolvedPipeline ?? DEFAULT_PIPELINE,
@@ -2199,6 +2250,21 @@ function resolveRecipeFromState(state: FullSessionState): import("./stages/types
         ? [...(state.resolvedDefaults?.codexReviewBackends ?? state.config.codexReviewBackends ?? [])]
         : undefined,
       handoverInterval: state.resolvedDefaults?.handoverInterval ?? state.config.handoverInterval ?? 3,
+    },
+    // T-461: absent on a legacy session, which is exactly what marks it as one.
+    // Resolved through the SAME helper the stages read, not by re-deriving the
+    // rules here. This is a second reader of one persisted field, and when it
+    // had its own copy of the logic the two disagreed: a marker missing its
+    // level read as size-mapped here and standard there, and an unreadable
+    // source was cast through as though it were valid.
+    reviewEffort: {
+      level: sessionEffort.level,
+      source: sessionEffort.source,
+      explicitKnobs: {
+        codeReviewMaxRounds: state.resolvedReviewEffort?.explicitKnobs?.codeReviewMaxRounds ?? false,
+        planReviewBackends: state.resolvedReviewEffort?.explicitKnobs?.planReviewBackends ?? false,
+        codeReviewBackends: state.resolvedReviewEffort?.explicitKnobs?.codeReviewBackends ?? false,
+      },
     },
   };
 }

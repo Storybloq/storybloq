@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ResolvedRecipe } from "../stages/types.js";
 import { parseBranchStrategy, parseBranchStrategyOrDefault } from "../branch-strategy.js";
+import { normalizeReviewEffortDefault } from "../review-effort.js";
 
 // ---------------------------------------------------------------------------
 // Recipe schema (raw JSON shape)
@@ -83,6 +84,9 @@ export function resolveRecipe(
     handoverInterval?: number;
     stages?: Record<string, Record<string, unknown>>;
     branchStrategy?: string;
+    /** T-461: session-level review-effort pin, if the caller resolved one. */
+    reviewEffort?: string;
+    reviewEffortSource?: "start-call" | "project";
   },
 ): ResolvedRecipe {
   let raw: RawRecipe;
@@ -185,11 +189,31 @@ export function resolveRecipe(
       ?? DEFAULT_DEFAULTS.handoverInterval,
   };
 
+  // T-461: which review knobs the PROJECT set, as opposed to which the recipe
+  // ships. After the shallow merge above the two are indistinguishable, and the
+  // dial may supersede a recipe-shipped value but never a project-set one.
+  const projectStages = projectOverrides?.stages ?? {};
+  const reviewEffort = {
+    level: normalizeReviewEffortDefault(projectOverrides?.reviewEffort),
+    // Provenance follows PRESENCE, not validity: a project that wrote a value
+    // we could not read still set one, and reporting that as "default" would
+    // hide the typo behind the level it fell closed to.
+    source: projectOverrides?.reviewEffort !== undefined
+      ? (projectOverrides.reviewEffortSource ?? "project")
+      : "default" as const,
+    explicitKnobs: {
+      codeReviewMaxRounds: projectStages.CODE_REVIEW?.maxReviewRounds !== undefined,
+      planReviewBackends: projectStages.PLAN_REVIEW?.backends !== undefined,
+      codeReviewBackends: projectStages.CODE_REVIEW?.backends !== undefined,
+    },
+  };
+
   return {
     id: raw.id ?? recipeName,
     pipeline,
     postComplete,
     stages,
+    reviewEffort,
     dirtyFileHandling: raw.dirtyFileHandling ?? "block",
     // T-328: normalize here rather than trusting either source. Both the
     // project override and the recipe JSON can carry the legacy "none".

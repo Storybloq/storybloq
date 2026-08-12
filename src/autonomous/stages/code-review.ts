@@ -6,6 +6,7 @@ import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
+import { effectiveReviewEffort } from "../review-effort.js";
 import { effectiveCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
@@ -29,6 +30,15 @@ import {
  */
 export class CodeReviewStage implements WorkflowStage {
   readonly id = "CODE_REVIEW";
+
+  /**
+   * T-461: `reviewEffort: off` removes this stage from the walk. Pure, for the
+   * same reason as PLAN_REVIEW. A review-mode session exists to produce a code
+   * review, so it still runs, at light.
+   */
+  skip(ctx: StageContext): boolean {
+    return effectiveReviewEffort(ctx.state, "CODE_REVIEW") === "off";
+  }
 
   async enter(ctx: StageContext): Promise<StageResult> {
     const backends = reviewBackendsForClient(ctx.state.config);

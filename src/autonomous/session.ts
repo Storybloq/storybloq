@@ -83,6 +83,8 @@ export interface SessionConfig {
   codexReviewBackends?: string[];
   mode?: "auto" | "review" | "plan" | "guided";
   handoverInterval?: number;
+  /** T-461: session review-effort pin. The resolved value lives in resolvedReviewEffort. */
+  reviewEffort?: string;
   stageOverrides?: Record<string, Record<string, unknown>>;
   /** T-328: accepted input; normalized to a canonical BranchStrategy by resolveRecipe. */
   branchStrategy?: string;

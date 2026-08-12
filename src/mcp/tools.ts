@@ -276,7 +276,7 @@ export async function runMcpWriteTool(
 
 // --- Tool registration ---
 
-const nodeParam = z.string().regex(NODE_NAME_REGEX).optional().describe("Node name (orchestrator only). When provided, operates on that node's .story/ instead of the orchestrator's.");
+const nodeParam = z.string().regex(NODE_NAME_REGEX).optional().describe("Operate on this node's .story/ instead of the orchestrator's own (orchestrator only).");
 
 function resolveEffectiveRoot(pinnedRoot: string, nodeName?: string): { root: string } | McpToolResult {
   if (!nodeName) return { root: pinnedRoot };
@@ -369,7 +369,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_status", {
     description: "Project summary: phase statuses, ticket/issue counts, blockers, current phase",
     inputSchema: {
-      format: z.enum(["md", "json"]).optional().describe("Output format (default: md)"),
+      format: z.enum(["md", "json"]).optional().describe("default: md"),
     },
   }, async (args) => {
     const format = args.format ?? "md";
@@ -408,7 +408,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Highest-priority unblocked ticket(s) with unblock impact and umbrella progress",
     inputSchema: {
       count: z.number().int().min(1).max(10).optional()
-        .describe("Number of candidates to return (default: 1)"),
+        .describe("default: 1"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
     handleTicketNext(ctx, args.count ?? 1),
@@ -425,7 +425,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_handover_latest", {
     description: "Content of the most recent handover document(s)",
     inputSchema: {
-      count: z.number().int().min(1).max(10).optional().describe("Number of recent handovers to return (default: 1)"),
+      count: z.number().int().min(1).max(10).optional().describe("default: 1"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
     handleHandoverLatest(ctx, args.count ?? 1),
@@ -438,9 +438,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   registerSessionGuardTool(server, pinnedRoot);
 
   server.registerTool("storybloq_validate", {
-    description: "Reference integrity + schema checks. The integrity preflight works even when critical JSON prevents normal project loading.",
+    description: "Reference integrity + schema checks. Works even when corrupt JSON blocks project loading.",
     inputSchema: {
-      format: z.enum(["md", "json"]).optional().describe("Output format (default: md)"),
+      format: z.enum(["md", "json"]).optional().describe("default: md"),
       integrityOnly: z.boolean().optional().describe("Scan all .story JSON without loading project state"),
     },
   }, async (args) => {
@@ -463,7 +463,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_phase_tickets", {
     description: "Leaf tickets for a specific phase, sorted by order",
     inputSchema: {
-      phaseId: z.string().describe("Phase ID (e.g. p5b, dogfood)"),
+      phaseId: z.string().describe("e.g. p5b, dogfood"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => {
     // Check phase existence -- return not_found for unknown phase
@@ -479,11 +479,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }));
 
   server.registerTool("storybloq_ticket_list", {
-    description: "List leaf tickets with optional filters",
+    description: "List leaf tickets",
     inputSchema: {
-      status: z.enum(TICKET_STATUSES).optional().describe("Filter by status: open, inprogress, complete"),
-      phase: z.string().optional().describe("Filter by phase ID"),
-      type: z.enum(TICKET_TYPES).optional().describe("Filter by type: task, feature, chore"),
+      status: z.enum(TICKET_STATUSES).optional(),
+      phase: z.string().optional(),
+      type: z.enum(TICKET_TYPES).optional(),
       node: nodeParam,
     },
   }, (args) => {
@@ -510,7 +510,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_ticket_get", {
     description: "Get a ticket by ID (includes umbrella tickets)",
     inputSchema: {
-      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("Ticket ID (e.g. T-001, T-079b, t-[canonical])"),
+      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, T-079b, t-[canonical]"),
       node: nodeParam,
     },
   }, (args) => {
@@ -520,20 +520,20 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   });
 
   server.registerTool("storybloq_ticket_meta_get", {
-    description: "Get custom passthrough metadata for a ticket. Omitting path returns all custom metadata.",
+    description: "Get custom passthrough metadata for a ticket. Omitting path returns all.",
     inputSchema: {
-      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("Ticket ID (e.g. T-001, T-079b, t-[canonical])"),
-      path: z.string().optional().describe("Custom metadata path, using dot notation for nested values"),
+      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, T-079b, t-[canonical]"),
+      path: z.string().optional().describe("Dot notation for nested values"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleTicketMetaGet(args.id, args.path, ctx)));
 
   server.registerTool("storybloq_issue_list", {
-    description: "List issues with optional filters",
+    description: "List issues",
     inputSchema: {
-      status: z.enum(ISSUE_STATUSES).optional().describe("Filter by status: open, inprogress, resolved"),
-      severity: z.enum(ISSUE_SEVERITIES).optional().describe("Filter by severity: critical, high, medium, low"),
-      component: z.string().optional().describe("Filter by component name"),
-      phase: z.string().optional().describe("Filter by phase ID"),
+      status: z.enum(ISSUE_STATUSES).optional(),
+      severity: z.enum(ISSUE_SEVERITIES).optional(),
+      component: z.string().optional(),
+      phase: z.string().optional().describe("Phase ID"),
       node: nodeParam,
     },
   }, (args) => {
@@ -572,24 +572,24 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   });
 
   server.registerTool("storybloq_issue_meta_get", {
-    description: "Get custom passthrough metadata for an issue. Omitting path returns all custom metadata.",
+    description: "Get custom passthrough metadata for an issue. Omitting path returns all.",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
-      path: z.string().optional().describe("Custom metadata path, using dot notation for nested values"),
+      path: z.string().optional().describe("Use dot notation for nested values"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleIssueMetaGet(args.id, args.path, ctx)));
 
   server.registerTool("storybloq_handover_get", {
     description: "Content of a specific handover document by filename",
     inputSchema: {
-      filename: z.string().describe("Handover filename (e.g. 2026-03-20-session.md)"),
+      filename: z.string().describe("e.g. 2026-03-20-session.md"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleHandoverGet(args.filename, ctx)));
 
   // --- T-084: Recap + Snapshot + Export ---
 
   server.registerTool("storybloq_recap", {
-    description: "Session diff -- changes since last snapshot + suggested next actions. Shows what changed and what to work on.",
+    description: "Session diff -- changes since last snapshot + suggested next actions.",
   }, () => runMcpReadTool(pinnedRoot, handleRecap));
 
   server.registerTool("storybloq_recommend", {
@@ -603,7 +603,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   ));
 
   server.registerTool("storybloq_snapshot", {
-    description: "Save current project state for session diffs. Creates a snapshot in .story/snapshots/.",
+    description: "Saves project state to .story/snapshots/ for session diffs.",
   }, () => runMcpWriteTool(pinnedRoot, handleSnapshot));
 
   server.registerTool("storybloq_export", {
@@ -633,7 +633,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_handover_create", {
     description: "Create a handover document from markdown content",
     inputSchema: {
-      content: z.string().describe("Markdown content of the handover"),
+      content: z.string(),
       slug: z.string().optional().describe("Slug for filename (e.g. phase5b-wrapup). Default: session"),
     },
   }, (args) => {
@@ -651,14 +651,14 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Ticket write tools ---
 
   server.registerTool("storybloq_ticket_create", {
-    description: "Create a new ticket. ID assignment is serialized under the project lock, so concurrent creates that acquire the lock receive distinct sequential IDs.",
+    description: "Create a new ticket. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
-      title: z.string().describe("Ticket title"),
-      type: z.enum(TICKET_TYPES).describe("Ticket type: task, feature, chore"),
-      phase: z.string().optional().describe("Phase ID"),
-      description: z.string().optional().describe("Ticket description"),
-      blockedBy: z.array(TicketRefSchema).optional().describe("IDs of blocking tickets"),
-      parentTicket: TicketRefSchema.optional().describe("Parent ticket ID (makes this a sub-ticket)"),
+      title: z.string(),
+      type: z.enum(TICKET_TYPES),
+      phase: z.string().optional(),
+      description: z.string().optional(),
+      blockedBy: z.array(TicketRefSchema).optional(),
+      parentTicket: TicketRefSchema.optional().describe("Makes this a sub-ticket"),
       node: nodeParam,
     },
   }, (args) => {
@@ -682,17 +682,17 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_ticket_update", {
     description: "Update an existing ticket",
     inputSchema: {
-      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("Ticket ID (e.g. T-001, t-[canonical])"),
-      status: z.enum(TICKET_STATUSES).optional().describe("New status: open, inprogress, complete"),
-      title: z.string().optional().describe("New title"),
-      type: z.enum(TICKET_TYPES).optional().describe("New type: task, feature, chore"),
-      order: z.number().int().optional().describe("New sort order"),
-      description: z.string().optional().describe("New description"),
-      phase: z.string().nullable().optional().describe("New phase ID (null to clear)"),
-      parentTicket: TicketRefSchema.nullable().optional().describe("Parent ticket ID (null to clear)"),
-      blockedBy: z.array(TicketRefSchema).optional().describe("IDs of blocking tickets"),
-      crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX)).nullable().optional().describe("Cross-node blocking refs (e.g. engine:T-061). Null to clear."),
-      force: z.boolean().optional().describe("Bypass ownership checks when reopening or editing an already-complete ticket you cannot otherwise prove ownership of (ISS-981). Does not take over a claim; reopening to a non-complete status leaves existing claim material unchanged."),
+      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
+      status: z.enum(TICKET_STATUSES).optional(),
+      title: z.string().optional(),
+      type: z.enum(TICKET_TYPES).optional(),
+      order: z.number().int().optional(),
+      description: z.string().optional(),
+      phase: z.string().nullable().optional().describe("Null to clear."),
+      parentTicket: TicketRefSchema.nullable().optional().describe("Null to clear."),
+      blockedBy: z.array(TicketRefSchema).optional(),
+      crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX)).nullable().optional().describe("e.g. engine:T-061. Null to clear."),
+      force: z.boolean().optional().describe("Bypass the ownership guard: complete a ticket claimed by another session, or reopen a complete one (ISS-981). Does not take over a claim; reopening leaves existing claim material unchanged."),
       node: nodeParam,
     },
   }, (args) => {
@@ -722,9 +722,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_ticket_meta_set", {
     description: "Set custom passthrough metadata on a ticket. Core ticket fields are protected.",
     inputSchema: {
-      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("Ticket ID (e.g. T-001, t-[canonical])"),
-      path: z.string().describe("Custom metadata path, using dot notation for nested values"),
-      value: z.unknown().describe("JSON-compatible metadata value"),
+      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
+      path: z.string().describe("Dot notation for nested values"),
+      value: z.unknown().describe("Must be JSON-compatible"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleTicketMetaSet(args.id, args.path, args.value, format, root),
@@ -733,8 +733,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_ticket_meta_unset", {
     description: "Unset custom passthrough metadata on a ticket. Core ticket fields are protected.",
     inputSchema: {
-      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("Ticket ID (e.g. T-001, t-[canonical])"),
-      path: z.string().describe("Custom metadata path, using dot notation for nested values"),
+      id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
+      path: z.string().describe("Dot notation for nested values"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleTicketMetaUnset(args.id, args.path, format, root),
@@ -743,17 +743,17 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Issue write tools ---
 
   server.registerTool("storybloq_issue_create", {
-    description: "Create a new issue. ID assignment is serialized under the project lock, so concurrent creates that acquire the lock receive distinct sequential IDs.",
+    description: "Create a new issue. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
-      title: z.string().describe("Issue title"),
-      severity: z.enum(ISSUE_SEVERITIES).describe("Issue severity: critical, high, medium, low"),
-      impact: z.string().describe("Impact description"),
-      components: z.array(z.string()).optional().describe("Affected components"),
-      relatedTickets: z.array(TicketRefSchema).optional().describe("Related ticket IDs"),
+      title: z.string(),
+      severity: z.enum(ISSUE_SEVERITIES),
+      impact: z.string(),
+      components: z.array(z.string()).optional(),
+      relatedTickets: z.array(TicketRefSchema).optional(),
       location: z.array(z.string()).optional().describe("File locations"),
-      sourceRefs: z.array(IssueSourceRefInputSchema).optional().describe("Structured source provenance. Missing hashes are captured from the reviewed revision or working tree."),
-      dedupeKey: IssueDedupeKeySchema.optional().describe("Idempotency key. A repeated create returns the existing issue."),
-      createdBy: z.string().min(1).max(256).optional().describe("Reviewer or agent attribution"),
+      sourceRefs: z.array(IssueSourceRefInputSchema).optional().describe("Missing hashes are captured from the reviewed revision or working tree."),
+      dedupeKey: IssueDedupeKeySchema.optional().describe("A repeated create returns the existing issue."),
+      createdBy: z.string().min(1).max(256).optional(),
       phase: z.string().optional().describe("Phase ID"),
       node: nodeParam,
     },
@@ -784,17 +784,17 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Update an existing issue",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
-      status: z.enum(ISSUE_STATUSES).optional().describe("New status: open, inprogress, resolved"),
-      title: z.string().optional().describe("New title"),
-      severity: z.enum(ISSUE_SEVERITIES).optional().describe("New severity"),
-      impact: z.string().optional().describe("New impact description"),
-      resolution: z.string().nullable().optional().describe("Resolution description (null to clear)"),
-      components: z.array(z.string()).optional().describe("Affected components"),
-      relatedTickets: z.array(TicketRefSchema).optional().describe("Related ticket IDs"),
+      status: z.enum(ISSUE_STATUSES).optional(),
+      title: z.string().optional(),
+      severity: z.enum(ISSUE_SEVERITIES).optional(),
+      impact: z.string().optional(),
+      resolution: z.string().nullable().optional().describe("null clears the resolution"),
+      components: z.array(z.string()).optional(),
+      relatedTickets: z.array(TicketRefSchema).optional(),
       location: z.array(z.string()).optional().describe("File locations"),
-      sourceRefs: z.array(IssueSourceRefInputSchema).optional().describe("Replacement structured source provenance"),
-      order: z.number().int().optional().describe("New sort order"),
-      phase: z.string().nullable().optional().describe("New phase ID (null to clear)"),
+      sourceRefs: z.array(IssueSourceRefInputSchema).optional().describe("Replaces existing source refs"),
+      order: z.number().int().optional(),
+      phase: z.string().nullable().optional().describe("Phase ID; null clears the phase"),
       node: nodeParam,
     },
   }, (args) => {
@@ -826,7 +826,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Set custom passthrough metadata on an issue. Core issue fields are protected.",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
-      path: z.string().describe("Custom metadata path, using dot notation for nested values"),
+      path: z.string().describe("Use dot notation for nested values"),
       value: z.unknown().describe("JSON-compatible metadata value"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
@@ -837,7 +837,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Unset custom passthrough metadata on an issue. Core issue fields are protected.",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
-      path: z.string().describe("Custom metadata path, using dot notation for nested values"),
+      path: z.string().describe("Use dot notation for nested values"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleIssueMetaUnset(args.id, args.path, format, root),
@@ -846,10 +846,10 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Note tools ---
 
   server.registerTool("storybloq_note_list", {
-    description: "List notes with optional status/tag filters",
+    description: "List notes",
     inputSchema: {
-      status: z.enum(NOTE_STATUSES).optional().describe("Filter by status: active, archived"),
-      tag: z.string().optional().describe("Filter by tag"),
+      status: z.enum(NOTE_STATUSES).optional(),
+      tag: z.string().optional(),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
     handleNoteList({ status: args.status, tag: args.tag }, ctx),
@@ -858,16 +858,16 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_note_get", {
     description: "Get a note by ID",
     inputSchema: {
-      id: NoteIdSchema.describe("Note ID (e.g. N-001 or n-[canonical])"),
+      id: NoteIdSchema.describe("e.g. N-001 or n-[canonical]"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleNoteGet(args.id, ctx)));
 
   server.registerTool("storybloq_note_create", {
-    description: "Create a new note. ID assignment is serialized under the project lock, so concurrent creates that acquire the lock receive distinct sequential IDs.",
+    description: "Create a new note. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
-      content: z.string().describe("Note content"),
-      title: z.string().optional().describe("Note title"),
-      tags: z.array(z.string()).optional().describe("Tags for the note"),
+      content: z.string(),
+      title: z.string().optional(),
+      tags: z.array(z.string()).optional(),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleNoteCreate(
@@ -884,11 +884,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_note_update", {
     description: "Update an existing note",
     inputSchema: {
-      id: NoteIdSchema.describe("Note ID (e.g. N-001 or n-[canonical])"),
-      content: z.string().optional().describe("New content"),
-      title: z.string().nullable().optional().describe("New title (null to clear)"),
-      tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
-      status: z.enum(NOTE_STATUSES).optional().describe("New status: active, archived"),
+      id: NoteIdSchema.describe("e.g. N-001 or n-[canonical]"),
+      content: z.string().optional(),
+      title: z.string().nullable().optional().describe("null to clear"),
+      tags: z.array(z.string()).optional().describe("Replaces existing"),
+      status: z.enum(NOTE_STATUSES).optional(),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleNoteUpdate(
@@ -908,11 +908,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Lesson tools ---
 
   server.registerTool("storybloq_lesson_list", {
-    description: "List lessons with optional status/tag/source filters",
+    description: "List lessons",
     inputSchema: {
-      status: z.enum(LESSON_STATUSES).optional().describe("Filter by status: active, deprecated, superseded"),
-      tag: z.string().optional().describe("Filter by tag"),
-      source: z.enum(LESSON_SOURCES).optional().describe("Filter by source: review, correction, postmortem, manual"),
+      status: z.enum(LESSON_STATUSES).optional(),
+      tag: z.string().optional(),
+      source: z.enum(LESSON_SOURCES).optional(),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
     handleLessonList({ status: args.status, tag: args.tag, source: args.source }, ctx),
@@ -921,7 +921,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_lesson_get", {
     description: "Get a lesson by ID",
     inputSchema: {
-      id: LessonIdSchema.describe("Lesson ID (e.g. L-001 or l-[canonical])"),
+      id: LessonIdSchema.describe("e.g. L-001 or l-[canonical]"),
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleLessonGet(args.id, ctx)));
 
@@ -931,14 +931,14 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, () => runMcpReadTool(pinnedRoot, (ctx) => handleLessonDigest(ctx)));
 
   server.registerTool("storybloq_lesson_create", {
-    description: "Create a new lesson. ID assignment is serialized under the project lock, so concurrent creates that acquire the lock receive distinct sequential IDs.",
+    description: "Create a new lesson. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
-      title: z.string().describe("Lesson title -- concise lesson name"),
+      title: z.string(),
       content: z.string().describe("The actionable rule (1-3 sentences)"),
       context: z.string().describe("What happened that produced this lesson (evidence, ticket/issue refs)"),
-      source: z.enum(LESSON_SOURCES).describe("Lesson source: review, correction, postmortem, manual"),
-      tags: z.array(z.string()).optional().describe("Tags for the lesson"),
-      supersedes: LessonIdSchema.optional().describe("ID of lesson this supersedes"),
+      source: z.enum(LESSON_SOURCES),
+      tags: z.array(z.string()).optional(),
+      supersedes: LessonIdSchema.optional().describe("Lesson ID this supersedes (e.g. L-001 or l-[canonical])"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleLessonCreate(
@@ -958,12 +958,12 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_lesson_update", {
     description: "Update an existing lesson",
     inputSchema: {
-      id: LessonIdSchema.describe("Lesson ID (e.g. L-001 or l-[canonical])"),
-      title: z.string().optional().describe("New title"),
-      content: z.string().optional().describe("New content"),
-      context: z.string().optional().describe("New context"),
-      tags: z.array(z.string()).optional().describe("New tags (replaces existing)"),
-      status: z.enum(LESSON_STATUSES).optional().describe("New status: active, deprecated, superseded"),
+      id: LessonIdSchema.describe("e.g. L-001 or l-[canonical]"),
+      title: z.string().optional(),
+      content: z.string().optional(),
+      context: z.string().optional(),
+      tags: z.array(z.string()).optional().describe("Replaces existing"),
+      status: z.enum(LESSON_STATUSES).optional(),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleLessonUpdate(
@@ -984,7 +984,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_lesson_reinforce", {
     description: "Reinforce a lesson -- increment reinforcement count and update lastValidated date",
     inputSchema: {
-      id: LessonIdSchema.describe("Lesson ID (e.g. L-001 or l-[canonical])"),
+      id: LessonIdSchema.describe("e.g. L-001 or l-[canonical]"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleLessonReinforce(args.id, format, root),
@@ -995,10 +995,10 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_phase_create", {
     description: "Create a new phase in the roadmap. Exactly one of after or atStart is required for positioning.",
     inputSchema: {
-      id: z.string().describe("Phase ID -- lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
+      id: z.string().describe("Lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
       name: z.string().describe("Phase display name"),
-      label: z.string().describe("Phase label (e.g. 'PHASE 1')"),
-      description: z.string().describe("Phase description"),
+      label: z.string().describe("e.g. 'PHASE 1'"),
+      description: z.string(),
       summary: z.string().optional().describe("One-line summary for compact display"),
       after: z.string().optional().describe("Insert after this phase ID"),
       atStart: z.boolean().optional().describe("Insert at beginning of roadmap"),
@@ -1027,8 +1027,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Initialize .story/ in a federation child node from the orchestrator. Does not require allowNodeWrites.",
     inputSchema: {
       node: z.string().regex(NODE_NAME_REGEX).describe("Node name from orchestrator config"),
-      type: z.string().optional().describe("Project type (e.g. npm, macapp, swift-spm)"),
-      language: z.string().optional().describe("Primary language"),
+      type: z.string().optional().describe("e.g. npm, macapp, swift-spm"),
+      language: z.string().optional(),
       force: z.boolean().optional().describe("Overwrite existing config if .story/ already exists"),
     },
   }, async (args) => {
@@ -1082,15 +1082,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Node add ---
 
   server.registerTool("storybloq_node_add", {
-    description: "Add a federation node to an orchestrator project's config. The node directory must exist. Absolute paths outside the orchestrator workspace are allowed (federation spans repos).",
+    description: "Add a federation node to an orchestrator project's config. Absolute paths outside the orchestrator workspace are allowed.",
     inputSchema: {
       name: z.string().regex(NODE_NAME_REGEX).describe("Node name (lowercase alphanumeric, hyphens, underscores)"),
       path: z.string().min(1).describe("Path to node directory (absolute or ~/relative). Must exist."),
-      stack: z.string().max(40).optional().describe("Tech stack (e.g. npm, swift-spm, cargo)"),
-      role: z.string().max(120).optional().describe("Human-readable role description"),
-      kind: z.string().max(32).optional().describe("Node kind (e.g. library, service, app)"),
+      stack: z.string().max(40).optional().describe("e.g. npm, swift-spm, cargo"),
+      role: z.string().max(120).optional(),
+      kind: z.string().max(32).optional().describe("e.g. library, service, app"),
       summary: z.string().max(200).optional().describe("One-line status summary"),
-      dependsOn: z.array(z.string().regex(NODE_NAME_REGEX)).optional().describe("Node names this depends on (validated for cycles)"),
+      dependsOn: z.array(z.string().regex(NODE_NAME_REGEX)).optional().describe("Node names; cycles rejected"),
       links: z.array(z.object({
         to: z.string().regex(NODE_NAME_REGEX),
         via: z.string().max(60).optional(),
@@ -1125,21 +1125,21 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Node update ---
 
   server.registerTool("storybloq_node_update", {
-    description: "Update an existing federation node's metadata. Shallow-merges provided fields onto the existing node entry, preserving health and passthrough fields.",
+    description: "Update a federation node's metadata. Shallow-merges provided fields, preserving health and passthrough fields.",
     inputSchema: {
       name: z.string().regex(NODE_NAME_REGEX).describe("Node name to update"),
-      path: z.string().min(1).optional().describe("New path to node directory"),
-      stack: z.string().max(40).optional().describe("New tech stack"),
-      role: z.string().max(120).optional().describe("New role description"),
-      kind: z.string().max(32).optional().describe("New node kind"),
-      summary: z.string().max(200).optional().describe("New status summary"),
-      dependsOn: z.array(z.string().regex(NODE_NAME_REGEX)).optional().describe("Replace dependsOn list (validated for cycles)"),
-      clearDependsOn: z.boolean().optional().describe("Clear all dependencies"),
+      path: z.string().min(1).optional(),
+      stack: z.string().max(40).optional(),
+      role: z.string().max(120).optional(),
+      kind: z.string().max(32).optional(),
+      summary: z.string().max(200).optional(),
+      dependsOn: z.array(z.string().regex(NODE_NAME_REGEX)).optional().describe("Replaces the list; cycles rejected"),
+      clearDependsOn: z.boolean().optional(),
       links: z.array(z.object({
         to: z.string().regex(NODE_NAME_REGEX),
         via: z.string().max(60).optional(),
       })).optional().describe("Replace runtime links"),
-      clearLinks: z.boolean().optional().describe("Clear all runtime links"),
+      clearLinks: z.boolean().optional(),
     },
   }, async (args) => {
     const { handleNodeUpdate } = await import("../cli/commands/node.js");
@@ -1166,7 +1166,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Selftest ---
 
   server.registerTool("storybloq_selftest", {
-    description: "Integration smoke test -- creates, updates, and deletes test entities to verify the full pipeline",
+    description: "Integration smoke test -- creates, updates, and deletes test entities",
   }, () => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleSelftest(root, format),
   ));
@@ -1176,7 +1176,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   server.registerTool("storybloq_session_report", {
     description: "Generate a structured analysis of an autonomous session -- works even if project state is corrupted",
     inputSchema: {
-      sessionId: z.string().uuid().describe("Session ID to analyze"),
+      sessionId: z.string().uuid(),
     },
   }, async (args) => {
     try {
@@ -1206,12 +1206,12 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Subprocess registry (T-261) ---
 
   server.registerTool("storybloq_register_subprocess", {
-    description: "Register a running subprocess so monitors can distinguish slow builds from hung agents. Writes a per-PID file under the session's telemetry directory.",
+    description: "Register a running subprocess so monitors can distinguish slow builds from hung agents. Writes a per-PID file under the session's telemetry dir.",
     inputSchema: {
-      pid: z.number().int().positive().describe("Process ID of the subprocess"),
-      cmd: z.string().describe("Command that was run (will be sanitized to executable basename)"),
-      category: z.enum(SUBPROCESS_CATEGORIES).describe("Subprocess category"),
-      sessionId: z.string().uuid().describe("Session ID to register against"),
+      pid: z.number().int().positive(),
+      cmd: z.string().describe("Sanitized to executable basename"),
+      category: z.enum(SUBPROCESS_CATEGORIES),
+      sessionId: z.string().uuid(),
     },
   }, (args) => {
     try {
@@ -1240,10 +1240,10 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   });
 
   server.registerTool("storybloq_unregister_subprocess", {
-    description: "Unregister a subprocess after it completes. Idempotent -- no error if the PID was already unregistered. Relaxed validation: works even on expired/terminal sessions to allow cleanup.",
+    description: "Unregister a subprocess after it completes. Idempotent; works even on expired/terminal sessions.",
     inputSchema: {
-      pid: z.number().int().positive().describe("Process ID to unregister"),
-      sessionId: z.string().uuid().describe("Session ID the subprocess was registered against"),
+      pid: z.number().int().positive(),
+      sessionId: z.string().uuid(),
     },
   }, (args) => {
     try {
@@ -1264,34 +1264,34 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // --- Autonomous guide ---
 
   server.registerTool("storybloq_autonomous_guide", {
-    description: "Autonomous session orchestrator. Call at every decision point during autonomous mode. Supports tiered access: auto (full autonomous), review (code review only), plan (plan + review), guided (single ticket end-to-end). Note: a review finding reported with disposition 'deferred' (and severity above 'suggestion') auto-files a storybloq issue, so use 'deferred' only for work you genuinely want tracked as a new issue. See the report.findings[].disposition field for the full per-value semantics.",
+    description: "Autonomous session orchestrator. Call at every decision point during autonomous mode.",
     inputSchema: {
-      sessionId: z.string().uuid().nullable().describe("Session ID (null for start action)"),
-      action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]).describe("Action to perform"),
+      sessionId: z.string().uuid().nullable().describe("null for start action"),
+      action: z.enum(["start", "report", "resume", "pre_compact", "cancel"]),
       clientTaskId: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN).optional()
-        .describe("Current AI-client task/thread id. Codex passes CODEX_THREAD_ID; Claude is detected automatically."),
+        .describe("Codex passes CODEX_THREAD_ID; Claude is auto-detected."),
       takeover: z.boolean().optional()
-        .describe("Resume only: recover a COMPACT session after explicitly confirming its recorded owner task is gone."),
+        .describe("Resume only: recover a COMPACT session whose recorded owner task is confirmed gone."),
       // T-450 step 7b: the SAME schema the direct guide path validates with, so
       // the two boundaries cannot disagree about what a confirmation is.
       ownerGoneCandidateTakeover: OwnerGoneCandidateTakeoverSchema.optional()
-        .describe("Resume only, with takeover: true. The confirmed owner-gone picture for a LIVE non-COMPACT session -- the session revision the confirmation was shown against, and the evidence fingerprint of that picture."),
+        .describe("Resume only, with takeover: true. Confirmed owner-gone picture for a LIVE non-COMPACT session -- the session revision the confirmation was shown against, plus that picture's evidence fingerprint."),
       // T-450 step 8: the cancel door's own schema, for the reason given where
       // it is declared -- the two doors share a shape today but not a contract.
       ownerGoneCandidateCancel: OwnerGoneCandidateCancelSchema.optional()
-        .describe("Cancel only, and requires an explicit sessionId. The confirmed owner-gone picture authorizing this task to END a session whose recorded owner is gone, rather than adopt it -- the session revision the confirmation was shown against, and the evidence fingerprint of that picture."),
-      mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Execution tier (start action only): auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
-      reviewEffort: z.enum(["off", "light", "standard", "thorough"]).optional().describe("Review intensity (start action only). Default: mapped per item from type and risk. Per-item reviewEffort metadata still wins; explicit project stage knobs always win."),
-      ticketId: z.string().optional().describe("Ticket ID for tiered modes (review, plan, guided). Required for non-auto modes."),
-      targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).optional().describe("For start action only: array of T-XXX and ISS-XXX IDs to work on in order. Empty or omitted = standard auto mode."),
+        .describe("Cancel only, and requires an explicit sessionId. Confirmed owner-gone picture: END the session rather than adopt it -- the session revision the confirmation was shown against, plus that picture's evidence fingerprint."),
+      mode: z.enum(["auto", "review", "plan", "guided"]).optional().describe("Start action only. auto=full autonomous, review=code review only, plan=plan+review, guided=single ticket"),
+      reviewEffort: z.enum(["off", "light", "standard", "thorough"]).optional().describe("Start action only. Default: mapped per item from type and risk. Per-item reviewEffort metadata still wins; explicit project stage knobs always win."),
+      ticketId: z.string().optional().describe("Required for non-auto modes."),
+      targetWork: z.array(z.string().regex(TARGET_WORK_ID_REGEX)).max(150).optional().describe("Start action only. T-XXX and ISS-XXX IDs in work order. Empty or omitted = standard auto mode."),
       report: z.object({
-        completedAction: z.string().describe("What was completed"),
-        ticketId: z.string().optional().describe("Ticket ID (for ticket_picked)"),
-        issueId: z.string().optional().describe("Issue ID (for issue_picked) -- T-153"),
-        commitHash: z.string().optional().describe("Git commit hash (for commit_done)"),
-        overrideAttribution: z.boolean().optional().describe("Explicit override for FINALIZE's commit-attribution check (ISS-982). When true, bypasses an attribution mismatch on a commit_done report; every use is recorded in the session's commitAttributionAudits trail and the commit event, override or not."),
-        handoverContent: z.string().optional().describe("Handover markdown content"),
-        verdict: z.string().optional().describe("Review verdict: approve|revise|request_changes|reject"),
+        completedAction: z.string(),
+        ticketId: z.string().optional().describe("For ticket_picked"),
+        issueId: z.string().optional().describe("For issue_picked"),
+        commitHash: z.string().optional().describe("For commit_done"),
+        overrideAttribution: z.boolean().optional().describe("When true, bypasses FINALIZE's commit-attribution mismatch on a commit_done report; every use is audited (ISS-982)."),
+        handoverContent: z.string().optional().describe("Markdown content"),
+        verdict: z.string().optional().describe("approve|revise|request_changes|reject"),
         findings: z.array(z.object({
           // ISS-717: id is optional and disposition defaults to "open" so a
           // synthesized lens-shaped finding (which carries severity, category,
@@ -1316,23 +1316,23 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           // ISS-556: stays constrained to the enum persisted by
           // SessionStateSchema (a default of "open" can never violate it).
           disposition: z.enum(LENS_FINDING_DISPOSITIONS).default("open").describe(
-            "Finding disposition (defaults to 'open' if omitted). 'open' = unresolved this round; " +
-            "'addressed' = fixed in this round; 'contested' = false positive (feeds the false-positive " +
-            "learning loop, files no issue; do NOT use it to park a valid finding, that pollutes the signal); " +
-            "'deferred' = valid but out of scope, which AUTO-FILES a storybloq issue (severity 'suggestion' is exempt).",
+            "Defaults to 'open' (unresolved this round). " +
+            "'addressed' = fixed in this round; 'contested' = false positive, files no issue (do NOT park a valid finding here); " +
+            "'deferred' = valid but out of scope, AUTO-FILES a storybloq issue " +
+            "(severity 'suggestion' is exempt).",
           ),
           // ISS-717: previously omitted from this schema, so the SDK stripped it
           // and the PLAN-redirect guard in the review stages was unreachable.
           recommendedNextState: z.enum(["PLAN", "IMPLEMENT"]).optional().describe(
-            "Set to 'PLAN' when the review concludes the implementation approach must be replanned; on a " +
-            "non-approve verdict this routes the session back to PLAN. Leave unset for ordinary findings.",
+            "'PLAN' = the approach must be replanned; on a non-approve verdict this " +
+            "routes the session back to PLAN.",
           ),
-        })).optional().describe("Review findings"),
+        })).optional(),
         reviewerSessionId: z.string().optional().describe("Codex session ID"),
-        reviewer: z.string().optional().describe("Actual reviewer backend used (e.g. 'agent' when codex was unavailable)"),
-        reviewId: z.string().optional().describe("ISS-720: lens reviewId returned by review_lenses_prepare/synthesize. Pass it on a lens-backed review_round report so the recorded verdict reflects whether the lens verification gate actually ran (lenses-verified) or was skipped/degraded (lenses-unverified)."),
-        notes: z.string().optional().describe("Free-text notes"),
-      }).optional().describe("Report data (required for report action)"),
+        reviewer: z.string().optional().describe("Actual reviewer backend used, e.g. 'agent' when codex was unavailable"),
+        reviewId: z.string().optional().describe("From review_lenses_prepare/synthesize; pass on lens-backed review_round reports (ISS-720)."),
+        notes: z.string().optional(),
+      }).optional().describe("Required for report action"),
     },
   }, (args) => {
     return runGuideCallInOrder(async () => {
@@ -1352,15 +1352,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   // ── T-189: Multi-lens review MCP tools ─────────────────────
 
   server.registerTool("storybloq_review_lenses_prepare", {
-    description: "Prepare a multi-lens code/plan review on the @storybloq/lenses registry. Activates lenses via the package surface rules, runs the secrets gate (redacting before content leaves the process), packages per-lens context, checks the round cache, and returns complete lens prompts for the agent to spawn as parallel subagents, with per-lens activation statuses disclosed.",
+    description: "Step 1 of the multi-lens review: returns complete lens prompts for the agent to spawn as parallel subagents, plus round-cache hits (empty prompt, cachedFindings) that are echoed into synthesize with cached: true instead of spawned. Collect every subagent output, then call storybloq_review_lenses_synthesize.",
     inputSchema: {
-      stage: z.enum(["CODE_REVIEW", "PLAN_REVIEW"]).describe("Review stage"),
-      diff: z.string().describe("The diff (code review) or plan text (plan review) to review"),
-      changedFiles: z.array(z.string()).describe("List of changed file paths"),
-      ticketDescription: z.string().optional().describe("Current ticket description for context"),
-      reviewRound: z.number().int().min(1).optional().describe("Review round (1 = first, 2+ = subsequent)"),
-      priorDeferrals: z.array(z.string()).optional().describe("issueKeys of findings the agent intentionally deferred from prior rounds"),
-      sessionId: z.string().uuid().optional().describe("Active session ID. Pass it so prepare can persist the round's cache keys and anchoring artifact for synthesize. Use the same reviewRound and the returned reviewId when you call synthesize."),
+      stage: z.enum(["CODE_REVIEW", "PLAN_REVIEW"]),
+      diff: z.string().describe("Diff for CODE_REVIEW, plan text for PLAN_REVIEW"),
+      changedFiles: z.array(z.string()),
+      ticketDescription: z.string().optional(),
+      reviewRound: z.number().int().min(1).optional(),
+      priorDeferrals: z.array(z.string()).optional().describe("issueKeys of findings deferred in prior rounds"),
+      sessionId: z.string().uuid().optional().describe("Persists the round's cache and anchoring artifact for synthesize. Pass the same sessionId, reviewRound, and returned reviewId to synthesize."),
     },
   }, (args) => {
     try {
@@ -1377,22 +1377,22 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   });
 
   server.registerTool("storybloq_review_lenses_synthesize", {
-    description: "Synthesize lens results after parallel review by running the @storybloq/lenses merger pipeline programmatically: per-lens schema parsing, evidence anchoring against the reviewed artifact, dedup, blocking policy, tension detection, coverage caps, and verdict computation. Returns the package ReviewVerdict envelope directly (no merger prompt, no merger agent). Also classifies origin (introduced vs pre-existing) and auto-files pre-existing issues. Call after collecting all lens subagent outputs, then pass reviewVerdict to storybloq_review_lenses_judge.",
+    description: "Step 2 of the multi-lens review: merges every lens subagent output into a ReviewVerdict, classifies findings introduced vs pre-existing, and auto-files the pre-existing ones as new issues. Call after collecting all lens outputs, then pass reviewVerdict to storybloq_review_lenses_judge.",
     inputSchema: {
-      stage: z.enum(["CODE_REVIEW", "PLAN_REVIEW"]).optional().describe("Review stage (defaults to CODE_REVIEW)"),
+      stage: z.enum(["CODE_REVIEW", "PLAN_REVIEW"]).optional().describe("Defaults to CODE_REVIEW"),
       lensResults: z.array(z.object({
         lens: z.string().describe("Lens id from prepare's activeLenses"),
-        output: z.unknown().describe("The lens subagent's raw output: the single JSON object ({status, findings, error, notes}) the lens prompt instructs it to emit, as an object or JSON string"),
+        output: z.unknown().describe("The lens subagent's raw JSON object ({status, findings, error, notes}), as an object or JSON string"),
         cached: z.boolean().optional().describe("True when this entry echoes cachedFindings returned by prepare"),
       })).describe("One entry per active lens with its raw output"),
-      activeLenses: z.array(z.string()).describe("Active lens names from prepare step"),
-      skippedLenses: z.array(z.string()).describe("Skipped lens names from prepare step"),
-      reviewRound: z.number().int().min(1).optional().describe("Current review round"),
-      reviewId: z.string().optional().describe("Review ID from prepare step"),
+      activeLenses: z.array(z.string()),
+      skippedLenses: z.array(z.string()),
+      reviewRound: z.number().int().min(1).optional(),
+      reviewId: z.string().optional().describe("From prepare; a mismatched or omitted id silently drops prepare's anchoring artifact and cache keys"),
       // T-192: Origin classification inputs
-      diff: z.string().optional().describe("The diff being reviewed (for evidence anchoring and origin classification of findings into introduced vs pre-existing)"),
-      changedFiles: z.array(z.string()).optional().describe("Changed file paths from prepare step"),
-      sessionId: z.string().uuid().optional().describe("Active session ID (enables anchoring against prepare's redacted artifact, cache write-back, telemetry, and dedup of auto-filed pre-existing issues across review rounds)"),
+      diff: z.string().optional().describe("Without it, findings are not evidence-anchored (unless prepare persisted an artifact) and not classified introduced vs pre-existing."),
+      changedFiles: z.array(z.string()).optional(),
+      sessionId: z.string().uuid().optional().describe("Enables anchoring against prepare's artifact and dedup of auto-filed pre-existing issues across rounds."),
     },
   }, async (args) => {
     try {
@@ -1558,16 +1558,16 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   });
 
   server.registerTool("storybloq_review_lenses_judge", {
-    description: "Deterministic final verdict mapping over the ReviewVerdict returned by synthesize. No judge agent: pipeline reject stays reject, revise stays revise, and an approve carrying major findings or partial lens coverage becomes approve with recommendFixRound true (the three-value verdict). Convergence history damps repeated majors-only recommendations once rounds stabilize; coverage gaps are never damped. Call after synthesize and report the returned verdict.",
+    description: "Step 3 of the multi-lens review: deterministic final verdict over the ReviewVerdict returned by synthesize -- approve, revise, or reject, where an approve carrying major findings or partial lens coverage returns recommendFixRound true. convergenceHistory damps repeated majors-only recommendations only once rounds stabilize (two prior rounds with zero blocking and non-increasing majors); coverage gaps are never damped.",
     inputSchema: {
-      reviewVerdict: z.unknown().describe("The reviewVerdict object returned by storybloq_review_lenses_synthesize (or a JSON string of it)"),
+      reviewVerdict: z.unknown().describe("From storybloq_review_lenses_synthesize; object or JSON string"),
       convergenceHistory: z.array(z.object({
         round: z.number(),
         verdict: z.string(),
         blocking: z.number(),
         important: z.number(),
         newCode: z.string(),
-      })).optional().describe("Prior round verdicts for convergence damping"),
+      })).optional(),
     },
   }, (args) => {
     try {
@@ -1625,7 +1625,7 @@ function writeFiledPreexisting(sessionDir: string, keys: Set<string>): void {
 export function registerSessionGuardTool(server: McpServer, root: string) {
   return server.registerTool("storybloq_session_guard", {
     description:
-      "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/ (no ledger load). Returns a per-session verdict plus an overallAction, which is null when more than one session bears: the source procedure supplies a rule per session and none for combining them, so every verdict is returned and no aggregate action is defined (ISS-898).",
+      "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/ (no ledger load). overallAction is null when more than one session bears; every per-session verdict is still returned (ISS-898).",
     inputSchema: {
       // Deliberately looser than `storybloq_autonomous_guide`, which pins the
       // same field to CLIENT_TASK_ID_PATTERN. A schema regex rejects the CALL,
@@ -1640,7 +1640,7 @@ export function registerSessionGuardTool(server: McpServer, root: string) {
       clientTaskId: z
         .string()
         .optional()
-        .describe("The caller's client task id. Omit it to inherit the client's environment identity (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID); the verdict reports identityUnavailable only when nothing supplies an id, environment included. A malformed id is treated as no identity rather than rejected, because missing or malformed identity never blocks the legacy workflow."),
+        .describe("Omit to inherit the client's environment identity (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID). A malformed id is treated as no identity rather than rejected."),
     },
   }, (args) => {
     // Forwarded unchanged. The evaluator resolves `explicit ?? environment`,

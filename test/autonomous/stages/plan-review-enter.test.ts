@@ -103,4 +103,27 @@ describe("PlanReviewStage.enter", () => {
     expect(result.instruction).toContain("Plan Review -- Round 1");
     expect(result.instruction).toContain("plan_review_round");
   });
+
+  // T-461 phase 3, the sibling of code-review-enter's pair. Same rule: the
+  // level is disclosed on every branch, and the codex-bridge `deliberate`
+  // argument appears only where a tool accepts it.
+  it("discloses the level and scopes the deliberate argument to the bridge", async () => {
+    expect((await stage.enter(ctxWith())).instruction)
+      .toContain("Review effort: standard (legacy)");
+
+    const thorough = (await stage.enter(ctxWith({
+      currentReviewEffort: "thorough",
+      currentReviewEffortSource: "start-call",
+    } as Partial<FullSessionState>))).instruction;
+    expect(thorough).toContain("Review effort: thorough (start-call).");
+    expect(thorough).toContain("Call `review_plan` MCP tool with the plan content. Request a thorough review -- design soundness, edge cases, and failure modes. Pass deliberate: true.");
+
+    const lenses = (await stage.enter(ctxWith({
+      currentReviewEffort: "thorough",
+      config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["lenses"], handoverInterval: 3 },
+    } as Partial<FullSessionState>))).instruction;
+    expect(lenses).toContain("Multi-Lens");
+    expect(lenses).toContain("Review effort: thorough");
+    expect(lenses).not.toContain("deliberate");
+  });
 });

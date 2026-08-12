@@ -488,6 +488,50 @@ describe("dialCodeReviewMaxRounds", () => {
     }
   });
 
+  /**
+   * The light landing guard, from the diagnostics side.
+   *
+   * The stage spends the round after the light cap on the fix. The diagnostics
+   * derive `atOrPastCap` from the same number, and if only the stage had learned
+   * about the grace round, every light session would spend that round being
+   * reported as landable-but-stuck while doing exactly what it was told.
+   */
+  const lightLoopState = (rounds: number) => ({
+    ...makeState({ currentReviewEffort: "light", state: "IMPLEMENT" } as Partial<FullSessionState>),
+    resolvedReviewEffort: marker(false),
+    resolvedStages: {},
+    reviews: {
+      plan: [],
+      code: Array.from({ length: rounds }, (_, i) => ({
+        round: i + 1, reviewer: "agent", verdict: "revise",
+        findingCount: 1, criticalCount: 0, unresolvedCriticalCount: 0,
+        majorCount: 1, suggestionCount: 0, timestamp: new Date().toISOString(),
+      })),
+    },
+  } as unknown as FullSessionState);
+
+  it("does not report a session mid-grace-round as landable but stuck", () => {
+    const codes = (rounds: number) =>
+      analyzeSessionDiagnostics(lightLoopState(rounds), { events: [] }).diagnostics.map((d) => d.code);
+
+    // Round 4 IS the light cap, and the stage has just routed it to IMPLEMENT
+    // for its fix. Nothing is stuck.
+    expect(codes(4)).toEqual([]);
+    // Round 5 is the grace round: past the landing floor, still uncommitted, so
+    // both warnings are due. This is the positive control -- without it the
+    // assertion above would also pass on a build where these never fire.
+    expect(codes(5)).toEqual(["code_review_non_converging", "landable_uncommitted"]);
+  });
+
+  it("keeps standard warning at its cap, since standard is the anchor", () => {
+    const state = {
+      ...lightLoopState(12),
+      currentReviewEffort: "standard",
+    } as FullSessionState;
+    expect(analyzeSessionDiagnostics(state, { events: [] }).diagnostics.map((d) => d.code))
+      .toEqual(["code_review_non_converging", "landable_uncommitted"]);
+  });
+
   it("reports the same cap to the diagnostics that the stage routes on", () => {
     // The desync guard. These two must never be computed independently again.
     const state = {

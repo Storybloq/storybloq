@@ -4,7 +4,9 @@ import {
   effectiveReviewEffort,
   effortBackends,
   effortCodeReviewMaxRounds,
+  effortDeliberateClause,
   effortDepthSentence,
+  effortDisclosureLine,
   effortMinRounds,
   lensOnlyAtLight,
   mapIssueSeverityToEffort,
@@ -360,11 +362,120 @@ describe("effortDepthSentence", () => {
   it("adds nothing at standard, so today's instruction stays byte-identical", () => {
     expect(effortDepthSentence("standard", "plan")).toBeNull();
     expect(effortDepthSentence("off", "code")).toBeNull();
+    expect(effortDeliberateClause("standard")).toBeNull();
+    expect(effortDeliberateClause("off")).toBeNull();
   });
 
-  it("names the depth and the deliberate flag at light and thorough", () => {
-    expect(effortDepthSentence("light", "plan")).toContain("deliberate: false");
-    expect(effortDepthSentence("thorough", "plan")).toContain("deliberate: true");
+  it("names the depth at light and thorough, per subject", () => {
+    expect(effortDepthSentence("light", "plan")).toContain("quick pass");
+    expect(effortDepthSentence("thorough", "plan")).toContain("design soundness");
     expect(effortDepthSentence("thorough", "code")).toContain("regressions");
+  });
+
+  /**
+   * The split is the point. `deliberate` is a parameter of the codex-bridge
+   * MCP tools and of nothing else -- the lenses harness has no such input,
+   * `storybloq codex-review` has no such flag, and a review subagent has no
+   * tool call to put it on. Keeping it inside the depth sentence would have
+   * meant that every path emitting depth wording also told the agent to pass an
+   * argument that does not exist on the reviewer it was about to use.
+   */
+  it("keeps the deliberate argument out of the depth sentence", () => {
+    for (const level of ["off", "light", "standard", "thorough"] as const) {
+      expect(effortDepthSentence(level, "plan") ?? "", `level=${level}`).not.toContain("deliberate");
+      expect(effortDepthSentence(level, "code") ?? "", `level=${level}`).not.toContain("deliberate");
+    }
+    expect(effortDeliberateClause("light")).toBe("Pass deliberate: false.");
+    expect(effortDeliberateClause("thorough")).toBe("Pass deliberate: true.");
+  });
+});
+
+describe("effortDisclosureLine", () => {
+  it("names the level and where it came from, at every level", () => {
+    expect(effortDisclosureLine({ currentReviewEffort: "light", currentReviewEffortSource: "size-mapped" }, "CODE_REVIEW"))
+      .toBe("Review effort: light (size-mapped).");
+    expect(effortDisclosureLine({ currentReviewEffort: "thorough", currentReviewEffortSource: "item" }, "PLAN_REVIEW"))
+      .toBe("Review effort: thorough (item).");
+  });
+
+  it("discloses standard too, so no level is the silent one", () => {
+    // A session with no marker at all: standard, and honestly labelled legacy
+    // rather than dressed up as a decision someone made.
+    expect(effortDisclosureLine({}, "CODE_REVIEW")).toBe("Review effort: standard (legacy).");
+    expect(effortDisclosureLine(
+      { resolvedReviewEffort: { level: "size-mapped", source: "default" } },
+      "CODE_REVIEW",
+    )).toBe("Review effort: standard (default).");
+  });
+
+  it("names the MODE when a forced run overrides an off pin", () => {
+    // The level and the source can disagree: the item said off, and the run is
+    // happening at light because review mode exists to produce a review.
+    // Reporting the item's own provenance beside `light` would name a source
+    // that did not choose it.
+    expect(effortDisclosureLine(
+      { currentReviewEffort: "off", currentReviewEffortSource: "item", mode: "review" },
+      "CODE_REVIEW",
+    )).toBe("Review effort: light (review mode requires this review).");
+    // Same state, the OTHER stage: not forced, so off stands and the item keeps
+    // its provenance.
+    expect(effortDisclosureLine(
+      { currentReviewEffort: "off", currentReviewEffortSource: "item", mode: "review" },
+      "PLAN_REVIEW",
+    )).toBe("Review effort: off (item).");
+  });
+
+  it("names the mode when the SESSION marker is what said off", () => {
+    // The reachable case an independent copy of the forcing check would miss:
+    // no per-item pin at all, and the session default is off. The forcing is
+    // identical; only the level's origin differs. Reporting `project` here
+    // would send a reader to a setting that asked for no review, next to a
+    // line saying a review is running.
+    expect(effortDisclosureLine({
+      currentReviewEffort: null,
+      currentReviewEffortSource: "item",
+      resolvedReviewEffort: { level: "off", source: "project" },
+      mode: "review",
+    }, "CODE_REVIEW")).toBe("Review effort: light (review mode requires this review).");
+
+    // Same session, PLAN_REVIEW: not forced, so the session marker's own
+    // provenance is the honest answer.
+    expect(effortDisclosureLine({
+      currentReviewEffort: null,
+      resolvedReviewEffort: { level: "off", source: "project" },
+      mode: "review",
+    }, "PLAN_REVIEW")).toBe("Review effort: off (project).");
+  });
+
+  it("agrees with effectiveReviewEffort on every level it prints", () => {
+    // The desync guard for this pair: the line names a level, and it must be
+    // the level the stage actually runs at. These are two functions reading the
+    // same three fields, which is exactly how the earlier provenance bugs
+    // happened.
+    const states = [
+      {},
+      { currentReviewEffort: "light", currentReviewEffortSource: "size-mapped" },
+      { currentReviewEffort: "off", mode: "review" },
+      { currentReviewEffort: null, resolvedReviewEffort: { level: "off", source: "project" }, mode: "review" },
+      { currentReviewEffort: "nonsense", currentReviewEffortSource: "item" },
+      { resolvedReviewEffort: { level: "size-mapped", source: "default" } },
+      { resolvedReviewEffort: {} },
+      { resolvedReviewEffort: null, mode: "plan" },
+    ];
+    for (const stage of ["PLAN_REVIEW", "CODE_REVIEW"] as const) {
+      for (const state of states) {
+        expect(
+          effortDisclosureLine(state, stage),
+          `${stage} ${JSON.stringify(state)}`,
+        ).toContain(`Review effort: ${effectiveReviewEffort(state, stage)} (`);
+      }
+    }
+  });
+
+  it("does not let a malformed source leak into the line", () => {
+    expect(effortDisclosureLine(
+      { currentReviewEffort: "light", currentReviewEffortSource: "<script>" },
+      "CODE_REVIEW",
+    )).toBe("Review effort: light (unknown).");
   });
 });

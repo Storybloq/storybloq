@@ -169,6 +169,57 @@ describe("CodeReviewStage.enter", () => {
     expect(lensOnly).toContain("Multi-Lens");
   });
 
+  it("discloses the level on every branch, including standard", async () => {
+    expect(await enter()).toContain("Review effort: standard (legacy)");
+
+    vi.stubEnv("STORYBLOQ_CLIENT", "claude");
+    expect(await enter({
+      currentReviewEffort: "light",
+      currentReviewEffortSource: "size-mapped",
+      resolvedReviewEffort: { level: "light", source: "start-call" },
+      config: {
+        maxTicketsPerSession: 5, compactThreshold: "high",
+        reviewBackends: ["lenses"], handoverInterval: 3,
+      },
+    } as Partial<FullSessionState>)).toContain("Review effort: light (size-mapped).");
+  });
+
+  /**
+   * The depth wording is branch-appropriate, which is the whole reason the
+   * `deliberate` clause was split out of it. `deliberate` is an argument of the
+   * codex-bridge MCP tools; the lenses harness has no such input and a review
+   * subagent has no tool call to put it on. An instruction naming it on those
+   * paths tells the agent to pass an argument that does not exist.
+   */
+  it("names deliberate only where a tool accepts it", async () => {
+    vi.stubEnv("STORYBLOQ_CLIENT", "claude");
+    const light = { currentReviewEffort: "light" } as Partial<FullSessionState>;
+
+    const bridge = await enter(light);
+    expect(bridge).toContain("Call `review_code` MCP tool with the diff. Request a quick pass -- correctness blockers only, skip style and polish. Pass deliberate: false.");
+
+    // Same level, agent reviewer: the depth ASK survives (the caller writes the
+    // subagent's prompt), the deliberate argument does not.
+    const agent = await enter({
+      ...light,
+      config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["agent"], handoverInterval: 3 },
+    } as Partial<FullSessionState>);
+    expect(agent).toContain("Launch a code review agent to review the diff. Request a quick pass");
+    expect(agent).not.toContain("deliberate");
+
+    // Lenses composes its review programmatically: no depth ask, no argument,
+    // but still disclosed.
+    const lenses = await enter({
+      ...light,
+      resolvedReviewEffort: { level: "light", source: "start-call" },
+      config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["lenses"], handoverInterval: 3 },
+    } as Partial<FullSessionState>);
+    expect(lenses).toContain("Multi-Lens");
+    expect(lenses).not.toContain("deliberate");
+    expect(lenses).not.toContain("quick pass");
+    expect(lenses).toContain("Review effort: light");
+  });
+
   it("records when the round started", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), recipe);
     await stage.enter(ctx);

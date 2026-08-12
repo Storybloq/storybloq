@@ -1,6 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { currentStorybloqClient } from "../client-profile.js";
-import { REVIEW_EFFORTS, effectiveReviewEffort, effortBackends } from "../review-effort.js";
+import {
+  REVIEW_EFFORTS,
+  effectiveReviewEffort,
+  effortBackends,
+  effortDeliberateClause,
+  effortDepthSentence,
+  type ReviewEffort,
+} from "../review-effort.js";
 
 export { currentStorybloqClient } from "../client-profile.js";
 
@@ -112,6 +119,53 @@ export function reviewBackendsForStage(
     return narrow(configured as readonly string[]);
   }
   return narrow(clientBackends);
+}
+
+/**
+ * The depth wording for ONE reviewer, or null where the reviewer composes its
+ * own review and cannot take an instruction from the caller.
+ *
+ * ONE place decides this, and every emitter asks it. There are four: each
+ * stage's enter() and each stage's retry instruction, and a retry is returned
+ * VERBATIM by processAdvance without enter() ever running, so a copy that
+ * drifted would show up as round 2 of a light review silently asking for a
+ * standard one.
+ *
+ * `lenses` fans out programmatically and the native CLI runs a fixed command,
+ * so neither takes a depth ask. The `deliberate` argument narrows further
+ * still: it belongs to the codex-bridge MCP tools and to nothing else.
+ */
+export function reviewDepthLine(
+  effort: ReviewEffort,
+  kind: "plan" | "code",
+  reviewer: string,
+  config: ReviewBackendConfig,
+): string | null {
+  // Deliberately the CONFIGURED native path, not `shouldUseNativeCodexReview`.
+  // That predicate ends in `hasNativeCodexCli()`, a `codex --version`
+  // subprocess with a five-second timeout, and this function decides PROSE. A
+  // retry instruction is returned verbatim out of report(), so probing here
+  // would put a subprocess spawn on every retry of a native-codex project and
+  // could block report handling behind a missing or hung binary. It would also
+  // be a SECOND probe whose answer can differ from the one enter() already
+  // made, which would suppress the depth ask on an instruction that is not
+  // native after all.
+  //
+  // This is the same condition with the probe removed, so it errs one way only:
+  // a project configured for native codex whose binary is absent falls to the
+  // caller-composed branch and gets no depth ask. That drops a sentence; the
+  // alternative emits one the reviewer cannot act on, and the disclosure line
+  // carries the level either way.
+  const configuredNative = currentStorybloqClient() === "codex"
+    && config.codexReviewBackends?.includes("codex") === true
+    && reviewer === "codex";
+  if (reviewer === "lenses" || configuredNative) return null;
+  const bridge = currentStorybloqClient() === "claude" && reviewer === "codex";
+  const line = [
+    effortDepthSentence(effort, kind),
+    bridge ? effortDeliberateClause(effort) : null,
+  ].filter(Boolean).join(" ");
+  return line.length > 0 ? line : null;
 }
 
 export function hasNativeCodexCli(): boolean {

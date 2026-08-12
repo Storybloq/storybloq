@@ -6,8 +6,8 @@ import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
-import { effectiveReviewEffort, effortMinRounds } from "../review-effort.js";
-import { dialCodeReviewMaxRounds } from "../session-diagnostics.js";
+import { effectiveReviewEffort, effortDisclosureLine, effortMinRounds } from "../review-effort.js";
+import { codeReviewLandingFloor, dialCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
@@ -16,6 +16,7 @@ import {
   nativeCodexReportInstruction,
   nativeCodexReviewCommand,
   reviewBackendsForStage,
+  reviewDepthLine,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 
@@ -48,7 +49,9 @@ export class CodeReviewStage implements WorkflowStage {
     const reviewer = nextReviewer(codeReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const storedRisk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk;
     const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
-    const rounds = effortMinRounds(effectiveReviewEffort(ctx.state, "CODE_REVIEW"), risk);
+    const effort = effectiveReviewEffort(ctx.state, "CODE_REVIEW");
+    const rounds = effortMinRounds(effort, risk);
+    const disclosure = effortDisclosureLine(ctx.state, "CODE_REVIEW");
     const mergeBase = ctx.state.git.mergeBase;
     const isIssueFix = !!ctx.state.currentIssue;
     const issueHeader = isIssueFix
@@ -71,6 +74,8 @@ export class CodeReviewStage implements WorkflowStage {
       return {
         instruction: [
           `# Multi-Lens ${issueHeader} -- Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
+          "",
+          disclosure,
           "",
           `Capture the diff with: ${diffCommand}`,
           "",
@@ -100,6 +105,8 @@ export class CodeReviewStage implements WorkflowStage {
         instruction: [
           `# Native Codex ${issueHeader} - Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
           "",
+          disclosure,
+          "",
           `Capture baseline context with: ${diffCommand}`,
           "",
           "Run native Codex code review:",
@@ -126,15 +133,20 @@ export class CodeReviewStage implements WorkflowStage {
       instruction: [
         `# ${issueHeader} -- Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
         "",
+        disclosure,
+        "",
         `Capture the diff with: ${diffCommand}`,
         "",
         "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
         "",
         `Run a code review using **${reviewer}**.`,
         "",
-        bridgeCodex
-          ? "Call `review_code` MCP tool with the diff."
-          : "Launch a code review agent to review the diff.",
+        [
+          bridgeCodex
+            ? "Call `review_code` MCP tool with the diff."
+            : "Launch a code review agent to review the diff.",
+          reviewDepthLine(effort, "code", reviewer, ctx.state.config),
+        ].filter(Boolean).join(" "),
         "",
         // Until now this branch ended at "When done, report verdict and
         // findings", the only instruction in either stage with no report
@@ -275,8 +287,14 @@ export class CodeReviewStage implements WorkflowStage {
     }
 
     const isChangeRequest = verdict === "revise" || verdict === "request_changes";
-    const forcedLanding = maxReviewRounds > 0 && isChangeRequest &&
-      !hasUnresolvedCritical && roundNum >= maxReviewRounds && !planRedirect;
+    // T-461: the light landing guard. At standard and thorough the floor IS the
+    // cap, so this line is byte-identical to what it replaced; at light the cap
+    // routes to IMPLEMENT and the grace round that follows is where landing may
+    // happen. See codeReviewLandingFloor for why, and for why an explicit
+    // project cap is exempt.
+    const landingFloor = codeReviewLandingFloor(ctx.state, ctx.recipe.stages, risk);
+    const forcedLanding = landingFloor > 0 && isChangeRequest &&
+      !hasUnresolvedCritical && roundNum >= landingFloor && !planRedirect;
 
     let nextAction: "PLAN" | "IMPLEMENT" | "FINALIZE" | "CODE_REVIEW";
     if (planRedirect && verdict !== "approve") {
@@ -467,6 +485,19 @@ export class CodeReviewStage implements WorkflowStage {
       action: "retry",
       instruction: [
         `Code review round ${roundNum} found issues. Fix them and re-review with **${nextReviewerName}**.`,
+        "",
+        // processAdvance returns a retry instruction verbatim without calling
+        // enter(), so without these the level would be disclosed, and the depth
+        // asked for, on the first round of the stage and on no round after it.
+        [
+          effortDisclosureLine(ctx.state, "CODE_REVIEW"),
+          reviewDepthLine(
+            effectiveReviewEffort(ctx.state, "CODE_REVIEW"),
+            "code",
+            nextReviewerName,
+            ctx.state.config,
+          ),
+        ].filter(Boolean).join(" "),
         "",
         `Capture diff with: ${mergeBase ? `\`git diff ${mergeBase}\`` : "`git diff HEAD` + `git ls-files --others --exclude-standard`"}. Pass FULL output -- do NOT compress or summarize.`,
       ].join("\n"),

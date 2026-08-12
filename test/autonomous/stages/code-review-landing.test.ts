@@ -283,6 +283,162 @@ describe("CodeReviewStage landing cap", () => {
     expect(atMinimumCtx.state.landingDecision?.maxReviewRounds).toBe(3);
   });
 
+  // ---------------------------------------------------------------------------
+  // T-461 phase 3: the light landing guard.
+  //
+  // Every test above pins today's rule -- a change request at the cap lands with
+  // no fix and no re-review. That is tolerable at standard's cap of 12 (and is
+  // filed as its own issue). At light's cap of 4 it would be the common case, so
+  // light moves the LANDING point one round past the cap and spends that round
+  // on the fix.
+  //
+  // These use makeRecipe(12), the shipped default, so the light cap of 4 is
+  // dial-derived rather than configured. The pair is deliberately mutually
+  // supporting: the round-5 test fails if the light cap is not applied (at 12,
+  // round 5 would route back), and the round-4 test fails if the guard is not
+  // applied (at cap 4, round 4 would land). Neither can pass vacuously.
+  // ---------------------------------------------------------------------------
+
+  const lightState = (roundsAlready: number, extra: Partial<FullSessionState> = {}) => makeState({
+    currentReviewEffort: "light",
+    reviews: { plan: [], code: Array.from({ length: roundsAlready }, (_, i) => review(i + 1)) },
+    ...extra,
+  } as Partial<FullSessionState>);
+
+  it("routes a change request AT the light cap to IMPLEMENT instead of landing", async () => {
+    const ctx = new StageContext(testRoot, sessionDir, lightState(3), makeRecipe(12));
+
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "request_changes",
+      findings: [finding("major"), finding("minor")],
+    });
+
+    // Round 4 == the light cap. Today's rule would land here.
+    expect(advance).toMatchObject({ action: "back", target: "IMPLEMENT" });
+    expect(ctx.state.landingDecision).toBeNull();
+    // The fix has not been reviewed, so nothing may be deferred away yet.
+    expect(issueCount(testRoot)).toBe(0);
+  });
+
+  it("lands on the grace round and reports the cap, not the floor", async () => {
+    const ctx = new StageContext(testRoot, sessionDir, lightState(4), makeRecipe(12));
+
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("major")],
+    });
+
+    expect(advance).toMatchObject({ action: "advance" });
+    expect(ctx.state.landingDecision).toMatchObject({
+      round: 5,
+      // 4, not 5: the grace round is an exception to landing, not a larger cap.
+      maxReviewRounds: 4,
+      reason: "max_review_rounds_no_blocking",
+    });
+  });
+
+  it("keeps an unresolved critical blocking through the grace round", async () => {
+    const ctx = new StageContext(testRoot, sessionDir, lightState(4), makeRecipe(12));
+
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("critical")],
+    });
+
+    expect(advance).toMatchObject({ action: "back", target: "IMPLEMENT" });
+    expect(ctx.state.landingDecision).toBeNull();
+  });
+
+  it("does not extend a PROJECT-set cap at light", async () => {
+    // Precedence rule 1: the dial narrows within what a project asked for and
+    // never past it. A project that wrote maxReviewRounds: 4 gets landing at 4,
+    // because a grace round here would be the dial overriding an explicit knob.
+    const ctx = new StageContext(testRoot, sessionDir, lightState(3, {
+      resolvedReviewEffort: {
+        level: "light",
+        source: "project",
+        explicitKnobs: { codeReviewMaxRounds: true },
+      },
+    } as Partial<FullSessionState>), makeRecipe(4));
+
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("major")],
+    });
+
+    expect(advance).toMatchObject({ action: "advance" });
+    expect(ctx.state.landingDecision?.maxReviewRounds).toBe(4);
+  });
+
+  /**
+   * A post-dial session whose `explicitKnobs` did not survive: the session
+   * schema is deliberately permissive (a corrupt record must not brick a
+   * resume), so `.catch({})` turns damage into an absent flag.
+   *
+   * The grace round applies there, on purpose, and this is the one place the
+   * decision is written down. Two reasons.
+   *
+   * FAIL-CLOSED DIRECTION: the alternative -- demanding proof the knob was NOT
+   * project-set -- makes corruption land a change request with no fix and no
+   * re-review. Damage must never buy LESS review than today; that rule already
+   * settled `normalizeReviewEffort` and `mapIssueSeverityToEffort`, and it
+   * settles this the same way. One extra round on a damaged record is the
+   * cheaper mistake by a wide margin.
+   *
+   * ONE READING OF THE KNOB: `dialCodeReviewMaxRounds` reads the same flag, and
+   * in this same cell it ALREADY treats the session as not-project-set and
+   * clamps the cap. A floor that honored the knob while the cap ignored it
+   * would be the two-readers-disagree bug the shared function exists to
+   * prevent -- the pair would be claiming the project's cap is authoritative
+   * and overriding it in the same breath.
+   */
+  it("keeps the grace round when explicitKnobs did not survive", async () => {
+    const damaged = { level: "light", source: "start-call" };
+
+    const ctx = new StageContext(testRoot, sessionDir, lightState(3, {
+      resolvedReviewEffort: damaged,
+    } as Partial<FullSessionState>), makeRecipe(4));
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("major")],
+    });
+    expect(advance).toMatchObject({ action: "back", target: "IMPLEMENT" });
+
+    // The control that makes the choice coherent rather than arbitrary: with
+    // the SAME damage and a project cap of 8, the cap reader has already
+    // clamped to 4. The project's number is not being honored by either reader.
+    const clamped = new StageContext(testRoot, sessionDir, lightState(4, {
+      resolvedReviewEffort: damaged,
+    } as Partial<FullSessionState>), makeRecipe(8));
+    await stage.report(clamped, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("major")],
+    });
+    expect(clamped.state.landingDecision?.maxReviewRounds).toBe(4);
+  });
+
+  it("leaves thorough on today's landing point", async () => {
+    const ctx = new StageContext(testRoot, sessionDir, makeState({
+      currentReviewEffort: "thorough",
+      reviews: { plan: [], code: [review(1)] },
+    } as Partial<FullSessionState>), makeRecipe(2));
+
+    const advance = await stage.report(ctx, {
+      completedAction: "code_review_round",
+      verdict: "revise",
+      findings: [finding("major")],
+    });
+
+    expect(advance).toMatchObject({ action: "advance" });
+    expect(ctx.state.landingDecision?.round).toBe(2);
+  });
+
   it("treats an explicit zero cap as unlimited", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState({
       reviews: { plan: [], code: Array.from({ length: 12 }, (_, index) => review(index + 1)) },

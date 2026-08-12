@@ -86,6 +86,49 @@ export function dialCodeReviewMaxRounds(
   );
 }
 
+/**
+ * The round at or after which a change-request verdict may land WITHOUT its fix
+ * being re-reviewed.
+ *
+ * Today's forced landing (code-review.ts) sends a change request at the cap
+ * straight to FINALIZE when nothing critical is unresolved: no fix, no
+ * re-review. At standard's cap of 12 that is rare enough to have gone
+ * unnoticed for a long time (filed as its own issue, deliberately unchanged
+ * here). At light's cap of 4 it would be COMMON, and it would quietly break the
+ * one review rule that holds at every level: a change request gets fixed and
+ * the fix gets looked at.
+ *
+ * So at light the cap stops being a landing point and becomes a routing point.
+ * The round that hits it routes to IMPLEMENT like any other change request, and
+ * the fix gets exactly one graceful re-review round -- during which landing is
+ * permitted again, whatever that round says. The bound is cap + 1 = 5, still
+ * nowhere near standard's 12.
+ *
+ * NOT applied when the cap is PROJECT-set. The dial narrows within what a
+ * project asked for and never past it; a project that wrote
+ * `maxReviewRounds: 4` gets landing at 4, because a grace round would be the
+ * dial overriding an explicit knob -- the one thing the precedence order says
+ * it may never do.
+ *
+ * Shared with the stage for the same reason `dialCodeReviewMaxRounds` is: the
+ * stage routes on this number and `analyzeSessionDiagnostics` derives
+ * `atOrPastCap` from it. If only the stage learned about the grace round, every
+ * light session would spend that round being reported as landable-but-stuck
+ * while it did exactly what it was told to do.
+ */
+export function codeReviewLandingFloor(
+  state: Parameters<typeof dialCodeReviewMaxRounds>[0],
+  stages: StageConfigMap,
+  risk: string | null | undefined,
+): number {
+  const cap = dialCodeReviewMaxRounds(state, stages, risk);
+  // 0 is "unlimited" and negatives cannot occur; either way there is no cap to
+  // extend, and forced landing never runs.
+  if (cap <= 0) return cap;
+  if (state.resolvedReviewEffort?.explicitKnobs?.codeReviewMaxRounds === true) return cap;
+  return effectiveReviewEffort(state, "CODE_REVIEW") === "light" ? cap + 1 : cap;
+}
+
 function isActiveSession(state: FullSessionState): boolean {
   return state.status === "active" && state.state !== "SESSION_END";
 }
@@ -140,7 +183,13 @@ export function analyzeSessionDiagnostics(
   const legacyBlockingCriticalCount = lastUnresolvedCriticalCount ?? lastCriticalCount;
   const reviewLoopState = state.state === "IMPLEMENT" || state.state === "CODE_REVIEW";
   const nonRejectVerdict = lastVerdict !== null && lastVerdict !== "reject";
-  const atOrPastCap = maxReviewRounds > 0 && codeReviewRounds >= maxReviewRounds;
+  // The FLOOR, not the cap: at light the cap is a routing point and the round
+  // after it is the landing point, so a session mid-grace-round is not stuck.
+  // `maxReviewRounds` stays the reported figure -- the grace round is an
+  // exception to landing, not a bigger cap, and telling a reader 5 when the
+  // configured number is 4 would be the lie this whole dial exists to avoid.
+  const landingFloor = codeReviewLandingFloor(state, state.resolvedStages, risk);
+  const atOrPastCap = landingFloor > 0 && codeReviewRounds >= landingFloor;
   const landingDecision = state.landingDecision ?? null;
   const trustedNoBlockingLanding = landingDecision?.stage === "CODE_REVIEW" &&
     landingDecision.reason === "max_review_rounds_no_blocking";

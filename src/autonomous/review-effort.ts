@@ -248,8 +248,9 @@ export function sessionEffortFromState(
  */
 export interface ReviewEffortState {
   readonly currentReviewEffort?: string | null;
+  readonly currentReviewEffortSource?: string | null;
   readonly mode?: string | null;
-  readonly resolvedReviewEffort?: { readonly level?: string | null } | null;
+  readonly resolvedReviewEffort?: { readonly level?: string | null; readonly source?: string | null } | null;
 }
 
 /**
@@ -272,15 +273,30 @@ function isForcedStage(mode: string | null | undefined, stage: ReviewStageId): b
  * before this feature behave exactly as it did.
  */
 export function effectiveReviewEffort(state: ReviewEffortState, stage: ReviewStageId): ReviewEffort {
-  const base = state.currentReviewEffort != null
+  const base = unforcedReviewEffort(state);
+  if (base === "off" && isForcedStage(state.mode, stage)) return "light";
+  return base;
+}
+
+/**
+ * The level BEFORE a mode can force it, resolved the same way for every reader.
+ *
+ * Extracted rather than inlined twice: the disclosure line has to know whether
+ * a forced run is what produced the level, and an independent copy that only
+ * consulted `currentReviewEffort` would miss the case where the pin is absent
+ * and the SESSION marker is what said `off`. That session is forced to light
+ * and would have been disclosed under the provenance of whoever set the
+ * session default -- naming a source that did not choose that level, which is
+ * the one thing this line exists to avoid.
+ */
+function unforcedReviewEffort(state: ReviewEffortState): ReviewEffort {
+  return state.currentReviewEffort != null
     ? normalizeReviewEffort(state.currentReviewEffort)
     : normalizeReviewEffort(
       normalizeReviewEffortDefault(state.resolvedReviewEffort?.level) === "size-mapped"
         ? "standard"
         : state.resolvedReviewEffort?.level,
     );
-  if (base === "off" && isForcedStage(state.mode, stage)) return "light";
-  return base;
 }
 
 /** Minimum rounds before a clean verdict may land. */
@@ -340,20 +356,72 @@ export function effortCodeReviewMaxRounds(
 
 export const LIGHT_CODE_REVIEW_MAX_ROUNDS = 4;
 
-/** Codex depth wording. `standard` adds nothing, so its instruction is byte-identical to today's. */
+/**
+ * The depth ASK. Split from the `deliberate` clause below on purpose.
+ *
+ * This half is actionable anywhere the CALLER composes the review request --
+ * the codex-bridge tool call and the "launch a review agent" path both let the
+ * caller say what kind of pass it wants. It is deliberately NOT emitted on the
+ * lenses or native-codex-CLI paths: there the review is composed
+ * programmatically (a fixed lens fan-out, a fixed command line), so a depth
+ * sentence would be an instruction with nothing to act on. Those paths still
+ * carry the disclosure line, so the level is never hidden -- it is just not
+ * pretended to be adjustable where it is not.
+ *
+ * `standard` returns null, which keeps its instruction byte-identical to today's.
+ */
 export function effortDepthSentence(effort: ReviewEffort, kind: "plan" | "code"): string | null {
   const subject = kind === "plan" ? "design soundness, edge cases, and failure modes" : "correctness, edge cases, and regressions";
   switch (effort) {
-    case "light": return "Request a quick pass -- correctness blockers only, skip style and polish. Pass deliberate: false.";
-    case "thorough": return `Request a thorough review -- ${subject}. Pass deliberate: true.`;
+    case "light": return "Request a quick pass -- correctness blockers only, skip style and polish.";
+    case "thorough": return `Request a thorough review -- ${subject}.`;
     default: return null;
   }
 }
 
-/** One disclosure line carried on every review instruction, at every level. */
-export function effortDisclosureLine(effort: ReviewEffort, source: ReviewEffortSource | null | undefined): string {
-  const provenance = source === "size-mapped" ? "size-mapped" : source ?? "default";
-  return `Review effort: ${effort} (${provenance}).`;
+/**
+ * The codex-bridge `deliberate` argument, and ONLY for that path.
+ *
+ * `deliberate` is a parameter of the bridge's `review_plan`/`review_code` MCP
+ * tools. No other reviewer accepts it: the lenses harness has no such input,
+ * `storybloq codex-review` has no such flag, and a review subagent has no tool
+ * call to put it on. Emitting it elsewhere would tell the agent to pass an
+ * argument that does not exist.
+ */
+export function effortDeliberateClause(effort: ReviewEffort): string | null {
+  switch (effort) {
+    case "light": return "Pass deliberate: false.";
+    case "thorough": return "Pass deliberate: true.";
+    default: return null;
+  }
+}
+
+/**
+ * The one disclosure line every review instruction carries, at every level
+ * including standard. Nothing about the dial is silent.
+ *
+ * Takes the STATE rather than a level plus a source, because those two can
+ * disagree and a caller pairing them by hand would eventually pair them wrong:
+ * when a plan-mode or review-mode session pinned `off`, the forced run happens
+ * at light, and reporting the item's own provenance beside that level would
+ * name a source that did not choose it.
+ */
+export function effortDisclosureLine(state: ReviewEffortState, stage: ReviewStageId): string {
+  const level = effectiveReviewEffort(state, stage);
+  return `Review effort: ${level} (${effortDisclosureSource(state, stage)}).`;
+}
+
+function effortDisclosureSource(state: ReviewEffortState, stage: ReviewStageId): string {
+  if (unforcedReviewEffort(state) === "off" && isForcedStage(state.mode, stage)) {
+    return `${state.mode} mode requires this review`;
+  }
+  if (state.currentReviewEffortSource != null) {
+    return normalizeReviewEffortSource(state.currentReviewEffortSource);
+  }
+  // No per-item pin: the session default is what resolved it. `legacy` and
+  // `unknown` are real provenances here, not fallbacks -- see
+  // sessionEffortFromState for what separates them.
+  return sessionEffortFromState(state).source;
 }
 
 export { normalizeRiskLevel };

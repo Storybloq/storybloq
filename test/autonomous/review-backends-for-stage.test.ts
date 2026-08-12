@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 
-import { reviewBackendsForStage } from "../../src/autonomous/stages/codex-native.js";
+import { reviewBackendsForStage, reviewDepthLine } from "../../src/autonomous/stages/codex-native.js";
 
 /**
  * T-461 phase 1(a): `stages.PLAN_REVIEW.backends` and `stages.CODE_REVIEW.backends`
@@ -167,5 +167,54 @@ describe("reviewBackendsForStage", () => {
       resolvedStages: { CODE_REVIEW: { backends: ["agent"] } },
       resolvedReviewEffort: MARKER,
     })).toEqual(["agent"]);
+  });
+});
+
+/**
+ * `reviewDepthLine`, the single decider of branch-appropriate depth wording.
+ *
+ * Four emitters ask it: each review stage's enter() and each stage's retry
+ * instructions. The retries are the reason it must stay PURE -- processAdvance
+ * returns a retry instruction verbatim out of report(), so anything expensive
+ * in here lands on the report path.
+ */
+describe("reviewDepthLine", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  const claude = { reviewBackends: ["codex", "agent"] };
+
+  it("adds nothing at standard, whatever the reviewer", () => {
+    for (const reviewer of ["codex", "agent", "lenses"]) {
+      expect(reviewDepthLine("standard", "code", reviewer, claude), reviewer).toBeNull();
+    }
+  });
+
+  it("names deliberate only on the codex bridge", () => {
+    vi.stubEnv("STORYBLOQ_CLIENT", "claude");
+    expect(reviewDepthLine("light", "code", "codex", claude))
+      .toBe("Request a quick pass -- correctness blockers only, skip style and polish. Pass deliberate: false.");
+    // Same level, agent reviewer: the ask survives, the argument does not.
+    expect(reviewDepthLine("light", "code", "agent", claude))
+      .toBe("Request a quick pass -- correctness blockers only, skip style and polish.");
+  });
+
+  it("says nothing to a reviewer that composes its own review", () => {
+    vi.stubEnv("STORYBLOQ_CLIENT", "claude");
+    expect(reviewDepthLine("thorough", "plan", "lenses", claude)).toBeNull();
+
+    // Native codex runs a fixed command line, so it takes no ask either. The
+    // check is the CONFIGURED native path, deliberately without
+    // shouldUseNativeCodexReview's `codex --version` probe: this decides prose,
+    // and a probe on the retry path would block report handling behind a
+    // missing or hung binary, and could answer differently from the probe
+    // enter() already made.
+    vi.stubEnv("STORYBLOQ_CLIENT", "codex");
+    const nativeConfig = { reviewBackends: ["codex"], codexReviewBackends: ["codex"] };
+    expect(reviewDepthLine("thorough", "plan", "codex", nativeConfig)).toBeNull();
+
+    // Control: same client, same reviewer, native NOT configured -- so the ask
+    // is emitted, and without the bridge argument, since this is not claude.
+    expect(reviewDepthLine("thorough", "plan", "codex", { reviewBackends: ["codex"], codexReviewBackends: ["agent"] }))
+      .toBe("Request a thorough review -- design soundness, edge cases, and failure modes.");
   });
 });

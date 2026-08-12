@@ -6,7 +6,7 @@ import type { GuideReportInput } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
-import { effectiveReviewEffort, effortMinRounds } from "../review-effort.js";
+import { effectiveReviewEffort, effortDisclosureLine, effortMinRounds } from "../review-effort.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
@@ -14,6 +14,7 @@ import {
   nativeCodexReportInstruction,
   nativeCodexReviewCommand,
   reviewBackendsForStage,
+  reviewDepthLine,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 
@@ -44,7 +45,9 @@ export class PlanReviewStage implements WorkflowStage {
     const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const storedRisk = ctx.state.ticket?.risk;
     const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
-    const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "PLAN_REVIEW"), risk);
+    const effort = effectiveReviewEffort(ctx.state, "PLAN_REVIEW");
+    const minRounds = effortMinRounds(effort, risk);
+    const disclosure = effortDisclosureLine(ctx.state, "PLAN_REVIEW");
 
     if (!ctx.state.currentReviewStartedAt) {
       ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
@@ -55,6 +58,8 @@ export class PlanReviewStage implements WorkflowStage {
       return {
         instruction: [
           `# Multi-Lens Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
+          "",
+          disclosure,
           "",
           "This round uses the **multi-lens review orchestrator** backed by @storybloq/lenses for plan review. It fans out to specialized review agents (Security, Error Handling, Clean Code, Concurrency, and more) in parallel, then merges findings programmatically. There is NO merger agent and NO judge agent.",
           "",
@@ -85,6 +90,8 @@ export class PlanReviewStage implements WorkflowStage {
         instruction: [
           `# Native Codex Plan Review - Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
           "",
+          disclosure,
+          "",
           "Run native Codex plan review:",
           "```bash",
           command,
@@ -105,11 +112,16 @@ export class PlanReviewStage implements WorkflowStage {
       instruction: [
         `# Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
         "",
+        disclosure,
+        "",
         `Run a plan review using **${reviewer}**.`,
         "",
-        bridgeCodex
-          ? `Call \`review_plan\` MCP tool with the plan content.`
-          : `Launch a code review agent to review the plan.`,
+        [
+          bridgeCodex
+            ? "Call `review_plan` MCP tool with the plan content."
+            : "Launch a code review agent to review the plan.",
+          reviewDepthLine(effort, "plan", reviewer, ctx.state.config),
+        ].filter(Boolean).join(" "),
         "",
         "When done, call `storybloq_autonomous_guide` with:",
         '```json',
@@ -357,6 +369,18 @@ export class PlanReviewStage implements WorkflowStage {
         instruction: [
           `# Plan Review -- Round ${roundNum} requested changes`,
           "",
+          [
+            effortDisclosureLine(ctx.state, "PLAN_REVIEW"),
+            // planReviews already carries this round, so this names the
+            // reviewer of the round the agent is being sent to run.
+            reviewDepthLine(
+              effectiveReviewEffort(ctx.state, "PLAN_REVIEW"),
+              "plan",
+              nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince),
+              ctx.state.config,
+            ),
+          ].filter(Boolean).join(" "),
+          "",
           "Update the plan to address these findings, then call me with completedAction: \"plan_review_round\" and the new review verdict.",
           "",
           findingSummary,
@@ -398,6 +422,17 @@ export class PlanReviewStage implements WorkflowStage {
       action: "retry",
       instruction: [
         `# Plan Review -- Round ${roundNum + 1}`,
+        "",
+        // A retry instruction is returned verbatim; enter() never runs for it.
+        [
+          effortDisclosureLine(ctx.state, "PLAN_REVIEW"),
+          reviewDepthLine(
+            effectiveReviewEffort(ctx.state, "PLAN_REVIEW"),
+            "plan",
+            nextReviewerName,
+            ctx.state.config,
+          ),
+        ].filter(Boolean).join(" "),
         "",
         hasCriticalOrMajor
           ? `Round ${roundNum} found ${findings.filter((f) => f.severity === "critical" || f.severity === "major").length} critical/major finding(s). Address them, then re-review with **${nextReviewerName}**.`

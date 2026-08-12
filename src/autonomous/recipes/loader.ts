@@ -21,6 +21,7 @@ interface RawRecipe {
     compactThreshold?: string;
     reviewBackends?: string[];
     codexReviewBackends?: string[];
+    handoverInterval?: number;
   };
 }
 
@@ -42,6 +43,7 @@ const DEFAULT_DEFAULTS = {
   compactThreshold: "high" as const,
   reviewBackends: ["codex", "agent"] as readonly string[],
   codexReviewBackends: ["lenses"] as readonly string[],
+  handoverInterval: 3,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,7 @@ export function resolveRecipe(
     compactThreshold?: string;
     reviewBackends?: string[];
     codexReviewBackends?: string[];
+    handoverInterval?: number;
     stages?: Record<string, Record<string, unknown>>;
     branchStrategy?: string;
   },
@@ -177,6 +180,9 @@ export function resolveRecipe(
     codexReviewBackends: projectOverrides?.codexReviewBackends
       ?? recipeDefaults.codexReviewBackends
       ?? [...DEFAULT_DEFAULTS.codexReviewBackends],
+    handoverInterval: projectOverrides?.handoverInterval
+      ?? recipeDefaults.handoverInterval
+      ?? DEFAULT_DEFAULTS.handoverInterval,
   };
 
   return {

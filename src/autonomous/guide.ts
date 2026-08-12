@@ -1559,9 +1559,23 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
     compactThreshold: sessionConfig.compactThreshold,
     reviewBackends: sessionConfig.reviewBackends,
     codexReviewBackends: sessionConfig.codexReviewBackends,
+    handoverInterval: sessionConfig.handoverInterval,
     stages: sessionConfig.stageOverrides,
     branchStrategy: sessionConfig.branchStrategy,
   });
+
+  // The resolved recipe is the ONE source for these defaults. Previously
+  // createSession carried its own literal fallbacks, so a recipe default the
+  // project did not override never reached the stages -- they read
+  // state.config, which held the literal. Seeding here collapses the two
+  // copies; resolveRecipe already folded in any project override above.
+  sessionConfig.maxTicketsPerSession = resolvedRecipe.defaults.maxTicketsPerSession;
+  sessionConfig.compactThreshold = resolvedRecipe.defaults.compactThreshold;
+  sessionConfig.reviewBackends = [...resolvedRecipe.defaults.reviewBackends];
+  sessionConfig.codexReviewBackends = resolvedRecipe.defaults.codexReviewBackends
+    ? [...resolvedRecipe.defaults.codexReviewBackends]
+    : undefined;
+  sessionConfig.handoverInterval = resolvedRecipe.defaults.handoverInterval;
 
   // T-183: Clean stale resume marker before creating a new session
   removeResumeMarker(root);
@@ -1689,6 +1703,7 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         codexReviewBackends: resolvedRecipe.defaults.codexReviewBackends
           ? [...resolvedRecipe.defaults.codexReviewBackends]
           : undefined,
+        handoverInterval: resolvedRecipe.defaults.handoverInterval,
       },
       ownerTask,
     };
@@ -2174,13 +2189,16 @@ function resolveRecipeFromState(state: FullSessionState): import("./stages/types
     stages: state.resolvedStages ?? {},
     dirtyFileHandling: state.resolvedDirtyFileHandling ?? "block",
     branchStrategy: parseBranchStrategyOrDefault(state.resolvedBranchStrategy),
-    defaults: state.resolvedDefaults ?? {
-      maxTicketsPerSession: state.config.maxTicketsPerSession,
-      compactThreshold: state.config.compactThreshold,
-      reviewBackends: [...state.config.reviewBackends],
-      codexReviewBackends: state.config.codexReviewBackends
-        ? [...state.config.codexReviewBackends]
+    // Legacy sessions predate resolvedDefaults and fall back to state.config,
+    // which is what their stages have been reading all along.
+    defaults: {
+      maxTicketsPerSession: state.resolvedDefaults?.maxTicketsPerSession ?? state.config.maxTicketsPerSession,
+      compactThreshold: state.resolvedDefaults?.compactThreshold ?? state.config.compactThreshold,
+      reviewBackends: [...(state.resolvedDefaults?.reviewBackends ?? state.config.reviewBackends)],
+      codexReviewBackends: (state.resolvedDefaults?.codexReviewBackends ?? state.config.codexReviewBackends)
+        ? [...(state.resolvedDefaults?.codexReviewBackends ?? state.config.codexReviewBackends ?? [])]
         : undefined,
+      handoverInterval: state.resolvedDefaults?.handoverInterval ?? state.config.handoverInterval ?? 3,
     },
   };
 }

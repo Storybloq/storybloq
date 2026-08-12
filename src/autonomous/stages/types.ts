@@ -62,6 +62,7 @@ export interface ResolvedRecipe {
     readonly compactThreshold: string;
     readonly reviewBackends: readonly string[];
     readonly codexReviewBackends?: readonly string[];
+    readonly handoverInterval: number;
   };
 }
 

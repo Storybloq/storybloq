@@ -407,7 +407,13 @@ describe("resolveRecipe", () => {
     });
     expect(recipe.defaults.maxTicketsPerSession).toBe(0);
     expect(recipe.defaults.compactThreshold).toBe("critical");
-    expect(recipe.defaults.reviewBackends).toEqual(["lenses", "codex", "agent"]); // T-181: lenses added
+    // T-461: the recipe default matches what sessions have actually run with.
+    // T-181 put "lenses" here, but createSession seeded state.config with its
+    // own ["codex","agent"] literal and the stages read state.config, so the
+    // lenses entry never reached a review. The recipe now states the effective
+    // behavior; enabling lenses is a deliberate project override (ISS-1006).
+    expect(recipe.defaults.reviewBackends).toEqual(["codex", "agent"]);
+    expect(recipe.defaults.handoverInterval).toBe(3);
   });
 
   it("includes TEST and WRITE_TESTS stages by default", () => {
@@ -431,7 +437,24 @@ describe("resolveRecipe", () => {
 
   it("preserves recipe stages config", () => {
     const recipe = resolveRecipe("coding");
-    expect(recipe.stages).toHaveProperty("PLAN_REVIEW");
     expect(recipe.stages).toHaveProperty("CODE_REVIEW");
+    expect(recipe.stages).toHaveProperty("WRITE_TESTS");
+    expect((recipe.stages.CODE_REVIEW as Record<string, unknown>).maxReviewRounds).toBe(12);
+  });
+
+  it("ships no per-stage backends pin, so the top-level list is the one source", () => {
+    // T-461: coding.json used to pin stages.PLAN_REVIEW/CODE_REVIEW.backends.
+    // Nothing read them, and wiring them without removing them would have
+    // silently switched every default project onto lenses.
+    const recipe = resolveRecipe("coding");
+    expect((recipe.stages.CODE_REVIEW as Record<string, unknown>).backends).toBeUndefined();
+    expect(recipe.stages.PLAN_REVIEW).toBeUndefined();
+  });
+
+  it("carries a project per-stage backends override through to resolvedStages", () => {
+    const recipe = resolveRecipe("coding", {
+      stages: { PLAN_REVIEW: { backends: ["codex"] } },
+    });
+    expect((recipe.stages.PLAN_REVIEW as Record<string, unknown>).backends).toEqual(["codex"]);
   });
 });

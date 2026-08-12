@@ -4,8 +4,7 @@
   "pipeline": ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
   "postComplete": ["LESSON_CAPTURE", "ISSUE_SWEEP"],
   "stages": {
-    "PLAN_REVIEW": { "backends": ["lenses", "codex", "agent"] },
-    "CODE_REVIEW": { "backends": ["lenses", "codex", "agent"], "maxReviewRounds": 12 },
+    "CODE_REVIEW": { "maxReviewRounds": 12 },
     "WRITE_TESTS": { "enabled": true, "command": "npm test", "onExhaustion": "plan" },
     "TEST": { "enabled": true, "command": "npm test" },
     "BUILD": { "enabled": false, "command": "npm run build" },
@@ -19,7 +18,7 @@
   "defaults": {
     "maxTicketsPerSession": 0,
     "compactThreshold": "high",
-    "reviewBackends": ["lenses", "codex", "agent"],
+    "reviewBackends": ["codex", "agent"],
     "codexReviewBackends": ["lenses"],
     "handoverInterval": 3
   }

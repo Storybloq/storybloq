@@ -14,7 +14,7 @@ import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensR
 import {
   nativeCodexReportInstruction,
   nativeCodexReviewCommand,
-  reviewBackendsForClient,
+  reviewBackendsForStage,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 
@@ -41,7 +41,7 @@ export class CodeReviewStage implements WorkflowStage {
   }
 
   async enter(ctx: StageContext): Promise<StageResult> {
-    const backends = reviewBackendsForClient(ctx.state.config);
+    const backends = reviewBackendsForStage("CODE_REVIEW", ctx.state);
     const codeReviews = ctx.state.reviews.code;
     const roundNum = codeReviews.length + 1;
     const reviewer = nextReviewer(codeReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
@@ -200,7 +200,7 @@ export class CodeReviewStage implements WorkflowStage {
     // critical/major contradiction guard below (and the per-severity counts and
     // lens history) cannot be bypassed by a miscased value.
     const findings = (report.findings ?? []).map((f) => ({ ...f, severity: normalizeSeverity(f.severity) }));
-    const backends = reviewBackendsForClient(ctx.state.config);
+    const backends = reviewBackendsForStage("CODE_REVIEW", ctx.state);
     const computedReviewer = nextReviewer(codeReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     // ISS-102: Use actual reviewer from report, infer from notes, or fall back to computed
     const reviewerBackend = report.reviewer

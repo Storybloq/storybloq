@@ -13,7 +13,7 @@ import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
   nativeCodexReviewCommand,
-  reviewBackendsForClient,
+  reviewBackendsForStage,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 
@@ -38,7 +38,7 @@ export class PlanReviewStage implements WorkflowStage {
   }
 
   async enter(ctx: StageContext): Promise<StageResult> {
-    const backends = reviewBackendsForClient(ctx.state.config);
+    const backends = reviewBackendsForStage("PLAN_REVIEW", ctx.state);
     const existingReviews = ctx.state.reviews.plan;
     const roundNum = existingReviews.length + 1;
     const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
@@ -189,7 +189,7 @@ export class PlanReviewStage implements WorkflowStage {
     // contradiction guard and per-severity counts cannot be bypassed by a
     // miscased value.
     const findings = (report.findings ?? []).map((f) => ({ ...f, severity: normalizeSeverity(f.severity) }));
-    const backends = reviewBackendsForClient(ctx.state.config);
+    const backends = reviewBackendsForStage("PLAN_REVIEW", ctx.state);
     const computedReviewer = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     // ISS-102: Use actual reviewer from report, infer from notes, or fall back to computed
     const reviewerBackend = report.reviewer

@@ -12,6 +12,7 @@ import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
+  currentStorybloqClient,
   nativeCodexReportInstruction,
   nativeCodexReviewCommand,
   reviewBackendsForStage,
@@ -69,7 +70,7 @@ export class CodeReviewStage implements WorkflowStage {
     if (reviewer === "lenses") {
       return {
         instruction: [
-          `# Multi-Lens ${issueHeader} -- Round ${roundNum} of ${rounds} minimum`,
+          `# Multi-Lens ${issueHeader} -- Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
           "",
           `Capture the diff with: ${diffCommand}`,
           "",
@@ -97,7 +98,7 @@ export class CodeReviewStage implements WorkflowStage {
       const command = nativeCodexReviewCommand("code", ctx.state.sessionId);
       return {
         instruction: [
-          `# Native Codex ${issueHeader} - Round ${roundNum} of ${rounds} minimum`,
+          `# Native Codex ${issueHeader} - Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
           "",
           `Capture baseline context with: ${diffCommand}`,
           "",
@@ -117,16 +118,34 @@ export class CodeReviewStage implements WorkflowStage {
       };
     }
 
+    // T-461: mirrors plan-review.ts:103. PLAN_REVIEW has named its MCP tool
+    // since the bridge shipped; CODE_REVIEW never did, so a Claude-client
+    // session told to review with "codex" was left to guess which tool to call.
+    const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";
     return {
       instruction: [
-        `# ${issueHeader} -- Round ${roundNum} of ${rounds} minimum`,
+        `# ${issueHeader} -- Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
         "",
         `Capture the diff with: ${diffCommand}`,
         "",
         "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
         "",
         `Run a code review using **${reviewer}**.`,
-        "When done, report verdict and findings.",
+        "",
+        bridgeCodex
+          ? "Call `review_code` MCP tool with the diff."
+          : "Launch a code review agent to review the diff.",
+        "",
+        // Until now this branch ended at "When done, report verdict and
+        // findings", the only instruction in either stage with no report
+        // envelope: it named no session, no completedAction, and no verdict
+        // vocabulary. The vocabularies deliberately differ between the two
+        // stages -- code review has request_changes, plan review does not
+        // (guide.ts REVIEW_VERDICTS) -- so this is not a copy of plan-review's.
+        "When done, call `storybloq_autonomous_guide` with:",
+        '```json',
+        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "code_review_round", "verdict": "<approve|revise|request_changes|reject>", "findings": [...] } }`,
+        '```',
       ].join("\n"),
       reminders: [
         diffReminder,

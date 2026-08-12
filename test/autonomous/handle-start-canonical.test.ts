@@ -284,6 +284,68 @@ describe("ISS-654: handleStart targetWork canonicalization (end-to-end)", () => 
 });
 
 /**
+ * T-461: review mode must run the REAL CODE_REVIEW instruction.
+ *
+ * handleStart used to build that instruction inline, which is the same defect
+ * PlanStage carried until 61b4b300, and it landed on the single round a
+ * review-mode session runs: no reviewer selection (a lenses-configured project
+ * silently got the plain agent text), no round header, and no
+ * currentReviewStartedAt. Nothing in the tree pinned it, which is why it
+ * survived.
+ */
+describe("T-461: review mode enters through CodeReviewStage", () => {
+  function setStageBackends(root: string, backends: string[]): void {
+    const configPath = join(root, ".story", "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    config.recipeOverrides = {
+      ...config.recipeOverrides,
+      stages: { ...config.recipeOverrides?.stages, CODE_REVIEW: { backends } },
+    };
+    writeFileSync(configPath, JSON.stringify(config));
+    run("git add .", root);
+    run('git commit -q -m "set code review backends"', root);
+  }
+
+  async function startReview(root: string) {
+    const result = await handleAutonomousGuide(root, {
+      action: "start", sessionId: null, mode: "review", ticketId: "T-001",
+    });
+    expect(result.isError).toBeFalsy();
+    return result.content[0]!.text as string;
+  }
+
+  it("emits the stage's own round header and records the round start time", async () => {
+    const root = track(buildProject());
+    const text = await startReview(root);
+
+    // The round header is the cheapest proof the stage produced this text: the
+    // old inline instruction had no notion of rounds at all.
+    expect(text).toMatch(/Round 1 of \d+ minimum/);
+    expect(startedSession(root).currentReviewStartedAt).toBeTruthy();
+  });
+
+  it("selects the configured reviewer instead of a generic instruction", async () => {
+    // Exercises the phase 1(a) per-stage backends end to end: a lenses project
+    // must get the LENS protocol here, which is exactly what the inline
+    // instruction could never do because it never consulted a reviewer.
+    const root = track(buildProject());
+    setStageBackends(root, ["lenses"]);
+    const text = await startReview(root);
+
+    expect(text).toContain("Multi-Lens");
+    expect(text).toContain("storybloq_review_lenses_prepare");
+  });
+
+  it("still names the code_review_round report contract", async () => {
+    // The one thing the old inline text got right has to survive the swap,
+    // otherwise a review-mode session cannot report its verdict back.
+    const root = track(buildProject());
+    const text = await startReview(root);
+    expect(text).toContain("code_review_round");
+  });
+});
+
+/**
  * T-461: the project-config INGESTION seam for the review-effort dial.
  *
  * resolveRecipe's own fail-closed behavior is unit-tested, but handleStart is

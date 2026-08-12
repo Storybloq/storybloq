@@ -2009,25 +2009,33 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
 
       // Build mode-specific instruction
       let instruction: string;
+      let stageReminders: readonly string[] = [];
       if (mode === "review") {
-        const mergeBase = updated.git.mergeBase;
-        const diffCommand = mergeBase
-          ? `\`git diff ${mergeBase}\``
-          : `\`git diff HEAD\` AND \`git ls-files --others --exclude-standard\``;
-        instruction = [
-          `# ${modeLabels[mode]} -- ${ticketResolution.displayId}: ${ticket.title}`,
-          "",
-          `Reviewing code for ticket **${ticketResolution.displayId}**. Capture the diff and run a code review.`,
-          "",
-          `Capture diff with: ${diffCommand}`,
-          "",
-          "**IMPORTANT:** Pass the FULL unified diff output to the reviewer. Do NOT summarize.",
-          "",
-          "When the code review is done, call `storybloq_autonomous_guide` with the verdict:",
-          '```json',
-          `{ "sessionId": "${updated.sessionId}", "action": "report", "report": { "completedAction": "code_review_round", "verdict": "<approve|revise|request_changes|reject>", "findings": [...] } }`,
-          '```',
-        ].join("\n");
+        // T-461: this branch used to build the CODE_REVIEW instruction itself,
+        // which is the same defect PlanStage carried until 61b4b300. Four
+        // things went wrong as a result, and they all landed on the ONE round a
+        // review-mode session runs: no reviewer selection, so a
+        // lenses-configured project silently got the plain agent text instead
+        // of the lens protocol; no round header; no `currentReviewStartedAt`,
+        // so the round had no start time; and no place for the effort
+        // disclosure and depth wording. Review mode is precisely where someone
+        // asked for exactly one review, which makes it the worst place to run a
+        // different instruction from every other round. There is one source for
+        // that text now, and it is the stage's own enter().
+        const reviewStage = getStage("CODE_REVIEW");
+        if (!reviewStage) throw new Error("CODE_REVIEW stage is not registered");
+        const reviewCtx = new StageContext(root, dir, written, resolvedRecipe);
+        const entered = await reviewStage.enter(reviewCtx);
+        // The WorkflowStage interface allows enter() to return an advance;
+        // CodeReviewStage.enter is typed Promise<StageResult> and never does.
+        // Narrowed rather than cast so a future stage that DOES advance from
+        // enter() fails here loudly instead of emitting an empty instruction.
+        const result = isStageAdvance(entered)
+          ? ("result" in entered ? entered.result : undefined)
+          : entered;
+        if (!result) throw new Error("CODE_REVIEW enter() produced no instruction at session start");
+        instruction = result.instruction;
+        stageReminders = result.reminders ?? [];
       } else {
         instruction = [
           `# ${modeLabels[mode]} -- ${ticketResolution.displayId}: ${ticket.title}`,
@@ -2051,6 +2059,10 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
             "This is guided mode -- single ticket, full pipeline.",
           ]
         : [
+            // The stage's own reminders come FIRST: they carry the protocol for
+            // whichever reviewer was selected, and dropping them was part of
+            // what the inline instruction above got wrong.
+            ...stageReminders,
             `This is ${mode} mode -- session ends after ${mode === "review" ? "code review approval" : "plan review approval"}.`,
           ];
 

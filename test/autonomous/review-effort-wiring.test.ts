@@ -11,6 +11,7 @@ import { findNextStage } from "../../src/autonomous/stages/registry.js";
 import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import { resolveRecipe } from "../../src/autonomous/recipes/loader.js";
 import { isValidTransition } from "../../src/autonomous/state-machine.js";
+import { analyzeSessionDiagnostics, dialCodeReviewMaxRounds } from "../../src/autonomous/session-diagnostics.js";
 import { PlanReviewStage } from "../../src/autonomous/stages/plan-review.js";
 import { CodeReviewStage } from "../../src/autonomous/stages/code-review.js";
 import { SessionStateSchema, type FullSessionState } from "../../src/autonomous/session-types.js";
@@ -421,5 +422,82 @@ describe("persisted dial fields survive corruption", () => {
       expect(sessionEffortFromState(absent.data as never))
         .toEqual({ level: "standard", source: "legacy" });
     }
+  });
+});
+
+/**
+ * T-461 phase 3: the CODE_REVIEW cap.
+ *
+ * The reason this is ONE function rather than two call sites is the desync it
+ * prevents. The stage routes on this number; the diagnostics derive
+ * `atOrPastCap`, the non-converging gate, the landable gate, the
+ * `scope_expanded` threshold, and the figure a person reads in the health model
+ * and the session report. If only the stage had become effort-aware, a light
+ * session would route on 4 while every one of those still reported 12.
+ */
+describe("dialCodeReviewMaxRounds", () => {
+  const marker = (explicit: boolean) => ({
+    level: "size-mapped", source: "default",
+    explicitKnobs: { codeReviewMaxRounds: explicit, planReviewBackends: false, codeReviewBackends: false },
+  });
+
+  it("keeps the configured cap at standard, which is the anchor", () => {
+    expect(dialCodeReviewMaxRounds({ resolvedReviewEffort: marker(false) }, {}, "low")).toBe(12);
+    expect(dialCodeReviewMaxRounds({ currentReviewEffort: "standard", resolvedReviewEffort: marker(false) }, {}, "low"))
+      .toBe(12);
+  });
+
+  it("lowers the cap at light", () => {
+    expect(dialCodeReviewMaxRounds({ currentReviewEffort: "light", resolvedReviewEffort: marker(false) }, {}, "low"))
+      .toBe(4);
+  });
+
+  it("never lets the light cap starve a risky item below its minimum", () => {
+    // requiredRounds(high) is 3, under the light cap of 4, so the clamp is not
+    // what decides here -- but a configured cap of 1 must still be lifted.
+    expect(dialCodeReviewMaxRounds(
+      { currentReviewEffort: "light", resolvedReviewEffort: marker(false) },
+      { CODE_REVIEW: { maxReviewRounds: 1 } },
+      "high",
+    )).toBe(3);
+  });
+
+  it("lets an explicitly project-set cap beat the dial", () => {
+    // The project said 8. light must not quietly cut it to 4.
+    expect(dialCodeReviewMaxRounds(
+      { currentReviewEffort: "light", resolvedReviewEffort: marker(true) },
+      { CODE_REVIEW: { maxReviewRounds: 8 } },
+      "low",
+    )).toBe(8);
+    // Same number, but recipe-shipped rather than project-set: the dial may
+    // supersede this one. That distinction is the whole point of explicitKnobs.
+    expect(dialCodeReviewMaxRounds(
+      { currentReviewEffort: "light", resolvedReviewEffort: marker(false) },
+      { CODE_REVIEW: { maxReviewRounds: 8 } },
+      "low",
+    )).toBe(4);
+  });
+
+  it("keeps 0 meaning unlimited at every level", () => {
+    for (const level of ["off", "light", "standard", "thorough"]) {
+      expect(dialCodeReviewMaxRounds(
+        { currentReviewEffort: level, resolvedReviewEffort: marker(false) },
+        { CODE_REVIEW: { maxReviewRounds: 0 } },
+        "high",
+      ), `level=${level}`).toBe(0);
+    }
+  });
+
+  it("reports the same cap to the diagnostics that the stage routes on", () => {
+    // The desync guard. These two must never be computed independently again.
+    const state = {
+      ...makeState({ currentReviewEffort: "light" } as Partial<FullSessionState>),
+      resolvedReviewEffort: marker(false),
+      resolvedStages: {},
+    } as unknown as FullSessionState;
+    const summary = analyzeSessionDiagnostics(state, { events: [] });
+    expect(summary.maxReviewRounds).toBe(4);
+    expect(summary.maxReviewRounds)
+      .toBe(dialCodeReviewMaxRounds(state, state.resolvedStages, state.ticket?.risk));
   });
 });

@@ -6,7 +6,7 @@ import type { GuideReportInput } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
-import { effectiveReviewEffort } from "../review-effort.js";
+import { effectiveReviewEffort, effortMinRounds } from "../review-effort.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import {
@@ -44,7 +44,7 @@ export class PlanReviewStage implements WorkflowStage {
     const reviewer = nextReviewer(existingReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     const storedRisk = ctx.state.ticket?.risk;
     const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
-    const minRounds = requiredRounds(risk);
+    const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "PLAN_REVIEW"), risk);
 
     if (!ctx.state.currentReviewStartedAt) {
       ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
@@ -220,7 +220,7 @@ export class PlanReviewStage implements WorkflowStage {
 
     const storedRisk = ctx.state.ticket?.risk;
     const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
-    const minRounds = requiredRounds(risk);
+    const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "PLAN_REVIEW"), risk);
     // ISS-073: Only count unresolved findings (open/contested) as contradictory with approve
     const hasCriticalOrMajor = findings.some(
       (f) => (f.severity === "critical" || f.severity === "major") &&

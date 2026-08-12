@@ -121,6 +121,54 @@ describe("CodeReviewStage.enter", () => {
     expect(await enter(pastMinimum)).toContain("Round 4 of 4 minimum");
   });
 
+  // -------------------------------------------------------------------------
+  // T-461 phase 3: the effort substitution actually reaching the instruction.
+  // Without these the substitution is indistinguishable from dead code, because
+  // every level behaves identically at `standard`.
+  // -------------------------------------------------------------------------
+
+  it("lowers the stated minimum at light and raises it at thorough", async () => {
+    const highRisk = { ticket: { id: "T-001", title: "t", risk: "high", claimed: true } };
+    // standard is the anchor: risk-derived, unchanged.
+    expect(await enter(highRisk as Partial<FullSessionState>)).toContain("Round 1 of 3 minimum");
+    // light collapses a high-risk item to a single round...
+    expect(await enter({ ...highRisk, currentReviewEffort: "light" } as Partial<FullSessionState>))
+      .toContain("Round 1 of 1 minimum");
+    // ...and thorough lifts a LOW-risk item off its single round.
+    expect(await enter({
+      ticket: { id: "T-001", title: "t", risk: "low", claimed: true },
+      currentReviewEffort: "thorough",
+    } as Partial<FullSessionState>)).toContain("Round 1 of 2 minimum");
+  });
+
+  it("narrows to one fast reviewer at light without inventing one", async () => {
+    vi.stubEnv("STORYBLOQ_CLIENT", "claude");
+    const marker = { level: "light", source: "start-call" };
+    // lenses fans out to many agents, so light drops it when codex is available.
+    const text = await enter({
+      currentReviewEffort: "light",
+      resolvedReviewEffort: marker,
+      config: {
+        maxTicketsPerSession: 5, compactThreshold: "high",
+        reviewBackends: ["lenses", "codex", "agent"], handoverInterval: 3,
+      },
+    } as Partial<FullSessionState>);
+    expect(text).toContain("`review_code` MCP tool");
+    expect(text).not.toContain("Multi-Lens");
+
+    // A lenses-ONLY project keeps lenses: the dial narrows within the allowed
+    // list and never invents a reviewer the project did not configure.
+    const lensOnly = await enter({
+      currentReviewEffort: "light",
+      resolvedReviewEffort: marker,
+      config: {
+        maxTicketsPerSession: 5, compactThreshold: "high",
+        reviewBackends: ["lenses"], handoverInterval: 3,
+      },
+    } as Partial<FullSessionState>);
+    expect(lensOnly).toContain("Multi-Lens");
+  });
+
   it("records when the round started", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), recipe);
     await stage.enter(ctx);

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { currentStorybloqClient } from "../client-profile.js";
-import { REVIEW_EFFORTS } from "../review-effort.js";
+import { REVIEW_EFFORTS, effectiveReviewEffort, effortBackends } from "../review-effort.js";
 
 export { currentStorybloqClient } from "../client-profile.js";
 
@@ -20,7 +20,18 @@ export function reviewBackendsForClient(config: ReviewBackendConfig): readonly s
 export interface StageBackendState {
   readonly config: ReviewBackendConfig;
   readonly resolvedStages?: Record<string, Record<string, unknown>> | null;
-  readonly resolvedReviewEffort?: unknown;
+  readonly resolvedReviewEffort?: {
+    readonly level?: string | null;
+    readonly explicitKnobs?: {
+      readonly planReviewBackends?: boolean;
+      readonly codeReviewBackends?: boolean;
+    } | null;
+  } | null;
+  // T-461 phase 3: the dial narrows the chosen list. Optional so every existing
+  // caller and test literal still satisfies the interface -- and absent reads
+  // as `standard`, which narrows nothing.
+  readonly currentReviewEffort?: string | null;
+  readonly mode?: string | null;
 }
 
 /**
@@ -65,12 +76,28 @@ function isPostDialMarker(marker: unknown): boolean {
   const sourceOk = source === "start-call" || source === "project" || source === "default";
   return levelOk && sourceOk;
 }
+
 export function reviewBackendsForStage(
   stage: "PLAN_REVIEW" | "CODE_REVIEW",
   state: StageBackendState,
 ): readonly string[] {
   const clientBackends = reviewBackendsForClient(state.config);
   if (!isPostDialMarker(state.resolvedReviewEffort)) return clientBackends;
+
+  const knobs = state.resolvedReviewEffort?.explicitKnobs;
+  const projectSetBackends = stage === "PLAN_REVIEW"
+    ? knobs?.planReviewBackends === true
+    : knobs?.codeReviewBackends === true;
+
+  /**
+   * The dial narrows WITHIN whatever list was chosen; it never adds a backend
+   * and never overrides a list the PROJECT set. That second half is what
+   * `explicitKnobs` exists for: after resolveRecipe's shallow merge a
+   * recipe-shipped value is indistinguishable from a project-set one, and the
+   * dial may supersede the former but never the latter.
+   */
+  const narrow = (chosen: readonly string[]): readonly string[] =>
+    projectSetBackends ? chosen : effortBackends(effectiveReviewEffort(state, stage), chosen);
 
   const configured = state.resolvedStages?.[stage]?.backends;
   // Every entry must be a usable string. A partially malformed array falls back
@@ -82,9 +109,9 @@ export function reviewBackendsForStage(
     && configured.length > 0
     && configured.every((b) => typeof b === "string" && b.length > 0)
   ) {
-    return configured as readonly string[];
+    return narrow(configured as readonly string[]);
   }
-  return clientBackends;
+  return narrow(clientBackends);
 }
 
 export function hasNativeCodexCli(): boolean {

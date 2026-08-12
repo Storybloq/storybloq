@@ -459,24 +459,20 @@ Do NOT search source code for this. The full config.json schema is shown below. 
         "command": "string (default: npm run build)"
       },
       "PLAN_REVIEW": {
-        "backends": ["codex", "agent"]
+        "backends": ["codex", "agent"],
+        "confidenceFloor": "number 0-1 (default: 0.6; minimum lens confidence for a finding to count)"
       },
       "CODE_REVIEW": {
         "backends": ["codex", "agent"],
-        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds))"
+        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds))",
+        "confidenceFloor": "number 0-1 (default: 0.6; minimum lens confidence for a finding to count)"
       },
       "LESSON_CAPTURE": { "enabled": "boolean" },
       "ISSUE_SWEEP": { "enabled": "boolean" }
     },
     "lensConfig": {
-      "lenses": "\"auto\" | string[] (default: \"auto\")",
-      "maxLenses": "number (1-8, default: 8)",
-      "lensTimeout": "number | { default: number, opus: number } (default: { default: 60, opus: 120 })",
-      "findingBudget": "number (default: 10)",
-      "confidenceFloor": "number 0-1 (default: 0.6)",
-      "tokenBudgetPerLens": "number (default: 32000)",
-      "hotPaths": "string[] (glob patterns for Performance lens, default: [])",
-      "lensModels": "Record<string, string> (default: { default: sonnet, security: opus, concurrency: opus })"
+      "lenses": "\"auto\" | string[] (default: \"auto\"; restricts activation to the named lenses. A set that matches no active lens is treated as a mistake and ignored, so a typo cannot turn lens review off)",
+      "maxLenses": "number (1-8, default: uncapped; keeps the first N activated lenses. Out-of-range values are ignored)"
     },
     "blockingPolicy": {
       "neverBlock": "string[] (lens names that never produce blocking findings, default: [])",

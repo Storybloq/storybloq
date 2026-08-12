@@ -94,6 +94,13 @@ export const ConfigSchema = z
       // project. The dial's own normalizer fails an unreadable value closed to
       // standard, which costs the project today's review instead of its config.
       reviewEffort: z.unknown().optional(),
+      // T-461: `lenses` and `maxLenses` are read by the lens harness. Declared
+      // here for the same reason as reviewEffort -- an undeclared key is
+      // STRIPPED by parse -- and permissive for the same reason too: this
+      // schema is parsed, not safe-parsed, so a strict shape would turn a typo
+      // into a throw that breaks every command. The harness validates and
+      // falls back per field.
+      lensConfig: z.unknown().optional(),
     }).optional(),
     nodes: z.record(z.string(), z.unknown()).optional(),
     orchestrator: z.string().optional(),

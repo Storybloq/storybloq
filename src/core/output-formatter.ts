@@ -2139,6 +2139,7 @@ export function formatReference(
   lines.push("");
   lines.push("With no .story/ project on the path, the MCP server starts degraded and registers only:");
   lines.push("");
+  lines.push("- **storybloq_session_guard** -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first (T-446)");
   lines.push("- **storybloq_init** -- bootstrap a .story/ project, then dynamically register the full tool set");
   lines.push("- **storybloq_status** -- returns setup guidance instead of a project summary");
   lines.push("");

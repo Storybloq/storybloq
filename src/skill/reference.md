@@ -665,6 +665,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?) - Run the @storybloq/lenses merger pipeline programmatically over raw lens outputs; returns the ReviewVerdict envelope (no merger agent)
 - **storybloq_review_lenses_judge** (reviewVerdict, convergenceHistory?) - Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent)
 - **storybloq_autonomous_guide** (sessionId?, action, mode?, ticketId?, clientTaskId?, takeover?, reviewEffort?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
+- **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode
 - **storybloq_session_report** (sessionId) - Structured analysis of an autonomous session (works even if project state is corrupted)
 - **storybloq_register_subprocess** (pid, cmd, category?, sessionId?) - Register a running subprocess so monitors can tell slow builds from hung agents
 - **storybloq_unregister_subprocess** (pid, sessionId?) - Unregister a subprocess after it completes (idempotent)
@@ -683,6 +684,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 
 With no .story/ project on the path, the MCP server starts degraded and registers only:
 
+- **storybloq_session_guard** -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first (T-446)
 - **storybloq_init** -- bootstrap a .story/ project, then dynamically register the full tool set
 - **storybloq_status** -- returns setup guidance instead of a project summary
 

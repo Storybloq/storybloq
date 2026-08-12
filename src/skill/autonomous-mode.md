@@ -16,6 +16,23 @@ This file is referenced from SKILL.md for `/story auto` / `$story auto`, review,
 
 **Ticket review depth:** Optional ticket metadata `reviewRisk` accepts `low`, `medium`, or `high` and sets the minimum PLAN_REVIEW depth to one, two, or three rounds. Set it with `storybloq ticket meta set T-001 reviewRisk '"high"'` or `storybloq_ticket_meta_set`. Legacy `risk` metadata remains compatible. Malformed explicit values fail closed to high, and risk metadata never skips a review stage.
 
+**Review effort:** Optional `reviewEffort` metadata on a ticket or issue accepts `off`, `light`, `standard`, or `thorough` and sets how hard BOTH review stages work for that item. Set it with `storybloq ticket meta set T-001 reviewEffort '"light"'` or `storybloq_ticket_meta_set`. Unset, it is derived per item: risk `high` maps to `thorough`, a `chore` at risk `low` maps to `light`, everything else maps to `standard` (issues map severity `low` or `medium` to `light`, else `standard`). A session-wide default can be set with `recipeOverrides.reviewEffort` or the `reviewEffort` argument on the start call, and an item's own value beats both. Malformed explicit values fail closed to `standard`, so a typo never buys less review than you have today -- the opposite direction from `reviewRisk`, which fails closed to `high`, because both point away from accidentally reviewing less. `reviewRisk` never skips a review stage; only `reviewEffort: off` does, and every level is disclosed on the review instruction, in a `review_effort_resolved` event, on the round record, and in `storybloq session-report`. The dial never overrides an explicit `stages.PLAN_REVIEW`/`stages.CODE_REVIEW` knob.
+
+### Review effort levels
+
+| Level | Plan review | Code review |
+|-------|-------------|-------------|
+| `off` | skipped | skipped (a plan-mode or review-mode session still runs its own review, at `light`) |
+| `light` | 1 round minimum; prefers one fast reviewer | 1 round minimum, cap 4; prefers one fast reviewer |
+| `standard` | risk-derived rounds | risk-derived rounds, cap 12 |
+| `thorough` | at least 2 rounds | at least 2 rounds |
+
+"Prefers" is exact: the dial narrows WITHIN the configured backends and never adds one, so a per-stage `backends` list you set explicitly is left alone, and a lenses-only project keeps its lens fan-out because there is no other reviewer to fall back to.
+
+`off` is the ONLY level that removes a review stage from the walk. `light` lowers the depth of both stages and never skips either one, which matters because `light` is reachable automatically through size mapping: a heuristic may make a review cheaper, but it never makes a gate disappear.
+
+The fix-then-re-review rule holds at every level. At `off` no review runs, so no change request can exist and the rule is vacuously satisfied; at `light` the landing rule below is what keeps it true under a lower cap.
+
 **Frontend design:** If the current ticket involves UI, frontend, components, layouts, or styling, read `design/design.md` in the same directory as the skill file for design principles. Load the relevant platform reference from `design/references/`. Apply the priority order (clarity > hierarchy > platform correctness > accessibility > state completeness) during both planning and implementation.
 
 ## Precedence: task-aware active-session guard
@@ -148,6 +165,8 @@ Use `/story auto T-XXX` instead. A single-ticket targeted auto session is equiva
 ### Code-review landing cap
 
 `recipeOverrides.stages.CODE_REVIEW.maxReviewRounds` defaults to 12. The effective cap is the larger of that value and the ticket risk's required review rounds; `0` explicitly disables the cap. `reject`, plan redirects, and unresolved critical findings remain blocking at any round. At the cap, `revise` or `request_changes` with zero unresolved critical findings advances to FINALIZE and converts unresolved major/minor findings into deduplicated follow-up issues. A `landingDecision.reason` of `max_review_rounds_no_blocking` is an instruction to land the ticket, not reopen implementation. PLAN_REVIEW convergence remains separate.
+
+At `reviewEffort: light` the cap is 4 rather than 12, and it becomes a routing point rather than a landing point: a change request AT the cap goes back to IMPLEMENT like any other, and its fix gets exactly one more review round, during which landing is permitted again. The bound is therefore 5. Without that grace round a lower cap would land unreviewed fixes as a matter of course, which is the one rule that holds at every level. Setting `maxReviewRounds` explicitly beats the dial and opts out of both the cap and the grace round.
 
 ## Review findings and dispositions
 

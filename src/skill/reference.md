@@ -664,7 +664,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, complete lens prompts
 - **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?) - Run the @storybloq/lenses merger pipeline programmatically over raw lens outputs; returns the ReviewVerdict envelope (no merger agent)
 - **storybloq_review_lenses_judge** (reviewVerdict, convergenceHistory?) - Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent)
-- **storybloq_autonomous_guide** (sessionId?, action, mode?, ticketId?, clientTaskId?, takeover?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
+- **storybloq_autonomous_guide** (sessionId?, action, mode?, ticketId?, clientTaskId?, takeover?, reviewEffort?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
 - **storybloq_session_report** (sessionId) - Structured analysis of an autonomous session (works even if project state is corrupted)
 - **storybloq_register_subprocess** (pid, cmd, category?, sessionId?) - Register a running subprocess so monitors can tell slow builds from hung agents
 - **storybloq_unregister_subprocess** (pid, sessionId?) - Unregister a subprocess after it completes (idempotent)

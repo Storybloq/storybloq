@@ -438,6 +438,7 @@ Do NOT search source code for this. The full config.json schema is shown below. 
     "compactThreshold": "string (medium/high/critical; selects pressure limits and rotation trigger; default: high)",
     "reviewBackends": ["codex", "agent"],
     "handoverInterval": "number (default: 3)",
+    "reviewEffort": "off | light | standard | thorough | size-mapped (default: size-mapped; one dial for how hard review works; standard is today's behavior exactly; see Review effort below)",
     "stages": {
       "WRITE_TESTS": {
         "enabled": "boolean",
@@ -464,7 +465,7 @@ Do NOT search source code for this. The full config.json schema is shown below. 
       },
       "CODE_REVIEW": {
         "backends": ["codex", "agent"],
-        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds))",
+        "maxReviewRounds": "number (default: 12; 0 disables; otherwise effective cap is max(value, required risk rounds); setting it explicitly beats reviewEffort)",
         "confidenceFloor": "number 0-1 (default: 0.6; minimum lens confidence for a finding to count)"
       },
       "LESSON_CAPTURE": { "enabled": "boolean" },
@@ -499,6 +500,26 @@ Do NOT search source code for this. The full config.json schema is shown below. 
   }
 }
 ```
+
+### Review effort
+
+`reviewEffort` is one dial for how hard review works. `standard` is today's
+behavior exactly, so a project that never sets it does not move. `size-mapped`
+(the default) derives it per item: risk `high` -> `thorough`, `chore` at risk
+`low` -> `light`, else `standard`; issues map severity `low`/`medium` ->
+`light`, else `standard`.
+
+Precedence, highest first: an explicit `stages.*` knob, then ticket/issue
+`reviewEffort` metadata, then the start call's `reviewEffort`, then this
+project default, then size mapping. **The dial never overrides an explicit
+`stages.*` knob**, never adds a backend you did not configure, and fails
+closed to `standard` on an unrecognized value, so a typo cannot buy less
+review than you have today. Every level is disclosed on the review
+instruction, in a `review_effort_resolved` event, on the round record, and in
+`storybloq session-report`.
+
+Full level table, the `off` semantics, and the `light` landing rule are in
+`autonomous-mode.md`.
 
 ## Support Files
 

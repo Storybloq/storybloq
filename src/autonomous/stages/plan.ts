@@ -5,15 +5,8 @@ import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
-import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
+import { normalizeRiskLevel } from "../review-depth.js";
 import { canAcquireTicketClaim } from "../candidate-authority.js";
-import {
-  currentStorybloqClient,
-  nativeCodexReportInstruction,
-  nativeCodexReviewCommand,
-  reviewBackendsForClient,
-  shouldUseNativeCodexReview,
-} from "./codex-native.js";
 
 /** Read a file, return empty string on error. */
 function readFileSafe(path: string): string {
@@ -231,51 +224,16 @@ export class PlanStage implements WorkflowStage {
       ...(mintedEpoch ? { claimEpoch: mintedEpoch } : {}),
     } as Partial<typeof ctx.state>);
 
-    // Produce PLAN_REVIEW instruction (advance with result for hybrid dispatch)
-    const backends = reviewBackendsForClient(ctx.state.config);
-    const existingPlanReviews = ctx.state.reviews.plan;
-    const roundNum = existingPlanReviews.length + 1;
-    const reviewer = nextReviewer(existingPlanReviews, backends);
-    const minRounds = requiredRounds(risk);
-
-    const nativeCodex = shouldUseNativeCodexReview(reviewer, ctx.state.config);
-    const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";
-    return {
-      action: "advance",
-      result: {
-        instruction: nativeCodex
-          ? [
-            `# Native Codex Plan Review - Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
-            "",
-            "Run native Codex plan review:",
-            "```bash",
-            nativeCodexReviewCommand("plan", ctx.state.sessionId),
-            "```",
-            "",
-            nativeCodexReportInstruction(ctx.state.sessionId),
-          ].join("\n")
-          : [
-            `# Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
-            "",
-            `Run a plan review using **${reviewer}**.`,
-            "",
-            bridgeCodex
-              ? `Call \`review_plan\` MCP tool with the plan content.`
-              : `Launch a code review agent to review the plan.`,
-            "",
-            "When done, call `storybloq_autonomous_guide` with:",
-            '```json',
-            `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "plan_review_round", "verdict": "<approve|revise|reject>", "findings": [...] } }`,
-            '```',
-          ].join("\n"),
-        reminders: nativeCodex
-          ? [
-            "The helper uses `codex exec --output-schema` and read-only sandboxing.",
-            "If native Codex fails, fall back to the next configured reviewer if available; otherwise use agent review and include 'codex unavailable' in notes.",
-          ]
-          : ["Report the exact verdict and findings from the reviewer."],
-        transitionedFrom: "PLAN",
-      },
-    };
+    // T-139 pattern: advance WITHOUT a precomputed result, so the walker calls
+    // the next stage's own enter(). This block used to build the PLAN_REVIEW
+    // instruction itself, which processAdvance prefers over enter() -- three
+    // things went wrong as a result. It had no lenses branch, so a
+    // lenses-configured project got the plain agent instruction on round one;
+    // it called nextReviewer without the codex-unavailable arguments, bypassing
+    // ISS-098/ISS-110; and it never wrote currentReviewStartedAt. T-461 makes
+    // it actively incorrect too: with reviewEffort off, PLAN_REVIEW is skipped
+    // and this would hand a plan-review instruction to WRITE_TESTS or
+    // IMPLEMENT. There is now one source for that text.
+    return { action: "advance" };
   }
 }

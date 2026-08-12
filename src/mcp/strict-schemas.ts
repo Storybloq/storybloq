@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { withLeanToolSchemas } from "./lean-schemas.js";
 
 /**
  * Makes every tool registration reject arguments it does not implement (ISS-892).
@@ -28,6 +29,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
  * be forgettable.
  */
 export function withStrictToolSchemas(server: McpServer): McpServer {
+  // T-460: both registration entry points run through here before their first
+  // registerTool call, which is exactly the window the tools/list wrap needs.
+  // Same argument as above: a rule enforced at one choke point is a rule that
+  // survives; one enforced at every call site is one that gets missed.
+  withLeanToolSchemas(server);
+
   const registerTool = server.registerTool.bind(server) as (
     name: string,
     config: Record<string, unknown>,

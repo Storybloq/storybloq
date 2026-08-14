@@ -15,6 +15,7 @@ describe("reference command", () => {
     expect(output).toContain("## MCP Tools");
     expect(output).toContain("## Common Workflows");
     expect(output).toContain("## Troubleshooting");
+    expect(output).toContain("## /story triage");
   });
 
   it("handleReference json format produces valid JSON", () => {

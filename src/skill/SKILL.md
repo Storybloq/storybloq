@@ -71,6 +71,7 @@ This guard overrides every no-confirmation rule elsewhere. A non-COMPACT live le
 - `/story review-lenses` -> run multi-lens review on current diff (read `review-lenses/review-lenses.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`). Note: the autonomous guide invokes lenses automatically when `reviewBackends` includes `"lenses"` -- this command is for manual/debug use.
 - `/story federation` -> set up multi-repo orchestrator (read `federation-setup.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`)
 - `/story orchestrate` -> drive the backlog as orchestrator/pen with tiered background agents (read `orchestrator-mode.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`)
+- `/story triage` -> read-only triage of the open issue backlog into a prioritized recommendations report (read `triage-mode.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`)
 - `/story bus` -> poll or coordinate with the current task-bound Storybloq Bus endpoint (read `bus-mode.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`)
 - `/story help` -> show all capabilities (read `reference.md` in the same directory as this skill file; if not found, tell user to run `storybloq setup --client all`)
 
@@ -531,4 +532,5 @@ Additional skill documentation, loaded on demand:
 - **`design/design.md`** -- Frontend design evaluation and implementation guidance, with platform references in `design/references/`
 - **`federation-setup.md`** -- Federation setup flow for multi-repo orchestrator initialization
 - **`orchestrator-mode.md`** -- Orchestrator mode: tiered multi-agent backlog drive with enrichment pass, session-model review gates, and batched ships
+- **`triage-mode.md`** -- Read-only issue triage: verify findings at HEAD, dedupe, root-cause grouping, prioritized recommendations report
 - **`review-lenses/review-lenses.md`** -- Multi-lens review orchestrator (9 specialized parallel reviewers); prompt bodies and merge semantics live in the @storybloq/lenses package

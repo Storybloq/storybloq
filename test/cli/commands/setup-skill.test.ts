@@ -970,6 +970,56 @@ describe("setup-skill", () => {
     expect(content).toContain("design/design.md");
   });
 
+  it("triage-mode.md pins the corrected data contracts and the read-only posture", async () => {
+    const content = await readFile(
+      join(PROJECT_ROOT, "src", "skill", "triage-mode.md"), "utf-8",
+    );
+    // Read-only sentinel + the one confirmed write path (snapshot before handover)
+    expect(content).toContain("mutates no issue, no ticket");
+    expect(content).toContain("the maintainer closes, files, and reprioritizes; never this workflow");
+    expect(content).toContain("`storybloq snapshot` and then `storybloq_handover_create`");
+    // Gathering contracts: validate-first branch, envelopes, exit codes, unfiltered list
+    expect(content).toContain("storybloq validate --format json");
+    expect(content).toContain("criticalErrorCount");
+    expect(content).toContain("regardless of exit code");
+    expect(content).toContain("storybloq issue list --format json");
+    expect(content).toContain("UNFILTERED");
+    expect(content).toContain("git status --porcelain");
+    // Correlation: multimap alias indexes, dedupe groups from issue objects
+    expect(content).toContain("previousDisplayIds");
+    expect(content).toContain("SET of records");
+    expect(content).toContain("compute dedupe-key groups directly from the issue objects");
+    // Evidence bars: re-verify default, ticket-scope corroboration, verified grouping
+    expect(content).toContain("Default to re-verify, NOT to already-fixed");
+    expect(content).toContain("FIX_WITH_T-xxx");
+    expect(content).toContain("VERIFIED shared mechanism");
+    // Report vocabulary axes and format extensibility
+    expect(content).toContain("Urgency and vehicle are separate axes");
+    expect(content).toContain("never replace, rename, or reorder the pinned sections");
+    // Consistency recheck + summary invariant
+    expect(content).toContain("Ledgers can change without HEAD moving");
+    expect(content).toContain("unclassified");
+    // Vocabulary spot checks
+    expect(content).toContain("ALREADY_FIXED");
+    expect(content).toContain("NEEDS_INVESTIGATION");
+    // Maintainer corrections applied while porting public PR #30: full
+    // source_ref code coverage, rot-proof integrity wording, the
+    // worktree-evidence label rule, and the item/auxiliary split.
+    expect(content).toContain("source_ref_original_mismatch");
+    expect(content).toContain("source_ref_original_unresolvable");
+    expect(content).toContain("is missing or invalid");
+    expect(content).not.toContain("(`invalid_json` / `schema_error`)");
+    expect(content).toContain("label that evidence `@ worktree`");
+    expect(content).toContain("never supports ALREADY_FIXED or CLOSE_FIXED");
+    expect(content).toContain("never dropped items and never counted in `droppedFileCount`");
+    // The report template must agree with the provenance rule: header and
+    // evidence column admit both labels, and an unborn branch reports null.
+    expect(content).toContain("@ <sha | worktree>");
+    expect(content).toContain("`@ <sha>` / `@ worktree` provenance");
+    expect(content).toContain('"head": "<sha, or null on an unborn branch>"');
+    expect(content).not.toContain("Evidence @ HEAD");
+  });
+
   // -------------------------------------------------------------------------
   // Installer copies all support files
   // -------------------------------------------------------------------------
@@ -983,6 +1033,7 @@ describe("setup-skill", () => {
     expect(tsContent).toContain('"autonomous-mode.md"');
     expect(tsContent).toContain('"reference.md"');
     expect(tsContent).toContain('"orchestrator-mode.md"');
+    expect(tsContent).toContain('"triage-mode.md"');
     expect(tsContent).toContain('"bus-mode.md"');
   });
 

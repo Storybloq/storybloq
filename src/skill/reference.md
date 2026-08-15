@@ -716,6 +716,16 @@ Requires explicit opt-in via AskUserQuestion before any agents are dispatched, a
 
 `/story` surfaces this option proactively at context load when the client is capable and the actionable backlog is orchestrate-sized, so you do not have to know the command exists; it stays a recommendation, and selecting it still routes through the explicit opt-in.
 
+## /story triage
+
+Read-only triage of the open issue backlog: verifies each finding against the pinned current HEAD (reusing the same source-reference provenance checks as `storybloq validate`), flags already-fixed and duplicate issues, groups issues that share one verified root cause, and produces a prioritized recommendations report.
+
+```
+/story triage                    # triage all open issues, report only
+```
+
+Mutates no issue and no ticket: classifications and recommendations are report vocabulary, and closing or filing stays with the maintainer. The only optional write is saving the finished report as a handover (snapshot first), offered once and performed only on explicit confirmation. The full procedure -- integrity branching, alias correlation, evidence bars, report format -- is in `triage-mode.md`.
+
 ## /story bus
 
 Poll or coordinate through the current task-bound local Bus endpoint. Peer content is advisory; confirmed review findings become canonical issues before an issue notice is sent.

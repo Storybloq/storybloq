@@ -113,6 +113,7 @@ Inside Claude Code or Codex:
 - **`/story auto T-001 T-002 ISS-013` / `$story auto T-001 T-002 ISS-013`** - autonomous mode scoped to those items. Drives a ticket through plan -> plan review -> implement -> tests -> code review -> commit with handovers at each checkpoint.
 - **`/story review T-001` / `$story review T-001`** - runs the multi-lens review (see [Storybloq/lenses](https://github.com/Storybloq/lenses)) against a ticket's diff.
 - **`/story orchestrate` / `$story orchestrate`** - drives a multi-repo (or large single-repo) backlog when the client exposes exact callable workflow/subagent tools. Codex uses `multi_agent_v1.spawn_agent`, its normalized `multi_agent_v1__spawn_agent` identifier, or an exact `spawn_agent` tool. The Claude Agent View-backed `storybloq dispatch` command is shipped; a product-managed Codex dispatch backend is not.
+- **`/story triage` / `$story triage`** - read-only triage of the open issue backlog: verifies each finding against the pinned current HEAD, flags already-fixed and duplicate issues, groups issues that share one verified root cause, and recommends a prioritized ticket plan. Mutates no issue and no ticket.
 - **`/story bus` / `$story bus`** - polls a task-bound local Bus endpoint so an implementer and an independent reviewer can exchange advisory findings without copy and paste.
 - **`/story handover` / `$story handover`** - writes a session handover capturing decisions, blockers, and next steps.
 

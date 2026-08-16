@@ -54,6 +54,28 @@ export const LimitResumeConfigSchema = z.object({
   notify: z.boolean().optional(),                        // default true
 }).optional();
 
+/**
+ * ISS-1012: per-project control of the turn-end status writer (feature-scoped,
+ * at ConfigSchema ROOT, deliberately not under recipeOverrides -- that object is
+ * a plain z.object whose undeclared keys are STRIPPED by parse, and this is not
+ * a recipe dial). Passthrough so future additive statusWriter.* settings never
+ * brick older readers (the bus/ISS-858 pattern).
+ *
+ * `stopHook: false` stops the Stop hook from doing ANY status work -- no session
+ * scan, no payload build (which itself reaps stale subprocess records), no
+ * gitignore self-heal, no write -- for nodes whose test harness treats any tree
+ * write during a battery as a failure. The guide keeps writing on its own MCP
+ * transitions, so the Mac app still gets a payload; a full kill would break the
+ * app's telemetry watcher, health dot and the iOS transcript, all of which
+ * bootstrap the session id from this file with no `.story/sessions/` fallback.
+ */
+export const StatusWriterConfigSchema = z.object({
+  enabled: z.boolean().optional(),   // reserved; the writer has no global kill today
+  stopHook: z.boolean().optional(),  // default true
+}).passthrough();
+
+export type StatusWriterConfig = z.infer<typeof StatusWriterConfigSchema>;
+
 export const ConfigSchema = z
   .object({
     version: z.number().int().min(1),
@@ -64,6 +86,7 @@ export const ConfigSchema = z
     features: FeaturesSchema,
     bus: BusConfigSchema.optional(),
     limitResume: LimitResumeConfigSchema,
+    statusWriter: StatusWriterConfigSchema.optional(),
     recipe: z.string().optional(),  // default "coding" applied in guide.ts handleStart
     // ISS-730: opt-in continuous cross-reference integrity check. When true,
     // loadProject runs a full validateProject pass and surfaces ERROR-level

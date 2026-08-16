@@ -382,6 +382,20 @@ Injects a compact-aware resume prompt. Codex setup uses the same command with `-
 
 `storybloq bus hooks enable` is a separate project opt-in. It adds endpoint metadata and pending counts to SessionStart, and permits the synchronous Stop hook to block once for each new mailbox cursor. Peer payload bytes never appear in hook output. Claude's shared hook structure is upgraded once and remains guarded by project-local policy; Codex uses `storybloq hook-status --client codex`.
 
+### Stop (live status for the Mac app)
+
+Runs `storybloq hook-status` at the end of every turn, refreshing the gitignored `.story/status.json` that the Mac app and iOS companion read for live session state.
+
+The write is content-gated: when the payload is identical to what the file already says (ignoring the observation timestamp and which writer produced it), nothing is written and the file's timestamps and inode are left alone. Idle turns therefore leave the working tree completely untouched. Genuine changes -- a workflow transition, a new MCP call, a health or lease change -- still write immediately.
+
+Projects whose test harness treats any write during a run as a failure can turn the turn-end writer off entirely:
+
+```json
+{ "statusWriter": { "stopHook": false } }
+```
+
+in `.story/config.json`. The hook then performs no status work at all: no session scan, no payload build, no gitignore self-heal, no write. Autonomous sessions keep refreshing status on their own MCP transitions, so the Mac app still shows live state while a session is running -- it just stops updating between turns of ordinary interactive work. The flag defaults to on, and any unreadable or malformed config leaves it on.
+
 ### StopFailure (usage-limit detection)
 
 Runs `storybloq session limit-stop` when a Claude Code session stops on a rate limit, recording the stop for auto-resume (see Usage-limit auto-resume above). Setup also adds a second SessionStart matcher group (`"resume"`) carrying the same `session resume-prompt` command so a manual reopen of a limit-stopped session gets limit-aware guidance. Both entries are Claude-only, reconciled on every upgrade, and removed automatically when the global kill switch is set.

@@ -12,6 +12,7 @@ import { readLastMcpCall, readOwnerHeartbeat } from "../../autonomous/liveness.j
 import { readSubprocessSummaries } from "../../autonomous/subprocess-registry.js";
 import { writeStatusFile } from "../../autonomous/status-writer.js";
 import { collectProbes, reduceHealthState } from "../../autonomous/health-model.js";
+import { isStopHookStatusWriteEnabled } from "../../core/limit-config.js";
 import {
   busRuntimeLostAdvisory,
   findEndpointForTask,
@@ -479,7 +480,12 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
     // TTY -- manual invocation (no pipe). Scan for active session same as piped path.
     if (process.stdin.isTTY) {
       const root = discoverProjectRoot();
-      if (root) {
+      // ISS-1012: the opt-out is checked BEFORE any status work, not inside
+      // writeStatus. Building the payload is itself a tree mutation --
+      // readSubprocessSummaries unlinks stale registry records -- so a check at
+      // the write would still have written to `.story/` on a node that asked
+      // this hook to touch nothing.
+      if (root && isStopHookStatusWriteEnabled(root)) {
         const session = findActiveSessionMinimal(root);
         const payload = session ? activePayload(session, root) : inactivePayload();
         writeStatus(root, payload);
@@ -520,10 +526,16 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
       process.exit(0);
     }
 
-    // Scan for active session
-    const session = findActiveSessionMinimal(root);
-    const payload = session ? activePayload(session, root) : inactivePayload();
-    writeStatus(root, payload);
+    // Scan for active session. ISS-1012: skipped entirely when this project
+    // opted out of the turn-end writer (see the TTY branch for why the check
+    // sits here rather than at the write). The hook's other duties below --
+    // limit-resume evidence, Bus advisory and delivery -- keep running; each
+    // has its own config, and a fully write-free hook needs those off too.
+    if (isStopHookStatusWriteEnabled(root)) {
+      const session = findActiveSessionMinimal(root);
+      const payload = session ? activePayload(session, root) : inactivePayload();
+      writeStatus(root, payload);
+    }
 
     // T-424: turns are evidence a limit stop cleared; also the waker respawn hook.
     const hookTaskId = typeof input!.session_id === "string" ? normalizeClientTaskId(input!.session_id) : null;

@@ -35,6 +35,19 @@ describe("T-387: mergeConfig", () => {
   });
 
   describe("deep merge nested objects", () => {
+    // ISS-1012: statusWriter is a nested root object, so it must be on the
+    // deep-merge allowlist -- otherwise two teammates touching different keys
+    // inside it conflict at the whole-object level, which is exactly what the
+    // "room to grow" shape was chosen to avoid.
+    it("field-merges statusWriter instead of conflicting on the whole object", () => {
+      const base = config({ statusWriter: { stopHook: true } });
+      const ours = config({ statusWriter: { stopHook: false } });
+      const theirs = config({ statusWriter: { stopHook: true, enabled: false } });
+      const result = mergeConfig(base, ours, theirs);
+      expect(result.clean).toBe(true);
+      expect(result.merged.statusWriter).toEqual({ stopHook: false, enabled: false });
+    });
+
     it("merges disjoint nested keys cleanly", () => {
       const base = config({ recipeOverrides: { maxTicketsPerSession: 5 } });
       const ours = config({ recipeOverrides: { maxTicketsPerSession: 5, branchStrategy: "per-ticket" } });

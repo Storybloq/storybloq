@@ -434,6 +434,9 @@ Do NOT search source code for this. The full config.json schema is shown below. 
     "roadmap": true, "reviews": true
   },
   "recipe": "string (default: coding)",
+  "statusWriter": {
+    "stopHook": "boolean (default true). false stops the turn-end Stop hook from doing ANY status work (no session scan, no payload build, no gitignore heal, no write) for projects whose test harness fails on writes during a run. Autonomous sessions still refresh status on their own MCP transitions."
+  },
   "recipeOverrides": {
     "maxTicketsPerSession": "number (0 = unlimited, default: 0)",
     "compactThreshold": "string (medium/high/critical; selects pressure limits and rotation trigger; default: high)",

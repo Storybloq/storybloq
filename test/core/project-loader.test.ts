@@ -231,6 +231,67 @@ describe("loadProject", () => {
         expect((err as ProjectLoaderError).code).toBe("validation_failed");
       }
     });
+
+    // ISS-755: these pin the CLI half of the CLI/Mac parity contract. The Swift
+    // Config model now mirrors each of these team-object constraints (see
+    // ClaudeStoryModelsTests/TeamCapabilityContractTests), so a config one client
+    // rejects cannot load in the other and be written from there.
+    describe("team-object validation (Mac parity, ISS-755)", () => {
+      const validTeam = {
+        enabled: true,
+        idAllocator: "local",
+        idAllocatorRemote: "origin",
+        protectedRef: "refs/storybloq/ids",
+        claimStalenessHours: 48,
+        mergeDriverVersion: 1,
+      };
+      const baseConfig = {
+        version: 2,
+        project: "p",
+        type: "npm",
+        language: "ts",
+        features: {
+          tickets: true, issues: true, handovers: true, roadmap: true, reviews: true,
+        },
+      };
+
+      it.each([
+        ["unknown idAllocator", { idAllocator: "magic" }],
+        ["idAllocatorRemote with a space", { idAllocatorRemote: "bad remote" }],
+        ["idAllocatorRemote starting with a dash", { idAllocatorRemote: "-origin" }],
+        // JS `$` without the `m` flag anchors at end of INPUT, not before a final
+        // line terminator (unlike Python), so the CLI regex already rejects this.
+        // Pinned because the Swift mirror uses a scalar whitelist with no anchor
+        // semantics at all, and the two must agree.
+        ["idAllocatorRemote with a trailing newline", { idAllocatorRemote: "origin\n" }],
+        ["empty protectedRef", { protectedRef: "" }],
+        ["protectedRef starting with a dash", { protectedRef: "-refs/x" }],
+        ["negative claimStalenessHours", { claimStalenessHours: -1 }],
+        ["non-integral mergeDriverVersion", { mergeDriverVersion: 1.5 }],
+      ])("rejects %s", async (_label, teamOverride) => {
+        testRoot = await createTestProject({
+          config: { ...baseConfig, team: { ...validTeam, ...teamOverride } },
+        });
+        try {
+          await loadProject(testRoot);
+          expect.fail("Should have thrown");
+        } catch (err) {
+          expect(err).toBeInstanceOf(ProjectLoaderError);
+          expect((err as ProjectLoaderError).code).toBe("validation_failed");
+        }
+      });
+
+      // Positive control: the rejections above cannot be passing by rejecting
+      // every team object.
+      it("accepts a fully populated valid team object", async () => {
+        testRoot = await createTestProject({
+          config: { ...baseConfig, team: validTeam },
+        });
+        const { state } = await loadProject(testRoot);
+        expect(state.config.team?.idAllocator).toBe("local");
+        expect(state.config.team?.claimStalenessHours).toBe(48);
+      });
+    });
   });
 
   describe("graceful degradation", () => {

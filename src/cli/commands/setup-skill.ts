@@ -14,6 +14,10 @@ import {
   LIMITSTOP_SUBCOMMAND,
   STOPFAILURE_MATCHER,
   LIMIT_SESSIONSTART_MATCHER,
+  PRESENCE_BIN_NAME,
+  PRESENCE_SUBCOMMAND,
+  PRESENCE_HOOK_TIMEOUT_SECONDS,
+  PRESENCE_HOOK_TYPES,
   STORYBLOQ_LEGACY_BASENAMES,
   formatHookCommand,
   migrateLegacyHookVariants,
@@ -29,6 +33,10 @@ export {
   PRECOMPACT_SUBCOMMAND,
   SESSIONSTART_SUBCOMMAND,
   STOP_SUBCOMMAND,
+  PRESENCE_BIN_NAME,
+  PRESENCE_SUBCOMMAND,
+  PRESENCE_HOOK_TIMEOUT_SECONDS,
+  PRESENCE_HOOK_TYPES,
   STORYBLOQ_LEGACY_BASENAMES,
   formatHookCommand,
   migrateLegacyHookVariants,
@@ -213,6 +221,41 @@ export function resolveStorybloqBin(): string | null {
 
   for (const candidate of candidatePaths()) {
     if (isExecutableFile(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the `storybloq-presence` bin (ISS-1022).
+ *
+ * Looks beside the resolved `storybloq` bin first, because npm installs both
+ * bins of the same package into the same directory, and that sibling is the
+ * one guaranteed to be the SAME version as the CLI that is registering the
+ * hook. Only then falls back to a PATH walk, which could otherwise pick up a
+ * presence bin from a different install.
+ */
+export function resolvePresenceBin(storybloqBin?: string | null): string | null {
+  const isWindows = process.platform === "win32";
+  const exts = isWindows
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
+    : [""];
+
+  const sibling = storybloqBin ?? resolveStorybloqBin();
+  if (sibling) {
+    for (const ext of exts) {
+      const candidate = join(dirname(sibling), PRESENCE_BIN_NAME + ext);
+      if (isExecutableFile(candidate)) return candidate;
+    }
+  }
+
+  const pathEnv = process.env.PATH ?? "";
+  for (const dir of pathEnv.split(pathDelimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = join(dir, PRESENCE_BIN_NAME + ext);
+      if (isExecutableFile(candidate)) return candidate;
+    }
   }
 
   return null;
@@ -443,6 +486,58 @@ export async function registerStopHook(
   const bin = binPath ?? resolveStorybloqBin() ?? "storybloq";
   const command = formatHookCommand(bin, STOP_SUBCOMMAND);
   return registerHook("Stop", { type: "command", command, async: true }, settingsPath);
+}
+
+/**
+ * Registers the five session-presence hooks (ISS-1022).
+ *
+ * All five are SYNCHRONOUS. `async: true` would hand ordering to whichever
+ * process happened to finish first, and there is nothing in a hook payload a
+ * record could use to reconstruct the true order afterwards -- so Claude Code's
+ * own event sequencing is the only sound source, and running synchronously is
+ * how it is inherited. Each carries an explicit 5s timeout because the client
+ * default is 600s, which on a per-tool-call hook is a ten-minute stall rather
+ * than a safety net.
+ *
+ * Every matcher is empty: presence must see every tool and every SessionStart
+ * source, `fork` included.
+ *
+ * Returns a per-hook-type result map, or null when the presence bin cannot be
+ * resolved (an older install, or a PATH the CLI cannot see) -- in which case
+ * nothing is registered rather than a command that would fail on every event.
+ */
+export async function registerPresenceHooks(
+  settingsPath?: string,
+  binPath?: string | null,
+): Promise<Record<string, "registered" | "exists" | "skipped"> | null> {
+  // An explicitly-passed null means the CALLER already tried to resolve and
+  // failed. Falling back to a second resolution attempt there would register a
+  // bin the caller deliberately rejected; only an omitted argument resolves.
+  const bin = binPath === undefined ? resolvePresenceBin() : binPath;
+  if (!bin) return null;
+  const command = formatHookCommand(bin, PRESENCE_SUBCOMMAND);
+  const results: Record<string, "registered" | "exists" | "skipped"> = {};
+  for (const hookType of PRESENCE_HOOK_TYPES) {
+    results[hookType] = await registerHook(
+      hookType,
+      { type: "command", command, timeout: PRESENCE_HOOK_TIMEOUT_SECONDS },
+      settingsPath,
+    );
+  }
+  return results;
+}
+
+/** Removes every presence hook registration (ISS-1022 opt-out / uninstall). */
+export async function removePresenceHooks(
+  settingsPath?: string,
+  binPath?: string | null,
+): Promise<void> {
+  const bin = binPath === undefined ? resolvePresenceBin() : binPath;
+  if (!bin) return;
+  const command = formatHookCommand(bin, PRESENCE_SUBCOMMAND);
+  for (const hookType of PRESENCE_HOOK_TYPES) {
+    await removeHook(hookType, command, settingsPath);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,6 +1210,22 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
         break;
       case "skipped":
         break;
+    }
+
+    // ISS-1022: session presence. Five synchronous hooks from the slim
+    // `storybloq-presence` bin. Silently skipped on an install that predates
+    // that bin -- registering a command that does not exist would fail on
+    // every tool call.
+    const presenceResults = await registerPresenceHooks(undefined, resolvePresenceBin(resolvedBin));
+    if (presenceResults === null) {
+      log("  Presence hooks skipped -- `storybloq-presence` binary not found (update the CLI)");
+    } else {
+      const registered = Object.values(presenceResults).filter((r) => r === "registered").length;
+      if (registered > 0) {
+        log(`  Presence hooks registered (${registered}/${PRESENCE_HOOK_TYPES.length}) -- live sessions appear in the Storybloq app`);
+      } else {
+        log("  Presence hooks already configured");
+      }
     }
 
     // T-424: limit-stop hooks honor the global kill switch (removed when disabled).

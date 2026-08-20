@@ -72,6 +72,11 @@ export const LimitResumeConfigSchema = z.object({
 export const StatusWriterConfigSchema = z.object({
   enabled: z.boolean().optional(),   // reserved; the writer has no global kill today
   stopHook: z.boolean().optional(),  // default true
+  // ISS-1022: `presence: false` stops the presence hooks writing
+  // `.story/telemetry/presence/` records for this project, and makes the Mac
+  // app suppress any that already exist so nothing is left animating. Default
+  // true; the producer fails OPEN to enabled on every uncertainty.
+  presence: z.boolean().optional(),  // default true
 }).passthrough();
 
 export type StatusWriterConfig = z.infer<typeof StatusWriterConfigSchema>;

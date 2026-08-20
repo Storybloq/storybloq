@@ -13,6 +13,7 @@ import { readSubprocessSummaries } from "../../autonomous/subprocess-registry.js
 import { writeStatusFile } from "../../autonomous/status-writer.js";
 import { collectProbes, reduceHealthState } from "../../autonomous/health-model.js";
 import { isStopHookStatusWriteEnabled } from "../../core/limit-config.js";
+import { isPresenceEnabled, removePresenceRecords } from "../../presence/handler.js";
 import {
   busRuntimeLostAdvisory,
   findEndpointForTask,
@@ -535,6 +536,16 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
       const session = findActiveSessionMinimal(root);
       const payload = session ? activePayload(session, root) : inactivePayload();
       writeStatus(root, payload);
+    }
+
+    // ISS-1022: the opt-out's cleanup half. Running it here, on the per-TURN
+    // Stop hook, rather than on the per-tool-call presence hook, is what keeps
+    // a directory scan off the hot path the opt-out exists to make cheap. When
+    // presence is enabled this costs one lstat.
+    try {
+      if (!isPresenceEnabled(root)) removePresenceRecords(root);
+    } catch {
+      // Best-effort cleanup; never fail a turn over it.
     }
 
     // T-424: turns are evidence a limit stop cleared; also the waker respawn hook.

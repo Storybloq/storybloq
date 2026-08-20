@@ -156,7 +156,11 @@ export async function initProject(
 /** Ephemeral .story/ entries that should always be gitignored. Single source of truth. */
 // channel-inbox/ carries Mac-app event payloads (including the .failed/ quarantine):
 // machine-local file IPC that must never become team-visible (ISS-754).
-export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/", "federation-cache.json", "channel-inbox/", "servers/"];
+// ISS-1022: "/telemetry/" carries a LEADING SLASH on purpose -- it pins the
+// root-level directory the presence records and heartbeat artifacts live in,
+// rather than matching any directory named `telemetry` at any depth inside a
+// project's own tracked `.story/` content.
+export const STORY_GITIGNORE_ENTRIES = ["snapshots/", "status.json", "sessions/", "federation-cache.json", "channel-inbox/", "servers/", "/telemetry/"];
 
 /**
  * Ensures a .gitignore file contains the specified entries.

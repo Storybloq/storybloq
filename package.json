@@ -32,7 +32,8 @@
     }
   },
   "bin": {
-    "storybloq": "dist/cli.js"
+    "storybloq": "dist/cli.js",
+    "storybloq-presence": "dist/presence.js"
   },
   "files": [
     "dist",

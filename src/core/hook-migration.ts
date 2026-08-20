@@ -49,6 +49,41 @@ export const STOPFAILURE_MATCHER = "rate_limit";
 export const LIMIT_SESSIONSTART_MATCHER = "resume";
 
 // ---------------------------------------------------------------------------
+// ISS-1022: session presence
+// ---------------------------------------------------------------------------
+
+/**
+ * Presence runs from its OWN binary, not a `storybloq` subcommand: the hook
+ * fires on every PreToolUse and PostToolUse, and `dist/cli.js` costs ~310ms per
+ * invocation before any hook logic runs.
+ */
+export const PRESENCE_BIN_NAME = "storybloq-presence";
+/** The entry ignores argv; the token exists so the command parses and matches like the others. */
+export const PRESENCE_SUBCOMMAND = "hook";
+
+/**
+ * Every presence hook is registered SYNCHRONOUSLY (no `async: true`), because
+ * Claude Code's own event sequencing is the only sound source of ordering
+ * available: hook payloads carry `session_id` and nothing identifying which
+ * SessionStart minted the current record, so a record cannot verify ordering
+ * for itself. Running synchronously is how that sequencing is inherited.
+ *
+ * Claude Code's DEFAULT hook timeout is 600 seconds. On a synchronous
+ * per-tool-call hook that is not a safety net, it is a ten-minute stall waiting
+ * to happen, so every presence registration carries this explicit bound.
+ */
+export const PRESENCE_HOOK_TIMEOUT_SECONDS = 5;
+
+/** Hook types the presence bin registers under. All five, all synchronous. */
+export const PRESENCE_HOOK_TYPES: readonly string[] = [
+  "SessionStart",
+  "PreToolUse",
+  "PostToolUse",
+  "Stop",
+  "SessionEnd",
+];
+
+// ---------------------------------------------------------------------------
 // Legacy-basename set (ISS-589)
 // ---------------------------------------------------------------------------
 

@@ -3833,6 +3833,10 @@ export function registerConfigCommand(yargs: Argv): Argv {
             .option("clear", {
               type: "boolean",
               describe: "Remove recipeOverrides entirely (reset to defaults)",
+            })
+            .option("deep", {
+              type: "boolean",
+              describe: "Deep-merge --json instead of shallow: objects recurse, null deletes at any depth, arrays and scalars replace",
             })),
         async (argv) => {
           const { handleConfigSetOverrides } = await import("./commands/config-update.js");
@@ -3842,7 +3846,11 @@ export function registerConfigCommand(yargs: Argv): Argv {
             const result = await handleConfigSetOverrides(
               process.cwd(),
               format,
-              { json: argv.json as string | undefined, clear: argv.clear === true },
+              {
+                json: argv.json as string | undefined,
+                clear: argv.clear === true,
+                deep: argv.deep === true,
+              },
             );
             writeOutput(result.output);
             if (result.errorCode) process.exitCode = 1;

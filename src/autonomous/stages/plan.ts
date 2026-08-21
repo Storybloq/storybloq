@@ -13,7 +13,7 @@ function readFileSafe(path: string): string {
   try { return readFileSync(path, "utf-8"); } catch { return ""; }
 }
 
-/** DJB2 hash for plan fingerprinting (ISS-035): seed 5381, base-36; same algorithm as the deferral-fingerprint hash (djb2Hash) in stages/types.ts. */
+/** DJB2 hash for plan fingerprinting (ISS-035): seed 5381, base-36. Once shared with the deferral fingerprint in stages/types.ts; that one moved to SHA-256 in T-470 because the round ceiling raised the cost of a collision there from silently skipping one distinct finding's follow-up issue to falsely satisfying the gate that says every blocker was filed. This one still only compares a plan against its own earlier self, so it is deliberately unchanged. */
 function simpleHash(content: string): string {
   let hash = 5381;
   for (let i = 0; i < content.length; i++) {

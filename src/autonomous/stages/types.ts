@@ -6,6 +6,7 @@ import {
   type ContextAdvice,
   type LensFindingDisposition,
 } from "../session-types.js";
+import { createHash } from "node:crypto";
 import { writeSessionSync, appendEvent } from "../session.js";
 import { killSidecar, writeShutdownMarker } from "../liveness.js";
 import { writeEvent, markEnded } from "../telemetry-writer.js";
@@ -181,6 +182,69 @@ export class StageContext {
   }
 
   /**
+   * The identity of one finding, for dedup and for the ceiling's park gate.
+   *
+   * A method rather than a free function so both call sites are forced through
+   * the same field list: they were two hand-written template literals that had
+   * to stay byte-identical, and only a comment said so.
+   */
+  private findingFingerprint(
+    f: { severity: string; category: string; description: string },
+    reviewKind: "plan" | "code",
+  ): string {
+    return hashFindingTuple([
+      this._state.ticket?.id ?? "",
+      reviewKind,
+      f.severity,
+      f.category,
+      f.description,
+    ]);
+  }
+
+  /**
+   * Queue findings as issues WITHOUT requiring a `deferred` disposition
+   * (T-470).
+   *
+   * `fileDeferredFindings` filters on `disposition === "deferred"`, which is
+   * right for its own callers and wrong for the round ceiling: a session that
+   * stops because blocking findings will not resolve has to file those
+   * findings AS blockers. Reaching that filter would mean rewriting a
+   * critical's disposition to get past it, and a critical rewritten into a
+   * deferral is a blocker laundered into a note.
+   *
+   * So this shares the durable queue and the drain -- fingerprints, the
+   * severity map, idempotency via `filedDeferrals` -- and skips only the
+   * disposition filter. The caller decides what is outstanding; the
+   * suggestion exemption still applies, since a suggestion is not a defect.
+   */
+  async queueFindingsAsIssues(
+    findings: readonly { severity: string; category: string; description: string }[],
+    reviewKind: "plan" | "code",
+  ): Promise<string[]> {
+    const relevant = findings.filter(f => normalizeSeverity(f.severity) !== "suggestion");
+    if (relevant.length === 0) return [];
+
+    const pending = [...(this._state.pendingDeferrals ?? [])];
+    // EVERY relevant finding's fingerprint is returned, including ones already
+    // queued or filed, because the caller uses this to say which issues belong
+    // to THIS escalation. A finding this ceiling is stopping over does not stop
+    // belonging to it because an earlier deferral happened to file it first.
+    const fingerprints: string[] = [];
+    for (const f of relevant) {
+      // The SAME fingerprint shape as fileDeferredFindings, so a finding
+      // already filed as a deferral is not filed twice under the ceiling.
+      const fp = this.findingFingerprint(f, reviewKind);
+      if (!fingerprints.includes(fp)) fingerprints.push(fp);
+      if ((this._state.filedDeferrals ?? []).some(d => d.fingerprint === fp)) continue;
+      if (pending.some(d => d.fingerprint === fp)) continue;
+      pending.push({ fingerprint: fp, severity: f.severity, category: f.category, description: f.description, reviewKind });
+    }
+
+    this.writeState({ pendingDeferrals: pending } as Partial<FullSessionState>);
+    return fingerprints;
+  }
+
+  /**
    * Drain pending deferrals -- attempt to file each as an issue.
    * Updates state with filed/remaining deferrals. Returns true if all filed.
    */
@@ -199,7 +263,34 @@ export class StageContext {
         const severity = SEVERITY_MAP[entry.severity] ?? "medium";
         const title = `[${entry.category}] ${entry.description.slice(0, 80)}`;
         const result = await handleIssueCreate(
-          { title, severity, impact: entry.description, components: ["autonomous"], relatedTickets: [], location: [] },
+          {
+            title, severity, impact: entry.description,
+            components: ["autonomous"], relatedTickets: [], location: [],
+            // T-470: the fingerprint as a DURABLE dedupe key, scoped to THIS
+            // session.
+            //
+            // `filedDeferrals` is session state, and it is written AFTER the
+            // issue is created. A stop in that window used to leave the issue
+            // in the ledger with nothing recording it, so the retry filed a
+            // second copy of the same finding. `handleIssueCreate` returns the
+            // existing issue for a matching key instead of creating another,
+            // which closes the window with the mechanism already built for it.
+            //
+            // The SESSION ID is what bounds it, and it is not decoration. The
+            // dedupe lookup scans `activeIssues`, which filters on `lifecycle`
+            // and NOT on status -- a RESOLVED issue is still there. A global
+            // key would therefore mean that a finding recurring months later,
+            // after its original issue was fixed and closed, silently resolved
+            // to that closed issue: the queue would mark it filed and a ceiling
+            // session could end with a live blocker having no open issue
+            // anywhere. Scoped, the crash-retry window this exists for is still
+            // closed (a retry is always the same session) and a later session
+            // files the recurrence as the new problem it is.
+            //
+            // Namespaced, because the key space is shared with every other
+            // caller and a bare hash could collide with one of theirs.
+            dedupeKey: `deferral:${this._state.sessionId}:${entry.fingerprint}`,
+          },
           "json",
           this.root,
         );
@@ -247,7 +338,7 @@ export class StageContext {
 
     const pending = [...(this._state.pendingDeferrals ?? [])];
     for (const f of deferred) {
-      const fp = djb2Hash(`${this._state.ticket?.id ?? ""}:${reviewKind}:${f.severity}:${f.category}:${f.description}`);
+      const fp = this.findingFingerprint(f, reviewKind);
       if ((this._state.filedDeferrals ?? []).some(d => d.fingerprint === fp)) continue;
       if (pending.some(d => d.fingerprint === fp)) continue;
       pending.push({ fingerprint: fp, severity: f.severity, category: f.category, description: f.description, reviewKind });
@@ -258,13 +349,45 @@ export class StageContext {
   }
 }
 
-/** DJB2 hash (seed 5381, base-36): the canonical deferral-fingerprint algorithm; keep it byte-for-byte in sync with the plan-fingerprint hash in stages/plan.ts. */
-function djb2Hash(content: string): string {
-  let hash = 5381;
-  for (let i = 0; i < content.length; i++) {
-    hash = ((hash << 5) + hash + content.charCodeAt(i)) & 0xffffffff;
-  }
-  return hash.toString(36);
+/**
+ * The deferral fingerprint: SHA-256 of the finding tuple, truncated to 32 hex
+ * characters (T-470).
+ *
+ * It was a 32-bit DJB2 hash. Even for its original job -- deduplicating
+ * filings within one session -- a collision was already a loss: two DISTINCT
+ * findings sharing a hash meant the second one's follow-up issue was silently
+ * skipped. It was tolerable because the cost stopped there, at one deferred
+ * finding that never became a ticket.
+ *
+ * The round ceiling raises that cost. It changed what the number decides. The park is gated on every
+ * fingerprint belonging to that escalation appearing in `filedDeferrals`, so a
+ * collision with any unrelated finding already filed in the session now makes
+ * the queue SKIP the real blocker and makes the gate agree it was filed. The
+ * session then ends, having told the user in its own report that a critical
+ * reached the ledger, with no issue anywhere. 32 bits is not enough to hang a
+ * data-integrity decision on, whatever it was enough for before.
+ *
+ * 128 bits of the digest is: a collision needs work no accident performs, and
+ * the value stays short enough to read in a state file and to carry as an issue
+ * `dedupeKey` (bounded at 512 characters).
+ *
+ * Sessions that upgrade mid-flight will not match their previously recorded
+ * fingerprints and may file one already-filed deferral a second time. That is a
+ * one-off duplicate follow-up issue in an active session, which is the cheapest
+ * failure available here and strictly cheaper than the one it removes.
+ *
+ * The plan-fingerprint hash in `stages/plan.ts` is a SEPARATE algorithm with a
+ * separate job (ISS-035) and is deliberately left alone; the comment there
+ * claiming they are the same algorithm no longer holds and says so.
+ */
+function hashFindingTuple(parts: readonly string[]): string {
+  // JSON-encoded, not colon-joined. A delimiter that can appear INSIDE a field
+  // makes distinct findings share an input: category `security:auth` with
+  // description `Token leak` produced the same string as category `security`
+  // with description `auth:Token leak`, so the second was skipped as already
+  // queued and the ceiling could park with it unfiled. No hash function fixes
+  // an ambiguous input; the encoding has to be unambiguous first.
+  return createHash("sha256").update(JSON.stringify(parts), "utf8").digest("hex").slice(0, 32);
 }
 
 // ---------------------------------------------------------------------------

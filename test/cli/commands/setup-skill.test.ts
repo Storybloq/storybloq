@@ -596,6 +596,32 @@ describe("setup-skill", () => {
     expect(autonomous).toContain("PLAN_REVIEW convergence remains separate");
   });
 
+  /**
+   * The ceiling is a behaviour change a reader has to be told about. At the
+   * EFFECTIVE cap -- the configured one, raised by the ticket-risk floor -- the
+   * session may land, but only when nothing blocking remains; blocking findings
+   * or a `reject` verdict are exactly the cases that continue past it. Three
+   * rounds later the hard ceiling stops either non-finalizing loop and ends the
+   * session. The cap
+   * paragraph above documents the landing half and would read as the whole
+   * story without this.
+   */
+  it("autonomous-mode.md documents the hard ceiling that bounds a non-converging review", async () => {
+    const autonomous = await readFile(join(PROJECT_ROOT, "src", "skill", "autonomous-mode.md"), "utf-8");
+    expect(autonomous).toContain("The hard ceiling");
+    expect(autonomous).toContain("files the outstanding findings as open issues");
+    expect(autonomous).toContain("goes to HANDOVER");
+    // `0` has to disable BOTH, or "unlimited" would not mean unlimited.
+    expect(autonomous).toContain("disables the ceiling along with the cap");
+    // BOTH triggers named. `reject` continues without landing whether or not
+    // anything is blocking, so a section describing only unresolved criticals
+    // tells a reader the ceiling cannot reach them when it can.
+    expect(autonomous).toContain("`reject` and unresolved criticals continue instead of finalizing");
+    // And the routing is not categorical: a finding asking for a replan sends
+    // the same non-finalizing round to PLAN rather than IMPLEMENT.
+    expect(autonomous).toContain("or to PLAN when a finding asks for a replan");
+  });
+
   it("SKILL.md summary actions are item-neutral because recommendations can be tickets or issues", async () => {
     const content = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
     expect(content).toContain("Work on [first recommended item ID + title]");

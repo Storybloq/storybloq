@@ -924,7 +924,21 @@ async function drainPendingDeferrals(
       const severity = SEVERITY_MAP[entry.severity] ?? "medium";
       const title = `[${entry.category}] ${entry.description.slice(0, 80)}`;
       const result = await handleIssueCreate(
-        { title, severity, impact: entry.description, components: ["autonomous"], relatedTickets: [], location: [] },
+        {
+          title, severity, impact: entry.description,
+          components: ["autonomous"], relatedTickets: [], location: [],
+          // T-470: the SAME session-scoped dedupe key as
+          // `StageContext.drainDeferrals`, and it has to be identical.
+          //
+          // This drain runs on every report BEFORE the stage does, so it is
+          // usually the one that actually files a ceiling escalation's
+          // findings. Keying only the stage's copy left the production retry
+          // path unprotected: a stop between creating an issue here and writing
+          // the state that records it filed a second copy on the next call,
+          // while the stage-level tests -- which never reach this function --
+          // stayed green.
+          dedupeKey: `deferral:${state.sessionId}:${entry.fingerprint}`,
+        },
         "json",
         root,
       );

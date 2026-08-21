@@ -168,6 +168,16 @@ Use `/story auto T-XXX` instead. A single-ticket targeted auto session is equiva
 
 At `reviewEffort: light` the cap is 4 rather than 12, and it becomes a routing point rather than a landing point: a change request AT the cap goes back to IMPLEMENT like any other, and its fix gets exactly one more review round, during which landing is permitted again. The bound is therefore 5. Without that grace round a lower cap would land unreviewed fixes as a matter of course, which is the one rule that holds at every level. Setting `maxReviewRounds` explicitly beats the dial and opts out of both the cap and the grace round.
 
+### The hard ceiling
+
+The cap above does not bound a review that keeps producing blocking findings, and it was never meant to: forced landing requires nothing blocking to be outstanding, so `reject` and unresolved criticals continue instead of finalizing at every round -- normally back to IMPLEMENT, or to PLAN when a finding asks for a replan. A reviewer that keeps finding the same class of problem therefore loops without limit.
+
+Three rounds past the effective cap, the session STOPS working on that item. It files the outstanding findings as open issues in the ledger (critical stays critical, major becomes high, minor becomes medium; suggestions are exempt) and goes to HANDOVER. When the session still owns the item's claim it also records the reason on the ticket, releases the claim, and the item returns to `open`. When the claim has moved to another session, or the item is no longer readable, nothing is written to it: the session drops it unchanged, and its current ledger state is what to check.
+
+It ends the session rather than moving to the next item because the parked item's work is still uncommitted in the working tree, and nothing re-checks the tree mid-session; ending puts it in front of the start-of-session dirty-tree guard instead of letting the next item build on top of it. An item released back to `open` can be picked again once a person has dealt with the tree.
+
+`maxReviewRounds: 0` disables the ceiling along with the cap, deliberately: a project that turned the cap off explicitly did not ask for a bound three rounds later. Rounds are counted per ticket and survive both a plan redirect and a compaction recovery, either of which clears the review history the cap's own round number is derived from. The issue-fix path and PLAN_REVIEW have no ceiling yet (ISS-1032, ISS-1031).
+
 ## Review findings and dispositions
 
 When you report a review round (`action: "report"` with `findings`), each finding

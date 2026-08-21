@@ -231,11 +231,27 @@ function buildReviewSection(state: FullSessionState): string {
   const plan = state.reviews.plan;
   const code = state.reviews.code;
 
+  // T-470: computed BEFORE the empty-review return, and appended to it too.
+  //
+  // A completed ceiling park is EXACTLY this shape: `parkCurrentTicket` clears
+  // both review arrays before the HANDOVER transition, so a session that
+  // stopped because review would not converge arrives here with nothing in
+  // either. Appending the ceiling only after this return meant the one report
+  // that most needs the explanation said "No reviews recorded" and dropped it
+  // -- the section was unreachable in the only state it was written for.
+  const ceiling = ceilingLines(state);
+
   if (plan.length === 0 && code.length === 0) {
     // T-461: an empty review section has two very different causes, and a
     // reader deciding whether a commit was reviewed needs to be told which.
     // "No reviews recorded" reads as an anomaly; a deliberate `off` is not one,
     // and saying so here is the whole point of the dial being disclosed.
+    //
+    // A ceiling escalation is a THIRD cause, and the arrays are empty because
+    // the park cleared them rather than because nothing ran.
+    if (ceiling.length > 0) {
+      return ["## Review Stats", "", "The review history was cleared when the item was released.", ...ceiling].join("\n");
+    }
     if (effectiveReviewEffort(state, "CODE_REVIEW") === "off") {
       return `## Review Stats\n\n${effortDisclosureLine(state, "CODE_REVIEW")} Reviews were skipped for this work; no review verdict exists.`;
     }
@@ -282,7 +298,124 @@ function buildReviewSection(state: FullSessionState): string {
   const totalFindings = [...plan, ...code].reduce((sum, r) => sum + r.findingCount, 0);
   lines.push("", `**Total findings:** ${totalFindings}`);
 
+  lines.push(...ceiling);
+
   return lines.join("\n");
+}
+
+/**
+ * The round-ceiling escalation, when one ended the session (T-470).
+ *
+ * It needs its own surfacing because nothing else renders it: the termination
+ * reason is generic, and `landingDecision` -- the only comparable record -- is
+ * not rendered at all. Without this, the single most consequential fact about
+ * the session ("it stopped because review would not converge, and here is what
+ * it filed") would be reachable only by reading state.json.
+ *
+ * Deliberately says what to DO next. A reader arriving at a session that
+ * stopped this way needs the item, the round, the issues, and the fact that the
+ * working tree still holds uncommitted work -- that last one is why the session
+ * ended rather than moving on, and it is not inferable from anything else here.
+ */
+function ceilingLines(state: FullSessionState): string[] {
+  const escalation = state.pendingCeilingEscalation;
+  if (!escalation) return [];
+  const counter = state.codeReviewRoundCounter;
+
+  // The ESCALATION's ticket is canonical, not the session's current one. A
+  // recovered or claim-lost session can be holding a different item by the time
+  // this renders, and attributing one item's non-convergence to another is a
+  // wrong answer rather than a vague one. The display id is borrowed only when
+  // the two agree.
+  const sameItem = !!escalation.ticketId && state.ticket?.id === escalation.ticketId;
+  const item = escalation.displayId
+    ?? (sameItem ? state.ticket?.displayId : undefined)
+    ?? escalation.ticketId
+    ?? state.ticket?.displayId
+    ?? state.ticket?.id
+    ?? "the item";
+
+  // THIS escalation's issues only. `filedDeferrals` is session-wide and also
+  // holds deferrals filed earlier for unrelated reasons; listing those under a
+  // "round ceiling" heading would attribute other work to this stop.
+  const mine = new Set(escalation.fingerprints ?? []);
+  // BOUNDED, like every other list this formatter renders. Session state is
+  // treated as untrusted here, and an unbounded id list would undercut the
+  // output-size protection the rest of the file applies.
+  const filed = boundedList(
+    (state.filedDeferrals ?? [])
+      .filter((d) => mine.has(d.fingerprint))
+      .map((d) => d.issueId)
+      .filter(Boolean)
+      .map((id) => safe(id)),
+    { noun: "issues" },
+  );
+
+  const head = [
+    "",
+    "### Round ceiling reached",
+    "",
+    `Code review stopped at round ${safe(escalation.round)} of a ceiling of ${safe(escalation.ceiling)} (cap ${safe(escalation.maxReviewRounds)} plus grace) on **${safe(item)}**, with ${escalation.unresolvedCritical} unresolved critical and ${escalation.unresolvedMajor} major finding(s) outstanding.`,
+    "",
+    // Deliberately NOT phrased as "unresolved criticals". `decideCeiling` fires
+    // on any round that would continue rather than finalize, and a `reject`
+    // verdict continues with zero criticals outstanding -- so this sentence
+    // sitting under a report that just said "0 unresolved critical" would name
+    // a cause that is not the one that fired.
+    "The cap alone does not bound this case: forced landing requires a non-blocking outcome, so unresolved criticals and reject verdicts both continue past the cap without limit. The ceiling is what ends either loop.",
+  ];
+
+  // An UNFINISHED escalation makes no lifecycle claims.
+  //
+  // Filing happens before the park, and the `completed` marker commits with the
+  // park transition -- three separate writes, not one. So an unfinished record
+  // means either the filing or the park may still be outstanding: the item may
+  // still be `inprogress`, and some findings may not have reached the ledger.
+  // Saying otherwise would send the next reader looking for issues that do not
+  // exist.
+  // Whether this stop OWNS any findings. A reject verdict trips the ceiling with
+  // none, and every sentence below that mentions filing would then be describing
+  // artifacts that do not exist.
+  //
+  // Scoped to THIS ESCALATION, and the copy says so. An empty record does not
+  // mean the round produced no issue work: `deferred` findings are deliberately
+  // not the escalation's, and the ordinary deferral path files them. So the
+  // wording is "no open findings of its own", never "nothing is owed to the
+  // ledger" -- that second claim is not this record's to make.
+  const owns = (escalation.fingerprints ?? []).length > 0 || (escalation.findings ?? []).length > 0;
+
+  if (!escalation.completed) {
+    const ledger = !owns
+      ? "This ceiling stop had no open findings of its own to file."
+      : filed.length > 0
+        ? `Some findings were filed (${filed}) and others may not have been.`
+        : "The findings may not have reached the ledger yet.";
+    return [
+      ...head,
+      "",
+      `**This stop did not finish.** ${ledger} ${safe(item)} may still be \`inprogress\`, and its work is uncommitted in the working tree. Check the ledger before starting the next session.`,
+      ...(counter && counter.ticketId === escalation.ticketId
+        ? ["", `Rounds recorded for this item: ${counter.completedRounds}.`]
+        : []),
+    ];
+  }
+
+  return [
+    ...head,
+    "",
+    filed.length > 0
+      ? `The outstanding findings were filed as issues: ${filed}.`
+      : "This ceiling stop had no open findings of its own to file.",
+    "",
+    // Deliberately does NOT assert the ticket is back to `open`. The park
+    // releases the claim and flips the status only when this session still owns
+    // the stamp; the not-ours outcome leaves the item exactly as another
+    // session left it, and that outcome is not recorded here.
+    `**The work for ${safe(item)} is still uncommitted in the working tree.** That is why the session ended here rather than moving to the next item. Its claim was released back to the backlog unless it had already moved to another session, so check its ledger state, and review the tree before starting the next session${owns ? "; the filed issues carry what review could not get resolved" : "; this ceiling stop filed nothing of its own"}.`,
+    ...(counter && counter.ticketId === escalation.ticketId
+      ? ["", `Rounds recorded for this item: ${counter.completedRounds}.`]
+      : []),
+  ];
 }
 
 function buildEventSection(events: { events: readonly EventEntry[]; malformedCount: number }): string {

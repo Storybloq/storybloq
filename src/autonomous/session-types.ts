@@ -1359,6 +1359,108 @@ export const SessionStateSchema = z.object({
     }),
     timestamp: z.string(),
   }).nullable().default(null),
+  /**
+   * T-470: completed CODE_REVIEW rounds, KEYED BY TICKET.
+   *
+   * Not derived from `reviews.code.length`, which two separate paths clear:
+   * the plan-redirect branch writes `reviews: { plan: [], code: [] }` before
+   * returning, and `RECOVERY_MAPPING.CODE_REVIEW` resets both on any recovery
+   * out of CODE_REVIEW -- and in a session heading for sixty rounds,
+   * compaction is close to certain. Either would silently reset a ceiling read
+   * off that array.
+   *
+   * The ticket id makes the reset an IDENTITY INVARIANT rather than a
+   * convention some future call site can forget: recording a round resets the
+   * count when the id differs, and reading the ceiling accepts the count only
+   * when it matches the current ticket. A legacy state without the field reads
+   * as zero.
+   */
+  codeReviewRoundCounter: z.object({
+    ticketId: z.string(),
+    completedRounds: z.number(),
+  }).nullable().default(null),
+
+  /**
+   * T-470: a ceiling escalation that has been DECIDED but not finished.
+   *
+   * Persisting the ceiling round and filing its findings is not atomic. If
+   * filing partially fails the session correctly stays in CODE_REVIEW, and
+   * resubmitting the same report would otherwise be processed as ANOTHER
+   * completed round: counter incremented again, another artifact and event,
+   * the handover retried from a different round.
+   *
+   * The findings are QUEUED FIRST and then copied into this record with their
+   * fingerprints, so a lost decision leaves the durable queue intact for the
+   * ordinary drain rather than leaving a record whose findings never reached
+   * anything.
+   *
+   * So the decision is written with the round, and any later guide call
+   * RESUMES it -- finishing the filing, then transitioning -- without
+   * re-running normal round processing. It is MARKED COMPLETED, not deleted,
+   * once the issues and the transition are both durable -- the session report
+   * renders it, and a session that ended this way has to be able to say so. Same queue-then-drain shape as
+   * `pendingDeferrals`, not a new subsystem.
+   */
+  pendingCeilingEscalation: z.object({
+    ticketId: z.string(),
+    /**
+     * The item's DISPLAY id, carried on the record.
+     *
+     * The park clears the draft ticket before the transition, so by the time
+     * the session report renders there is nowhere else to read it from -- and a
+     * report that can only say `t-ce111n9000000001` when a person is looking
+     * for `T-901` is a worse answer for no reason. Optional because a legacy
+     * record predates it and the canonical id is still a correct fallback.
+     */
+    displayId: z.string().optional(),
+    round: z.number(),
+    ceiling: z.number(),
+    maxReviewRounds: z.number(),
+    reason: z.string(),
+    unresolvedCritical: z.number(),
+    unresolvedMajor: z.number(),
+    decidedAt: z.string(),
+    /**
+     * The outstanding findings this escalation exists to file.
+     *
+     * Copied here AFTER they are queued into `pendingDeferrals`, so a resume is
+     * self-contained: the resumed call carries no findings of its own and would
+     * otherwise park the item having filed none of the blockers that stopped
+     * it. The earlier queue write is the durable copy that survives a lost
+     * decision; this one is what lets the resume proceed without it.
+     */
+    findings: z.array(z.object({
+      severity: z.string(),
+      category: z.string(),
+      description: z.string(),
+    })).default([]),
+    /**
+     * Fingerprints of the findings THIS escalation is filing.
+     *
+     * Recorded because the session report has to name the issues it produced,
+     * and `filedDeferrals` is session-wide: it also holds deferrals filed
+     * earlier for unrelated reasons. Listing all of them under a "round
+     * ceiling" heading would attribute other work to this stop. Written at
+     * queue time rather than after the drain, so a resume after a partial
+     * filing still knows which findings belong here -- the resumed call carries
+     * no findings of its own.
+     */
+    fingerprints: z.array(z.string()).default([]),
+    /**
+     * Set once the filing AND the transition are both durable.
+     *
+     * The record is not deleted at that point, because it is the only place the
+     * session STATE says why it ended this way: the termination reason is
+     * generic and `landingDecision` is never rendered. Clearing it would remove
+     * the structured reason from state entirely, leaving the formatter unable
+     * to surface the single most consequential fact about the session without
+     * reconstructing it from the ceiling event or the item's park record.
+     * `resumeCeilingEscalation` ignores a completed record, so keeping it costs
+     * nothing.
+     */
+    completed: z.boolean().default(false),
+  }).nullable().default(null),
+
   recentDeferrals: z.object({
     total: z.number(),
     critical: z.number(),

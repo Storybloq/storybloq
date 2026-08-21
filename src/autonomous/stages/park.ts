@@ -35,8 +35,14 @@ import type { FullSessionState, GuideReportInput } from "../session-types.js";
 /** The control action that parks the current item. */
 export const PARK_ACTION = "park_item";
 
-/** Stages from which an item can be declared unworkable as filed. */
-export type ParkOrigin = "PLAN" | "PLAN_REVIEW";
+/**
+ * Stages from which an item can be declared unworkable as filed.
+ *
+ * CODE_REVIEW (T-470) is the ceiling's origin and is deliberately NOT in
+ * `PARK_STAGES` below: it is never reported by an agent, only decided by the
+ * pipeline when review stops converging.
+ */
+export type ParkOrigin = "PLAN" | "PLAN_REVIEW" | "CODE_REVIEW";
 
 /**
  * The only states that handle `park_item`. Enforced centrally in
@@ -82,6 +88,32 @@ export function parkHintLines(sessionId: string, roundsSoFar: number): readonly 
     "",
     "Park only for a defect in the item itself. Ordinary review findings are addressed and re-reviewed as usual.",
   ];
+}
+
+export interface ParkOptions {
+  /**
+   * The reason, when the PIPELINE is parking rather than an agent. The ceiling
+   * has one and the report does not, since no agent asked for this park.
+   */
+  readonly reason?: string;
+  /**
+   * Where to go afterwards. PICK_TICKET advances the queue; HANDOVER ends the
+   * session.
+   *
+   * The ceiling must use HANDOVER, for two independent reasons either of which
+   * is sufficient. The WORKING TREE: at PLAN and PLAN_REVIEW nothing has been
+   * implemented, so the tree is clean and continuing is safe, but at
+   * CODE_REVIEW the tree always holds the parked item's uncommitted work
+   * (IMPLEMENT ran, FINALIZE did not) and `dirtyFileHandling` is checked only
+   * at session START, never at PICK_TICKET or IMPLEMENT -- so the next item
+   * would build its baseline, its review and its commit on top of the parked
+   * item's changes. Ending instead puts the tree in front of the EXISTING
+   * start-time guard, which is what that guard is for. The TRANSITION TABLE:
+   * `assertTransition` forbids the other route anyway, since CODE_REVIEW's row
+   * does not list PICK_TICKET but does list HANDOVER -- a park routed there
+   * would throw AFTER mutating the ticket ledger.
+   */
+  readonly target?: "PICK_TICKET" | "HANDOVER";
 }
 
 export interface ParkRecord {
@@ -133,12 +165,13 @@ export async function parkCurrentTicket(
   ctx: StageContext,
   report: GuideReportInput,
   from: ParkOrigin,
+  options: ParkOptions = {},
 ): Promise<StageAdvance> {
   const draft = ctx.state.ticket;
   const ticketId = draft?.id;
   const label = draft?.displayId ?? ticketId ?? "the current item";
 
-  const reason = (report.notes ?? "").trim();
+  const reason = (options.reason ?? report.notes ?? "").trim();
   if (!reason) {
     return {
       action: "retry",
@@ -266,7 +299,10 @@ export async function parkCurrentTicket(
   // Staged, not written, so the whole park commits atomically with the
   // transition in processAdvance (same reasoning as the ISS-759 claim-lost
   // re-pick at plan.ts:188). The goto target is validated by assertTransition,
-  // so PLAN_REVIEW's row in TRANSITIONS must list PICK_TICKET.
+  // so the origin's row in TRANSITIONS must list it: PLAN_REVIEW lists
+  // PICK_TICKET (ISS-904) and CODE_REVIEW lists HANDOVER (T-470). CODE_REVIEW
+  // does NOT list PICK_TICKET, which is the second reason the ceiling ends the
+  // session rather than advancing the queue.
   ctx.updateDraft({
     ticket: undefined,
     pendingTicketClaim: undefined,
@@ -291,9 +327,31 @@ export async function parkCurrentTicket(
         `${label} was left untouched. If the filing defect needs to persist, file it as an issue instead.`,
       ].join("\n");
 
+  const target = options.target ?? "PICK_TICKET";
+  // Built from the OUTCOME, not from the target alone. On the not-ours branch
+  // nothing was written to the item: its claim moved, it vanished, or it left
+  // `inprogress`, so it may be complete or owned by another session. Telling a
+  // handover writer it is "back in the queue" would contradict the notes
+  // directly above and send the next session after an item that is not theirs.
+  const closing = target === "HANDOVER"
+    ? [
+        parked
+          ? `${label} is back in the queue for a LATER session, not this one.`
+          : `${label} was left exactly as it is -- this session did not change it, because its claim is no longer ours. Check its current ledger state before assuming it still needs work.`,
+        "",
+        "The uncommitted changes are still in the working tree. That is why this ends the session rather than moving on: the next item would otherwise build its baseline, its review and its commit on top of them.",
+        "",
+        // "any issues filed, or that none were", not "the issues just filed":
+        // a reject verdict with no findings can trip the ceiling and legitimately
+        // file nothing, and an instruction to name artifacts that do not exist
+        // is an instruction to invent them.
+        "Write the handover now. Name the item, the round it stopped at, any issues filed (or that none were needed), and the files left dirty, so the next session reads the block instead of rediscovering it.",
+      ].join("\n")
+    : `${label} will not be offered again in this session. Pick the next item.`;
+
   return {
     action: "goto",
-    target: "PICK_TICKET",
+    target,
     result: {
       instruction: [
         parked ? `# Parked: ${label}` : `# Dropped: ${label} (claim no longer ours)`,
@@ -302,12 +360,18 @@ export async function parkCurrentTicket(
         "",
         notes,
         "",
-        `${label} will not be offered again in this session. Pick the next item.`,
+        closing,
       ].join("\n"),
-      reminders: [
-        "Do NOT re-pick the parked item.",
-        "Do NOT stop or summarize -- pick the next item immediately.",
-      ],
+      reminders: target === "HANDOVER"
+        ? [
+            "Do NOT re-pick the parked item.",
+            "Do NOT keep reviewing -- the round ceiling was reached.",
+            "Write the handover, then stop.",
+          ]
+        : [
+            "Do NOT re-pick the parked item.",
+            "Do NOT stop or summarize -- pick the next item immediately.",
+          ],
       transitionedFrom: from,
     },
   };

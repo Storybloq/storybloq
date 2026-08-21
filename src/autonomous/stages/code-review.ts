@@ -19,6 +19,149 @@ import {
   reviewDepthLine,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
+import { decideCeiling, outstandingCeilingFindings } from "./code-review-ceiling.js";
+import { parkCurrentTicket } from "./park.js";
+import type { FullSessionState } from "../session-types.js";
+
+/**
+ * Finish a ceiling escalation: file the outstanding findings, then park.
+ *
+ * Resumable, and it has to be. Persisting the round and filing the issues is
+ * not atomic, so a failure part way through leaves the session in CODE_REVIEW
+ * with `pendingCeilingEscalation` set. `resumeCeilingEscalation` re-enters
+ * HERE on the next guide call rather than letting the same report be processed
+ * as another completed round -- which would increment the counter again, write
+ * another artifact and event, and retry the handover from a different round.
+ *
+ * Findings are filed through the SAME durable queue as deferrals
+ * (`pendingDeferrals` -> `drainDeferrals`), which carries the fingerprint
+ * dedup, the critical/high/medium severity map, and -- since T-470 -- a durable
+ * dedupe key on issue creation, so a stop between creating an issue and
+ * recording it cannot file the same finding twice.
+ * What it does NOT do is go through `fileDeferredFindings`,
+ * which filters on `disposition === "deferred"`: reaching that filter would
+ * mean rewriting a critical's disposition to get past it, and laundering a
+ * blocker into a deferral is exactly what this path must not do. The queue is
+ * shared; the disposition is untouched.
+ */
+async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
+  const pending = ctx.state.pendingCeilingEscalation;
+  const label = ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? "the current item";
+
+  // Read from the RECORD, not from the incoming report. The record was written
+  // atomically with the decision, so first call and resume take the identical
+  // path -- and a resume, which arrives with no findings of its own, still
+  // files exactly what stopped the item rather than parking it having filed
+  // nothing.
+  const outstanding = pending?.findings ?? [];
+
+  // Re-queued on a resume, idempotently: `queueFindingsAsIssues` skips anything
+  // already queued or filed, so this costs nothing on the normal path and
+  // rebuilds the queue if the write that created it was the one that was lost.
+  const fingerprints = await ctx.queueFindingsAsIssues(outstanding, "code");
+  if (pending && fingerprints.length > 0) {
+    // WRITTEN, not staged. A draft is discarded when this returns `retry`,
+    // and the whole point of recording these is that a failure part way
+    // through leaves a record knowing which findings are this escalation's.
+    const merged = Array.from(new Set([...(pending.fingerprints ?? []), ...fingerprints]));
+    if (merged.length !== (pending.fingerprints ?? []).length) {
+      ctx.writeState({
+        pendingCeilingEscalation: { ...pending, fingerprints: merged },
+      } as Partial<FullSessionState>);
+    }
+  }
+
+  await ctx.drainDeferrals();
+
+  // Gated on THIS escalation's findings, not on the whole queue.
+  //
+  // `drainDeferrals` reports success only when every pending entry filed, and
+  // that queue is session-wide. One unrelated older deferral whose creation
+  // keeps failing would otherwise hold the session in CODE_REVIEW forever --
+  // re-reviewing nothing, having already filed every finding this ceiling
+  // exists to file. Unrelated entries stay queued for the ordinary retry path.
+  const filed = new Set((ctx.state.filedDeferrals ?? []).map((d) => d.fingerprint));
+  const mine = ctx.state.pendingCeilingEscalation?.fingerprints ?? pending?.fingerprints ?? [];
+  const drained = mine.every((fp) => filed.has(fp));
+  if (!drained) {
+    // Deliberately NOT a transition. The escalation record survives, so the
+    // next call resumes here instead of reprocessing the round.
+    return {
+      action: "retry",
+      instruction: [
+        `# Filing the outstanding findings for ${label} did not complete`,
+        "",
+        "The round ceiling was reached and the session is ending, but some findings could not be written as issues yet.",
+        "",
+        "Re-report the same review. The round will NOT be counted again -- the escalation is already recorded and this only finishes the filing.",
+      ].join("\n"),
+    };
+  }
+
+  const round = pending?.round ?? 0;
+  const ceiling = pending?.ceiling ?? 0;
+  const reason = pending?.reason
+    ?? `Code review reached its hard ceiling of ${ceiling} rounds without reaching a landable verdict.`;
+
+  const advance = await parkCurrentTicket(
+    ctx,
+    { notes: reason } as GuideReportInput,
+    "CODE_REVIEW",
+    { reason, target: "HANDOVER" },
+  );
+
+  // Marked completed only once the filing AND the transition are both settled.
+  // A park that returned `retry` (the write-failed branch) leaves the record
+  // unfinished so the next call resumes rather than restarting.
+  if (advance.action === "goto") {
+    // Re-read rather than reusing `pending`: the fingerprints were written to
+    // the draft above, and the captured copy predates them.
+    const current = ctx.state.pendingCeilingEscalation ?? pending;
+    // Marked done rather than deleted: the record is what the session report
+    // renders, and a session that ended this way must say so.
+    ctx.updateDraft({
+      pendingCeilingEscalation: current ? { ...current, completed: true } : null,
+    } as Partial<FullSessionState>);
+    ctx.appendEvent("code_review_ceiling", {
+      ticketId: pending?.ticketId ?? ctx.state.ticket?.id,
+      round,
+      ceiling,
+      maxReviewRounds: pending?.maxReviewRounds,
+      unresolvedCritical: pending?.unresolvedCritical,
+      filedFindings: outstanding.length,
+    });
+  }
+  return advance;
+}
+
+/**
+ * Resume an escalation left unfinished by an earlier call.
+ *
+ * Returns null when there is nothing to resume, so the normal round path runs.
+ * Called at the TOP of `report`, before anything reads the incoming payload as
+ * a new round.
+ */
+export async function resumeCeilingEscalation(ctx: StageContext): Promise<StageAdvance | null> {
+  const pending = ctx.state.pendingCeilingEscalation;
+  if (!pending || pending.completed) return null;
+  // EXACT match, and an absent ticket is a non-match rather than a pass.
+  //
+  // An escalation is ticket-only. Guarding on "both ids exist AND differ" let
+  // the record through whenever the session held an ISSUE or held nothing:
+  // filing could then complete, but `parkCurrentTicket` returns `retry` with no
+  // ticket to park, so every later CODE_REVIEW report resumed the same
+  // escalation and the current item could never progress.
+  //
+  // The record is KEPT rather than deleted. Its findings were durably queued
+  // into `pendingDeferrals` BEFORE the escalation record was created -- that is
+  // what the ordering below buys -- so the ordinary drain can still file them.
+  // Deleting would discard the one explanation of why that earlier item
+  // stopped, which is what the session report renders. Failing closed would
+  // deadlock the current item over a record belonging to an item that is no
+  // longer here.
+  if (ctx.state.ticket?.id !== pending.ticketId) return null;
+  return await escalateCeiling(ctx);
+}
 
 /**
  * CODE_REVIEW stage -- independent reviewer evaluates the implementation.
@@ -170,6 +313,14 @@ export class CodeReviewStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // T-470: FIRST, before anything reads this payload as a new round. An
+    // escalation left unfinished by an earlier call is resumed rather than
+    // restarted -- otherwise resubmitting the same review would be counted as
+    // another completed round, with another artifact, another event, and the
+    // handover retried from a different number.
+    const resumed = await resumeCeilingEscalation(ctx);
+    if (resumed) return resumed;
+
     if (report.completedAction === "skip_ticket") {
       const ticketId = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
       const ticketLabel = ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? ctx.state.currentIssue?.displayId ?? ctx.state.currentIssue?.id ?? "unknown";
@@ -365,10 +516,37 @@ export class CodeReviewStage implements WorkflowStage {
     // T-208: Issue-fix context
     const isIssueFix = !!ctx.state.currentIssue;
 
-    // CODE_REVIEW -> PLAN: full reset with verdict artifact
-    if (nextAction === "PLAN") {
+    // T-470: the hard ceiling. Decided HERE, before the plan-redirect branch,
+    // because that branch is an early return with its own writeState and would
+    // otherwise leave with `reviews.code` cleared and the ceiling unevaluated.
+    const ceilingDecision = decideCeiling({
+      state: ctx.state,
+      stages: ctx.recipe.stages,
+      risk,
+      nextAction,
+      isIssueFix,
+    });
+
+    // CODE_REVIEW -> PLAN: full reset with verdict artifact.
+    //
+    // Gated on the ceiling, so a ceiling-triggering redirect falls through to
+    // the normal round-persistence path below instead of leaving from here.
+    // Two things depend on that. The round has to be PERSISTED like any other
+    // -- counter, artifact, event and the escalation record written in one
+    // update -- and this branch returns before all of it. And this branch
+    // discards `lensReviewHistory` and `realizedRisk`, which is right for a
+    // replan and wrong for a session that is about to end: the park clears the
+    // review arrays itself (the item is being released), but the lens history
+    // is what the handover has left to say WHY sixty rounds went nowhere.
+    if (nextAction === "PLAN" && !ceilingDecision.shouldPark) {
       clearCache(ctx.dir);
       ctx.writeState({
+        // The counter advances HERE too. It is the only durable record of a
+        // completed round, and this branch clears the array `roundNum` is
+        // derived from -- so without this line a reviewer that keeps
+        // recommending PLAN would loop forever at a count that never moved,
+        // which is the same unbounded shape the ceiling exists to close.
+        ...(ceilingDecision.counter ? { codeReviewRoundCounter: ceilingDecision.counter } : {}),
         reviews: { plan: [], code: [] },
         lensReviewHistory: [],
         ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk: undefined } : ctx.state.ticket,
@@ -414,7 +592,82 @@ export class CodeReviewStage implements WorkflowStage {
       lastReviewVerdict: tier1Verdict,
       currentReviewStartedAt: null,
     };
+    // T-470: the ticket-keyed counter, persisted with the round it counts.
+    if (ceilingDecision.counter) stateUpdate.codeReviewRoundCounter = ceilingDecision.counter;
     if (landingDecision) stateUpdate.landingDecision = landingDecision;
+    if (ceilingDecision.shouldPark) {
+      // Written in the SAME update as the round, so a failure between the two
+      // cannot leave a round recorded with no decision attached -- which is
+      // what would let the next report be processed as another round.
+      // QUEUED FIRST, before the decision is written.
+      //
+      // The two writes are not atomic either way, so the question is only which
+      // order fails safe. Decision-then-queue could leave a record whose
+      // findings were never queued: if the ticket then changed, the resume
+      // guard above correctly declines it, and a later ceiling would overwrite
+      // the singleton record -- taking the only remaining copy of those
+      // findings with it. Queue-then-decision fails the other way: the findings
+      // are durable and the ordinary drain files them, and the lost decision
+      // just means the next report is an ordinary round.
+      const outstanding = outstandingCeilingFindings(findings);
+
+      // The DEFERRED findings of this same round, queued here rather than
+      // being left to the ordinary call further down.
+      //
+      // That call sits AFTER the decision write, and a resume enters
+      // `escalateCeiling` at the top of `report` and parks without processing
+      // the report at all -- so a stop in that window used to drop this round's
+      // deferred findings entirely. They were safe only while the allow-list
+      // was a deny-list and the escalation happened to carry them; making the
+      // filter correct is what opened the window, so it is closed here. The
+      // call below stays and no-ops on these: both paths skip anything already
+      // queued or filed, and they compute the same fingerprint.
+      await ctx.fileDeferredFindings(findings, "code");
+
+      const escalationFingerprints = await ctx.queueFindingsAsIssues(outstanding, "code");
+
+      stateUpdate.pendingCeilingEscalation = {
+        ticketId: ctx.state.ticket?.id ?? "",
+        // Captured NOW, while the ticket is still on the state. The park clears
+        // it before the transition, so the report has nowhere else to read it.
+        ...(ctx.state.ticket?.displayId ? { displayId: ctx.state.ticket.displayId } : {}),
+        // The DURABLE count, not `roundNum`. `roundNum` is
+        // `reviews.code.length + 1`, and that array is cleared by the
+        // plan-redirect branch and by recovery -- so a ceiling reached on the
+        // fifteenth round could be reported as "round 1 of a ceiling of 7",
+        // which reads as a bug in the ceiling rather than as what stopped the
+        // session.
+        round: ceilingDecision.counter?.completedRounds ?? roundNum,
+        ceiling: ceilingDecision.ceiling,
+        maxReviewRounds,
+        // Covers BOTH triggers. The ceiling fires on any round that would
+        // continue rather than finalize, and a `reject` verdict continues with
+        // zero blocking findings -- so "with blocking findings still
+        // outstanding" would be written onto the ticket's park record, and read
+        // back out of the ledger later, as a fact that was not true.
+        reason: `Code review reached its hard ceiling of ${ceilingDecision.ceiling} rounds without reaching a landable verdict.`,
+        unresolvedCritical: unresolvedCriticalCount,
+        // The SAME rule as the criticals beside it, not the raw `majorCount`.
+        // That count includes majors already addressed and majors explicitly
+        // deferred, so a report headed "still outstanding" was naming findings
+        // that were fixed or consciously set aside -- which is the opposite of
+        // what a reader arriving at a stopped session needs from that number.
+        unresolvedMajor: findings.filter(
+          (f) => f.severity === "major" &&
+            f.disposition !== "addressed" && f.disposition !== "deferred",
+        ).length,
+        decidedAt: new Date().toISOString(),
+        // Written WITH the decision. The resumed call arrives with no findings
+        // of its own, so without these it would park the item having filed none
+        // of the blockers that stopped it.
+        findings: outstanding,
+        fingerprints: escalationFingerprints,
+      };
+      // A terminal report must never show a forced-landing decision AND a
+      // ceiling escalation: they say opposite things about why the item
+      // stopped. The common path does not otherwise clear this.
+      stateUpdate.landingDecision = null;
+    }
     if (reviewerBackend === "lenses" && findings.length > 0) {
       const updated = buildLensHistoryUpdate(
         findings,
@@ -450,6 +703,12 @@ export class CodeReviewStage implements WorkflowStage {
       : [];
 
     await ctx.fileDeferredFindings([...findings, ...forcedDeferredFindings], "code");
+
+    // T-470: the ceiling fires from the SAME site as every other transition,
+    // after the round has been persisted exactly like any other round.
+    if (ceilingDecision.shouldPark) {
+      return await escalateCeiling(ctx);
+    }
 
     if (nextAction === "IMPLEMENT") {
       // T-208: Issue fixes route back to ISSUE_FIX instead of IMPLEMENT

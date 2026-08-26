@@ -18,7 +18,6 @@ import { realpathSync, existsSync } from "node:fs";
 import { resolve, join, isAbsolute } from "node:path";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { serverRegistryBinder } from "../autonomous/mcp-binding.js";
 
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
@@ -308,6 +307,17 @@ async function main(): Promise<void> {
   // licenses this process to stamp its pid on sessions at all.
   bindServerRegistry(root);
 
+  // Imported dynamically, not at module scope: the SDK's stdio.js imports
+  // node:process, and Node's ESM builtin facade eagerly reads every export at
+  // link time -- including the stdin getter, which constructs the TTY. Because
+  // tsup bundles with splitting: false, a static import here gets hoisted to a
+  // top-level import in dist/cli.js, defeating cli/index.ts's lazy --mcp guard
+  // and making EVERY CLI invocation acquire stdin before argv parsing. On a
+  // wedged pty that open() hangs uninterruptibly (ISS-1043). The dynamic form
+  // survives bundling because esbuild preserves dynamic imports of externals.
+  const { StdioServerTransport } = await import(
+    "@modelcontextprotocol/sdk/server/stdio.js"
+  );
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

@@ -495,11 +495,22 @@ describe("cancel deadlock (ISS-904)", () => {
 });
 
 describe("planGateNonApprovals lifecycle (ISS-904)", () => {
-  async function reviewRound(sessionId: string, verdict: string) {
+  // ISS-598/ISS-1031, Gate-1 ratified ordering: a "revise" verdict with NO
+  // unresolved critical/major findings lands at IMPLEMENT once roundNum >=
+  // minRounds (here minRounds=1 for a "low" risk ticket, so this fires on
+  // round 1). These tests exercise the "keeps NOT landing" lifecycle, which
+  // now requires an actual unresolved blocking finding each round -- a bare
+  // "revise" with nothing to cite is exactly the clean-landing case this
+  // ticket restored, not a case that stays open.
+  const UNRESOLVED_MAJOR = [
+    { severity: "major", category: "design", description: "Missing rollback path", disposition: "open" },
+  ];
+
+  async function reviewRound(sessionId: string, verdict: string, findings: unknown[] = UNRESOLVED_MAJOR) {
     return handleAutonomousGuide(root, {
       action: "report",
       sessionId,
-      report: { completedAction: "plan_review_round", verdict, reviewer: "agent" },
+      report: { completedAction: "plan_review_round", verdict, reviewer: "agent", findings },
     });
   }
 
@@ -521,7 +532,7 @@ describe("planGateNonApprovals lifecycle (ISS-904)", () => {
     expect(textOf(r3)).toContain("3 review rounds without approval");
 
     // Approval clears it, so the next ticket does not inherit this one's history.
-    await reviewRound(session.sessionId, "approve");
+    await reviewRound(session.sessionId, "approve", []);
     expect(readState(root, session.sessionId).planGateNonApprovals).toBe(0);
   });
 
@@ -541,6 +552,35 @@ describe("planGateNonApprovals lifecycle (ISS-904)", () => {
     });
 
     expect(readState(root, session.sessionId).planGateNonApprovals).toBe(0);
+  });
+
+  /**
+   * ISS-598/ISS-1031, Gate-1 ratified plan (:156-159): "Revise + zero
+   * unresolved critical/major + roundNum>=minRounds lands at IMPLEMENT" --
+   * the exact clean-landing case the pre-fix ordering made permanently dead
+   * code. Ticket risk is "low" (seedHoldingSession), so minRounds=1 and this
+   * fires on the very first round.
+   */
+  it("a revise verdict with no unresolved critical/major lands at IMPLEMENT once past minRounds", async () => {
+    const { session } = seedHoldingSession(root);
+    const result = await reviewRound(session.sessionId, "revise", []);
+    expect(textOf(result)).not.toContain("park_item");
+    expect(readState(root, session.sessionId).planGateNonApprovals).toBe(0);
+    expect(readState(root, session.sessionId).state).toBe("IMPLEMENT");
+  });
+
+  /**
+   * Counterpart: an unresolved MAJOR finding still blocks landing no matter
+   * how many rounds have run. There is a findings-tolerant landing path, but
+   * never a majors-tolerant one.
+   */
+  it("a revise verdict with an unresolved major finding does NOT land, at any round count", async () => {
+    const { session } = seedHoldingSession(root);
+    await reviewRound(session.sessionId, "revise");
+    await reviewRound(session.sessionId, "revise");
+    const r3 = await reviewRound(session.sessionId, "revise");
+    expect(textOf(r3)).not.toContain('"action":"goto"');
+    expect(readState(root, session.sessionId).state).toBe("PLAN_REVIEW");
   });
 });
 

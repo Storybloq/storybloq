@@ -1,14 +1,29 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { releaseSessionClaim } from "../../core/claims.js";
 import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import { buildLensHistoryUpdate } from "./types.js";
-import type { GuideReportInput } from "../session-types.js";
+import type { GuideReportInput, FullSessionState } from "../session-types.js";
 import { PARK_ACTION, parkCurrentTicket, parkHintLines } from "./park.js";
 import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
 import { effectiveReviewEffort, effortDisclosureLine, effortMinRounds } from "../review-effort.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
+import { decidePlanCeiling } from "./plan-review-ceiling.js";
+import { outstandingCeilingFindings } from "./code-review-ceiling.js";
+import {
+  buildRound1Baseline,
+  hashPlanContent,
+  foldIntroducedFraction,
+  driftTriggered,
+  firstDriftTriggerRound,
+  DRIFT_FRACTION_THRESHOLD,
+  DRIFT_CONSECUTIVE_ROUNDS,
+  type DriftFinding,
+  type DriftRoundEntry,
+} from "./plan-review-drift.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -18,12 +33,134 @@ import {
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 
+/** Read a file, return empty string on error. Mirrors plan.ts's own helper. */
+function readFileSafe(path: string): string {
+  try { return readFileSync(path, "utf-8"); } catch { return ""; }
+}
+
+/**
+ * Finish a plan-review ceiling park: file the outstanding findings, then park.
+ *
+ * ISS-598/ISS-1031, mirroring `code-review.ts`'s `escalateCeiling` /
+ * `resumeCeilingEscalation` byte-for-byte. Resumable, and it has to be:
+ * persisting the round and filing its findings is not atomic, so a failure
+ * part way through leaves the session in PLAN_REVIEW with
+ * `pendingPlanCeilingEscalation` set. `resumePlanCeilingEscalation` re-enters
+ * HERE on the next guide call rather than letting the same report be
+ * processed as another completed round.
+ *
+ * Unlike CODE_REVIEW's ceiling, this always parks to PICK_TICKET, never
+ * HANDOVER (ISS-1031's distinct point): nothing is implemented yet at
+ * PLAN_REVIEW, so the working tree is clean and the session can advance to
+ * the next item instead of ending.
+ */
+async function escalatePlanCeiling(ctx: StageContext): Promise<StageAdvance> {
+  const pending = ctx.state.pendingPlanCeilingEscalation;
+  const label = ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? "the current item";
+
+  const outstanding = pending?.findings ?? [];
+
+  const fingerprints = await ctx.queueFindingsAsIssues(outstanding, "plan");
+  if (pending && fingerprints.length > 0) {
+    const merged = Array.from(new Set([...(pending.fingerprints ?? []), ...fingerprints]));
+    if (merged.length !== (pending.fingerprints ?? []).length) {
+      ctx.writeState({
+        pendingPlanCeilingEscalation: { ...pending, fingerprints: merged },
+      } as Partial<FullSessionState>);
+    }
+  }
+
+  await ctx.drainDeferrals();
+
+  const filed = new Set((ctx.state.filedDeferrals ?? []).map((d) => d.fingerprint));
+  const mine = ctx.state.pendingPlanCeilingEscalation?.fingerprints ?? pending?.fingerprints ?? [];
+  const drained = mine.every((fp) => filed.has(fp));
+  if (!drained) {
+    return {
+      action: "retry",
+      instruction: [
+        `# Filing the outstanding findings for ${label} did not complete`,
+        "",
+        "The plan-review ceiling was reached and this item is being parked, but some findings could not be written as issues yet.",
+        "",
+        "Re-report the same review. The round will NOT be counted again -- the escalation is already recorded and this only finishes the filing.",
+      ].join("\n"),
+    };
+  }
+
+  const round = pending?.round ?? 0;
+  const ceiling = pending?.ceiling ?? 0;
+  const reason = pending?.reason
+    ?? `Plan review reached its hard ceiling of ${ceiling} rounds without an approvable plan.`;
+
+  const advance = await parkCurrentTicket(
+    ctx,
+    { notes: reason } as GuideReportInput,
+    "PLAN_REVIEW",
+    { reason, target: "PICK_TICKET" },
+  );
+
+  // Marked completed only once the filing AND the transition are both
+  // settled, via ctx.updateDraft (a staged draft mutation committed by
+  // processAdvance together with the transition itself) rather than
+  // ctx.writeState, which would commit prematurely before the transition.
+  if (advance.action === "goto") {
+    const current = ctx.state.pendingPlanCeilingEscalation ?? pending;
+    ctx.updateDraft({
+      pendingPlanCeilingEscalation: current ? { ...current, completed: true } : null,
+    } as Partial<FullSessionState>);
+    ctx.appendEvent("plan_review_ceiling", {
+      ticketId: pending?.ticketId ?? ctx.state.ticket?.id,
+      round,
+      ceiling,
+      trigger: pending?.trigger,
+      unresolvedCritical: pending?.unresolvedCritical,
+      driftWouldHaveFiredAtRound: pending?.driftWouldHaveFiredAtRound,
+      filedFindings: outstanding.length,
+    });
+  }
+  return advance;
+}
+
+/**
+ * Resume an escalation left unfinished by an earlier call.
+ *
+ * Returns null when there is nothing to resume, so the normal round path
+ * runs. Called at the TOP of `report`, before anything reads the incoming
+ * payload as a new round.
+ */
+async function resumePlanCeilingEscalation(ctx: StageContext): Promise<StageAdvance | null> {
+  const pending = ctx.state.pendingPlanCeilingEscalation;
+  if (!pending || pending.completed) return null;
+  if (ctx.state.ticket?.id !== pending.ticketId) return null;
+  return await escalatePlanCeiling(ctx);
+}
+
 /**
  * PLAN_REVIEW stage -- independent reviewer evaluates the plan.
  *
  * enter(): Instruction to run plan review with specified backend.
- * report(): Process verdict → advance (IMPLEMENT), retry (next round),
+ * report(): Process verdict -> advance (IMPLEMENT), retry (next round),
  *           or back (PLAN for revise/reject).
+ *
+ * ISS-598/ISS-1031, Gate-1 ratified: the landing check runs BEFORE
+ * `isRevise`, so a "revise" verdict lands at IMPLEMENT once findings are
+ * clean of unresolved critical/major AND `roundNum >= minRounds` -- there IS
+ * a findings-tolerant landing path, just no MAJORS-tolerant one (unlike
+ * CODE_REVIEW's `forcedLanding`, unresolved critical/major still never
+ * lands, at any round count). Before this fix, `isRevise` claimed every
+ * non-approve, non-reject verdict unconditionally ahead of that check, which
+ * made the landing ternary's `roundNum >= 5` branch permanently DEAD CODE --
+ * unreachable, because `isRevise` already consumed the verdict before it
+ * could run -- so a genuinely converging review (clean findings, past
+ * minRounds, but reviewed as "revise" rather than "approve") could never
+ * land and a non-converging loop had no real ceiling either. Both halves of
+ * that are fixed here: the reordering restores the clean-landing path, and a
+ * separate, unconditionally-computed mechanism (plan-review-ceiling.ts)
+ * bounds whatever continues past it -- it can only ever convert a would-be
+ * CONTINUATION into a PARK, never alter a genuine landing. The clean-landing
+ * path is what makes a FIXED ceiling tolerable at all: without it, a slow
+ * but healthy review parks its findings at the ceiling instead of shipping.
  */
 export class PlanReviewStage implements WorkflowStage {
   readonly id = "PLAN_REVIEW";
@@ -51,6 +188,58 @@ export class PlanReviewStage implements WorkflowStage {
 
     if (!ctx.state.currentReviewStartedAt) {
       ctx.writeState({ currentReviewStartedAt: new Date().toISOString() });
+    }
+
+    // ISS-598: capture the round-1 plan-text vocabulary once per PLAN
+    // generation, for the advisory scope-drift signal computed in report().
+    // Gated on `existingReviews.length === 0` -- a ticket can legitimately
+    // re-enter PLAN_REVIEW's round 1 more than once (CODE_REVIEW can redirect
+    // a finding back to PLAN, which clears `reviews.plan` and rewrites
+    // plan.md). A ticket already mid-PLAN_REVIEW when this ships
+    // (existingReviews.length > 0) never gets a baseline -- drift telemetry
+    // simply never appears for it; the round ceiling still bounds it.
+    //
+    // `ticketId` equality ALONE cannot tell "this round-1 entry resumed after
+    // compaction, same plan.md" (must not touch the baseline) apart from "a
+    // genuine re-plan for the same ticket" (must recapture) -- both leave
+    // `reviews.plan` empty (codex round 2, state lifecycle). `planHash`, a
+    // digest of the full plan.md text, is the actual generation identity:
+    // unchanged content is the same generation and is skipped entirely, so a
+    // resumed session re-entering round 1 cannot overwrite the baseline a
+    // report() call already measured findings against.
+    const ticket = ctx.state.ticket;
+    if (existingReviews.length === 0 && ticket) {
+      // Reads the whole file before buildRound1Baseline truncates it (codex
+      // round 1, MINOR/perf). Deliberately not bounded to a byte prefix:
+      // plan.md is self-authored KB-scale text, and a partial-byte read risks
+      // splitting a multi-byte UTF-8 sequence mid-character -- a real
+      // correctness cost for a gain against an input shape that doesn't occur.
+      const planText = readFileSafe(join(ctx.dir, "plan.md"));
+      const planHash = hashPlanContent(planText);
+      const existingBaseline = ctx.state.planReviewBaseline;
+      const sameGeneration = existingBaseline?.ticketId === ticket.id && existingBaseline?.planHash === planHash;
+      if (!sameGeneration) {
+        if (planText.trim().length > 0) {
+          const { tokens, truncated } = buildRound1Baseline(planText);
+          // A plan with no extractable identifier-shaped vocabulary is not
+          // evidence of anything -- storing it as an empty-but-active baseline
+          // would classify every later signal-bearing finding as "introduced"
+          // with no real basis, manufacturing a maximum-strength drift hint
+          // from two ordinary review rounds. The drift gate below already
+          // treats a missing baseline as "disabled for this ticket", so a
+          // NEW generation with no vocabulary explicitly clears any baseline
+          // left over from a PRIOR generation (codex round 2: an unreadable
+          // or zero-vocabulary re-plan must not leave a stale baseline from
+          // before the re-plan active for this new one).
+          if (tokens.length > 0) {
+            ctx.writeState({ planReviewBaseline: { ticketId: ticket.id, planHash, tokens: [...tokens], truncated } });
+          } else if (existingBaseline) {
+            ctx.writeState({ planReviewBaseline: null });
+          }
+        } else if (existingBaseline) {
+          ctx.writeState({ planReviewBaseline: null });
+        }
+      }
     }
 
     // Lenses backend: multi-lens parallel plan review
@@ -138,6 +327,12 @@ export class PlanReviewStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // ISS-598/ISS-1031: FIRST, before anything reads this payload as a new
+    // round. An escalation left unfinished by an earlier call is resumed
+    // rather than restarted -- mirrors code-review.ts's placement exactly.
+    const resumed = await resumePlanCeilingEscalation(ctx);
+    if (resumed) return resumed;
+
     // ISS-904: the plan gate's escape when the FILING, not the plan, is the
     // defect. Unlike skip_ticket below it advances the queue instead of ending
     // the session, so a repeatedly-rejected item never needs a faked approve.
@@ -298,22 +493,72 @@ export class PlanReviewStage implements WorkflowStage {
       tier1Verdict = buildTier1Verdict(recovered);
     }
 
-    // ISS-035: explicit verdict routing
-    const isRevise = verdict === "revise" || verdict === "request_changes";
+    // ISS-598/ISS-1031, Gate-1 ratified ordering: the landing check runs
+    // BEFORE isRevise, restoring the clean-landing path ISS-048's ordering
+    // had made permanently dead code. Under the OLD ordering, `isRevise`
+    // claimed every non-approve, non-reject verdict first, so a revise with
+    // zero unresolved critical/major findings at or past `minRounds` could
+    // never land -- the `roundNum >= 5` branch that used to sit inside the
+    // landing check literally could not run. That is the SAME defect shape
+    // this ticket exists to remove elsewhere (an unconditional path that
+    // starves a real mechanism), so shipping it here too was wrong: this
+    // ordering is what makes the fixed 8-round ceiling tolerable at all,
+    // since a genuinely converging review (ISS-155-shaped: slow, but clean
+    // and past minRounds) now lands instead of parking a healthy result.
+    //
+    // Unresolved critical/major still never lands, at any round count --
+    // there is no majors-tolerant tier, only a findings-clean one.
     const isReject = verdict === "reject";
+    const isRevise = verdict === "revise" || verdict === "request_changes";
 
     let nextAction: "PLAN" | "IMPLEMENT" | "PLAN_REVIEW";
     if (isReject) {
       nextAction = "PLAN";
-    } else if (isRevise) {
-      // ISS-048: Revise stays in PLAN_REVIEW -- agent already fixed inline, just re-review
-      nextAction = "PLAN_REVIEW";
     } else if (verdict === "approve" || (!hasCriticalOrMajor && roundNum >= minRounds)) {
       nextAction = "IMPLEMENT";
-    } else if (roundNum >= 5) {
-      nextAction = "IMPLEMENT";
-    } else {
+    } else if (isRevise) {
       nextAction = "PLAN_REVIEW";
+    } else {
+      // Unreachable given the 3 verdict values; kept for type totality.
+      nextAction = "PLAN_REVIEW";
+    }
+
+    // ISS-598/ISS-1031: the ceiling is decided HERE, unconditionally, before
+    // any early return -- mirrors code-review.ts's decideCeiling placement.
+    // `nextAction !== "IMPLEMENT"` lets it fire on BOTH an ordinary
+    // PLAN_REVIEW continuation AND a reject-routed PLAN continuation, closing
+    // the ISS-904 blind spot where a reject/replan loop was invisible to any
+    // `reviews.plan`-derived counter (that array is cleared on every reject).
+    const ticketId = ctx.state.ticket?.id;
+    const ceilingDecision = decidePlanCeiling({
+      ticketId,
+      priorCounter: ctx.state.planReviewRoundCounter,
+      nextAction,
+    });
+
+    // ISS-598: advisory scope-drift signal (plan-review-drift.ts). Computed
+    // only for a revise round that is not already landing; never itself
+    // changes `nextAction`. Disabled entirely for a ticket with no baseline
+    // (a session resumed mid-flight from before this shipped) or a truncated
+    // one (never run the heuristic against known-incomplete data).
+    let driftFraction: number | null = null;
+    let driftHistoryForTicket: { ticketId: string; rounds: DriftRoundEntry[] } | null = null;
+    let driftJustTriggered = false;
+    if (isRevise && nextAction === "PLAN_REVIEW" && ticketId) {
+      const baseline = ctx.state.planReviewBaseline;
+      if (baseline && baseline.ticketId === ticketId && !baseline.truncated) {
+        const driftFindings: DriftFinding[] = findings.map((f) => ({
+          file: typeof (f as Record<string, unknown>).file === "string" ? (f as Record<string, unknown>).file as string : undefined,
+          description: f.description,
+        }));
+        driftFraction = foldIntroducedFraction(driftFindings, new Set(baseline.tokens));
+        const priorRounds = ctx.state.planReviewDriftHistory?.ticketId === ticketId
+          ? ctx.state.planReviewDriftHistory.rounds
+          : [];
+        const rounds = driftFraction === null ? priorRounds : [...priorRounds, { round: roundNum, fraction: driftFraction }];
+        driftHistoryForTicket = { ticketId, rounds };
+        driftJustTriggered = driftFraction !== null && driftTriggered(rounds);
+      }
     }
 
     // reject: clear plan review history. revise: preserve history.
@@ -335,6 +580,51 @@ export class PlanReviewStage implements WorkflowStage {
       currentReviewStartedAt: null,
       planGateNonApprovals: nonApprovals,
     };
+    if (ceilingDecision.counter) stateUpdate.planReviewRoundCounter = ceilingDecision.counter;
+    if (driftHistoryForTicket) stateUpdate.planReviewDriftHistory = driftHistoryForTicket;
+    if (isReject) {
+      // A reject means the plan is rewritten from scratch; comparing the new
+      // plan's findings against the OLD plan's vocabulary would manufacture
+      // false drift signals on a plan converging normally post-rewrite.
+      // `planReviewRoundCounter` above is the OPPOSITE: it does NOT reset on
+      // reject, because it bounds total plan-gate effort for the ticket, not
+      // one plan draft.
+      stateUpdate.planReviewBaseline = null;
+      stateUpdate.planReviewDriftHistory = null;
+    }
+
+    // ISS-598/ISS-1031: the round ceiling firing. Findings are filed BEFORE
+    // `pendingPlanCeilingEscalation` is added to the state update, mirroring
+    // code-review.ts's escalateCeiling/report() ordering -- a crash before the
+    // state write must still leave both filing paths durably queued.
+    if (ceilingDecision.shouldPark) {
+      await ctx.fileDeferredFindings(findings, "plan");
+      const outstanding = outstandingCeilingFindings(findings);
+      const escalationFingerprints = await ctx.queueFindingsAsIssues(outstanding, "plan");
+      const driftHistoryForFirstCheck = driftHistoryForTicket
+        ?? (ctx.state.planReviewDriftHistory?.ticketId === ticketId ? ctx.state.planReviewDriftHistory : null);
+      const firstDrift = driftHistoryForFirstCheck ? firstDriftTriggerRound(driftHistoryForFirstCheck.rounds) : null;
+      stateUpdate.pendingPlanCeilingEscalation = {
+        ticketId: ticketId ?? "",
+        ...(ctx.state.ticket?.displayId ? { displayId: ctx.state.ticket.displayId } : {}),
+        round: ceilingDecision.counter?.completedRounds ?? roundNum,
+        ceiling: ceilingDecision.ceiling,
+        trigger: "round-ceiling" as const,
+        reason: `Plan review reached its hard ceiling of ${ceilingDecision.ceiling} rounds without an approvable plan.`,
+        unresolvedCritical: unresolvedCriticalCount,
+        unresolvedMajor: findings.filter(
+          (f) => f.severity === "major" && f.disposition !== "addressed" && f.disposition !== "deferred",
+        ).length,
+        // Gate-1 ratification condition (b): even though drift itself never
+        // routes to park while advisory, a ceiling park must not silently
+        // hide a drift signal that was present the whole time.
+        ...(firstDrift != null ? { driftWouldHaveFiredAtRound: firstDrift } : {}),
+        decidedAt: new Date().toISOString(),
+        findings: outstanding,
+        fingerprints: escalationFingerprints,
+      };
+    }
+
     if (reviewerBackend === "lenses" && findings.length > 0) {
       const updated = buildLensHistoryUpdate(
         findings,
@@ -355,45 +645,37 @@ export class PlanReviewStage implements WorkflowStage {
       effort: roundEffort,
     });
 
-    // ISS-037: file deferred findings
+    // Gate-1 ratification condition (b): full data for an offline
+    // promote-to-automatic decision, regardless of whether this round's
+    // trigger changed anything.
+    if (driftFraction !== null) {
+      ctx.appendEvent("plan_review_drift", {
+        ticketId,
+        round: roundNum,
+        fraction: driftFraction,
+        triggered: driftJustTriggered,
+        policy: "advisory",
+        action: driftJustTriggered ? "hint" : "recorded",
+      });
+    }
+
+    // ISS-037: file deferred findings. Idempotent re-run for the escalating
+    // path (already filed above); the only filing call on the non-escalating
+    // path.
     await ctx.fileDeferredFindings(findings, "plan");
+
+    // ISS-598/ISS-1031: the ceiling fires from the SAME site as every other
+    // transition, after the round has been persisted exactly like any other
+    // round.
+    if (ceilingDecision.shouldPark) {
+      return await escalatePlanCeiling(ctx);
+    }
 
     if (nextAction === "PLAN") {
       return {
         action: "back",
         target: "PLAN",
         reason: "reject",
-      };
-    }
-
-    // ISS-048: Revise stays in PLAN_REVIEW -- retry with findings summary
-    if (isRevise) {
-      const findingSummary = findings.length > 0
-        ? findings.slice(0, 5).map((f) => `- [${f.severity}] ${f.description}`).join("\n")
-        : "Address the reviewer's concerns.";
-      return {
-        action: "retry",
-        instruction: [
-          `# Plan Review -- Round ${roundNum} requested changes`,
-          "",
-          [
-            effortDisclosureLine(ctx.state, "PLAN_REVIEW"),
-            // planReviews already carries this round, so this names the
-            // reviewer of the round the agent is being sent to run.
-            reviewDepthLine(
-              effectiveReviewEffort(ctx.state, "PLAN_REVIEW"),
-              "plan",
-              nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince),
-              ctx.state.config,
-            ),
-          ].filter(Boolean).join(" "),
-          "",
-          "Update the plan to address these findings, then call me with completedAction: \"plan_review_round\" and the new review verdict.",
-          "",
-          findingSummary,
-          ...parkHintLines(ctx.state.sessionId, nonApprovals),
-        ].join("\n"),
-        reminders: ["Update the plan file, then re-review. Do NOT rewrite from scratch."],
       };
     }
 
@@ -411,7 +693,7 @@ export class PlanReviewStage implements WorkflowStage {
             instruction: [
               "# Plan Review Complete",
               "",
-              `Plan for **${ctx.state.ticket?.id}** has been approved after ${roundNum} review round(s).`,
+              `Plan for **${ctx.state.ticket?.id}** is ready to implement after ${roundNum} review round(s).`,
               "",
               "Session ending -- plan mode is complete.",
             ].join("\n"),
@@ -423,16 +705,38 @@ export class PlanReviewStage implements WorkflowStage {
       return { action: "advance" };
     }
 
-    // Stay in PLAN_REVIEW -- next round
+    // nextAction === "PLAN_REVIEW": an ordinary continuation, always via
+    // isRevise given the ternary above (approve/reject are fully handled,
+    // and the general clean-landing check already claimed anything that
+    // would land). Stay in PLAN_REVIEW -- next round.
+    const findingSummary = findings.length > 0
+      ? findings.slice(0, 5).map((f) => `- [${f.severity}] ${f.description}`).join("\n")
+      : "Address the reviewer's concerns.";
+    const driftHintLines: string[] = (() => {
+      if (!driftJustTriggered || !driftHistoryForTicket) return [];
+      const recent = driftHistoryForTicket.rounds.slice(-DRIFT_CONSECUTIVE_ROUNDS);
+      const named = recent.map((r) => `round ${r.round}: ${r.fraction.toFixed(2)}`).join(", ");
+      return [
+        "",
+        "---",
+        "",
+        `**Scope-drift signal (advisory).** The last ${DRIFT_CONSECUTIVE_ROUNDS} consecutive rounds each had a fold-introduced-finding fraction at or above ${DRIFT_FRACTION_THRESHOLD} (${named}) -- at least half of each round's findings were classified by this heuristic as citing subjects absent from the plan when review began. A real incident showed this exact pattern manufacturing unrequested, increasingly dangerous scope under review pressure. Consider whether the plan has drifted from the ticket's actual scope. If so, PARK this item now instead of continuing to revise:`,
+        "```json",
+        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "${PARK_ACTION}", "notes": "<the drifted scope, specifically>" } }`,
+        "```",
+        "Or escalate to your operator before proceeding further.",
+      ];
+    })();
     const nextReviewerName = nextReviewer(planReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     return {
       action: "retry",
       instruction: [
-        `# Plan Review -- Round ${roundNum + 1}`,
+        `# Plan Review -- Round ${roundNum} requested changes`,
         "",
-        // A retry instruction is returned verbatim; enter() never runs for it.
         [
           effortDisclosureLine(ctx.state, "PLAN_REVIEW"),
+          // planReviews already carries this round, so this names the
+          // reviewer of the round the agent is being sent to run.
           reviewDepthLine(
             effectiveReviewEffort(ctx.state, "PLAN_REVIEW"),
             "plan",
@@ -441,14 +745,13 @@ export class PlanReviewStage implements WorkflowStage {
           ),
         ].filter(Boolean).join(" "),
         "",
-        hasCriticalOrMajor
-          ? `Round ${roundNum} found ${findings.filter((f) => f.severity === "critical" || f.severity === "major").length} critical/major finding(s). Address them, then re-review with **${nextReviewerName}**.`
-          : `Round ${roundNum} complete. Run round ${roundNum + 1} with **${nextReviewerName}**.`,
+        "Update the plan to address these findings, then call me with completedAction: \"plan_review_round\" and the new review verdict.",
         "",
-        "Report verdict and findings as before.",
+        findingSummary,
+        ...driftHintLines,
         ...parkHintLines(ctx.state.sessionId, nonApprovals),
       ].join("\n"),
-      reminders: ["Address findings before re-reviewing."],
+      reminders: ["Update the plan file, then re-review. Do NOT rewrite from scratch."],
     };
   }
 }

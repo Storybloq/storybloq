@@ -1461,6 +1461,108 @@ export const SessionStateSchema = z.object({
     completed: z.boolean().default(false),
   }).nullable().default(null),
 
+  /**
+   * ISS-598/ISS-1031: the ticket-scoped PLAN_REVIEW round counter.
+   *
+   * Advances on EVERY completed PLAN_REVIEW round, including one routed back
+   * to PLAN by a reject. `reviews.plan` is cleared on every reject, so a
+   * round number derived from it restarts at 1 -- this counter is what makes
+   * a reject/replan loop, not just a revise/revise loop, bounded by
+   * `planReviewHardCeiling`. Identity-scoped by ticketId, same invariant as
+   * `codeReviewRoundCounter`: a counter belonging to another ticket is not a
+   * smaller count, it is no count.
+   */
+  planReviewRoundCounter: z.object({
+    ticketId: z.string(),
+    completedRounds: z.number().int().nonnegative(),
+  }).nullable().default(null),
+
+  /**
+   * ISS-598/ISS-1031: a plan-review ceiling park that has been DECIDED but
+   * not finished, mirroring `pendingCeilingEscalation`'s crash-safety shape.
+   * `trigger` records which mechanism fired -- only "round-ceiling" is
+   * currently reachable as an automatic park; "scope-drift" is reserved for
+   * when the drift signal (currently advisory-only) is promoted to an
+   * automatic trigger.
+   */
+  pendingPlanCeilingEscalation: z.object({
+    ticketId: z.string(),
+    displayId: z.string().optional(),
+    round: z.number().int().nonnegative(),
+    ceiling: z.number().int().nonnegative(),
+    trigger: z.enum(["round-ceiling", "scope-drift"]),
+    reason: z.string(),
+    unresolvedCritical: z.number().int().nonnegative(),
+    unresolvedMajor: z.number().int().nonnegative(),
+    /** Present only when `trigger === "scope-drift"` (not yet reachable). */
+    driftFraction: z.number().min(0).max(1).optional(),
+    /**
+     * Whether the advisory drift signal would independently have fired for
+     * this same round, and at which round, even though drift itself never
+     * routes to park while it is advisory-only. Recorded so a round-ceiling
+     * park does not silently hide a drift signal that was present the whole
+     * time -- Gate-1 ratification condition (b).
+     */
+    driftWouldHaveFiredAtRound: z.number().int().nonnegative().optional(),
+    decidedAt: z.string(),
+    findings: z.array(z.object({
+      severity: z.string(),
+      category: z.string(),
+      description: z.string(),
+    })).default([]),
+    fingerprints: z.array(z.string()).default([]),
+    completed: z.boolean().default(false),
+  }).nullable().default(null),
+
+  /**
+   * ISS-598: the round-1 plan-text vocabulary for the CURRENT ticket, used by
+   * the scope-drift detector (plan-review-drift.ts) to tell whether a later
+   * finding's subject existed when review began. Captured once, at
+   * PLAN_REVIEW's first `enter()` for a ticket (re-captured on a later re-plan
+   * cycle for the same ticket, since a CODE_REVIEW redirect back to PLAN
+   * rewrites plan.md and resets `reviews.plan` to empty). `truncated` means
+   * extraction hit the scan-length or token cap while building this baseline
+   * -- when true, drift is disabled entirely for this ticket rather than run
+   * against known-incomplete data.
+   *
+   * `tokens` are SHA-256 digests (`hashToken` in plan-review-drift.ts), never
+   * raw plan-text substrings: plan.md is arbitrary project content and can
+   * legitimately contain secret-shaped values, which the identifier-shaped
+   * extraction cannot distinguish from ordinary vocabulary. Hashing prevents
+   * casual disclosure of a pasted secret through the session ledger; it does
+   * not make every digest irreversible, since a short, low-entropy token can
+   * still be recovered from its digest by dictionary or brute-force guessing.
+   *
+   * `planHash` is a SHA-256 digest of the FULL plan.md text at capture time
+   * (codex round 2, ISS-598): the generation identity this baseline belongs
+   * to. `ticketId` alone cannot distinguish "the same round-1 entry resumed
+   * after compaction" (same plan, must not recapture) from "a genuine re-plan
+   * for the same ticket" (different plan, must recapture) -- both leave
+   * `reviews.plan` empty. Comparing `planHash` against the current plan.md's
+   * digest resolves it: unchanged content skips the write entirely, and
+   * changed content replaces (or explicitly clears) the baseline.
+   */
+  planReviewBaseline: z.object({
+    ticketId: z.string(),
+    planHash: z.string().regex(/^[a-f0-9]{64}$/),
+    tokens: z.array(z.string().regex(/^[a-f0-9]{32}$/)).max(500),
+    truncated: z.boolean(),
+  }).nullable().default(null),
+
+  /**
+   * ISS-598: per-round fold-introduced-fraction history for the CURRENT
+   * ticket. A round with no signal-bearing findings contributes NO entry at
+   * all (not a zero), so `driftTriggered`'s adjacency check cannot be bridged
+   * by a silently-omitted round.
+   */
+  planReviewDriftHistory: z.object({
+    ticketId: z.string(),
+    rounds: z.array(z.object({
+      round: z.number().int().nonnegative(),
+      fraction: z.number().min(0).max(1),
+    })),
+  }).nullable().default(null),
+
   recentDeferrals: z.object({
     total: z.number(),
     critical: z.number(),

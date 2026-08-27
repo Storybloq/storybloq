@@ -9,7 +9,7 @@ import type { Finding, GuideReportInput, ReviewVerdict } from "../../autonomous/
 export type CodexReviewKind = "plan" | "code";
 export type CodexReviewFormat = "guide-report";
 
-interface CodexFinding {
+export interface CodexFinding {
   readonly severity: "critical" | "major" | "minor" | "suggestion" | "nitpick";
   readonly category?: string;
   readonly description?: string;
@@ -242,14 +242,14 @@ async function runCodexExec(
   });
 }
 
-function normalizeFinding(finding: CodexFinding, index: number): Finding {
+export function normalizeFinding(finding: CodexFinding, index: number): Finding {
   const severity = finding.severity === "nitpick" ? "suggestion" : finding.severity;
   const location = finding.file
     ? `${finding.file}${finding.line ? `:${finding.line}` : ""}: `
     : "";
   const suggestion = finding.suggestion ? ` Suggestion: ${finding.suggestion}` : "";
   const description = finding.description ?? finding.issue ?? "Codex review finding";
-  return {
+  const result: Finding & { file?: string } = {
     id: `codex-${index + 1}`,
     severity,
     category: finding.category ?? "review",
@@ -257,6 +257,17 @@ function normalizeFinding(finding: CodexFinding, index: number): Finding {
     disposition: "open",
     recommendedNextState: finding.recommendedNextState,
   };
+  // ISS-598 codex round 2: `Finding` deliberately has no `file` property (see
+  // tools.ts's report.findings schema comment), but this normalizer used to
+  // fold the path into `description` and drop it entirely -- the ONE place a
+  // native codex review's file citation existed. plan-review.ts's drift
+  // detector reads `file` defensively off the raw object, so attaching it
+  // here (never removing the folded-in text, which every other consumer
+  // still reads) is what lets the detector's basename-only tokenization
+  // engage on this path at all instead of only ever seeing the full path
+  // embedded in prose.
+  if (finding.file) result.file = finding.file;
+  return result;
 }
 
 export async function handleCodexReview(options: CodexReviewOptions): Promise<GuideReportInput> {

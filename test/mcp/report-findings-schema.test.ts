@@ -97,6 +97,39 @@ describe("autonomous_guide report.findings schema (ISS-717)", () => {
       parseReport([{ severity: "major", category: "x", description: "y", disposition: "bogus" }]),
     ).toThrow();
   });
+
+  /**
+   * ISS-598: a 4th instance of the recurring MCP-schema-stripping pattern
+   * (ISS-717, ISS-724, ISS-988) -- `file` is read defensively off the raw
+   * finding by plan-review.ts, which builds the `DriftFinding` the PLAN_REVIEW
+   * scope-drift classifier (plan-review-drift.ts) actually runs against, but
+   * `file` was never declared on the schema, so a reviewer that cited a file
+   * would have it silently dropped before either ever saw it.
+   */
+  it("accepts a file field on a finding, for the scope-drift detector", () => {
+    const parsed = parseReport([
+      { severity: "major", category: "design", description: "unbounded chain", file: "src/nav/reducer.ts" },
+    ], "revise");
+    expect(parsed.report.findings[0].file).toBe("src/nav/reducer.ts");
+  });
+
+  it("omits file rather than defaulting it, so a reviewer that cites none leaves the detector to fall back on description text alone", () => {
+    const parsed = parseReport([
+      { severity: "major", category: "design", description: "unbounded chain" },
+    ], "revise");
+    expect(parsed.report.findings[0].file).toBeUndefined();
+  });
+
+  it("accepts exactly the 1024-character boundary and rejects one character past it", () => {
+    const boundary = "a".repeat(1024);
+    const ok = parseReport([
+      { severity: "major", category: "design", description: "x", file: boundary },
+    ], "revise");
+    expect(ok.report.findings[0].file).toBe(boundary);
+    expect(() => parseReport([
+      { severity: "major", category: "design", description: "x", file: "a".repeat(1025) },
+    ], "revise")).toThrow();
+  });
 });
 
 describe("lens fidelity through the report boundary (ISS-724)", () => {

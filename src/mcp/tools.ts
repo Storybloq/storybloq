@@ -1303,6 +1303,17 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           severity: z.string(),
           category: z.string(),
           description: z.string(),
+          // ISS-598: subject file for the PLAN_REVIEW scope-drift detector.
+          // Deliberately NOT added to the canonical `Finding` interface in
+          // session-types.ts, following the existing precedent for `lens`
+          // below: an MCP-only observability field read defensively via a
+          // Record<string, unknown> cast at its single consumer
+          // (plan-review.ts, which builds the DriftFinding passed to
+          // plan-review-drift.ts), rather than widening a type every other
+          // Finding consumer also uses. Optional: reviewers that cannot cite
+          // a file simply omit it and the detector falls back to description
+          // text alone.
+          file: z.string().max(1024).optional(),
           // ISS-724: declare the synthesized finding's lens identifier so it
           // survives the report boundary. Without it zod strips the field (the
           // object has no .passthrough()), so buildLensHistoryUpdate sees no

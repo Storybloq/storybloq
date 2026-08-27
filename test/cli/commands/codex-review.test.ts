@@ -71,4 +71,35 @@ describe("codex-review helpers", () => {
     expect(JSON.stringify(schemaForKind("code"))).toContain('"request_changes"');
     expect(JSON.stringify(schemaForKind("code"))).not.toContain('"revise"');
   });
+
+  /**
+   * ISS-598 codex round 2 (API integration): this normalizer used to fold
+   * `file`/`line` into `description` and drop `file` entirely -- the ONE
+   * place a native codex review's file citation existed, since `Finding` (the
+   * canonical interface) has no `file` property. plan-review.ts's scope-drift
+   * detector reads `file` defensively off the raw finding object, so without
+   * this the detector's basename-only tokenization could never engage on the
+   * native-codex review path at all.
+   */
+  it("attaches the raw file path to the normalized finding, without removing it from the folded description", async () => {
+    const { normalizeFinding } = await import("../../../src/cli/commands/codex-review.js");
+    const finding = normalizeFinding(
+      { severity: "major", category: "correctness", description: "Off-by-one", file: "src/nav/reducer.ts", line: 42 },
+      0,
+    ) as { file?: string; description: string };
+
+    expect(finding.file).toBe("src/nav/reducer.ts");
+    expect(finding.description).toContain("src/nav/reducer.ts:42:");
+    expect(finding.description).toContain("Off-by-one");
+  });
+
+  it("omits file entirely when codex cited none, rather than defaulting it to an empty string", async () => {
+    const { normalizeFinding } = await import("../../../src/cli/commands/codex-review.js");
+    const finding = normalizeFinding(
+      { severity: "minor", category: "style", description: "Rename this" },
+      0,
+    ) as { file?: string };
+
+    expect(finding.file).toBeUndefined();
+  });
 });

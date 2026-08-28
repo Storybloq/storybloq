@@ -9,6 +9,7 @@ import {
   TicketIdSchema,
   ConflictEntrySchema,
   EarmarkSchema,
+  RulingIdSchema,
 } from "./types.js";
 
 const SOURCE_HASH_PATTERN = /^[a-f0-9]{64}$/i;
@@ -117,6 +118,8 @@ export const IssueSchema = z
     // holder against) -- validate's staleness check treats every `assigned`
     // issue earmark as stale-eligible past threshold for exactly this reason.
     earmark: EarmarkSchema.nullable().optional(),
+    // T-476: rulings this issue cites -- see TicketSchema's citesRulings.
+    citesRulings: z.array(RulingIdSchema).optional(),
   })
   .passthrough();
 

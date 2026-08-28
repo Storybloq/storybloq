@@ -10,6 +10,7 @@ import {
   ClaimSchema,
   EarmarkSchema,
   CROCKFORD_CLASS,
+  RulingIdSchema,
 } from "./types.js";
 
 // ISS-703: canonical-ID char class derived from the single CROCKFORD_CLASS source.
@@ -51,6 +52,10 @@ export const TicketSchema = z
     // and from assignedTo (legacy free-text attribution) -- neither reads nor
     // writes either of those fields.
     earmark: EarmarkSchema.nullable().optional(),
+    // T-476: rulings this ticket cites. Read integration resolves each id to
+    // its CURRENT state at render time (src/core/ruling.ts) -- this array
+    // never stores the ruling's text or a superseded/stale flag itself.
+    citesRulings: z.array(RulingIdSchema).optional(),
   })
   .passthrough();
 

@@ -6,6 +6,7 @@ import {
   TicketRefSchema,
   IssueRefSchema,
   CLIENT_TASK_ID_PATTERN,
+  RulingIdSchema,
 } from "./types.js";
 
 export const ARRANGEMENT_LIFECYCLE = ["active", "suspended", "closed"] as const;
@@ -87,6 +88,8 @@ export const ArrangementSchema = z
       .optional(),
     reviewBounds: ArrangementBoundsSchema.optional(),
     unreachability: ArrangementUnreachabilitySchema,
+    // T-476: rulings this arrangement cites -- see TicketSchema's citesRulings.
+    citesRulings: z.array(RulingIdSchema).optional(),
     createdDate: DateSchema,
     updatedAt: TimestampSchema,
     createdBy: z.string().nullable().optional(),

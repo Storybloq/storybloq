@@ -498,7 +498,7 @@ export const COMMANDS: readonly CommandEntry[] = [
 ];
 
 export const MCP_TOOLS: readonly McpToolEntry[] = [
-  { name: "storybloq_status", description: "Project summary: phase statuses, ticket/issue counts, blockers. Markdown is the default; JSON includes full active/resumable session ownership and lease metadata.", params: ["format?"] },
+  { name: "storybloq_status", description: "Project summary: phase statuses, ticket/issue counts, blockers. Markdown is the default; JSON includes full active/resumable session ownership and lease metadata. clientTaskId (T-477) also enriches this session's own arrangementPresence/ownerIdentity onto its presence record as a side effect; omit to inherit the environment identity, same as storybloq_session_guard.", params: ["format?", "clientTaskId?"] },
   { name: "storybloq_phase_list", description: "All phases with derived status" },
   { name: "storybloq_phase_current", description: "First non-complete phase" },
   { name: "storybloq_phase_tickets", description: "Leaf tickets for a specific phase", params: ["phaseId"] },
@@ -545,6 +545,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_review_lenses_judge", description: "Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent)", params: ["reviewVerdict", "convergenceHistory?"] },
   { name: "storybloq_autonomous_guide", description: "Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE", params: ["sessionId?", "action", "mode?", "ticketId?", "clientTaskId?", "takeover?", "reviewEffort?"] },
   { name: "storybloq_session_guard", description: "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode", params: ["clientTaskId?"] },
+  { name: "storybloq_session_milestone", description: "Report a self-described work milestone (implementing/gate-hold/blocked-external/reviewing) onto this session's own presence record, for duet/arrangement visibility. Self-reported, never a computed verdict. gateName is required when kind is gate-hold. On lock contention or write failure, returns an explicit machine-readable retryable error rather than a false success.", params: ["kind", "gateName?", "note?", "clientTaskId?"] },
   { name: "storybloq_session_report", description: "Structured analysis of an autonomous session (works even if project state is corrupted)", params: ["sessionId"] },
   { name: "storybloq_register_subprocess", description: "Register a running subprocess so monitors can tell slow builds from hung agents", params: ["pid", "cmd", "category?", "sessionId?"] },
   { name: "storybloq_unregister_subprocess", description: "Unregister a subprocess after it completes (idempotent)", params: ["pid", "sessionId?"] },

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import * as outputFormatter from "../../src/core/output-formatter.js";
 import {
   successEnvelope,
   errorEnvelope,
@@ -26,6 +27,7 @@ import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase } from "./test
 import type { NextTicketOutcome, NextTicketsOutcome } from "../../src/core/queries.js";
 import type { RecommendResult } from "../../src/core/recommend.js";
 import type { ValidationResult, ValidationFinding } from "../../src/core/validation.js";
+import type { Ruling } from "../../src/models/ruling.js";
 
 describe("envelopes", () => {
   it("successEnvelope wraps data with version 1", () => {
@@ -1198,5 +1200,77 @@ describe("formatStatus positional compatibility (ISS-943, Codex round 4)", () =>
     expect(parsed.data.limitStops).toEqual(limitStops);
     expect(parsed.data.sessionDiagnostics).toEqual(diagnostics);
     expect(parsed.data.bus).toEqual(bus);
+  });
+});
+
+/**
+ * T-476 binding ruling, closed structurally per the pen's round-3 acceptor's
+ * ruling: the anti-laundering caveat was found missing three separate times
+ * across three separate review rounds (formatRuling's JSON chainStatus-less
+ * branch, formatRulingList, and the create/supersede result JSON) -- three
+ * per-surface fixes losing to surface growth. This test enumerates every
+ * exported `formatRuling*` function BY REFLECTION (not a hand-maintained
+ * list a new formatter could silently skip) and asserts that any output
+ * surface displaying `attribution`/`recordedBy` also carries the caveat --
+ * mirroring array-options.e2e.test.ts's coverage-matrix pattern, so a new
+ * formatter without a matching ADAPTERS entry fails the coverage test below
+ * before it can ever ship without the caveat.
+ */
+describe("T-476 binding ruling: every attribution-displaying ruling formatter output carries the anti-laundering caveat (round-3 self-audit)", () => {
+  const sampleRuling: Ruling = {
+    id: "r-0000000000000abc",
+    text: "Sample ruling text for the self-audit fixture.",
+    attribution: "owner-direct",
+    recordedBy: { client: "claude", id: "self-audit-session" },
+    date: "2026-08-28",
+    scopeTags: [],
+    supersedes: null,
+  };
+
+  interface FormatterOutput {
+    readonly label: string;
+    readonly output: string;
+    /** Whether THIS specific output surface displays attribution/recordedBy at all. */
+    readonly showsAttribution: boolean;
+  }
+
+  const ADAPTERS: Record<string, () => FormatterOutput[]> = {
+    formatRuling: () => [
+      { label: "md", output: outputFormatter.formatRuling(sampleRuling, "md"), showsAttribution: true },
+      { label: "json", output: outputFormatter.formatRuling(sampleRuling, "json"), showsAttribution: true },
+    ],
+    formatRulingList: () => [
+      { label: "md", output: outputFormatter.formatRulingList([sampleRuling], "md"), showsAttribution: true },
+      { label: "json", output: outputFormatter.formatRulingList([sampleRuling], "json"), showsAttribution: true },
+    ],
+    formatRulingCreateResult: () => [
+      // The markdown branch is a terse confirmation ("Created ruling X.")
+      // that never displays attribution/recordedBy at all -- the caveat
+      // guards against a shown claim being mistaken for a verified one, so
+      // it has nothing to guard here. The JSON branch spreads the full
+      // ruling (including attribution) and DOES need it.
+      { label: "md", output: outputFormatter.formatRulingCreateResult(sampleRuling, "md"), showsAttribution: false },
+      { label: "json", output: outputFormatter.formatRulingCreateResult(sampleRuling, "json"), showsAttribution: true },
+    ],
+    formatRulingSupersedeResult: () => [
+      { label: "md", output: outputFormatter.formatRulingSupersedeResult(sampleRuling, false, "md"), showsAttribution: false },
+      { label: "json", output: outputFormatter.formatRulingSupersedeResult(sampleRuling, false, "json"), showsAttribution: true },
+    ],
+  };
+
+  it("covers every exported formatRuling* function -- a new one with no adapter here fails loudly", () => {
+    const discovered = Object.keys(outputFormatter).filter((k) => k.startsWith("formatRuling")).sort();
+    expect(discovered).toEqual(Object.keys(ADAPTERS).sort());
+  });
+
+  it("every attribution-displaying output carries the anti-laundering caveat text", () => {
+    for (const [name, produce] of Object.entries(ADAPTERS)) {
+      for (const { label, output, showsAttribution } of produce()) {
+        if (!showsAttribution) continue;
+        expect(output, `${name} (${label}) shows attribution but is missing the anti-laundering caveat`).toMatch(
+          /not verified by storybloq/i,
+        );
+      }
+    }
   });
 });

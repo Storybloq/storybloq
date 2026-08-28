@@ -226,6 +226,14 @@ const CONTRACT_CUES: readonly ContractCue[] = [
   { tool: "storybloq_review_lenses_synthesize", kind: "precedence", cue: "pass reviewVerdict to storybloq_review_lenses_judge" },
   { tool: "storybloq_review_lenses_synthesize", kind: "selection", cue: "Step 2 of the multi-lens review" },
   { tool: "storybloq_review_lenses_synthesize", kind: "selection", cue: "classifies findings introduced vs pre-existing" },
+  { tool: "storybloq_ruling_create", kind: "constraint", cue: "not verified by storybloq" },
+  { tool: "storybloq_ruling_create", kind: "constraint", cue: "does not replace the second key" },
+  { tool: "storybloq_ruling_get", kind: "selection", cue: "current chain status" },
+  { tool: "storybloq_ruling_list", kind: "enum-semantic", cue: "omit for all" },
+  { tool: "storybloq_ruling_list", kind: "selection", cue: "not a terminal one" },
+  { tool: "storybloq_ruling_supersede", kind: "constraint", cue: "Refuses outright while any ruling" },
+  { tool: "storybloq_ruling_supersede", kind: "default", cue: "omit to create-and-supersede" },
+  { tool: "storybloq_ruling_supersede", kind: "precedence", cue: "never attempted against an unverifiable graph" },
   { tool: "storybloq_selftest", kind: "destructive", cue: "creates, updates, and deletes test entities" },
   { tool: "storybloq_session_guard", kind: "constraint", cue: "treated as no identity rather than rejected" },
   { tool: "storybloq_session_guard", kind: "precedence", cue: "CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID" },
@@ -289,17 +297,17 @@ describe("tool description contract (T-460)", () => {
     // added three arrangement tools (get/create/update), measured at 40,307
     // bytes; T-474 added three gate-ack tools (get/create/contest), measured
     // at 42,632 bytes; T-475 added four earmark tools (get/reserve/assign/
-    // release), measured at 45,615 bytes; T-476 commit 5/6 checkpoint adds
+    // release), measured at 45,615 bytes; T-476 added four ruling tools
+    // (get/list/create/supersede), measured at 48,458 bytes, then section 10's
     // citesRuling/clearCitesRulings fields on ticket/issue create/update,
-    // measured at 46,274 bytes -- the four ruling_* tools land in commit
-    // 6 and raise this further. So this ceiling leaves ~500 bytes of
-    // headroom and fails once an edit gives back more than that. Raising it
-    // is a deliberate act that belongs in a commit message, which is the
-    // point. Deliberately NO lower bound: the cues above are what protect
-    // against over-trimming, and a floor would fail an honest future trim
-    // for being too good.
+    // measured at 49,347 bytes, so this ceiling leaves ~500 bytes of headroom
+    // and fails once an edit gives back more than that. Raising it is a
+    // deliberate act that belongs in a commit message, which is the point.
+    // Deliberately NO lower bound: the cues above are what protect against
+    // over-trimming, and a floor would fail an honest future trim for being
+    // too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(46_800);
+    expect(bytes).toBeLessThan(49_850);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -316,10 +324,11 @@ describe("tool description contract (T-460)", () => {
     // (63 -> 66); no _list tool either, same ruling. T-475 added
     // storybloq_earmark_get/reserve/assign/release (66 -> 70); no _list
     // tool either -- earmarks are a field on the item, not a standalone
-    // entity, so there is nothing to enumerate independently. T-476 commit
-    // 5/6 checkpoint adds no new tools yet (citesRuling fields land on
-    // existing ticket/issue tools); the storybloq_ruling_get/list/create/
-    // supersede tools (70 -> 74) land in commit 6.
-    expect(result.tools.length).toBe(70);
+    // entity, so there is nothing to enumerate independently. T-476 added
+    // storybloq_ruling_get/list/create/supersede (70 -> 74); unlike the
+    // three prior additions, section 11 of the ratified plan explicitly
+    // calls for a _list tool here (citation resolution should be
+    // discoverable without shelling out to the CLI).
+    expect(result.tools.length).toBe(74);
   });
 });

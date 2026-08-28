@@ -21,15 +21,29 @@ import {
 } from "../../src/presence/record.js";
 import {
   MAX_AGENT_IDS,
+  MAX_ARRANGEMENT_PRESENCE_ENTRIES,
+  MAX_CLIENT_TASK_ID_BYTES,
   MAX_CLOSED_TOOL_IDS,
+  MAX_GATE_NAME_BYTES,
   MAX_ID_BYTES,
+  MAX_MILESTONE_KIND_BYTES,
+  MAX_MILESTONE_NOTE_BYTES,
   MAX_OPEN_TOOLS,
   MAX_TARGET_BYTES,
   MAX_TOOL_NAME_BYTES,
   MAX_RECORD_BYTES,
   PRESENCE_SCHEMA_VERSION,
+  type ArrangementPresenceEntry,
   type SessionPresence,
 } from "../../src/presence/types.js";
+
+/** Neutral T-477 defaults, spread into hand-built `SessionPresence` literals below. */
+const NO_T477_STATE = {
+  arrangementPresence: [] as const,
+  arrangementPresenceTruncated: false,
+  milestone: null,
+  ownerIdentity: null,
+};
 
 const SESSION = "sess-abc123";
 
@@ -328,6 +342,10 @@ describe("presence bounds (ISS-1022)", () => {
       agentIds: Array.from({ length: 12 }, (_, i) => `agent-${i}`),
       suppressed: false,
       endedAt: null,
+      arrangementPresence: [{ arrangementId: "a-1", role: "pen", lifecycle: "active", supervising: { workerActive: true } }],
+      arrangementPresenceTruncated: false,
+      milestone: { kind: "implementing", at: "2026-08-20T12:00:00.000Z" },
+      ownerIdentity: { client: "claude", clientTaskId: "task-1" },
     };
 
     const [one, two, three, four] = PRESENCE_SHED_STEPS;
@@ -358,6 +376,16 @@ describe("presence bounds (ISS-1022)", () => {
       expect(step.startedAt).toBe(rec.startedAt);
       expect(step.generation).toBe(1);
     }
+
+    // T-477: arrangementPresence/milestone/ownerIdentity are excluded from the
+    // ladder ENTIRELY, not merely ordered last -- every step must carry them
+    // through completely untouched.
+    for (const step of [s1, s2, s3, s4]) {
+      expect(step.arrangementPresence).toEqual(rec.arrangementPresence);
+      expect(step.arrangementPresenceTruncated).toBe(rec.arrangementPresenceTruncated);
+      expect(step.milestone).toEqual(rec.milestone);
+      expect(step.ownerIdentity).toEqual(rec.ownerIdentity);
+    }
   });
 
   it("applies the ladder when handed an over-cap record, and refuses one that cannot fit", () => {
@@ -383,6 +411,7 @@ describe("presence bounds (ISS-1022)", () => {
       agentIds: filler(60, "agent"),
       suppressed: false,
       endedAt: null,
+      ...NO_T477_STATE,
     };
     const shed = JSON.parse(serializePresence(oversized)!) as SessionPresence;
     expect(Buffer.byteLength(JSON.stringify(shed), "utf-8")).toBeLessThanOrEqual(MAX_RECORD_BYTES);
@@ -457,5 +486,236 @@ describe("presence parsing (ISS-1022)", () => {
   it("a record with no usable startedAt is treated as absent", () => {
     const text = JSON.stringify({ sessionId: SESSION, startedAt: "not a date" });
     expect(parsePresenceRecord(text, SESSION)).toBeNull();
+  });
+});
+
+describe("T-477: arrangementPresence / milestone / ownerIdentity", () => {
+  const ENTRY: ArrangementPresenceEntry = {
+    arrangementId: "a-1",
+    role: "pen",
+    lifecycle: "active",
+    supervising: { workerActive: true },
+  };
+  const OWNER = { client: "claude" as const, clientTaskId: "task-1" };
+  const MILESTONE = { kind: "implementing", at: "2026-08-20T12:00:00.000Z" };
+
+  function heavyPathRecord(prev: SessionPresence): SessionPresence {
+    // Simulates what the heavy path (storybloq status / session milestone)
+    // writes -- the hook itself never constructs these fields.
+    return { ...prev, arrangementPresence: [ENTRY], arrangementPresenceTruncated: false, milestone: MILESTONE, ownerIdentity: OWNER };
+  }
+
+  it("a session's very first ever write defaults to empty/false/null/null", () => {
+    const first = start();
+    expect(first.arrangementPresence).toEqual([]);
+    expect(first.arrangementPresenceTruncated).toBe(false);
+    expect(first.milestone).toBeNull();
+    expect(first.ownerIdentity).toBeNull();
+  });
+
+  it("PreToolUse, PostToolUse and Stop preserve all four fields verbatim", () => {
+    const withState = heavyPathRecord(start());
+    for (const next of [pre(withState, "tu_1"), post(withState, "tu_1"), applyPresenceEvent(withState, ctx({ event: "Stop" }))]) {
+      expect(next.arrangementPresence).toEqual([ENTRY]);
+      expect(next.arrangementPresenceTruncated).toBe(false);
+      expect(next.milestone).toEqual(MILESTONE);
+      expect(next.ownerIdentity).toEqual(OWNER);
+    }
+  });
+
+  it("SessionStart{resume|compact} preserves milestone; SessionStart{startup|clear|unknown|missing} clears it", () => {
+    const withState = heavyPathRecord(start());
+    for (const source of ["resume", "compact"]) {
+      const next = start(withState, "2026-08-20T13:00:00.000Z", source);
+      expect(next.milestone).toEqual(MILESTONE);
+    }
+    for (const source of ["startup", "clear", "some-unrecognized-source", null as unknown as string]) {
+      const next = applyPresenceEvent(withState, ctx({ event: "SessionStart", nowIso: "2026-08-20T13:00:00.000Z", source }));
+      expect(next.milestone, `source ${JSON.stringify(source)} must clear milestone`).toBeNull();
+    }
+  });
+
+  it("SessionStart of any source preserves arrangementPresence/arrangementPresenceTruncated/ownerIdentity, with no exceptions", () => {
+    const withState = heavyPathRecord(start());
+    for (const source of ["startup", "clear", "resume", "compact", "some-unrecognized-source"]) {
+      const next = start(withState, "2026-08-20T13:00:00.000Z", source);
+      expect(next.arrangementPresence).toEqual([ENTRY]);
+      expect(next.arrangementPresenceTruncated).toBe(false);
+      expect(next.ownerIdentity).toEqual(OWNER);
+    }
+  });
+
+  it("SessionEnd tombstones milestone but preserves arrangementPresence/ownerIdentity", () => {
+    const withState = heavyPathRecord(start());
+    const ended = applyPresenceEvent(withState, ctx({ event: "SessionEnd", nowIso: "2026-08-20T12:30:00.000Z" }));
+    expect(ended.milestone).toBeNull();
+    expect(ended.arrangementPresence).toEqual([ENTRY]);
+    expect(ended.ownerIdentity).toEqual(OWNER);
+  });
+
+  describe("parsing", () => {
+    it("round-trips arrangementPresence/milestone/ownerIdentity through serialize+parse", () => {
+      const rec = heavyPathRecord(start());
+      const parsed = parsePresenceRecord(serializePresence(rec)!, SESSION);
+      expect(parsed).toEqual({ ...rec, schemaVersion: PRESENCE_SCHEMA_VERSION });
+    });
+
+    it("drops a malformed arrangementPresence entry without failing the whole parse", () => {
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        arrangementPresence: [
+          ENTRY,
+          { arrangementId: "a-2", role: "not-a-role", lifecycle: "active" },
+          { arrangementId: "a-3", role: "worker", lifecycle: "not-a-lifecycle" },
+          "not an object",
+          null,
+        ],
+      });
+      const parsed = parsePresenceRecord(text, SESSION)!;
+      expect(parsed.arrangementPresence).toEqual([ENTRY]);
+    });
+
+    it("dedupes by (arrangementId, role) and caps at MAX_ARRANGEMENT_PRESENCE_ENTRIES on READ, flagging truncation", () => {
+      const many = Array.from({ length: MAX_ARRANGEMENT_PRESENCE_ENTRIES + 3 }, (_, i) => ({
+        arrangementId: `a-${i}`, role: "worker", lifecycle: "active", supervising: null,
+      }));
+      const withDupe = [...many, { ...many[0] }]; // exact duplicate of the first entry
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        arrangementPresence: withDupe,
+      });
+      const parsed = parsePresenceRecord(text, SESSION)!;
+      expect(parsed.arrangementPresence).toHaveLength(MAX_ARRANGEMENT_PRESENCE_ENTRIES);
+      expect(parsed.arrangementPresenceTruncated).toBe(true);
+    });
+
+    it("preserves an explicit arrangementPresenceTruncated=true even when the array itself is small", () => {
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        arrangementPresence: [ENTRY], arrangementPresenceTruncated: true,
+      });
+      expect(parsePresenceRecord(text, SESSION)!.arrangementPresenceTruncated).toBe(true);
+    });
+
+    it("parses a well-formed milestone and rejects a malformed one", () => {
+      const good = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        milestone: { kind: "gate-hold", at: "2026-08-20T12:00:00.000Z", gateName: "plan-ack", note: "waiting on pen" },
+      });
+      const parsedGood = parsePresenceRecord(good, SESSION)!;
+      expect(parsedGood.milestone).toEqual({ kind: "gate-hold", at: "2026-08-20T12:00:00.000Z", gateName: "plan-ack", note: "waiting on pen" });
+
+      for (const bad of [{ kind: "implementing" }, { at: "2026-08-20T12:00:00.000Z" }, { kind: 5, at: "x" }, "not an object", 42]) {
+        const text = JSON.stringify({
+          sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z", milestone: bad,
+        });
+        expect(parsePresenceRecord(text, SESSION)!.milestone, `${JSON.stringify(bad)} must be rejected`).toBeNull();
+      }
+    });
+
+    it("caps milestone string fields at their byte limits on read", () => {
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        milestone: {
+          kind: "x".repeat(MAX_MILESTONE_KIND_BYTES * 2),
+          at: "2026-08-20T12:00:00.000Z",
+          gateName: "y".repeat(MAX_GATE_NAME_BYTES * 2),
+          note: "z".repeat(MAX_MILESTONE_NOTE_BYTES * 2),
+        },
+      });
+      const parsed = parsePresenceRecord(text, SESSION)!;
+      expect(Buffer.byteLength(parsed.milestone!.kind, "utf-8")).toBeLessThanOrEqual(MAX_MILESTONE_KIND_BYTES);
+      expect(Buffer.byteLength(parsed.milestone!.gateName!, "utf-8")).toBeLessThanOrEqual(MAX_GATE_NAME_BYTES);
+      expect(Buffer.byteLength(parsed.milestone!.note!, "utf-8")).toBeLessThanOrEqual(MAX_MILESTONE_NOTE_BYTES);
+    });
+
+    it("classification of an unrecognized milestone kind is deferred to the renderer -- the reader never rejects it", () => {
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        milestone: { kind: "some-future-kind-this-reader-has-never-seen", at: "2026-08-20T12:00:00.000Z" },
+      });
+      expect(parsePresenceRecord(text, SESSION)!.milestone).toEqual({ kind: "some-future-kind-this-reader-has-never-seen", at: "2026-08-20T12:00:00.000Z" });
+    });
+
+    it("parses a well-formed ownerIdentity and rejects a malformed one", () => {
+      const good = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        ownerIdentity: OWNER,
+      });
+      expect(parsePresenceRecord(good, SESSION)!.ownerIdentity).toEqual(OWNER);
+
+      for (const bad of [{ client: "not-a-client", clientTaskId: "x" }, { client: "claude" }, { clientTaskId: "x" }, "not an object", 42]) {
+        const text = JSON.stringify({
+          sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z", ownerIdentity: bad,
+        });
+        expect(parsePresenceRecord(text, SESSION)!.ownerIdentity, `${JSON.stringify(bad)} must be rejected`).toBeNull();
+      }
+    });
+
+    it("rejects an oversized clientTaskId outright rather than truncating it -- an identity must never be silently mutated", () => {
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        ownerIdentity: { client: "codex", clientTaskId: "t".repeat(MAX_CLIENT_TASK_ID_BYTES * 2) },
+      });
+      expect(parsePresenceRecord(text, SESSION)!.ownerIdentity).toBeNull();
+    });
+
+    it("an oversized clientTaskId whose first MAX_CLIENT_TASK_ID_BYTES bytes exactly match a real identity must NOT parse into that identity (prefix-collision)", () => {
+      const realAnchor = "a".repeat(MAX_CLIENT_TASK_ID_BYTES);
+      const text = JSON.stringify({
+        sessionId: SESSION, startedAt: "2026-08-20T12:00:00.000Z", lastEventAt: "2026-08-20T12:00:00.000Z",
+        ownerIdentity: { client: "claude", clientTaskId: `${realAnchor}-forged-suffix` },
+      });
+      const parsed = parsePresenceRecord(text, SESSION)!;
+      expect(parsed.ownerIdentity).toBeNull();
+      // Truncation would have produced exactly `realAnchor`, indistinguishable
+      // from a genuine identity -- confirm that never happens.
+      expect(parsed.ownerIdentity?.clientTaskId).not.toBe(realAnchor);
+    });
+  });
+
+  /**
+   * Plan section 2.4's required assertion: the worst case T-477 adds (a
+   * saturated arrangementPresence array plus a populated milestone and
+   * ownerIdentity, every string at its max length) stays comfortably under
+   * MAX_RECORD_BYTES alongside a simultaneously-saturated pre-existing record.
+   */
+  it("the T-477 worst case, layered onto an already-saturated record, stays well under the record bound", () => {
+    const exact = (bytes: number, seed: string) => (seed + "z".repeat(bytes)).slice(0, bytes);
+    let rec = start();
+    for (let i = 0; i < MAX_AGENT_IDS; i++) {
+      rec = pre(rec, exact(MAX_ID_BYTES, `id${i}-`), exact(MAX_TOOL_NAME_BYTES, `tool${i}-`), "2026-08-20T12:00:01.000Z", {
+        target: exact(MAX_TARGET_BYTES, `d/${i}/`),
+        agentId: exact(MAX_ID_BYTES, `agent${i}-`),
+      });
+    }
+    for (let i = 0; i < MAX_CLOSED_TOOL_IDS; i++) rec = post(rec, exact(MAX_ID_BYTES, `closed${i}-`));
+
+    const saturatedEntries: ArrangementPresenceEntry[] = Array.from({ length: MAX_ARRANGEMENT_PRESENCE_ENTRIES }, (_, i) => ({
+      arrangementId: exact(MAX_ID_BYTES, `a${i}-`),
+      role: i % 2 === 0 ? "pen" : "worker",
+      lifecycle: "active",
+      supervising: { workerActive: true },
+    }));
+    rec = {
+      ...rec,
+      arrangementPresence: saturatedEntries,
+      arrangementPresenceTruncated: true,
+      milestone: {
+        kind: exact(MAX_MILESTONE_KIND_BYTES, "k-"),
+        at: "2026-08-20T12:00:00.000Z",
+        gateName: exact(MAX_GATE_NAME_BYTES, "g-"),
+        note: exact(MAX_MILESTONE_NOTE_BYTES, "n-"),
+      },
+      ownerIdentity: { client: "codex", clientTaskId: exact(MAX_CLIENT_TASK_ID_BYTES, "t-") },
+    };
+
+    const text = serializePresence(rec);
+    expect(text).not.toBeNull();
+    const bytes = Buffer.byteLength(text!, "utf-8");
+    expect(bytes).toBeLessThanOrEqual(MAX_RECORD_BYTES);
+    // Headroom, per the plan's own requirement: a cap change that erodes this
+    // margin should be a deliberate decision, not a silent approach to the cliff.
+    expect(bytes).toBeLessThan(MAX_RECORD_BYTES * 0.9);
   });
 });

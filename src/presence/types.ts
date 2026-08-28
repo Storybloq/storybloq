@@ -124,6 +124,21 @@ export const MAX_RECORD_BYTES = 16 * 1024;
 /** Records untouched for this long are swept on the next SessionStart/SessionEnd. */
 export const PRESENCE_TTL_MS = 12 * 60 * 60 * 1000;
 
+/**
+ * T-477 caps. `MAX_ARRANGEMENT_PRESENCE_ENTRIES` is generous above the
+ * realistic case (an arrangement has exactly one pen and one worker party),
+ * and small enough that a worst-case record (this many entries, plus a
+ * populated `milestone` and `ownerIdentity`, all max-length strings) is well
+ * under `MAX_RECORD_BYTES` -- see `presence-record.test.ts` for the pinned
+ * assertion. The other three bound the strings inside `milestone`.
+ */
+export const MAX_ARRANGEMENT_PRESENCE_ENTRIES = 4;
+export const MAX_MILESTONE_KIND_BYTES = 64;
+export const MAX_GATE_NAME_BYTES = 128;
+export const MAX_MILESTONE_NOTE_BYTES = 500;
+/** Matches `CLIENT_TASK_ID_PATTERN`'s own max length in models/types.ts. */
+export const MAX_CLIENT_TASK_ID_BYTES = 128;
+
 export interface PresenceOpenTool {
   /** `tool_use_id` when the client supplies one, else a synthetic per-record id. */
   readonly id: string;
@@ -167,6 +182,53 @@ export interface SessionPresence {
   readonly suppressed: boolean;
   /** Tombstone written by SessionEnd. */
   readonly endedAt: string | null;
+
+  /**
+   * T-477: this session's role, per arrangement, as of the last heavy-path
+   * (`storybloq status` / `storybloq session milestone`) call for this
+   * session's own identity. NEVER computed or touched by the slim hook --
+   * see record.ts's `applyPresenceEvent` transition table. Capped at
+   * `MAX_ARRANGEMENT_PRESENCE_ENTRIES`; `arrangementPresenceTruncated`
+   * records whether the cap actually dropped something.
+   */
+  readonly arrangementPresence: readonly ArrangementPresenceEntry[];
+  readonly arrangementPresenceTruncated: boolean;
+  /**
+   * A self-reported structural marker of what this session is doing right
+   * now (see record.ts's `parseMilestone` / the milestone command). Never an
+   * automatic verdict -- `selfReported: true` on every read-time projection
+   * is the permanent reminder of that. Cleared on a genuinely new session;
+   * preserved across resume/compact and every tool-level event -- see the
+   * hook's transition table for the exact rule, stated once there.
+   */
+  readonly milestone: MilestoneReadEvent | null;
+  /**
+   * The (client, clientTaskId) the heavy path last resolved for THIS session,
+   * persisted so worker-liveness can be checked for an INTERACTIVE
+   * arrangement party (which has no `.story/sessions/` entry to scan) without
+   * a new scanner or identity contract -- see the ticket's section 0.
+   */
+  readonly ownerIdentity: OwnerIdentity | null;
+}
+
+export interface ArrangementPresenceEntry {
+  readonly arrangementId: string;
+  readonly role: "pen" | "worker";
+  readonly lifecycle: "active" | "suspended";
+  /** Present only for a `pen`-role entry; `workerActive` per section 0's dual-population check. */
+  readonly supervising: { readonly workerActive: boolean } | null;
+}
+
+export interface MilestoneReadEvent {
+  readonly kind: string;
+  readonly at: string;
+  readonly gateName?: string;
+  readonly note?: string;
+}
+
+export interface OwnerIdentity {
+  readonly client: "claude" | "codex";
+  readonly clientTaskId: string;
 }
 
 export type PresenceHookEvent =

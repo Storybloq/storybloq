@@ -8,6 +8,7 @@ import {
   IssueIdSchema,
   TicketIdSchema,
   ConflictEntrySchema,
+  EarmarkSchema,
 } from "./types.js";
 
 const SOURCE_HASH_PATTERN = /^[a-f0-9]{64}$/i;
@@ -110,6 +111,12 @@ export const IssueSchema = z
     deletedAt: z.string().optional(),
     deletedBy: z.string().optional(),
     _conflicts: z.array(ConflictEntrySchema).optional(),
+    // T-475: pick-exclusion state, distinct from assignedTo (legacy free-text
+    // attribution). Issues carry no claimedBySession/claim field at all (no
+    // per-session acquisition state exists to match an `assigned` earmark's
+    // holder against) -- validate's staleness check treats every `assigned`
+    // issue earmark as stale-eligible past threshold for exactly this reason.
+    earmark: EarmarkSchema.nullable().optional(),
   })
   .passthrough();
 

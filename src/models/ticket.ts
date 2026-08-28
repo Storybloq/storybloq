@@ -8,6 +8,7 @@ import {
   TicketIdSchema,
   ConflictEntrySchema,
   ClaimSchema,
+  EarmarkSchema,
   CROCKFORD_CLASS,
 } from "./types.js";
 
@@ -46,6 +47,10 @@ export const TicketSchema = z
     deletedBy: z.string().optional(),
     _conflicts: z.array(ConflictEntrySchema).optional(),
     claim: ClaimSchema.optional(),
+    // T-475: pick-exclusion state, distinct from claimedBySession/claim above
+    // and from assignedTo (legacy free-text attribution) -- neither reads nor
+    // writes either of those fields.
+    earmark: EarmarkSchema.nullable().optional(),
   })
   .passthrough();
 

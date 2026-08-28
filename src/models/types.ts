@@ -211,6 +211,60 @@ export const ArrangementRefSchema = z
   .string()
   .refine((v) => ARRANGEMENT_CANONICAL_ID_REGEX.test(v), "Arrangement ref must match a-[canonical]");
 
+export const EARMARK_ROLES = ["pen", "worker"] as const;
+export type EarmarkRole = (typeof EARMARK_ROLES)[number];
+
+/**
+ * Mirrors `autonomous/client-profile.ts`'s real `OwnerTask` ({client, id,
+ * boundAt}) minus `boundAt`, which is provenance, not identity -- a
+ * placement/retraction identity is compared for equality, never recency.
+ * Duplicated here rather than imported: `models/` never depends on
+ * `autonomous/` (one-directional layering), so this is a structural mirror,
+ * kept in sync by hand the same way `ArrangementPartySchema`'s `client`
+ * field already is.
+ */
+export const OwnerTaskLikeSchema = z.object({
+  client: z.enum(["claude", "codex"]),
+  id: z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN),
+});
+export type OwnerTaskLike = z.infer<typeof OwnerTaskLikeSchema>;
+
+/**
+ * T-475: pick-exclusion state for assignment coordination between a duet's
+ * pen and worker. Unrelated to `reconcile.ts`'s "reservations" (git-ref
+ * duplicate-display-id tie-breaking) -- deliberately never named
+ * "reservation" to keep the two concepts from being confused in code or
+ * conversation.
+ *
+ * A discriminated union on `stage` so the invalid states (an `assigned`
+ * earmark with no `holderSession`, a `reserved` earmark bound to a session)
+ * are unrepresentable, the same discipline as `frozenGate`
+ * (autonomous/session-types.ts). The choke point that acquires an earmarked
+ * item (autonomous/stages/pick-ticket.ts) CONVERTS `reserved` -> `assigned`
+ * in place rather than clearing it -- an `assigned` earmark persists for the
+ * item's whole active life as its assignment record, cleared only at an
+ * explicit release seam (see earmarks.ts), never by acquisition itself.
+ */
+const EarmarkBaseSchema = z.object({
+  reservedBy: OwnerTaskLikeSchema,
+  arrangementId: ArrangementIdSchema,
+  since: z.string().datetime(),
+});
+
+export const EarmarkSchema = z.discriminatedUnion("stage", [
+  EarmarkBaseSchema.extend({
+    stage: z.literal("reserved"),
+    holderRole: z.enum(EARMARK_ROLES),
+    holderSession: z.null(),
+  }),
+  EarmarkBaseSchema.extend({
+    stage: z.literal("assigned"),
+    holderRole: z.enum(EARMARK_ROLES),
+    holderSession: z.string().uuid(),
+  }),
+]);
+export type Earmark = z.infer<typeof EarmarkSchema>;
+
 /**
  * Canonical-only (T-474), and content-derived rather than randomly minted
  * (see gate-ack.ts's `computeGateAckId`) -- no legacy form, no allocator.

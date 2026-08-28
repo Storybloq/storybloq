@@ -18,11 +18,14 @@ export function encodeBase32Crockford(bytes: Uint8Array): string {
   return result;
 }
 
-export type CanonicalPrefix = "t" | "i" | "n" | "l" | "a";
+export type CanonicalPrefix = "t" | "i" | "n" | "l" | "a" | "g";
 
 export function generateCanonicalId(prefix: CanonicalPrefix): string {
   const bytes = randomBytes(10);
   return `${prefix}-${encodeBase32Crockford(bytes)}`;
 }
 
-export const CANONICAL_ID_REGEX = new RegExp(`^[tinla]-${CROCKFORD_CLASS}{16}$`);
+// T-474: "g" (gate-ack) ids are never minted via generateCanonicalId -- they
+// are content-derived (see gate-ack.ts's computeGateAckId) so re-acking the
+// identical pin is idempotent. Included in this regex for validation only.
+export const CANONICAL_ID_REGEX = new RegExp(`^[tinlag]-${CROCKFORD_CLASS}{16}$`);

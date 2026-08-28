@@ -18,6 +18,7 @@ import type { DoctorResult } from "./team-doctor.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "./session-scan.js";
 import type { Arrangement, ArrangementLifecycle, ArrangementRole } from "../models/arrangement.js";
 import type { GateAck } from "../models/gate-ack.js";
+import type { LandingsResult } from "./landings.js";
 import type { Earmark } from "../models/types.js";
 import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
@@ -1697,6 +1698,63 @@ export function formatRulingSupersedeResult(ruling: Ruling, noop: boolean, forma
   return noop
     ? `Ruling ${ruling.id} already supersedes ${ruling.supersedes} (no-op).`
     : `Ruling ${ruling.id} now supersedes ${ruling.supersedes}.`;
+}
+
+/**
+ * T-477 section 4.3: `storybloq landings` is the CLI-only surface for the
+ * full feed -- no MCP tool, no `storybloq_status` field (plan 4.3's explicit
+ * non-goal). JSON is the same versioned envelope every other read command
+ * uses; `landings-unavailable` renders as a `formatError`-style envelope,
+ * translated at the CLI layer -- the library itself never throws for it.
+ */
+export function formatLandings(result: LandingsResult, format: OutputFormat): string {
+  if (result.status === "landings-unavailable") {
+    return format === "json"
+      ? JSON.stringify(errorEnvelope("io_error", result.reason), null, 2)
+      : `Error [io_error]: ${escapeMarkdownInline(result.reason)}`;
+  }
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(result), null, 2);
+  }
+  if (result.landings.length === 0) return "No landings found.";
+  const lines: string[] = [];
+  for (const landing of result.landings) {
+    const shortSha = landing.sha.slice(0, 12);
+    lines.push(`### ${shortSha} -- ${escapeMarkdownInline(landing.subject)}`);
+    lines.push(`  authored: ${landing.authoredAt} | summary: ${landing.summary}`);
+    if (landing.refs.length === 0) {
+      lines.push("  refs: (none)");
+    } else {
+      for (const ref of landing.refs) {
+        const cov = ref.coverage;
+        const evidenceNote = cov.reviewEvidence === "present" ? ", evidence present" : cov.reviewEvidence === "absent" ? ", evidence absent" : "";
+        const multi = cov.multipleMatches ? ", multiple matches" : "";
+        const crossConfirmed = ref.crossConfirmed ? ", cross-confirmed" : "";
+        lines.push(
+          `  - ${escapeMarkdownInline(ref.ref)} (${ref.source}${crossConfirmed}): ${cov.gateAckCoverage}${evidenceNote}${multi}`,
+        );
+      }
+    }
+    if (landing.unresolvedTokens.length > 0) {
+      lines.push(`  unresolved tokens: ${landing.unresolvedTokens.map((t) => escapeMarkdownInline(t)).join(", ")}`);
+    }
+    lines.push("");
+  }
+  if (result.unresolvedResolutionShas.length > 0) {
+    lines.push("### Unresolved resolution-field shas");
+    for (const u of result.unresolvedResolutionShas) {
+      lines.push(`  - ${escapeMarkdownInline(u.issueRef)}: ${escapeMarkdownInline(u.token)} (${u.reason})`);
+    }
+    lines.push("");
+  }
+  if (result.unattributedGateAckWarnings.length > 0) {
+    lines.push("### Unattributed gate-ack warnings (force every ticket-shaped ref to \"unknown\" this run)");
+    for (const w of result.unattributedGateAckWarnings) {
+      lines.push(`  - ${escapeMarkdownInline(w)}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
 }
 
 function formatGateAckPin(ack: GateAck): string {

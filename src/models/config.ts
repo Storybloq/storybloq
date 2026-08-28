@@ -129,6 +129,11 @@ export const ConfigSchema = z
       // into a throw that breaks every command. The harness validates and
       // falls back per field.
       lensConfig: z.unknown().optional(),
+      // T-475: threshold for `validate`'s stale_earmark check
+      // (isTicketEarmarkStale/isIssueEarmarkStale) -- how long an earmark may
+      // sit unconverted (reserved) or unclaimed (assigned, no matching
+      // ticket claim; always for issues per AM-b) before it is flagged.
+      earmarkStaleThresholdHours: z.number().min(0).optional(),
     }).optional(),
     nodes: z.record(z.string(), z.unknown()).optional(),
     orchestrator: z.string().optional(),

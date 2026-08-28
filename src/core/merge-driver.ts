@@ -365,6 +365,25 @@ export function threeWayMerge(
     conflicts.push({ fieldPath: toPointer(key), field: key, kind: "field", base: bVal, ours: oVal, theirs: tVal });
   }
 
+  // T-475: cross-field invariant, checked once EVERY field above (coupled
+  // groups and the plain allKeys loop alike) has already resolved -- the
+  // earmark field and the status group (ticket-status/issue-status) can each
+  // merge cleanly in isolation (one side changed only earmark, the other only
+  // status) while their COMBINATION is an invalid state per R5: a `reserved`
+  // earmark on a non-open item, or an `assigned` earmark whose holder no
+  // longer matches the ticket's actual claim. Neither per-field merge above
+  // can see this -- it is only visible once every field has already settled.
+  // Skipped when `earmark` itself already produced a fresh conflict this
+  // merge (already flagged; no need to pile on a second entry for the same
+  // field).
+  if (entityType === "ticket" || entityType === "issue") {
+    const earmarkAlreadyConflicted = conflicts.some((c) => c.field === "earmark");
+    if (!earmarkAlreadyConflicted) {
+      const invariantConflict = checkEarmarkStatusInvariant(entityType, merged, base, ours, theirs);
+      if (invariantConflict) conflicts.push(invariantConflict);
+    }
+  }
+
   // NOTE: `clean` (and therefore the git exit code) reflects only NEW conflicts.
   // A merge that merely carries forward committed-but-unresolved entries exits 0:
   // the merge itself succeeded; failing every later merge of the file would make
@@ -372,6 +391,49 @@ export function threeWayMerge(
   attachConflicts(merged, mergeConflictSets(carried, conflicts));
 
   return { merged, conflicts, clean: conflicts.length === 0 };
+}
+
+/**
+ * T-475/R5: the two invalid earmark states, checked against the fully-merged
+ * (post-coupled-group) document. Downgrades to an ordinary hard-conflict-shaped
+ * ConflictEntry (kind "field", no group) on the `earmark` field -- the same
+ * shape `threeWayMerge` already emits for an unregistered field, so it flows
+ * through the existing conflicts-list/resolve machinery unchanged: `resolve
+ * --field earmark --use ours|theirs` picks a whole side's earmark object as
+ * the fix. base/ours/theirs record each side's raw earmark (not the merged
+ * status), matching every other field-level ConflictEntry's convention.
+ *
+ * - `reserved` earmark on a non-`open` item: the reservation should have been
+ *   converted or cleared before the item moved off `open`.
+ * - `assigned` earmark whose holder no longer matches the ticket's actual
+ *   claim: for tickets only -- AM-b already established that issues have no
+ *   `claimedBySession` to match against, so an assigned issue earmark is
+ *   never checked here (staleness, not merge-time consistency, is how a
+ *   stranded issue earmark surfaces -- see isIssueEarmarkStale).
+ */
+function checkEarmarkStatusInvariant(
+  entityType: EntityType,
+  merged: Record<string, unknown>,
+  base: Record<string, unknown>,
+  ours: Record<string, unknown>,
+  theirs: Record<string, unknown>,
+): ConflictEntry | null {
+  const earmark = merged.earmark as { stage?: string; holderSession?: string | null } | null | undefined;
+  if (!earmark) return null;
+
+  const invalid =
+    (earmark.stage === "reserved" && merged.status !== "open") ||
+    (earmark.stage === "assigned" && entityType === "ticket" && merged.claimedBySession !== earmark.holderSession);
+  if (!invalid) return null;
+
+  return {
+    fieldPath: "/earmark",
+    field: "earmark",
+    kind: "field",
+    base: base.earmark,
+    ours: ours.earmark,
+    theirs: theirs.earmark,
+  };
 }
 
 export function stripConflicts(obj: Record<string, unknown>): Record<string, unknown> {

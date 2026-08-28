@@ -517,3 +517,93 @@ describe("crossNodeBlockedBy validation (T-337)", () => {
     expect(result.findings.filter((f) => f.code.includes("cross_node"))).toHaveLength(0);
   });
 });
+
+describe("stale_earmark (T-475, AM-a/AM-b)", () => {
+  const NOW = "2026-08-30T00:00:00.000Z";
+  const STALE_SINCE = "2026-08-01T00:00:00.000Z"; // well past any reasonable threshold
+
+  function reservedEarmark(overrides: Record<string, unknown> = {}) {
+    return {
+      stage: "reserved",
+      reservedBy: { client: "claude", id: "task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: STALE_SINCE,
+      holderRole: "worker",
+      holderSession: null,
+      ...overrides,
+    };
+  }
+
+  function assignedEarmark(overrides: Record<string, unknown> = {}) {
+    return {
+      stage: "assigned",
+      reservedBy: { client: "claude", id: "task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: STALE_SINCE,
+      holderRole: "worker",
+      holderSession: "11111111-1111-4111-8111-111111111111",
+      ...overrides,
+    };
+  }
+
+  it("flags a stale reserved ticket earmark past the default 48h threshold", () => {
+    const ticket = makeTicket({ id: "T-001", phase: "p1", earmark: reservedEarmark() as never });
+    const state = makeState({ tickets: [ticket], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
+    const result = validateProject(state, NOW);
+    expect(result.findings.some((f) => f.code === "stale_earmark" && f.entity === "T-001")).toBe(true);
+  });
+
+  it("does not flag an assigned ticket earmark whose holder matches the actual claim, regardless of age", () => {
+    const ticket = makeTicket({
+      id: "T-001", phase: "p1",
+      earmark: assignedEarmark({ holderSession: "11111111-1111-4111-8111-111111111111" }) as never,
+      claimedBySession: "11111111-1111-4111-8111-111111111111",
+    } as never);
+    const state = makeState({ tickets: [ticket], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
+    const result = validateProject(state, NOW);
+    expect(result.findings.some((f) => f.code === "stale_earmark")).toBe(false);
+  });
+
+  it("flags a stale assigned ticket earmark with no matching claim", () => {
+    const ticket = makeTicket({
+      id: "T-001", phase: "p1",
+      earmark: assignedEarmark() as never,
+      claimedBySession: null,
+    } as never);
+    const state = makeState({ tickets: [ticket], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
+    const result = validateProject(state, NOW);
+    expect(result.findings.some((f) => f.code === "stale_earmark" && f.entity === "T-001")).toBe(true);
+  });
+
+  it("flags the dead-session sweep strand: issue inprogress + assigned earmark + no live session, past threshold (AM-b)", () => {
+    // The exact residue a session dying mid-sweep leaves behind: status was
+    // already set to inprogress and the earmark converted to assigned before
+    // the crash. Issues carry no claimedBySession to match against at all, so
+    // this is the only way `validate` ever surfaces this strand.
+    const issue = makeIssue({ id: "ISS-001", status: "inprogress", earmark: assignedEarmark() as never } as never);
+    const state = makeState({ issues: [issue] });
+    const result = validateProject(state, NOW);
+    expect(result.findings.some((f) => f.code === "stale_earmark" && f.entity === "ISS-001")).toBe(true);
+  });
+
+  it("respects recipeOverrides.earmarkStaleThresholdHours", () => {
+    const ticket = makeTicket({ id: "T-001", phase: "p1", earmark: reservedEarmark({ since: NOW }) as never });
+    const config = { ...minimalConfig, recipeOverrides: { earmarkStaleThresholdHours: 1 } } as Config;
+    const state = makeState({ tickets: [ticket], roadmap: makeRoadmap([makePhase({ id: "p1" })]), config });
+    // Fresh earmark, 2 hours later, threshold 1h -- stale under the override
+    // even though it would not be stale under the 48h default.
+    const later = "2026-08-30T02:00:00.000Z";
+    const result = validateProject(state, later);
+    expect(result.findings.some((f) => f.code === "stale_earmark")).toBe(true);
+  });
+
+  it("never flags a deleted ticket or issue regardless of earmark age", () => {
+    const ticket = makeTicket({ id: "T-001", phase: "p1", earmark: reservedEarmark() as never } as never);
+    (ticket as Record<string, unknown>).lifecycle = "deleted";
+    const issue = makeIssue({ id: "ISS-001", earmark: assignedEarmark() as never } as never);
+    (issue as Record<string, unknown>).lifecycle = "deleted";
+    const state = makeState({ tickets: [ticket], issues: [issue], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
+    const result = validateProject(state, NOW);
+    expect(result.findings.some((f) => f.code === "stale_earmark")).toBe(false);
+  });
+});

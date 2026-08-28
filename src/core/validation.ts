@@ -4,6 +4,9 @@ import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
 import { hasConflicts } from "./conflicts.js";
 import { displayIdOf } from "./resolver.js";
 import { isTeamModeConfig } from "./team-capabilities.js";
+import { isTicketEarmarkStale, isIssueEarmarkStale } from "./earmarks.js";
+
+const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
 
 // --- Types ---
 
@@ -30,7 +33,10 @@ export interface ValidationResult {
  * Validates a fully loaded ProjectState for reference integrity.
  * Pure function -- no I/O. Returns structured findings, never throws.
  */
-export function validateProject(state: ProjectState): ValidationResult {
+export function validateProject(
+  state: ProjectState,
+  now: string = new Date().toISOString(),
+): ValidationResult {
   const findings: ValidationFinding[] = [];
   const phaseIDs = new Set(state.roadmap.phases.map((p) => p.id));
   const deletedTicketIDs = new Set<string>();
@@ -355,6 +361,40 @@ export function validateProject(state: ProjectState): ValidationResult {
         level: "warning",
         code: "orphan_issue",
         message: `Issue ${i.id} is open with no related tickets.`,
+        entity: i.id,
+      });
+    }
+  }
+
+  // T-475: stale earmark check. Threshold from config, default 48h -- pure
+  // over item-file fields plus the caller-supplied `now` (AM-a: `validate`
+  // has no touch-recency signal of its own, so staleness must be checkable
+  // from the earmark's own `since` and, for tickets, whether `claimedBySession`
+  // still matches the earmark's holder). A stale ticket earmark is a stuck
+  // reservation or an assignment whose claim moved on; a stale issue earmark
+  // is always flagged past threshold once `assigned` (AM-b: issues carry no
+  // claimedBySession, so an assigned issue earmark is definitionally
+  // unmatchable and includes the dead-session sweep-strand case).
+  const earmarkStaleThresholdHours =
+    state.config.recipeOverrides?.earmarkStaleThresholdHours ?? DEFAULT_EARMARK_STALE_THRESHOLD_HOURS;
+  for (const t of state.tickets) {
+    if ((t as Record<string, unknown>).lifecycle === "deleted") continue;
+    if (isTicketEarmarkStale(t, earmarkStaleThresholdHours, now)) {
+      findings.push({
+        level: "warning",
+        code: "stale_earmark",
+        message: `Ticket ${displayIdOf(t)} has a stale earmark (since ${t.earmark?.since}).`,
+        entity: t.id,
+      });
+    }
+  }
+  for (const i of state.issues) {
+    if ((i as Record<string, unknown>).lifecycle === "deleted") continue;
+    if (isIssueEarmarkStale(i, earmarkStaleThresholdHours, now)) {
+      findings.push({
+        level: "warning",
+        code: "stale_earmark",
+        message: `Issue ${displayIdOf(i)} has a stale earmark (since ${i.earmark?.since}).`,
         entity: i.id,
       });
     }

@@ -1,5 +1,13 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import type { Issue } from "../../models/issue.js";
+import { isDeleted } from "../../core/project-state.js";
+import { tryAcquireEarmark } from "../../core/earmarks.js";
+
+type SweepAcquisition =
+  | { kind: "acquired"; issue: Issue; remaining: string[] }
+  | { kind: "exhausted" }
+  | { kind: "error"; message: string };
 
 /**
  * ISSUE_SWEEP stage -- postComplete stage that sweeps open issues.
@@ -8,9 +16,11 @@ import type { GuideReportInput } from "../session-types.js";
  * (guide has full context), then pre-existing. Each group sorted by severity
  * (critical → high → medium → low) then discoveredDate.
  *
- * enter(): Load issues, build ordered queue, return instruction for first issue.
- * report(): Issue fixed → mark resolved, pop queue. More → retry with next.
- *           All done → advance (→ HANDOVER).
+ * enter(): Load issues, build ordered candidate queue, acquire the first
+ *          earmark-eligible one (T-475 Layer 1), return instruction.
+ * report(): Issue resolved → mark resolved, acquire next eligible. More →
+ *           retry with next. All done or none eligible → advance to
+ *           HANDOVER.
  */
 export class IssueSweepStage implements WorkflowStage {
   readonly id = "ISSUE_SWEEP";
@@ -18,6 +28,60 @@ export class IssueSweepStage implements WorkflowStage {
   skip(ctx: StageContext): boolean {
     const issueConfig = ctx.recipe.stages?.ISSUE_SWEEP as Record<string, unknown> | undefined;
     return !issueConfig?.enabled;
+  }
+
+  /**
+   * T-475 Layer 1 (binding choke point): confirmed at round 2 that sweep
+   * previously bypassed acquisition entirely -- it handed out a fix
+   * instruction straight from an in-memory queue with no lock and no status
+   * write at all. This is the single acquisition transaction both enter()
+   * and report()'s advance-to-next logic call: scans `candidateIds` in
+   * order under ONE lock, skips any issue that no longer exists, is no
+   * longer open, or is earmarked to someone else (R5 convert-not-clear,
+   * same predicate as the ticket/issue choke points in pick-ticket.ts), and
+   * atomically converts+claims the first eligible one. Fail-closed: any
+   * thrown error refuses (never hands out an instruction under uncertainty).
+   */
+  private async acquireNextSweepIssue(
+    ctx: StageContext,
+    candidateIds: readonly string[],
+  ): Promise<SweepAcquisition> {
+    let outcome: SweepAcquisition = { kind: "exhausted" };
+    try {
+      const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+      await withProjectLock(ctx.root, { strict: false }, async ({ state: freshState }) => {
+        for (let i = 0; i < candidateIds.length; i++) {
+          const id = candidateIds[i]!;
+          const freshIssue = freshState.issues.find(x => x.id === id);
+          if (!freshIssue || freshIssue.status !== "open" || isDeleted(freshIssue)) continue;
+          const decision = tryAcquireEarmark(freshIssue.earmark, ctx.state.sessionId, "worker");
+          if (!decision.ok) continue; // earmarked to someone else -- skip, do not retry within this sweep
+          const updated: Issue = {
+            ...freshIssue,
+            status: "inprogress",
+            ...(decision.write ? { earmark: decision.write } : {}),
+          };
+          await writeIssueUnlocked(updated, ctx.root);
+          outcome = { kind: "acquired", issue: updated, remaining: candidateIds.slice(i + 1) };
+          return;
+        }
+        outcome = { kind: "exhausted" };
+      });
+    } catch (err) {
+      outcome = { kind: "error", message: err instanceof Error ? err.message : String(err) };
+    }
+    return outcome;
+  }
+
+  private instructionFor(issue: Issue, remainingCount: number): string {
+    return [
+      `# Issue Sweep -- ${remainingCount} open issue(s)`,
+      "",
+      `Fix **${issue.id}**: ${issue.title}`,
+      "",
+      `Severity: ${issue.severity}`,
+      issue.impact ? `Impact: ${issue.impact}` : "",
+    ].filter(Boolean).join("\n");
   }
 
   async enter(ctx: StageContext): Promise<StageResult | StageAdvance> {
@@ -52,30 +116,32 @@ export class IssueSweepStage implements WorkflowStage {
     const sessionIssues = allIssues.filter(i => sessionIssueIds.has(i.id)).sort(sortFn);
     const preExisting = allIssues.filter(i => !sessionIssueIds.has(i.id)).sort(sortFn);
     const ordered = [...sessionIssues, ...preExisting];
+    const orderedIds = ordered.map(i => i.id);
 
-    const remaining = ordered.map(i => i.id);
-    const current = remaining[0] ?? null;
+    const acquisition = await this.acquireNextSweepIssue(ctx, orderedIds);
+    if (acquisition.kind !== "acquired") {
+      // "exhausted" (every open issue is earmarked to someone else) and
+      // "error" (lock/read/write failure) both fail closed the same way
+      // here: no instruction is handed out under uncertainty, and this
+      // stage's own established convention on a load failure is already
+      // goto HANDOVER rather than retry-forever.
+      return { action: "goto", target: "HANDOVER" };
+    }
 
     ctx.writeState({
-      issueSweepState: { remaining, current, resolved: [] },
+      issueSweepState: { remaining: acquisition.remaining, current: acquisition.issue.id, resolved: [] },
       pipelinePhase: "postComplete" as const,
     });
 
-    const firstIssue = ordered[0]!;
     return {
       instruction: [
-        `# Issue Sweep -- ${ordered.length} open issue(s)`,
-        "",
-        `Fix **${firstIssue.id}**: ${firstIssue.title}`,
-        "",
-        `Severity: ${firstIssue.severity}`,
-        firstIssue.impact ? `Impact: ${firstIssue.impact}` : "",
+        this.instructionFor(acquisition.issue, ordered.length),
         "",
         `When done, call \`storybloq_autonomous_guide\` with:`,
         '```json',
         `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "issue_fixed", "notes": "..." } }`,
         '```',
-      ].filter(Boolean).join("\n"),
+      ].join("\n"),
       reminders: [
         "Fix the issue and update its status to resolved in .story/issues/.",
         "Do NOT ask the user for confirmation.",
@@ -91,7 +157,12 @@ export class IssueSweepStage implements WorkflowStage {
 
     const current = sweep.current;
     if (current) {
-      // Verify the issue was actually resolved in project state
+      // T-475 (round-3 finding, confirmed and fixed): acquisition now sets
+      // the picked issue to "inprogress", so the OLD check here
+      // (`status === "open"` => retry) no longer catches an unfixed issue --
+      // it's "inprogress", not "open", and would silently fall through as
+      // resolved. Require "resolved" explicitly; every other status gets
+      // its own distinct message rather than one collapsed "not open" check.
       let verifyState;
       try {
         ({ state: verifyState } = await ctx.loadProject());
@@ -99,50 +170,47 @@ export class IssueSweepStage implements WorkflowStage {
         return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files, then report again.` };
       }
       const currentIssue = verifyState.issues.find(i => i.id === current);
-      if (currentIssue && currentIssue.status === "open") {
+      if (!currentIssue) {
         return {
           action: "retry",
-          instruction: `Issue ${current} is still open. Update its status to "resolved" in .story/issues/${current}.json, then report again.`,
+          instruction: `Issue ${current} could not be found in .story/issues/. Check for corruption, then report again.`,
+        };
+      }
+      if (isDeleted(currentIssue)) {
+        return {
+          action: "retry",
+          instruction: `Issue ${current} was deleted (tombstoned) instead of resolved. Set its status to "resolved" with a resolution description, then report again.`,
+        };
+      }
+      if (currentIssue.status !== "resolved") {
+        return {
+          action: "retry",
+          instruction: `Issue ${current} is still ${currentIssue.status}, not resolved. Update its status to "resolved" in .story/issues/${current}.json, then report again.`,
           reminders: ["Set status to 'resolved' and add a resolution description."],
         };
       }
 
-      // Issue resolved -- advance queue
+      // Issue resolved -- acquire the next eligible issue from the queue.
       const resolved = [...sweep.resolved, current];
-      const remaining = sweep.remaining.filter(id => id !== current);
-      const next = remaining[0] ?? null;
+      const acquisition = await this.acquireNextSweepIssue(ctx, sweep.remaining);
 
-      ctx.writeState({
-        issueSweepState: { remaining, current: next, resolved },
-      });
-
-      if (remaining.length === 0) {
+      if (acquisition.kind !== "acquired") {
+        // "exhausted" (nothing left, or everything left is earmarked to
+        // someone else) and "error" both end the sweep here rather than
+        // handing out an instruction under uncertainty.
+        ctx.writeState({ issueSweepState: { remaining: [], current: null, resolved } });
         ctx.appendEvent("issue_sweep_complete", { resolved: resolved.length });
         return { action: "goto", target: "HANDOVER" };
       }
 
-      // Load next issue details
-      let projectState;
-      try {
-        ({ state: projectState } = await ctx.loadProject());
-      } catch {
-        // Can't load details -- present with minimal info
-        return {
-          action: "retry",
-          instruction: `Issue ${next} is next. Fix it and report again. (Could not load full details from .story/.)`,
-          reminders: ["Set status to 'resolved' and add a resolution description."],
-        };
-      }
-      const nextIssue = projectState.issues.find(i => i.id === next);
+      ctx.writeState({
+        issueSweepState: { remaining: acquisition.remaining, current: acquisition.issue.id, resolved },
+      });
 
       return {
         action: "retry",
         instruction: [
-          `# Issue Sweep -- ${remaining.length} remaining`,
-          "",
-          nextIssue
-            ? `Fix **${nextIssue.id}**: ${nextIssue.title}\nSeverity: ${nextIssue.severity}${nextIssue.impact ? `\nImpact: ${nextIssue.impact}` : ""}`
-            : `Fix issue ${next}.`,
+          this.instructionFor(acquisition.issue, acquisition.remaining.length + 1),
           "",
           'When done, report with completedAction: "issue_fixed".',
         ].join("\n"),

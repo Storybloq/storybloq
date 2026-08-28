@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { GateAckSchema, computeGateAckId, type GateAck, type GateAckPin } from "../models/gate-ack.js";
 import type { ArrangementRole } from "../models/arrangement.js";
+import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX } from "../models/types.js";
 import { readBoundedRegularFile } from "./pin-utils.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-loader.js";
@@ -82,54 +83,258 @@ export function findGateAck(root: string, query: {
   return { status: "valid", ack: rec };
 }
 
+/** One directory entry's outcome from the shared scan below. */
+export type GateAckScanEntry =
+  | { readonly kind: "ok"; readonly ack: GateAck }
+  | { readonly kind: "warning"; readonly file: string; readonly reason: string; readonly rawTicketRef: string | null };
+
 /**
- * Enumerate every ack for the CLI `gate-ack list` command -- informational,
- * warn-and-skip, mirrors `loadArrangementsSafe`'s posture exactly. Never
- * used for a permission decision (that is `findGateAck`'s job alone).
+ * The raw result of ONE full `.story/arrangement-acks/` scan. Exported so a
+ * multi-ref caller (`storybloq landings`) can scan exactly once and thread
+ * the SAME snapshot through both `unattributedWarningsFromScan` and
+ * `ticketAcksFromScan` for every ref it classifies -- see `scanGateAcksOnce`.
  */
-export function readGateAcksForListing(root: string): { acks: readonly GateAck[]; warnings: readonly string[] } {
+export interface GateAckDirScan {
+  readonly entries: readonly GateAckScanEntry[];
+  readonly dirWarnings: readonly string[];
+}
+
+/**
+ * Shared enumeration of every file in `.story/arrangement-acks/`, used by both
+ * `readGateAcksForListing` (unscoped, unchanged since T-473) and
+ * `readGateAcksForTicket` (T-477, ticket-scoped). Factored out so the two
+ * callers never duplicate the readdir/read/parse walk or drift apart on it.
+ *
+ * For every entry that fails `GateAckSchema` validation, `rawTicketRef`
+ * carries a BEST-EFFORT extraction of the raw JSON's own `ticketRef` field,
+ * taken before schema validation and independent of whether the rest of the
+ * record is well-formed -- most warning-producing files are near-valid
+ * records (a bad pin shape, a wrong `ackRole`, an inconsistent id) whose
+ * `ticketRef` is still a plain string, and that string is what lets a caller
+ * attribute the warning to one ticket instead of poisoning every ticket's
+ * coverage. It is `null` only when attribution is genuinely undeterminable:
+ * the file was not valid JSON at all, or the parsed value is not an object,
+ * or that object has no string `ticketRef` field.
+ */
+function scanGateAckDir(root: string): GateAckDirScan {
   const dir = resolve(root, ".story", "arrangement-acks");
   let dirents: Dirent[];
   try {
     dirents = readdirSync(dir, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { acks: [], warnings: [] };
-    return { acks: [], warnings: [`Could not read .story/arrangement-acks/: ${sanitizeDisplayText(String(err))}`] };
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], dirWarnings: [] };
+    return { entries: [], dirWarnings: [`Could not read .story/arrangement-acks/: ${sanitizeDisplayText(String(err))}`] };
   }
 
-  const acks: GateAck[] = [];
-  const warnings: string[] = [];
+  const entries: GateAckScanEntry[] = [];
   for (const entry of dirents) {
     const file = entry.name;
     if (!file.endsWith(".json")) continue;
     if (!entry.isFile()) {
-      warnings.push(`arrangement-acks/${sanitizeDisplayText(file)}: not a regular file, skipped`);
+      entries.push({ kind: "warning", file, reason: "not a regular file, skipped", rawTicketRef: null });
       continue;
     }
     const fileResult = readBoundedRegularFile(join(dir, file), GATE_ACK_MAX_BYTES);
     if (fileResult.status !== "ok") {
-      warnings.push(`arrangement-acks/${sanitizeDisplayText(file)}: ${fileResult.status === "missing" ? "vanished during scan" : fileResult.reason}, skipped`);
+      entries.push({
+        kind: "warning",
+        file,
+        reason: `${fileResult.status === "missing" ? "vanished during scan" : fileResult.reason}, skipped`,
+        rawTicketRef: null,
+      });
       continue;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(fileResult.bytes.toString("utf-8"));
     } catch {
-      warnings.push(`arrangement-acks/${sanitizeDisplayText(file)}: invalid JSON`);
+      entries.push({ kind: "warning", file, reason: "invalid JSON", rawTicketRef: null });
       continue;
     }
+    const candidateTicketRef =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as Record<string, unknown>).ticketRef === "string"
+        ? ((parsed as Record<string, unknown>).ticketRef as string)
+        : null;
+    // "Recoverable" (per this module's corruption doctrine, above) means the
+    // value could actually IDENTIFY a real ticket -- an empty string or
+    // garbage text is technically a string but can never equal a real
+    // canonical ticketRef, so treating it as attributed would silently drop
+    // it from BOTH this ticket's scoped warnings AND the project-wide
+    // unattributed-corruption bucket, exactly the "confident wrong answer"
+    // the doctrine exists to prevent.
+    const rawTicketRef =
+      candidateTicketRef !== null && (TICKET_ID_REGEX.test(candidateTicketRef) || TICKET_CANONICAL_ID_REGEX.test(candidateTicketRef))
+        ? candidateTicketRef
+        : null;
     const result = GateAckSchema.safeParse(parsed);
     if (!result.success) {
-      warnings.push(`arrangement-acks/${sanitizeDisplayText(file)}: schema mismatch`);
+      entries.push({ kind: "warning", file, reason: "schema mismatch", rawTicketRef });
       continue;
     }
     if (file !== `${result.data.id}.json`) {
-      warnings.push(`arrangement-acks/${sanitizeDisplayText(file)}: filename does not match record id, skipped`);
+      entries.push({ kind: "warning", file, reason: "filename does not match record id, skipped", rawTicketRef });
       continue;
     }
-    acks.push(result.data);
+    entries.push({ kind: "ok", ack: result.data });
+  }
+  return { entries, dirWarnings: [] };
+}
+
+/**
+ * Enumerate every ack for the CLI `gate-ack list` command -- informational,
+ * warn-and-skip, mirrors `loadArrangementsSafe`'s posture exactly. Never
+ * used for a permission decision (that is `findGateAck`'s job alone).
+ *
+ * Signature and behavior UNCHANGED by T-477 -- every existing caller
+ * (`cli/commands/gate-ack.ts`) is unaffected.
+ */
+export function readGateAcksForListing(root: string): { acks: readonly GateAck[]; warnings: readonly string[] } {
+  const { entries, dirWarnings } = scanGateAckDir(root);
+  const acks: GateAck[] = [];
+  const warnings: string[] = [...dirWarnings];
+  for (const entry of entries) {
+    if (entry.kind === "ok") {
+      acks.push(entry.ack);
+    } else {
+      warnings.push(`arrangement-acks/${sanitizeDisplayText(entry.file)}: ${entry.reason}`);
+    }
   }
   return { acks, warnings };
+}
+
+/**
+ * T-477: ONE full-directory scan, run ONCE per `storybloq landings` (or
+ * similar) run and reused across every ref's `computeReviewCoverage` call --
+ * never re-scanned per ref, which would defeat the point of computing this
+ * once. Returns every warning whose owning ticket could not be determined at
+ * all (unparseable JSON, no string `ticketRef`, or the directory itself
+ * unreadable).
+ *
+ * Doctrine, per T-476's `loadRulingsSafe`/`hasUnrecoverableEntries`
+ * precedent (`core/ruling-loader.ts`): corruption with a recoverable
+ * identity taints only that identity; corruption with NO recoverable
+ * identity taints every conclusion it could conceal, project-wide, because
+ * the unreadable content might be hiding anything -- here, specifically, a
+ * contest record for a commit this run is about to classify. `readGateAcksForTicket`
+ * already refuses to let an unattributable warning taint any ONE ticket
+ * (that would be arbitrary); the caller is instead responsible for taking
+ * `computeReviewCoverage`'s `runHasUnattributedCorruption` flag from THIS
+ * function so that a project-wide unknown-identity corruption forces every
+ * gate-ack-eligible ref in the run to read `"unknown"` -- never a confident
+ * `"matched"` or `"absent"` that an invisible contest record could be hiding
+ * behind.
+ */
+export function scanForUnattributedGateAckWarnings(root: string): readonly string[] {
+  return unattributedWarningsFromScan(scanGateAckDir(root));
+}
+
+/**
+ * Runs the ONE full-directory scan a multi-ref caller (`storybloq landings`)
+ * threads through every ref it classifies, via `unattributedWarningsFromScan`
+ * and `ticketAcksFromScan` below -- never re-scanning `.story/arrangement-acks/`
+ * per ref, and never letting two refs in the same run observe different
+ * directory states (T-477 round-4 finding: `computeReviewCoverage` used to
+ * call `readGateAcksForTicket`, which re-scans internally, once per ref).
+ */
+export function scanGateAcksOnce(root: string): GateAckDirScan {
+  return scanGateAckDir(root);
+}
+
+/** Pure projection of a `GateAckDirScan` -- see `scanForUnattributedGateAckWarnings`'s doc comment for the doctrine this implements. */
+export function unattributedWarningsFromScan(scan: GateAckDirScan): readonly string[] {
+  const warnings: string[] = [...scan.dirWarnings];
+  for (const entry of scan.entries) {
+    if (entry.kind === "warning" && entry.rawTicketRef === null) {
+      warnings.push(`arrangement-acks/${sanitizeDisplayText(entry.file)}: ${entry.reason}`);
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Resolves a raw ref string (e.g. a warning entry's `rawTicketRef`) to the
+ * canonical ticket id it identifies, or `null` when it identifies no KNOWN
+ * ticket. `ticketAcksFromScan` needs this rather than plain string equality
+ * because this project's ledger is PERMANENTLY MIXED (CLAUDE.md): a ticket's
+ * canonical id and its display id are different strings for a legacy ticket,
+ * and a re-idented ticket can have PREVIOUS display ids too -- a corrupt
+ * ack's raw `ticketRef` field could legitimately name the same real ticket
+ * `computeReviewCoverage` was queried with, spelled a different way. Built at
+ * the `storybloq landings` boundary from `ProjectState.resolveTicketRef`
+ * (canonical + current display id + previous display ids, in one call); a
+ * caller with no `ProjectState` (this module's own single-ticket tests) may
+ * omit it entirely.
+ */
+export type TicketRefResolver = (raw: string) => string | null;
+
+/** The acceptor's ruling default (T-477 round-4 cap escalation): with no resolver, nothing can be confirmed as a DIFFERENT known ticket, so classification never excludes -- see `ticketAcksFromScan`. */
+const NO_KNOWN_TICKETS: TicketRefResolver = () => null;
+
+/**
+ * T-477: ticket-scoped ack listing for the review-coverage view. Unlike
+ * `readGateAcksForListing`, a warning here only taints THIS ticket's coverage
+ * when it is actually attributable to this ticket -- an unrelated ticket's
+ * corrupt ack file must never make every OTHER ticket's coverage read
+ * `"unknown"` (the round-3 finding this function exists to close: "one
+ * unreadable unrelated gate-ack poison[s] coverage for every ticket").
+ *
+ * Attribution is ALIAS-SET membership, not string equality (T-477 round-4 cap
+ * escalation, acceptor's ruling): a raw ref that `resolveTicketRef` maps to
+ * THIS ticket's canonical id is scoped here regardless of which alias it was
+ * spelled with; a raw ref that maps to a DIFFERENT known ticket is excluded
+ * entirely, by design; a ticket-SHAPED raw ref that resolves to NO known
+ * ticket at all (a deleted ticket, or text that merely looks ticket-shaped)
+ * is FAIL-CLOSED into `unattributedWarnings` rather than silently excluded --
+ * confident exclusion requires a positively confirmed different identity, not
+ * merely the absence of a match to this one.
+ *
+ * A warning whose ticket cannot be determined at all (unparseable JSON, a
+ * parsed value with no string `ticketRef`, or one that is not even
+ * ticket-shaped) is neither included in `acks` nor attributed to `ticketRef`
+ * -- it is fail-VISIBLE rather than fail-silent, returned separately as
+ * `unattributedWarnings` so a caller can surface it as a project-level
+ * diagnostic (e.g. in `storybloq landings` or `gate-ack list`) without
+ * collapsing any specific ticket's `gateAckCoverage` to `"unknown"` over a
+ * file that, for all this function can tell, may belong to a different
+ * ticket entirely.
+ */
+export function ticketAcksFromScan(
+  scan: GateAckDirScan,
+  ticketRef: string,
+  resolveTicketRef: TicketRefResolver = NO_KNOWN_TICKETS,
+): { acks: readonly GateAck[]; scopedWarnings: readonly string[]; unattributedWarnings: readonly string[] } {
+  const acks: GateAck[] = [];
+  const scopedWarnings: string[] = [];
+  const unattributedWarnings: string[] = [...scan.dirWarnings];
+  for (const entry of scan.entries) {
+    if (entry.kind === "ok") {
+      if (entry.ack.ticketRef === ticketRef) acks.push(entry.ack);
+      continue;
+    }
+    const message = `arrangement-acks/${sanitizeDisplayText(entry.file)}: ${entry.reason}`;
+    if (entry.rawTicketRef === null) {
+      unattributedWarnings.push(message);
+      continue;
+    }
+    const resolved = entry.rawTicketRef === ticketRef ? ticketRef : resolveTicketRef(entry.rawTicketRef);
+    if (resolved === ticketRef) {
+      scopedWarnings.push(message);
+    } else if (resolved === null) {
+      // Ticket-shaped but resolves to no KNOWN ticket -- fail-closed, not a
+      // confident "belongs to someone else".
+      unattributedWarnings.push(message);
+    }
+    // else: resolved to a DIFFERENT known ticket -- excluded entirely, by design.
+  }
+  return { acks, scopedWarnings, unattributedWarnings };
+}
+
+export function readGateAcksForTicket(
+  root: string,
+  ticketRef: string,
+  resolveTicketRef: TicketRefResolver = NO_KNOWN_TICKETS,
+): { acks: readonly GateAck[]; scopedWarnings: readonly string[]; unattributedWarnings: readonly string[] } {
+  return ticketAcksFromScan(scanGateAckDir(root), ticketRef, resolveTicketRef);
 }
 
 /**

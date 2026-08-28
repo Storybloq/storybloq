@@ -415,6 +415,65 @@ describe("handleTicketUpdate", () => {
     expect(disk.claimedBySession).toBeUndefined();
   });
 
+  it("T-475 section 5: clears an assigned earmark matching the claim it strips on completion", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    const ticketPath = join(dir, ".story", "tickets", "T-001.json");
+    const raw = JSON.parse(await readFile(ticketPath, "utf-8"));
+    const CLAIMING_SESSION = "11111111-1111-4111-8111-111111111111";
+    raw.status = "inprogress";
+    raw.claim = { user: "alice@test.com", branch: "feat/x", since: "2026-05-26T10:00:00Z" };
+    raw.claimedBySession = CLAIMING_SESSION;
+    // R5's normal worked state: the earmark's holderSession matches the
+    // ticket's own claimedBySession -- and clearClaimOnComplete is about to
+    // strip that claim, orphaning the earmark unless this seam clears it too.
+    raw.earmark = {
+      stage: "assigned",
+      reservedBy: { client: "claude", id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-05-26T10:00:00Z",
+      holderRole: "worker",
+      holderSession: CLAIMING_SESSION,
+    };
+    await writeFile(ticketPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
+
+    await handleTicketUpdate("T-001", { status: "complete" }, "json", dir, true);
+
+    const disk = JSON.parse(await readFile(ticketPath, "utf-8"));
+    expect(disk.status).toBe("complete");
+    expect(disk.earmark).toBeNull();
+  });
+
+  it("T-475 section 5: leaves an earmark alone when it does not match the ticket's own claimedBySession", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
+    tmpDirs.push(dir);
+    await setupProject(dir);
+    const ticketPath = join(dir, ".story", "tickets", "T-001.json");
+    const raw = JSON.parse(await readFile(ticketPath, "utf-8"));
+    raw.status = "inprogress";
+    raw.claim = { user: "alice@test.com", branch: "feat/x", since: "2026-05-26T10:00:00Z" };
+    raw.claimedBySession = "11111111-1111-4111-8111-111111111111";
+    // Already an independently-invalid split state (R5) -- not this seam's
+    // job to fix, `validate`'s stale_earmark check flags it separately.
+    const foreignEarmark = {
+      stage: "assigned",
+      reservedBy: { client: "claude", id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-05-26T10:00:00Z",
+      holderRole: "worker",
+      holderSession: "22222222-2222-4222-8222-222222222222",
+    };
+    raw.earmark = foreignEarmark;
+    await writeFile(ticketPath, JSON.stringify(raw, null, 2) + "\n", "utf-8");
+
+    await handleTicketUpdate("T-001", { status: "complete" }, "json", dir, true);
+
+    const disk = JSON.parse(await readFile(ticketPath, "utf-8"));
+    expect(disk.status).toBe("complete");
+    expect(disk.earmark).toEqual(foreignEarmark);
+  });
+
   it("returns not_found for missing ticket", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ticket-update-"));
     tmpDirs.push(dir);

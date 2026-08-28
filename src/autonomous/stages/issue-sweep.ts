@@ -2,7 +2,7 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 import type { Issue } from "../../models/issue.js";
 import { isDeleted } from "../../core/project-state.js";
-import { tryAcquireEarmark } from "../../core/earmarks.js";
+import { tryAcquireEarmark, clearSameSessionEarmark } from "../../core/earmarks.js";
 
 type SweepAcquisition =
   | { kind: "acquired"; issue: Issue; remaining: string[] }
@@ -189,6 +189,22 @@ export class IssueSweepStage implements WorkflowStage {
           reminders: ["Set status to 'resolved' and add a resolution description."],
         };
       }
+
+      // Section 5 (completion, new seam): the agent's own status-update write
+      // just confirmed above landed a genuine resolution -- clear a
+      // same-session assigned earmark left over from this stage's own
+      // acquisition, in a fresh locked write (best-effort: a failure here
+      // leaves a stale-eligible earmark for `validate` to flag, never blocks
+      // the sweep from advancing).
+      try {
+        const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+        await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
+          const issue = ps.issues.find((i) => i.id === current);
+          if (!issue) return;
+          const { cleared, item: next } = clearSameSessionEarmark(issue, ctx.state.sessionId);
+          if (cleared) await writeIssueUnlocked(next, ctx.root);
+        });
+      } catch { /* best-effort */ }
 
       // Issue resolved -- acquire the next eligible issue from the queue.
       const resolved = [...sweep.resolved, current];

@@ -34,6 +34,8 @@ import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 const NOW = new Date().toISOString();
+const ARRANGEMENT_ID = "a-0123456789abcdef";
+const RESERVED_BY = { client: "claude" as const, id: "pen-task-1" };
 
 function setupProject(dir: string): void {
   const storyDir = join(dir, ".story");
@@ -203,5 +205,79 @@ describe("session cancel claim-release ownership (ISS-778, guide site)", () => {
     const data = cancelledEventData(sessDir);
     expect(data?.ticketConflict).toBe(true);
     expect(data?.ticketReleased).toBe(false);
+  });
+});
+
+describe("T-475 section 5: cancel clears a same-session earmark in the same locked write", () => {
+  it("clears this session's assigned earmark alongside the claim it releases (epochless path)", async () => {
+    const { sessionId } = plantSession(root);
+    writeTicket(root, {
+      claimedBySession: sessionId,
+      claim: { user: "me@example.com", branch: "main", since: NOW },
+      earmark: {
+        stage: "assigned",
+        reservedBy: RESERVED_BY,
+        arrangementId: ARRANGEMENT_ID,
+        since: NOW,
+        holderRole: "worker",
+        holderSession: sessionId,
+      },
+    });
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+
+    const after = readTicket(root);
+    expect(after.status).toBe("open");
+    expect(after.earmark).toBeNull();
+  });
+
+  it("does not clear a DIFFERENT session's earmark on a conflict (foreign claim survives untouched)", async () => {
+    const otherSession = "ffffffff-0000-0000-0000-000000000009";
+    const foreignEarmark = {
+      stage: "assigned",
+      reservedBy: RESERVED_BY,
+      arrangementId: ARRANGEMENT_ID,
+      since: NOW,
+      holderRole: "worker",
+      holderSession: otherSession,
+    };
+    writeTicket(root, {
+      claimedBySession: otherSession,
+      claim: { user: "other@example.com", branch: "main", since: NOW },
+      earmark: foreignEarmark,
+    });
+    const { sessionId } = plantSession(root);
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+
+    const after = readTicket(root);
+    expect(after.status).toBe("inprogress");
+    expect(after.earmark).toEqual(foreignEarmark);
+  });
+
+  it("leaves a reserved (not-yet-picked-up) earmark alone -- it names no session to match", async () => {
+    const { sessionId } = plantSession(root);
+    const reservedEarmark = {
+      stage: "reserved",
+      reservedBy: RESERVED_BY,
+      arrangementId: ARRANGEMENT_ID,
+      since: NOW,
+      holderRole: "worker",
+      holderSession: null,
+    };
+    writeTicket(root, {
+      claimedBySession: sessionId,
+      claim: { user: "me@example.com", branch: "main", since: NOW },
+      earmark: reservedEarmark,
+    });
+
+    const result = await handleAutonomousGuide(root, { action: "cancel", sessionId });
+    expect(result.isError).toBeFalsy();
+
+    const after = readTicket(root);
+    expect(after.status).toBe("open");
+    expect(after.earmark).toEqual(reservedEarmark);
   });
 });

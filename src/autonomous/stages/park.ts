@@ -1,4 +1,5 @@
 import { releaseClaimIfOwned } from "../../core/claims.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
 import type { StageAdvance, StageContext } from "./types.js";
 import type { FullSessionState, GuideReportInput } from "../session-types.js";
@@ -225,8 +226,12 @@ export async function parkCurrentTicket(
         // epoch are both written later, at PLAN's `plan_written`. So a park
         // straight after a pick meets an open, unclaimed ticket. There is no
         // claim to prove and nothing foreign to destroy, so record the reason
-        // and leave the ticket exactly as it is.
-        await writeTicketUnlocked({ ...current, park } as typeof current, ctx.root);
+        // and leave the ticket exactly as it is -- except a same-session
+        // earmark (section 5): the choke point can have converted one at
+        // pick time, before any claim ever landed, and this park is this
+        // session walking away from it.
+        const { item: unclaimedNext } = clearSameSessionEarmark(current, ctx.state.sessionId);
+        await writeTicketUnlocked({ ...unclaimedNext, park } as typeof current, ctx.root);
         outcome = "parked-unclaimed";
         return;
       }
@@ -266,8 +271,11 @@ export async function parkCurrentTicket(
 
       // Additive passthrough metadata (TicketSchema is .passthrough()), written
       // only on a proven release, in the same write that returns the ticket to
-      // `open`, so the record and the release cannot disagree.
-      await writeTicketUnlocked({ ...released.ticket, park } as typeof current, ctx.root);
+      // `open`, so the record and the release cannot disagree. Section 5: the
+      // same write also clears a same-session assigned earmark -- this is
+      // how self-decline works, there is no separate "decline" verb.
+      const { item: releasedNext } = clearSameSessionEarmark(released.ticket, ctx.state.sessionId);
+      await writeTicketUnlocked({ ...releasedNext, park } as typeof current, ctx.root);
       outcome = "parked-released";
     });
   } catch {

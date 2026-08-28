@@ -45,6 +45,7 @@ import type { IssueAuthorityView } from "./candidate-authority.js";
 import type { Ticket } from "../models/ticket.js";
 import { serverRegistryBinder } from "./mcp-binding.js";
 import { releaseClaimIfOwned, provenOwnership, clearClaimOnComplete } from "../core/claims.js";
+import { clearSameSessionEarmark } from "../core/earmarks.js";
 import { todayISO } from "../cli/helpers.js";
 import {
   createSession,
@@ -4335,7 +4336,10 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
         if (epoch) {
           const outcome = releaseClaimIfOwned(ticket, epoch);
           if (outcome.released) {
-            await writeTicketUnlocked(outcome.ticket, root);
+            // Section 5: same-session earmark release, in the same locked
+            // write that releases the claim.
+            const { item: outcomeWithEarmark } = clearSameSessionEarmark(outcome.ticket, cancelInfo.state.sessionId);
+            await writeTicketUnlocked(outcomeWithEarmark, root);
             disposition = { kind: "released", ticketId };
           } else {
             disposition = { kind: "conflict", ticketId };
@@ -4357,7 +4361,12 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
           // ISS-759/ISS-652: delete the claim keys rather than writing
           // explicit nulls, so a released ticket carries no residual state.
           const { claimedBySession: _cb, claim: _cl, ...rest } = ticket as Record<string, unknown>;
-          await writeTicketUnlocked({ ...rest, status: "open" as const } as typeof ticket, root);
+          // Section 5: same-session earmark release, in the same locked write.
+          const { item: restWithEarmark } = clearSameSessionEarmark(
+            rest as typeof ticket,
+            cancelInfo.state.sessionId,
+          );
+          await writeTicketUnlocked({ ...restWithEarmark, status: "open" as const } as typeof ticket, root);
           disposition = { kind: "released", ticketId };
         } else {
           disposition = { kind: "conflict", ticketId };

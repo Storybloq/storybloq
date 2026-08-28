@@ -10,6 +10,8 @@ import {
   handleArrangementUpdate,
 } from "../../../src/cli/commands/arrangement.js";
 import { handleTicketCreate } from "../../../src/cli/commands/ticket.js";
+import { handleIssueCreate } from "../../../src/cli/commands/issue.js";
+import { handleEarmarkReserve } from "../../../src/cli/commands/earmark.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
 import { makeState } from "../../core/test-factories.js";
@@ -262,5 +264,95 @@ describe("handleArrangementUpdate", () => {
     await expect(
       handleArrangementUpdate("a-0000000000000000", { lifecycle: "closed" }, "md", dir),
     ).rejects.toThrow(CliValidationError);
+  });
+
+  describe("T-475 section 5: closing an arrangement retracts every earmark it authorized", () => {
+    it("clears a reserved ticket earmark and an assigned issue earmark bound to the closing arrangement, in one locked write (lock-nesting regression)", async () => {
+      const { dir } = await newProjectWithTicket();
+      const issueCreated = await handleIssueCreate(
+        { title: "Duet arrangement issue", severity: "medium", impact: "", components: [], relatedTickets: [], location: [] },
+        "json",
+        dir,
+      );
+      const issueId = JSON.parse(issueCreated.output).data.id as string;
+
+      const created = await handleArrangementCreate(
+        { bounds: ["T-001", issueId], parties: PARTIES, onIrreversibleWork: "hold" },
+        "json",
+        dir,
+      );
+      const arrangementId = JSON.parse(created.output).data.id as string;
+
+      // If `clearEarmarkUnlocked` mistakenly opened its OWN `withProjectLock`
+      // instead of running inside `handleArrangementUpdate`'s existing lock,
+      // this call would deadlock and the test would time out rather than
+      // fail an assertion -- that IS the regression this test guards.
+      await handleEarmarkReserve(
+        { ref: "T-001", role: "worker", arrangement: arrangementId, clientTaskId: "worker-session" },
+        "json",
+        dir,
+      );
+
+      // `earmark assign`'s "--to" requires a live, matching session to
+      // resolve against, which this lock-nesting test has no need to stand
+      // up -- write the assigned issue earmark directly instead, exercising
+      // exactly what clearEarmarkUnlocked scans for on the issue side.
+      const issuePath = join(dir, ".story", "issues", `${issueId}.json`);
+      const issueRaw = JSON.parse(await readFile(issuePath, "utf-8"));
+      writeFileSync(issuePath, JSON.stringify({
+        ...issueRaw,
+        earmark: {
+          stage: "assigned",
+          reservedBy: { client: "claude", id: "worker-session" },
+          arrangementId,
+          since: new Date().toISOString(),
+          holderRole: "worker",
+          holderSession: "11111111-1111-4111-8111-111111111111",
+        },
+      }, null, 2));
+
+      const ticketBefore = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8"));
+      expect(ticketBefore.earmark).toBeTruthy();
+
+      await handleArrangementUpdate(arrangementId, { lifecycle: "closed" }, "json", dir);
+
+      const ticketAfter = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8"));
+      const issueAfter = JSON.parse(await readFile(issuePath, "utf-8"));
+      expect(ticketAfter.earmark).toBeNull();
+      expect(issueAfter.earmark).toBeNull();
+    });
+
+    it("does not clear an earmark bound to a DIFFERENT arrangement", async () => {
+      const { dir } = await newProjectWithTicket();
+      const closing = await handleArrangementCreate(
+        { bounds: ["T-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+        "json",
+        dir,
+      );
+      const closingId = JSON.parse(closing.output).data.id as string;
+
+      await handleTicketCreate(
+        { title: "Second ticket", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+        "md",
+        dir,
+      );
+      const other = await handleArrangementCreate(
+        { bounds: ["T-002"], parties: PARTIES, onIrreversibleWork: "hold" },
+        "json",
+        dir,
+      );
+      const otherId = JSON.parse(other.output).data.id as string;
+      await handleEarmarkReserve(
+        { ref: "T-002", role: "worker", arrangement: otherId, clientTaskId: "worker-session" },
+        "json",
+        dir,
+      );
+
+      await handleArrangementUpdate(closingId, { lifecycle: "closed" }, "json", dir);
+
+      const otherTicket = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-002.json"), "utf-8"));
+      expect(otherTicket.earmark).toBeTruthy();
+      expect(otherTicket.earmark.arrangementId).toBe(otherId);
+    });
   });
 });

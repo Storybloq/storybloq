@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseSessionClaim } from "../../core/claims.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
@@ -82,7 +83,11 @@ export class PlanStage implements WorkflowStage {
                 ctx.state.sessionId,
                 (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined,
               );
-              if (released) await writeTicketUnlocked(next, ctx.root);
+              // Section 5: same-session earmark release, in the same locked
+              // write. Independent of `released` -- the choke point can have
+              // converted an earmark at pick time before any claim landed.
+              const { cleared, item: nextWithEarmark } = clearSameSessionEarmark(next, ctx.state.sessionId);
+              if (released || cleared) await writeTicketUnlocked(nextWithEarmark, ctx.root);
             }
           });
         } catch { /* best-effort */ }

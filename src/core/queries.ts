@@ -1,6 +1,7 @@
 import type { Ticket } from "../models/ticket.js";
 import type { Phase, Blocker } from "../models/roadmap.js";
 import type { ProjectState, PhaseStatus } from "./project-state.js";
+import { notHiddenByEarmark } from "./earmarks.js";
 
 // --- Result Types ---
 
@@ -104,7 +105,7 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
 
     // Find first non-complete, unblocked leaf
     const incompleteLeaves = leaves.filter((t) => t.status !== "complete");
-    const candidate = incompleteLeaves.find((t) => !state.isBlocked(t));
+    const candidate = incompleteLeaves.find((t) => !state.isBlocked(t) && notHiddenByEarmark(t));
 
     if (candidate) {
       const impact = ticketsUnblockedBy(candidate.id, state);
@@ -175,7 +176,7 @@ export function nextTickets(
     const incompleteLeaves = leaves
       .filter((t) => t.status !== "complete")
       .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)));
-    const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t));
+    const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t));
 
     if (unblocked.length === 0) {
       skippedBlockedPhases.push({

@@ -619,7 +619,7 @@ storybloq node remove <name> [--format json|md]
 
 The base tools below are registered in full mode (inside a .story/ project). The five storybloq_bus_* tools are always registered in full mode; when the Bus is disabled or uninitialized they return setup guidance pointing at `storybloq bus setup`, with no MCP restart required.
 
-- **storybloq_status** (format?) - Project summary: phase statuses, ticket/issue counts, blockers. Markdown is the default; JSON includes full active/resumable session ownership and lease metadata.
+- **storybloq_status** (format?, clientTaskId?) - Project summary: phase statuses, ticket/issue counts, blockers. Markdown is the default; JSON includes full active/resumable session ownership and lease metadata. clientTaskId (T-477) also enriches this session's own arrangementPresence/ownerIdentity onto its presence record as a side effect; omit to inherit the environment identity, same as storybloq_session_guard.
 - **storybloq_phase_list** - All phases with derived status
 - **storybloq_phase_current** - First non-complete phase
 - **storybloq_phase_tickets** (phaseId) - Leaf tickets for a specific phase
@@ -666,6 +666,7 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_review_lenses_judge** (reviewVerdict, convergenceHistory?) - Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent)
 - **storybloq_autonomous_guide** (sessionId?, action, mode?, ticketId?, clientTaskId?, takeover?, reviewEffort?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
 - **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode
+- **storybloq_session_milestone** (kind, gateName?, note?, clientTaskId?) - Report a self-described work milestone (implementing/gate-hold/blocked-external/reviewing) onto this session's own presence record, for duet/arrangement visibility. Self-reported, never a computed verdict. gateName is required when kind is gate-hold. On lock contention or write failure, returns an explicit machine-readable retryable error rather than a false success.
 - **storybloq_session_report** (sessionId) - Structured analysis of an autonomous session (works even if project state is corrupted)
 - **storybloq_register_subprocess** (pid, cmd, category?, sessionId?) - Register a running subprocess so monitors can tell slow builds from hung agents
 - **storybloq_unregister_subprocess** (pid, sessionId?) - Unregister a subprocess after it completes (idempotent)

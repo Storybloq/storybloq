@@ -623,45 +623,70 @@ function dfsBlocked(
   visited.add(id);
 }
 
+/**
+ * T-476: shared supersedes-chain cycle walk, generalized behind a bar
+ * (gate-0 ruling): factors out the identical visited/inStack bookkeeping
+ * that lessons and rulings both need, while leaving each caller's own id
+ * RESOLUTION semantics separate -- lessons resolve through
+ * `state.resolveLessonRef` (dual legacy/canonical id forms), rulings through
+ * a direct canonical-id map lookup (no legacy form exists). `next(id)`
+ * returns the next id in the chain, or null to stop the walk. Zero behavior
+ * change for the existing lesson path: same code, same message shape, same
+ * entity id.
+ */
+function walkSupersedesChain(
+  startId: string,
+  next: (id: string) => string | null,
+  visited: Set<string>,
+  inStack: Set<string>,
+  code: string,
+  findings: ValidationFinding[],
+): void {
+  // Codex round-2 finding 4: iterative, not recursive -- a chain has no
+  // branching (each id has exactly one `next`), so this is a linked-list
+  // walk, not a graph traversal; a call-stack frame per link let a
+  // sufficiently long ledger chain crash `storybloq validate` instead of
+  // reporting a finding. `opened` records the walk order so the unwind loop
+  // below finishes ids in the same order the old recursion's post-walk lines
+  // (`inStack.delete`; `visited.add`) would have -- last-opened first.
+  const opened: string[] = [];
+  let id: string | null = startId;
+  while (id !== null) {
+    if (inStack.has(id)) {
+      findings.push({
+        level: "error",
+        code,
+        message: `Cycle detected in supersedes chain involving ${id}.`,
+        entity: id,
+      });
+      break;
+    }
+    if (visited.has(id)) break;
+    inStack.add(id);
+    opened.push(id);
+    id = next(id);
+  }
+  for (let i = opened.length - 1; i >= 0; i--) {
+    inStack.delete(opened[i]!);
+    visited.add(opened[i]!);
+  }
+}
+
 function detectSupersedesCycles(
   state: ProjectState,
   findings: ValidationFinding[],
 ): void {
   const visited = new Set<string>();
   const inStack = new Set<string>();
+  const nextLesson = (id: string): string | null => {
+    const lesson = state.lessonByID(id);
+    if (!lesson?.supersedes || lesson.supersedes === id) return null;
+    const resolved = state.resolveLessonRef(lesson.supersedes);
+    return resolved.kind === "found" && resolved.item.id !== id ? resolved.item.id : null;
+  };
 
   for (const l of state.lessons) {
     if (l.supersedes == null || visited.has(l.id)) continue;
-    dfsSupersedesChain(l.id, state, visited, inStack, findings);
+    walkSupersedesChain(l.id, nextLesson, visited, inStack, "supersedes_cycle", findings);
   }
-}
-
-function dfsSupersedesChain(
-  id: string,
-  state: ProjectState,
-  visited: Set<string>,
-  inStack: Set<string>,
-  findings: ValidationFinding[],
-): void {
-  if (inStack.has(id)) {
-    findings.push({
-      level: "error",
-      code: "supersedes_cycle",
-      message: `Cycle detected in supersedes chain involving ${id}.`,
-      entity: id,
-    });
-    return;
-  }
-  if (visited.has(id)) return;
-
-  inStack.add(id);
-  const lesson = state.lessonByID(id);
-  if (lesson?.supersedes && lesson.supersedes !== id) {
-    const resolved = state.resolveLessonRef(lesson.supersedes);
-    if (resolved.kind === "found" && resolved.item.id !== id) {
-      dfsSupersedesChain(resolved.item.id, state, visited, inStack, findings);
-    }
-  }
-  inStack.delete(id);
-  visited.add(id);
 }

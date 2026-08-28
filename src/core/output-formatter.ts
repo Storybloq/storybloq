@@ -22,6 +22,8 @@ import type { Earmark } from "../models/types.js";
 import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
+import type { CitationResolution } from "./ruling.js";
+import { renderCitation } from "./ruling.js";
 
 /**
  * How many diagnostic lines the human-readable section may carry (ISS-897).
@@ -298,6 +300,40 @@ export function fencedBlock(content: string, lang?: string): string {
   }
   const fence = "`".repeat(maxTicks + 1);
   return `${fence}${lang ?? ""}\n${content}\n${fence}`;
+}
+
+/**
+ * T-476: markdown rendering for a citing item's resolved rulings.
+ * `resolutions` defaults to empty everywhere it is threaded through, so an
+ * existing caller that never resolves citations renders byte-identically to
+ * before this ticket -- this returns "" for an empty list.
+ */
+/**
+ * Shared "## Cited Rulings" markdown block, also reused verbatim by the
+ * autonomous-mode instruction builders (T-476 acceptance 4) -- an agent
+ * reading PLAN/issue-fix instructions gets the same rendering, including the
+ * unconditional anti-laundering caveat, as a human reading `ticket get`.
+ */
+export function formatCitedRulingsSection(resolutions: readonly CitationResolution[]): string {
+  if (resolutions.length === 0) return "";
+  const lines = resolutions.map((resolution) => {
+    const rendered = renderCitation(resolution);
+    if (rendered.status === "resolved" && rendered.current) {
+      const staleNote = rendered.stale ? ` (superseded by ${rendered.current.id})` : "";
+      return [
+        `- **${escapeMarkdownInline(rendered.citedId)}**${staleNote}: "${escapeMarkdownInline(rendered.current.text)}"`,
+        `  ${rendered.current.attribution}, recorded by ${rendered.current.recordedBy.client}/${rendered.current.recordedBy.id} on ${rendered.current.date}`,
+        `  > ${rendered.current.caveat}`,
+      ].join("\n");
+    }
+    return `- **${escapeMarkdownInline(rendered.citedId)}**: ${rendered.warning ?? rendered.status}`;
+  });
+  return `\n\n## Cited Rulings\n\n${lines.join("\n")}`;
+}
+
+/** T-476: JSON-safe embedding for a citing item's resolved rulings. */
+function citedRulingsForJson(resolutions: readonly CitationResolution[]): unknown[] {
+  return resolutions.map(renderCitation);
 }
 
 /**
@@ -952,22 +988,36 @@ export function formatPhaseTickets(
   phaseId: string,
   state: ProjectState,
   format: OutputFormat,
+  citedRulingsByTicketId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
 ): string {
   const tickets = state.phaseTickets(phaseId);
   if (format === "json") {
-    return JSON.stringify(successEnvelope(tickets), null, 2);
+    return JSON.stringify(
+      successEnvelope(
+        tickets.map((t) => ({ ...t, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+      ),
+      null,
+      2,
+    );
   }
   if (tickets.length === 0) return "No tickets in this phase.";
-  return tickets.map((t) => formatTicketOneLiner(t, state)).join("\n");
+  const lines: string[] = [];
+  for (const t of tickets) {
+    lines.push(formatTicketOneLiner(t, state));
+    const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
+    if (rulingsSection) lines.push(rulingsSection);
+  }
+  return lines.join("\n");
 }
 
 export function formatTicket(
   ticket: Ticket,
   state: ProjectState,
   format: OutputFormat,
+  citedRulings: readonly CitationResolution[] = [],
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(ticket), null, 2);
+    return JSON.stringify(successEnvelope({ ...ticket, citedRulings: citedRulingsForJson(citedRulings) }), null, 2);
   }
 
   const blocked = state.isBlocked(ticket) ? " [BLOCKED]" : "";
@@ -989,16 +1039,21 @@ export function formatTicket(
   if (ticket.description) {
     lines.push("", "## Description", "", fencedBlock(ticket.description));
   }
-  return lines.join("\n");
+  return lines.join("\n") + formatCitedRulingsSection(citedRulings);
 }
 
 export function formatNextTicketOutcome(
   outcome: NextTicketOutcome,
   state: ProjectState,
   format: OutputFormat,
+  citedRulings: readonly CitationResolution[] = [],
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(outcome), null, 2);
+    const enriched =
+      outcome.kind === "found"
+        ? { ...outcome, ticket: { ...outcome.ticket, citedRulings: citedRulingsForJson(citedRulings) } }
+        : outcome;
+    return JSON.stringify(successEnvelope(enriched), null, 2);
   }
 
   switch (outcome.kind) {
@@ -1034,7 +1089,7 @@ export function formatNextTicketOutcome(
         lines.push("", fencedBlock(t.description));
       }
 
-      return lines.join("\n");
+      return lines.join("\n") + formatCitedRulingsSection(citedRulings);
     }
   }
 }
@@ -1043,9 +1098,20 @@ export function formatNextTicketsOutcome(
   outcome: NextTicketsOutcome,
   state: ProjectState,
   format: OutputFormat,
+  citedRulingsByTicketId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(outcome), null, 2);
+    const enriched =
+      outcome.kind === "found"
+        ? {
+            ...outcome,
+            candidates: outcome.candidates.map((c) => ({
+              ...c,
+              ticket: { ...c.ticket, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(c.ticket.id) ?? []) },
+            })),
+          }
+        : outcome;
+    return JSON.stringify(successEnvelope(enriched), null, 2);
   }
 
   switch (outcome.kind) {
@@ -1094,6 +1160,8 @@ export function formatNextTicketsOutcome(
         if (t.description) {
           lines.push("", fencedBlock(t.description));
         }
+        const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
+        if (rulingsSection) lines.push(rulingsSection);
       }
 
       if (skippedBlockedPhases.length > 0) {
@@ -1111,15 +1179,24 @@ export function formatNextTicketsOutcome(
 export function formatTicketList(
   tickets: readonly Ticket[],
   format: OutputFormat,
+  citedRulingsByTicketId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(tickets), null, 2);
+    return JSON.stringify(
+      successEnvelope(
+        tickets.map((t) => ({ ...t, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+      ),
+      null,
+      2,
+    );
   }
   if (tickets.length === 0) return "No tickets found.";
   const lines: string[] = [];
   for (const t of tickets) {
     const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
     lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} (${t.phase ?? "none"})`);
+    const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
+    if (rulingsSection) lines.push(rulingsSection);
   }
   return lines.join("\n");
 }
@@ -1128,9 +1205,10 @@ export function formatIssue(
   issue: Issue,
   format: OutputFormat,
   state?: ProjectState,
+  citedRulings: readonly CitationResolution[] = [],
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(issue), null, 2);
+    return JSON.stringify(successEnvelope({ ...issue, citedRulings: citedRulingsForJson(citedRulings) }), null, 2);
   }
 
   const lines: string[] = [
@@ -1162,21 +1240,30 @@ export function formatIssue(
   if (issue.resolution) {
     lines.push("", "## Resolution", "", fencedBlock(issue.resolution));
   }
-  return lines.join("\n");
+  return lines.join("\n") + formatCitedRulingsSection(citedRulings);
 }
 
 export function formatIssueList(
   issues: readonly Issue[],
   format: OutputFormat,
+  citedRulingsByIssueId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
 ): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(issues), null, 2);
+    return JSON.stringify(
+      successEnvelope(
+        issues.map((i) => ({ ...i, citedRulings: citedRulingsForJson(citedRulingsByIssueId.get(i.id) ?? []) })),
+      ),
+      null,
+      2,
+    );
   }
   if (issues.length === 0) return "No issues found.";
   const lines: string[] = [];
   for (const i of issues) {
     const status = i.status === "resolved" ? "[x]" : "[ ]";
     lines.push(`${status} ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownInline(i.title)} (${i.phase ?? "none"})`);
+    const rulingsSection = formatCitedRulingsSection(citedRulingsByIssueId.get(i.id) ?? []);
+    if (rulingsSection) lines.push(rulingsSection);
   }
   return lines.join("\n");
 }
@@ -1185,6 +1272,7 @@ export function formatBlockedTickets(
   tickets: readonly Ticket[],
   state: ProjectState,
   format: OutputFormat,
+  citedRulingsByTicketId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
 ): string {
   if (format === "json") {
     return JSON.stringify(
@@ -1195,6 +1283,7 @@ export function formatBlockedTickets(
             id: bid,
             status: state.ticketByID(bid)?.status ?? "unknown",
           })),
+          citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []),
         })),
       ),
       null,
@@ -1214,6 +1303,8 @@ export function formatBlockedTickets(
       })
       .join(", ");
     lines.push(`${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- blocked by: ${blockerInfo}`);
+    const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
+    if (rulingsSection) lines.push(rulingsSection);
   }
   return lines.join("\n");
 }
@@ -1447,9 +1538,13 @@ export function formatNoteDeleteResult(
 
 // --- Arrangement formatters (T-473) ---
 
-export function formatArrangement(arrangement: Arrangement, format: OutputFormat): string {
+export function formatArrangement(
+  arrangement: Arrangement,
+  format: OutputFormat,
+  citedRulings: readonly CitationResolution[] = [],
+): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(arrangement), null, 2);
+    return JSON.stringify(successEnvelope({ ...arrangement, citedRulings: citedRulingsForJson(citedRulings) }), null, 2);
   }
   const parties = arrangement.parties.map((p) => `${p.role} (${p.client})`).join(", ");
   const lines: string[] = [
@@ -1459,12 +1554,22 @@ export function formatArrangement(arrangement: Arrangement, format: OutputFormat
     `Parties: ${escapeMarkdownInline(parties)}`,
     `Unreachability (irreversible): ${arrangement.unreachability.onIrreversibleWork}`,
   ];
-  return lines.join("\n");
+  return lines.join("\n") + formatCitedRulingsSection(citedRulings);
 }
 
-export function formatArrangementList(arrangements: readonly Arrangement[], format: OutputFormat): string {
+export function formatArrangementList(
+  arrangements: readonly Arrangement[],
+  format: OutputFormat,
+  citedRulingsByArrangementId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
+): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(arrangements), null, 2);
+    return JSON.stringify(
+      successEnvelope(
+        arrangements.map((a) => ({ ...a, citedRulings: citedRulingsForJson(citedRulingsByArrangementId.get(a.id) ?? []) })),
+      ),
+      null,
+      2,
+    );
   }
   if (arrangements.length === 0) return "No arrangements found.";
   return arrangements
@@ -1475,16 +1580,24 @@ export function formatArrangementList(arrangements: readonly Arrangement[], form
     .join("\n");
 }
 
-export function formatArrangementCreateResult(arrangement: Arrangement, format: OutputFormat): string {
+export function formatArrangementCreateResult(
+  arrangement: Arrangement,
+  format: OutputFormat,
+  citedRulings: readonly CitationResolution[] = [],
+): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(arrangement), null, 2);
+    return JSON.stringify(successEnvelope({ ...arrangement, citedRulings: citedRulingsForJson(citedRulings) }), null, 2);
   }
   return `Created arrangement ${arrangement.id}.`;
 }
 
-export function formatArrangementUpdateResult(arrangement: Arrangement, format: OutputFormat): string {
+export function formatArrangementUpdateResult(
+  arrangement: Arrangement,
+  format: OutputFormat,
+  citedRulings: readonly CitationResolution[] = [],
+): string {
   if (format === "json") {
-    return JSON.stringify(successEnvelope(arrangement), null, 2);
+    return JSON.stringify(successEnvelope({ ...arrangement, citedRulings: citedRulingsForJson(citedRulings) }), null, 2);
   }
   return `Updated arrangement ${arrangement.id} [${arrangement.lifecycle}].`;
 }

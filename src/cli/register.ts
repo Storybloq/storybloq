@@ -101,6 +101,13 @@ import {
 } from "./commands/arrangement.js";
 import { ARRANGEMENT_LIFECYCLE, ARRANGEMENT_ROLES, type ArrangementParty } from "../models/arrangement.js";
 import {
+  handleRulingList,
+  handleRulingGet,
+  handleRulingCreate,
+  handleRulingSupersede,
+} from "./commands/ruling.js";
+import { RULING_ATTRIBUTIONS } from "../models/ruling.js";
+import {
   handleGateAckGet,
   handleGateAckList,
   handleGateAckCreate,
@@ -1088,7 +1095,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   describe: "Parent ticket ID (makes this a sub-ticket)",
                 })
                 .conflicts("description", "stdin"),
-              { "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
+              {
+                "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
+                "cites-ruling": { ...SPLIT_LIST, describe: "Ruling IDs this ticket cites (e.g. r-[canonical])" },
+              },
             ))),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -1128,6 +1138,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   ),
                   parentTicket:
                     argv["parent-ticket"] === "" ? null : (argv["parent-ticket"] as string | undefined) ?? null,
+                  citesRuling: argv["cites-ruling"] as string[] | undefined,
                 },
                 format,
                 eff.root,
@@ -1207,12 +1218,22 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Complete a claimed ticket without proving ownership (T-442)",
                 })
-                .conflicts("description", "stdin"),
+                .option("clear-cites-rulings", {
+                  type: "boolean",
+                  describe: "Clear all cited rulings",
+                })
+                .conflicts("description", "stdin")
+                .conflicts("cites-ruling", "clear-cites-rulings"),
               {
                 "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
                 "cross-node-blocked-by": {
                   ...LEGACY_SPLIT_LIST,
                   describe: "Cross-node blocking refs (e.g. engine:T-001). Bare flag clears.",
+                },
+                "cites-ruling": {
+                  ...SPLIT_LIST,
+                  describe: "Ruling IDs this ticket cites (replaces existing)",
+                  requireValue: "Use --clear-cites-rulings to clear.",
                 },
               },
             )),
@@ -1264,6 +1285,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   blockedBy: argv["blocked-by"] as string[] | undefined,
                   crossNodeBlockedBy,
                   parentTicket: argv["parent-ticket"] === "" ? null : argv["parent-ticket"] as string | undefined,
+                  citesRuling: argv["cites-ruling"] as string[] | undefined,
+                  clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
                 },
                 format,
                 eff.root,
@@ -1697,6 +1720,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   ...LITERAL_KEEP_BLANK,
                   describe: "Source reference as a JSON object",
                 },
+                "cites-ruling": { ...SPLIT_LIST, describe: "Ruling IDs this issue cites (e.g. r-[canonical])" },
               },
             )),
           async (argv) => {
@@ -1732,6 +1756,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   dedupeKey: argv["dedupe-key"] as string | undefined,
                   createdBy: argv["created-by"] as string | undefined,
                   phase: argv.phase === "" ? undefined : (argv.phase as string | undefined),
+                  citesRuling: argv["cites-ruling"] as string[] | undefined,
                 },
                 format,
                 root,
@@ -1802,7 +1827,12 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New phase ID",
                 })
-                .conflicts("impact", "stdin"),
+                .option("clear-cites-rulings", {
+                  type: "boolean",
+                  describe: "Clear all cited rulings",
+                })
+                .conflicts("impact", "stdin")
+                .conflicts("cites-ruling", "clear-cites-rulings"),
               {
                 components: { ...SPLIT_LIST, describe: "Affected components" },
                 "related-tickets": { ...SPLIT_LIST, describe: "Related ticket IDs" },
@@ -1810,6 +1840,11 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 "source-ref": {
                   ...LITERAL_KEEP_BLANK,
                   describe: "Replacement source ref (JSON object)",
+                },
+                "cites-ruling": {
+                  ...SPLIT_LIST,
+                  describe: "Ruling IDs this issue cites (replaces existing)",
+                  requireValue: "Use --clear-cites-rulings to clear.",
                 },
               },
             )),
@@ -1852,6 +1887,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   sourceRefs: parseIssueSourceRefs(argv["source-ref"] as string[] | undefined),
                   order: argv.order as number | undefined,
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
+                  citesRuling: argv["cites-ruling"] as string[] | undefined,
+                  clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
                 },
                 format,
                 root,

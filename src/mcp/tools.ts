@@ -66,6 +66,7 @@ import {
   NoteIdSchema,
   LessonIdSchema,
   ArrangementIdSchema,
+  RulingIdSchema,
   GateAckIdSchema,
   TicketRefSchema,
   IssueRefSchema,
@@ -132,6 +133,16 @@ import {
   handleArrangementUpdate,
 } from "../cli/commands/arrangement.js";
 import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, type ArrangementParty } from "../models/arrangement.js";
+// T-476 section 11: unlike T-473/T-474, the ratified plan calls for all four
+// verbs on MCP (`storybloq_ruling_{create,get,list,supersede}`) -- citation
+// resolution is meant to be discoverable without shelling out to the CLI.
+import {
+  handleRulingGet,
+  handleRulingList,
+  handleRulingCreate,
+  handleRulingSupersede,
+} from "../cli/commands/ruling.js";
+import { RULING_ATTRIBUTIONS } from "../models/ruling.js";
 // T-474: no MCP list tool, same reasoning and same ruling as T-473's
 // arrangement list -- list-shaped tools stay CLI-only.
 import {
@@ -227,27 +238,44 @@ export async function runMcpReadTool(
     const integrityWarnings = warnings.filter((w) =>
       (INTEGRITY_WARNING_TYPES as readonly string[]).includes(w.type),
     );
-    if (integrityWarnings.length > 0) {
+    // T-476 ruling #9: handler-produced render warnings (e.g. a cited
+    // ruling's chain state is unverifiable) -- distinct shape (plain
+    // strings) from the main ledger's typed integrity warnings above, kept
+    // in a separate field rather than conflated into the same array. This
+    // block is reached only when the handler did NOT already classify as an
+    // error above, so a real failure is never softened by a warning.
+    const handlerWarnings = result.warnings ?? [];
+    if (integrityWarnings.length > 0 || handlerWarnings.length > 0) {
       if (format === "json") {
         const parsed = JSON.parse(text) as Record<string, unknown>;
         text = JSON.stringify({
           ...parsed,
-          warnings: integrityWarnings.map((warning) => ({
-            type: warning.type,
-            file: warning.file,
-            message: warning.message,
-          })),
+          ...(integrityWarnings.length > 0 && {
+            warnings: integrityWarnings.map((warning) => ({
+              type: warning.type,
+              file: warning.file,
+              message: warning.message,
+            })),
+          }),
+          ...(handlerWarnings.length > 0 && { handlerWarnings }),
           partial: true,
         }, null, 2);
       } else {
-        const details = integrityWarnings
-          .slice(0, 5)
-          .map((w) => `  - ${w.file}: ${w.message}`)
-          .join("\n");
-        const more = integrityWarnings.length > 5
-          ? `\n  ... and ${integrityWarnings.length - 5} more. Run storybloq_validate for the full list.`
-          : "";
-        text = `Warning: ${integrityWarnings.length} item(s) skipped due to data integrity issues:\n${details}${more}\n\n${text}`;
+        const blocks: string[] = [];
+        if (integrityWarnings.length > 0) {
+          const details = integrityWarnings
+            .slice(0, 5)
+            .map((w) => `  - ${w.file}: ${w.message}`)
+            .join("\n");
+          const more = integrityWarnings.length > 5
+            ? `\n  ... and ${integrityWarnings.length - 5} more. Run storybloq_validate for the full list.`
+            : "";
+          blocks.push(`Warning: ${integrityWarnings.length} item(s) skipped due to data integrity issues:\n${details}${more}`);
+        }
+        if (handlerWarnings.length > 0) {
+          blocks.push(`Warning: ${handlerWarnings.join("; ")}`);
+        }
+        text = `${blocks.join("\n\n")}\n\n${text}`;
       }
     }
 
@@ -684,6 +712,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       description: z.string().optional(),
       blockedBy: z.array(TicketRefSchema).optional(),
       parentTicket: TicketRefSchema.optional().describe("Makes this a sub-ticket"),
+      citesRuling: z.array(RulingIdSchema).optional().describe("Ruling IDs this ticket cites"),
       node: nodeParam,
     },
   }, (args) => {
@@ -698,6 +727,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         description: args.description ?? "",
         blockedBy: args.blockedBy ?? [],
         parentTicket: args.parentTicket ?? null,
+        citesRuling: args.citesRuling,
       },
       format,
       root,
@@ -718,6 +748,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       blockedBy: z.array(TicketRefSchema).optional(),
       crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX)).nullable().optional().describe("e.g. engine:T-061. Null to clear."),
       force: z.boolean().optional().describe("Bypass the ownership guard: complete a ticket claimed by another session, or reopen a complete one (ISS-981). Does not take over a claim; reopening leaves existing claim material unchanged."),
+      citesRuling: z.array(RulingIdSchema).optional().describe("Replaces existing cited rulings. Mutually exclusive with clearCitesRulings."),
+      clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
       node: nodeParam,
     },
   }, (args) => {
@@ -736,6 +768,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           parentTicket: args.parentTicket,
           blockedBy: args.blockedBy,
           crossNodeBlockedBy: args.crossNodeBlockedBy,
+          citesRuling: args.citesRuling,
+          clearCitesRulings: args.clearCitesRulings,
         },
         format,
         root,
@@ -780,6 +814,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       dedupeKey: IssueDedupeKeySchema.optional().describe("A repeated create returns the existing issue."),
       createdBy: z.string().min(1).max(256).optional(),
       phase: z.string().optional().describe("Phase ID"),
+      citesRuling: z.array(RulingIdSchema).optional().describe("Ruling IDs this issue cites"),
       node: nodeParam,
     },
   }, (args) => {
@@ -798,6 +833,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           dedupeKey: args.dedupeKey,
           createdBy: args.createdBy,
           phase: args.phase,
+          citesRuling: args.citesRuling,
         },
         format,
         root,
@@ -820,6 +856,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       sourceRefs: z.array(IssueSourceRefInputSchema).optional().describe("Replaces existing source refs"),
       order: z.number().int().optional(),
       phase: z.string().nullable().optional().describe("Phase ID; null clears the phase"),
+      citesRuling: z.array(RulingIdSchema).optional().describe("Replaces existing cited rulings. Mutually exclusive with clearCitesRulings."),
+      clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
       node: nodeParam,
     },
   }, (args) => {
@@ -840,6 +878,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           sourceRefs: args.sourceRefs,
           order: args.order,
           phase: args.phase,
+          citesRuling: args.citesRuling,
+          clearCitesRulings: args.clearCitesRulings,
         },
         format,
         root,

@@ -137,7 +137,9 @@ import {
 } from "../cli/commands/handover.js";
 import type { CommandContext } from "../cli/types.js";
 import { sanitizeDisplayPath, sanitizeDisplayText } from "../core/display-text.js";
-import { escapeMarkdownDocumentStrict } from "../core/output-formatter.js";
+import { escapeMarkdownDocumentStrict, formatCitedRulingsSection } from "../core/output-formatter.js";
+import { loadCitationContext } from "../core/ruling-loader.js";
+import { resolveEntityCitations } from "../core/ruling.js";
 
 /**
  * ISS-899: whether this caller is refused, and WHY, which the call sites need
@@ -2052,11 +2054,17 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
         instruction = result.instruction;
         stageReminders = result.reminders ?? [];
       } else {
+        // T-476 acceptance 4 (T-055 class): resolved fresh from disk for THIS
+        // ticket at session start, same as PICK_TICKET's own PLAN instruction.
+        const citedRulingsSection = formatCitedRulingsSection(
+          resolveEntityCitations(ticket, loadCitationContext(root)),
+        );
         instruction = [
           `# ${modeLabels[mode]} -- ${ticketResolution.displayId}: ${ticket.title}`,
           "",
           `Write an implementation plan for ticket **${ticketResolution.displayId}**: ${ticket.title}`,
           ticket.description ? `\n**Description:**\n${ticket.description}` : "",
+          citedRulingsSection,
           "",
           `Write the plan as a markdown file at \`.story/sessions/${updated.sessionId}/plan.md\`.`,
           "Do NOT use client-native plan mode.",

@@ -6,6 +6,7 @@ import {
   resolveCitation,
   citationWarningText,
   validateSupersedeCandidate,
+  resolveCitesRulingsInput,
 } from "../../src/core/ruling.js";
 import type { Ruling } from "../../src/models/ruling.js";
 
@@ -206,5 +207,49 @@ describe("validateSupersedeCandidate", () => {
     // c->b closes a 3-node loop: c -> b -> a -> c.
     const refusal = validateSupersedeCandidate(rulings, "r-c", "r-b");
     expect(refusal?.code).toBe("cycle");
+  });
+});
+
+describe("resolveCitesRulingsInput (section 10)", () => {
+  const R1 = "r-0000000000000001";
+  const R2 = "r-0000000000000002";
+
+  it("passes through undefined when neither flag is given (no change on update)", () => {
+    const res = resolveCitesRulingsInput(undefined, undefined);
+    expect(res).toEqual({ ok: true, citesRulings: undefined });
+  });
+
+  it("clears to an empty array when clearCitesRulings is true", () => {
+    const res = resolveCitesRulingsInput(undefined, true);
+    expect(res).toEqual({ ok: true, citesRulings: [] });
+  });
+
+  it("dedupes citesRuling, preserving first-seen order", () => {
+    const res = resolveCitesRulingsInput([R2, R1, R2], undefined);
+    expect(res).toEqual({ ok: true, citesRulings: [R2, R1] });
+  });
+
+  it("refuses when both citesRuling and clearCitesRulings are given", () => {
+    const res = resolveCitesRulingsInput([R1], true);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toContain("mutually exclusive");
+  });
+
+  it("refuses clearCitesRulings alongside an EMPTY citesRuling array (presence, not length, is what conflicts)", () => {
+    const res = resolveCitesRulingsInput([], true);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toContain("mutually exclusive");
+  });
+
+  it("refuses a bare empty citesRuling array on its own (no MCP-only path to clearing)", () => {
+    const res = resolveCitesRulingsInput([], undefined);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toContain("clear-cites-rulings");
+  });
+
+  it("rejects a structurally invalid ruling id", () => {
+    const res = resolveCitesRulingsInput(["not-a-ruling-id"], undefined);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.message).toContain("not-a-ruling-id");
   });
 });

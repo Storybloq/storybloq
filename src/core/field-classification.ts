@@ -22,6 +22,10 @@ const TICKET_RULES: Record<string, MergeRule> = {
   blockedBy: { kind: "commutative" },
   crossNodeBlockedBy: { kind: "commutative" },
   previousDisplayIds: { kind: "commutative" },
+  // T-476: same union-don't-conflict semantics as relatedTickets -- two
+  // sessions each citing a different ruling on the same ticket should merge
+  // to the union, not conflict.
+  citesRulings: { kind: "commutative" },
 
   title: { kind: "hard-conflict" },
   description: { kind: "hard-conflict" },
@@ -70,6 +74,7 @@ const ISSUE_RULES: Record<string, MergeRule> = {
   location: { kind: "commutative" },
   sourceRefs: { kind: "commutative" },
   previousDisplayIds: { kind: "commutative" },
+  citesRulings: { kind: "commutative" },
 
   dedupeKey: { kind: "identity" },
 

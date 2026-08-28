@@ -17,6 +17,8 @@ import {
   successEnvelope,
   ExitCode,
 } from "../../core/output-formatter.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { citationMapFor } from "../../core/ruling.js";
 import { CliValidationError } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 
@@ -90,7 +92,10 @@ export function handlePhaseTickets(
       errorCode: "not_found",
     };
   }
-  return { output: formatPhaseTickets(phaseId, ctx.state, ctx.format) };
+  const tickets = ctx.state.phaseTickets(phaseId);
+  return {
+    output: formatPhaseTickets(phaseId, ctx.state, ctx.format, citationMapFor(tickets, loadCitationContext(ctx.root))),
+  };
 }
 
 // --- Write Handlers ---

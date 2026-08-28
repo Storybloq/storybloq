@@ -15,6 +15,8 @@ import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
 import { ProjectState } from "../../core/project-state.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
 import {
   withProjectLock,
   writeTicketUnlocked,
@@ -79,6 +81,7 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "createdAt",
   "deletedAt",
   "deletedBy",
+  "citesRulings",
 ]);
 
 // --- Read Handlers ---
@@ -111,7 +114,8 @@ export function handleTicketList(
     tickets = tickets.filter((t) => t.type === filters.type);
   }
 
-  return { output: formatTicketList(tickets, ctx.format) };
+  const rulingCtx = loadCitationContext(ctx.root);
+  return { output: formatTicketList(tickets, ctx.format, citationMapFor(tickets, rulingCtx)) };
 }
 
 export function handleTicketGet(
@@ -134,7 +138,8 @@ export function handleTicketGet(
       errorCode: "not_found",
     };
   }
-  return { output: formatTicket(result.item, ctx.state, ctx.format) };
+  const rulingCtx = loadCitationContext(ctx.root);
+  return { output: formatTicket(result.item, ctx.state, ctx.format, resolveEntityCitations(result.item, rulingCtx)) };
 }
 
 export function handleTicketMetaGet(
@@ -175,17 +180,20 @@ export function handleTicketNext(ctx: CommandContext, count: number = 1): Comman
     // Existing path -- unchanged behavior, uses nextTicket (early-stop at blocked phase)
     const outcome = nextTicket(ctx.state);
     const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
-    return { output: formatNextTicketOutcome(outcome, ctx.state, ctx.format), exitCode };
+    const citedRulings = outcome.kind === "found" ? resolveEntityCitations(outcome.ticket, loadCitationContext(ctx.root)) : [];
+    return { output: formatNextTicketOutcome(outcome, ctx.state, ctx.format, citedRulings), exitCode };
   }
   // Multi-candidate path -- continues across blocked phases
   const outcome = nextTickets(ctx.state, count);
   const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
-  return { output: formatNextTicketsOutcome(outcome, ctx.state, ctx.format), exitCode };
+  const citedRulingsByTicketId =
+    outcome.kind === "found" ? citationMapFor(outcome.candidates.map((c) => c.ticket), loadCitationContext(ctx.root)) : new Map();
+  return { output: formatNextTicketsOutcome(outcome, ctx.state, ctx.format, citedRulingsByTicketId), exitCode };
 }
 
 export function handleTicketBlocked(ctx: CommandContext): CommandResult {
   const blocked = blockedTickets(ctx.state);
-  return { output: formatBlockedTickets(blocked, ctx.state, ctx.format) };
+  return { output: formatBlockedTickets(blocked, ctx.state, ctx.format, citationMapFor(blocked, loadCitationContext(ctx.root))) };
 }
 
 // --- Write Handlers ---
@@ -301,6 +309,7 @@ export async function handleTicketCreate(
     description: string;
     blockedBy: string[];
     parentTicket: string | null;
+    citesRuling?: string[];
   },
   format: string,
   root: string,
@@ -310,6 +319,10 @@ export async function handleTicketCreate(
       "invalid_input",
       `Unknown ticket type "${args.type}": must be one of ${TICKET_TYPES.join(", ")}`,
     );
+  }
+  const citesRulingsResolution = resolveCitesRulingsInput(args.citesRuling, undefined);
+  if (!citesRulingsResolution.ok) {
+    throw new CliValidationError("invalid_input", citesRulingsResolution.message);
   }
 
   let createdTicket: Ticket | undefined;
@@ -352,6 +365,8 @@ export async function handleTicketCreate(
       completedDate: null,
       blockedBy: resolvedBlockedBy,
       parentTicket: resolvedParent,
+      ...(citesRulingsResolution.citesRulings !== undefined && citesRulingsResolution.citesRulings.length > 0
+        && { citesRulings: citesRulingsResolution.citesRulings }),
     };
 
     validatePostWriteState(ticket, state, true);
@@ -430,6 +445,8 @@ export async function handleTicketUpdate(
     blockedBy?: string[];
     crossNodeBlockedBy?: string[] | null;
     parentTicket?: string | null;
+    citesRuling?: string[];
+    clearCitesRulings?: boolean;
   },
   format: string,
   root: string,
@@ -438,7 +455,7 @@ export async function handleTicketUpdate(
   assertUpdateHasFields(
     updates,
     "ticket",
-    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket",
+    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings",
   );
   if (updates.status && !TICKET_STATUSES.includes(updates.status as TicketStatus)) {
     throw new CliValidationError(
@@ -451,6 +468,10 @@ export async function handleTicketUpdate(
       "invalid_input",
       `Unknown ticket type "${updates.type}": must be one of ${TICKET_TYPES.join(", ")}`,
     );
+  }
+  const citesRulingsResolution = resolveCitesRulingsInput(updates.citesRuling, updates.clearCitesRulings);
+  if (!citesRulingsResolution.ok) {
+    throw new CliValidationError("invalid_input", citesRulingsResolution.message);
   }
 
   let updatedTicket: Ticket | undefined;
@@ -498,6 +519,7 @@ export async function handleTicketUpdate(
       ...(resolvedBlockedBy !== undefined && { blockedBy: resolvedBlockedBy }),
       ...(updates.crossNodeBlockedBy !== undefined && { crossNodeBlockedBy: updates.crossNodeBlockedBy ?? undefined }),
       ...(updates.parentTicket !== undefined && { parentTicket: resolvedParent }),
+      ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
       ...statusChanges,
     };
 

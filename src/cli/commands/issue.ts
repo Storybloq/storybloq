@@ -10,6 +10,8 @@ import {
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
 import {
   formatIssueList,
   formatIssue,
@@ -75,6 +77,7 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   "createdAt",
   "deletedAt",
   "deletedBy",
+  "citesRulings",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
@@ -120,7 +123,7 @@ export function handleIssueList(
     issues = issues.filter((i) => i.phase === filters.phase);
   }
 
-  return { output: formatIssueList(issues, ctx.format) };
+  return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
 }
 
 export function handleIssueGet(
@@ -143,7 +146,8 @@ export function handleIssueGet(
       errorCode: "not_found",
     };
   }
-  return { output: formatIssue(result.item, ctx.format, ctx.state) };
+  const rulingCtx = loadCitationContext(ctx.root);
+  return { output: formatIssue(result.item, ctx.format, ctx.state, resolveEntityCitations(result.item, rulingCtx)) };
 }
 
 export function handleIssueMetaGet(
@@ -266,6 +270,7 @@ export async function handleIssueCreate(
     dedupeKey?: string;
     createdBy?: string;
     phase?: string;
+    citesRuling?: string[];
   },
   format: string,
   root: string,
@@ -275,6 +280,10 @@ export async function handleIssueCreate(
       "invalid_input",
       `Unknown issue severity "${args.severity}": must be one of ${ISSUE_SEVERITIES.join(", ")}`,
     );
+  }
+  const citesRulingsResolution = resolveCitesRulingsInput(args.citesRuling, undefined);
+  if (!citesRulingsResolution.ok) {
+    throw new CliValidationError("invalid_input", citesRulingsResolution.message);
   }
 
   const dedupeResult = args.dedupeKey === undefined
@@ -351,6 +360,8 @@ export async function handleIssueCreate(
       resolvedDate: null,
       relatedTickets: resolvedRelated,
       phase: args.phase ?? null,
+      ...(citesRulingsResolution.citesRulings !== undefined && citesRulingsResolution.citesRulings.length > 0
+        && { citesRulings: citesRulingsResolution.citesRulings }),
     };
 
     validatePostWriteIssueState(issue, state, true);
@@ -389,6 +400,8 @@ export async function handleIssueUpdate(
     sourceRefs?: IssueSourceRefInput[];
     order?: number;
     phase?: string | null;
+    citesRuling?: string[];
+    clearCitesRulings?: boolean;
   },
   format: string,
   root: string,
@@ -397,7 +410,7 @@ export async function handleIssueUpdate(
   assertUpdateHasFields(
     updates,
     "issue",
-    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase",
+    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings",
   );
   if (updates.status && !ISSUE_STATUSES.includes(updates.status as IssueStatus)) {
     throw new CliValidationError(
@@ -410,6 +423,10 @@ export async function handleIssueUpdate(
       "invalid_input",
       `Unknown issue severity "${updates.severity}": must be one of ${ISSUE_SEVERITIES.join(", ")}`,
     );
+  }
+  const citesRulingsResolution = resolveCitesRulingsInput(updates.citesRuling, updates.clearCitesRulings);
+  if (!citesRulingsResolution.ok) {
+    throw new CliValidationError("invalid_input", citesRulingsResolution.message);
   }
 
   let updatedIssue: Issue | undefined;
@@ -470,6 +487,7 @@ export async function handleIssueUpdate(
       ...(sourceRefs !== undefined && { sourceRefs }),
       ...(updates.order !== undefined && { order: updates.order }),
       ...(updates.phase !== undefined && { phase: updates.phase }),
+      ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
       ...statusChanges,
     };
 

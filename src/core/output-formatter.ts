@@ -18,6 +18,7 @@ import type { DoctorResult } from "./team-doctor.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "./session-scan.js";
 import type { Arrangement, ArrangementLifecycle, ArrangementRole } from "../models/arrangement.js";
 import type { GateAck } from "../models/gate-ack.js";
+import type { Earmark } from "../models/types.js";
 import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
@@ -1540,6 +1541,42 @@ export function formatGateAckContestResult(ack: GateAck, format: OutputFormat): 
     return JSON.stringify(successEnvelope(ack), null, 2);
   }
   return `Gate-ack ${escapeMarkdownInline(sanitizeDisplayText(ack.id))} marked contested: ${escapeMarkdownInline(sanitizeDisplayText(ack.contestedReason ?? ""))}`;
+}
+
+// --- Earmark formatters (T-475) ---
+
+function formatEarmarkLine(earmark: Earmark): string {
+  const holder =
+    earmark.stage === "assigned"
+      ? `assigned to session ${escapeMarkdownInline(sanitizeDisplayText(earmark.holderSession))}`
+      : `reserved for role ${escapeMarkdownInline(sanitizeDisplayText(earmark.holderRole))}`;
+  return (
+    `${holder} (role ${escapeMarkdownInline(sanitizeDisplayText(earmark.holderRole))}), ` +
+    `reserved by ${escapeMarkdownInline(sanitizeDisplayText(earmark.reservedBy.client))}:${escapeMarkdownInline(sanitizeDisplayText(earmark.reservedBy.id))}, ` +
+    `arrangement ${escapeMarkdownInline(sanitizeDisplayText(earmark.arrangementId))}, since ${escapeMarkdownInline(sanitizeDisplayText(earmark.since))}`
+  );
+}
+
+export function formatEarmarkGetResult(ref: string, earmark: Earmark | null, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ ref, earmark }), null, 2);
+  }
+  if (!earmark) return `${escapeMarkdownInline(sanitizeDisplayText(ref))} has no earmark.`;
+  return `Earmark on ${escapeMarkdownInline(sanitizeDisplayText(ref))}: ${formatEarmarkLine(earmark)}`;
+}
+
+export function formatEarmarkActionResult(
+  action: "reserved" | "assigned" | "released",
+  ref: string,
+  earmark: Earmark | null,
+  format: OutputFormat,
+): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({ ref, action, earmark }), null, 2);
+  }
+  const target = escapeMarkdownInline(sanitizeDisplayText(ref));
+  if (action === "released") return `Released earmark on ${target}.`;
+  return `${action === "reserved" ? "Reserved" : "Assigned"} ${target}: ${formatEarmarkLine(earmark!)}`;
 }
 
 // --- Lesson formatters ---

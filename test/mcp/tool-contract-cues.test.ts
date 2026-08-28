@@ -286,14 +286,15 @@ describe("tool description contract (T-460)", () => {
     // A ratchet, not a target. T-460 measured 45,224 -> 38,504 bytes; T-473
     // added three arrangement tools (get/create/update), measured at 40,307
     // bytes; T-474 added three gate-ack tools (get/create/contest), measured
-    // at 42,632 bytes, so this ceiling leaves ~500 bytes of headroom and
-    // fails once an edit gives back more than that. Raising it is a
-    // deliberate act that belongs in a commit message, which is the point.
-    // Deliberately NO lower bound: the cues above are what protect against
-    // over-trimming, and a floor would fail an honest future trim for being
-    // too good.
+    // at 42,632 bytes; T-475 added four earmark tools (get/reserve/assign/
+    // release), measured at 45,615 bytes, so this ceiling leaves ~500 bytes
+    // of headroom and fails once an edit gives back more than that. Raising
+    // it is a deliberate act that belongs in a commit message, which is the
+    // point. Deliberately NO lower bound: the cues above are what protect
+    // against over-trimming, and a floor would fail an honest future trim
+    // for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(43_100);
+    expect(bytes).toBeLessThan(46_100);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -307,7 +308,10 @@ describe("tool description contract (T-460)", () => {
     // T-473 added storybloq_arrangement_get/create/update (60 -> 63); no
     // _list tool, per amendment A3 (status's activeArrangements covers
     // discovery). T-474 added storybloq_gate_ack_get/create/contest
-    // (63 -> 66); no _list tool either, same ruling.
-    expect(result.tools.length).toBe(66);
+    // (63 -> 66); no _list tool either, same ruling. T-475 added
+    // storybloq_earmark_get/reserve/assign/release (66 -> 70); no _list
+    // tool either -- earmarks are a field on the item, not a standalone
+    // entity, so there is nothing to enumerate independently.
+    expect(result.tools.length).toBe(70);
   });
 });

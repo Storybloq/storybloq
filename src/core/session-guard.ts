@@ -23,6 +23,8 @@ import { escapeMarkdownDocumentStrict } from "./output-formatter.js";
 import { CONTAINMENT_CHECKS } from "./containment-checks.js";
 import { safeJson, MAX_DISPLAY_SERIALIZED_LENGTH } from "./safe-json.js";
 import { boundedList } from "./bounded-list.js";
+import { loadArrangementsSafe } from "./arrangement-loader.js";
+import type { Arrangement, ArrangementRole, ArrangementLifecycle } from "../models/arrangement.js";
 
 export { CONTAINMENT_CHECKS };
 
@@ -342,6 +344,107 @@ export interface GuardVerdict {
    * of pre-validated cleanup targets.
    */
   readonly collisions: readonly SessionCollision[];
+  /**
+   * T-473: which duet-mode arrangements this call is a recognized party or
+   * counterparty to, keyed by identity (never by session name -- the
+   * arrangement's own PITFALLS clause). Orthogonal to the ownership axis
+   * above, same convention as `diagnostics`/`collisions`: populated at every
+   * return point in `classifySessionGuard`, including the zero-verdict
+   * branch, so a fresh session start still learns an arrangement exists
+   * before it acts.
+   */
+  readonly arrangements: readonly ArrangementAnnouncement[];
+  /**
+   * Non-empty means arrangement discovery was degraded (an unreadable
+   * `.story/arrangements/` entry, bad JSON, or a schema mismatch) -- NOT
+   * that no arrangement exists. An empty `arrangements` array alongside a
+   * non-empty `arrangementWarnings` is not evidence of a clean, arrangement-free
+   * project; per this project's "never fail open" doctrine (N-108
+   * requirement 3), a consumer with irreversible work pending should treat
+   * that combination as unreachable rather than proceeding as though no
+   * arrangement exists.
+   */
+  readonly arrangementWarnings: readonly string[];
+}
+
+/**
+ * One recognized party/counterparty relationship to a T-473 arrangement,
+ * aggregated to exactly one entry per `(arrangementId, role)` so a caller
+ * that is BOTH the caller's own identity AND a scanned session's identity
+ * (the common case) does not produce two entries.
+ */
+export interface ArrangementAnnouncement {
+  readonly arrangementId: string;
+  readonly lifecycle: ArrangementLifecycle;
+  readonly role: ArrangementRole;
+  /** Deduped; `"caller"` first when both sources matched. */
+  readonly matchSources: readonly ("caller" | "scanned-session")[];
+  /** Deduped `sourceDir`s of every scanned match; `[]` if none. */
+  readonly sourceDirs: readonly string[];
+}
+
+/**
+ * Matches the caller's own identity AND every session the raw scan admitted
+ * (`activeSessions`, `resumableSessions`, `expiredLeaseSessions`) against
+ * each non-closed arrangement's parties.
+ *
+ * Scans the RAW `SessionScanResult` populations, not the post-dedup
+ * `verdicts`/`sessions` array: a session dropped by ID-collision
+ * deduplication still carries a usable `ownerTask` and must still be able to
+ * trigger an announcement (T-473 Gate 1, round 3 finding) -- `verdicts` is a
+ * strict subset of what this function needs to see. Matching is on
+ * `(client, identityAnchor)` only, never on session name or `sourceDir`
+ * identity, per the arrangement's own PITFALLS clause.
+ */
+export function matchArrangements(
+  caller: GuardCaller,
+  summaries: SessionScanResult,
+  arrangements: readonly Arrangement[],
+): ArrangementAnnouncement[] {
+  const scanned: { ownerTask: OwnerTask | null; sourceDir: string }[] = [
+    ...summaries.activeSessions.map((s) => ({ ownerTask: s.ownerTask ?? null, sourceDir: s.sourceDir })),
+    ...summaries.resumableSessions.map((s) => ({ ownerTask: s.ownerTask ?? null, sourceDir: s.sourceDir })),
+    ...(summaries.expiredLeaseSessions ?? []).map((s) => ({ ownerTask: s.ownerTask ?? null, sourceDir: s.sourceDir })),
+  ];
+  const byKey = new Map<
+    string,
+    { role: ArrangementRole; lifecycle: ArrangementLifecycle; sources: Set<"caller" | "scanned-session">; dirs: Set<string> }
+  >();
+  for (const a of arrangements) {
+    if (a.lifecycle === "closed") continue;
+    for (const party of a.parties) {
+      const key = `${a.id}:${party.role}`;
+      const matchesCaller =
+        caller.task != null && party.client === caller.client && party.identityAnchor === caller.task.id;
+      const scannedDirs = scanned
+        .filter((s) => s.ownerTask && party.client === s.ownerTask.client && party.identityAnchor === s.ownerTask.id)
+        .map((s) => s.sourceDir);
+      if (!matchesCaller && scannedDirs.length === 0) continue;
+      const entry = byKey.get(key) ?? {
+        role: party.role,
+        lifecycle: a.lifecycle,
+        sources: new Set<"caller" | "scanned-session">(),
+        dirs: new Set<string>(),
+      };
+      if (matchesCaller) entry.sources.add("caller");
+      for (const d of scannedDirs) {
+        entry.sources.add("scanned-session");
+        entry.dirs.add(d);
+      }
+      byKey.set(key, entry);
+    }
+  }
+  return [...byKey.entries()].map(([key, v]) => ({
+    arrangementId: key.split(":")[0]!,
+    lifecycle: v.lifecycle,
+    role: v.role,
+    // Fixed two-element ordering (caller-first when present), not a general
+    // comparator -- this domain never has more than two values.
+    matchSources: v.sources.has("caller")
+      ? (["caller", ...[...v.sources].filter((s) => s !== "caller")] as const)
+      : [...v.sources],
+    sourceDirs: [...v.dirs],
+  }));
 }
 
 /** One deduplication event, carrying the decoded names unmodified by this build (ISS-914). */
@@ -1148,7 +1251,12 @@ const SESSION_LIST_BLIND_KINDS = new Set<SessionScanDiagnostic["kind"]>([
   "entry-not-contained",
 ]);
 
-export function classifySessionGuard(summaries: SessionScanResult, caller: GuardCaller): GuardVerdict {
+export function classifySessionGuard(
+  summaries: SessionScanResult,
+  caller: GuardCaller,
+  arrangements: readonly Arrangement[] = [],
+  arrangementWarnings: readonly string[] = [],
+): GuardVerdict {
   const identityAvailable = caller.task !== null;
   const notes: string[] = [];
 
@@ -2196,6 +2304,8 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
       diagnostics,
       scanCompleteness,
       collisions: droppedDuplicates,
+      arrangements: matchArrangements(caller, summaries, arrangements),
+      arrangementWarnings,
     };
   }
 
@@ -2259,6 +2369,8 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
       diagnostics,
       scanCompleteness,
       collisions: droppedDuplicates,
+      arrangements: matchArrangements(caller, summaries, arrangements),
+      arrangementWarnings,
     };
   }
 
@@ -2339,6 +2451,8 @@ export function classifySessionGuard(summaries: SessionScanResult, caller: Guard
     diagnostics,
     scanCompleteness,
     collisions: droppedDuplicates,
+    arrangements: matchArrangements(caller, summaries, arrangements),
+    arrangementWarnings,
   };
 }
 
@@ -2372,5 +2486,9 @@ export function evaluateSessionGuard(root: string, opts: EvaluateSessionGuardOpt
   const environmentTaskId = client === "codex" ? process.env.CODEX_THREAD_ID : process.env.CLAUDE_CODE_SESSION_ID;
   const task = ownerTaskForClient(client, opts.clientTaskId ?? environmentTaskId);
 
-  return classifySessionGuard(scanSessionSummaries(root), { task, client });
+  // T-473: synchronous, never-throwing read -- cannot regress the
+  // never-fail-open posture on ownership above, and its own degradation is
+  // reported via `arrangementWarnings` rather than swallowed.
+  const { arrangements, warnings: arrangementWarnings } = loadArrangementsSafe(root);
+  return classifySessionGuard(scanSessionSummaries(root), { task, client }, arrangements, arrangementWarnings);
 }

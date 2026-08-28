@@ -259,13 +259,15 @@ describe("the guard does not read the ledger", () => {
     expect(reads.some((p) => p.endsWith("state.json"))).toBe(true);
   });
 
-  it("reads only the sessions directory and its state.json files", () => {
+  it("reads only the sessions directory, its state.json files, and the T-473 arrangements directory", () => {
     const root = projectWithLedger(50);
     evaluateSessionGuard(root, { clientTaskId: "caller-task", client: "claude" });
 
     expect(reads.length).toBeGreaterThan(0);
     for (const path of reads) {
-      expect(path, `unexpected read: ${path}`).toContain(`${sep}.story${sep}sessions`);
+      expect(path, `unexpected read: ${path}`).toMatch(
+        new RegExp(`\\${sep}\\.story\\${sep}(sessions|arrangements)(\\${sep}|$)`),
+      );
     }
   });
 

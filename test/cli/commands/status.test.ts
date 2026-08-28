@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleStatus } from "../../../src/cli/commands/status.js";
@@ -105,6 +105,134 @@ describe("handleStatus forwards the scanner's diagnostics", () => {
     const out = (await handleStatus(ctxAt(root, "md"))).output;
     expect(out).toContain("Session Scan Warnings");
     expect(out).toContain("half-created");
+  });
+});
+
+describe("handleStatus: arrangements (T-473)", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+  });
+
+  function tempRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "sb-status-arr-"));
+    roots.push(root);
+    return root;
+  }
+
+  function writeArrangement(root: string, overrides: Record<string, unknown> = {}): void {
+    mkdirSync(join(root, ".story", "arrangements"), { recursive: true });
+    const arrangement = {
+      id: "a-0123456789abcdef",
+      lifecycle: "active",
+      bounds: ["T-001"],
+      parties: [
+        { role: "pen", client: "claude", identityAnchor: "pen-session" },
+        { role: "worker", client: "claude", identityAnchor: "worker-session" },
+      ],
+      gates: [],
+      unreachability: { onIrreversibleWork: "hold" },
+      createdDate: "2026-08-27",
+      ...overrides,
+    };
+    writeFileSync(join(root, ".story", "arrangements", `${arrangement.id}.json`), JSON.stringify(arrangement));
+  }
+
+  function ctxAt(root: string, format: "md" | "json" = "json"): CommandContext {
+    return makeCtx({
+      format,
+      root,
+      state: makeState({
+        tickets: [makeTicket({ id: "T-001", phase: "p1" })],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      }),
+    } as never);
+  }
+
+  it("renders an active arrangement in the JSON payload", async () => {
+    const root = tempRoot();
+    writeArrangement(root);
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as {
+      data: { arrangements: { id: string; lifecycle: string }[]; arrangementWarnings: string[] };
+    };
+    expect(parsed.data.arrangements).toHaveLength(1);
+    expect(parsed.data.arrangements[0]!.id).toBe("a-0123456789abcdef");
+    expect(parsed.data.arrangements[0]!.lifecycle).toBe("active");
+    expect(parsed.data.arrangementWarnings).toEqual([]);
+  });
+
+  it("renders an active arrangement in the Markdown output", async () => {
+    const root = tempRoot();
+    writeArrangement(root);
+    const out = (await handleStatus(ctxAt(root, "md"))).output;
+    expect(out).toContain("## Arrangements");
+    expect(out).toContain("a-0123456789abcdef");
+  });
+
+  it("omits a closed arrangement from both formats", async () => {
+    const root = tempRoot();
+    writeArrangement(root, { lifecycle: "closed" });
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as {
+      data: { arrangements: unknown[] };
+    };
+    expect(parsed.data.arrangements).toEqual([]);
+    const out = (await handleStatus(ctxAt(root, "md"))).output;
+    expect(out).not.toContain("## Arrangements");
+  });
+
+  it("reports a warning, not a failure, for a bound ref that no longer resolves", async () => {
+    const root = tempRoot();
+    writeArrangement(root, { bounds: ["T-999"] });
+    const result = await handleStatus(ctxAt(root));
+    expect(result.exitCode).toBeUndefined();
+    const parsed = JSON.parse(result.output) as { data: { arrangementWarnings: string[] } };
+    expect(parsed.data.arrangementWarnings.some((w) => w.includes("T-999") && w.includes("not found"))).toBe(true);
+  });
+
+  it("reports a warning, not a failure, for a corrupt arrangement file (binding item 2: never blocks status)", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, ".story", "arrangements"), { recursive: true });
+    writeFileSync(join(root, ".story", "arrangements", "a-broken.json"), "{not json");
+    const result = await handleStatus(ctxAt(root));
+    expect(result.exitCode).toBeUndefined();
+    const parsed = JSON.parse(result.output) as { data: { arrangements: unknown[]; arrangementWarnings: string[] } };
+    expect(parsed.data.arrangements).toEqual([]);
+    expect(parsed.data.arrangementWarnings.some((w) => w.includes("invalid JSON"))).toBe(true);
+  });
+
+  it("A2: a hostile bound ref cannot reach arrangementWarnings' 'not found' path at all -- TicketRefSchema/IssueRefSchema reject it at load time, surfacing only the already-sanitized schema-mismatch warning", async () => {
+    // Every bound ref is validated against TicketRefSchema/IssueRefSchema
+    // before an arrangement is ever accepted onto disk (^T-\d+[a-z]?$,
+    // ^ISS-\d+$, or the canonical crockford forms) -- there is no character
+    // class overlap with control/bidi/invisible characters, so a hostile ref
+    // never survives to reach buildStatusArrangements' own "not found"/
+    // "ambiguous" warning composition. It is rejected one layer earlier, by
+    // loadArrangementsSafe's schema-mismatch check, whose warning is already
+    // covered by the filename test above.
+    const root = tempRoot();
+    const hostileRef = "T-999\n​[fake-line]";
+    writeArrangement(root, { bounds: [hostileRef] });
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as {
+      data: { arrangements: unknown[]; arrangementWarnings: string[] };
+    };
+    expect(parsed.data.arrangements).toEqual([]);
+    expect(parsed.data.arrangementWarnings).toHaveLength(1);
+    expect(parsed.data.arrangementWarnings[0]).toContain("schema mismatch");
+    expect(parsed.data.arrangementWarnings[0]).not.toContain("\n");
+    expect(parsed.data.arrangementWarnings[0]).not.toContain("​");
+  });
+
+  it("A2: sanitizes a hostile arrangement filename before it reaches arrangementWarnings", async () => {
+    const root = tempRoot();
+    mkdirSync(join(root, ".story", "arrangements"), { recursive: true });
+    // A directory-listing entry can legally contain control characters on
+    // POSIX filesystems; loadArrangementsSafe must sanitize the filename it
+    // echoes back, not just the ref values it resolves itself.
+    writeFileSync(join(root, ".story", "arrangements", "a-broken\n​.json"), "{not json");
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+    expect(parsed.data.arrangementWarnings).toHaveLength(1);
+    expect(parsed.data.arrangementWarnings[0]).not.toContain("\n");
+    expect(parsed.data.arrangementWarnings[0]).not.toContain("​");
   });
 });
 
@@ -493,6 +621,53 @@ describe("formatFederatedStatus (T-334)", () => {
     };
     const output = formatFederatedStatus(sampleFedState, configWithReview, "md");
     expect(output).toContain("lenses");
+  });
+});
+
+describe("arrangementsSection on both formatters (T-473)", () => {
+  const arrangements = {
+    items: [
+      {
+        id: "a-0123456789abcdef",
+        lifecycle: "active" as const,
+        bounds: ["T-473"],
+        parties: [{ role: "pen" as const, client: "claude" as const }, { role: "worker" as const, client: "claude" as const }],
+      },
+    ],
+    warnings: ["arrangements/a-broken.json: invalid JSON"],
+  };
+
+  it("formatStatus renders items and warnings in Markdown", () => {
+    const out = formatStatus(makeState(), "md", [], [], undefined, [], undefined, [], arrangements);
+    expect(out).toContain("## Arrangements");
+    expect(out).toContain("a-0123456789abcdef");
+    expect(out).toContain("arrangements/a-broken.json: invalid JSON");
+  });
+
+  it("formatStatus renders items and warnings in JSON, as separate top-level keys", () => {
+    const parsed = JSON.parse(formatStatus(makeState(), "json", [], [], undefined, [], undefined, [], arrangements));
+    expect(parsed.data.arrangements).toHaveLength(1);
+    expect(parsed.data.arrangements[0].id).toBe("a-0123456789abcdef");
+    expect(parsed.data.arrangementWarnings).toEqual(["arrangements/a-broken.json: invalid JSON"]);
+  });
+
+  it("formatFederatedStatus renders items and warnings in Markdown", () => {
+    const out = formatFederatedStatus(sampleFedState, orchestratorConfig, "md", [], [], undefined, [], undefined, [], arrangements);
+    expect(out).toContain("## Arrangements");
+    expect(out).toContain("a-0123456789abcdef");
+  });
+
+  it("formatFederatedStatus renders items and warnings in JSON, as separate top-level keys", () => {
+    const parsed = JSON.parse(
+      formatFederatedStatus(sampleFedState, orchestratorConfig, "json", [], [], undefined, [], undefined, [], arrangements),
+    );
+    expect(parsed.data.arrangements).toHaveLength(1);
+    expect(parsed.data.arrangementWarnings).toEqual(["arrangements/a-broken.json: invalid JSON"]);
+  });
+
+  it("neither formatter renders the section when both items and warnings are empty (default)", () => {
+    expect(formatStatus(makeState(), "md")).not.toContain("## Arrangements");
+    expect(formatFederatedStatus(sampleFedState, orchestratorConfig, "md")).not.toContain("## Arrangements");
   });
 });
 

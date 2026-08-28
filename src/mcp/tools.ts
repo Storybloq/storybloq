@@ -21,6 +21,8 @@ import { withStalenessNote } from "../autonomous/binary-staleness.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
 import { withStrictToolSchemas } from "./strict-schemas.js";
+import { MilestoneWriteSchema, handleSessionMilestone, utf8ByteLimitedString } from "../cli/commands/session-milestone.js";
+import { MAX_GATE_NAME_BYTES, MAX_MILESTONE_NOTE_BYTES } from "../presence/types.js";
 
 // ISS-407: Cache active session dir to avoid O(n) directory scan on every MCP call.
 // Expires after 30s -- long enough to amortize hot-path calls, short enough
@@ -423,10 +425,19 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Project summary: phase statuses, ticket/issue counts, blockers, current phase",
     inputSchema: {
       format: z.enum(["md", "json"]).optional().describe("default: md"),
+      // T-477 section 2.2: mirrors storybloq_session_guard's identical field
+      // exactly -- omit to inherit the client's environment identity
+      // (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID); client itself is always
+      // inferred (currentStorybloqClient()/STORYBLOQ_CLIENT), never a
+      // separate explicit input here.
+      clientTaskId: z
+        .string()
+        .optional()
+        .describe("Omit to inherit the client's environment identity (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID)."),
     },
   }, async (args) => {
     const format = args.format ?? "md";
-    const result = await runMcpReadTool(pinnedRoot, handleStatus, undefined, format);
+    const result = await runMcpReadTool(pinnedRoot, (ctx) => handleStatus(ctx, args.clientTaskId), undefined, format);
     // ISS-570 G2: prepend update-available notice so /story's first MCP
     // call surfaces 'newer storybloq available' proactively. Synchronous
     // cache read; a background refresh is kicked off so the NEXT status
@@ -489,6 +500,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
   }, () => runMcpReadTool(pinnedRoot, handleBlockerList));
 
   registerSessionGuardTool(server, pinnedRoot);
+  registerSessionMilestoneTool(server, pinnedRoot);
 
   server.registerTool("storybloq_validate", {
     description: "Reference integrity + schema checks. Works even when corrupt JSON blocks project loading.",
@@ -1990,5 +2002,50 @@ export function registerSessionGuardTool(server: McpServer, root: string) {
     return Promise.resolve({
       content: [{ type: "text" as const, text: JSON.stringify(verdict, null, 2) }],
     });
+  });
+}
+
+/**
+ * T-477 section 3: writes a self-reported milestone onto the caller's own
+ * presence record via the heavy-path locked read-modify-write
+ * (`core/presence-enrichment.ts`). Same optional `clientTaskId` shape as
+ * `storybloq_status` (section 2.2) -- client is always inferred, never a
+ * separate explicit field. Write-time validation (`MilestoneWriteSchema`)
+ * runs here, not in `presence/record.ts`'s slim-binary reader (section 3.3).
+ */
+export function registerSessionMilestoneTool(server: McpServer, root: string) {
+  return server.registerTool("storybloq_session_milestone", {
+    description:
+      "Report a self-described work milestone (implementing/gate-hold/blocked-external/reviewing) onto this session's own presence record, for duet/arrangement visibility. Self-reported, never a computed verdict. On lock contention or write failure, returns an explicit machine-readable retryable error rather than a false success.",
+    inputSchema: {
+      kind: z.enum(["implementing", "gate-hold", "blocked-external", "reviewing"]),
+      gateName: utf8ByteLimitedString(MAX_GATE_NAME_BYTES, "gateName").optional().describe("Required when kind is gate-hold"),
+      note: utf8ByteLimitedString(MAX_MILESTONE_NOTE_BYTES, "note").optional(),
+      clientTaskId: z
+        .string()
+        .optional()
+        .describe("Omit to inherit the client's environment identity (CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID)."),
+    },
+  }, async (args) => {
+    try { touchMcpLiveness(root); } catch { /* best-effort */ }
+    const parsed = MilestoneWriteSchema.safeParse({
+      kind: args.kind,
+      ...(args.gateName !== undefined ? { gateName: args.gateName } : {}),
+      ...(args.note !== undefined ? { note: args.note } : {}),
+    });
+    if (!parsed.success) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Invalid milestone input: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
+        }],
+        isError: true,
+      };
+    }
+    const result = handleSessionMilestone(root, parsed.data, args.clientTaskId);
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      ...(result.ok ? {} : { isError: true }),
+    };
   });
 }

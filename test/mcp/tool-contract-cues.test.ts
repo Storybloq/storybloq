@@ -300,14 +300,15 @@ describe("tool description contract (T-460)", () => {
     // release), measured at 45,615 bytes; T-476 added four ruling tools
     // (get/list/create/supersede), measured at 48,458 bytes, then section 10's
     // citesRuling/clearCitesRulings fields on ticket/issue create/update,
-    // measured at 49,347 bytes, so this ceiling leaves ~500 bytes of headroom
-    // and fails once an edit gives back more than that. Raising it is a
-    // deliberate act that belongs in a commit message, which is the point.
-    // Deliberately NO lower bound: the cues above are what protect against
-    // over-trimming, and a floor would fail an honest future trim for being
-    // too good.
+    // measured at 49,347 bytes; T-477 added storybloq_session_milestone and
+    // storybloq_status's clientTaskId field, measured at 50,361 bytes, so this
+    // ceiling leaves ~500 bytes of headroom and fails once an edit gives back
+    // more than that. Raising it is a deliberate act that belongs in a commit
+    // message, which is the point. Deliberately NO lower bound: the cues
+    // above are what protect against over-trimming, and a floor would fail an
+    // honest future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(49_850);
+    expect(bytes).toBeLessThan(50_850);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -328,7 +329,10 @@ describe("tool description contract (T-460)", () => {
     // storybloq_ruling_get/list/create/supersede (70 -> 74); unlike the
     // three prior additions, section 11 of the ratified plan explicitly
     // calls for a _list tool here (citation resolution should be
-    // discoverable without shelling out to the CLI).
-    expect(result.tools.length).toBe(74);
+    // discoverable without shelling out to the CLI). T-477 added
+    // storybloq_session_milestone (74 -> 75); no _list tool, matching the
+    // arrangement/gate-ack/earmark precedent -- a milestone is a field on
+    // the caller's own presence record, not a standalone enumerable entity.
+    expect(result.tools.length).toBe(75);
   });
 });

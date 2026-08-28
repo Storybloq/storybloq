@@ -27,14 +27,22 @@
 
 import {
   MAX_AGENT_IDS,
+  MAX_ARRANGEMENT_PRESENCE_ENTRIES,
+  MAX_CLIENT_TASK_ID_BYTES,
   MAX_CLOSED_TOOL_IDS,
+  MAX_GATE_NAME_BYTES,
   MAX_ID_BYTES,
+  MAX_MILESTONE_KIND_BYTES,
+  MAX_MILESTONE_NOTE_BYTES,
   MAX_OPEN_TOOLS,
   MAX_RECORD_BYTES,
   MAX_TARGET_BYTES,
   MAX_TOOL_NAME_BYTES,
   PRESENCE_SCHEMA_VERSION,
   SESSION_ID_PATTERN,
+  type ArrangementPresenceEntry,
+  type MilestoneReadEvent,
+  type OwnerIdentity,
   type PresenceHookEvent,
   type PresenceOpenTool,
   type SessionPresence,
@@ -78,6 +86,8 @@ export function parsePresenceRecord(text: string, sessionId: string): SessionPre
   const startedAt = isoOrNull(r.startedAt);
   if (startedAt === null) return null; // no anchor -- treat as absent
 
+  const { entries: arrangementPresence, truncated: parseTruncated } = parseArrangementPresence(r.arrangementPresence);
+
   return {
     schemaVersion: PRESENCE_SCHEMA_VERSION,
     sessionId,
@@ -90,6 +100,13 @@ export function parsePresenceRecord(text: string, sessionId: string): SessionPre
     agentIds: parseIdList(r.agentIds, MAX_AGENT_IDS),
     suppressed: r.suppressed === true,
     endedAt: isoOrNull(r.endedAt),
+    // T-477: the SAME cap and per-string length limits apply on READ, not
+    // only on write, so a hand-edited or pre-v4-shaped file cannot smuggle an
+    // oversized value through parsing and back out through a later write.
+    arrangementPresence,
+    arrangementPresenceTruncated: r.arrangementPresenceTruncated === true || parseTruncated,
+    milestone: parseMilestone(r.milestone),
+    ownerIdentity: parseOwnerIdentity(r.ownerIdentity),
   };
 }
 
@@ -113,7 +130,24 @@ export function applyPresenceEvent(
     agentIds: [],
     suppressed: false,
     endedAt: null,
+    arrangementPresence: [],
+    arrangementPresenceTruncated: false,
+    milestone: null,
+    ownerIdentity: null,
   };
+
+  // T-477's ONE canonical transition table for the four new fields (stated
+  // here so no other section of this codebase restates it and drifts):
+  //   - arrangementPresence / arrangementPresenceTruncated / ownerIdentity:
+  //     preserved verbatim on EVERY hook-driven transition below, with no
+  //     exceptions -- only the heavy path (status / milestone command) ever
+  //     changes them, so none of the cases below assigns to them and the
+  //     `{...base, ...}` spread carries them through unchanged.
+  //   - milestone: preserved on PreToolUse, PostToolUse, Stop, and
+  //     SessionStart with `source` in {resume, compact}; cleared to null on
+  //     SessionStart with any other (including unknown/missing) `source`,
+  //     and on SessionEnd (tombstoned, matching `endedAt`'s own semantics).
+  const PRESERVE_MILESTONE_SOURCES = new Set(["resume", "compact"]);
 
   switch (ctx.event) {
     case "SessionStart":
@@ -132,6 +166,7 @@ export function applyPresenceEvent(
         // A start on a tombstoned record revives it. `/exit` then reopening the
         // same session id must not leave the row permanently hidden.
         endedAt: null,
+        milestone: ctx.source && PRESERVE_MILESTONE_SOURCES.has(ctx.source) ? base.milestone : null,
       };
 
     case "PreToolUse": {
@@ -197,6 +232,7 @@ export function applyPresenceEvent(
         agentIds: [],
         suppressed: ctx.suppressed,
         endedAt: ctx.nowIso,
+        milestone: null,
       };
   }
 }
@@ -294,6 +330,97 @@ function parseIdList(value: unknown, cap: number): readonly string[] {
 /** Keeps the most recent `max` entries; the oldest are the ones we can afford to forget. */
 function capTail<T>(list: readonly T[], max: number): readonly T[] {
   return list.length <= max ? list : list.slice(list.length - max);
+}
+
+// ---------------------------------------------------------------------------
+// T-477: arrangementPresence / milestone / ownerIdentity -- no Zod, matching
+// this file's existing hand-rolled style, since it is on the slim binary's
+// import graph.
+// ---------------------------------------------------------------------------
+
+const ARRANGEMENT_PRESENCE_ROLES = new Set(["pen", "worker"]);
+const ARRANGEMENT_PRESENCE_LIFECYCLES = new Set(["active", "suspended"]);
+
+function parseArrangementPresenceEntry(value: unknown): ArrangementPresenceEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const arrangementId = capString(v.arrangementId, MAX_ID_BYTES);
+  if (!arrangementId) return null;
+  if (typeof v.role !== "string" || !ARRANGEMENT_PRESENCE_ROLES.has(v.role)) return null;
+  if (typeof v.lifecycle !== "string" || !ARRANGEMENT_PRESENCE_LIFECYCLES.has(v.lifecycle)) return null;
+  let supervising: { workerActive: boolean } | null = null;
+  if (v.supervising && typeof v.supervising === "object" && !Array.isArray(v.supervising)) {
+    const s = v.supervising as Record<string, unknown>;
+    if (typeof s.workerActive === "boolean") supervising = { workerActive: s.workerActive };
+  }
+  return {
+    arrangementId,
+    role: v.role as "pen" | "worker",
+    lifecycle: v.lifecycle as "active" | "suspended",
+    supervising,
+  };
+}
+
+/**
+ * Applies `MAX_ARRANGEMENT_PRESENCE_ENTRIES` on READ too (not only on the
+ * heavy path's write), so a hand-edited or pre-v4-shaped file cannot smuggle
+ * an oversized array through parsing and back out through a later legitimate
+ * write. A malformed individual entry is dropped, not fatal to the rest --
+ * matching this file's existing per-entry-tolerant style (`parseOpenTools`).
+ */
+function parseArrangementPresence(value: unknown): { entries: readonly ArrangementPresenceEntry[]; truncated: boolean } {
+  if (!Array.isArray(value)) return { entries: [], truncated: false };
+  const out: ArrangementPresenceEntry[] = [];
+  let truncated = false;
+  for (const raw of value) {
+    const entry = parseArrangementPresenceEntry(raw);
+    if (!entry) continue;
+    if (out.some((e) => e.arrangementId === entry.arrangementId && e.role === entry.role)) continue;
+    if (out.length >= MAX_ARRANGEMENT_PRESENCE_ENTRIES) {
+      truncated = true;
+      continue;
+    }
+    out.push(entry);
+  }
+  return { entries: out, truncated };
+}
+
+/**
+ * `clientTaskId` is an IDENTITY value, compared for EXACT equality by
+ * `hasLivePresenceMatch` (core/presence-enrichment.ts) -- unlike every other
+ * field this reader caps with `capString` (display text, safe to truncate),
+ * silently truncating an oversized identity is unsafe: a corrupt or crafted
+ * value whose first `MAX_CLIENT_TASK_ID_BYTES` bytes happen to equal a real
+ * worker's identity anchor would decode into that VALID identity instead of
+ * being refused, producing a false worker-liveness match. Reject an oversized
+ * (or otherwise malformed) value outright instead of mutating it.
+ */
+function parseOwnerIdentity(value: unknown): OwnerIdentity | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (v.client !== "claude" && v.client !== "codex") return null;
+  if (typeof v.clientTaskId !== "string" || v.clientTaskId.length === 0 || v.clientTaskId.includes("\0")) return null;
+  if (Buffer.byteLength(v.clientTaskId, "utf-8") > MAX_CLIENT_TASK_ID_BYTES) return null;
+  return { client: v.client, clientTaskId: v.clientTaskId };
+}
+
+/**
+ * Hand-rolled, matching `parsePresenceRecord`'s existing style for every
+ * other field: defensive `typeof`/property checks, `null` on anything
+ * malformed, no schema library. This function -- not a Zod schema -- is what
+ * keeps `presence/record.ts` on the slim binary's import graph; write-time
+ * validation (the strict `MilestoneWriteSchema`) lives in the heavy CLI/MCP
+ * command file instead, which already imports Zod freely.
+ */
+function parseMilestone(value: unknown): MilestoneReadEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.kind !== "string" || typeof v.at !== "string") return null;
+  const kind = capString(v.kind, MAX_MILESTONE_KIND_BYTES);
+  if (!kind) return null;
+  const gateName = typeof v.gateName === "string" ? (capString(v.gateName, MAX_GATE_NAME_BYTES) ?? undefined) : undefined;
+  const note = typeof v.note === "string" ? (capString(v.note, MAX_MILESTONE_NOTE_BYTES) ?? undefined) : undefined;
+  return { kind, at: v.at, gateName, note };
 }
 
 function withUnique(list: readonly string[], value: string): readonly string[] {

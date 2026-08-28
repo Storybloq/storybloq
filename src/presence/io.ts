@@ -174,6 +174,25 @@ export function presenceDirIfPresent(root: string): string | null {
 }
 
 /**
+ * T-477: every presence record's absolute path (`.json` files only; `.lock`
+ * directories excluded). Read-only, best-effort -- an unreadable directory
+ * yields `[]` rather than throwing. Used only by the HEAVY path's
+ * cross-session worker-liveness scan (`core/presence-enrichment.ts`), never
+ * by the hook itself, which never needs to see any record but its own.
+ */
+export function listPresenceRecordPaths(root: string): readonly string[] {
+  const dir = presenceDirIfPresent(root);
+  if (!dir) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => join(dir, e.name));
+}
+
+/**
  * Acquires a per-record lock, or gives up inside the budget.
  *
  * `mkdir` is the atomic primitive. A lock DIRECTORY older than LOCK_STALE_MS is

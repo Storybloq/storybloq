@@ -107,6 +107,7 @@ import {
   handleRulingSupersede,
 } from "./commands/ruling.js";
 import { RULING_ATTRIBUTIONS } from "../models/ruling.js";
+import { handleLandings } from "./commands/landings.js";
 import {
   handleGateAckGet,
   handleGateAckList,
@@ -3343,6 +3344,41 @@ export function registerGateAckCommand(yargs: Argv): Argv {
         .demandCommand(1, "Specify a gate-ack subcommand: list, get, create, contest")
         .strict(),
     () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
+// landings (T-477)
+// ---------------------------------------------------------------------------
+
+export function registerLandingsCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "landings",
+    "Commits that touched tickets/issues, with review coverage (CLI-only; no MCP tool)",
+    (y) =>
+      addFormatOption(
+        y
+          .option("since", {
+            type: "string",
+            describe: "Show landings after this ref (exclusive), instead of the last 200 commits on HEAD",
+          })
+          .option("limit", {
+            type: "number",
+            describe: "Cap the number of commits scanned (default 200 without --since; overrides that default with --since too)",
+          }),
+      ),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      await runReadCommand(format, (ctx) =>
+        handleLandings(
+          {
+            since: argv.since as string | undefined,
+            limit: argv.limit as number | undefined,
+          },
+          ctx,
+        ),
+      );
+    },
   );
 }
 

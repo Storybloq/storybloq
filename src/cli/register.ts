@@ -5079,9 +5079,68 @@ export function registerSessionCommand(yargs: Argv): Argv {
             }
           },
         )
+        .command(
+          "milestone <kind>",
+          "Report a self-described work milestone for presence display (duet/arrangement sessions)",
+          (y2) =>
+            y2
+              .positional("kind", {
+                type: "string",
+                choices: ["implementing", "gate-hold", "blocked-external", "reviewing"] as const,
+                demandOption: true,
+                describe: "What this session is doing right now",
+              })
+              .option("gate-name", {
+                type: "string",
+                describe: "Required for kind=gate-hold: which gate is being held at",
+              })
+              .option("note", {
+                type: "string",
+                describe: "Optional free-text note",
+              })
+              .option("client-task-id", {
+                type: "string",
+                describe: "Explicit caller identity, if not resolvable from the session",
+              })
+              .option("format", {
+                type: "string",
+                choices: ["text", "json"] as const,
+                default: "text",
+              }),
+          async (argv) => {
+            const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
+            const root = discoverProjectRoot();
+            if (!root) {
+              process.stderr.write("No .story/ project found.\n");
+              process.exitCode = 1;
+              return;
+            }
+            const { MilestoneWriteSchema, handleSessionMilestone } = await import("./commands/session-milestone.js");
+            const rawInput = {
+              kind: argv.kind,
+              ...(argv["gate-name"] !== undefined ? { gateName: argv["gate-name"] } : {}),
+              ...(argv.note !== undefined ? { note: argv.note } : {}),
+            };
+            const parsed = MilestoneWriteSchema.safeParse(rawInput);
+            if (!parsed.success) {
+              process.stderr.write(`Invalid milestone input: ${parsed.error.issues.map((i) => i.message).join("; ")}\n`);
+              process.exitCode = 1;
+              return;
+            }
+            const result = handleSessionMilestone(root, parsed.data, argv["client-task-id"] as string | undefined);
+            if (argv.format === "json") {
+              process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+            } else if (result.ok) {
+              process.stdout.write(`Milestone recorded: ${result.kind} at ${result.at}\n`);
+            } else {
+              process.stderr.write(`${result.message}\n`);
+            }
+            if (!result.ok) process.exitCode = 1;
+          },
+        )
         .demandCommand(
           1,
-          "Specify a session subcommand: compact-prepare, resume-prompt, limit-stop, clear-compact, stop, list, show, repair, delete, health, watch",
+          "Specify a session subcommand: compact-prepare, resume-prompt, limit-stop, clear-compact, stop, list, show, repair, delete, health, watch, milestone",
         )
         .strict(),
     () => {},

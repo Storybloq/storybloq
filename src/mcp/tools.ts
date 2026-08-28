@@ -65,6 +65,7 @@ import {
   LESSON_ID_REGEX,
   NoteIdSchema,
   LessonIdSchema,
+  ArrangementIdSchema,
   TicketRefSchema,
   IssueRefSchema,
   TICKET_STATUSES,
@@ -120,6 +121,15 @@ import {
   handleNoteCreate,
   handleNoteUpdate,
 } from "../cli/commands/note.js";
+// T-473: no MCP list tool -- gate-0 ruled storybloq_status's active-arrangements
+// summary covers discovery and T-473 does not ask for MCP-side enumeration.
+// CLI `arrangement list` stays (scripting needs it); only MCP drops it.
+import {
+  handleArrangementGet,
+  handleArrangementCreate,
+  handleArrangementUpdate,
+} from "../cli/commands/arrangement.js";
+import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, type ArrangementParty } from "../models/arrangement.js";
 import {
   handleLessonList,
   handleLessonGet,
@@ -903,6 +913,60 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       format,
       root,
     ),
+  ));
+
+  // --- Arrangement tools ---
+  // No storybloq_arrangement_list (amendment A3): storybloq_status's
+  // activeArrangements summary covers MCP-side discovery. CLI `arrangement
+  // list` stays for scripting.
+
+  server.registerTool("storybloq_arrangement_get", {
+    description: "Get a duet/wave arrangement by ID",
+    inputSchema: {
+      id: ArrangementIdSchema.describe("e.g. a-[canonical]"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleArrangementGet(args.id, ctx)));
+
+  server.registerTool("storybloq_arrangement_create", {
+    description: "Create a new arrangement (duet/wave party charter). Authentication is out of scope: identityAnchor is a name to match, not a credential.",
+    inputSchema: {
+      bounds: z.array(z.string()).min(1).describe("Ticket/issue refs, display-form or canonical"),
+      parties: z
+        .array(
+          z.object({
+            role: z.enum(ARRANGEMENT_ROLES),
+            client: z.enum(["claude", "codex"]),
+            identityAnchor: z.string().min(1).max(128),
+            modelTier: z.string().max(64).optional(),
+            provenanceLogRef: z.string().max(1024).optional(),
+          }),
+        )
+        .min(2)
+        .describe("Exactly one pen and one worker party"),
+      onIrreversibleWork: z.enum(["hold", "escalate"]),
+      onReversibleWork: z.enum(["hold", "escalate", "proceed"]).optional(),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleArrangementCreate(
+      {
+        bounds: args.bounds,
+        parties: args.parties as ArrangementParty[],
+        onIrreversibleWork: args.onIrreversibleWork,
+        onReversibleWork: args.onReversibleWork,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("storybloq_arrangement_update", {
+    description: "Update an arrangement's lifecycle (active/suspended/closed)",
+    inputSchema: {
+      id: ArrangementIdSchema.describe("e.g. a-[canonical]"),
+      lifecycle: z.enum(ARRANGEMENT_LIFECYCLE),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleArrangementUpdate(args.id, { lifecycle: args.lifecycle }, format, root),
   ));
 
   // --- Lesson tools ---

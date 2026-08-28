@@ -604,6 +604,38 @@ const MATRIX: Coverage[] = [
       expect(parsed.data.messages[0]!.message.refs.files).toEqual(["reports/a,b.json"]);
     },
   },
+  {
+    key: "arrangement create --bounds",
+    check: (dir) => {
+      seedTickets(dir, 2);
+      const res = run(dir, "arrangement", "create",
+        "--bounds", "T-001,T-002",
+        "--party", "role=pen,client=claude,identityAnchor=pen-1",
+        "--party", "role=worker,client=claude,identityAnchor=worker-1",
+        "--unreachability-irreversible", "hold");
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "arrangements")[0]!.bounds).toEqual(["T-001", "T-002"]);
+    },
+  },
+  {
+    key: "arrangement create --party",
+    check: (dir) => {
+      seedTickets(dir, 1);
+      // comma: "literal" here: it is the field separator WITHIN one
+      // --party value, so a "split" policy would shred each entry into
+      // unparsable fragments and this command would fail outright.
+      const res = run(dir, "arrangement", "create",
+        "--bounds", "T-001",
+        "--party", "role=pen,client=claude,identityAnchor=pen-1",
+        "--party", "role=worker,client=codex,identityAnchor=worker-1",
+        "--unreachability-irreversible", "hold");
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "arrangements")[0]!.parties).toEqual([
+        { role: "pen", client: "claude", identityAnchor: "pen-1" },
+        { role: "worker", client: "codex", identityAnchor: "worker-1" },
+      ]);
+    },
+  },
 ];
 
 describe("ISS-886 registration coverage matrix", () => {

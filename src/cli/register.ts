@@ -94,6 +94,13 @@ import {
   handleNoteDelete,
 } from "./commands/note.js";
 import {
+  handleArrangementList,
+  handleArrangementGet,
+  handleArrangementCreate,
+  handleArrangementUpdate,
+} from "./commands/arrangement.js";
+import { ARRANGEMENT_LIFECYCLE, ARRANGEMENT_ROLES, type ArrangementParty } from "../models/arrangement.js";
+import {
   handleLessonList,
   handleLessonGet,
   handleLessonDigest,
@@ -2764,6 +2771,208 @@ export function registerNoteCommand(yargs: Argv): Argv {
           1,
           "Specify a note subcommand: list, get, create, update, delete",
         )
+        .strict(),
+    () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
+// arrangement (T-473)
+// ---------------------------------------------------------------------------
+
+/** Parses one `--party role=pen,client=codex,identityAnchor=abc123` entry. */
+function parsePartySpec(spec: string): ArrangementParty {
+  const fields: Record<string, string> = {};
+  for (const pair of spec.split(",")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) {
+      throw new CliValidationError("invalid_input", `Malformed --party entry (expected key=value pairs): "${spec}"`);
+    }
+    fields[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+  }
+  const { role, client, identityAnchor, modelTier } = fields;
+  if (!role || !ARRANGEMENT_ROLES.includes(role as (typeof ARRANGEMENT_ROLES)[number])) {
+    throw new CliValidationError("invalid_input", `--party role must be one of ${ARRANGEMENT_ROLES.join(", ")}: "${spec}"`);
+  }
+  if (client !== "claude" && client !== "codex") {
+    throw new CliValidationError("invalid_input", `--party client must be "claude" or "codex": "${spec}"`);
+  }
+  if (!identityAnchor) {
+    throw new CliValidationError("invalid_input", `--party identityAnchor is required: "${spec}"`);
+  }
+  return {
+    role: role as (typeof ARRANGEMENT_ROLES)[number],
+    client,
+    identityAnchor,
+    ...(modelTier !== undefined && { modelTier }),
+  };
+}
+
+export function registerArrangementCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "arrangement",
+    "Manage duet-mode arrangements",
+    (y) =>
+      y
+        .command(
+          "list",
+          "List arrangements",
+          (y2) =>
+            addFormatOption(
+              y2.option("lifecycle", {
+                type: "string",
+                choices: ARRANGEMENT_LIFECYCLE,
+                describe: "Filter by lifecycle",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) =>
+              handleArrangementList({ lifecycle: argv.lifecycle as string | undefined }, ctx),
+            );
+          },
+        )
+        .command(
+          "get <id>",
+          "Get an arrangement",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", {
+                type: "string",
+                demandOption: true,
+                describe: "Arrangement ID (e.g. a-[canonical])",
+              }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleArrangementGet(argv.id as string, ctx));
+          },
+        )
+        .command(
+          "create",
+          "Create a new arrangement",
+          (y2) =>
+            addFormatOption(
+              arrayOptions(
+                y2
+                  .option("unreachability-irreversible", {
+                    type: "string",
+                    choices: ["hold", "escalate"],
+                    demandOption: true,
+                    describe: "What to do on irreversible work when the arrangement is unreachable",
+                  })
+                  .option("unreachability-reversible", {
+                    type: "string",
+                    choices: ["hold", "escalate", "proceed"],
+                    describe: "What to do on reversible work when the arrangement is unreachable",
+                  }),
+                {
+                  // Atomic ticket/issue refs -- a comma can never be part of one.
+                  bounds: { ...SPLIT_LIST, describe: "Ticket/issue refs this arrangement covers (repeatable)" },
+                  // "role=pen,client=claude,identityAnchor=..." -- the comma is
+                  // the field separator WITHIN one value, so it must never be
+                  // split by this layer; parsePartySpec below does its own
+                  // splitting per entry.
+                  party: {
+                    ...LITERAL_KEEP_BLANK,
+                    describe: "role=pen|worker,client=claude|codex,identityAnchor=... (repeatable)",
+                  },
+                },
+              ).demandOption(["bounds", "party"]),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const parties = (argv.party as string[]).map(parsePartySpec);
+              const result = await handleArrangementCreate(
+                {
+                  bounds: argv.bounds as string[],
+                  parties,
+                  onIrreversibleWork: argv["unreachability-irreversible"] as "hold" | "escalate",
+                  onReversibleWork: argv["unreachability-reversible"] as "hold" | "escalate" | "proceed" | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "update <id>",
+          "Update an arrangement",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", {
+                  type: "string",
+                  demandOption: true,
+                  describe: "Arrangement ID (e.g. a-[canonical])",
+                })
+                .option("lifecycle", {
+                  type: "string",
+                  choices: ARRANGEMENT_LIFECYCLE,
+                  describe: "New lifecycle",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleArrangementUpdate(
+                argv.id as string,
+                { lifecycle: argv.lifecycle as string | undefined },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .demandCommand(1, "Specify an arrangement subcommand: list, get, create, update")
         .strict(),
     () => {},
   );

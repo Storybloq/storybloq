@@ -276,14 +276,15 @@ describe("tool description contract (T-460)", () => {
   });
 
   it("holds the payload under its post-trim ceiling", async () => {
-    // A ratchet, not a target. T-460 measured 45,224 -> 38,504 bytes, so this
-    // ceiling leaves ~1.5 KB of headroom and fails once an edit gives back more
-    // than that. Raising it is a deliberate act that belongs in a commit
-    // message, which is the point. Deliberately NO lower bound: the cues above
-    // are what protect against over-trimming, and a floor would fail an honest
-    // future trim for being too good.
+    // A ratchet, not a target. T-460 measured 45,224 -> 38,504 bytes; T-473
+    // added three arrangement tools (get/create/update), measured at 40,307
+    // bytes, so this ceiling leaves ~1.5 KB of headroom and fails once an
+    // edit gives back more than that. Raising it is a deliberate act that
+    // belongs in a commit message, which is the point. Deliberately NO lower
+    // bound: the cues above are what protect against over-trimming, and a
+    // floor would fail an honest future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(40_000);
+    expect(bytes).toBeLessThan(41_800);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -294,6 +295,9 @@ describe("tool description contract (T-460)", () => {
     await Promise.all([server.connect(s), client.connect(c)]);
     const result = await client.listTools();
     await client.close();
-    expect(result.tools.length).toBe(60);
+    // T-473 added storybloq_arrangement_get/create/update (60 -> 63); no
+    // _list tool, per amendment A3 (status's activeArrangements covers
+    // discovery).
+    expect(result.tools.length).toBe(63);
   });
 });

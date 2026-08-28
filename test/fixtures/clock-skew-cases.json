@@ -1,0 +1,93 @@
+[
+  {
+    "name": "same instant",
+    "nowMs": 1700000000000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "five minutes ago",
+    "nowMs": 1700000300000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 300,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "exactly at the cadence boundary (900s)",
+    "nowMs": 1700000900000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 900,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "one second past the cadence boundary",
+    "nowMs": 1700000901000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 901,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "two hours ago (well past cadence)",
+    "nowMs": 1700007200000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 7200,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "exactly at the tolerance boundary (at 120s in the future)",
+    "nowMs": 1699999880000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": false
+  },
+  {
+    "name": "one second past the tolerance boundary (at 121s in the future)",
+    "nowMs": 1699999879000,
+    "at": "2023-11-14T22:13:20.000Z",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "far future timestamp (hand-edited or corrupt record)",
+    "nowMs": 1700000000000,
+    "at": "2099-01-01T00:00:00.000Z",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "unparseable timestamp",
+    "nowMs": 1700000000000,
+    "at": "not-a-timestamp",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "date-only, no time component (JS Date.parse accepts this; ISO-8601 for this rule does not)",
+    "nowMs": 1700000000000,
+    "at": "2023-11-14",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "missing timezone designator (JS Date.parse takes this as ambiguous local time)",
+    "nowMs": 1700000000000,
+    "at": "2023-11-14T22:13:20",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "locale-style date string, not ISO-8601",
+    "nowMs": 1700000000000,
+    "at": "November 14, 2023",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": true
+  },
+  {
+    "name": "valid ISO-8601 with a numeric UTC offset instead of Z",
+    "nowMs": 1699992800000,
+    "at": "2023-11-14T22:13:20.000+02:00",
+    "expectedElapsedSeconds": 0,
+    "expectedClockAnomaly": false
+  }
+]

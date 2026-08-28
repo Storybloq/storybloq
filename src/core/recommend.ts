@@ -18,6 +18,7 @@ import {
   isCrossNodeBlocked,
 } from "./queries.js";
 import { validateProject } from "./validation.js";
+import { notHiddenByEarmark } from "./earmarks.js";
 import { applyClaimAnnotations } from "./claims.js";
 import type { Claim } from "../models/types.js";
 
@@ -219,7 +220,8 @@ function generateCriticalIssues(state: ProjectState): Recommendation[] {
     .filter(
       (i) =>
         i.status !== "resolved" &&
-        (i.severity === "critical" || i.severity === "high"),
+        (i.severity === "critical" || i.severity === "high") &&
+        notHiddenByEarmark(i),
     )
     .sort((a, b) => {
       const sevDiff = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
@@ -268,6 +270,7 @@ function generateHighImpactUnblocks(state: ProjectState, crossNodeStatuses?: Rec
     if (ticket.status === "complete") continue;
     if (state.isBlocked(ticket)) continue;
     if (isCrossNodeBlocked(ticket, crossNodeStatuses)) continue;
+    if (!notHiddenByEarmark(ticket)) continue;
 
     const wouldUnblock = ticketsUnblockedBy(ticket.id, state);
     if (wouldUnblock.length >= 2) {
@@ -313,7 +316,11 @@ function generateNearCompleteUmbrellas(
 
     const leaves = descendantLeaves(umbrellaId, state);
     const incomplete = leaves.filter(
-      (t) => t.status !== "complete" && !state.isBlocked(t) && !isCrossNodeBlocked(t, crossNodeStatuses),
+      (t) =>
+        t.status !== "complete" &&
+        !state.isBlocked(t) &&
+        !isCrossNodeBlocked(t, crossNodeStatuses) &&
+        notHiddenByEarmark(t),
     );
     const sorted = sortByPhaseAndOrder(incomplete, phaseIndex);
     if (sorted.length === 0) continue;
@@ -347,7 +354,11 @@ function generatePhaseMomentum(state: ProjectState, crossNodeStatuses?: Record<s
     if (state.phaseStatus(phase.id) === "complete") continue;
     const leaves = state.phaseTickets(phase.id);
     const candidate = leaves.find(
-      (t) => t.status !== "complete" && !state.isBlocked(t) && !isCrossNodeBlocked(t, crossNodeStatuses),
+      (t) =>
+        t.status !== "complete" &&
+        !state.isBlocked(t) &&
+        !isCrossNodeBlocked(t, crossNodeStatuses) &&
+        notHiddenByEarmark(t),
     );
     if (!candidate) continue;
     return [
@@ -368,7 +379,11 @@ function generatePhaseMomentum(state: ProjectState, crossNodeStatuses?: Record<s
 function generateQuickWins(state: ProjectState, phaseIndex: Map<string, number>, crossNodeStatuses?: Record<string, string>): Recommendation[] {
   const tickets = state.leafTickets.filter(
     (t) =>
-      t.status === "open" && t.type === "chore" && !state.isBlocked(t) && !isCrossNodeBlocked(t, crossNodeStatuses),
+      t.status === "open" &&
+      t.type === "chore" &&
+      !state.isBlocked(t) &&
+      !isCrossNodeBlocked(t, crossNodeStatuses) &&
+      notHiddenByEarmark(t),
   );
   const sorted = sortByPhaseAndOrder(tickets, phaseIndex);
 
@@ -388,7 +403,8 @@ function generateOpenIssues(state: ProjectState): Recommendation[] {
     .filter(
       (i) =>
         i.status !== "resolved" &&
-        (i.severity === "medium" || i.severity === "low"),
+        (i.severity === "medium" || i.severity === "low") &&
+        notHiddenByEarmark(i),
     )
     .sort((a, b) => {
       const sevDiff = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
@@ -470,6 +486,11 @@ function applyHandoverBoost(
   for (const id of actionableIds) {
     const ticket = state.ticketByID(id);
     if (!ticket || ticket.status === "complete") continue;
+    // Layer 2: applies to BOTH branches below -- boosting an already-listed
+    // rec and freshly adding one that bypassed the generators entirely.
+    // Never suppresses an already-inprogress ticket referenced in a
+    // handover; only an open one's earmark is a pick temptation here.
+    if (!notHiddenByEarmark(ticket)) continue;
 
     const existing = dedup.get(id);
     if (existing) {

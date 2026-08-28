@@ -179,6 +179,42 @@ describe("nextTicket", () => {
       expect(result.ticket.id).toBe("T-002");
     }
   });
+
+  const ASSIGNED_EARMARK = {
+    stage: "assigned" as const,
+    reservedBy: { client: "claude" as const, id: "pen-task-1" },
+    arrangementId: "a-0123456789abcdef",
+    since: "2026-08-28T00:00:00.000Z",
+    holderRole: "worker" as const,
+    holderSession: "11111111-1111-4111-8111-111111111111",
+  };
+
+  it("T-475 section 5: skips an OPEN earmarked ticket, returns the next unearmarked one", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", order: 10, status: "open", earmark: ASSIGNED_EARMARK }),
+        makeTicket({ id: "T-002", phase: "p1", order: 20, status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTicket(state);
+    expect(result.kind).toBe("found");
+    if (result.kind === "found") {
+      expect(result.ticket.id).toBe("T-002");
+    }
+  });
+
+  it("T-475 section 5: never skips an INPROGRESS earmarked ticket -- R5's normal worked state", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1", order: 10, status: "inprogress", earmark: ASSIGNED_EARMARK })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTicket(state);
+    expect(result.kind).toBe("found");
+    if (result.kind === "found") {
+      expect(result.ticket.id).toBe("T-001");
+    }
+  });
 });
 
 describe("nextTickets", () => {
@@ -361,6 +397,33 @@ describe("nextTickets", () => {
     expect(result.kind).toBe("found");
     if (result.kind === "found") {
       expect(result.candidates).toHaveLength(1);
+    }
+  });
+
+  it("T-475 section 5: excludes an OPEN earmarked ticket, includes an INPROGRESS earmarked one", () => {
+    const earmark = {
+      stage: "assigned" as const,
+      reservedBy: { client: "claude" as const, id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-08-28T00:00:00.000Z",
+      holderRole: "worker" as const,
+      holderSession: "11111111-1111-4111-8111-111111111111",
+    };
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", order: 10, status: "open", earmark }),
+        makeTicket({ id: "T-002", phase: "p1", order: 20, status: "inprogress", earmark }),
+        makeTicket({ id: "T-003", phase: "p1", order: 30, status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTickets(state, 5);
+    expect(result.kind).toBe("found");
+    if (result.kind === "found") {
+      const ids = result.candidates.map((c) => c.ticket.id);
+      expect(ids).not.toContain("T-001");
+      expect(ids).toContain("T-002");
+      expect(ids).toContain("T-003");
     }
   });
 });

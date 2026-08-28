@@ -233,3 +233,20 @@ describe("PICK_TICKET earmark choke point -- issue path (T-475)", () => {
     expect(readIssue(root, "ISS-001").earmark ?? null).toBeNull();
   });
 });
+
+describe("PICK_TICKET Layer 2 (advisory) -- own open-issues listing (T-475 section 5)", () => {
+  let root: string;
+  beforeEach(() => { root = buildRepo(); mkdirSync(join(root, ".story", "sessions", "s"), { recursive: true }); });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("omits an OPEN issue earmarked to anyone from the candidates instruction", async () => {
+    writeIssue(root, "ISS-001", assignedTo(OTHER_SESSION));
+    writeIssue(root, "ISS-002", null);
+    const ctx = new StageContext(root, join(root, ".story", "sessions", "s"), makeState(), makeRecipe());
+
+    const result = await stage.enter(ctx);
+    const instruction = "action" in result ? "" : result.instruction;
+    expect(instruction).not.toContain("ISS-001");
+    expect(instruction).toContain("ISS-002");
+  });
+});

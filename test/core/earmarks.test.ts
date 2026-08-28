@@ -3,10 +3,13 @@ import {
   tryAcquireEarmark,
   canPlaceEarmark,
   isEarmarkVisible,
+  notHiddenByEarmark,
   isTicketEarmarkStale,
   isIssueEarmarkStale,
   provenEarmarkOwnership,
   describeEarmarkHolder,
+  clearSameSessionEarmark,
+  earmarkMatchesArrangement,
 } from "../../src/core/earmarks.js";
 import type { Earmark } from "../../src/models/types.js";
 
@@ -270,5 +273,78 @@ describe("describeEarmarkHolder", () => {
 
   it("names the role for a reserved earmark", () => {
     expect(describeEarmarkHolder(reserved({ holderRole: "pen" }))).toContain("pen");
+  });
+});
+
+describe("notHiddenByEarmark (T-475 section 5: mixed open+inprogress listings)", () => {
+  it("hides an OPEN item earmarked to anyone", () => {
+    expect(notHiddenByEarmark({ status: "open", earmark: reserved() })).toBe(false);
+    expect(notHiddenByEarmark({ status: "open", earmark: assigned() })).toBe(false);
+  });
+
+  it("shows an OPEN item with no earmark", () => {
+    expect(notHiddenByEarmark({ status: "open", earmark: null })).toBe(true);
+  });
+
+  it("never hides an INPROGRESS item, earmarked or not -- R5's normal worked state", () => {
+    expect(notHiddenByEarmark({ status: "inprogress", earmark: assigned() })).toBe(true);
+    expect(notHiddenByEarmark({ status: "inprogress", earmark: null })).toBe(true);
+  });
+
+  it("passes any other status through untouched", () => {
+    expect(notHiddenByEarmark({ status: "complete", earmark: assigned() })).toBe(true);
+    expect(notHiddenByEarmark({ status: "resolved", earmark: assigned() })).toBe(true);
+  });
+});
+
+describe("clearSameSessionEarmark (T-475 section 5: PARK/SKIP/cancel/completion self-decline)", () => {
+  it("clears an assigned earmark held by the given session", () => {
+    const item = { earmark: assigned({ holderSession: SESSION_A }) };
+    const result = clearSameSessionEarmark(item, SESSION_A);
+    expect(result).toEqual({ cleared: true, item: { earmark: null } });
+  });
+
+  it("leaves an assigned earmark held by a DIFFERENT session untouched", () => {
+    const item = { earmark: assigned({ holderSession: SESSION_A }) };
+    const result = clearSameSessionEarmark(item, SESSION_B);
+    expect(result).toEqual({ cleared: false, item });
+    expect(result.item).toBe(item); // same reference -- no spurious copy
+  });
+
+  it("never touches a reserved earmark -- it names no session to match against", () => {
+    const item = { earmark: reserved() };
+    const result = clearSameSessionEarmark(item, SESSION_A);
+    expect(result).toEqual({ cleared: false, item });
+  });
+
+  it("is a no-op on an item with no earmark at all", () => {
+    const item = { earmark: null };
+    const result = clearSameSessionEarmark(item, SESSION_A);
+    expect(result).toEqual({ cleared: false, item });
+  });
+
+  it("preserves every other field on the item it clears", () => {
+    const item = { id: "T-001", status: "inprogress", earmark: assigned({ holderSession: SESSION_A }) };
+    const { item: next } = clearSameSessionEarmark(item, SESSION_A);
+    expect(next).toEqual({ id: "T-001", status: "inprogress", earmark: null });
+  });
+});
+
+describe("earmarkMatchesArrangement (T-475 section 5: arrangement-close bulk clear)", () => {
+  it("matches a reserved earmark naming the arrangement", () => {
+    expect(earmarkMatchesArrangement(reserved({ arrangementId: ARRANGEMENT_ID }), ARRANGEMENT_ID)).toBe(true);
+  });
+
+  it("matches an assigned earmark naming the arrangement", () => {
+    expect(earmarkMatchesArrangement(assigned({ arrangementId: ARRANGEMENT_ID }), ARRANGEMENT_ID)).toBe(true);
+  });
+
+  it("does not match an earmark naming a DIFFERENT arrangement", () => {
+    expect(earmarkMatchesArrangement(assigned({ arrangementId: "a-fedcba9876543210" }), ARRANGEMENT_ID)).toBe(false);
+  });
+
+  it("does not match an absent earmark", () => {
+    expect(earmarkMatchesArrangement(null, ARRANGEMENT_ID)).toBe(false);
+    expect(earmarkMatchesArrangement(undefined, ARRANGEMENT_ID)).toBe(false);
   });
 });

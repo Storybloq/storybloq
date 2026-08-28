@@ -12,6 +12,7 @@ import {
   type CompletionGuardOptions,
 } from "../../core/claims.js";
 import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
 import { ProjectState } from "../../core/project-state.js";
 import {
@@ -581,7 +582,19 @@ export async function handleTicketUpdate(
           `If that is intended, re-run with --force.`,
       );
     }
-    const finalTicket = completion.ticket;
+    let finalTicket = completion.ticket;
+    // Section 5 (completion, new seam): `clearClaimOnComplete` just stripped
+    // `existing.claimedBySession` above -- an `assigned` earmark that named
+    // that exact session was the normal worked state (R5) and is now
+    // orphaned by the claim it was co-located with, which is one of R5's two
+    // invalid split states if left behind. Scoped to a genuine, non-no-op
+    // completion that actually had a matching claim to strip; an earmark
+    // that never matched `existing.claimedBySession` was already invalid
+    // independently of this write and is left for `validate` to flag.
+    if (!isNoOpUpdate && finalTicket.status === "complete" && existing.claimedBySession) {
+      const { item: completedWithEarmark } = clearSameSessionEarmark(finalTicket, existing.claimedBySession);
+      finalTicket = completedWithEarmark;
+    }
     validatePostWriteState(finalTicket, state, false);
     await writeTicketUnlocked(finalTicket, root);
     updatedTicket = finalTicket;

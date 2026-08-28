@@ -2,6 +2,7 @@ import { displayIdOf } from "../../core/resolver.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { effectiveReviewEffort } from "../review-effort.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 
 /**
  * ISSUE_FIX stage -- T-153: Fix a single issue picked from PICK_TICKET.
@@ -107,6 +108,22 @@ export class IssueFixStage implements WorkflowStage {
         reminders: ["Set status to 'resolved', add resolution text, set resolvedDate."],
       };
     }
+
+    // Section 5 (completion, new seam): the agent's own status-update write
+    // just confirmed above landed a genuine resolution -- clear a
+    // same-session assigned earmark left over from PICK_TICKET's issue-path
+    // acquisition, in a fresh locked write (best-effort: a failure here
+    // leaves a stale-eligible earmark for `validate` to flag, never blocks
+    // the fix from finalizing).
+    try {
+      const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+      await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
+        const freshIssue = ps.issues.find((i) => i.id === issue.id);
+        if (!freshIssue) return;
+        const { cleared, item: next } = clearSameSessionEarmark(freshIssue, ctx.state.sessionId);
+        if (cleared) await writeIssueUnlocked(next, ctx.root);
+      });
+    } catch { /* best-effort */ }
 
     // T-208: Optional code review for issue fixes.
     // T-461: a goto jumps straight to a stage without consulting its skip(),

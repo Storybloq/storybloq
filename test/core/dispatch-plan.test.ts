@@ -271,3 +271,33 @@ describe("buildFederationDispatchPlan (T-336)", () => {
     expect(plan.skipped).toHaveLength(0);
   });
 });
+
+describe("T-475 section 5: dispatch's dry-run display (ids: 'all') never surfaces an earmarked candidate", () => {
+  it("an open ticket earmarked to someone never reaches the dispatch plan, end to end through recommend()", async () => {
+    const { recommend } = await import("../../src/core/recommend.js");
+    const { makeTicket, makeState, makeRoadmap, makePhase } = await import("./test-factories.js");
+    const state = makeState({
+      tickets: [
+        makeTicket({
+          id: "T-001", phase: "p1", status: "open", type: "chore",
+          earmark: {
+            stage: "assigned",
+            reservedBy: { client: "claude", id: "pen-task-1" },
+            arrangementId: "a-0123456789abcdef",
+            since: "2026-08-28T00:00:00.000Z",
+            holderRole: "worker",
+            holderSession: "11111111-1111-4111-8111-111111111111",
+          },
+        }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open", type: "chore" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+
+    const { recommendations } = recommend(state, 10);
+    const plan = buildDispatchPlan(recommendations, "all", "/project", "2.1.140", 10);
+
+    expect(plan.entries.some((e) => e.target.id === "T-001")).toBe(false);
+    expect(plan.entries.some((e) => e.target.id === "T-002")).toBe(true);
+  });
+});

@@ -1,5 +1,6 @@
-import { withProjectLock } from "../../core/project-loader.js";
+import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked } from "../../core/project-loader.js";
 import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
+import { earmarkMatchesArrangement } from "../../core/earmarks.js";
 import { generateCanonicalId } from "../../core/canonical-id.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
 import {
@@ -144,6 +145,26 @@ export async function handleArrangementCreate(
   return { output: formatArrangementCreateResult(created, format) };
 }
 
+/**
+ * Section 5: closing an arrangement retracts everything it ever authorized.
+ * Called INSIDE `handleArrangementUpdate`'s existing lock, never a
+ * separately-locking wrapper (confirmed nesting-deadlock risk, round 1) --
+ * `earmarkMatchesArrangement` (earmarks.ts) is the pure predicate, this is
+ * just the scan-and-write.
+ */
+async function clearEarmarkUnlocked(state: ProjectState, arrangementId: string, root: string): Promise<void> {
+  for (const ticket of state.tickets) {
+    if (earmarkMatchesArrangement(ticket.earmark, arrangementId)) {
+      await writeTicketUnlocked({ ...ticket, earmark: null }, root);
+    }
+  }
+  for (const issue of state.issues) {
+    if (earmarkMatchesArrangement(issue.earmark, arrangementId)) {
+      await writeIssueUnlocked({ ...issue, earmark: null }, root);
+    }
+  }
+}
+
 export async function handleArrangementUpdate(
   id: string,
   updates: { lifecycle?: string },
@@ -162,10 +183,12 @@ export async function handleArrangementUpdate(
 
   let updated: Arrangement | undefined;
 
-  await withProjectLock(root, { strict: true }, async () => {
+  await withProjectLock(root, { strict: true }, async ({ state }) => {
     // Arrangements are off the strict ProjectState load path (binding item
     // 2), so the existing record comes from the fail-safe loader, not from
-    // `state` -- consistent with the read handlers above.
+    // `state` -- consistent with the read handlers above. `state` itself is
+    // still needed here (section 5) to scan tickets/issues for earmarks to
+    // retract on close.
     const { arrangements } = loadArrangementsSafe(root);
     const existing = arrangements.find((a) => a.id === id);
     if (!existing) {
@@ -175,6 +198,9 @@ export async function handleArrangementUpdate(
     const arrangement = validateOrThrow(candidate);
     // Binding item 3: the ordinary atomic-replace path, `createOnly` omitted.
     await writeArrangementUnlocked(arrangement, root);
+    if (arrangement.lifecycle === "closed") {
+      await clearEarmarkUnlocked(state, arrangement.id, root);
+    }
     updated = arrangement;
   });
 

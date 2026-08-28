@@ -221,4 +221,56 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
       expect(thirdRaw.status).toBe("inprogress");
     });
   });
+
+  describe("completion clears the same-session earmark (T-475 section 5, new seam)", () => {
+    it("clears this session's assigned earmark once report() confirms the issue resolved", async () => {
+      const root = await newProject();
+      tempDirs.push(root);
+      const issueId = await createIssue(root, "reserved for worker");
+      await setIssueEarmark(root, issueId, {
+        stage: "reserved",
+        reservedBy: { client: "claude", id: "pen-task" },
+        arrangementId: ARRANGEMENT_ID,
+        since: new Date().toISOString(),
+        holderRole: "worker",
+        holderSession: null,
+      } as Earmark);
+
+      const ctx = new StageContext(root, newSessionDirIn(root), makeState(), makeRecipe());
+      await stage.enter(ctx); // converts reserved -> assigned(SESSION_ID)
+
+      const acquired = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
+      expect(acquired.earmark.holderSession).toBe(SESSION_ID);
+
+      await writeIssueUnlocked({ ...acquired, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root);
+
+      const result = await stage.report(ctx, { completedAction: "issue_fixed" });
+      expect(result).toEqual({ action: "goto", target: "HANDOVER" });
+
+      const after = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
+      expect(after.earmark).toBeNull();
+      expect(after.status).toBe("resolved");
+    });
+
+    it("does not clear a DIFFERENT session's earmark left behind by a corrupted acquisition record", async () => {
+      const root = await newProject();
+      tempDirs.push(root);
+      const issueId = await createIssue(root, "will be fixed");
+
+      const ctx = new StageContext(root, newSessionDirIn(root), makeState(), makeRecipe());
+      await stage.enter(ctx);
+
+      const raw = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
+      const foreignEarmark = assignedEarmark(OTHER_SESSION);
+      await writeIssueUnlocked(
+        { ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed", earmark: foreignEarmark },
+        root,
+      );
+
+      await stage.report(ctx, { completedAction: "issue_fixed" });
+
+      const after = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
+      expect(after.earmark).toEqual(foreignEarmark);
+    });
+  });
 });

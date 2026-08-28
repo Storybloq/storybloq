@@ -2,6 +2,7 @@ import type { WorkflowStage, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { evaluatePressure, pressureMeetsThreshold } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
+import { isEarmarkVisible } from "../../core/earmarks.js";
 import { findFirstPostComplete, type NextStageResult } from "./registry.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
 import { detectBranchAffinity, buildAffinityAnnotation } from "../branch-affinity.js";
@@ -88,7 +89,7 @@ export class CompleteStage implements WorkflowStage {
       if (nextResult.kind === "found") {
         nextTarget = "PICK_TICKET";
       } else {
-        const openIssues = projectState.issues.filter(i => i.status === "open");
+        const openIssues = projectState.issues.filter(i => i.status === "open" && isEarmarkVisible(i));
         nextTarget = openIssues.length > 0 ? "PICK_TICKET" : "HANDOVER";
       }
     }

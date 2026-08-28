@@ -86,6 +86,7 @@ interface TicketOverrides {
   readonly claimedBySession?: string | null;
   readonly claim?: { user: string; branch: string; since: string } | null;
   readonly displayId?: string;
+  readonly earmark?: Record<string, unknown> | null;
 }
 
 function writeTicket(root: string, id: string, title: string, over: TicketOverrides = {}): void {
@@ -101,6 +102,7 @@ function writeTicket(root: string, id: string, title: string, over: TicketOverri
   const has = (k: string) => Object.prototype.hasOwnProperty.call(over, k);
   if (has("claimedBySession")) base.claimedBySession = over.claimedBySession;
   if (has("claim")) base.claim = over.claim;
+  if (has("earmark")) base.earmark = over.earmark;
   writeFileSync(join(root, ".story", "tickets", `${id}.json`), JSON.stringify(base));
 }
 
@@ -868,5 +870,85 @@ describe("FINALIZE crash window (ISS-904 round 4)", () => {
     expect(readState(root, session.sessionId).state).toBe("FINALIZE");
     // And the completed ticket is untouched either way.
     expect(readTicket(root, CANON).status).toBe("complete");
+  });
+});
+
+describe("T-475 section 5: park clears a same-session earmark (self-decline)", () => {
+  const ARRANGEMENT_ID = "a-0123456789abcdef";
+  const RESERVED_BY = { client: "claude" as const, id: "pen-task-1" };
+
+  it("clears this session's assigned earmark in the same write that releases the claim", async () => {
+    const { session } = seedHoldingSession(root);
+    const earmark = {
+      stage: "assigned", reservedBy: RESERVED_BY, arrangementId: ARRANGEMENT_ID,
+      since: NOW, holderRole: "worker", holderSession: session.sessionId,
+    };
+    writeTicket(root, CANON, "Defective filing", {
+      status: "inprogress", claimedBySession: session.sessionId,
+      claim: { user: MINE, branch: "main", since: NOW }, displayId: DISPLAY, earmark,
+    });
+
+    await handleAutonomousGuide(root, {
+      action: "report",
+      sessionId: session.sessionId,
+      report: { completedAction: "park_item", notes: "Filing contradicts itself." },
+    });
+
+    const ticket = readTicket(root, CANON);
+    expect(ticket.status).toBe("open");
+    expect(ticket.earmark).toBeNull();
+  });
+
+  it("clears a same-session earmark on a freshly picked, not-yet-claimed ticket too", async () => {
+    const session = createSession(root, "coding", "test-workspace");
+    const earmark = {
+      stage: "assigned", reservedBy: RESERVED_BY, arrangementId: ARRANGEMENT_ID,
+      since: NOW, holderRole: "worker", holderSession: session.sessionId,
+    };
+    // The choke point can convert an earmark at PICK time, before PLAN's own
+    // plan_written ever lands a claim -- so an "unclaimed" ticket can still
+    // carry this session's earmark, and this park is that session walking
+    // away from it.
+    writeTicket(root, CANON, "Defective filing", { status: "open", displayId: DISPLAY, earmark });
+    writeSessionSync(join(root, ".story", "sessions", session.sessionId), {
+      ...session,
+      state: "PLAN",
+      previousState: "PICK_TICKET",
+      ticket: { id: CANON, displayId: DISPLAY, title: "Defective filing", risk: "low", claimed: true },
+      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+      reviews: { plan: [], code: [] },
+    } as unknown as FullSessionState);
+
+    await handleAutonomousGuide(root, {
+      action: "report",
+      sessionId: session.sessionId,
+      report: { completedAction: "park_item", notes: "Cited file:line does not exist." },
+    });
+
+    const ticket = readTicket(root, CANON);
+    expect(ticket.status).toBe("open");
+    expect(ticket.earmark).toBeNull();
+  });
+
+  it("does not clear a DIFFERENT session's earmark", async () => {
+    const otherSession = "ffffffff-0000-0000-0000-000000000009";
+    const { session } = seedHoldingSession(root);
+    const earmark = {
+      stage: "assigned", reservedBy: RESERVED_BY, arrangementId: ARRANGEMENT_ID,
+      since: NOW, holderRole: "worker", holderSession: otherSession,
+    };
+    writeTicket(root, CANON, "Defective filing", {
+      status: "inprogress", claimedBySession: session.sessionId,
+      claim: { user: MINE, branch: "main", since: NOW }, displayId: DISPLAY, earmark,
+    });
+
+    await handleAutonomousGuide(root, {
+      action: "report",
+      sessionId: session.sessionId,
+      report: { completedAction: "park_item", notes: "Filing contradicts itself." },
+    });
+
+    const ticket = readTicket(root, CANON);
+    expect(ticket.earmark).toEqual(earmark);
   });
 });

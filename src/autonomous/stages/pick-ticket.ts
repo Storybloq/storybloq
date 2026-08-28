@@ -18,7 +18,7 @@ import { reviewRiskForTicket } from "../review-depth.js";
 import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } from "../review-effort.js";
 import { entityFingerprint } from "../pending-artifacts.js";
 import { resolveGateStatus } from "./gate-enforcement.js";
-import { tryAcquireEarmark, describeEarmarkHolder } from "../../core/earmarks.js";
+import { tryAcquireEarmark, describeEarmarkHolder, isEarmarkVisible } from "../../core/earmarks.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
 
@@ -139,7 +139,7 @@ export class PickTicketStage implements WorkflowStage {
 
     // ISS-084: Surface ALL open issues (severity affects display order, not work-remaining check)
     const allOpenIssues = projectState.activeIssues.filter(
-      i => i.status === "open" && !skipped.has(i.id) && !(i.displayId && skipped.has(i.displayId)),
+      i => i.status === "open" && !skipped.has(i.id) && !(i.displayId && skipped.has(i.displayId)) && isEarmarkVisible(i),
     );
     const highIssues = allOpenIssues.filter(i => i.severity === "critical" || i.severity === "high");
     const otherIssues = allOpenIssues.filter(i => i.severity !== "critical" && i.severity !== "high");

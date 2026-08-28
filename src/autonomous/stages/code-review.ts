@@ -1,5 +1,6 @@
 import { displayIdOf } from "../../core/resolver.js";
 import { releaseSessionClaim } from "../../core/claims.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import { buildLensHistoryUpdate } from "./types.js";
@@ -338,16 +339,30 @@ export class CodeReviewStage implements WorkflowStage {
                 ctx.state.sessionId,
                 (ctx.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined,
               );
-              if (released) await writeTicketUnlocked(next, ctx.root);
+              // Section 5: same-session earmark release, in the same locked
+              // write. Independent of `released` -- the choke point can have
+              // converted an earmark at pick time before any claim landed.
+              const { cleared, item: nextWithEarmark } = clearSameSessionEarmark(next, ctx.state.sessionId);
+              if (released || cleared) await writeTicketUnlocked(nextWithEarmark, ctx.root);
             }
           });
         } catch { /* best-effort */ }
       }
 
       if (ctx.state.currentIssue) {
+        const issueId = ctx.state.currentIssue.id;
         try {
+          // Section 5, issue half: issues carry no claimedBySession (AM-b),
+          // so there is no claim to release here -- but a same-session
+          // assigned earmark from the ISSUE_SWEEP/ISSUE_FIX choke point can
+          // still be sitting on it. The status reset and the earmark clear
+          // must land in the SAME write, or a failure between two separate
+          // locked transactions can leave status and earmark inconsistent
+          // (issue reopened with the earmark still assigned, or vice versa).
           const { handleIssueUpdate } = await import("../../cli/commands/issue.js");
-          await handleIssueUpdate(ctx.state.currentIssue.id, { status: "open" }, "json", ctx.root);
+          await handleIssueUpdate(issueId, { status: "open" }, "json", ctx.root, {
+            clearEarmarkForSession: ctx.state.sessionId,
+          });
         } catch { /* best-effort */ }
       }
 

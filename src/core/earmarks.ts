@@ -112,6 +112,19 @@ export function isEarmarkVisible(item: { earmark?: Earmark | null }): boolean {
   return !item.earmark;
 }
 
+/**
+ * Layer 2 variant for listings that mix open and inprogress items (most of
+ * `recommend.ts`'s generators and `queries.ts`'s next-ticket queries filter
+ * on "not complete" rather than "open"). An inprogress item's own `assigned`
+ * earmark is the normal worked state (R5), not a pick temptation -- hiding
+ * it would regress a session's ability to find its way back to its own
+ * active work. Only an OPEN item's earmark is a pick temptation worth
+ * suppressing here; every other status passes through untouched.
+ */
+export function notHiddenByEarmark(item: { status: string; earmark?: Earmark | null }): boolean {
+  return item.status !== "open" || isEarmarkVisible(item);
+}
+
 function isStaleByAge(since: string, thresholdHours: number, nowIso: string): boolean {
   const ageMs = Date.parse(nowIso) - Date.parse(since);
   // An unparseable `since` fails closed -- flagged as stale rather than
@@ -184,6 +197,42 @@ export function provenEarmarkOwnership(earmark: Earmark, actor: EarmarkReleaseAc
     return earmark.reservedBy.client === actor.value.client && earmark.reservedBy.id === actor.value.id;
   }
   return earmark.stage === "assigned" && earmark.holderSession === actor.value;
+}
+
+/**
+ * Self-decline (section 5): PARK, the three SKIP sites, and claim-loss/cancel
+ * all release a claim on the item they are walking away from, and this is
+ * the same-session earmark half of that release, applied in the SAME locked
+ * write. Only ever clears an `assigned` earmark held by `sessionId` --
+ * deliberately unconditional on whether a claim was also released, since the
+ * choke point converts an earmark at PICK time, before PLAN's own
+ * `plan_written` report ever lands a claim; a session that walks away before
+ * that point still holds an earmark with nothing yet to release alongside it.
+ * A `reserved` earmark is never touched here -- it names no session to match
+ * against and was never `tryAcquireEarmark`'s job to convert in the first
+ * place.
+ */
+export function clearSameSessionEarmark<T extends { earmark?: Earmark | null }>(
+  item: T,
+  sessionId: string,
+): { cleared: boolean; item: T } {
+  const earmark = item.earmark;
+  if (!earmark || earmark.stage !== "assigned" || earmark.holderSession !== sessionId) {
+    return { cleared: false, item };
+  }
+  return { cleared: true, item: { ...item, earmark: null } };
+}
+
+/**
+ * Arrangement-close bulk clear (section 5): a pure predicate so the actual
+ * scan-and-write stays in `handleArrangementUpdate`, inside the lock it
+ * already holds, rather than this I/O-free module reaching for a lock of its
+ * own (confirmed nesting-deadlock risk, round 1). Matches either stage --
+ * closing an arrangement retracts everything it ever authorized, reserved or
+ * already picked up.
+ */
+export function earmarkMatchesArrangement(earmark: Earmark | null | undefined, arrangementId: string): boolean {
+  return !!earmark && earmark.arrangementId === arrangementId;
 }
 
 /** User-facing holder description for a refused pick/placement/conversion. */

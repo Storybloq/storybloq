@@ -7,6 +7,7 @@ import {
   writeIssueUnlocked,
   deleteIssue,
 } from "../../core/project-loader.js";
+import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import {
@@ -391,6 +392,7 @@ export async function handleIssueUpdate(
   },
   format: string,
   root: string,
+  opts?: { clearEarmarkForSession?: string },
 ): Promise<CommandResult> {
   assertUpdateHasFields(
     updates,
@@ -456,7 +458,7 @@ export async function handleIssueUpdate(
       }
     }
 
-    const issue: Issue = {
+    let issue: Issue = {
       ...existing,
       ...(updates.title !== undefined && { title: updates.title }),
       ...(updates.severity !== undefined && { severity: updates.severity as IssueSeverity }),
@@ -470,6 +472,11 @@ export async function handleIssueUpdate(
       ...(updates.phase !== undefined && { phase: updates.phase }),
       ...statusChanges,
     };
+
+    if (opts?.clearEarmarkForSession) {
+      const { item: next } = clearSameSessionEarmark(issue, opts.clearEarmarkForSession);
+      issue = next;
+    }
 
     validatePostWriteIssueState(issue, state, false);
     await writeIssueUnlocked(issue, root);

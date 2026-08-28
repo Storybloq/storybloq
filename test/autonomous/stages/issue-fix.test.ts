@@ -9,7 +9,7 @@
  * - Shared candidate renderer with issues
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
@@ -322,6 +322,62 @@ describe("ISSUE_FIX stage", () => {
     const result = await stage.enter(ctx);
     expect("action" in result).toBe(true);
     expect((result as { action: string; target: string }).target).toBe("PICK_TICKET");
+  });
+
+  it("T-475 section 5: clears this session's assigned earmark once the issue confirms resolved", async () => {
+    const state0 = makeState({ state: "ISSUE_FIX", currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" } });
+    writeFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), JSON.stringify({
+      id: "ISS-001", title: "Critical bug", status: "resolved", severity: "critical",
+      components: ["core"], impact: "App crashes", resolution: "Fixed", resolvedDate: "2026-03-30",
+      discoveredDate: "2026-03-30", relatedTickets: [], location: [],
+      earmark: {
+        stage: "assigned",
+        reservedBy: { client: "claude", id: "pen-task-1" },
+        arrangementId: "a-0123456789abcdef",
+        since: "2026-03-30T00:00:00.000Z",
+        holderRole: "worker",
+        holderSession: state0.sessionId,
+      },
+    }));
+
+    const { IssueFixStage } = await import("../../../src/autonomous/stages/issue-fix.js");
+    const stage = new IssueFixStage();
+    const ctx = new StageContext(testRoot, sessionDir, state0, makeRecipe());
+
+    const advance = await stage.report(ctx, { completedAction: "issue_fixed" });
+    expect(advance.action).toBe("goto");
+
+    const after = JSON.parse(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8"));
+    expect(after.earmark).toBeNull();
+    expect(after.status).toBe("resolved"); // resolution itself untouched
+  });
+
+  it("T-475 section 5: does not clear a DIFFERENT session's earmark", async () => {
+    const otherSession = "ffffffff-0000-0000-0000-000000000009";
+    const foreignEarmark = {
+      stage: "assigned",
+      reservedBy: { client: "claude", id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-03-30T00:00:00.000Z",
+      holderRole: "worker",
+      holderSession: otherSession,
+    };
+    const state0 = makeState({ state: "ISSUE_FIX", currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" } });
+    writeFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), JSON.stringify({
+      id: "ISS-001", title: "Critical bug", status: "resolved", severity: "critical",
+      components: ["core"], impact: "App crashes", resolution: "Fixed", resolvedDate: "2026-03-30",
+      discoveredDate: "2026-03-30", relatedTickets: [], location: [],
+      earmark: foreignEarmark,
+    }));
+
+    const { IssueFixStage } = await import("../../../src/autonomous/stages/issue-fix.js");
+    const stage = new IssueFixStage();
+    const ctx = new StageContext(testRoot, sessionDir, state0, makeRecipe());
+
+    await stage.report(ctx, { completedAction: "issue_fixed" });
+
+    const after = JSON.parse(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8"));
+    expect(after.earmark).toEqual(foreignEarmark);
   });
 });
 

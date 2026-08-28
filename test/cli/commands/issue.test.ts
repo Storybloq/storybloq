@@ -461,6 +461,52 @@ describe("handleIssueUpdate", () => {
     expect(parsed.data.severity).toBe("low");
   });
 
+  it("clearEarmarkForSession clears a same-session earmark atomically with the status write", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const issuePath = join(dir, ".story", "issues", "ISS-001.json");
+    const issue = JSON.parse(await readFile(issuePath, "utf-8"));
+    issue.status = "inprogress";
+    issue.earmark = {
+      stage: "assigned", reservedBy: { client: "claude", id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef", since: "2026-08-28T00:00:00.000Z",
+      holderRole: "worker", holderSession: sessionId,
+    };
+    await writeFile(issuePath, JSON.stringify(issue, null, 2), "utf-8");
+
+    const result = await handleIssueUpdate("ISS-001", { status: "open" }, "json", dir, {
+      clearEarmarkForSession: sessionId,
+    });
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.status).toBe("open");
+    expect(parsed.data.earmark).toBeNull();
+  });
+
+  it("clearEarmarkForSession leaves a different session's earmark untouched", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
+    tmpDirs.push(dir);
+    await setupIssue(dir);
+    const foreignEarmark = {
+      stage: "assigned", reservedBy: { client: "claude", id: "pen-task-1" },
+      arrangementId: "a-0123456789abcdef", since: "2026-08-28T00:00:00.000Z",
+      holderRole: "worker", holderSession: "22222222-2222-4222-8222-222222222222",
+    };
+    const issuePath = join(dir, ".story", "issues", "ISS-001.json");
+    const issue = JSON.parse(await readFile(issuePath, "utf-8"));
+    issue.status = "inprogress";
+    issue.earmark = foreignEarmark;
+    await writeFile(issuePath, JSON.stringify(issue, null, 2), "utf-8");
+
+    const result = await handleIssueUpdate("ISS-001", { status: "open" }, "json", dir, {
+      clearEarmarkForSession: "11111111-1111-4111-8111-111111111111",
+    });
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.status).toBe("open");
+    expect(parsed.data.earmark).toEqual(foreignEarmark);
+  });
+
   it("resolved sets resolvedDate", async () => {
     const dir = await mkdtemp(join(tmpdir(), "issue-update-"));
     tmpDirs.push(dir);

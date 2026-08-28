@@ -7,6 +7,7 @@ import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-l
 import { ProjectLoaderError } from "./errors.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { readBoundedFile } from "./limit-config.js";
+import { buildCitationResolutionContext, type CitationResolutionContext } from "./ruling.js";
 
 /**
  * A ruling is a short attributed quote plus a handful of scalar fields -- a
@@ -156,6 +157,17 @@ export function loadRulingsSafe(root: string): LoadRulingsResult {
     rulings.push(result.data);
   }
   return { rulings, warnings, unavailableIds, scanCompleteness: "complete", hasUnrecoverableEntries };
+}
+
+/**
+ * Loads rulings and builds a `CitationResolutionContext` in one call -- the
+ * one entry point render command handlers use (`loadRulingsSafe` plus
+ * `buildCitationResolutionContext`, called once per command, never once per
+ * rendered item).
+ */
+export function loadCitationContext(root: string): CitationResolutionContext {
+  const { rulings, unavailableIds, scanCompleteness, hasUnrecoverableEntries } = loadRulingsSafe(root);
+  return buildCitationResolutionContext(rulings, unavailableIds, scanCompleteness, hasUnrecoverableEntries);
 }
 
 /**

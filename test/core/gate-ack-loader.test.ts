@@ -5,6 +5,7 @@ import { tmpdir, platform } from "node:os";
 import {
   findGateAck,
   readGateAcksForListing,
+  readGateAcksForTicket,
   writeGateAckUnlocked,
   writeGateAckContested,
 } from "../../src/core/gate-ack-loader.js";
@@ -194,5 +195,126 @@ describe("readGateAcksForListing", () => {
     const result = readGateAcksForListing(root);
     expect(result.acks).toHaveLength(1);
     expect(result.warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe("readGateAcksForTicket", () => {
+  let root: string;
+  const OTHER_TICKET_REF = "t-fedcba9876543210";
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "gate-ack-loader-"));
+    await mkdir(join(root, ".story", "arrangement-acks"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("returns empty with no warnings when the directory does not exist", async () => {
+    await rm(join(root, ".story", "arrangement-acks"), { recursive: true, force: true });
+    expect(readGateAcksForTicket(root, TICKET_REF)).toEqual({ acks: [], scopedWarnings: [], unattributedWarnings: [] });
+  });
+
+  it("includes a valid ack for this ticket and excludes a valid ack for a different ticket", async () => {
+    await writeGateAckUnlocked(baseAck(), root);
+    await writeGateAckUnlocked(baseAck({
+      id: computeGateAckId(ARRANGEMENT_ID, GATE_NAME, OTHER_TICKET_REF, PIN),
+      ticketRef: OTHER_TICKET_REF,
+    }), root);
+    const result = readGateAcksForTicket(root, TICKET_REF);
+    expect(result.acks).toHaveLength(1);
+    expect(result.acks[0]!.ticketRef).toBe(TICKET_REF);
+    expect(result.scopedWarnings).toEqual([]);
+    expect(result.unattributedWarnings).toEqual([]);
+  });
+
+  it("scopes a warning to this ticket when the broken record's own ticketRef names it", async () => {
+    const dir = join(root, ".story", "arrangement-acks");
+    // Schema-mismatch (pin missing required fields) but ticketRef is a plain, extractable string.
+    await writeFile(
+      join(dir, "g-scopedbroken000.json"),
+      JSON.stringify({ id: "g-scopedbroken000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: TICKET_REF, pin: { kind: "plan-hash" } }),
+    );
+    const result = readGateAcksForTicket(root, TICKET_REF);
+    expect(result.acks).toEqual([]);
+    expect(result.scopedWarnings).toHaveLength(1);
+    expect(result.unattributedWarnings).toEqual([]);
+  });
+
+  describe("alias-set attribution (T-477 round-4 cap escalation, acceptor's ruling)", () => {
+    async function writeOtherTicketBroken(root: string): Promise<void> {
+      const dir = join(root, ".story", "arrangement-acks");
+      await writeFile(
+        join(dir, "g-otherbroken0000.json"),
+        JSON.stringify({ id: "g-otherbroken0000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: OTHER_TICKET_REF, pin: { kind: "plan-hash" } }),
+      );
+    }
+
+    it("branch: shaped-unknown -- with NO resolver (or one that cannot confirm the ref as a real known ticket), a ticket-shaped-but-non-matching ref is FAIL-CLOSED to unattributed, never silently excluded", async () => {
+      await writeOtherTicketBroken(root);
+      const result = readGateAcksForTicket(root, TICKET_REF); // default resolver: confirms nothing
+      expect(result.acks).toEqual([]);
+      expect(result.scopedWarnings).toEqual([]);
+      expect(result.unattributedWarnings).toHaveLength(1);
+    });
+
+    it("branch: known-other -- a ref a resolver CONFIRMS is a different real ticket is excluded entirely, not tainting either bucket", async () => {
+      await writeOtherTicketBroken(root);
+      const resolveKnownOther = (raw: string) => (raw === OTHER_TICKET_REF ? OTHER_TICKET_REF : null);
+      const result = readGateAcksForTicket(root, TICKET_REF, resolveKnownOther);
+      expect(result.acks).toEqual([]);
+      expect(result.scopedWarnings).toEqual([]);
+      expect(result.unattributedWarnings).toEqual([]);
+    });
+
+    it("branch: alias-match -- a raw ticketRef that is a DIFFERENT alias of THIS SAME ticket (e.g. a display id when queried by canonical id) is scoped here, not excluded or unattributed", async () => {
+      const DISPLAY_ALIAS = "T-477";
+      const dir = join(root, ".story", "arrangement-acks");
+      await writeFile(
+        join(dir, "g-aliasbroken0000.json"),
+        JSON.stringify({ id: "g-aliasbroken0000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: DISPLAY_ALIAS, pin: { kind: "plan-hash" } }),
+      );
+      // Simulates ProjectState.resolveTicketRef: the display alias resolves to the SAME canonical ticket being queried.
+      const resolveSameTicketAlias = (raw: string) => (raw === DISPLAY_ALIAS ? TICKET_REF : null);
+      const result = readGateAcksForTicket(root, TICKET_REF, resolveSameTicketAlias);
+      expect(result.acks).toEqual([]);
+      expect(result.scopedWarnings).toHaveLength(1);
+      expect(result.unattributedWarnings).toEqual([]);
+    });
+  });
+
+  it("a raw ticketRef that is present but NOT ticket-shaped (empty, or garbage text) is unattributed, not silently excluded as if it named a real ticket", async () => {
+    const dir = join(root, ".story", "arrangement-acks");
+    await writeFile(
+      join(dir, "g-emptyref00000000.json"),
+      JSON.stringify({ id: "g-emptyref00000000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: "", pin: { kind: "plan-hash" } }),
+    );
+    await writeFile(
+      join(dir, "g-garbageref0000000.json"),
+      JSON.stringify({ id: "g-garbageref0000000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: "not-a-ticket-shape", pin: { kind: "plan-hash" } }),
+    );
+    const result = readGateAcksForTicket(root, TICKET_REF);
+    expect(result.acks).toEqual([]);
+    expect(result.scopedWarnings).toEqual([]);
+    expect(result.unattributedWarnings).toHaveLength(2);
+  });
+
+  it("surfaces an unparseable file as unattributed rather than tainting this ticket's coverage", async () => {
+    const dir = join(root, ".story", "arrangement-acks");
+    await writeFile(join(dir, "g-corrupt0000000.json"), "{not json");
+    const result = readGateAcksForTicket(root, TICKET_REF);
+    expect(result.acks).toEqual([]);
+    expect(result.scopedWarnings).toEqual([]);
+    expect(result.unattributedWarnings).toHaveLength(1);
+  });
+
+  it("readGateAcksForListing remains unaffected by the new scoped function (shared scan, unchanged signature)", async () => {
+    await writeGateAckUnlocked(baseAck(), root);
+    const dir = join(root, ".story", "arrangement-acks");
+    await writeFile(join(dir, "g-broken0000001.json"), "{not json");
+    const listing = readGateAcksForListing(root);
+    expect(listing.acks).toHaveLength(1);
+    expect(listing.warnings).toHaveLength(1);
   });
 });

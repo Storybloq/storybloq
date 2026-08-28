@@ -1,4 +1,4 @@
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ZodType } from "zod";
 import { ConfigSchema } from "../models/config.js";
@@ -7,9 +7,23 @@ import { LessonSchema } from "../models/lesson.js";
 import { NoteSchema } from "../models/note.js";
 import { RoadmapSchema } from "../models/roadmap.js";
 import { TicketSchema } from "../models/ticket.js";
+import { RulingSchema } from "../models/ruling.js";
+import { readBoundedRegularFile } from "./pin-utils.js";
 
 export type LedgerIntegrityClassification = "critical" | "item" | "auxiliary";
-export type LedgerIntegrityCode = "missing_file" | "unreadable" | "invalid_json" | "schema_error";
+export type LedgerIntegrityCode = "missing_file" | "unreadable" | "invalid_json" | "schema_error" | "oversized";
+
+/**
+ * T-476 ruling #6: no per-type write-side size limit exists for
+ * tickets/issues/notes/lessons (unlike rulings' own `RULING_MAX_BYTES` or
+ * arrangements' `ARRANGEMENT_MAX_BYTES`), so the SCAN uses one generous,
+ * shared cap across every item type it reads -- big enough that no
+ * well-formed ledger item ever hits it, finite so a corrupt or hostile file
+ * can never be read in full. This is a scan-time safety bound, not a
+ * write-time limit; it does not change what `writeTicketUnlocked` et al.
+ * will accept.
+ */
+const LEDGER_SCAN_MAX_BYTES = 1_048_576;
 
 export interface LedgerIntegrityFinding {
   readonly code: LedgerIntegrityCode;
@@ -46,7 +60,18 @@ const ITEM_DIRECTORIES = new Map<string, ZodType<unknown>>([
   ["issues", IssueSchema],
   ["notes", NoteSchema],
   ["lessons", LessonSchema],
+  ["rulings", RulingSchema],
 ]);
+
+/**
+ * T-476 ruling #5: derived from `ITEM_DIRECTORIES`'s own keys rather than a
+ * second hardcoded copy. Before this fix, `contractFor` maintained its own
+ * `(tickets|issues|notes|lessons)` regex independent of `ITEM_DIRECTORIES` --
+ * adding an entry to the map alone did not teach this function to recognize
+ * the new directory. Built once at module scope; adding a future item type
+ * to `ITEM_DIRECTORIES` is now sufficient on its own.
+ */
+const ITEM_FILE_REGEX = new RegExp(`^\\.story/(${[...ITEM_DIRECTORIES.keys()].join("|")})/[^/]+\\.json$`);
 
 function normalizeRelativePath(root: string, path: string): string {
   return relative(root, path).split(sep).join("/");
@@ -60,7 +85,7 @@ function contractFor(relativePath: string): FileContract {
     return { classification: "critical", schema: RoadmapSchema };
   }
 
-  const match = /^\.story\/(tickets|issues|notes|lessons)\/[^/]+\.json$/.exec(relativePath);
+  const match = ITEM_FILE_REGEX.exec(relativePath);
   if (match) {
     return {
       classification: "item",
@@ -232,18 +257,30 @@ export async function scanLedgerIntegrity(
   for (const path of [...files].sort()) {
     const file = normalizeRelativePath(root, path);
     const contract = contractFor(file);
-    let raw: string;
-    try {
-      raw = await readFile(path, "utf8");
-    } catch (err) {
+    // T-476 ruling #6: bounded, TOCTOU-closed read (single fd, fstat + read
+    // on the same descriptor) -- the previous unconditional `readFile`
+    // would read a file of any size in full before this scanner ever wired
+    // in a new, attacker-influenced entity type (rulings).
+    const bounded = readBoundedRegularFile(path, LEDGER_SCAN_MAX_BYTES);
+    if (bounded.status === "unreadable" && bounded.reason === `exceeds ${LEDGER_SCAN_MAX_BYTES} bytes`) {
+      findings.push({
+        code: "oversized",
+        classification: contract.classification,
+        file,
+        message: `File exceeds ${LEDGER_SCAN_MAX_BYTES} bytes, skipped without reading its content.`,
+      });
+      continue;
+    }
+    if (bounded.status !== "ok") {
       findings.push({
         code: "unreadable",
         classification: contract.classification,
         file,
-        message: `Cannot read file: ${(err as Error).message}`,
+        message: `Cannot read file: ${bounded.reason}`,
       });
       continue;
     }
+    const raw = bounded.bytes.toString("utf8");
 
     let parsed: unknown;
     try {

@@ -29,6 +29,24 @@ export const ISSUE_ID_REGEX = /^ISS-\d+$/;
 /** Matches canonical i-[crockford16] */
 export const ISSUE_CANONICAL_ID_REGEX = new RegExp(`^i-${CROCKFORD_CLASS}{16}$`);
 
+/**
+ * Arrangements have no legacy era (T-473): born after the canonical-id
+ * migration, so there is no display-form regex to pair with this one and no
+ * sequential allocator. Canonical-only, deliberately.
+ */
+export const ARRANGEMENT_CANONICAL_ID_REGEX = new RegExp(`^a-${CROCKFORD_CLASS}{16}$`);
+
+/**
+ * The client-task-identity contract (T-473), duplicated from
+ * `autonomous/client-profile.ts`'s own copy so `ArrangementPartySchema` can
+ * depend on it without importing `client-profile.ts` into the models layer.
+ * NOT re-exported from there: `client-profile.ts` sits in the presence-entry
+ * hook's zero-dependency import closure (ISS-1022), and importing this file
+ * from there pulls zod and the whole models module into that closure. Keep
+ * the two copies in sync by hand.
+ */
+export const CLIENT_TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 // --- Ticket enums ---
 
 export const TICKET_STATUSES = ["open", "inprogress", "complete"] as const;
@@ -180,3 +198,12 @@ export const LessonRefSchema = z
     (v) => LESSON_ID_REGEX.test(v) || LESSON_CANONICAL_ID_REGEX.test(v),
     "Lesson ref must match L-NNN or l-[canonical]",
   );
+
+/** Canonical-only (T-473): no legacy form exists, so id and ref are the same shape. */
+export const ArrangementIdSchema = z
+  .string()
+  .refine((v) => ARRANGEMENT_CANONICAL_ID_REGEX.test(v), "Arrangement ID must match a-[canonical]");
+
+export const ArrangementRefSchema = z
+  .string()
+  .refine((v) => ARRANGEMENT_CANONICAL_ID_REGEX.test(v), "Arrangement ref must match a-[canonical]");

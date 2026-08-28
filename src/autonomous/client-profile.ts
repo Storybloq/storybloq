@@ -1,3 +1,12 @@
+// T-473: `models/types.ts` carries its OWN copy of this same pattern (not an
+// import of it) so `ArrangementPartySchema` can depend on it. Reusing an
+// import here instead of a literal broke ISS-1022's presence-entry closure
+// test: `presence-entry.ts` transitively reaches this file, and importing
+// `models/types.ts` pulled zod and the whole models module into that
+// zero-dependency closure. Keep this definition local and in sync by hand;
+// it is a two-line regex literal, not a relationship worth a shared import.
+export const CLIENT_TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 export type StorybloqClient = "claude" | "codex";
 
 export interface StorybloqClientProfile {
@@ -11,8 +20,6 @@ export interface OwnerTask {
   readonly id: string;
   readonly boundAt: string;
 }
-
-export const CLIENT_TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 const CLIENT_PROFILES: Readonly<Record<StorybloqClient, StorybloqClientProfile>> = {
   claude: {

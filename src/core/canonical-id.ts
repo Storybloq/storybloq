@@ -18,11 +18,11 @@ export function encodeBase32Crockford(bytes: Uint8Array): string {
   return result;
 }
 
-export type CanonicalPrefix = "t" | "i" | "n" | "l";
+export type CanonicalPrefix = "t" | "i" | "n" | "l" | "a";
 
 export function generateCanonicalId(prefix: CanonicalPrefix): string {
   const bytes = randomBytes(10);
   return `${prefix}-${encodeBase32Crockford(bytes)}`;
 }
 
-export const CANONICAL_ID_REGEX = new RegExp(`^[tinl]-${CROCKFORD_CLASS}{16}$`);
+export const CANONICAL_ID_REGEX = new RegExp(`^[tinla]-${CROCKFORD_CLASS}{16}$`);

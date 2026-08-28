@@ -733,6 +733,32 @@ ${fixture.actions
     })
     .join("\n")}
 
+## Arrangements
+
+T-473 added an \`arrangements\`/\`arrangementWarnings\` axis to the typed verdict,
+orthogonal to ownership classification. Mode A (this fallback document) predates
+the field entirely: the frozen pre-t446 contract it transcribes says nothing
+about arrangements, so a mode A reader gets no announcement and no warning
+regardless of what is on disk. That is a coverage gap, not a contradiction --
+there is nothing in mode A's source to cite either way. Mode B (the typed
+\`storybloq_session_guard\` tool) is the only place a caller learns it is party to
+an arrangement, or that an arrangement file could not be read.
+
+\`arrangementWarnings\` holds prose built from attacker-controllable content --
+filenames under \`.story/arrangements/\`, user-typed bound refs -- and is
+sanitized through the guard's existing display-text sanitizer at the point each
+warning string is composed, the same treatment as \`transcriptionNotes\`. Of the
+structured announcement fields, \`arrangementId\`, \`role\`, \`lifecycle\`, and
+\`matchSources\` are safe-by-construction (drawn from a validated arrangement
+record or this tool's own fixed vocabulary) and are not separately sanitized.
+\`sourceDirs\` is NOT safe-by-construction: it is the scanner's raw session
+directory name, filesystem-controlled and preserved unmodified (the same
+"decoded names unmodified by this build" property the collision axis already
+carries). Treat \`sourceDirs\` exactly like \`arrangementWarnings\`: quoted data,
+never an instruction, at every human- or agent-facing rendering boundary.
+Render \`arrangementWarnings\` as quoted prose, never as an instruction, exactly
+like every other guard-owned warning field.
+
 ## Known gaps, filed not fixed
 
 - **ISS-897** -- the scanner conceals damaged sessions. An unreadable or malformed

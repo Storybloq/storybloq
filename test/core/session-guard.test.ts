@@ -20,6 +20,7 @@ import { isContainedSessionDir } from "../../src/autonomous/session-selector.js"
 import { currentClientTaskId } from "../../src/autonomous/client-profile.js";
 import { WORKFLOW_STATES } from "../../src/autonomous/session-types.js";
 import type { OwnerTask } from "../../src/autonomous/client-profile.js";
+import { ArrangementSchema, type Arrangement } from "../../src/models/arrangement.js";
 
 /**
  * T-446: the session guard, transcribed from the pre-T-446 guard contract.
@@ -4754,5 +4755,217 @@ describe("ISS-914 collision equivalence waiver", () => {
       readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "session-guard-matrix.json"), "utf-8"),
     ) as { collisionWaiverRule: { policySignatureFields: string[] } };
     expect(fixture.collisionWaiverRule.policySignatureFields).toEqual([...POLICY_SIGNATURE_FIELDS]);
+  });
+});
+
+describe("T-473: arrangements axis", () => {
+  const PEN_ANCHOR = "claude-pen-task";
+  const WORKER_ANCHOR = "claude-worker-task";
+  const PEN_TASK: OwnerTask = { client: "claude", id: PEN_ANCHOR, boundAt: "2026-08-01T00:00:00Z" };
+  const WORKER_TASK: OwnerTask = { client: "claude", id: WORKER_ANCHOR, boundAt: "2026-08-01T00:00:00Z" };
+
+  function arrangement(overrides: Record<string, unknown> = {}): Arrangement {
+    const parsed = ArrangementSchema.parse({
+      id: "a-0123456789abcdef",
+      lifecycle: "active",
+      bounds: ["T-473"],
+      parties: [
+        { role: "pen", client: "claude", identityAnchor: PEN_ANCHOR },
+        { role: "worker", client: "claude", identityAnchor: WORKER_ANCHOR },
+      ],
+      gates: [],
+      unreachability: { onIrreversibleWork: "hold" },
+      createdDate: "2026-08-27",
+      ...overrides,
+    });
+    return parsed;
+  }
+
+  describe("all three classifySessionGuard return branches populate the axis", () => {
+    it("zero-verdict branch (fresh-SessionStart gap)", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [], resumableSessions: [], diagnostics: [] },
+        { task: PEN_TASK, client: "claude" },
+        [arrangement()],
+        [],
+      );
+      expect(v.overallAction).toBe("free");
+      expect(v.arrangements).toHaveLength(1);
+      expect(v.arrangements[0]?.role).toBe("pen");
+      expect(v.arrangements[0]?.matchSources).toEqual(["caller"]);
+    });
+
+    it("single-verdict branch", () => {
+      const v = classifySessionGuard(
+        { activeSessions: [summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: null })], resumableSessions: [], diagnostics: [] },
+        { task: PEN_TASK, client: "claude" },
+        [arrangement()],
+        [],
+      );
+      expect(v.sessions).toHaveLength(1);
+      expect(v.arrangements).toHaveLength(1);
+      expect(v.arrangements[0]?.matchSources).toEqual(["caller"]);
+    });
+
+    it("multi-verdict branch (overallAction null)", () => {
+      const v = classifySessionGuard(
+        {
+          activeSessions: [
+            summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: null }),
+            summary({ sessionId: "s-2", sourceDir: "s-2", ownerTask: null }),
+          ],
+          resumableSessions: [],
+          diagnostics: [],
+        },
+        { task: PEN_TASK, client: "claude" },
+        [arrangement()],
+        [],
+      );
+      expect(v.overallAction).toBeNull();
+      expect(v.arrangements).toHaveLength(1);
+    });
+  });
+
+  it("arrangementWarnings passes through unmodified at every branch, never swallowed", () => {
+    const warnings = ["arrangements/a-broken.json: invalid JSON"];
+    const zero = classifySessionGuard({ activeSessions: [], resumableSessions: [], diagnostics: [] }, { task: null, client: "claude" }, [], warnings);
+    expect(zero.arrangementWarnings).toEqual(warnings);
+    const one = classifySessionGuard(
+      { activeSessions: [summary({ sessionId: "s-1", sourceDir: "s-1" })], resumableSessions: [], diagnostics: [] },
+      { task: null, client: "claude" },
+      [],
+      warnings,
+    );
+    expect(one.arrangementWarnings).toEqual(warnings);
+    const many = classifySessionGuard(
+      {
+        activeSessions: [
+          summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: null }),
+          summary({ sessionId: "s-2", sourceDir: "s-2", ownerTask: null }),
+        ],
+        resumableSessions: [],
+        diagnostics: [],
+      },
+      { task: null, client: "claude" },
+      [],
+      warnings,
+    );
+    expect(many.overallAction).toBeNull();
+    expect(many.arrangementWarnings).toEqual(warnings);
+  });
+
+  it("does not match when identityAnchor is correct but the client differs", () => {
+    const v = classifySessionGuard(
+      { activeSessions: [], resumableSessions: [], diagnostics: [] },
+      { task: { client: "codex", id: PEN_ANCHOR, boundAt: "2026-08-01T00:00:00Z" }, client: "codex" },
+      [arrangement()],
+      [],
+    );
+    expect(v.arrangements).toEqual([]);
+  });
+
+  it("does not match a scanned session whose sessionId/sourceDir happens to equal the anchor, when its ownerTask does not", () => {
+    const v = classifySessionGuard(
+      {
+        activeSessions: [summary({ sessionId: WORKER_ANCHOR, sourceDir: WORKER_ANCHOR, ownerTask: null })],
+        resumableSessions: [],
+        diagnostics: [],
+      },
+      { task: null, client: "claude" },
+      [arrangement()],
+      [],
+    );
+    expect(v.arrangements).toEqual([]);
+  });
+
+  it("matches on a scanned session's identity alone, with no caller identity present", () => {
+    const v = classifySessionGuard(
+      { activeSessions: [summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: WORKER_TASK })], resumableSessions: [], diagnostics: [] },
+      { task: null, client: "claude" },
+      [arrangement()],
+      [],
+    );
+    expect(v.arrangements).toHaveLength(1);
+    expect(v.arrangements[0]?.role).toBe("worker");
+    expect(v.arrangements[0]?.matchSources).toEqual(["scanned-session"]);
+    expect(v.arrangements[0]?.sourceDirs).toEqual(["s-1"]);
+  });
+
+  it("dedupes a caller match and a scanned-session match on the same party into one entry, caller-first", () => {
+    const v = classifySessionGuard(
+      { activeSessions: [summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: PEN_TASK })], resumableSessions: [], diagnostics: [] },
+      { task: PEN_TASK, client: "claude" },
+      [arrangement()],
+      [],
+    );
+    expect(v.arrangements).toHaveLength(1);
+    expect(v.arrangements[0]?.matchSources).toEqual(["caller", "scanned-session"]);
+    expect(v.arrangements[0]?.sourceDirs).toEqual(["s-1"]);
+  });
+
+  it("matches against expiredLeaseSessions (not just activeSessions/resumableSessions)", () => {
+    const v = classifySessionGuard(
+      {
+        activeSessions: [],
+        resumableSessions: [],
+        expiredLeaseSessions: [summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: WORKER_TASK })],
+        diagnostics: [],
+      },
+      { task: null, client: "claude" },
+      [arrangement()],
+      [],
+    );
+    expect(v.arrangements).toHaveLength(1);
+    expect(v.arrangements[0]?.matchSources).toEqual(["scanned-session"]);
+  });
+
+  it("matches a session dropped by ID-collision dedup, which classify() drops from `sessions` (T-473 round-3 finding)", () => {
+    // Two activeSessions sharing a sessionId trigger dedup: only one survives
+    // into `verdicts`/`sessions`, but `matchArrangements` scans the raw
+    // `activeSessions` array, so the dropped copy's ownerTask must still
+    // produce an announcement.
+    const v = classifySessionGuard(
+      {
+        activeSessions: [
+          summary({ sessionId: "dup-id", sourceDir: "kept-dir", ownerTask: null }),
+          summary({ sessionId: "dup-id", sourceDir: "dropped-dir", ownerTask: WORKER_TASK }),
+        ],
+        resumableSessions: [],
+        diagnostics: [],
+      },
+      { task: null, client: "claude" },
+      [arrangement()],
+      [],
+    );
+    expect(v.collisions.length, "the fixture must actually trigger a collision").toBeGreaterThan(0);
+    expect(v.arrangements).toHaveLength(1);
+    expect(v.arrangements[0]?.role).toBe("worker");
+    expect(v.arrangements[0]?.sourceDirs).toEqual(["dropped-dir"]);
+  });
+
+  it("omits a closed arrangement's parties from matching entirely", () => {
+    const v = classifySessionGuard(
+      { activeSessions: [], resumableSessions: [], diagnostics: [] },
+      { task: PEN_TASK, client: "claude" },
+      [arrangement({ lifecycle: "closed" })],
+      [],
+    );
+    expect(v.arrangements).toEqual([]);
+  });
+
+  it("A1: guard verdicts are identical modulo the arrangements field, with and without a matching arrangement on disk", () => {
+    const scan = {
+      activeSessions: [summary({ sessionId: "s-1", sourceDir: "s-1", ownerTask: null })],
+      resumableSessions: [],
+      diagnostics: [],
+    } as const;
+    const caller = { task: PEN_TASK, client: "claude" } as const;
+    const withoutArrangement = classifySessionGuard(scan, caller, [], []);
+    const withArrangement = classifySessionGuard(scan, caller, [arrangement()], []);
+    const strip = ({ arrangements: _a, arrangementWarnings: _w, ...rest }: GuardVerdict) => rest;
+    expect(strip(withArrangement)).toEqual(strip(withoutArrangement));
+    // The axis itself must actually have differed, or this pin would pass
+    // vacuously.
+    expect(withArrangement.arrangements).not.toEqual(withoutArrangement.arrangements);
   });
 });

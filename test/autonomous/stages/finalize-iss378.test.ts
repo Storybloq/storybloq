@@ -90,6 +90,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
     guideCallCount: 5,
     config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["codex", "agent"] },
     ticket: { id: "T-001", title: "Test ticket", claimed: true },
+    frozenGate: { status: "ungated" },
     filedDeferrals: [],
     pendingDeferrals: [],
     deferralsUnfiled: false,

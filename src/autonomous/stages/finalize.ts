@@ -1,11 +1,14 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput, FullSessionState } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail } from "../git-inspector.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
 import { effectiveReviewEffort, effortDisclosureLine, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
+import { findGateAck } from "../../core/gate-ack-loader.js";
+import { PRECOMMIT_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
 
 /**
  * The commit from which the CURRENT item must produce a new, validated commit
@@ -402,15 +405,7 @@ export class FinalizeStage implements WorkflowStage {
     if (checkpoint === "staged" || checkpoint === "staged_override") {
       return {
         action: "retry",
-        instruction: [
-          "Files staged. Now commit.",
-          "",
-          ctx.state.ticket
-            ? `Commit with message: "feat: <description> (${ticketLabel(ctx)})"`
-            : "Commit with a descriptive message.",
-          "",
-          'Call me with completedAction: "commit_done" and include the commitHash.',
-        ].join("\n"),
+        instruction: await nowCommitInstruction(ctx, "Files staged. Now commit."),
       };
     }
 
@@ -542,15 +537,7 @@ export class FinalizeStage implements WorkflowStage {
 
     return {
       action: "retry",
-      instruction: [
-        "Files staged. Now commit.",
-        "",
-        ctx.state.ticket
-          ? `Commit with message: "feat: <description> (${ticketLabel(ctx)})"`
-          : "Commit with a descriptive message.",
-        "",
-        'Call me with completedAction: "commit_done" and include the commitHash.',
-      ].join("\n"),
+      instruction: await nowCommitInstruction(ctx, "Files staged. Now commit."),
     };
   }
 
@@ -617,15 +604,7 @@ export class FinalizeStage implements WorkflowStage {
 
     return {
       action: "retry",
-      instruction: [
-        "Pre-commit passed. Now commit.",
-        "",
-        ctx.state.ticket
-          ? `Commit with message: "feat: <description> (${ticketLabel(ctx)})"`
-          : "Commit with a descriptive message.",
-        "",
-        'Call me with completedAction: "commit_done" and include the commitHash.',
-      ].join("\n"),
+      instruction: await nowCommitInstruction(ctx, "Pre-commit passed. Now commit."),
     };
   }
 
@@ -773,6 +752,50 @@ export class FinalizeStage implements WorkflowStage {
       };
     }
 
+    // T-474: pre-commit-ack gate, ticket-only (section 7's ISS-1032-shaped
+    // descope -- an issue-fix session has no ticket to gate). This is the
+    // load-bearing check: it runs AFTER attribution passes and BEFORE
+    // finalizeCheckpoint is ever written as "committed", inside the single
+    // convergence point every commit-acceptance path funnels through
+    // (confirmed by direct trace: FINALIZE's two `handleStage` branches and
+    // `handlePrecommit` all either call `handleCommit` directly or lead to a
+    // later `report()` call that does; the two auto-detect fast-forwards in
+    // `enter()` and `handleStage`'s ISS-046 branch also call it directly).
+    // ISS-1049 tracks the follow-up (an issue-fix-scoped enforcement path is
+    // not built here, the same way ISS-1032 tracks code-review-ceiling's own
+    // analogous gap).
+    if (ctx.state.ticket) {
+      const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
+      if (gateStatus.status === "unresolved") {
+        return { action: "retry", instruction: renderUnresolvedHold(gateStatus.reason) };
+      }
+      if (gateStatus.status === "gated") {
+        const gate = gateStatus.gates.find((g) => g.name === PRECOMMIT_ACK_GATE_NAME);
+        if (gate) {
+          const parentResult = await gitParentOf(ctx.root, normalizedHash);
+          if (!parentResult.ok) {
+            return { action: "retry", instruction: `Cannot determine commit ${normalizedHash.slice(0, 7)}'s parent (${parentResult.message}). Escalate -- do not treat as approved.` };
+          }
+          const treeResult = await gitTreeOf(ctx.root, normalizedHash);
+          if (!treeResult.ok) {
+            return { action: "retry", instruction: `Cannot determine commit ${normalizedHash.slice(0, 7)}'s tree (${treeResult.message}). Escalate -- do not treat as approved.` };
+          }
+          const pin: GateAckPin = { kind: "tree-digest", parentSha: parentResult.data, treeId: treeResult.data };
+          const lookup = findGateAck(ctx.root, {
+            arrangementId: gateStatus.arrangementId,
+            gateName: gate.name,
+            ticketRef: ctx.state.ticket.id,
+            pin,
+            expectedAckRole: gate.ackRole,
+          });
+          if (lookup.status !== "valid") {
+            // commit_done REFUSED -- finalizeCheckpoint never reaches "committed".
+            return { action: "retry", instruction: renderGateAckHold(lookup, gate) };
+          }
+        }
+      }
+    }
+
     // ISS-084: Issue-fix mode -- record resolved issue, route through COMPLETE
     // (so session limits and checkpoint handovers apply uniformly)
     const currentIssue = ctx.state.currentIssue;
@@ -889,6 +912,54 @@ export class FinalizeStage implements WorkflowStage {
 
 function ticketLabel(ctx: StageContext): string {
   return ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? "unknown";
+}
+
+/**
+ * T-474: courtesy check, NOT load-bearing -- the real check runs inside
+ * `handleCommit`, after the commit already exists. This computes the SAME
+ * kind of pin from the currently staged tree and withholds "Now commit" if
+ * the gate status is unresolved or no valid ack exists yet, so the agent
+ * isn't sent to commit only to be rejected after the fact. When a valid ack
+ * carries `deltas`, appends them here -- the only point in the pre-commit
+ * flow where rendering deltas is still timely, since `handleCommit` runs
+ * AFTER the commit already exists (R3-FIX 5's pre-commit half). Any git
+ * failure here falls through to the ordinary instruction: the load-bearing
+ * check at `handleCommit` still runs regardless.
+ */
+async function nowCommitInstruction(ctx: StageContext, headline: string): Promise<string> {
+  const base = [
+    headline,
+    "",
+    ctx.state.ticket
+      ? `Commit with message: "feat: <description> (${ticketLabel(ctx)})"`
+      : "Commit with a descriptive message.",
+    "",
+    'Call me with completedAction: "commit_done" and include the commitHash.',
+  ];
+
+  if (!ctx.state.ticket) return base.join("\n");
+  const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
+  if (gateStatus.status === "unresolved") return renderUnresolvedHold(gateStatus.reason);
+  if (gateStatus.status !== "gated") return base.join("\n");
+  const gate = gateStatus.gates.find((g) => g.name === PRECOMMIT_ACK_GATE_NAME);
+  if (!gate) return base.join("\n");
+
+  const headResult = await gitHead(ctx.root);
+  if (!headResult.ok) return base.join("\n");
+  const treeResult = await gitWriteTree(ctx.root);
+  if (!treeResult.ok) return base.join("\n");
+  const pin: GateAckPin = { kind: "tree-digest", parentSha: headResult.data.hash, treeId: treeResult.data };
+  const lookup = findGateAck(ctx.root, {
+    arrangementId: gateStatus.arrangementId,
+    gateName: gate.name,
+    ticketRef: ctx.state.ticket.id,
+    pin,
+    expectedAckRole: gate.ackRole,
+  });
+  if (lookup.status !== "valid") return renderGateAckHold(lookup, gate);
+  return lookup.ack.deltas
+    ? [...base, "", "## Pen-approved pre-commit-ack deltas (binding, non-mutating)", "", lookup.ack.deltas].join("\n")
+    : base.join("\n");
 }
 
 async function busShipBlockers(ctx: StageContext): Promise<string[]> {

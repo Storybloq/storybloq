@@ -116,6 +116,13 @@ const CONTRACT_CUES: readonly ContractCue[] = [
   { tool: "storybloq_bus_thread_update", kind: "selection", cue: "Apply one explicit park" },
   { tool: "storybloq_export", kind: "constraint", cue: "Export a single phase by ID" },
   { tool: "storybloq_export", kind: "constraint", cue: "Export entire project" },
+  { tool: "storybloq_gate_ack_create", kind: "constraint", cue: "Exactly one of planFile or fromStaged is required" },
+  { tool: "storybloq_gate_ack_create", kind: "constraint", cue: "ackRole is derived from the arrangement's own gate declaration, never freely chosen" },
+  { tool: "storybloq_gate_ack_create", kind: "constraint", cue: "restricted BY CONVENTION to non-mutating caveats" },
+  { tool: "storybloq_gate_ack_create", kind: "constraint", cue: "the commit it applies to has already been made" },
+  { tool: "storybloq_gate_ack_create", kind: "enum-semantic", cue: "computes a plan-hash pin" },
+  { tool: "storybloq_gate_ack_create", kind: "enum-semantic", cue: "Compute a tree-digest pin from the currently staged index" },
+  { tool: "storybloq_gate_ack_contest", kind: "precedence", cue: "not a reopen workflow" },
   { tool: "storybloq_handover_create", kind: "constraint", cue: "from markdown content" },
   { tool: "storybloq_handover_create", kind: "constraint", cue: "phase5b-wrapup" },
   { tool: "storybloq_handover_create", kind: "default", cue: "Default: session" },
@@ -278,13 +285,15 @@ describe("tool description contract (T-460)", () => {
   it("holds the payload under its post-trim ceiling", async () => {
     // A ratchet, not a target. T-460 measured 45,224 -> 38,504 bytes; T-473
     // added three arrangement tools (get/create/update), measured at 40,307
-    // bytes, so this ceiling leaves ~1.5 KB of headroom and fails once an
-    // edit gives back more than that. Raising it is a deliberate act that
-    // belongs in a commit message, which is the point. Deliberately NO lower
-    // bound: the cues above are what protect against over-trimming, and a
-    // floor would fail an honest future trim for being too good.
+    // bytes; T-474 added three gate-ack tools (get/create/contest), measured
+    // at 42,632 bytes, so this ceiling leaves ~500 bytes of headroom and
+    // fails once an edit gives back more than that. Raising it is a
+    // deliberate act that belongs in a commit message, which is the point.
+    // Deliberately NO lower bound: the cues above are what protect against
+    // over-trimming, and a floor would fail an honest future trim for being
+    // too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(41_800);
+    expect(bytes).toBeLessThan(43_100);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -297,7 +306,8 @@ describe("tool description contract (T-460)", () => {
     await client.close();
     // T-473 added storybloq_arrangement_get/create/update (60 -> 63); no
     // _list tool, per amendment A3 (status's activeArrangements covers
-    // discovery).
-    expect(result.tools.length).toBe(63);
+    // discovery). T-474 added storybloq_gate_ack_get/create/contest
+    // (63 -> 66); no _list tool either, same ruling.
+    expect(result.tools.length).toBe(66);
   });
 });

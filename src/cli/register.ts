@@ -101,6 +101,12 @@ import {
 } from "./commands/arrangement.js";
 import { ARRANGEMENT_LIFECYCLE, ARRANGEMENT_ROLES, type ArrangementParty } from "../models/arrangement.js";
 import {
+  handleGateAckGet,
+  handleGateAckList,
+  handleGateAckCreate,
+  handleGateAckContest,
+} from "./commands/gate-ack.js";
+import {
   handleLessonList,
   handleLessonGet,
   handleLessonDigest,
@@ -2973,6 +2979,155 @@ export function registerArrangementCommand(yargs: Argv): Argv {
           },
         )
         .demandCommand(1, "Specify an arrangement subcommand: list, get, create, update")
+        .strict(),
+    () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
+// gate-ack (T-474)
+// ---------------------------------------------------------------------------
+
+export function registerGateAckCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "gate-ack",
+    "Manage duet-mode gate-ack records",
+    (y) =>
+      y
+        .command(
+          "list",
+          "List gate-acks",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("arrangement", { type: "string", describe: "Filter by arrangement ID" })
+                .option("ticket", { type: "string", describe: "Filter by ticket ref" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) =>
+              handleGateAckList({ arrangement: argv.arrangement as string | undefined, ticket: argv.ticket as string | undefined }, ctx),
+            );
+          },
+        )
+        .command(
+          "get <id>",
+          "Get a gate-ack",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", { type: "string", demandOption: true, describe: "Gate-ack ID (e.g. g-[canonical])" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleGateAckGet(argv.id as string, ctx));
+          },
+        )
+        .command(
+          "create",
+          "Create a gate-ack",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("arrangement", { type: "string", demandOption: true, describe: "Arrangement ID this gate-ack authorizes against" })
+                .option("gate", { type: "string", demandOption: true, describe: "Gate name declared on the arrangement (e.g. plan-ack, pre-commit-ack)" })
+                .option("ticket", { type: "string", demandOption: true, describe: "Ticket ref this ack applies to" })
+                .option("plan-file", { type: "string", describe: "Path to plan.md -- computes a plan-hash pin" })
+                .option("from-staged", { type: "boolean", describe: "Compute a tree-digest pin from the currently staged index" })
+                .option("codex-session-id", { type: "string", describe: "Independent-review session id, if any (acceptance 7)" })
+                .option("verdict", { type: "string", describe: "Independent-review verdict, if any (acceptance 7)" })
+                .option("rounds", { type: "number", describe: "Independent-review round count, if any (acceptance 7)" })
+                .option("deltas", {
+                  type: "string",
+                  describe:
+                    "Ratify-with-deltas text. For pre-commit-ack, restricted BY CONVENTION to non-mutating caveats " +
+                    "(a note, a follow-up-issue pointer) -- never a condition requiring the staged content to differ, " +
+                    "since by the time this ack is checked the commit it applies to has already been made.",
+                }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleGateAckCreate(
+                {
+                  arrangement: argv.arrangement as string,
+                  gate: argv.gate as string,
+                  ticket: argv.ticket as string,
+                  planFile: argv["plan-file"] as string | undefined,
+                  fromStaged: argv["from-staged"] as boolean | undefined,
+                  codexSessionId: argv["codex-session-id"] as string | undefined,
+                  verdict: argv.verdict as string | undefined,
+                  rounds: argv.rounds as number | undefined,
+                  deltas: argv.deltas as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "contest <id>",
+          "Mark a gate-ack contested (record + surfaced flag only, T-474 acceptance 6)",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", { type: "string", demandOption: true, describe: "Gate-ack ID" })
+                .option("reason", { type: "string", demandOption: true, describe: "Why this ack is contested" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleGateAckContest(argv.id as string, argv.reason as string, format, root);
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .demandCommand(1, "Specify a gate-ack subcommand: list, get, create, contest")
         .strict(),
     () => {},
   );

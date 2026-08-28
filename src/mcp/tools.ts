@@ -66,6 +66,7 @@ import {
   NoteIdSchema,
   LessonIdSchema,
   ArrangementIdSchema,
+  GateAckIdSchema,
   TicketRefSchema,
   IssueRefSchema,
   TICKET_STATUSES,
@@ -130,6 +131,13 @@ import {
   handleArrangementUpdate,
 } from "../cli/commands/arrangement.js";
 import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, type ArrangementParty } from "../models/arrangement.js";
+// T-474: no MCP list tool, same reasoning and same ruling as T-473's
+// arrangement list -- list-shaped tools stay CLI-only.
+import {
+  handleGateAckGet,
+  handleGateAckCreate,
+  handleGateAckContest,
+} from "../cli/commands/gate-ack.js";
 import {
   handleLessonList,
   handleLessonGet,
@@ -967,6 +975,69 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleArrangementUpdate(args.id, { lifecycle: args.lifecycle }, format, root),
+  ));
+
+  // --- Gate-ack tools (T-474) ---
+  // No storybloq_gate_ack_list, same ruling and reasoning as T-473's
+  // arrangement list: list-shaped tools stay CLI-only.
+
+  server.registerTool("storybloq_gate_ack_get", {
+    description: "Get a duet-mode gate-ack record by ID",
+    inputSchema: {
+      id: GateAckIdSchema.describe("e.g. g-[canonical]"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleGateAckGet(args.id, ctx)));
+
+  server.registerTool("storybloq_gate_ack_create", {
+    description:
+      "Create a gate-ack: a pinned acceptance record for a duet-mode arrangement's declared gate (plan-ack or " +
+      "pre-commit-ack). Exactly one of planFile or fromStaged is required to compute the pin. ackRole is derived " +
+      "from the arrangement's own gate declaration, never freely chosen.",
+    inputSchema: {
+      arrangement: ArrangementIdSchema.describe("e.g. a-[canonical]"),
+      gate: z.string().min(1).max(128).describe("Gate name declared on the arrangement (e.g. plan-ack, pre-commit-ack)"),
+      ticket: TicketRefSchema.describe("Ticket ref this ack applies to, display-form or canonical"),
+      planFile: z.string().optional().describe("Path to plan.md -- computes a plan-hash pin"),
+      fromStaged: z.boolean().optional().describe("Compute a tree-digest pin from the currently staged index"),
+      codexSessionId: z.string().max(128).optional().describe("Independent-review session id, if any (acceptance 7)"),
+      verdict: z.string().max(32).optional().describe("Independent-review verdict, if any (acceptance 7)"),
+      rounds: z.number().int().nonnegative().optional().describe("Independent-review round count, if any (acceptance 7)"),
+      deltas: z
+        .string()
+        .max(4096)
+        .optional()
+        .describe(
+          "Ratify-with-deltas text. For pre-commit-ack, restricted BY CONVENTION to non-mutating caveats -- never " +
+            "a condition requiring the staged content to differ, since by the time this ack is checked the commit " +
+            "it applies to has already been made.",
+        ),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleGateAckCreate(
+      {
+        arrangement: args.arrangement,
+        gate: args.gate,
+        ticket: args.ticket,
+        planFile: args.planFile,
+        fromStaged: args.fromStaged,
+        codexSessionId: args.codexSessionId,
+        verdict: args.verdict,
+        rounds: args.rounds,
+        deltas: args.deltas,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("storybloq_gate_ack_contest", {
+    description: "Mark a gate-ack contested (record + surfaced flag only, T-474 acceptance 6 -- not a reopen workflow)",
+    inputSchema: {
+      id: GateAckIdSchema.describe("e.g. g-[canonical]"),
+      reason: z.string().min(1).max(1024),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleGateAckContest(args.id, args.reason, format, root),
   ));
 
   // --- Lesson tools ---

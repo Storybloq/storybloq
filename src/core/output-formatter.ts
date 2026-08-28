@@ -17,6 +17,7 @@ import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "./session-scan.js";
 import type { Arrangement, ArrangementLifecycle, ArrangementRole } from "../models/arrangement.js";
+import type { GateAck } from "../models/gate-ack.js";
 import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
@@ -1485,6 +1486,60 @@ export function formatArrangementUpdateResult(arrangement: Arrangement, format: 
     return JSON.stringify(successEnvelope(arrangement), null, 2);
   }
   return `Updated arrangement ${arrangement.id} [${arrangement.lifecycle}].`;
+}
+
+// --- Gate-ack formatters (T-474) ---
+
+function formatGateAckPin(ack: GateAck): string {
+  return ack.pin.kind === "plan-hash"
+    ? `plan-hash:${sanitizeDisplayText(ack.pin.sha256).slice(0, 12)}...`
+    : `tree-digest:${sanitizeDisplayText(ack.pin.treeId).slice(0, 12)}... (parent ${sanitizeDisplayText(ack.pin.parentSha).slice(0, 12)}...)`;
+}
+
+export function formatGateAck(ack: GateAck, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(ack), null, 2);
+  }
+  const contestedBadge = ack.contested ? " [CONTESTED]" : "";
+  const lines: string[] = [
+    `# Gate-ack ${escapeMarkdownInline(sanitizeDisplayText(ack.id))}${contestedBadge}`,
+    "",
+    `Arrangement: ${escapeMarkdownInline(sanitizeDisplayText(ack.arrangementId))} | Gate: ${escapeMarkdownInline(sanitizeDisplayText(ack.gateName))} | Acked by: ${escapeMarkdownInline(sanitizeDisplayText(ack.ackRole))}`,
+    `Ticket: ${escapeMarkdownInline(sanitizeDisplayText(ack.ticketRef))}`,
+    `Pin: ${formatGateAckPin(ack)}`,
+    `Decided: ${escapeMarkdownInline(sanitizeDisplayText(ack.decidedAt ?? "unknown"))}`,
+    `Review trail: ${ack.reviewTrail.present ? `${escapeMarkdownInline(sanitizeDisplayText(ack.reviewTrail.verdict ?? "present"))}${ack.reviewTrail.rounds !== undefined ? ` (${ack.reviewTrail.rounds} rounds)` : ""}` : "none (acked on inspection)"}`,
+  ];
+  if (ack.deltas) lines.push("", "## Deltas", "", sanitizeDisplayText(ack.deltas, MAX_PROSE_LENGTH));
+  if (ack.contested) lines.push("", `Contested: ${escapeMarkdownInline(sanitizeDisplayText(ack.contestedReason ?? ""))}`);
+  return lines.join("\n");
+}
+
+export function formatGateAckList(acks: readonly GateAck[], format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(acks), null, 2);
+  }
+  if (acks.length === 0) return "No gate-acks found.";
+  return acks
+    .map((a) => {
+      const contestedBadge = a.contested ? " [CONTESTED]" : "";
+      return `- ${escapeMarkdownInline(sanitizeDisplayText(a.id))}${contestedBadge} -- ${escapeMarkdownInline(sanitizeDisplayText(a.gateName))} on ${escapeMarkdownInline(sanitizeDisplayText(a.ticketRef))} (${escapeMarkdownInline(sanitizeDisplayText(a.ackRole))})`;
+    })
+    .join("\n");
+}
+
+export function formatGateAckCreateResult(ack: GateAck, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(ack), null, 2);
+  }
+  return `Created gate-ack ${escapeMarkdownInline(sanitizeDisplayText(ack.id))} (${escapeMarkdownInline(sanitizeDisplayText(ack.gateName))} on ${escapeMarkdownInline(sanitizeDisplayText(ack.ticketRef))}).`;
+}
+
+export function formatGateAckContestResult(ack: GateAck, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(ack), null, 2);
+  }
+  return `Gate-ack ${escapeMarkdownInline(sanitizeDisplayText(ack.id))} marked contested: ${escapeMarkdownInline(sanitizeDisplayText(ack.contestedReason ?? ""))}`;
 }
 
 // --- Lesson formatters ---

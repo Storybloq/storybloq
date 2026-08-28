@@ -122,4 +122,60 @@ describe("loader-independent ledger integrity", () => {
     const json = JSON.parse(formatLedgerIntegrity(result, "json"));
     expect(json).toMatchObject({ version: 1, data: { valid: true } });
   });
+
+  describe("T-476: rulings wired into the item-directory contract", () => {
+    it("recognizes .story/rulings/*.json as a classified item, not auxiliary (ruling #5)", async () => {
+      const root = await project();
+      await mkdir(join(root, ".story", "rulings"), { recursive: true });
+      await writeFile(join(root, ".story", "rulings", "r-bad.json"), "{}\n", "utf8");
+
+      const result = await scanLedgerIntegrity(root);
+
+      expect(result.findings).toContainEqual(expect.objectContaining({
+        file: ".story/rulings/r-bad.json",
+        classification: "item",
+        code: "schema_error",
+      }));
+    });
+
+    it("still classifies tickets/issues/notes/lessons correctly after the contractFor derivation (hard bar: zero behavior change)", async () => {
+      const root = await project();
+      await writeFile(join(root, ".story", "notes", "N-BAD.json"), "{}\n", "utf8");
+      await writeFile(join(root, ".story", "lessons", "L-BAD.json"), "{}\n", "utf8");
+
+      const result = await scanLedgerIntegrity(root);
+
+      expect(result.findings).toContainEqual(expect.objectContaining({ file: ".story/notes/N-BAD.json", classification: "item", code: "schema_error" }));
+      expect(result.findings).toContainEqual(expect.objectContaining({ file: ".story/lessons/L-BAD.json", classification: "item", code: "schema_error" }));
+    });
+
+    it("reports oversized rather than reading a file past the scan cap in full (ruling #6)", async () => {
+      const root = await project();
+      await mkdir(join(root, ".story", "rulings"), { recursive: true });
+      const oversized = "x".repeat(1_048_576 + 1);
+      await writeFile(join(root, ".story", "rulings", "r-huge.json"), oversized, "utf8");
+
+      const result = await scanLedgerIntegrity(root);
+
+      const finding = result.findings.find((f) => f.file === ".story/rulings/r-huge.json");
+      expect(finding).toEqual(expect.objectContaining({ code: "oversized", classification: "item" }));
+      // Never classified as invalid_json/schema_error -- proves the content was never parsed.
+      expect(finding?.code).not.toBe("invalid_json");
+      expect(finding?.code).not.toBe("schema_error");
+    });
+
+    it("does not read a multi-megabyte oversized file in full (not just a limit+1 fixture)", async () => {
+      const root = await project();
+      await mkdir(join(root, ".story", "tickets"), { recursive: true });
+      const huge = "y".repeat(8 * 1_048_576);
+      await writeFile(join(root, ".story", "tickets", "T-HUGE.json"), huge, "utf8");
+
+      const result = await scanLedgerIntegrity(root);
+
+      expect(result.findings).toContainEqual(expect.objectContaining({
+        file: ".story/tickets/T-HUGE.json",
+        code: "oversized",
+      }));
+    });
+  });
 });

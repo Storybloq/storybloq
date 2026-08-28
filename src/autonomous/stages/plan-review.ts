@@ -32,6 +32,10 @@ import {
   reviewDepthLine,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
+import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
+import { readBoundedRegularFile, sha256Bytes, PLAN_ACK_MAX_BYTES } from "../../core/pin-utils.js";
+import { findGateAck } from "../../core/gate-ack-loader.js";
+import { PLAN_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
 
 /** Read a file, return empty string on error. Mirrors plan.ts's own helper. */
 function readFileSafe(path: string): string {
@@ -134,6 +138,114 @@ async function resumePlanCeilingEscalation(ctx: StageContext): Promise<StageAdva
   if (!pending || pending.completed) return null;
   if (ctx.state.ticket?.id !== pending.ticketId) return null;
   return await escalatePlanCeiling(ctx);
+}
+
+/**
+ * T-474 [D1]: a plan changing mid-hold is the SAME situation as a reject --
+ * the plan is effectively rewritten from scratch, so comparing new content
+ * against old vocabulary would manufacture false drift signals. This helper
+ * clears the identical two fields the reject branch below clears, with the
+ * identical justification, in ONE write together with clearing the stale
+ * hold (never as two separate writes -- R3-FIX 1's standard: a crash between
+ * "generation reset" and "hold marker cleared" must be impossible, not
+ * merely rare).
+ */
+function resetPlanReviewGenerationState(ctx: StageContext, opts: { clearPendingPlanAck: boolean }): void {
+  ctx.writeState({
+    reviews: { ...ctx.state.reviews, plan: [] },
+    planReviewBaseline: null,
+    planReviewDriftHistory: null,
+    currentReviewStartedAt: null,
+    // Codex round 2 #2: a generation reset invalidates any deltas approved
+    // for the OLD content too -- carrying them forward into a plan the
+    // system no longer recognizes as reviewed would bind the pen to text
+    // written for content that has since changed.
+    approvedPlanAckDeltas: null,
+    ...(opts.clearPendingPlanAck ? { pendingPlanAck: null } : {}),
+  });
+}
+
+/**
+ * T-474 section 8: the gate-ack polling branch. `check_gate_ack` is an
+ * additive `completedAction` value that did not exist before this ticket --
+ * a worker holding at a plan-ack gate polls this repeatedly while waiting
+ * for the pen to record a gate-ack, without re-submitting a review verdict
+ * (which would otherwise re-run the round bookkeeping on every poll).
+ */
+async function handleCheckGateAck(ctx: StageContext, ticketId: string | undefined): Promise<StageAdvance> {
+  const pending = ctx.state.pendingPlanAck;
+  if (!pending || pending.ticketId !== ticketId) {
+    return {
+      action: "retry",
+      instruction: "No matching pending gate-ack hold found for this ticket. If you believe review already passed, resubmit your original report to re-establish the hold.",
+    };
+  }
+
+  // Codex round 3 #2: the gate-status resolve is the ONLY await in this
+  // function -- it runs FIRST, before the plan.md read/hash below, so
+  // nothing can yield between that read and the synchronous lookup +
+  // state write that follows it. (An earlier ordering awaited AFTER the
+  // read, leaving exactly this window open: a plan.md edit landing during
+  // the await would ride through on the pre-await hash.)
+  const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
+  if (gateStatus.status !== "gated") {
+    return {
+      action: "retry",
+      instruction: gateStatus.status === "unresolved" ? renderUnresolvedHold(gateStatus.reason) : "Inconsistent gate state for a pending hold; escalate.",
+    };
+  }
+  const gate = gateStatus.gates.find((g) => g.name === pending.gateName);
+  if (!gate) {
+    // [R3-FIX 6] a dedicated message, never renderGateAckHold with an undefined gate.
+    return { action: "retry", instruction: "The gate this hold was waiting on no longer exists on the arrangement; escalate." };
+  }
+
+  const planRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+  if (planRead.status !== "ok") {
+    return { action: "retry", instruction: `Cannot read plan.md: ${planRead.reason}. Escalate -- do not treat as approved.` };
+  }
+  const currentHash = sha256Bytes(planRead.bytes);
+  if (currentHash !== pending.pinSha256) {
+    resetPlanReviewGenerationState(ctx, { clearPendingPlanAck: true });
+    return {
+      action: "retry",
+      instruction: "plan.md changed since this review passed; that review no longer applies to the current content, and its history has been cleared. Submit a fresh PLAN_REVIEW report for the current plan.",
+    };
+  }
+  const pin: GateAckPin = { kind: "plan-hash", sha256: currentHash };
+  const lookup = findGateAck(ctx.root, {
+    arrangementId: pending.arrangementId,
+    gateName: pending.gateName,
+    ticketRef: pending.ticketId,
+    pin,
+    expectedAckRole: gate.ackRole,
+  });
+  if (lookup.status === "valid") {
+    ctx.writeState({ pendingPlanAck: null, approvedPlanAckDeltas: lookup.ack.deltas ?? null });
+    if (ctx.state.mode === "plan") {
+      ctx.finalizeSession({
+        status: "completed" as const,
+        terminationReason: "normal" as const,
+      });
+      return {
+        action: "goto",
+        target: "SESSION_END",
+        result: {
+          instruction: [
+            "# Plan Review Complete",
+            "",
+            `Plan for **${ctx.state.ticket?.id}** is ready to implement after gate-ack approval.`,
+            "",
+            "Session ending -- plan mode is complete.",
+          ].join("\n"),
+          reminders: [],
+          transitionedFrom: "PLAN_REVIEW",
+        },
+      } as StageAdvance;
+    }
+    return { action: "advance" };
+  }
+  return { action: "retry", instruction: renderGateAckHold(lookup, gate) }; // lookup and gate both concrete here, always
 }
 
 /**
@@ -327,6 +439,16 @@ export class PlanReviewStage implements WorkflowStage {
   }
 
   async report(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
+    // [R3-FIX 6] hoisted to the top of report() -- the polling branch below
+    // needs it before any of the existing verdict-processing code declares it.
+    const ticketId = ctx.state.ticket?.id;
+
+    // T-474 section 8: the gate-ack polling branch, checked FIRST, before any
+    // of report()'s existing processing.
+    if (report.completedAction === "check_gate_ack") {
+      return handleCheckGateAck(ctx, ticketId);
+    }
+
     // ISS-598/ISS-1031: FIRST, before anything reads this payload as a new
     // round. An escalation left unfinished by an earlier call is resumed
     // rather than restarted -- mirrors code-review.ts's placement exactly.
@@ -523,13 +645,53 @@ export class PlanReviewStage implements WorkflowStage {
       nextAction = "PLAN_REVIEW";
     }
 
+    // T-474 section 8 [R3-FIX 1]: the gate decision is computed BEFORE the
+    // round-bookkeeping write below and folded INTO the same atomic
+    // `ctx.writeState(stateUpdate)` call -- a crash between "round approved"
+    // and "hold marker recorded" must be impossible, not merely rare.
+    // Mutually exclusive with `ceilingDecision.shouldPark` below:
+    // `decidePlanCeiling` never parks when `nextAction === "IMPLEMENT"`.
+    let pendingPlanAckForWrite: { ticketId: string; arrangementId: string; gateName: string; pinSha256: string } | null = null;
+    let gateBlockInstruction: string | null = null;
+    let approvedDeltas: string | undefined;
+    // T-474 (R1-FIX 2, TOCTOU): captured only when a plan-ack gate validated
+    // THIS round, so the recheck immediately before the IMPLEMENT return
+    // (below, after the intervening `ctx.fileDeferredFindings` await) can
+    // re-verify plan.md still matches the exact hash that was approved.
+    let validatedPlanAckContext: { ticketId: string; arrangementId: string; gateName: string; validatedSha256: string } | null = null;
+    if (nextAction === "IMPLEMENT" && ticketId) {
+      const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
+      if (gateStatus.status === "unresolved") {
+        gateBlockInstruction = renderUnresolvedHold(gateStatus.reason);
+      } else if (gateStatus.status === "gated") {
+        const gate = gateStatus.gates.find((g) => g.name === PLAN_ACK_GATE_NAME);
+        if (gate) {
+          const planRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+          if (planRead.status !== "ok") {
+            gateBlockInstruction = `Cannot read plan.md to compute the gate-ack pin: ${planRead.reason}. Escalate -- do not treat as approved.`;
+          } else {
+            const pin: GateAckPin = { kind: "plan-hash", sha256: sha256Bytes(planRead.bytes) };
+            const lookup = findGateAck(ctx.root, {
+              arrangementId: gateStatus.arrangementId, gateName: gate.name, ticketRef: ticketId, pin, expectedAckRole: gate.ackRole,
+            });
+            if (lookup.status === "valid") {
+              approvedDeltas = lookup.ack.deltas;
+              validatedPlanAckContext = { ticketId, arrangementId: gateStatus.arrangementId, gateName: gate.name, validatedSha256: pin.sha256 };
+            } else {
+              pendingPlanAckForWrite = { ticketId, arrangementId: gateStatus.arrangementId, gateName: gate.name, pinSha256: pin.sha256 };
+              gateBlockInstruction = renderGateAckHold(lookup, gate);
+            }
+          }
+        }
+      }
+    }
+
     // ISS-598/ISS-1031: the ceiling is decided HERE, unconditionally, before
     // any early return -- mirrors code-review.ts's decideCeiling placement.
     // `nextAction !== "IMPLEMENT"` lets it fire on BOTH an ordinary
     // PLAN_REVIEW continuation AND a reject-routed PLAN continuation, closing
     // the ISS-904 blind spot where a reject/replan loop was invisible to any
     // `reviews.plan`-derived counter (that array is cleared on every reject).
-    const ticketId = ctx.state.ticket?.id;
     const ceilingDecision = decidePlanCeiling({
       ticketId,
       priorCounter: ctx.state.planReviewRoundCounter,
@@ -634,6 +796,16 @@ export class PlanReviewStage implements WorkflowStage {
       );
       if (updated) stateUpdate.lensReviewHistory = updated;
     }
+    // T-474: folded into the SAME single write as the round's own
+    // bookkeeping above -- one write covers both, atomically.
+    stateUpdate.pendingPlanAck = pendingPlanAckForWrite;
+    // R1-FIX (codex round 1): unconditional on every unblocked IMPLEMENT
+    // transition, not just when truthy -- an ack recorded with no deltas
+    // must clear any stale deltas left by an earlier generation, matching
+    // the polling path's `?? null` at handleCheckGateAck above.
+    if (nextAction === "IMPLEMENT" && ticketId && !gateBlockInstruction) {
+      stateUpdate.approvedPlanAckDeltas = approvedDeltas ?? null;
+    }
     ctx.writeState(stateUpdate);
 
     accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: ctx.writeState.bind(ctx) });
@@ -680,6 +852,57 @@ export class PlanReviewStage implements WorkflowStage {
     }
 
     if (nextAction === "IMPLEMENT") {
+      // T-474: the plan-ack gate holds here -- a pending hold was already
+      // recorded in the same write above, atomically with this round's
+      // bookkeeping.
+      if (gateBlockInstruction) {
+        return { action: "retry", instruction: gateBlockInstruction };
+      }
+      // T-474 (R1-FIX 2, TOCTOU): re-read plan.md immediately before actually
+      // advancing, after every intervening await since the pin was computed
+      // above (`ctx.fileDeferredFindings` chief among them) -- a plan.md edit
+      // landing in that window must not ride through on the stale hash.
+      //
+      // Crash-window note (binding item 5 does not cover this: item 5 binds
+      // the marker-plus-bookkeeping PAIR into one write; this corrective
+      // write is a SECOND decision, made on new information the first write
+      // could not have had). If the process dies between the first write
+      // above (already recorded approvedPlanAckDeltas and cleared
+      // pendingPlanAck for the round that looked valid) and this corrective
+      // write, the session is left with approved deltas recorded but no
+      // pending marker and no advance delivered. That is safe, not silently
+      // wrong: the agent's next check_gate_ack finds no matching pending
+      // hold (handleCheckGateAck's very first check, above) and is told to
+      // resubmit its report -- which recomputes everything, including this
+      // recheck, against whatever plan.md holds by then. The window
+      // converges to correctness; it never converges to a stale advance.
+      if (validatedPlanAckContext) {
+        const recheck = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+        if (recheck.status !== "ok") {
+          ctx.writeState({ pendingPlanAck: null, approvedPlanAckDeltas: null });
+          return {
+            action: "retry",
+            instruction: `Cannot read plan.md to re-verify the gate-ack pin: ${recheck.reason}. Escalate -- do not treat as approved.`,
+          };
+        }
+        const currentHash = sha256Bytes(recheck.bytes);
+        if (currentHash !== validatedPlanAckContext.validatedSha256) {
+          // Codex round 2 #2: the edited content never went through a
+          // `plan_review_round` report -- no findings, no verdict, no drift
+          // check. Establishing a pending ack for its new hash (as an
+          // earlier revision of this fix did) would let a coincidentally
+          // matching future ack advance it WITHOUT that round ever having
+          // happened. This is the identical situation `[D1]`'s mid-hold path
+          // already handles (a plan change invalidates the generation, full
+          // stop) -- so it gets the identical treatment: a full reset, never
+          // a fresh hold for the new content.
+          resetPlanReviewGenerationState(ctx, { clearPendingPlanAck: true });
+          return {
+            action: "retry",
+            instruction: "plan.md changed after this review's gate-ack passed; that ack no longer applies to the current content, and its review history has been cleared. Submit a fresh PLAN_REVIEW report for the current plan.",
+          };
+        }
+      }
       // T-135: Plan mode exits after plan review approval
       if (ctx.state.mode === "plan") {
         ctx.finalizeSession({

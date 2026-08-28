@@ -16,12 +16,17 @@ export class ImplementStage implements WorkflowStage {
   async enter(ctx: StageContext): Promise<StageResult> {
     const ticket = ctx.state.ticket;
     const planPath = `.story/sessions/${ctx.state.sessionId}/plan.md`;
+    // T-474: the pen's ratify-with-deltas text from the plan-ack gate that
+    // just cleared, rendered once here and never again -- `approvedPlanAckDeltas`
+    // is not re-read by any later stage.
+    const deltas = ctx.state.approvedPlanAckDeltas;
     return {
       instruction: [
         `# Implement -- ${ticket?.id ?? "unknown"}: ${ticket?.title ?? ""}`,
         "",
         `Implement the approved plan at \`${planPath}\`.`,
         "",
+        ...(deltas ? ["## Pen-approved plan-ack deltas (binding)", "", deltas, ""] : []),
         "When done, call `storybloq_autonomous_guide` with:",
         '```json',
         `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "implementation_done" } }`,

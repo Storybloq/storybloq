@@ -1,7 +1,8 @@
 import { realpathSync } from "node:fs";
 import { z } from "zod";
 import { CLIENT_TASK_ID_PATTERN, type OwnerTask } from "./client-profile.js";
-import { CROCKFORD_CLASS } from "../models/types.js";
+import { CROCKFORD_CLASS, ArrangementIdSchema, TicketRefSchema } from "../models/types.js";
+import { ArrangementGateSchema } from "../models/arrangement.js";
 import type { ClaimEpoch } from "./claim-reconciliation.js";
 
 /** Combined ticket + issue ID regex for targetWork validation (sequential + canonical). ISS-703: canonical char class derived from CROCKFORD_CLASS. */
@@ -1562,6 +1563,44 @@ export const SessionStateSchema = z.object({
       fraction: z.number().min(0).max(1),
     })),
   }).nullable().default(null),
+
+  /**
+   * T-474: this session's duet-mode gate posture for its CURRENT ticket, a
+   * discriminated union rather than three independently-optional fields
+   * (R3-FIX 7) -- "gated with no requirement snapshot" or "unresolved with a
+   * gated snapshot attached" are unrepresentable at the type level rather
+   * than merely disciplined against at runtime. `undefined` (the field
+   * omitted) means "not yet resolved" -- a legacy session written before this
+   * field existed; enforcement resolves it lazily on first check and caches
+   * the result via `ctx.writeState`. Resolved once at PICK_TICKET and reset
+   * unconditionally (along with `pendingPlanAck`/`approvedPlanAckDeltas`)
+   * every time PICK_TICKET runs for this session -- no cross-ticket
+   * carryover, ever. Ticket-only (ISS-1032-shaped descope, T-474 section 7):
+   * an issue-fix session has no ticket to resolve gates against and always
+   * carries `{status: "ungated"}` here.
+   */
+  frozenGate: z.discriminatedUnion("status", [
+    z.object({ status: z.literal("ungated") }),
+    z.object({ status: z.literal("gated"), arrangementId: ArrangementIdSchema, gates: z.array(ArrangementGateSchema) }),
+    z.object({ status: z.literal("unresolved"), reason: z.string().max(1024) }),
+  ]).optional(),
+
+  /**
+   * T-474: a plan-ack gate-ack was not yet found for the current plan.md's
+   * content hash, so PLAN_REVIEW is holding at this generation until one
+   * appears. Cleared (along with a matching generation reset) the moment
+   * plan.md's content changes underneath the hold, since a stale hold against
+   * superseded content would otherwise linger forever.
+   */
+  pendingPlanAck: z.object({
+    ticketId: TicketRefSchema,
+    arrangementId: ArrangementIdSchema,
+    gateName: z.string().min(1).max(128),
+    pinSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }).nullable().optional(),
+
+  /** T-474: the pen's ratify-with-deltas text from the plan-ack gate that just cleared, rendered once at IMPLEMENT's enter() and never again. */
+  approvedPlanAckDeltas: z.string().max(4096).nullable().optional(),
 
   recentDeferrals: z.object({
     total: z.number(),

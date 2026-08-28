@@ -17,6 +17,7 @@ import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
 import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } from "../review-effort.js";
 import { entityFingerprint } from "../pending-artifacts.js";
+import { resolveGateStatus } from "./gate-enforcement.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
 
@@ -341,6 +342,12 @@ export class PickTicketStage implements WorkflowStage {
       finalizedItem: null,
       landingDecision: null,
       ticketStartedAt: new Date().toISOString(),
+      // T-474 section 5: resolved fresh for THIS ticket and reset
+      // unconditionally, along with pendingPlanAck/approvedPlanAckDeltas --
+      // no cross-ticket carryover, ever.
+      frozenGate: resolveGateStatus(ctx.root, ticket.id, projectState),
+      pendingPlanAck: null,
+      approvedPlanAckDeltas: null,
       ...(claimObj ? { pendingTicketClaim: claimObj } : {}),
     });
 
@@ -499,6 +506,12 @@ export class PickTicketStage implements WorkflowStage {
       finalizeCheckpoint: null,
       finalizedItem: null,
       landingDecision: null,
+      // T-474 section 7 (ISS-1032-shaped descope): an issue-fix session has
+      // no ticket to gate, so this always resets to ungated -- also clears
+      // any stale hold left over from a prior ticket in the same session.
+      frozenGate: { status: "ungated" },
+      pendingPlanAck: null,
+      approvedPlanAckDeltas: null,
     });
 
     return { action: "goto", target: "ISSUE_FIX" };

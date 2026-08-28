@@ -3,6 +3,7 @@ import type { Ticket } from "../../src/models/ticket.js";
 import type { Issue } from "../../src/models/issue.js";
 import type { Note } from "../../src/models/note.js";
 import type { Lesson } from "../../src/models/lesson.js";
+import type { Ruling } from "../../src/models/ruling.js";
 import type { Roadmap, Phase } from "../../src/models/roadmap.js";
 import type { Config } from "../../src/models/config.js";
 
@@ -72,6 +73,20 @@ export function makeLesson(
     status: "active",
     ...overrides,
   } as Lesson;
+}
+
+export function makeRuling(
+  overrides: Partial<Ruling> & { id: string },
+): Ruling {
+  return {
+    text: `Test ruling text for ${overrides.id}.`,
+    attribution: "owner-direct",
+    recordedBy: { client: "claude", id: "test-session" },
+    date: "2026-08-27",
+    scopeTags: [],
+    supersedes: null,
+    ...overrides,
+  } as Ruling;
 }
 
 export function makePhase(

@@ -40,6 +40,13 @@ export const ARRANGEMENT_CANONICAL_ID_REGEX = new RegExp(`^a-${CROCKFORD_CLASS}{
 export const GATE_ACK_CANONICAL_ID_REGEX = new RegExp(`^g-${CROCKFORD_CLASS}{16}$`);
 
 /**
+ * Canonical-only (T-476), same reasoning as `ARRANGEMENT_CANONICAL_ID_REGEX`:
+ * rulings are born after the canonical-id migration, so there is no legacy
+ * display-form to pair with this one.
+ */
+export const RULING_CANONICAL_ID_REGEX = new RegExp(`^r-${CROCKFORD_CLASS}{16}$`);
+
+/**
  * The client-task-identity contract (T-473), duplicated from
  * `autonomous/client-profile.ts`'s own copy so `ArrangementPartySchema` can
  * depend on it without importing `client-profile.ts` into the models layer.
@@ -210,6 +217,15 @@ export const ArrangementIdSchema = z
 export const ArrangementRefSchema = z
   .string()
   .refine((v) => ARRANGEMENT_CANONICAL_ID_REGEX.test(v), "Arrangement ref must match a-[canonical]");
+
+/** Canonical-only (T-476): no legacy form exists, so id and ref are the same shape. */
+export const RulingIdSchema = z
+  .string()
+  .refine((v) => RULING_CANONICAL_ID_REGEX.test(v), "Ruling ID must match r-[canonical]");
+
+export const RulingRefSchema = z
+  .string()
+  .refine((v) => RULING_CANONICAL_ID_REGEX.test(v), "Ruling ref must match r-[canonical]");
 
 export const EARMARK_ROLES = ["pen", "worker"] as const;
 export type EarmarkRole = (typeof EARMARK_ROLES)[number];

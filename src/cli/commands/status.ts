@@ -14,6 +14,8 @@ import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX } from "../../models/types.js";
 import { sanitizeDisplayText } from "../../core/display-text.js";
 import type { ProjectState } from "../../core/project-state.js";
+import { ownerTaskForCurrentClient } from "../../autonomous/client-profile.js";
+import { computeArrangementPresence, applyPresenceEnrichment, ownerIdentityOf, STATUS_ENRICHMENT_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
 
 /**
  * T-473: builds the active-only, status-display projection of arrangements,
@@ -68,7 +70,37 @@ function buildStatusArrangements(root: string, state: ProjectState): StatusArran
   };
 }
 
-export async function handleStatus(ctx: CommandContext): Promise<CommandResult> {
+/**
+ * T-477 section 2.1: `storybloq status`'s heavy-path enrichment. A side
+ * effect of running for THIS caller's own identity -- computes
+ * `arrangementPresence`/`ownerIdentity` and performs a locked
+ * read-modify-write onto the caller's own presence record, using the SAME
+ * lock file and primitives the slim hook already uses. Best-effort at the
+ * hook's own short budget: on contention it silently skips (an enrichment
+ * miss is not a status failure), and when identity cannot be resolved at
+ * all it silently omits the enrichment for this call (section 2.2) --
+ * neither case ever affects `handleStatus`'s returned output.
+ */
+function enrichPresenceForCaller(root: string, explicitClientTaskId: string | null | undefined): void {
+  const ownerTask = ownerTaskForCurrentClient(explicitClientTaskId);
+  if (!ownerTask) return; // identity unresolved -- visibility degradation only, per section 2.2
+  try {
+    const { entries, truncated } = computeArrangementPresence(root, ownerTask);
+    applyPresenceEnrichment(root, ownerTask.id, STATUS_ENRICHMENT_LOCK_BUDGET_MS, "status-enrichment", (base) => ({
+      ...base,
+      arrangementPresence: entries,
+      arrangementPresenceTruncated: truncated,
+      ownerIdentity: ownerIdentityOf(ownerTask),
+    }));
+  } catch {
+    // Best-effort, matching every other status side-read in this function
+    // (limitStops, bus): a broken enrichment path must never fail status.
+  }
+}
+
+export async function handleStatus(ctx: CommandContext, clientTaskId?: string | null): Promise<CommandResult> {
+  enrichPresenceForCaller(ctx.root, clientTaskId);
+
   const {
     activeSessions,
     resumableSessions,

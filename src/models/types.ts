@@ -36,6 +36,9 @@ export const ISSUE_CANONICAL_ID_REGEX = new RegExp(`^i-${CROCKFORD_CLASS}{16}$`)
  */
 export const ARRANGEMENT_CANONICAL_ID_REGEX = new RegExp(`^a-${CROCKFORD_CLASS}{16}$`);
 
+/** Canonical-only (T-474): a gate-ack has no legacy display-id era. */
+export const GATE_ACK_CANONICAL_ID_REGEX = new RegExp(`^g-${CROCKFORD_CLASS}{16}$`);
+
 /**
  * The client-task-identity contract (T-473), duplicated from
  * `autonomous/client-profile.ts`'s own copy so `ArrangementPartySchema` can
@@ -207,3 +210,11 @@ export const ArrangementIdSchema = z
 export const ArrangementRefSchema = z
   .string()
   .refine((v) => ARRANGEMENT_CANONICAL_ID_REGEX.test(v), "Arrangement ref must match a-[canonical]");
+
+/**
+ * Canonical-only (T-474), and content-derived rather than randomly minted
+ * (see gate-ack.ts's `computeGateAckId`) -- no legacy form, no allocator.
+ */
+export const GateAckIdSchema = z
+  .string()
+  .refine((v) => GATE_ACK_CANONICAL_ID_REGEX.test(v), "Gate-ack ID must match g-[canonical]");

@@ -5,6 +5,9 @@ import { hasConflicts } from "./conflicts.js";
 import { displayIdOf } from "./resolver.js";
 import { isTeamModeConfig } from "./team-capabilities.js";
 import { isTicketEarmarkStale, isIssueEarmarkStale } from "./earmarks.js";
+import type { Ruling } from "../models/ruling.js";
+import type { RulingScanCompleteness } from "./ruling-loader.js";
+import { buildSuccessorIndex, buildCitationResolutionContext, resolveCitation } from "./ruling.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
 
@@ -27,6 +30,20 @@ export interface ValidationResult {
   readonly findings: readonly ValidationFinding[];
 }
 
+/**
+ * T-476: optional ruling side-store input. Absent (the default) means
+ * exactly the pre-T-476 behavior -- ruling checks are skipped entirely, not
+ * run against an empty set, so a caller that has not yet loaded rulings sees
+ * no new findings at all. The `validate` command boundary is the one caller
+ * that populates this.
+ */
+export interface ValidationAux {
+  readonly rulings?: readonly Ruling[];
+  readonly unavailableRulingIds?: ReadonlySet<string>;
+  readonly rulingScanCompleteness?: RulingScanCompleteness;
+  readonly rulingHasUnrecoverableEntries?: boolean;
+}
+
 // --- Main Validation ---
 
 /**
@@ -36,6 +53,7 @@ export interface ValidationResult {
 export function validateProject(
   state: ProjectState,
   now: string = new Date().toISOString(),
+  aux: ValidationAux = {},
 ): ValidationResult {
   const findings: ValidationFinding[] = [];
   const phaseIDs = new Set(state.roadmap.phases.map((p) => p.id));
@@ -459,6 +477,17 @@ export function validateProject(
     });
   }
 
+  if (aux.rulings !== undefined) {
+    validateRulings(
+      aux.rulings,
+      aux.unavailableRulingIds ?? new Set(),
+      aux.rulingScanCompleteness ?? "complete",
+      aux.rulingHasUnrecoverableEntries ?? false,
+      state,
+      findings,
+    );
+  }
+
   const errorCount = findings.filter((f) => f.level === "error").length;
   const warningCount = findings.filter((f) => f.level === "warning").length;
   const infoCount = findings.filter((f) => f.level === "info").length;
@@ -688,5 +717,129 @@ function detectSupersedesCycles(
   for (const l of state.lessons) {
     if (l.supersedes == null || visited.has(l.id)) continue;
     walkSupersedesChain(l.id, nextLesson, visited, inStack, "supersedes_cycle", findings);
+  }
+}
+
+/**
+ * T-476 section 7: ruling-specific validation. Pure over `(rulings,
+ * unavailableIds, scanCompleteness, state)` -- no I/O. Runs only when the
+ * caller supplies `aux.rulings` (the `validate` command boundary is the one
+ * caller that loads the side-store; every other `validateProject` call site
+ * is unaffected).
+ */
+function validateRulings(
+  rulings: readonly Ruling[],
+  unavailableIds: ReadonlySet<string>,
+  scanCompleteness: RulingScanCompleteness,
+  hasUnrecoverableEntries: boolean,
+  state: ProjectState,
+  findings: ValidationFinding[],
+): void {
+  const rulingsById = new Map(rulings.map((r) => [r.id, r]));
+
+  // Self-supersedes / dangling / unreadable supersedes-target invariants
+  // (rulings #5-adjacent structural checks, distinct from the citation checks below).
+  for (const r of rulings) {
+    if (!r.supersedes) continue;
+    if (r.supersedes === r.id) {
+      findings.push({
+        level: "error",
+        code: "ruling_self_supersedes",
+        message: `Ruling ${r.id} supersedes itself.`,
+        entity: r.id,
+      });
+      continue;
+    }
+    if (unavailableIds.has(r.supersedes)) {
+      findings.push({
+        level: "error",
+        code: "ruling_unreadable_supersedes_target",
+        message: `Ruling ${r.id} supersedes ${r.supersedes}, which is currently unreadable.`,
+        entity: r.id,
+      });
+    } else if (!rulingsById.has(r.supersedes)) {
+      findings.push({
+        level: "error",
+        code: "ruling_missing_supersedes_target",
+        message: `Ruling ${r.id} supersedes ${r.supersedes}, which does not exist.`,
+        entity: r.id,
+      });
+    }
+  }
+
+  // Cycle detection: same shared walk and the SAME "supersedes_cycle" code
+  // as lessons (generalized-behind-a-bar gate-0 ruling) -- a ruling's
+  // `supersedes` is canonical-only, so resolution is a direct map lookup,
+  // no legacy dual-form to resolve.
+  {
+    const cycleVisited = new Set<string>();
+    const inStack = new Set<string>();
+    const nextRuling = (id: string): string | null => {
+      const r = rulingsById.get(id);
+      if (!r?.supersedes || r.supersedes === id || !rulingsById.has(r.supersedes)) return null;
+      return r.supersedes;
+    };
+    for (const r of rulings) {
+      if (!r.supersedes || cycleVisited.has(r.id)) continue;
+      walkSupersedesChain(r.id, nextRuling, cycleVisited, inStack, "supersedes_cycle", findings);
+    }
+  }
+
+  // Branch detection: a predecessor with more than one successor.
+  const index = buildSuccessorIndex(rulings);
+  for (const target of index.branchedTargets) {
+    const successors = index.successorsByTarget.get(target) ?? [];
+    findings.push({
+      level: "error",
+      code: "ruling_supersedes_branch",
+      message: `Ruling ${target} has competing successors: ${successors.join(", ")}.`,
+      entity: target,
+    });
+  }
+
+  // Citation checks: every ticket/issue citesRulings entry, resolved to its
+  // current state. Arrangements are off the strict ProjectState load path
+  // (T-473 binding item 2) and are not part of this pure function's input.
+  const ctx = buildCitationResolutionContext(rulings, unavailableIds, scanCompleteness, hasUnrecoverableEntries);
+  const citingEntities: ReadonlyArray<{ id: string; citesRulings?: readonly string[] }> = [
+    ...state.tickets,
+    ...state.issues,
+  ];
+  for (const entity of citingEntities) {
+    for (const citedId of entity.citesRulings ?? []) {
+      const resolution = resolveCitation(citedId, ctx);
+      if (resolution.status === "resolved" && resolution.stale) {
+        findings.push({
+          level: "warning",
+          code: "superseded_ruling_citation",
+          message: `${entity.id} cites ${citedId}, which has been superseded by ${resolution.current.id}.`,
+          entity: entity.id,
+        });
+      } else if (resolution.status === "missing") {
+        findings.push({
+          level: "error",
+          code: "dangling_ruling_citation",
+          message: `${entity.id} cites ${citedId}, which does not exist.`,
+          entity: entity.id,
+        });
+      } else if (resolution.status === "unreadable") {
+        findings.push({
+          level: "warning",
+          code: "unreadable_ruling_citation",
+          message: `${entity.id} cites ${citedId}, which is currently unreadable.`,
+          entity: entity.id,
+        });
+      } else if (resolution.status === "indeterminate") {
+        findings.push({
+          level: "warning",
+          code: "ruling_indeterminate_citation",
+          message: `${entity.id} cites ${citedId}: chain state unverifiable (${resolution.reason}).`,
+          entity: entity.id,
+        });
+      }
+      // "branch" and "cycle" resolutions are already reported once, keyed by
+      // the ruling graph itself (ruling_supersedes_branch / supersedes_cycle
+      // above) -- not duplicated per citing entity here.
+    }
   }
 }

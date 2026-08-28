@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { handleValidate, handleValidateWithSourceRefs } from "../../../src/cli/commands/validate.js";
 import { ExitCode } from "../../../src/core/output-formatter.js";
-import { makeIssue, makeState, makeTicket, makeRoadmap, makePhase } from "../../core/test-factories.js";
+import { writeRulingUnlocked } from "../../../src/core/ruling-loader.js";
+import { makeIssue, makeState, makeTicket, makeRuling, makeRoadmap, makePhase } from "../../core/test-factories.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -91,5 +95,67 @@ describe("handleValidate", () => {
     expect(parsed.data.findings).not.toContainEqual(
       expect.objectContaining({ code: expect.stringMatching(/^source_ref_/) }),
     );
+  });
+
+  describe("T-476: ruling side-store wiring (acceptance 3)", () => {
+    const tempDirs: string[] = [];
+
+    afterEach(async () => {
+      await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    async function tempRoot(): Promise<string> {
+      const root = await mkdtemp(join(tmpdir(), "validate-rulings-"));
+      tempDirs.push(root);
+      return root;
+    }
+
+    it("flags a ticket citing a superseded ruling", async () => {
+      const root = await tempRoot();
+      await writeRulingUnlocked(makeRuling({ id: "r-0000000000000001" }), root, { createOnly: true });
+      await writeRulingUnlocked(
+        makeRuling({ id: "r-0000000000000002", supersedes: "r-0000000000000001" }),
+        root,
+        { createOnly: true },
+      );
+      const ctx = makeCtx({
+        root,
+        format: "json",
+        state: makeState({ tickets: [makeTicket({ id: "T-001", citesRulings: ["r-0000000000000001"] })] }),
+      });
+      const result = handleValidate(ctx);
+      const parsed = JSON.parse(result.output);
+      expect(parsed.data.findings).toContainEqual(
+        expect.objectContaining({ code: "superseded_ruling_citation", entity: "T-001" }),
+      );
+    });
+
+    it("surfaces a broken ruling file as a ruling_loader_warning finding", async () => {
+      const root = await tempRoot();
+      await mkdir(join(root, ".story", "rulings"), { recursive: true });
+      await writeFile(join(root, ".story", "rulings", "r-broken00000001.json"), "{not json", "utf8");
+      const ctx = makeCtx({ root, format: "json" });
+      const result = handleValidate(ctx);
+      const parsed = JSON.parse(result.output);
+      expect(parsed.data.findings).toContainEqual(
+        expect.objectContaining({ code: "ruling_loader_warning" }),
+      );
+    });
+
+    it("does not affect validation when .story/rulings/ does not exist (ordinary pre-T-476 project)", async () => {
+      const root = await tempRoot();
+      const ctx = makeCtx({
+        root,
+        format: "json",
+        state: makeState({
+          tickets: [makeTicket({ id: "T-001", phase: "p1" })],
+          roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+        }),
+      });
+      const result = handleValidate(ctx);
+      const parsed = JSON.parse(result.output);
+      expect(parsed.data.findings.filter((f: { code: string }) => f.code.includes("ruling"))).toEqual([]);
+      expect(result.exitCode).toBe(ExitCode.OK);
+    });
   });
 });

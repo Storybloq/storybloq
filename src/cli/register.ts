@@ -212,10 +212,11 @@ export function registerStatusCommand(yargs: Argv): Argv {
   return yargs.command(
     "status",
     "Project summary",
-    (y) => addFormatOption(y),
+    (y) => addFormatOption(y).option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
-      await runReadCommand(format, handleStatus);
+      const clientTaskId = argv["client-task-id"] as string | undefined;
+      await runReadCommand(format, (ctx) => handleStatus(ctx, clientTaskId));
     },
   );
 }

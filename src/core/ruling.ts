@@ -3,6 +3,32 @@ import { RULING_CANONICAL_ID_REGEX, type OwnerTaskLike } from "../models/types.j
 import type { RulingScanCompleteness } from "./ruling-loader.js";
 
 /**
+ * T-476: owner rulings -- verbatim, attributed decision records with
+ * supersedes-links.
+ *
+ * A ruling is a verbatim quote of something an owner (or, per `attribution`,
+ * a manager acting with delegated or owner-veto authority) decided, recorded
+ * once and cited by id from wherever that decision matters -- a ticket, an
+ * issue, an arrangement's gate text. Citing items never restate a ruling's
+ * text; `resolveCitation`/`resolveEntityCitations` resolve it fresh, at read
+ * time, off the live `supersedes` chain, which is what makes a restatement
+ * going stale (the agentkit-rn T-055/N-012 incident this ticket exists to
+ * prevent) structurally impossible for anything built on this module -- see
+ * `test/core/ruling-t055-regression.test.ts` for the reproduction and fix.
+ *
+ * DOCS STATEMENT (this is the one copy; `storybloq ruling create --help`
+ * and the rendered caveat's short form both point here): `attribution` is a
+ * CLAIM asserted by the person or agent recording the ruling. Storybloq
+ * cannot verify who actually said what -- it can only make the claim
+ * checkable, by recording who wrote the record (`recordedBy`) alongside
+ * what they claim it is (`attribution`). This is why `rulingAttributionCaveat`
+ * renders on every ruling unconditionally: it does not replace the two-key
+ * rule for irreversible actions, and a worker is always entitled to demand
+ * the owner's direct word before treating a cited ruling alone as
+ * authorization for one.
+ */
+
+/**
  * T-476 ANTI-LAUNDERING CONSTRAINT (load-bearing, binding pen ruling from
  * gate-1 round 1): `attribution` is a CLAIM asserted by the recorder, never
  * verified by storybloq. The caveat below renders on EVERY ruling,

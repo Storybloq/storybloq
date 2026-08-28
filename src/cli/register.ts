@@ -3029,6 +3029,175 @@ export function registerArrangementCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// ruling (T-476)
+// ---------------------------------------------------------------------------
+
+export function registerRulingCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "ruling",
+    "Manage owner-ruling attestation records",
+    (y) =>
+      y
+        .command(
+          "list",
+          "List rulings",
+          (y2) =>
+            addFormatOption(
+              y2
+                .option("scope-tag", { type: "string", describe: "Filter by scope tag" })
+                .option("superseded", { type: "boolean", describe: "Filter to superseded (true) or current (false) rulings only" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) =>
+              handleRulingList(
+                { scopeTag: argv["scope-tag"] as string | undefined, superseded: argv.superseded as boolean | undefined },
+                ctx,
+              ),
+            );
+          },
+        )
+        .command(
+          "get <id>",
+          "Get a ruling",
+          (y2) =>
+            addFormatOption(
+              y2.positional("id", { type: "string", demandOption: true, describe: "Ruling ID (e.g. r-[canonical])" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleRulingGet(argv.id as string, ctx));
+          },
+        )
+        .command(
+          "create",
+          "Record a new ruling. Text is byte-verbatim: no markdown cleanup, no editing inside the quote.",
+          (y2) =>
+            addFormatOption(
+              arrayOptions(
+                y2
+                  .option("text", { type: "string", demandOption: true, describe: "Verbatim ruling text" })
+                  .option("attribution", {
+                    type: "string",
+                    choices: RULING_ATTRIBUTIONS,
+                    demandOption: true,
+                    describe:
+                      "Claimed source of this ruling -- a CLAIM asserted by the recorder, not verified by storybloq. " +
+                      "See src/core/ruling.ts's module docblock for the full docs statement.",
+                  })
+                  .option("date", { type: "string", demandOption: true, describe: "Ruling date (YYYY-MM-DD)" })
+                  .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
+                { "scope-tag": { ...SPLIT_LIST, describe: "Scope tag (repeatable)" } },
+              ),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleRulingCreate(
+                {
+                  text: argv.text as string,
+                  attribution: argv.attribution as string,
+                  date: argv.date as string,
+                  scopeTags: (argv["scope-tag"] as string[] | undefined) ?? [],
+                  clientTaskId: argv["client-task-id"] as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "supersede <id>",
+          "Supersede a ruling -- link an existing ruling with --with, or create a new superseding ruling with --text/--attribution/--date",
+          (y2) =>
+            addFormatOption(
+              arrayOptions(
+                y2
+                  .positional("id", { type: "string", demandOption: true, describe: "Ruling ID being superseded" })
+                  .option("with", { type: "string", describe: "Existing ruling ID that supersedes <id>" })
+                  .option("text", { type: "string", describe: "Verbatim text for a new superseding ruling" })
+                  .option("attribution", { type: "string", choices: RULING_ATTRIBUTIONS, describe: "Claimed source of the new ruling" })
+                  .option("date", { type: "string", describe: "Date of the new ruling (YYYY-MM-DD)" })
+                  .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" })
+                  .conflicts("with", "text")
+                  .conflicts("with", "attribution")
+                  .conflicts("with", "date"),
+                { "scope-tag": { ...SPLIT_LIST, describe: "Scope tag for a new superseding ruling (repeatable)" } },
+              ),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleRulingSupersede(
+                argv.id as string,
+                {
+                  withId: argv.with as string | undefined,
+                  text: argv.text as string | undefined,
+                  attribution: argv.attribution as string | undefined,
+                  date: argv.date as string | undefined,
+                  scopeTags: argv["scope-tag"] as string[] | undefined,
+                  clientTaskId: argv["client-task-id"] as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .demandCommand(1, "Specify a ruling subcommand: list, get, create, supersede")
+        .strict(),
+    () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
 // gate-ack (T-474)
 // ---------------------------------------------------------------------------
 

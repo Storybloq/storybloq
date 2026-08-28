@@ -639,10 +639,10 @@ const MATRIX: Coverage[] = [
   {
     key: "ticket create --cites-ruling",
     check: (dir) => {
-      // Commit 5/6 checkpoint: the `ruling` CLI verb ships in commit 6, so this
-      // uses a canonical-shaped fixture ID (format-only validated by
-      // resolveCitesRulingsInput) instead of minting one via `ruling create`.
-      const rulingId = "r-0000000000000abc";
+      const ruling = run(dir, "ruling", "create", "--text", "t", "--attribution", "owner-direct",
+        "--date", "2026-08-28", "--client-task-id", "e2e-test-session", "--format", "json");
+      expect(ruling.code, ruling.out).toBe(0);
+      const rulingId = (JSON.parse(ruling.out) as { data: { id: string } }).data.id;
       const res = run(dir, "ticket", "create", "--title", "t", "--type", "task",
         "--cites-ruling", `${rulingId},${rulingId}`);
       expect(res.code, res.out).toBe(0);
@@ -652,7 +652,9 @@ const MATRIX: Coverage[] = [
   {
     key: "ticket update --cites-ruling",
     check: (dir) => {
-      const rulingId = "r-0000000000000abd";
+      const ruling = run(dir, "ruling", "create", "--text", "t", "--attribution", "owner-direct",
+        "--date", "2026-08-28", "--client-task-id", "e2e-test-session", "--format", "json");
+      const rulingId = (JSON.parse(ruling.out) as { data: { id: string } }).data.id;
       seedTickets(dir, 1);
       const id = (byDisplayId(dir, "tickets", "T-001").id) as string;
       const res = run(dir, "ticket", "update", id, "--cites-ruling", rulingId);
@@ -663,7 +665,9 @@ const MATRIX: Coverage[] = [
   {
     key: "issue create --cites-ruling",
     check: (dir) => {
-      const rulingId = "r-0000000000000abe";
+      const ruling = run(dir, "ruling", "create", "--text", "t", "--attribution", "owner-direct",
+        "--date", "2026-08-28", "--client-task-id", "e2e-test-session", "--format", "json");
+      const rulingId = (JSON.parse(ruling.out) as { data: { id: string } }).data.id;
       const res = run(dir, "issue", "create", "--title", "i", "--severity", "low", "--impact", "x",
         "--cites-ruling", `${rulingId},${rulingId}`);
       expect(res.code, res.out).toBe(0);
@@ -673,12 +677,42 @@ const MATRIX: Coverage[] = [
   {
     key: "issue update --cites-ruling",
     check: (dir) => {
-      const rulingId = "r-0000000000000abf";
+      const ruling = run(dir, "ruling", "create", "--text", "t", "--attribution", "owner-direct",
+        "--date", "2026-08-28", "--client-task-id", "e2e-test-session", "--format", "json");
+      const rulingId = (JSON.parse(ruling.out) as { data: { id: string } }).data.id;
       seedIssue(dir);
       const id = (byDisplayId(dir, "issues", "ISS-001").id) as string;
       const res = run(dir, "issue", "update", id, "--cites-ruling", rulingId);
       expect(res.code, res.out).toBe(0);
       expect(byDisplayId(dir, "issues", "ISS-001").citesRulings).toEqual([rulingId]);
+    },
+  },
+  {
+    key: "ruling create --scope-tag",
+    check: (dir) => {
+      const res = run(dir, "ruling", "create",
+        "--text", "verbatim text", "--attribution", "owner-direct", "--date", "2026-08-28",
+        "--client-task-id", "e2e-test-session",
+        "--scope-tag", "alpha,beta");
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "rulings")[0]!.scopeTags).toEqual(["alpha", "beta"]);
+    },
+  },
+  {
+    key: "ruling supersede --scope-tag",
+    check: (dir) => {
+      const created = run(dir, "ruling", "create",
+        "--text", "old", "--attribution", "owner-direct", "--date", "2026-08-27",
+        "--client-task-id", "e2e-test-session", "--format", "json");
+      expect(created.code, created.out).toBe(0);
+      const oldId = (JSON.parse(created.out) as { data: { id: string } }).data.id;
+      const res = run(dir, "ruling", "supersede", oldId,
+        "--text", "new", "--attribution", "owner-direct", "--date", "2026-08-28",
+        "--client-task-id", "e2e-test-session",
+        "--scope-tag", "gamma,delta");
+      expect(res.code, res.out).toBe(0);
+      const superseding = readEntities(dir, "rulings").find((r) => r.id !== oldId)!;
+      expect(superseding.scopeTags).toEqual(["gamma", "delta"]);
     },
   },
 ];

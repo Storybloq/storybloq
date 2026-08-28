@@ -1024,6 +1024,85 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     handleArrangementUpdate(args.id, { lifecycle: args.lifecycle }, format, root),
   ));
 
+  // --- Ruling tools (T-476) ---
+
+  server.registerTool("storybloq_ruling_get", {
+    description: "Get an owner ruling by ID, including its current chain status (current / superseded / indeterminate).",
+    inputSchema: {
+      id: RulingIdSchema.describe("e.g. r-[canonical]"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleRulingGet(args.id, ctx)));
+
+  server.registerTool("storybloq_ruling_list", {
+    description:
+      "List owner rulings, optionally filtered by scope tag or superseded/current status. Unlike arrangement/gate-ack " +
+      "(terminal-only consumers, so no MCP list), a ruling list has a genuine agent consumer: discovering applicable " +
+      "rulings by scope tag while enriching a spec is an MCP-client operation, not a terminal one.",
+    inputSchema: {
+      // Codex round-2 finding 5: no max here -- RulingSchema.scopeTags and
+      // storybloq_ruling_create both accept any length, so a cap on the
+      // list-filter side alone could make a legitimately created tag
+      // unfilterable through this tool.
+      scopeTag: z.string().optional(),
+      superseded: z.boolean().optional().describe("true = only superseded rulings, false = only current rulings, omit for all"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleRulingList({ scopeTag: args.scopeTag, superseded: args.superseded }, ctx)));
+
+  server.registerTool("storybloq_ruling_create", {
+    description:
+      "Record a new owner ruling: a verbatim, attributed decision quote. Attribution is a CLAIM asserted by the " +
+      "recorder, not verified by storybloq -- it makes attribution checkable, it does not replace the second key.",
+    inputSchema: {
+      text: z.string().min(1).describe("Verbatim ruling text, recorded exactly as given"),
+      attribution: z.enum(RULING_ATTRIBUTIONS),
+      date: z.string().min(1).describe("Date the ruling was made (YYYY-MM-DD)"),
+      scopeTags: z.array(z.string()).optional().describe("Free-form tags for filtering, e.g. duet-mode, N-108"),
+      clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleRulingCreate(
+      {
+        text: args.text,
+        attribution: args.attribution,
+        date: args.date,
+        scopeTags: args.scopeTags ?? [],
+        clientTaskId: args.clientTaskId,
+      },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("storybloq_ruling_supersede", {
+    description:
+      "Supersede an existing ruling. Pass `with` to link an already-existing ruling as the successor, or " +
+      "text/attribution/date to create a new superseding ruling in one step. Refuses outright while any ruling " +
+      "in the project is unreadable (fail-closed: a chain edit is never attempted against an unverifiable graph).",
+    inputSchema: {
+      id: RulingIdSchema.describe("The ruling being superseded"),
+      with: RulingIdSchema.optional().describe("An existing ruling to link as successor; omit to create-and-supersede"),
+      text: z.string().min(1).optional().describe("Required with create-and-supersede (omit `with`)"),
+      attribution: z.enum(RULING_ATTRIBUTIONS).optional(),
+      date: z.string().min(1).optional(),
+      scopeTags: z.array(z.string()).optional(),
+      clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleRulingSupersede(
+      args.id,
+      {
+        withId: args.with,
+        text: args.text,
+        attribution: args.attribution,
+        date: args.date,
+        scopeTags: args.scopeTags,
+        clientTaskId: args.clientTaskId,
+      },
+      format,
+      root,
+    ),
+  ));
+
   // --- Gate-ack tools (T-474) ---
   // No storybloq_gate_ack_list, same ruling and reasoning as T-473's
   // arrangement list: list-shaped tools stay CLI-only.

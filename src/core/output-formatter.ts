@@ -23,7 +23,8 @@ import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
 import type { CitationResolution } from "./ruling.js";
-import { renderCitation } from "./ruling.js";
+import { renderCitation, rulingAttributionCaveat } from "./ruling.js";
+import type { Ruling } from "../models/ruling.js";
 
 /**
  * How many diagnostic lines the human-readable section may carry (ISS-897).
@@ -1603,6 +1604,100 @@ export function formatArrangementUpdateResult(
 }
 
 // --- Gate-ack formatters (T-474) ---
+
+// --- Ruling formatters (T-476) ---
+
+export function formatRuling(
+  ruling: Ruling,
+  format: OutputFormat,
+  resolution?: CitationResolution,
+): string {
+  const rendered = resolution ? renderCitation(resolution) : undefined;
+  if (format === "json") {
+    // Codex round-3 finding 4: the caveat must be unconditional at the TOP
+    // level too -- relying on chainStatus.current.caveat (renderCitation's
+    // "resolved" case only) means an indeterminate/missing/unreadable/branch/
+    // cycle resolution -- or no resolution at all -- exposed the ruling's
+    // attribution with no caveat anywhere in the JSON output.
+    return JSON.stringify(
+      successEnvelope({ ...ruling, attributionCaveat: rulingAttributionCaveat(ruling.recordedBy), chainStatus: rendered ?? null }),
+      null,
+      2,
+    );
+  }
+  const lines: string[] = [
+    `# Ruling ${escapeMarkdownInline(ruling.id)}`,
+    "",
+    `Attribution: ${ruling.attribution} | Recorded by: ${ruling.recordedBy.client}/${ruling.recordedBy.id} | Date: ${ruling.date}`,
+  ];
+  if (ruling.scopeTags.length > 0) {
+    lines.push(`Scope: ${ruling.scopeTags.map((t) => escapeMarkdownInline(t)).join(", ")}`);
+  }
+  if (ruling.supersedes) {
+    lines.push(`Supersedes: ${escapeMarkdownInline(ruling.supersedes)}`);
+  }
+  lines.push("", "## Text", "", fencedBlock(ruling.text));
+  lines.push("", rulingAttributionCaveat(ruling.recordedBy));
+  if (rendered) {
+    if (rendered.status === "resolved") {
+      lines.push(
+        "",
+        rendered.stale ? `Status: superseded by ${rendered.current!.id}` : "Status: current",
+      );
+    } else {
+      lines.push("", `Status: ${rendered.warning ?? rendered.status}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function formatRulingList(rulings: readonly Ruling[], format: OutputFormat): string {
+  if (format === "json") {
+    // Codex round-2 finding 2: attribution is a CLAIM (see
+    // rulingAttributionCaveat's binding constraint) and must render
+    // unconditionally everywhere a ruling's attribution is shown, including
+    // the list surface -- not only single-ruling get/create/supersede.
+    return JSON.stringify(
+      successEnvelope(rulings.map((r) => ({ ...r, attributionCaveat: rulingAttributionCaveat(r.recordedBy) }))),
+      null,
+      2,
+    );
+  }
+  if (rulings.length === 0) return "No rulings found.";
+  return rulings
+    .map((r) => {
+      const preview = r.text.length > 80 ? `${r.text.slice(0, 80)}...` : r.text;
+      return [
+        `- ${escapeMarkdownInline(r.id)} [${r.attribution}] (${r.date}): "${escapeMarkdownInline(preview)}"`,
+        `  ${rulingAttributionCaveat(r.recordedBy)}`,
+      ].join("\n");
+    })
+    .join("\n");
+}
+
+export function formatRulingCreateResult(ruling: Ruling, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(
+      successEnvelope({ ...ruling, attributionCaveat: rulingAttributionCaveat(ruling.recordedBy) }),
+      null,
+      2,
+    );
+  }
+  return `Created ruling ${ruling.id}.`;
+}
+
+export function formatRulingSupersedeResult(ruling: Ruling, noop: boolean, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(
+      successEnvelope({ ...ruling, noop, attributionCaveat: rulingAttributionCaveat(ruling.recordedBy) }),
+      null,
+      2,
+    );
+  }
+  return noop
+    ? `Ruling ${ruling.id} already supersedes ${ruling.supersedes} (no-op).`
+    : `Ruling ${ruling.id} now supersedes ${ruling.supersedes}.`;
+}
 
 function formatGateAckPin(ack: GateAck): string {
   return ack.pin.kind === "plan-hash"

@@ -25,6 +25,11 @@ describe("T-385: field classification", () => {
     expect(rules.dedupeKey?.kind).toBe("identity");
   });
 
+  it("T-475: earmark is hard-conflict for both ticket and issue (not a coupled group -- nothing else to couple it with)", () => {
+    expect(getMergeRules("ticket").earmark).toEqual({ kind: "hard-conflict" });
+    expect(getMergeRules("issue").earmark).toEqual({ kind: "hard-conflict" });
+  });
+
   it("coupled groups are symmetric", () => {
     const groups = getCoupledGroups("ticket");
     expect(groups.length).toBeGreaterThan(0);

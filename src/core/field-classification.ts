@@ -46,6 +46,15 @@ const TICKET_RULES: Record<string, MergeRule> = {
   completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle"] },
   lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle"] },
 
+  // T-475: earmark is a single self-contained discriminated-union field, so
+  // it is hard-conflict rather than "coupled" -- "coupled" groups in this
+  // codebase always sync >=2 fields together (enforced by
+  // field-classification.test.ts's "coupled groups are symmetric" check),
+  // and there is nothing else to couple earmark with. hard-conflict already
+  // gives the behavior the design calls for: a real divergence always
+  // surfaces as a conflict, never resolved arbitrarily.
+  earmark: { kind: "hard-conflict" },
+
   deletedAt: { kind: "hard-conflict" },
   deletedBy: { kind: "hard-conflict" },
 };
@@ -83,6 +92,10 @@ const ISSUE_RULES: Record<string, MergeRule> = {
   resolvedDate: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle"] },
 
   lifecycle: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle"] },
+
+  // T-475: see the ticket rule of the same name -- identical treatment.
+  earmark: { kind: "hard-conflict" },
+
   deletedAt: { kind: "hard-conflict" },
   deletedBy: { kind: "hard-conflict" },
 };

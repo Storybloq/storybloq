@@ -604,3 +604,122 @@ describe("T-385: threeWayMerge", () => {
     });
   });
 });
+
+describe("T-475: earmark field merge and cross-field invariant", () => {
+  function reservedEarmark(overrides: Record<string, unknown> = {}) {
+    return {
+      stage: "reserved",
+      reservedBy: { client: "claude", id: "task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-08-28T00:00:00.000Z",
+      holderRole: "worker",
+      holderSession: null,
+      ...overrides,
+    };
+  }
+
+  function assignedEarmark(overrides: Record<string, unknown> = {}) {
+    return {
+      stage: "assigned",
+      reservedBy: { client: "claude", id: "task-1" },
+      arrangementId: "a-0123456789abcdef",
+      since: "2026-08-28T00:00:00.000Z",
+      holderRole: "worker",
+      holderSession: "11111111-1111-4111-8111-111111111111",
+      ...overrides,
+    };
+  }
+
+  it("merges clean when only one side sets an earmark", () => {
+    const base = ticket({ earmark: null });
+    const ours = ticket({ earmark: reservedEarmark() });
+    const theirs = ticket({ earmark: null });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    expect(result.clean).toBe(true);
+    expect(result.merged.earmark).toEqual(reservedEarmark());
+  });
+
+  it("hard-conflicts on a genuine divergent earmark (two different reservations)", () => {
+    const base = ticket({ earmark: null });
+    const ours = ticket({ earmark: reservedEarmark({ holderRole: "worker" }) });
+    const theirs = ticket({ earmark: reservedEarmark({ holderRole: "pen" }) });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    expect(result.clean).toBe(false);
+    const c = result.conflicts.find((x) => x.field === "earmark");
+    expect(c).toBeDefined();
+    expect(c!.kind).toBe("field");
+  });
+
+  it("downgrades to hard-conflict: a reserved earmark merges clean alongside a status move off open (R5 invalid state)", () => {
+    // Each coupled group merges clean in isolation -- ours only changed
+    // status (ticket-status group), theirs only changed earmark (its own
+    // hard-conflict field) -- but the COMBINATION (reserved earmark + a
+    // non-open item) is an invalid state per R5. Neither per-group merge can
+    // see this on its own; only the post-merge invariant check can.
+    const base = ticket({ status: "open", earmark: null });
+    const ours = ticket({ status: "inprogress", earmark: null });
+    const theirs = ticket({ status: "open", earmark: reservedEarmark() });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    expect(result.clean).toBe(false);
+    const c = result.conflicts.find((x) => x.field === "earmark");
+    expect(c).toBeDefined();
+    expect(c!.kind).toBe("field");
+    expect(c!.base).toBeNull();
+    expect(c!.ours).toBeNull();
+    expect(c!.theirs).toEqual(reservedEarmark());
+  });
+
+  it("downgrades to hard-conflict: an assigned ticket earmark merges clean alongside a claim that moved to someone else (R5 invalid state)", () => {
+    const base = ticket({ earmark: null, claimedBySession: null, claim: null });
+    const ours = ticket({
+      earmark: null,
+      claimedBySession: "22222222-2222-4222-8222-222222222222",
+      claim: { user: "bob@test.com", branch: "feat/y", since: "2026-08-28T01:00:00.000Z" },
+    });
+    const theirs = ticket({ earmark: assignedEarmark(), claimedBySession: null, claim: null });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    expect(result.clean).toBe(false);
+    const c = result.conflicts.find((x) => x.field === "earmark");
+    expect(c).toBeDefined();
+    expect(c!.kind).toBe("field");
+  });
+
+  it("does not double-flag: a genuinely divergent earmark is not ALSO caught by the invariant check", () => {
+    const base = ticket({ status: "inprogress", earmark: null });
+    const ours = ticket({ status: "inprogress", earmark: reservedEarmark({ holderRole: "worker" }) });
+    const theirs = ticket({ status: "inprogress", earmark: reservedEarmark({ holderRole: "pen" }) });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    const earmarkConflicts = result.conflicts.filter((x) => x.field === "earmark");
+    expect(earmarkConflicts.length).toBe(1);
+  });
+
+  it("never flags a valid worked state: assigned earmark whose holder matches the actual claim, status inprogress", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const base = ticket({ status: "open", earmark: null, claimedBySession: null });
+    const ours = ticket({ status: "inprogress", earmark: assignedEarmark({ holderSession: sessionId }), claimedBySession: sessionId });
+    const theirs = ticket({ status: "open", earmark: null, claimedBySession: null });
+    const result = threeWayMerge(base, ours, theirs, "ticket");
+    expect(result.clean).toBe(true);
+  });
+
+  it("issue path: never invariant-checks claimedBySession (AM-b -- issues have no such field)", () => {
+    // An assigned issue earmark alongside any status is never flagged by the
+    // invariant check itself (issues have no claimedBySession to compare
+    // against) -- staleness, not merge-time consistency, is how a stranded
+    // issue earmark surfaces (isIssueEarmarkStale).
+    const base = issue({ status: "open", earmark: null });
+    const ours = issue({ status: "inprogress", earmark: null });
+    const theirs = issue({ status: "open", earmark: assignedEarmark() });
+    const result = threeWayMerge(base, ours, theirs, "issue");
+    expect(result.conflicts.some((x) => x.field === "earmark")).toBe(false);
+  });
+
+  it("issue path: still flags a reserved earmark alongside a non-open status", () => {
+    const base = issue({ status: "open", earmark: null });
+    const ours = issue({ status: "resolved", resolvedDate: "2026-08-28" });
+    const theirs = issue({ status: "open", earmark: reservedEarmark() });
+    const result = threeWayMerge(base, ours, theirs, "issue");
+    const c = result.conflicts.find((x) => x.field === "earmark");
+    expect(c).toBeDefined();
+  });
+});

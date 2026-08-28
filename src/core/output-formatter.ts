@@ -16,6 +16,8 @@ import type { RecommendResult } from "./recommend.js";
 import type { ReconcileResult } from "./reconcile.js";
 import type { DoctorResult } from "./team-doctor.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "./session-scan.js";
+import type { Arrangement, ArrangementLifecycle, ArrangementRole } from "../models/arrangement.js";
+import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
 
@@ -538,6 +540,45 @@ function expiredLeaseSessionsSection(expiredLeaseSessions: readonly ActiveSessio
   return lines;
 }
 
+/**
+ * Markdown for active duet-mode arrangements (T-473). Rendered only when
+ * non-empty. `arrangementWarnings` is advisory text composed elsewhere
+ * (`arrangement-loader.ts`'s `loadArrangementsSafe`, `handleStatus`'s bounds
+ * staleness check) and already passed through `sanitizeDisplayText` at that
+ * composition point (control/bidi characters neutralized); this function
+ * additionally runs every string through `escapeMarkdownInline` before
+ * rendering, same as every other piece of prose in this file, since
+ * sanitizing control characters and neutralizing Markdown structure are two
+ * separate concerns.
+ */
+function arrangementsSection(arrangements: StatusArrangements): string[] {
+  if (arrangements.items.length === 0 && arrangements.warnings.length === 0) return [];
+  const lines = ["", "## Arrangements", ""];
+  for (const a of arrangements.items) {
+    const parties = a.parties.map((p) => `${p.role} (${p.client})`).join(", ");
+    lines.push(
+      `- ${escapeMarkdownInline(a.id)} [${a.lifecycle}] -- bounds: ${escapeMarkdownInline(a.bounds.join(", "))}; parties: ${escapeMarkdownInline(parties)}`,
+    );
+  }
+  for (const w of arrangements.warnings) {
+    lines.push(`- warning: ${escapeMarkdownInline(w)}`);
+  }
+  return lines;
+}
+
+/** Active-only projection of an Arrangement for status display (T-473). */
+export interface StatusArrangementSummary {
+  readonly id: string;
+  readonly lifecycle: ArrangementLifecycle;
+  readonly bounds: readonly string[];
+  readonly parties: readonly { readonly role: ArrangementRole; readonly client: StorybloqClient }[];
+}
+
+export interface StatusArrangements {
+  readonly items: readonly StatusArrangementSummary[];
+  readonly warnings: readonly string[];
+}
+
 export function formatStatus(
   state: ProjectState,
   format: OutputFormat,
@@ -552,6 +593,13 @@ export function formatStatus(
   // inserting a parameter anywhere but the end would shift `bus`/`limitStops`/
   // `sessionDiagnostics` for any external caller still using positional args.
   expiredLeaseSessions: readonly ActiveSessionSummary[] = [],
+  // T-473, same APPENDED-LAST discipline as `expiredLeaseSessions` above.
+  // Always present, empty-when-none (same ISS-891 convention as
+  // `activeSessions`) -- `arrangementWarnings` is advisory prose text and is
+  // NEVER folded into `sessionDiagnostics`/any integrity-warning channel:
+  // doing so would change this command's exit classification for a merely
+  // degraded, non-blocking arrangement read.
+  arrangements: StatusArrangements = { items: [], warnings: [] },
 ): string {
   const phases = phasesWithStatus(state);
   const data = {
@@ -605,6 +653,12 @@ export function formatStatus(
     // ISS-891 gave the session arrays, for the same reason. This was the last
     // field in these two objects still using the omit-when-empty pattern.
     limitStops,
+    // T-473: active-only arrangements, same always-present/empty-when-none
+    // convention. `arrangementWarnings` is a separate, purely advisory key --
+    // never merged into `sessionDiagnostics` or any other channel this
+    // command's exit code reads from.
+    arrangements: arrangements.items,
+    arrangementWarnings: arrangements.warnings,
   };
 
   if (format === "json") {
@@ -685,6 +739,7 @@ export function formatStatus(
   lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
+  lines.push(...arrangementsSection(arrangements));
 
   if (state.isEmptyScaffold) {
     lines.push("");
@@ -713,6 +768,8 @@ export function formatFederatedStatus(
   // into different parameter orders for the same concept would be its own
   // hazard.
   expiredLeaseSessions: readonly ActiveSessionSummary[] = [],
+  // T-473: appended last, matching `formatStatus`'s placement, same reasons.
+  arrangements: StatusArrangements = { items: [], warnings: [] },
 ): string {
   const sanitizedNodes = fedState.nodes.map((node) => ({
     name: node.name,
@@ -759,6 +816,12 @@ export function formatFederatedStatus(
     // ISS-891 gave the session arrays, for the same reason. This was the last
     // field in these two objects still using the omit-when-empty pattern.
     limitStops,
+    // T-473: active-only arrangements, same always-present/empty-when-none
+    // convention. `arrangementWarnings` is a separate, purely advisory key --
+    // never merged into `sessionDiagnostics` or any other channel this
+    // command's exit code reads from.
+    arrangements: arrangements.items,
+    arrangementWarnings: arrangements.warnings,
   };
 
   if (format === "json") {
@@ -852,6 +915,7 @@ export function formatFederatedStatus(
   lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...limitStopsSection(limitStops));
+  lines.push(...arrangementsSection(arrangements));
 
   return lines.join("\n");
 }
@@ -1377,6 +1441,50 @@ export function formatNoteDeleteResult(
     return `Note ${id} is already deleted; existing tombstone preserved.`;
   }
   return `Deleted note ${id}.`;
+}
+
+// --- Arrangement formatters (T-473) ---
+
+export function formatArrangement(arrangement: Arrangement, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(arrangement), null, 2);
+  }
+  const parties = arrangement.parties.map((p) => `${p.role} (${p.client})`).join(", ");
+  const lines: string[] = [
+    `# Arrangement ${escapeMarkdownInline(arrangement.id)} [${arrangement.lifecycle}]`,
+    "",
+    `Bounds: ${escapeMarkdownInline(arrangement.bounds.join(", "))}`,
+    `Parties: ${escapeMarkdownInline(parties)}`,
+    `Unreachability (irreversible): ${arrangement.unreachability.onIrreversibleWork}`,
+  ];
+  return lines.join("\n");
+}
+
+export function formatArrangementList(arrangements: readonly Arrangement[], format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(arrangements), null, 2);
+  }
+  if (arrangements.length === 0) return "No arrangements found.";
+  return arrangements
+    .map((a) => {
+      const parties = a.parties.map((p) => p.role).join("/");
+      return `- ${escapeMarkdownInline(a.id)} [${a.lifecycle}] (${escapeMarkdownInline(parties)}) -- bounds: ${escapeMarkdownInline(a.bounds.join(", "))}`;
+    })
+    .join("\n");
+}
+
+export function formatArrangementCreateResult(arrangement: Arrangement, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(arrangement), null, 2);
+  }
+  return `Created arrangement ${arrangement.id}.`;
+}
+
+export function formatArrangementUpdateResult(arrangement: Arrangement, format: OutputFormat): string {
+  if (format === "json") {
+    return JSON.stringify(successEnvelope(arrangement), null, 2);
+  }
+  return `Updated arrangement ${arrangement.id} [${arrangement.lifecycle}].`;
 }
 
 // --- Lesson formatters ---

@@ -69,6 +69,7 @@ import {
   GateAckIdSchema,
   TicketRefSchema,
   IssueRefSchema,
+  EARMARK_ROLES,
   TICKET_STATUSES,
   TICKET_TYPES,
   ISSUE_STATUSES,
@@ -138,6 +139,12 @@ import {
   handleGateAckCreate,
   handleGateAckContest,
 } from "../cli/commands/gate-ack.js";
+import {
+  handleEarmarkGet,
+  handleEarmarkReserve,
+  handleEarmarkAssign,
+  handleEarmarkRelease,
+} from "../cli/commands/earmark.js";
 import {
   handleLessonList,
   handleLessonGet,
@@ -1038,6 +1045,68 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleGateAckContest(args.id, args.reason, format, root),
+  ));
+
+  // --- Earmark tools (T-475) ---
+  // No storybloq_earmark_list -- earmarks are a field on tickets/issues, not
+  // a standalone ledger entity; discovery is via `ticket get`/`issue get`.
+
+  server.registerTool("storybloq_earmark_get", {
+    description: "Get the pick-exclusion earmark (if any) on a ticket or issue",
+    inputSchema: {
+      ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
+    },
+  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleEarmarkGet(args.ref, ctx)));
+
+  server.registerTool("storybloq_earmark_reserve", {
+    description:
+      "Reserve a ticket or issue for a duet-mode role, pending pickup. Fails as a CAS conflict if already earmarked " +
+      "to someone/something else. --arrangement is required only when more than one active arrangement covers the item.",
+    inputSchema: {
+      ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
+      role: z.enum(EARMARK_ROLES).describe("Role this reservation is held for"),
+      arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
+      clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleEarmarkReserve(
+      { ref: args.ref, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("storybloq_earmark_assign", {
+    description:
+      "Assign a ticket or issue's earmark directly to a live session -- either a fresh placement or an explicit " +
+      "reserved -> assigned conversion. The target session must be live and match an arrangement party holding " +
+      "`role`. A reserved -> assigned conversion is authorized only for the reserver or the arrangement's pen party.",
+    inputSchema: {
+      ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
+      to: z.string().min(1).describe("Target session selector (id or unambiguous prefix)"),
+      role: z.enum(EARMARK_ROLES).describe("Role the target session must hold on the covering arrangement"),
+      arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
+      clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleEarmarkAssign(
+      { ref: args.ref, to: args.to, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
+      format,
+      root,
+    ),
+  ));
+
+  server.registerTool("storybloq_earmark_release", {
+    description:
+      "Release (clear) a ticket or issue's earmark. Authorized for the reserver or the covering arrangement's pen " +
+      "party. A no-op, not an error, when there is no earmark to clear.",
+    inputSchema: {
+      ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
+      arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
+      clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleEarmarkRelease({ ref: args.ref, arrangement: args.arrangement, clientTaskId: args.clientTaskId }, format, root),
   ));
 
   // --- Lesson tools ---

@@ -107,6 +107,13 @@ import {
   handleGateAckContest,
 } from "./commands/gate-ack.js";
 import {
+  handleEarmarkGet,
+  handleEarmarkReserve,
+  handleEarmarkAssign,
+  handleEarmarkRelease,
+} from "./commands/earmark.js";
+import { EARMARK_ROLES } from "../models/types.js";
+import {
   handleLessonList,
   handleLessonGet,
   handleLessonDigest,
@@ -3128,6 +3135,171 @@ export function registerGateAckCommand(yargs: Argv): Argv {
           },
         )
         .demandCommand(1, "Specify a gate-ack subcommand: list, get, create, contest")
+        .strict(),
+    () => {},
+  );
+}
+
+// ---------------------------------------------------------------------------
+// earmark (T-475)
+// ---------------------------------------------------------------------------
+
+export function registerEarmarkCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "earmark",
+    "Manage duet-mode assignment earmarks (pick-exclusion for tickets/issues)",
+    (y) =>
+      y
+        .command(
+          "get <ref>",
+          "Get the earmark on a ticket or issue",
+          (y2) =>
+            addFormatOption(
+              y2.positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            await runReadCommand(format, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
+          },
+        )
+        .command(
+          "reserve <ref>",
+          "Reserve a ticket or issue for a role, pending pickup",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
+                .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role this reservation is held for" })
+                .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleEarmarkReserve(
+                { ref: argv.ref as string, role: argv.role as (typeof EARMARK_ROLES)[number], arrangement: argv.arrangement as string | undefined },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "assign <ref>",
+          "Assign a ticket or issue's earmark directly to a live session (direct placement, or an explicit reserved -> assigned conversion)",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
+                .option("to", { type: "string", demandOption: true, describe: "Target session selector (id or unambiguous prefix)" })
+                .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role the target session must hold on the covering arrangement" })
+                .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleEarmarkAssign(
+                {
+                  ref: argv.ref as string,
+                  to: argv.to as string,
+                  role: argv.role as (typeof EARMARK_ROLES)[number],
+                  arrangement: argv.arrangement as string | undefined,
+                },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .command(
+          "release <ref>",
+          "Release (clear) a ticket or issue's earmark",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
+                .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+            if (!root) {
+              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              process.exitCode = ExitCode.USER_ERROR;
+              return;
+            }
+            try {
+              const result = await handleEarmarkRelease(
+                { ref: argv.ref as string, arrangement: argv.arrangement as string | undefined },
+                format,
+                root,
+              );
+              writeOutput(result.output);
+              process.exitCode = result.exitCode ?? ExitCode.OK;
+            } catch (err: unknown) {
+              if (err instanceof CliValidationError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const { ProjectLoaderError } = await import("../core/errors.js");
+              if (err instanceof ProjectLoaderError) {
+                writeOutput(formatError(err.code, err.message, format));
+                process.exitCode = ExitCode.USER_ERROR;
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              writeOutput(formatError("io_error", message, format));
+              process.exitCode = ExitCode.USER_ERROR;
+            }
+          },
+        )
+        .demandCommand(1, "Specify an earmark subcommand: get, reserve, assign, release")
         .strict(),
     () => {},
   );

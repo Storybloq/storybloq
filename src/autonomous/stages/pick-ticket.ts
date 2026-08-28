@@ -18,6 +18,7 @@ import { reviewRiskForTicket } from "../review-depth.js";
 import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } from "../review-effort.js";
 import { entityFingerprint } from "../pending-artifacts.js";
 import { resolveGateStatus } from "./gate-enforcement.js";
+import { tryAcquireEarmark, describeEarmarkHolder } from "../../core/earmarks.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
 
@@ -303,6 +304,44 @@ export class PickTicketStage implements WorkflowStage {
     const planPath = join(ctx.dir, "plan.md");
     try { if (existsSync(planPath)) unlinkSync(planPath); } catch { /* best-effort */ }
 
+    // T-475 Layer 1 (binding choke point): resolve the earmark CAS before
+    // this stage ever commits to handing out the PLAN instruction. R5 (the
+    // gate-1 acceptor's ruling): CONVERT a matching reservation into an
+    // assignment, never CLEAR one -- an assignment persists through the
+    // item's whole active life so a rival's concurrent reserve/pick has
+    // nothing to race against. An autonomous PICK_TICKET session is always
+    // acting as "worker" in this architecture -- a "pen" never runs its own
+    // autonomous walker through this stage. Fail-closed: any lock, reload,
+    // or write error refuses the pick rather than falling through as
+    // success -- the exact failure mode ISS-1051 named in the pre-existing,
+    // unrelated claim-acquisition path, deliberately not repeated here.
+    let earmarkRefusal: string | null = null;
+    try {
+      const { withProjectLock, writeTicketUnlocked } = await import("../../core/project-loader.js");
+      let refusal: string | null = null;
+      await withProjectLock(ctx.root, { strict: false }, async ({ state: freshState }) => {
+        const freshTicket = freshState.ticketByID(ticket.id);
+        if (!freshTicket) {
+          refusal = `Ticket ${ticketLabel} no longer exists. Pick a different ticket.`;
+          return;
+        }
+        const decision = tryAcquireEarmark(freshTicket.earmark, ctx.state.sessionId, "worker");
+        if (!decision.ok) {
+          refusal = `Ticket ${ticketLabel} is earmarked for ${describeEarmarkHolder(decision.holder)}. Pick a different ticket.`;
+          return;
+        }
+        if (decision.write) {
+          await writeTicketUnlocked({ ...freshTicket, earmark: decision.write }, ctx.root);
+        }
+      });
+      earmarkRefusal = refusal;
+    } catch {
+      earmarkRefusal = `Could not verify earmark status for ${ticketLabel} due to a lock or read error. Try again.`;
+    }
+    if (earmarkRefusal) {
+      return { action: "retry", instruction: earmarkRefusal };
+    }
+
     // T-375: Build claim using final branch (after per-ticket branch creation)
     const finalBranch = ctx.state.git?.branch ?? "unknown";
     const claimObj = email ? buildClaim(email, finalBranch, new Date().toISOString()) : undefined;
@@ -441,6 +480,49 @@ export class PickTicketStage implements WorkflowStage {
     // leaves the issue's status untouched.
     const issueBaseHead = await resolveItemBaseHead(ctx);
     if (!issueBaseHead) return { action: "retry", instruction: GIT_UNAVAILABLE_AT_PICK };
+
+    // T-475 Layer 1 (binding choke point, issue path): a FRESH read here --
+    // not the snapshot from the top of this method -- is what closes the
+    // TOCTOU window round 2's review found (the mismatch check and
+    // applyStrategy's git work above are real async time; a stale earmark
+    // read across that gap would miss a placement that landed during it).
+    // Same R5 convert-not-clear semantics and fail-closed posture as the
+    // ticket path above. Deliberately its OWN locked transaction rather than
+    // merged into the pendingProjectMutation write below: a rival earmark
+    // PLACEMENT is itself CAS'd against whatever this transaction commits
+    // (core/earmarks.ts's placement CAS, wired in cli/commands/earmark.ts),
+    // so a placement landing in the brief gap between this commit and the
+    // status write below sees the now-converted earmark and refuses --
+    // merging the two writes was not required to close the race this ticket
+    // is scoped to close, and reusing the existing pendingProjectMutation
+    // crash-recovery machinery unmodified was judged lower-risk than folding
+    // an unrelated write path into a new combined transaction.
+    let earmarkRefusal: string | null = null;
+    try {
+      const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+      let refusal: string | null = null;
+      await withProjectLock(ctx.root, { strict: false }, async ({ state: freshState }) => {
+        const freshIssue = freshState.issues.find(i => i.id === issue.id);
+        if (!freshIssue) {
+          refusal = `Issue ${issueLabel} no longer exists. Pick a different issue.`;
+          return;
+        }
+        const decision = tryAcquireEarmark(freshIssue.earmark, ctx.state.sessionId, "worker");
+        if (!decision.ok) {
+          refusal = `Issue ${issueLabel} is earmarked for ${describeEarmarkHolder(decision.holder)}. Pick a different issue.`;
+          return;
+        }
+        if (decision.write) {
+          await writeIssueUnlocked({ ...freshIssue, earmark: decision.write }, ctx.root);
+        }
+      });
+      earmarkRefusal = refusal;
+    } catch {
+      earmarkRefusal = `Could not verify earmark status for ${issueLabel} due to a lock or read error. Try again.`;
+    }
+    if (earmarkRefusal) {
+      return { action: "retry", instruction: earmarkRefusal };
+    }
 
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)

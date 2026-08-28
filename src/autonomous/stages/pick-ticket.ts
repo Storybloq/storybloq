@@ -21,6 +21,9 @@ import { resolveGateStatus } from "./gate-enforcement.js";
 import { tryAcquireEarmark, describeEarmarkHolder, isEarmarkVisible } from "../../core/earmarks.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { resolveEntityCitations } from "../../core/ruling.js";
+import { formatCitedRulingsSection } from "../../core/output-formatter.js";
 
 /**
  * T-328: revalidating a pending target has three outcomes, not two. Folding a
@@ -390,6 +393,13 @@ export class PickTicketStage implements WorkflowStage {
       ...(claimObj ? { pendingTicketClaim: claimObj } : {}),
     });
 
+    // T-476 acceptance 4 (T-055 class): resolve citations fresh from disk for
+    // THIS ticket rather than trusting anything cached on the ticket object,
+    // so a superseded ruling never rides into a PLAN instruction as if it
+    // were still current.
+    const citationCtx = loadCitationContext(ctx.root);
+    const citedRulingsSection = formatCitedRulingsSection(resolveEntityCitations(ticket, citationCtx));
+
     // Produce PLAN instruction (advance with result for hybrid dispatch)
     return {
       action: "advance",
@@ -398,6 +408,7 @@ export class PickTicketStage implements WorkflowStage {
           `# Plan for ${ticketLabel}: ${ticket.title}`,
           "",
           ticket.description ? `## Ticket Description\n\n${ticket.description}` : "",
+          citedRulingsSection,
           "",
           `Write an implementation plan for this ticket. Save it to \`.story/sessions/${ctx.state.sessionId}/plan.md\`.`,
           "",

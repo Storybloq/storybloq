@@ -152,6 +152,7 @@ const CONTRACT_CUES: readonly ContractCue[] = [
   { tool: "storybloq_issue_update", kind: "enum-semantic", cue: "null clears the resolution" },
   { tool: "storybloq_issue_update", kind: "precedence", cue: "Replaces existing source refs" },
   { tool: "storybloq_issue_update", kind: "selection", cue: "Update an existing issue" },
+  { tool: "storybloq_issue_update", kind: "constraint", cue: "Mutually exclusive with clearCitesRulings" },
   { tool: "storybloq_lesson_create", kind: "constraint", cue: "The actionable rule (1-3 sentences)" },
   { tool: "storybloq_lesson_create", kind: "constraint", cue: "evidence, ticket/issue refs" },
   { tool: "storybloq_lesson_create", kind: "selection", cue: "Create a new lesson" },
@@ -255,6 +256,7 @@ const CONTRACT_CUES: readonly ContractCue[] = [
   { tool: "storybloq_ticket_update", kind: "enum-semantic", cue: "Null to clear" },
   { tool: "storybloq_ticket_update", kind: "precedence", cue: "Does not take over a claim" },
   { tool: "storybloq_ticket_update", kind: "precedence", cue: "complete a ticket claimed by another session, or reopen a complete one" },
+  { tool: "storybloq_ticket_update", kind: "constraint", cue: "Mutually exclusive with clearCitesRulings" },
   { tool: "storybloq_unregister_subprocess", kind: "constraint", cue: "Idempotent" },
   { tool: "storybloq_unregister_subprocess", kind: "precedence", cue: "works even on expired/terminal sessions" },
   { tool: "storybloq_validate", kind: "enum-semantic", cue: "Scan all .story JSON without loading project state" },
@@ -287,14 +289,17 @@ describe("tool description contract (T-460)", () => {
     // added three arrangement tools (get/create/update), measured at 40,307
     // bytes; T-474 added three gate-ack tools (get/create/contest), measured
     // at 42,632 bytes; T-475 added four earmark tools (get/reserve/assign/
-    // release), measured at 45,615 bytes, so this ceiling leaves ~500 bytes
-    // of headroom and fails once an edit gives back more than that. Raising
-    // it is a deliberate act that belongs in a commit message, which is the
+    // release), measured at 45,615 bytes; T-476 commit 5/6 checkpoint adds
+    // citesRuling/clearCitesRulings fields on ticket/issue create/update,
+    // measured at 46,274 bytes -- the four ruling_* tools land in commit
+    // 6 and raise this further. So this ceiling leaves ~500 bytes of
+    // headroom and fails once an edit gives back more than that. Raising it
+    // is a deliberate act that belongs in a commit message, which is the
     // point. Deliberately NO lower bound: the cues above are what protect
     // against over-trimming, and a floor would fail an honest future trim
     // for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(46_100);
+    expect(bytes).toBeLessThan(46_800);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -311,7 +316,10 @@ describe("tool description contract (T-460)", () => {
     // (63 -> 66); no _list tool either, same ruling. T-475 added
     // storybloq_earmark_get/reserve/assign/release (66 -> 70); no _list
     // tool either -- earmarks are a field on the item, not a standalone
-    // entity, so there is nothing to enumerate independently.
+    // entity, so there is nothing to enumerate independently. T-476 commit
+    // 5/6 checkpoint adds no new tools yet (citesRuling fields land on
+    // existing ticket/issue tools); the storybloq_ruling_get/list/create/
+    // supersede tools (70 -> 74) land in commit 6.
     expect(result.tools.length).toBe(70);
   });
 });

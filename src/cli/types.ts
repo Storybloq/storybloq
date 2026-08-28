@@ -35,6 +35,17 @@ export interface CommandResult {
    * CLI-side error signal.
    */
   readonly isError?: boolean;
+  /**
+   * T-476: handler-produced advisory warnings discovered at RENDER time
+   * (e.g. a cited ruling's chain state is currently unverifiable) --
+   * distinct from `CommandContext.warnings` (pre-handler, main-ledger load
+   * warnings). Plain strings, matching the side-store loader convention
+   * (`loadArrangementsSafe`/`loadRulingsSafe`), not the main ledger's typed
+   * `LoadWarning`. Only ever upgrades an OK exit to PARTIAL (see
+   * `runReadCommand`) -- never overrides a handler's own non-OK
+   * exitCode/isError.
+   */
+  readonly warnings?: readonly string[];
 }
 
 /** Delete command context includes force flag. */

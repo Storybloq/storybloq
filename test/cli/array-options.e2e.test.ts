@@ -636,6 +636,51 @@ const MATRIX: Coverage[] = [
       ]);
     },
   },
+  {
+    key: "ticket create --cites-ruling",
+    check: (dir) => {
+      // Commit 5/6 checkpoint: the `ruling` CLI verb ships in commit 6, so this
+      // uses a canonical-shaped fixture ID (format-only validated by
+      // resolveCitesRulingsInput) instead of minting one via `ruling create`.
+      const rulingId = "r-0000000000000abc";
+      const res = run(dir, "ticket", "create", "--title", "t", "--type", "task",
+        "--cites-ruling", `${rulingId},${rulingId}`);
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "tickets")[0]!.citesRulings).toEqual([rulingId]);
+    },
+  },
+  {
+    key: "ticket update --cites-ruling",
+    check: (dir) => {
+      const rulingId = "r-0000000000000abd";
+      seedTickets(dir, 1);
+      const id = (byDisplayId(dir, "tickets", "T-001").id) as string;
+      const res = run(dir, "ticket", "update", id, "--cites-ruling", rulingId);
+      expect(res.code, res.out).toBe(0);
+      expect(byDisplayId(dir, "tickets", "T-001").citesRulings).toEqual([rulingId]);
+    },
+  },
+  {
+    key: "issue create --cites-ruling",
+    check: (dir) => {
+      const rulingId = "r-0000000000000abe";
+      const res = run(dir, "issue", "create", "--title", "i", "--severity", "low", "--impact", "x",
+        "--cites-ruling", `${rulingId},${rulingId}`);
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "issues")[0]!.citesRulings).toEqual([rulingId]);
+    },
+  },
+  {
+    key: "issue update --cites-ruling",
+    check: (dir) => {
+      const rulingId = "r-0000000000000abf";
+      seedIssue(dir);
+      const id = (byDisplayId(dir, "issues", "ISS-001").id) as string;
+      const res = run(dir, "issue", "update", id, "--cites-ruling", rulingId);
+      expect(res.code, res.out).toBe(0);
+      expect(byDisplayId(dir, "issues", "ISS-001").citesRulings).toEqual([rulingId]);
+    },
+  },
 ];
 
 describe("ISS-886 registration coverage matrix", () => {

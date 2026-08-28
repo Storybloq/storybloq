@@ -3,6 +3,9 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput } from "../session-types.js";
 import { effectiveReviewEffort } from "../review-effort.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { resolveEntityCitations } from "../../core/ruling.js";
+import { formatCitedRulingsSection } from "../../core/output-formatter.js";
 
 /**
  * ISSUE_FIX stage -- T-153: Fix a single issue picked from PICK_TICKET.
@@ -65,11 +68,18 @@ export class IssueFixStage implements WorkflowStage {
         ].filter(Boolean).join("\n")
       : `**${issueLabel}**: ${issue.title} (severity: ${issue.severity})`;
 
+    // T-476 acceptance 4: resolve fresh from disk for THIS issue, never from
+    // the possibly-stale `issue` snapshot on session state.
+    const citedRulingsSection = fullIssue
+      ? formatCitedRulingsSection(resolveEntityCitations(fullIssue, loadCitationContext(ctx.root)))
+      : "";
+
     return {
       instruction: [
         "# Fix Issue",
         "",
         details,
+        citedRulingsSection,
         "",
         "Fix this issue, then update its status to \"resolved\" in `.story/issues/`.",
         "Add a resolution description explaining the fix.",

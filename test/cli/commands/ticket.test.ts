@@ -20,6 +20,7 @@ import { ExitCode } from "../../../src/core/output-formatter.js";
 import { CliValidationError } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
 import { loadProject } from "../../../src/core/project-loader.js";
+import { writeRulingUnlocked } from "../../../src/core/ruling-loader.js";
 import { makeState, makeTicket, makeRoadmap, makePhase } from "../../core/test-factories.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 
@@ -1155,5 +1156,185 @@ describe("global _conflicts write-block through CLI handlers (ISS-695)", () => {
     await expect(
       handleTicketCreate({ title: "New", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null }, "md", dir),
     ).rejects.toThrow(/unresolved conflicts/i);
+  });
+});
+
+describe("T-476: handleTicketGet cited ruling rendering (acceptance 1 and 2)", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("renders a cited ruling's verbatim text, attribution, and recorder in markdown", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-ruling-"));
+    tmpDirs.push(dir);
+    await writeRulingUnlocked(
+      {
+        id: "r-0000000000000001",
+        text: "The lens-cache evidence stands; the total is 337.",
+        attribution: "owner-direct",
+        recordedBy: { client: "claude", id: "test-session" },
+        date: "2026-08-27",
+        scopeTags: [],
+        supersedes: null,
+      },
+      dir,
+      { createOnly: true },
+    );
+    const ctx = makeCtx({
+      root: dir,
+      state: makeState({ tickets: [makeTicket({ id: "T-001", citesRulings: ["r-0000000000000001"] })] }),
+    });
+    const result = handleTicketGet("T-001", ctx);
+    expect(result.output).toContain("The lens-cache evidence stands; the total is 337.");
+    expect(result.output).toContain("owner-direct");
+    expect(result.output).toContain("claude/test-session");
+    expect(result.output).toContain("does not replace the second key");
+  });
+
+  it("surfaces the CURRENT (superseding) ruling's text, not the originally-cited stale one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-ruling-"));
+    tmpDirs.push(dir);
+    await writeRulingUnlocked(
+      {
+        id: "r-0000000000000001",
+        text: "old ruling text",
+        attribution: "owner-direct",
+        recordedBy: { client: "claude", id: "test-session" },
+        date: "2026-08-01",
+        scopeTags: [],
+        supersedes: null,
+      },
+      dir,
+      { createOnly: true },
+    );
+    await writeRulingUnlocked(
+      {
+        id: "r-0000000000000002",
+        text: "new ruling text supersedes the old one",
+        attribution: "owner-direct",
+        recordedBy: { client: "claude", id: "test-session" },
+        date: "2026-08-27",
+        scopeTags: [],
+        supersedes: "r-0000000000000001",
+      },
+      dir,
+      { createOnly: true },
+    );
+    const ctx = makeCtx({
+      root: dir,
+      state: makeState({ tickets: [makeTicket({ id: "T-001", citesRulings: ["r-0000000000000001"] })] }),
+    });
+    const result = handleTicketGet("T-001", ctx);
+    expect(result.output).toContain("new ruling text supersedes the old one");
+    expect(result.output).not.toContain("old ruling text");
+    expect(result.output).toContain("superseded by r-0000000000000002");
+  });
+
+  it("JSON mode embeds citedRulings on the ticket, resolved to current state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-ruling-"));
+    tmpDirs.push(dir);
+    await writeRulingUnlocked(
+      {
+        id: "r-0000000000000001",
+        text: "verbatim quote",
+        attribution: "manager-delegated",
+        recordedBy: { client: "codex", id: "codex-thread-1" },
+        date: "2026-08-27",
+        scopeTags: [],
+        supersedes: null,
+      },
+      dir,
+      { createOnly: true },
+    );
+    const ctx = makeCtx({
+      root: dir,
+      format: "json",
+      state: makeState({ tickets: [makeTicket({ id: "T-001", citesRulings: ["r-0000000000000001"] })] }),
+    });
+    const result = handleTicketGet("T-001", ctx);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citedRulings).toHaveLength(1);
+    expect(parsed.data.citedRulings[0]).toMatchObject({
+      citedId: "r-0000000000000001",
+      status: "resolved",
+      current: expect.objectContaining({ text: "verbatim quote", attribution: "manager-delegated" }),
+    });
+  });
+});
+
+describe("T-476 section 10: setting citesRulings via create/update", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  const R1 = "r-0000000000000001";
+  const R2 = "r-0000000000000002";
+
+  it("create: citesRuling is deduplicated preserving first-seen order", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await handleTicketCreate(
+      { title: "t", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, citesRuling: [R2, R1, R2] },
+      "json", dir,
+    );
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([R2, R1]);
+  });
+
+  it("update: citesRuling fully replaces the existing array", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "t", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, citesRuling: [R1] },
+      "json", dir,
+    );
+    const result = await handleTicketUpdate("T-001", { citesRuling: [R2] }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([R2]);
+  });
+
+  it("update: clearCitesRulings empties the array", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "t", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, citesRuling: [R1] },
+      "json", dir,
+    );
+    const result = await handleTicketUpdate("T-001", { clearCitesRulings: true }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([]);
+  });
+
+  it("update: citesRuling and clearCitesRulings together are refused as invalid_input", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "t", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+      "json", dir,
+    );
+    await expect(
+      handleTicketUpdate("T-001", { citesRuling: [R1], clearCitesRulings: true }, "json", dir),
+    ).rejects.toThrow(CliValidationError);
+  });
+
+  it("update: an invalid ruling id shape is refused", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ticket-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "t", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+      "json", dir,
+    );
+    await expect(
+      handleTicketUpdate("T-001", { citesRuling: ["not-a-ruling"] }, "json", dir),
+    ).rejects.toThrow(CliValidationError);
   });
 });

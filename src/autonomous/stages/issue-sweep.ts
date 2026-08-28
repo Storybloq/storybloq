@@ -3,6 +3,9 @@ import type { GuideReportInput } from "../session-types.js";
 import type { Issue } from "../../models/issue.js";
 import { isDeleted } from "../../core/project-state.js";
 import { tryAcquireEarmark, clearSameSessionEarmark } from "../../core/earmarks.js";
+import { loadCitationContext } from "../../core/ruling-loader.js";
+import { resolveEntityCitations } from "../../core/ruling.js";
+import { formatCitedRulingsSection } from "../../core/output-formatter.js";
 
 type SweepAcquisition =
   | { kind: "acquired"; issue: Issue; remaining: string[] }
@@ -73,7 +76,10 @@ export class IssueSweepStage implements WorkflowStage {
     return outcome;
   }
 
-  private instructionFor(issue: Issue, remainingCount: number): string {
+  private instructionFor(issue: Issue, remainingCount: number, root: string): string {
+    // T-476 acceptance 4: resolved fresh from disk for THIS issue on every
+    // call, never carried over from a previous sweep iteration.
+    const citedRulingsSection = formatCitedRulingsSection(resolveEntityCitations(issue, loadCitationContext(root)));
     return [
       `# Issue Sweep -- ${remainingCount} open issue(s)`,
       "",
@@ -81,6 +87,7 @@ export class IssueSweepStage implements WorkflowStage {
       "",
       `Severity: ${issue.severity}`,
       issue.impact ? `Impact: ${issue.impact}` : "",
+      citedRulingsSection,
     ].filter(Boolean).join("\n");
   }
 
@@ -135,7 +142,7 @@ export class IssueSweepStage implements WorkflowStage {
 
     return {
       instruction: [
-        this.instructionFor(acquisition.issue, ordered.length),
+        this.instructionFor(acquisition.issue, ordered.length, ctx.root),
         "",
         `When done, call \`storybloq_autonomous_guide\` with:`,
         '```json',
@@ -226,7 +233,7 @@ export class IssueSweepStage implements WorkflowStage {
       return {
         action: "retry",
         instruction: [
-          this.instructionFor(acquisition.issue, acquisition.remaining.length + 1),
+          this.instructionFor(acquisition.issue, acquisition.remaining.length + 1, ctx.root),
           "",
           'When done, report with completedAction: "issue_fixed".',
         ].join("\n"),

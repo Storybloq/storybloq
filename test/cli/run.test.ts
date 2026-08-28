@@ -195,4 +195,99 @@ describe("runReadCommand", () => {
     expect(output).toContain("not_found");
     spy.mockRestore();
   });
+
+  describe("T-476 ruling #9: CommandResult.warnings upgrades OK to PARTIAL, never overrides a real error", () => {
+    it("upgrades an OK result to PARTIAL when the handler returns warnings", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("md", () => ({ output: "ok", warnings: ["ruling r-x is unreadable"] }));
+      expect(process.exitCode).toBe(ExitCode.PARTIAL);
+      spy.mockRestore();
+    });
+
+    it("prints the warning text in markdown mode, not just the exit code", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("md", () => ({ output: "ok", warnings: ["ruling r-x is unreadable"] }));
+      const printed = spy.mock.calls.map((c) => c[0]).join("");
+      expect(printed).toContain("ok");
+      expect(printed).toContain("Warning: ruling r-x is unreadable");
+      spy.mockRestore();
+    });
+
+    it("injects warnings as a top-level sibling of the standard {version, data} JSON envelope (the shape raw-mode.ts already documents and tests)", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("json", () => ({
+        output: JSON.stringify({ version: 1, data: { id: "r-1" } }),
+        warnings: ["rulings/broken.json: invalid JSON"],
+      }));
+      const printed = spy.mock.calls.map((c) => c[0]).join("");
+      const parsed = JSON.parse(printed);
+      expect(parsed).toEqual({
+        version: 1,
+        data: { id: "r-1" },
+        warnings: ["rulings/broken.json: invalid JSON"],
+      });
+      spy.mockRestore();
+    });
+
+    it("leaves a JSON error envelope untouched even if warnings were somehow present", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("json", () => ({
+        output: JSON.stringify({ version: 1, error: { code: "not_found", message: "x" } }),
+        exitCode: ExitCode.USER_ERROR,
+        warnings: ["should not be injected"],
+      }));
+      const printed = spy.mock.calls.map((c) => c[0]).join("");
+      const parsed = JSON.parse(printed);
+      expect(parsed).toEqual({ version: 1, error: { code: "not_found", message: "x" } });
+      spy.mockRestore();
+    });
+
+    it("does not touch exit code when warnings is an empty array", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("md", () => ({ output: "ok", warnings: [] }));
+      expect(process.exitCode).toBe(ExitCode.OK);
+      spy.mockRestore();
+    });
+
+    it("never overrides a handler's own non-OK exitCode with a PARTIAL upgrade", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "run-test-"));
+      tmpDirs.push(dir);
+      await initProject(dir, { name: "test" });
+      process.chdir(dir);
+
+      const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+      await runReadCommand("md", () => ({
+        output: "not found",
+        exitCode: ExitCode.USER_ERROR,
+        warnings: ["ruling r-x is unreadable"],
+      }));
+      expect(process.exitCode).toBe(ExitCode.USER_ERROR);
+      spy.mockRestore();
+    });
+  });
 });

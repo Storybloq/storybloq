@@ -702,3 +702,78 @@ describe("handleIssueDelete", () => {
     expect(result.output).toContain("Deleted issue ISS-001");
   });
 });
+
+describe("T-476 section 10: setting citesRulings via create/update", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  const R1 = "r-0000000000000001";
+  const R2 = "r-0000000000000002";
+
+  it("create: citesRuling is deduplicated preserving first-seen order", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const result = await handleIssueCreate(
+      { title: "i", severity: "low", impact: "x", components: [], relatedTickets: [], location: [], citesRuling: [R2, R1, R2] },
+      "json", dir,
+    );
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([R2, R1]);
+  });
+
+  it("update: citesRuling fully replaces the existing array", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "i", severity: "low", impact: "x", components: [], relatedTickets: [], location: [], citesRuling: [R1] },
+      "json", dir,
+    );
+    const result = await handleIssueUpdate("ISS-001", { citesRuling: [R2] }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([R2]);
+  });
+
+  it("update: clearCitesRulings empties the array", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "i", severity: "low", impact: "x", components: [], relatedTickets: [], location: [], citesRuling: [R1] },
+      "json", dir,
+    );
+    const result = await handleIssueUpdate("ISS-001", { clearCitesRulings: true }, "json", dir);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.data.citesRulings).toEqual([]);
+  });
+
+  it("update: citesRuling and clearCitesRulings together are refused as invalid_input", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "i", severity: "low", impact: "x", components: [], relatedTickets: [], location: [] },
+      "json", dir,
+    );
+    await expect(
+      handleIssueUpdate("ISS-001", { citesRuling: [R1], clearCitesRulings: true }, "json", dir),
+    ).rejects.toThrow(CliValidationError);
+  });
+
+  it("update: an invalid ruling id shape is refused", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "issue-cites-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "i", severity: "low", impact: "x", components: [], relatedTickets: [], location: [] },
+      "json", dir,
+    );
+    await expect(
+      handleIssueUpdate("ISS-001", { citesRuling: ["not-a-ruling"] }, "json", dir),
+    ).rejects.toThrow(CliValidationError);
+  });
+});

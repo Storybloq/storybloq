@@ -337,3 +337,59 @@ export function validateSupersedeCandidate(
 
   return null;
 }
+
+export type CitesRulingsInputResolution =
+  | { ok: true; citesRulings: string[] | undefined }
+  | { ok: false; message: string };
+
+/**
+ * Section 10: the ONE resolution of `--cites-ruling`/`--clear-cites-rulings`
+ * (and their MCP equivalents `citesRuling`/`clearCitesRulings`), called by
+ * both the ticket and issue create/update handlers so CLI and MCP cannot
+ * diverge on this field's semantics.
+ *
+ * `citesRuling` on update fully REPLACES `citesRulings` (same convention as
+ * `blockedBy`/`relatedTickets`), deduplicated preserving first-seen order.
+ * Existence of the cited ruling is deliberately NOT checked here: a forward
+ * reference to a not-yet-created ruling is a valid transient state, exactly
+ * like `resolveCitation`'s "missing" status already handles at read time.
+ * Only the id's structural shape is validated.
+ *
+ * Mutual exclusion is on PRESENCE, not length: `citesRuling` counts as
+ * "given" the moment it is not `undefined`, including an explicit `[]` --
+ * an MCP caller sending `{ clearCitesRulings: true, citesRuling: [] }` must
+ * be refused exactly like `--clear-cites-rulings --cites-ruling ""` would be
+ * on the CLI (`requireValue` there already rejects a bare/empty flag before
+ * this function is ever reached), and a bare `citesRuling: []` alone is
+ * refused too so an MCP caller cannot achieve "clear" through a path the CLI
+ * has no equivalent for.
+ */
+export function resolveCitesRulingsInput(
+  citesRuling: readonly string[] | undefined,
+  clearCitesRulings: boolean | undefined,
+): CitesRulingsInputResolution {
+  if (clearCitesRulings && citesRuling !== undefined) {
+    return { ok: false, message: "--clear-cites-rulings and --cites-ruling are mutually exclusive" };
+  }
+  if (clearCitesRulings) {
+    return { ok: true, citesRulings: [] };
+  }
+  if (citesRuling === undefined) {
+    return { ok: true, citesRulings: undefined };
+  }
+  if (citesRuling.length === 0) {
+    return { ok: false, message: "citesRuling cannot be empty; use --clear-cites-rulings to clear" };
+  }
+  const invalid = citesRuling.filter((id) => !RULING_CANONICAL_ID_REGEX.test(id));
+  if (invalid.length > 0) {
+    return { ok: false, message: `Invalid ruling ID(s): ${invalid.join(", ")} (expected r-[canonical])` };
+  }
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const id of citesRuling) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    deduped.push(id);
+  }
+  return { ok: true, citesRulings: deduped };
+}

@@ -1,4 +1,3 @@
-import { readdirSync, type Dirent } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { GateAckSchema, computeGateAckId, type GateAck, type GateAckPin } from "../models/gate-ack.js";
@@ -8,6 +7,7 @@ import { readBoundedRegularFile } from "./pin-utils.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-loader.js";
 import { ProjectLoaderError } from "./errors.js";
+import { readdirSafe, verifyContainment, verifyDirIdentity } from "./readdir-safe.js";
 
 /** A real ack record is a few hundred bytes; same reasoning as T-473's arrangement ceiling. */
 const GATE_ACK_MAX_BYTES = 65_536;
@@ -118,20 +118,28 @@ export interface GateAckDirScan {
  */
 function scanGateAckDir(root: string): GateAckDirScan {
   const dir = resolve(root, ".story", "arrangement-acks");
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], dirWarnings: [] };
-    return { entries: [], dirWarnings: [`Could not read .story/arrangement-acks/: ${sanitizeDisplayText(String(err))}`] };
+  const scan = readdirSafe(dir);
+  if (scan.warning !== null) {
+    return { entries: [], dirWarnings: [`Could not read .story/arrangement-acks/: ${sanitizeDisplayText(scan.warning)}`] };
   }
+  if (scan.dirents === null) return { entries: [], dirWarnings: [] };
 
   const entries: GateAckScanEntry[] = [];
-  for (const entry of dirents) {
+  for (const entry of scan.dirents) {
     const file = entry.name;
     if (!file.endsWith(".json")) continue;
     if (!entry.isFile()) {
       entries.push({ kind: "warning", file, reason: "not a regular file, skipped", rawTicketRef: null });
+      continue;
+    }
+    // Containment check (ISS-1053, T-478): a symlinked ancestor path
+    // component swapped in between the listing and this read must not let
+    // this read escape `dir`. Independent of `readBoundedRegularFile`'s own
+    // leaf-symlink refusal below (O_NOFOLLOW with no prior resolution) --
+    // this catches an ancestor-component swap, not a symlinked leaf.
+    const containmentWarning = verifyContainment(dir, file);
+    if (containmentWarning !== null) {
+      entries.push({ kind: "warning", file, reason: sanitizeDisplayText(containmentWarning), rawTicketRef: null });
       continue;
     }
     const fileResult = readBoundedRegularFile(join(dir, file), GATE_ACK_MAX_BYTES);
@@ -176,6 +184,16 @@ function scanGateAckDir(root: string): GateAckDirScan {
       continue;
     }
     entries.push({ kind: "ok", ack: result.data });
+  }
+  if (scan.dirIdentity !== null) {
+    const postScanWarning = verifyDirIdentity(dir, scan.dirIdentity);
+    if (postScanWarning !== null) {
+      // Any content read during a since-detected-swapped window is
+      // retroactively suspect once the swap is confirmed -- discard every
+      // entry already accumulated from this scan, not just the file being
+      // read at the time.
+      return { entries: [], dirWarnings: [`Could not read .story/arrangement-acks/: ${sanitizeDisplayText(postScanWarning)}`] };
+    }
   }
   return { entries, dirWarnings: [] };
 }

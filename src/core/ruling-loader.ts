@@ -1,4 +1,3 @@
-import { readdirSync, type Dirent } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { RulingSchema, type Ruling } from "../models/ruling.js";
@@ -8,6 +7,7 @@ import { ProjectLoaderError } from "./errors.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { readBoundedFile } from "./limit-config.js";
 import { buildCitationResolutionContext, type CitationResolutionContext } from "./ruling.js";
+import { readdirSafe, verifyContainment, verifyDirIdentity } from "./readdir-safe.js";
 
 /**
  * A ruling is a short attributed quote plus a handful of scalar fields -- a
@@ -70,20 +70,18 @@ export interface LoadRulingsResult {
  */
 export function loadRulingsSafe(root: string): LoadRulingsResult {
   const dir = resolve(root, ".story", "rulings");
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { rulings: [], warnings: [], unavailableIds: new Set(), scanCompleteness: "complete", hasUnrecoverableEntries: false };
-    }
+  const scan = readdirSafe(dir);
+  if (scan.warning !== null) {
     return {
       rulings: [],
-      warnings: [`Could not read .story/rulings/: ${sanitizeDisplayText(String(err))}`],
+      warnings: [`Could not read .story/rulings/: ${sanitizeDisplayText(scan.warning)}`],
       unavailableIds: new Set(),
       scanCompleteness: "incomplete",
       hasUnrecoverableEntries: false,
     };
+  }
+  if (scan.dirents === null) {
+    return { rulings: [], warnings: [], unavailableIds: new Set(), scanCompleteness: "complete", hasUnrecoverableEntries: false };
   }
 
   const rulings: Ruling[] = [];
@@ -96,13 +94,26 @@ export function loadRulingsSafe(root: string): LoadRulingsResult {
     return RULING_CANONICAL_ID_REGEX.test(base) ? base : null;
   };
 
-  for (const entry of dirents) {
+  for (const entry of scan.dirents) {
     const file = entry.name;
     if (!file.endsWith(".json")) continue;
     // Only ordinary regular files: a symlink or other special node must
     // never be able to hang or exhaust memory on a synchronous read.
     if (!entry.isFile()) {
       warnings.push(`rulings/${sanitizeDisplayText(file)}: not a regular file, skipped`);
+      const recovered = recoverIdFromFilename(file);
+      if (recovered) unavailableIds.add(recovered);
+      else hasUnrecoverableEntries = true;
+      continue;
+    }
+    // Containment check (ISS-1053, T-478): a symlinked ancestor path
+    // component swapped in between the listing and this read must not let
+    // this read escape `dir`. Same taint doctrine as every other skip below:
+    // recover the id from the filename if possible, else the whole scan is
+    // tainted for "nothing supersedes X" purposes.
+    const containmentWarning = verifyContainment(dir, file);
+    if (containmentWarning !== null) {
+      warnings.push(`rulings/${sanitizeDisplayText(file)}: ${sanitizeDisplayText(containmentWarning)}`);
       const recovered = recoverIdFromFilename(file);
       if (recovered) unavailableIds.add(recovered);
       else hasUnrecoverableEntries = true;
@@ -155,6 +166,22 @@ export function loadRulingsSafe(root: string): LoadRulingsResult {
       continue;
     }
     rulings.push(result.data);
+  }
+  if (scan.dirIdentity !== null) {
+    const postScanWarning = verifyDirIdentity(dir, scan.dirIdentity);
+    if (postScanWarning !== null) {
+      // Any content read during a since-detected-swapped window is
+      // retroactively suspect once the swap is confirmed -- discard the
+      // whole scan result (not per-id: we no longer trust which ids were
+      // validly present) and taint every "nothing supersedes X" conclusion.
+      return {
+        rulings: [],
+        warnings: [`Could not read .story/rulings/: ${sanitizeDisplayText(postScanWarning)}`],
+        unavailableIds: new Set(),
+        scanCompleteness: "incomplete",
+        hasUnrecoverableEntries: true,
+      };
+    }
   }
   return { rulings, warnings, unavailableIds, scanCompleteness: "complete", hasUnrecoverableEntries };
 }

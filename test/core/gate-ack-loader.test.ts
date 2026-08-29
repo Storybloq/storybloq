@@ -196,6 +196,7 @@ describe("readGateAcksForListing", () => {
     expect(result.acks).toHaveLength(1);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
+
 });
 
 describe("readGateAcksForTicket", () => {

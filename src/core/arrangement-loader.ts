@@ -1,4 +1,3 @@
-import { readdirSync, type Dirent } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { ArrangementSchema, type Arrangement } from "../models/arrangement.js";
@@ -7,6 +6,7 @@ import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-l
 import { ProjectLoaderError } from "./errors.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { readBoundedFile } from "./limit-config.js";
+import { readdirSafe, verifyContainment, verifyDirIdentity } from "./readdir-safe.js";
 
 /**
  * A real arrangement (a handful of bounds refs, two-or-so parties, gate
@@ -43,22 +43,17 @@ export function loadArrangementsSafe(
   root: string,
 ): { arrangements: readonly Arrangement[]; warnings: readonly string[] } {
   const dir = resolve(root, ".story", "arrangements");
-  let dirents: Dirent[];
-  try {
-    dirents = readdirSync(dir, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { arrangements: [], warnings: [] };
-    }
-    return {
-      arrangements: [],
-      warnings: [`Could not read .story/arrangements/: ${sanitizeDisplayText(String(err))}`],
-    };
+  const scan = readdirSafe(dir);
+  if (scan.warning !== null) {
+    return { arrangements: [], warnings: [`Could not read .story/arrangements/: ${sanitizeDisplayText(scan.warning)}`] };
+  }
+  if (scan.dirents === null) {
+    return { arrangements: [], warnings: [] };
   }
 
   const arrangements: Arrangement[] = [];
   const warnings: string[] = [];
-  for (const entry of dirents) {
+  for (const entry of scan.dirents) {
     const file = entry.name;
     if (!file.endsWith(".json")) continue;
     // Only ordinary regular files: a symlink (possibly to a FIFO or other
@@ -67,6 +62,14 @@ export function loadArrangementsSafe(
     // binding item 2 (arrangements never block a write or status call).
     if (!entry.isFile()) {
       warnings.push(`arrangements/${sanitizeDisplayText(file)}: not a regular file, skipped`);
+      continue;
+    }
+    // Containment check (ISS-1053, T-478): a symlinked ancestor path
+    // component swapped in between the listing and this read must not let
+    // this read escape `dir`.
+    const containmentWarning = verifyContainment(dir, file);
+    if (containmentWarning !== null) {
+      warnings.push(`arrangements/${sanitizeDisplayText(file)}: ${sanitizeDisplayText(containmentWarning)}`);
       continue;
     }
     const path = join(dir, file);
@@ -106,6 +109,15 @@ export function loadArrangementsSafe(
       continue;
     }
     arrangements.push(result.data);
+  }
+  if (scan.dirIdentity !== null) {
+    const postScanWarning = verifyDirIdentity(dir, scan.dirIdentity);
+    if (postScanWarning !== null) {
+      // Any content read during a since-detected-swapped window is
+      // retroactively suspect once the swap is confirmed -- discard the
+      // whole scan result, not just the file being read at this moment.
+      return { arrangements: [], warnings: [`Could not read .story/arrangements/: ${sanitizeDisplayText(postScanWarning)}`] };
+    }
   }
   return { arrangements, warnings };
 }

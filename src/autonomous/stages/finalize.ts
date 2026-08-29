@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
 import { findGateAck } from "../../core/gate-ack-loader.js";
 import { PRECOMMIT_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
+import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 
 /**
  * The commit from which the CURRENT item must produce a new, validated commit
@@ -942,7 +943,13 @@ async function nowCommitInstruction(ctx: StageContext, headline: string): Promis
   if (gateStatus.status === "unresolved") return renderUnresolvedHold(gateStatus.reason);
   if (gateStatus.status !== "gated") return base.join("\n");
   const gate = gateStatus.gates.find((g) => g.name === PRECOMMIT_ACK_GATE_NAME);
-  if (!gate) return base.join("\n");
+  if (!gate) {
+    // ISS-1050 interim: this arrangement is gated but has no pre-commit-ack --
+    // the ONLY case `arrangementGateRiskWarnings` can find something to say,
+    // since a pre-commit-ack gate found above would already have covered it.
+    const warnings = arrangementGateRiskWarnings(gateStatus.gates);
+    return warnings.length === 0 ? base.join("\n") : [...base, "", ...warnings].join("\n");
+  }
 
   const headResult = await gitHead(ctx.root);
   if (!headResult.ok) return base.join("\n");

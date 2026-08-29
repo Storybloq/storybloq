@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { arrangementCoversTicket, type TicketRefResolver } from "../../src/core/arrangement-bounds.js";
+import { arrangementCoversTicket, arrangementGateRiskWarnings, type TicketRefResolver, type ArrangementGate } from "../../src/core/arrangement-bounds.js";
 import type { Arrangement } from "../../src/models/arrangement.js";
+
+function gate(name: string): ArrangementGate {
+  return { name, ackRole: "pen" };
+}
 
 function baseArrangement(overrides: Partial<Arrangement> = {}): Arrangement {
   return {
@@ -86,5 +90,27 @@ describe("arrangementCoversTicket", () => {
     const arrangement = baseArrangement({ bounds: ["ISS-1", "T-474"] });
     const resolver = fakeResolver({ "T-474": { kind: "found", item: { id: CANONICAL_TICKET } } });
     expect(arrangementCoversTicket(arrangement, CANONICAL_TICKET, resolver)).toBe("matched");
+  });
+});
+
+describe("T-478: arrangementGateRiskWarnings (ISS-1050 interim)", () => {
+  it("warns when plan-ack is configured alone, with no pre-commit-ack", () => {
+    const warnings = arrangementGateRiskWarnings([gate("plan-ack")]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/plan-ack/);
+    expect(warnings[0]).toMatch(/pre-commit-ack/);
+    expect(warnings[0]).toMatch(/ISS-1050/);
+  });
+
+  it("does not warn when both plan-ack and pre-commit-ack are configured", () => {
+    expect(arrangementGateRiskWarnings([gate("plan-ack"), gate("pre-commit-ack")])).toEqual([]);
+  });
+
+  it("does not warn when only pre-commit-ack is configured", () => {
+    expect(arrangementGateRiskWarnings([gate("pre-commit-ack")])).toEqual([]);
+  });
+
+  it("does not warn when there are no gates at all", () => {
+    expect(arrangementGateRiskWarnings([])).toEqual([]);
   });
 });

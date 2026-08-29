@@ -37,6 +37,22 @@ import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold 
 import { readBoundedRegularFile, sha256Bytes, PLAN_ACK_MAX_BYTES } from "../../core/pin-utils.js";
 import { findGateAck } from "../../core/gate-ack-loader.js";
 import { PLAN_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
+import { arrangementGateRiskWarnings, type ArrangementGate } from "../../core/arrangement-bounds.js";
+
+/**
+ * ISS-1050 interim: appends the plan-ack-without-pre-commit-ack risk warning
+ * (if any) to an already-built hold instruction. Deliberately NOT wired into
+ * an `advance` return's `result` field: `guide.ts`'s `processAdvance` treats
+ * a present `result` as the WHOLE next-stage instruction, skipping that
+ * stage's own `enter()` entirely -- attaching this warning there would
+ * silently discard IMPLEMENT's real entry instruction on every gated ticket,
+ * not just the risky ones. A plain hold-instruction string has no such
+ * replace-everything semantics, so it is a safe place to append.
+ */
+function appendGateRiskWarning(instruction: string, gates: readonly ArrangementGate[]): string {
+  const warnings = arrangementGateRiskWarnings(gates);
+  return warnings.length === 0 ? instruction : [instruction, "", ...warnings].join("\n");
+}
 
 /** Read a file, return empty string on error. Mirrors plan.ts's own helper. */
 function readFileSafe(path: string): string {
@@ -244,9 +260,18 @@ async function handleCheckGateAck(ctx: StageContext, ticketId: string | undefine
         },
       } as StageAdvance;
     }
+    // ISS-1050 interim: deliberately does NOT surface arrangementGateRiskWarnings
+    // here. `guide.ts`'s processAdvance treats a bare `{action: "advance"}` by
+    // calling the next stage's own `enter()`, but a `result` field on this
+    // return would REPLACE that call entirely -- there is no safe way to add
+    // the warning to a bare advance without either losing IMPLEMENT's real
+    // entry instruction or reimplementing it here. The warning already fires
+    // at the moment that matters for this configuration: `finalize.ts`'s
+    // `nowCommitInstruction`, at actual commit time. See `appendGateRiskWarning`.
     return { action: "advance" };
   }
-  return { action: "retry", instruction: renderGateAckHold(lookup, gate) }; // lookup and gate both concrete here, always
+  // lookup and gate both concrete here, always
+  return { action: "retry", instruction: appendGateRiskWarning(renderGateAckHold(lookup, gate), gateStatus.gates) };
 }
 
 /**
@@ -684,7 +709,7 @@ export class PlanReviewStage implements WorkflowStage {
               validatedPlanAckContext = { ticketId, arrangementId: gateStatus.arrangementId, gateName: gate.name, validatedSha256: pin.sha256 };
             } else {
               pendingPlanAckForWrite = { ticketId, arrangementId: gateStatus.arrangementId, gateName: gate.name, pinSha256: pin.sha256 };
-              gateBlockInstruction = renderGateAckHold(lookup, gate);
+              gateBlockInstruction = appendGateRiskWarning(renderGateAckHold(lookup, gate), gateStatus.gates);
             }
           }
         }
@@ -930,6 +955,12 @@ export class PlanReviewStage implements WorkflowStage {
           },
         } as StageAdvance;
       }
+      // ISS-1050 interim: deliberately does NOT surface arrangementGateRiskWarnings
+      // here -- same reasoning as handleCheckGateAck's identical advance above:
+      // a `result` on this return would replace IMPLEMENT's real `enter()`
+      // instruction wholesale via `guide.ts`'s processAdvance, not add to it.
+      // The warning fires where it matters for this configuration -- at commit
+      // time, in `finalize.ts`'s `nowCommitInstruction`.
       return { action: "advance" };
     }
 

@@ -16,6 +16,7 @@ import { sanitizeDisplayText } from "../../core/display-text.js";
 import type { ProjectState } from "../../core/project-state.js";
 import { ownerTaskForCurrentClient } from "../../autonomous/client-profile.js";
 import { computeArrangementPresence, applyPresenceEnrichment, ownerIdentityOf, STATUS_ENRICHMENT_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
+import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 
 /**
  * T-473: builds the active-only, status-display projection of arrangements,
@@ -53,6 +54,12 @@ function buildStatusArrangements(root: string, state: ProjectState): StatusArran
       } else if (result.kind === "ambiguous") {
         boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)} bound ${sanitizeDisplayText(ref)} is ambiguous`);
       }
+    }
+    // ISS-1050 interim: surface a plan-ack-without-pre-commit-ack risk here
+    // regardless of how the arrangement got its gates (hand-edit, future
+    // create/update once gates become configurable, merge-driver output).
+    for (const warning of arrangementGateRiskWarnings(a.gates)) {
+      boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)}: ${warning}`);
     }
   }
   return {

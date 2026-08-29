@@ -57,6 +57,24 @@ describe("hasConflicts", () => {
     const noteItem = report.items.find((i) => i.id === "N-001");
     expect(noteItem!.conflictCount).toBe(2);
   });
+
+  it("T-478: detects a conflicted arrangement when the optional arrangements parameter is supplied", () => {
+    const state = makeState({ tickets: [makeTicket({ id: "T-001" })] });
+    const report = hasConflicts(state, [
+      { id: "a-0123456789abcdef", _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }] },
+      { id: "a-fedcba9876543210" },
+    ]);
+    expect(report.hasConflicts).toBe(true);
+    expect(report.items).toHaveLength(1);
+    expect(report.items[0]!.type).toBe("arrangement");
+    expect(report.items[0]!.id).toBe("a-0123456789abcdef");
+  });
+
+  it("T-478: omitting the arrangements parameter leaves behavior unchanged (backward compat)", () => {
+    const state = makeState({ tickets: [makeTicket({ id: "T-001" })] });
+    const report = hasConflicts(state);
+    expect(report.hasConflicts).toBe(false);
+  });
 });
 
 describe("assertNoConflicts", () => {

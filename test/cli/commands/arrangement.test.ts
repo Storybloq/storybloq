@@ -266,6 +266,28 @@ describe("handleArrangementUpdate", () => {
     ).rejects.toThrow(CliValidationError);
   });
 
+  it("T-478: refuses to write an update to an arrangement carrying unresolved merge conflicts", async () => {
+    const { dir } = await newProjectWithTicket();
+    const created = await handleArrangementCreate(
+      { bounds: ["T-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+      "json",
+      dir,
+    );
+    const id = JSON.parse(created.output).data.id as string;
+    const filePath = join(dir, ".story", "arrangements", `${id}.json`);
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
+    writeFileSync(filePath, JSON.stringify({
+      ...raw,
+      _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }],
+    }, null, 2));
+
+    await expect(handleArrangementUpdate(id, { lifecycle: "closed" }, "md", dir)).rejects.toThrow(CliValidationError);
+    await expect(handleArrangementUpdate(id, { lifecycle: "closed" }, "md", dir)).rejects.toThrow(/unresolved merge conflicts/);
+
+    const afterRaw = JSON.parse(await readFile(filePath, "utf-8"));
+    expect(afterRaw.lifecycle).toBe("active"); // unchanged: the refusal must not have written anything
+  });
+
   describe("T-475 section 5: closing an arrangement retracts every earmark it authorized", () => {
     it("clears a reserved ticket earmark and an assigned issue earmark bound to the closing arrangement, in one locked write (lock-nesting regression)", async () => {
       const { dir } = await newProjectWithTicket();

@@ -46,6 +46,24 @@ function writeTicketFile(dir: string, id: string, overrides: Json): void {
   }, null, 2) + "\n");
 }
 
+function writeArrangementFile(dir: string, id: string, overrides: Json): void {
+  mkdirSync(join(dir, ".story", "arrangements"), { recursive: true });
+  writeFileSync(join(dir, ".story", "arrangements", `${id}.json`), JSON.stringify({
+    id,
+    lifecycle: "active",
+    bounds: ["T-001"],
+    parties: [
+      { role: "pen", client: "claude", identityAnchor: "pen-session" },
+      { role: "worker", client: "claude", identityAnchor: "worker-session" },
+    ],
+    gates: [],
+    unreachability: { onIrreversibleWork: "hold" },
+    createdDate: "2026-08-27",
+    updatedAt: "2026-08-27T00:00:00.000Z",
+    ...overrides,
+  }, null, 2) + "\n");
+}
+
 const titleConflict = (): Json => ({
   fieldPath: "/title", field: "title", kind: "field", base: "Old", ours: "Ours title", theirs: "Theirs title",
 });
@@ -232,6 +250,69 @@ describe("entity-level conflict rendering", () => {
     // Sanity: the tombstone branch still renders and the readable payload survives.
     expect(result.output).toContain("deleted (tombstone by");
     expect(result.output).toContain("OWNED");
+  });
+});
+
+describe("T-478: arrangement conflict targets", () => {
+  const arrangementFieldConflict = (): Json => ({
+    fieldPath: "/lifecycle", field: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed",
+  });
+
+  it("conflicts list includes an arrangement carrying a field-level conflict", async () => {
+    const dir = makeProject();
+    writeArrangementFile(dir, "a-0123456789abcdef", { _conflicts: [arrangementFieldConflict()] });
+    const result = await handleConflictsList(dir, "md");
+    expect(result.output).toContain("arrangement");
+    expect(result.output).toContain("a-0123456789abcdef");
+  });
+
+  it("conflicts show renders a field-level conflict on an arrangement", async () => {
+    const dir = makeProject();
+    writeArrangementFile(dir, "a-0123456789abcdef", { _conflicts: [arrangementFieldConflict()] });
+    const result = await handleConflictsShow("a-0123456789abcdef", dir, "md");
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.output).toContain("/lifecycle");
+  });
+
+  it("conflicts show renders an entity-level (whole-record) conflict on an arrangement", async () => {
+    const dir = makeProject();
+    const base = { id: "a-0123456789abcdef", title: "n/a" };
+    const tombstone = { id: "a-0123456789abcdef", lifecycle: "deleted", deletedAt: "2026-08-27T00:00:00Z", deletedBy: "pen@test.com" };
+    const edited = { id: "a-0123456789abcdef", lifecycle: "closed" };
+    writeArrangementFile(dir, "a-0123456789abcdef", {
+      _conflicts: [{ fieldPath: "", field: "_entity", kind: "delete-edit", base, ours: tombstone, theirs: edited }],
+    });
+    const result = await handleConflictsShow("a-0123456789abcdef", dir, "md");
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.output).toContain("(entire entity)");
+    expect(result.output).toContain("pen@test.com");
+  });
+
+  it("resolve --use ours on a conflicted arrangement writes back the resolved field and clears _conflicts", async () => {
+    const dir = makeProject();
+    writeArrangementFile(dir, "a-0123456789abcdef", { _conflicts: [arrangementFieldConflict()] });
+    const result = await handleResolve("a-0123456789abcdef", dir, { use: "ours" });
+    expect(result.exitCode ?? 0).toBe(0);
+    const arrangement = JSON.parse(readFileSync(join(dir, ".story", "arrangements", "a-0123456789abcdef.json"), "utf-8"));
+    expect(arrangement.lifecycle).toBe("suspended");
+    expect(arrangement._conflicts).toBeUndefined();
+  });
+
+  it("conflicts show on an id absent from the scan, with a damaged arrangement present, distinguishes 'scan incomplete' from a flat not-found", async () => {
+    const dir = makeProject();
+    mkdirSync(join(dir, ".story", "arrangements"), { recursive: true });
+    writeFileSync(join(dir, ".story", "arrangements", "a-badbadbadbadbad.json"), "{ invalid json", "utf-8");
+    const result = await handleConflictsShow("a-0123456789abcdef", dir, "md");
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Arrangement scan was incomplete");
+  });
+
+  it("conflicts list surfaces a damaged arrangement as a named diagnostic instead of silently vanishing", async () => {
+    const dir = makeProject();
+    mkdirSync(join(dir, ".story", "arrangements"), { recursive: true });
+    writeFileSync(join(dir, ".story", "arrangements", "a-badbadbadbadbad.json"), "{ invalid json", "utf-8");
+    const result = await handleConflictsList(dir, "md");
+    expect(result.output).toContain("Arrangement scan incomplete");
   });
 });
 

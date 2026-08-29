@@ -1,5 +1,6 @@
 import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked } from "../../core/project-loader.js";
 import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
+import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import { earmarkMatchesArrangement } from "../../core/earmarks.js";
 import { generateCanonicalId } from "../../core/canonical-id.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
@@ -193,6 +194,12 @@ export async function handleArrangementUpdate(
     const existing = arrangements.find((a) => a.id === id);
     if (!existing) {
       throw new CliValidationError("not_found", `Arrangement ${id} not found`);
+    }
+    if (isArrangementConflicted(existing)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Arrangement ${id} has unresolved merge conflicts; resolve with "storybloq resolve ${id}" before updating it`,
+      );
     }
     const candidate = { ...existing, lifecycle: updates.lifecycle as ArrangementLifecycle };
     const arrangement = validateOrThrow(candidate);

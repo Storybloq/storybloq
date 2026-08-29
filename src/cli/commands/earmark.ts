@@ -1,5 +1,6 @@
 import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked } from "../../core/project-loader.js";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
+import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import { canPlaceEarmark, describeEarmarkHolder } from "../../core/earmarks.js";
 import { resolveSessionSelector } from "../../autonomous/session-selector.js";
 import { ownerTaskForCurrentClient } from "../../autonomous/client-profile.js";
@@ -63,16 +64,58 @@ async function persistTarget(target: EarmarkTarget, item: unknown, root: string)
  * arrangement it is inferred.
  */
 function resolveCoveringArrangement(explicitId: string | undefined, targetId: string, root: string): Arrangement {
-  const { arrangements } = loadArrangementsSafe(root);
-  const covering = arrangements.filter((a) => a.lifecycle !== "closed" && a.bounds.includes(targetId));
+  const { arrangements, warnings } = loadArrangementsSafe(root);
   if (explicitId) {
     const found = arrangements.find((a) => a.id === explicitId);
     if (!found) throw new CliValidationError("not_found", `Arrangement ${explicitId} not found`);
+    if (isArrangementConflicted(found)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Arrangement ${explicitId} has unresolved merge conflicts; resolve with "storybloq resolve ${explicitId}" before using it for earmarks`,
+      );
+    }
     if (!found.bounds.includes(targetId)) {
       throw new CliValidationError("invalid_input", `Arrangement ${explicitId} does not cover ${targetId}`);
     }
     return found;
   }
+  // codex round-2 finding (T-478): an incomplete scan (an unreadable or
+  // schema-invalid arrangement file) silently OMITS that record from
+  // `arrangements` -- it is not in `warnings`' place, it is simply absent.
+  // The inferred path's whole safety argument is "reason about the FULL set
+  // of arrangements that could cover targetId"; an omitted arrangement could
+  // itself cover `targetId` and be conflicted or otherwise disputed, and
+  // there is no way to rule that out from an incomplete scan. Mirrors
+  // `resolveGateStatus` (gate-enforcement.ts): any scan warning makes the
+  // whole result untrustworthy, checked before any per-arrangement logic.
+  // `--arrangement` (the explicit-id path above) is unaffected: naming an
+  // arrangement that itself loaded fine needs no completeness guarantee
+  // about the REST of the directory.
+  if (warnings.length > 0) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Arrangement scan incomplete (${warnings.join("; ")}); a hidden arrangement cannot be ruled out. Run "storybloq validate" for details, or pass --arrangement to name a specific, known-good arrangement explicitly.`,
+    );
+  }
+  // T-478: conflicted arrangements are excluded FIRST, across the FULL list,
+  // before either `lifecycle` or `bounds` is consulted for ANY arrangement --
+  // a conflicted arrangement's retained `bounds`/`lifecycle` is precisely the
+  // field that may be in dispute, so this cannot be trusted to decide whether
+  // the arrangement even reaches the `covering` filter. If any conflicted
+  // arrangement exists at all, the inferred path refuses outright (AM2: the
+  // refusal names the specific conflicted ids) rather than attempting to
+  // reason about which ones could plausibly cover `targetId` -- deliberately
+  // more conservative than strictly necessary, but never authorizes on
+  // disputed data. --arrangement remains available to name an unconflicted
+  // arrangement explicitly.
+  const conflicted = arrangements.filter((a) => isArrangementConflicted(a));
+  if (conflicted.length > 0) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Arrangement(s) ${conflicted.map((a) => a.id).join(", ")} have unresolved merge conflicts; resolve them with "storybloq resolve" or pass --arrangement to name a specific, unconflicted arrangement explicitly`,
+    );
+  }
+  const covering = arrangements.filter((a) => a.lifecycle !== "closed" && a.bounds.includes(targetId));
   if (covering.length === 0) {
     throw new CliValidationError("invalid_input", `No active arrangement covers ${targetId}; specify --arrangement`);
   }

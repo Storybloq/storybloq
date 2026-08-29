@@ -69,6 +69,15 @@ async function createArrangement(dir: string, bound: string): Promise<string> {
   return JSON.parse(result.output).data.id as string;
 }
 
+async function markArrangementConflicted(dir: string, arrangementId: string): Promise<void> {
+  const filePath = join(dir, ".story", "arrangements", `${arrangementId}.json`);
+  const raw = JSON.parse(await readFile(filePath, "utf-8"));
+  writeFileSync(filePath, JSON.stringify({
+    ...raw,
+    _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }],
+  }, null, 2));
+}
+
 function writeLiveSession(dir: string, sessionId: string, ownerTaskId: string): void {
   const sessDir = join(dir, ".story", "sessions", sessionId);
   mkdirSync(sessDir, { recursive: true });
@@ -197,6 +206,69 @@ describe("handleEarmarkReserve", () => {
     await createArrangement(dir, issueId);
     const result = await handleEarmarkReserve({ ref: issueId, role: "pen", clientTaskId: PEN_TASK }, "json", dir);
     expect(JSON.parse(result.output).data.earmark.stage).toBe("reserved");
+  });
+
+  describe("T-478: refuses to trust a conflicted arrangement's authority", () => {
+    it("explicit --arrangement naming a conflicted arrangement is refused outright, before the bounds check", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const arrangementId = await createArrangement(dir, ticketId);
+      await markArrangementConflicted(dir, arrangementId);
+
+      await expect(
+        handleEarmarkReserve({ ref: ticketId, role: "worker", arrangement: arrangementId, clientTaskId: RESERVER }, "json", dir),
+      ).rejects.toThrow(/unresolved merge conflicts/);
+    });
+
+    it("inferred-covering path refuses when ANY arrangement anywhere is conflicted, naming the specific conflicted id(s) (AM2)", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      await createArrangement(dir, ticketId);
+
+      // A conflicted arrangement covering a DIFFERENT, unrelated ticket --
+      // proves the inferred path's blanket refusal scans the FULL list, not
+      // just arrangements that (per their own untrusted retained bounds)
+      // appear to cover this ticket.
+      const otherTicketId = await createTicket(dir);
+      const conflictedId = await createArrangement(dir, otherTicketId);
+      await markArrangementConflicted(dir, conflictedId);
+
+      await expect(
+        handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir),
+      ).rejects.toThrow(CliValidationError);
+      try {
+        await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+        expect.fail("expected handleEarmarkReserve to throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(CliValidationError);
+        expect((err as CliValidationError).message).toContain(conflictedId);
+      }
+    });
+
+    it("codex round-2: inferred-covering path refuses when the arrangement scan is incomplete (an unreadable arrangement is hidden, not merely conflicted)", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      await createArrangement(dir, ticketId);
+
+      // An unreadable arrangement file elsewhere in the directory: omitted
+      // from `arrangements` entirely (not surfaced as `_conflicts`), so a
+      // filter that only walks `arrangements` cannot see it at all -- the
+      // exact gap the conflict filter above cannot close by itself.
+      writeFileSync(join(dir, ".story", "arrangements", "a-brokenbrokenbrok.json"), "{not json");
+
+      await expect(
+        handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir),
+      ).rejects.toThrow(/scan incomplete/);
+      // Explicitly naming a KNOWN-GOOD arrangement still works -- the
+      // incomplete-scan refusal is scoped to the inferred path only.
+      const { arrangements } = await (async () => {
+        const { loadArrangementsSafe } = await import("../../../src/core/arrangement-loader.js");
+        return loadArrangementsSafe(dir);
+      })();
+      const goodId = arrangements[0]!.id;
+      const result = await handleEarmarkReserve({ ref: ticketId, role: "worker", arrangement: goodId, clientTaskId: RESERVER }, "json", dir);
+      expect(result.exitCode ?? 0).toBe(0);
+    });
   });
 });
 

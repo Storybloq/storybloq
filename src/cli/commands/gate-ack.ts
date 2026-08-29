@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { withProjectLock } from "../../core/project-loader.js";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
+import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import { readGateAcksForListing, writeGateAckUnlocked, writeGateAckContested } from "../../core/gate-ack-loader.js";
 import { readBoundedRegularFile, sha256Bytes, PLAN_ACK_MAX_BYTES } from "../../core/pin-utils.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
@@ -109,6 +110,12 @@ export async function handleGateAckCreate(
     const arrangement = arrangements.find((a) => a.id === args.arrangement);
     if (!arrangement) {
       throw new CliValidationError("not_found", `Arrangement ${args.arrangement} not found`);
+    }
+    if (isArrangementConflicted(arrangement)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Arrangement ${args.arrangement} has unresolved merge conflicts; resolve with "storybloq resolve ${args.arrangement}" before creating a gate-ack against it`,
+      );
     }
     const gate = arrangement.gates.find((g) => g.name === args.gate);
     if (!gate) {

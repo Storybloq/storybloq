@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { computeReconcilePlan, computeRebalancePlan, type EntityType, type ReconcileContext, type ReconcileRename } from "../../core/reconcile.js";
+import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { formatReconcileResult, ExitCode, successEnvelope, type ExitCodeValue } from "../../core/output-formatter.js";
 import { withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
 import { nextNoteID, allocateTeamNoteId, NOTE_NUMERIC_REGEX } from "../../core/id-allocation.js";
@@ -164,7 +165,8 @@ export async function handleReconcile(
 
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     const context = await buildReconcileContext(root, state);
-    const result = computeReconcilePlan(state, context);
+    const arrangementScan = loadArrangementsSafe(root);
+    const result = computeReconcilePlan(state, context, arrangementScan);
     const rebalance = options.rebalanceRanks ? computeRebalancePlan(state) : null;
     const rankChanges: RankChange[] = rebalance
       ? rebalance.changes.map((c) => ({ id: c.id, entityType: c.entityType, newRank: c.newRank }))

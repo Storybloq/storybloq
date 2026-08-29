@@ -1266,8 +1266,13 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Get the pick-exclusion earmark (if any) on a ticket or issue",
     inputSchema: {
       ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
+      node: nodeParam,
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleEarmarkGet(args.ref, ctx)));
+  }, (args) => {
+    const eff = resolveEffectiveRoot(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpReadTool(pinnedRoot, (ctx) => handleEarmarkGet(args.ref, ctx), eff.root);
+  });
 
   server.registerTool("storybloq_earmark_reserve", {
     description:
@@ -1278,14 +1283,34 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       role: z.enum(EARMARK_ROLES).describe("Role this reservation is held for"),
       arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
       clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+      node: nodeParam,
     },
-  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
-    handleEarmarkReserve(
-      { ref: args.ref, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
-      format,
-      root,
-    ),
-  ));
+  }, async (args) => {
+    const collision = await checkNodeCollision(pinnedRoot, args.node, args.ref, TICKET_ID_REGEX.test(args.ref) || TICKET_CANONICAL_ID_REGEX.test(args.ref));
+    if (collision) return collision;
+    // Earmark handlers need the ORCHESTRATOR root (arrangements always live
+    // there, Q3) plus a separately-resolved item root -- unlike
+    // ticket/issue writes, `root` here must stay `pinnedRoot`, never the
+    // node's own directory. `resolveEffectiveRootForWrite` is still called
+    // for its validation (allowNodeWrites permission + node resolvability);
+    // its resolved `.root` is discarded. Codex round-1 finding: this check
+    // runs UNLOCKED, so it is an optimistic fast-fail only, not the
+    // authoritative decision -- `handleEarmarkReserve` re-checks the same
+    // permission flag under the orchestrator lock (its `preValidate`
+    // callback, `assertNodeWritePermissionUnderLock`) immediately before the
+    // mutation, closing the window a config write could open between this
+    // check and the lock being acquired.
+    const eff = resolveEffectiveRootForWrite(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpWriteTool(pinnedRoot, (root, format) =>
+      handleEarmarkReserve(
+        { ref: args.ref, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
+        format,
+        root,
+        args.node,
+      ),
+    pinnedRoot, boardLabelFor(pinnedRoot, args.node));
+  });
 
   server.registerTool("storybloq_earmark_assign", {
     description:
@@ -1298,27 +1323,46 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       role: z.enum(EARMARK_ROLES).describe("Role the target session must hold on the covering arrangement"),
       arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
       clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+      node: nodeParam,
     },
-  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
-    handleEarmarkAssign(
-      { ref: args.ref, to: args.to, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
-      format,
-      root,
-    ),
-  ));
+  }, async (args) => {
+    const collision = await checkNodeCollision(pinnedRoot, args.node, args.ref, TICKET_ID_REGEX.test(args.ref) || TICKET_CANONICAL_ID_REGEX.test(args.ref));
+    if (collision) return collision;
+    // Same orchestrator-root-required reasoning as storybloq_earmark_reserve above.
+    const eff = resolveEffectiveRootForWrite(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpWriteTool(pinnedRoot, (root, format) =>
+      handleEarmarkAssign(
+        { ref: args.ref, to: args.to, role: args.role, arrangement: args.arrangement, clientTaskId: args.clientTaskId },
+        format,
+        root,
+        args.node,
+      ),
+    pinnedRoot, boardLabelFor(pinnedRoot, args.node));
+  });
 
   server.registerTool("storybloq_earmark_release", {
     description:
-      "Release (clear) a ticket or issue's earmark. Authorized for the reserver or the covering arrangement's pen " +
-      "party. A no-op, not an error, when there is no earmark to clear.",
+      "Release (clear) a ticket or issue's earmark. Authorized for the reserver, or the pen party of the earmark's " +
+      "OWN authorizing arrangement (its stored arrangementId, not necessarily whatever arrangement covers the item " +
+      "NOW -- codex round-2 fix: release removes a hold, so it doesn't need current bounds coverage the way " +
+      "reserve/assign do). A no-op, not an error, when there is no earmark to clear.",
     inputSchema: {
       ref: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref, display-form or canonical"),
-      arrangement: ArrangementIdSchema.optional().describe("Covering arrangement ID; required if ambiguous"),
+      arrangement: ArrangementIdSchema.optional().describe("Sanity check only: must match the earmark's own authorizing arrangement ID if given"),
       clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
+      node: nodeParam,
     },
-  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
-    handleEarmarkRelease({ ref: args.ref, arrangement: args.arrangement, clientTaskId: args.clientTaskId }, format, root),
-  ));
+  }, async (args) => {
+    const collision = await checkNodeCollision(pinnedRoot, args.node, args.ref, TICKET_ID_REGEX.test(args.ref) || TICKET_CANONICAL_ID_REGEX.test(args.ref));
+    if (collision) return collision;
+    // Same orchestrator-root-required reasoning as storybloq_earmark_reserve above.
+    const eff = resolveEffectiveRootForWrite(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpWriteTool(pinnedRoot, (root, format) =>
+      handleEarmarkRelease({ ref: args.ref, arrangement: args.arrangement, clientTaskId: args.clientTaskId }, format, root, args.node),
+    pinnedRoot, boardLabelFor(pinnedRoot, args.node));
+  });
 
   // --- Lesson tools ---
 

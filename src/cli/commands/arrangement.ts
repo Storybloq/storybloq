@@ -5,6 +5,7 @@ import { earmarkMatchesArrangement } from "../../core/earmarks.js";
 import { generateCanonicalId } from "../../core/canonical-id.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
 import { resolveNodeRoot } from "../../mcp/node-resolution.js";
+import { withOrchestratorAndItemLocks } from "../../core/orchestrator-item-lock.js";
 import {
   formatArrangement,
   formatArrangementList,
@@ -211,6 +212,50 @@ async function clearEarmarkUnlocked(state: ProjectState, arrangementId: string, 
   }
 }
 
+/** ISS-1077 (C5): groups an arrangement's node-qualified bounds by node name. */
+function groupNodeQualifiedBounds(bounds: readonly string[]): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const ref of bounds) {
+    const match = CROSS_NODE_REF_CAPTURE_REGEX.exec(ref);
+    if (!match) continue;
+    const [, nodeName, itemId] = match as unknown as [string, string, string];
+    const list = groups.get(nodeName) ?? [];
+    list.push(itemId);
+    groups.set(nodeName, list);
+  }
+  return groups;
+}
+
+/**
+ * ISS-1077 (C5), reworked post-gate-1 per codex round 1: the node-side twin
+ * of `clearEarmarkUnlocked`, scoped to one node root -- now a FULL scan of
+ * that root's own tickets/issues by `arrangementId`, exactly mirroring
+ * `clearEarmarkUnlocked`'s local behavior, rather than looking up only the
+ * specific ids the arrangement's CURRENT bounds happen to name. The original
+ * id-keyed version missed an item whose bound was removed/merge-edited after
+ * its earmark was placed (unlike local closure, which always scans
+ * everything), and could never retract a hand-edited, mismatched-id bound
+ * against a team-mode node (A4's traced residual) since `ticketByID` would
+ * simply miss. Scanning by `arrangementId` instead is form-and-mismatch
+ * agnostic and idempotent (safe to re-run on a retry).
+ */
+async function retractNodeEarmarksOnItem(
+  itemState: ProjectState,
+  itemRoot: string,
+  arrangementId: string,
+): Promise<void> {
+  for (const ticket of itemState.tickets) {
+    if (earmarkMatchesArrangement(ticket.earmark, arrangementId)) {
+      await writeTicketUnlocked({ ...ticket, earmark: null }, itemRoot);
+    }
+  }
+  for (const issue of itemState.issues) {
+    if (earmarkMatchesArrangement(issue.earmark, arrangementId)) {
+      await writeIssueUnlocked({ ...issue, earmark: null }, itemRoot);
+    }
+  }
+}
+
 export async function handleArrangementUpdate(
   id: string,
   updates: { lifecycle?: string },
@@ -227,34 +272,149 @@ export async function handleArrangementUpdate(
     );
   }
 
+  // ISS-1077 ([R3-FIX 3/4], reworked post-gate-1 per codex round 1): pre-lock
+  // HINT only -- which node ROOTS might need earmark retraction if this
+  // closes the arrangement, so we know which item locks to acquire before
+  // entering the orchestrator lock. Deliberately a Set of resolved ROOTS, not
+  // a name -> root map: two different configured node names can resolve to
+  // the same physical root (an alias), and retraction below is a full scan
+  // of that root's own tickets/issues by arrangementId (mirroring
+  // `clearEarmarkUnlocked`'s local behavior exactly) -- it needs to know
+  // WHICH ROOTS to visit, never WHICH NAME they were reached through, so an
+  // aliased name can never cause one root's cleanup to be silently dropped
+  // in favor of another. Re-verified against the freshly loaded arrangement
+  // in `preValidate` below (by RESOLVED ROOT, same reasoning); if bounds
+  // changed concurrently to reference a root this hint missed, the close
+  // refuses rather than silently skipping that root's retraction (D1: fail
+  // closed on a detected race, never proceed on a stale hint).
+  //
+  // Known accepted residual (ISS-1084, ruled by the pen during run-7's
+  // codex-round-1 triage): this hint is built from the arrangement's CURRENT
+  // bounds only. If a bounds edit removes a node NAME entirely (not just
+  // swaps to a different id on the same node -- that case IS covered, see
+  // `retractNodeEarmarksOnItem`'s full-scan-by-arrangementId below), that
+  // node's root never enters `hintNodeRoots`, its lock is never acquired, and
+  // any earmark stranded there is never retracted by this close. Accepted
+  // because the failure direction is a STRANDED reservation (conservative:
+  // blocks reuse, never authorizes a wrong write); full parity needs a real
+  // design decision (lock every configured node on close, or a persisted
+  // touched-nodes history) tracked in ISS-1084, not a bug fix. `earmark
+  // release`'s stored-arrangementId authority (codex round 2, see
+  // `authorizeRelease` in earmark.ts) is what makes the manual-recovery
+  // claim above actually TRUE -- it was false when this comment was first
+  // written (release required current bounds coverage, which this exact
+  // scenario removes), fixed in the same round that added the multi-root
+  // ordering choice below.
+  const closing = updates.lifecycle === "closed";
+  const hintNodeRoots = new Set<string>();
+  if (closing) {
+    const { arrangements: hintArrangements } = loadArrangementsSafe(root);
+    const hintExisting = hintArrangements.find((a) => a.id === id);
+    if (hintExisting) {
+      for (const nodeName of groupNodeQualifiedBounds(hintExisting.bounds).keys()) {
+        const resolved = resolveNodeRoot(root, nodeName);
+        if (resolved.ok) hintNodeRoots.add(resolved.root);
+        // Unresolvable here: dropped from the hint. preValidate's own fresh
+        // resolution hits the same failure and refuses fail-closed there
+        // (the close throws rather than silently proceeding).
+      }
+    }
+  }
+
   let updated: Arrangement | undefined;
 
-  await withProjectLock(root, { strict: true }, async ({ state }) => {
-    // Arrangements are off the strict ProjectState load path (binding item
-    // 2), so the existing record comes from the fail-safe loader, not from
-    // `state` -- consistent with the read handlers above. `state` itself is
-    // still needed here (section 5) to scan tickets/issues for earmarks to
-    // retract on close.
-    const { arrangements } = loadArrangementsSafe(root);
-    const existing = arrangements.find((a) => a.id === id);
-    if (!existing) {
-      throw new CliValidationError("not_found", `Arrangement ${id} not found`);
-    }
-    if (isArrangementConflicted(existing)) {
-      throw new CliValidationError(
-        "invalid_input",
-        `Arrangement ${id} has unresolved merge conflicts; resolve with "storybloq resolve ${id}" before updating it`,
-      );
-    }
-    const candidate = { ...existing, lifecycle: updates.lifecycle as ArrangementLifecycle };
-    const arrangement = validateOrThrow(candidate);
-    // Binding item 3: the ordinary atomic-replace path, `createOnly` omitted.
-    await writeArrangementUnlocked(arrangement, root);
-    if (arrangement.lifecycle === "closed") {
-      await clearEarmarkUnlocked(state, arrangement.id, root);
-    }
-    updated = arrangement;
-  });
+  await withOrchestratorAndItemLocks(
+    root,
+    [...hintNodeRoots],
+    async (_orchestratorState, itemRoot, itemState) => {
+      // Idempotent full scan (never limited to the bounds captured by the
+      // pre-lock hint, and never skipped just because the arrangement was
+      // ALREADY closed) -- this root was selected specifically because SOME
+      // node-qualified bound named it as relevant; clearing by arrangementId
+      // rather than by specific item id also means a hand-edited bound
+      // storing a stale/mismatched id (A4's traced residual) can never leave
+      // an earmark stranded here the way an id-keyed lookup could. Re-running
+      // this on a retry after a prior partial failure is always safe: a
+      // matching earmark is cleared, a non-matching or already-cleared one is
+      // untouched. Runs AFTER `beforeItems` below has already committed the
+      // arrangement's own closure (codex round 2): if THIS sweep fails
+      // partway across multiple node roots, the arrangement is already
+      // closed and whichever root's earmark this reached is already
+      // retracted -- only the roots not yet reached are left with a
+      // stranded-but-conservative earmark (see `beforeItems`'s docblock on
+      // `withOrchestratorAndItemLocks` for the fail-direction this reorder
+      // chose), recoverable via `earmark release`'s own
+      // stored-arrangementId authority (`authorizeRelease` in earmark.ts),
+      // which needs neither the arrangement to still be active nor its
+      // bounds to still cover the item.
+      await retractNodeEarmarksOnItem(itemState, itemRoot, id);
+    },
+    async () => {},
+    undefined,
+    () => {
+      // Runs under the orchestrator lock BEFORE any item root is touched
+      // (see withOrchestratorAndItemLocks's own docblock on why this can't
+      // wait until the write below): not-found, conflicted, and the D1
+      // missed-root race check all belong here, not after node mutations
+      // have already committed and released their locks.
+      const { arrangements } = loadArrangementsSafe(root);
+      const existing = arrangements.find((a) => a.id === id);
+      if (!existing) {
+        throw new CliValidationError("not_found", `Arrangement ${id} not found`);
+      }
+      if (isArrangementConflicted(existing)) {
+        throw new CliValidationError(
+          "invalid_input",
+          `Arrangement ${id} has unresolved merge conflicts; resolve with "storybloq resolve ${id}" before updating it`,
+        );
+      }
+      if (closing) {
+        // D1: every node root this close needs to touch must have had its
+        // item lock actually acquired above. A bound added concurrently,
+        // after the hint was taken but before this lock closed the race
+        // window, would not have. Refuse rather than close with a node
+        // earmark left stranded -- see this function's own module docblock
+        // (C5). Compared by RESOLVED ROOT (never by name) so an alias never
+        // masks a genuinely missed root.
+        for (const nodeName of groupNodeQualifiedBounds(existing.bounds).keys()) {
+          const resolved = resolveNodeRoot(root, nodeName);
+          if (!resolved.ok || !hintNodeRoots.has(resolved.root)) {
+            throw new CliValidationError(
+              "conflict",
+              `Arrangement ${id}'s bounds changed to reference node "${nodeName}" during this close; retry the close so its earmarks can be retracted safely.`,
+            );
+          }
+        }
+      }
+    },
+    async (orchestratorState) => {
+      // codex round-2 (ISS-1077 continued): the arrangement's own write --
+      // and the orchestrator-side earmark clear that depends on it having
+      // already landed -- now commits HERE, under `beforeItems`, BEFORE the
+      // node-root retraction sweep in `perItem` above, inverting round-1's
+      // order. preValidate already confirmed existing/unconflicted/
+      // no-missed-root; re-derive fresh again here only because this is
+      // where the write happens and nothing else can have changed it while
+      // the orchestrator lock has been held continuously since preValidate
+      // ran. See `withOrchestratorAndItemLocks`'s own docblock for why this
+      // ordering was chosen: it trades a fail-open partial-failure exposure
+      // (earmarks cleared, arrangement still active) for a fail-closed one
+      // (arrangement closed, an earmark stranded), the latter being cheap to
+      // recover from now that `earmark release` no longer needs the
+      // arrangement to still cover the item.
+      const { arrangements } = loadArrangementsSafe(root);
+      const existing = arrangements.find((a) => a.id === id)!;
+      const candidate = { ...existing, lifecycle: updates.lifecycle as ArrangementLifecycle };
+      const arrangement = validateOrThrow(candidate);
+
+      // Binding item 3: the ordinary atomic-replace path, `createOnly` omitted.
+      await writeArrangementUnlocked(arrangement, root);
+      if (arrangement.lifecycle === "closed") {
+        await clearEarmarkUnlocked(orchestratorState, arrangement.id, root);
+      }
+      updated = arrangement;
+    },
+  );
 
   if (!updated) throw new Error("Arrangement not updated");
   return { output: formatArrangementUpdateResult(updated, format) };

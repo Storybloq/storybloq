@@ -269,6 +269,19 @@ describe("handleEarmarkReserve", () => {
       const result = await handleEarmarkReserve({ ref: ticketId, role: "worker", arrangement: goodId, clientTaskId: RESERVER }, "json", dir);
       expect(result.exitCode ?? 0).toBe(0);
     });
+
+    it("codex round-2: explicit --arrangement naming a CLOSED arrangement is refused, even though its retained bounds still textually cover the target", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const arrangementId = await createArrangement(dir, ticketId);
+      const filePath = join(dir, ".story", "arrangements", `${arrangementId}.json`);
+      const raw = JSON.parse(await readFile(filePath, "utf-8"));
+      writeFileSync(filePath, JSON.stringify({ ...raw, lifecycle: "closed" }, null, 2));
+
+      await expect(
+        handleEarmarkReserve({ ref: ticketId, role: "worker", arrangement: arrangementId, clientTaskId: RESERVER }, "json", dir),
+      ).rejects.toThrow(/closed/);
+    });
   });
 });
 
@@ -310,6 +323,79 @@ describe("handleEarmarkRelease", () => {
     ).rejects.toThrow(CliValidationError);
     const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
     expect(raw.earmark).toBeTruthy();
+  });
+
+  describe("ISS-1084 continued, codex round-2: release authorizes via the earmark's OWN stored arrangementId, not current bounds coverage", () => {
+    it("the reserver releases their own earmark even after the arrangement's bounds no longer cover it", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const otherTicketId = await createTicket(dir);
+      const arrangementId = await createArrangement(dir, ticketId);
+      await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+
+      // Simulate a merge-driver edit dropping ticketId from the arrangement's
+      // bounds entirely -- the exact ISS-1084 scenario. Before this fix, this
+      // would leave the earmark with NO working release path at all.
+      const { loadArrangementsSafe, writeArrangementUnlocked } = await import("../../../src/core/arrangement-loader.js");
+      const { arrangements } = loadArrangementsSafe(dir);
+      const arrangement = arrangements.find((a) => a.id === arrangementId)!;
+      await writeArrangementUnlocked({ ...arrangement, bounds: [otherTicketId] }, dir);
+
+      await handleEarmarkRelease({ ref: ticketId, clientTaskId: RESERVER }, "json", dir);
+      const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
+      expect(raw.earmark ?? null).toBeNull();
+    });
+
+    it("the arrangement's pen party releases someone else's earmark the same way, even after bounds no longer cover it", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const otherTicketId = await createTicket(dir);
+      const arrangementId = await createArrangement(dir, ticketId);
+      await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+
+      const { loadArrangementsSafe, writeArrangementUnlocked } = await import("../../../src/core/arrangement-loader.js");
+      const { arrangements } = loadArrangementsSafe(dir);
+      const arrangement = arrangements.find((a) => a.id === arrangementId)!;
+      await writeArrangementUnlocked({ ...arrangement, bounds: [otherTicketId] }, dir);
+
+      await handleEarmarkRelease({ ref: ticketId, clientTaskId: PEN_TASK }, "json", dir);
+      const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
+      expect(raw.earmark ?? null).toBeNull();
+    });
+
+    it("still refuses a non-reserver, non-pen caller even once bounds no longer cover the item", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const otherTicketId = await createTicket(dir);
+      const arrangementId = await createArrangement(dir, ticketId);
+      await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+
+      const { loadArrangementsSafe, writeArrangementUnlocked } = await import("../../../src/core/arrangement-loader.js");
+      const { arrangements } = loadArrangementsSafe(dir);
+      const arrangement = arrangements.find((a) => a.id === arrangementId)!;
+      await writeArrangementUnlocked({ ...arrangement, bounds: [otherTicketId] }, dir);
+
+      await expect(
+        handleEarmarkRelease({ ref: ticketId, clientTaskId: OTHER_TASK }, "json", dir),
+      ).rejects.toThrow(CliValidationError);
+      const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
+      expect(raw.earmark).toBeTruthy();
+    });
+
+    it("refuses an explicit --arrangement that does not match the earmark's own authorizing arrangement", async () => {
+      const { dir } = await newProject();
+      const ticketId = await createTicket(dir);
+      const otherTicketId = await createTicket(dir);
+      await createArrangement(dir, ticketId);
+      await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+      const decoyArrangementId = await createArrangement(dir, otherTicketId);
+
+      await expect(
+        handleEarmarkRelease({ ref: ticketId, arrangement: decoyArrangementId, clientTaskId: RESERVER }, "json", dir),
+      ).rejects.toThrow(CliValidationError);
+      const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
+      expect(raw.earmark).toBeTruthy();
+    });
   });
 });
 
@@ -394,5 +480,80 @@ describe("handleEarmarkAssign", () => {
         dir,
       ),
     ).rejects.toThrow(CliValidationError);
+  });
+});
+
+// --- ISS-1077 (C4), codex round 1: CLI node-scoped writes must honor
+// federation.allowNodeWrites, exactly like the MCP path already does. The
+// original resolveItemRootForNode called resolveNodeRoot directly, skipping
+// checkNodeWritePermission entirely -- a real authorization bypass reachable
+// only from the CLI (MCP's own resolveEffectiveRootForWrite pre-check
+// happened to mask it there). Fixed by routing through resolveCliNodeRoot.
+
+async function newOrchestratorWithNode(allowNodeWrites: boolean): Promise<{ orchDir: string; nodeDir: string }> {
+  const nodeDir = await mkdtemp(join(tmpdir(), "earmark-cli-node-"));
+  tmpDirs.push(nodeDir);
+  await initProject(nodeDir, { name: "engine" });
+
+  const orchDir = await mkdtemp(join(tmpdir(), "earmark-cli-orch-"));
+  tmpDirs.push(orchDir);
+  await initProject(orchDir, { name: "orchestrator" });
+  const configPath = join(orchDir, ".story", "config.json");
+  const config = JSON.parse(await readFile(configPath, "utf-8"));
+  config.type = "orchestrator";
+  config.nodes = { engine: { path: nodeDir, health: "grey", dependsOn: [], stack: "", role: "", summary: "" } };
+  config.federation = { allowNodeWrites };
+  writeFileSync(configPath, JSON.stringify(config));
+
+  return { orchDir, nodeDir };
+}
+
+describe("ISS-1077 (C4): CLI node-scoped earmark writes honor federation.allowNodeWrites", () => {
+  it("refuses earmark reserve --node when node writes are disabled", async () => {
+    const { orchDir, nodeDir } = await newOrchestratorWithNode(false);
+    const ticketId = await createTicket(nodeDir);
+    await createArrangement(orchDir, `engine:${ticketId}`);
+    await expect(
+      handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", orchDir, "engine"),
+    ).rejects.toThrow(/[Nn]ode writes (are )?disabled/);
+  });
+
+  it("refuses earmark release --node when node writes are disabled", async () => {
+    const { orchDir, nodeDir } = await newOrchestratorWithNode(true);
+    const ticketId = await createTicket(nodeDir);
+    await createArrangement(orchDir, `engine:${ticketId}`);
+    await handleEarmarkReserve({ ref: ticketId, role: "worker", clientTaskId: RESERVER }, "json", orchDir, "engine");
+
+    // Disable node writes AFTER the reservation was legitimately placed, then
+    // confirm release still respects the gate rather than only checking it on
+    // the initial reserve.
+    const configPath = join(orchDir, ".story", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf-8"));
+    config.federation = { allowNodeWrites: false };
+    writeFileSync(configPath, JSON.stringify(config));
+
+    await expect(
+      handleEarmarkRelease({ ref: ticketId, clientTaskId: RESERVER }, "json", orchDir, "engine"),
+    ).rejects.toThrow(/[Nn]ode writes (are )?disabled/);
+
+    // codex round-2: the refused release must not have cleared the earmark
+    // it was refused before ever touching -- a regression that cleared it
+    // before surfacing the permission error would otherwise still pass.
+    const raw = JSON.parse(await readFile(join(nodeDir, ".story", "tickets", `${ticketId}.json`), "utf-8"));
+    expect(raw.earmark?.stage).toBe("reserved");
+    expect(raw.earmark?.reservedBy?.id).toBe(RESERVER);
+  });
+
+  it("succeeds when node writes are enabled (regression: the fix doesn't over-refuse)", async () => {
+    const { orchDir, nodeDir } = await newOrchestratorWithNode(true);
+    const ticketId = await createTicket(nodeDir);
+    await createArrangement(orchDir, `engine:${ticketId}`);
+    const result = await handleEarmarkReserve(
+      { ref: ticketId, role: "worker", clientTaskId: RESERVER },
+      "json",
+      orchDir,
+      "engine",
+    );
+    expect(JSON.parse(result.output).data.earmark.stage).toBe("reserved");
   });
 });

@@ -36,6 +36,7 @@ import {
 import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
 import { readBoundedRegularFile, sha256Bytes, PLAN_ACK_MAX_BYTES } from "../../core/pin-utils.js";
 import { findGateAck } from "../../core/gate-ack-loader.js";
+import { writePlanSnapshot } from "../../core/plan-snapshot.js";
 import { PLAN_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
 import { arrangementGateRiskWarnings, type ArrangementGate } from "../../core/arrangement-bounds.js";
 
@@ -238,7 +239,19 @@ async function handleCheckGateAck(ctx: StageContext, ticketId: string | undefine
     expectedAckRole: gate.ackRole,
   });
   if (lookup.status === "valid") {
-    ctx.writeState({ pendingPlanAck: null, approvedPlanAckDeltas: lookup.ack.deltas ?? null });
+    // ISS-1050 full fix: `planRead.bytes` above is already fresh -- the only
+    // intervening step since that read is the synchronous `findGateAck` call,
+    // so no await could have raced a plan.md edit past this point. Blocking
+    // on a snapshot-write failure here (rather than advancing without a pin)
+    // is D1: a gated landing must never fail open.
+    const snapshot = await writePlanSnapshot(ctx.dir, planRead.bytes);
+    if (snapshot.status !== "ok") {
+      return {
+        action: "retry",
+        instruction: `Failed to snapshot the approved plan: ${snapshot.reason}. Re-report the same check to retry.`,
+      };
+    }
+    ctx.writeState({ pendingPlanAck: null, approvedPlanAckDeltas: lookup.ack.deltas ?? null, approvedPlanSnapshot: snapshot.ref });
     if (ctx.state.mode === "plan") {
       ctx.finalizeSession({
         status: "completed" as const,
@@ -906,6 +919,7 @@ export class PlanReviewStage implements WorkflowStage {
       // resubmit its report -- which recomputes everything, including this
       // recheck, against whatever plan.md holds by then. The window
       // converges to correctness; it never converges to a stale advance.
+      let landedPlanBytes: Buffer | null = null;
       if (validatedPlanAckContext) {
         const recheck = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
         if (recheck.status !== "ok") {
@@ -932,6 +946,10 @@ export class PlanReviewStage implements WorkflowStage {
             instruction: "plan.md changed after this review's gate-ack passed; that ack no longer applies to the current content, and its review history has been cleared. Submit a fresh PLAN_REVIEW report for the current plan.",
           };
         }
+        // SITE 1: reuse this recheck's bytes for the snapshot below -- they
+        // are already the freshest possible read (no await since), so a
+        // second read would only add a redundant TOCTOU window, not close one.
+        landedPlanBytes = recheck.bytes;
       }
       // T-135: Plan mode exits after plan review approval
       if (ctx.state.mode === "plan") {
@@ -955,6 +973,30 @@ export class PlanReviewStage implements WorkflowStage {
           },
         } as StageAdvance;
       }
+      // ISS-1050 full fix (SITE 2 / ungated TOCTOU close): no plan-ack gate
+      // validated this round, so `landedPlanBytes` is still null -- a fresh
+      // read immediately before advancing, so the snapshot captures exactly
+      // what is about to be implemented rather than the round's earlier read.
+      if (!landedPlanBytes) {
+        const finalRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+        if (finalRead.status !== "ok") {
+          return {
+            action: "retry",
+            instruction: `Cannot read plan.md to snapshot the approved plan: ${finalRead.reason}. Escalate -- do not treat as approved.`,
+          };
+        }
+        landedPlanBytes = finalRead.bytes;
+      }
+      // D1: never fail open -- a snapshot write failure blocks the transition
+      // rather than advancing to IMPLEMENT with no pin.
+      const landingSnapshot = await writePlanSnapshot(ctx.dir, landedPlanBytes);
+      if (landingSnapshot.status !== "ok") {
+        return {
+          action: "retry",
+          instruction: `Failed to snapshot the approved plan: ${landingSnapshot.reason}. Re-report your review verdict to retry.`,
+        };
+      }
+      ctx.writeState({ approvedPlanSnapshot: landingSnapshot.ref });
       // ISS-1050 interim: deliberately does NOT surface arrangementGateRiskWarnings
       // here -- same reasoning as handleCheckGateAck's identical advance above:
       // a `result` on this return would replace IMPLEMENT's real `enter()`

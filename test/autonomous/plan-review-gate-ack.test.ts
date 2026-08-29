@@ -3,7 +3,7 @@
  * generation-aware polling branch and the restructured immediate-approval
  * path.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -18,6 +18,8 @@ import { writeGateAckUnlocked } from "../../src/core/gate-ack-loader.js";
 import { computeGateAckId, PLAN_ACK_GATE_NAME, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
 import { sha256Bytes } from "../../src/core/pin-utils.js";
 import { SessionStateSchema } from "../../src/autonomous/session-types.js";
+import * as planSnapshotModule from "../../src/core/plan-snapshot.js";
+const { readPlanSnapshot } = planSnapshotModule;
 
 const PARTIES = [
   { role: "pen" as const, client: "claude" as const, identityAnchor: "pen-session" },
@@ -410,6 +412,146 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       // path every session reload goes through.
       const roundTripped = SessionStateSchema.shape.frozenGate.parse(frozenGate);
       expect(roundTripped).toEqual(frozenGate);
+    });
+  });
+
+  describe("[ISS-1050 full fix] approvedPlanSnapshot writes", () => {
+    it("SITE 2 (ungated landing): writes a content-addressed snapshot of the landed plan.md", async () => {
+      const root = mkdtempSync(join(tmpdir(), "plan-review-snapshot-ungated-"));
+      tempDirs.push(root);
+      await initProject(root, { name: "test" });
+      await handleTicketCreate(
+        { title: "Ungated ticket", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+        "md",
+        root,
+      );
+      const sessionDir = newSessionDirIn(root);
+      const planPath = join(sessionDir, "plan.md");
+      writeFileSync(planPath, "# Ungated plan\n\nDo the thing.\n");
+      const expectedBytes = readFileSync(planPath);
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, "T-001"), makeRecipe());
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+
+      expect(result.action).toBe("advance");
+      const ref = ctx.state.approvedPlanSnapshot;
+      expect(ref).toBeTruthy();
+      expect(ref?.sha256).toBe(sha256Bytes(expectedBytes));
+      const read = readPlanSnapshot(sessionDir, ref!);
+      expect(read).toEqual({ status: "ok", text: expectedBytes.toString("utf-8") });
+    });
+
+    it("SITE 1 (gated recheck): writes a content-addressed snapshot when landing via a pre-existing valid ack", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      const planPath = join(sessionDir, "plan.md");
+      writeFileSync(planPath, "# Already-acked plan\n");
+      const expectedBytes = readFileSync(planPath);
+      const pin: GateAckPin = { kind: "plan-hash", sha256: sha256Bytes(expectedBytes) };
+      const ack: GateAck = {
+        id: computeGateAckId(arrangementId, PLAN_ACK_GATE_NAME, ticketId, pin),
+        arrangementId,
+        gateName: PLAN_ACK_GATE_NAME,
+        ackRole: "pen",
+        ticketRef: ticketId,
+        pin,
+        decidedAt: new Date().toISOString(),
+        reviewTrail: { present: false },
+        contested: false,
+      };
+      await writeGateAckUnlocked(ack, root);
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+
+      expect(result.action).toBe("advance");
+      const ref = ctx.state.approvedPlanSnapshot;
+      expect(ref).toBeTruthy();
+      expect(ref?.sha256).toBe(sha256Bytes(expectedBytes));
+      const read = readPlanSnapshot(sessionDir, ref!);
+      expect(read).toEqual({ status: "ok", text: expectedBytes.toString("utf-8") });
+    });
+
+    it("SITE 3 (check_gate_ack poll): writes a content-addressed snapshot when the poll discovers a newly-valid ack", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      const planPath = join(sessionDir, "plan.md");
+      writeFileSync(planPath, "# Polled plan\n");
+      const expectedBytes = readFileSync(planPath);
+      const planHash = sha256Bytes(expectedBytes);
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId, {
+        pendingPlanAck: { ticketId, arrangementId, gateName: PLAN_ACK_GATE_NAME, pinSha256: planHash },
+      }), makeRecipe());
+
+      // No ack exists yet -- first poll holds.
+      const firstPoll = await stage.report(ctx, { completedAction: "check_gate_ack" });
+      expect(firstPoll.action).toBe("retry");
+      expect(ctx.state.approvedPlanSnapshot).toBeFalsy();
+
+      // Now the pen records the ack; the next poll discovers it valid.
+      const pin: GateAckPin = { kind: "plan-hash", sha256: planHash };
+      const ack: GateAck = {
+        id: computeGateAckId(arrangementId, PLAN_ACK_GATE_NAME, ticketId, pin),
+        arrangementId,
+        gateName: PLAN_ACK_GATE_NAME,
+        ackRole: "pen",
+        ticketRef: ticketId,
+        pin,
+        decidedAt: new Date().toISOString(),
+        reviewTrail: { present: false },
+        contested: false,
+      };
+      await writeGateAckUnlocked(ack, root);
+
+      const result = await stage.report(ctx, { completedAction: "check_gate_ack" });
+      expect(result.action).toBe("advance");
+      const ref = ctx.state.approvedPlanSnapshot;
+      expect(ref).toBeTruthy();
+      expect(ref?.sha256).toBe(planHash);
+      const read = readPlanSnapshot(sessionDir, ref!);
+      expect(read).toEqual({ status: "ok", text: expectedBytes.toString("utf-8") });
+    });
+
+    it("[D1] SITE 1 gated recheck: a snapshot write failure blocks the transition rather than advancing without a pin", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      const planPath = join(sessionDir, "plan.md");
+      writeFileSync(planPath, "# Blocked-write plan\n");
+      const expectedBytes = readFileSync(planPath);
+      const planHash = sha256Bytes(expectedBytes);
+      const pin: GateAckPin = { kind: "plan-hash", sha256: planHash };
+      const ack: GateAck = {
+        id: computeGateAckId(arrangementId, PLAN_ACK_GATE_NAME, ticketId, pin),
+        arrangementId,
+        gateName: PLAN_ACK_GATE_NAME,
+        ackRole: "pen",
+        ticketRef: ticketId,
+        pin,
+        decidedAt: new Date().toISOString(),
+        reviewTrail: { present: false },
+        contested: false,
+      };
+      await writeGateAckUnlocked(ack, root);
+
+      // Force a genuine, non-idempotent write failure: a pre-occupied target
+      // path would hit atomicCreate's EEXIST branch, which plan-snapshot.ts
+      // treats as an idempotent success (by design) -- not the failure this
+      // test needs to exercise.
+      const spy = vi.spyOn(planSnapshotModule, "writePlanSnapshot")
+        .mockResolvedValueOnce({ status: "unreadable", reason: "simulated write failure" });
+      try {
+        const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
+        const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+
+        expect(result.action).toBe("retry");
+        expect(ctx.state.approvedPlanSnapshot).toBeFalsy();
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

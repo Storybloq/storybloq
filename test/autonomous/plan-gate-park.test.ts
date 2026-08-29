@@ -155,6 +155,12 @@ function seedHoldingSession(root: string, opts: { targeted?: boolean } = {}) {
   const sessDir = join(root, ".story", "sessions", session.sessionId);
   const claim = { user: MINE, branch: "main", since: NOW };
 
+  mkdirSync(sessDir, { recursive: true });
+  // T-470/ISS-1050: a PLAN_REVIEW verdict that lands (SITE 2, plan-review.ts)
+  // snapshots plan.md, so a fixture exercising a landing verdict needs the
+  // file on disk.
+  writeFileSync(join(sessDir, "plan.md"), "# The plan\n\nDo the thing.\n");
+
   writeTicket(root, CANON, "Defective filing", {
     status: "inprogress", claimedBySession: session.sessionId, claim, displayId: DISPLAY,
   });

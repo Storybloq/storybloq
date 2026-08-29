@@ -301,14 +301,21 @@ describe("tool description contract (T-460)", () => {
     // (get/list/create/supersede), measured at 48,458 bytes, then section 10's
     // citesRuling/clearCitesRulings fields on ticket/issue create/update,
     // measured at 49,347 bytes; T-477 added storybloq_session_milestone and
-    // storybloq_status's clientTaskId field, measured at 50,361 bytes, so this
-    // ceiling leaves ~500 bytes of headroom and fails once an edit gives back
-    // more than that. Raising it is a deliberate act that belongs in a commit
-    // message, which is the point. Deliberately NO lower bound: the cues
-    // above are what protect against over-trimming, and a floor would fail an
-    // honest future trim for being too good.
+    // storybloq_status's clientTaskId field, measured at 50,361 bytes; run 7
+    // (ISS-1074/1076/1077) added a `node` param + description to ~15
+    // federation-parity-relevant tools (ticket/issue create/update,
+    // ticket_next/blocked, recommend, phase_tickets, earmark get/reserve/
+    // assign/release) plus board-labeling and collision-preflight behavior,
+    // measured at 51,711 bytes -- a deliberate, necessary growth (every one
+    // of those tools needed federation awareness per ISS-1074/1076's own
+    // acceptance criteria), not a prose bloat to trim. This ceiling leaves
+    // ~500 bytes of headroom and fails once an edit gives back more than
+    // that. Raising it is a deliberate act that belongs in a commit message,
+    // which is the point. Deliberately NO lower bound: the cues above are
+    // what protect against over-trimming, and a floor would fail an honest
+    // future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(50_850);
+    expect(bytes).toBeLessThan(52_200);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {

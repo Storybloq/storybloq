@@ -527,14 +527,26 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     inputSchema: {
       count: z.number().int().min(1).max(10).optional()
         .describe("default: 1"),
+      node: nodeParam,
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleTicketNext(ctx, args.count ?? 1),
-  ));
+  }, (args) => {
+    const eff = resolveEffectiveRoot(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpReadTool(pinnedRoot, (ctx) =>
+      handleTicketNext(ctx, args.count ?? 1),
+    eff.root);
+  });
 
   server.registerTool("storybloq_ticket_blocked", {
     description: "All blocked tickets with their blocking dependencies",
-  }, () => runMcpReadTool(pinnedRoot, handleTicketBlocked));
+    inputSchema: {
+      node: nodeParam,
+    },
+  }, (args) => {
+    const eff = resolveEffectiveRoot(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpReadTool(pinnedRoot, handleTicketBlocked, eff.root);
+  });
 
   server.registerTool("storybloq_handover_list", {
     description: "List handover filenames (newest first)",
@@ -583,19 +595,24 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     description: "Leaf tickets for a specific phase, sorted by order",
     inputSchema: {
       phaseId: z.string().describe("e.g. p5b, dogfood"),
+      node: nodeParam,
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) => {
-    // Check phase existence -- return not_found for unknown phase
-    const phaseExists = ctx.state.roadmap.phases.some((p) => p.id === args.phaseId);
-    if (!phaseExists) {
-      return {
-        output: `Phase "${args.phaseId}" not found in roadmap.`,
-        exitCode: 1 as const,
-        errorCode: "not_found" as const,
-      };
-    }
-    return handlePhaseTickets(args.phaseId, ctx);
-  }));
+  }, (args) => {
+    const eff = resolveEffectiveRoot(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpReadTool(pinnedRoot, (ctx) => {
+      // Check phase existence -- return not_found for unknown phase
+      const phaseExists = ctx.state.roadmap.phases.some((p) => p.id === args.phaseId);
+      if (!phaseExists) {
+        return {
+          output: `Phase "${args.phaseId}" not found in roadmap.`,
+          exitCode: 1 as const,
+          errorCode: "not_found" as const,
+        };
+      }
+      return handlePhaseTickets(args.phaseId, ctx);
+    }, eff.root);
+  });
 
   server.registerTool("storybloq_ticket_list", {
     description: "List leaf tickets",
@@ -716,10 +733,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     inputSchema: {
       count: z.number().int().min(1).max(10).optional()
         .describe("Number of recommendations (default: 5)"),
+      node: nodeParam,
     },
-  }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
-    handleRecommend(ctx, args.count ?? 5),
-  ));
+  }, (args) => {
+    const eff = resolveEffectiveRoot(pinnedRoot, args.node);
+    if ("content" in eff) return eff;
+    return runMcpReadTool(pinnedRoot, (ctx) =>
+      handleRecommend(ctx, args.count ?? 5),
+    eff.root);
+  });
 
   server.registerTool("storybloq_snapshot", {
     description: "Saves project state to .story/snapshots/ for session diffs.",

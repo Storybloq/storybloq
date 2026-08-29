@@ -3397,24 +3397,33 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
           "get <ref>",
           "Get the earmark on a ticket or issue",
           (y2) =>
-            addFormatOption(
+            addNodeOption(addFormatOption(
               y2.positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" }),
-            ),
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runReadCommand(format, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
+            const nodeName = argv.node as string | undefined;
+            if (nodeName) {
+              const orchRoot = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format)); process.exitCode = ExitCode.USER_ERROR; return; }
+              const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
+              if (!eff.ok) { writeOutput(eff.output); process.exitCode = ExitCode.USER_ERROR; return; }
+              await runReadCommandWithRoot(format, eff.root, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
+            } else {
+              await runReadCommand(format, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
+            }
           },
         )
         .command(
           "reserve <ref>",
           "Reserve a ticket or issue for a role, pending pickup",
           (y2) =>
-            addFormatOption(
+            addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
                 .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role this reservation is held for" })
                 .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
-            ),
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3424,10 +3433,19 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
               return;
             }
             try {
+              // Node routing (ISS-1077) is handled BY the handler itself: `root`
+              // stays the discovered (orchestrator) root always -- arrangements
+              // only ever live there (Q3) -- and `node` is passed straight
+              // through so the handler can resolve the item's own root
+              // separately. This is deliberately NOT `resolveRootWithNode`'s
+              // single-effective-root pattern (used by ticket/issue commands),
+              // which has no way to express "two different roots for two
+              // different purposes in the same call."
               const result = await handleEarmarkReserve(
                 { ref: argv.ref as string, role: argv.role as (typeof EARMARK_ROLES)[number], arrangement: argv.arrangement as string | undefined },
                 format,
                 root,
+                argv.node as string | undefined,
               );
               writeOutput(result.output);
               process.exitCode = result.exitCode ?? ExitCode.OK;
@@ -3453,13 +3471,13 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
           "assign <ref>",
           "Assign a ticket or issue's earmark directly to a live session (direct placement, or an explicit reserved -> assigned conversion)",
           (y2) =>
-            addFormatOption(
+            addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
                 .option("to", { type: "string", demandOption: true, describe: "Target session selector (id or unambiguous prefix)" })
                 .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role the target session must hold on the covering arrangement" })
                 .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
-            ),
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3478,6 +3496,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
+                argv.node as string | undefined,
               );
               writeOutput(result.output);
               process.exitCode = result.exitCode ?? ExitCode.OK;
@@ -3503,11 +3522,11 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
           "release <ref>",
           "Release (clear) a ticket or issue's earmark",
           (y2) =>
-            addFormatOption(
+            addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
-                .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
-            ),
+                .option("arrangement", { type: "string", describe: "Sanity check only: must match the earmark's own authorizing arrangement ID if given (release authorizes via that stored ID, not current bounds coverage)" }),
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3521,6 +3540,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 { ref: argv.ref as string, arrangement: argv.arrangement as string | undefined },
                 format,
                 root,
+                argv.node as string | undefined,
               );
               writeOutput(result.output);
               process.exitCode = result.exitCode ?? ExitCode.OK;

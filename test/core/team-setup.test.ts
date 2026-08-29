@@ -98,6 +98,7 @@ describe("T-388: team-setup", () => {
       expect(content).toContain("issues/*.json merge=storybloq-json");
       expect(content).toContain("notes/*.json merge=storybloq-json");
       expect(content).toContain("lessons/*.json merge=storybloq-json");
+      expect(content).toContain("arrangements/*.json merge=storybloq-json");
       expect(content).toContain("config.json merge=storybloq-json");
       expect(content).toContain("roadmap.json merge=storybloq-json");
     });

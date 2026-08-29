@@ -7,6 +7,7 @@ import {
   IssueRefSchema,
   CLIENT_TASK_ID_PATTERN,
   RulingIdSchema,
+  ConflictEntrySchema,
 } from "./types.js";
 
 export const ARRANGEMENT_LIFECYCLE = ["active", "suspended", "closed"] as const;
@@ -93,11 +94,12 @@ export const ArrangementSchema = z
     createdDate: DateSchema,
     updatedAt: TimestampSchema,
     createdBy: z.string().nullable().optional(),
-    // Inert in T-473: arrangements are not wired into the merge driver
-    // (that is T-478/reconcile territory). The field exists only so a
-    // future wire-up is additive, matching the other models' convention of
-    // carrying `_conflicts` even before merge support lands.
-    _conflicts: z.array(z.unknown()).optional(),
+    // T-478: wired into the merge driver (field-classification.ts's
+    // ARRANGEMENT_RULES + merge-driver.ts's entityTypeFromPath/schemaFor) --
+    // no longer inert. Typed the same as ticket/issue/note/lesson's
+    // `_conflicts`, so `core/resolve.ts`'s generic `resolveConflicts` and
+    // `isEntityLevel` operate on it unmodified.
+    _conflicts: z.array(ConflictEntrySchema).optional(),
   })
   .passthrough()
   // N-109 duet mode is exactly two parties with distinct roles. Without

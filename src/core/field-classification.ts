@@ -11,7 +11,7 @@ export type MergeRule =
   | { kind: "hard-conflict" }
   | { kind: "coupled"; group: string; members: string[]; latestWinsField?: string; onAmbiguous?: "conflict" | "release" };
 
-export type EntityType = "ticket" | "issue" | "note" | "lesson";
+export type EntityType = "ticket" | "issue" | "note" | "lesson" | "arrangement";
 
 const TICKET_RULES: Record<string, MergeRule> = {
   id: { kind: "identity" },
@@ -153,11 +153,40 @@ const LESSON_RULES: Record<string, MergeRule> = {
   deletedBy: { kind: "hard-conflict" },
 };
 
+// T-478: arrangement duet-coordination fields. Per ruling (b1), any
+// invariant-relevant field routes to hard-conflict rather than a silent
+// deterministic pick (T-475 merge ruling precedent: routing to resolve IS
+// the policy, not an exception to it). No coupled groups exist on this
+// schema (no field pairs analogous to ticket's `attribution` or
+// `ticket-claim` groups) -- getCoupledGroups("arrangement") correctly
+// returns [].
+const ARRANGEMENT_RULES: Record<string, MergeRule> = {
+  id: { kind: "identity" },
+  createdDate: { kind: "identity" },
+  createdBy: { kind: "identity" },
+
+  // No lastModifiedBy/updatedDate pair exists on this schema to couple
+  // with (unlike ticket/issue) -- standalone monotonic-max, matching
+  // note/lesson's treatment of updatedAt.
+  updatedAt: { kind: "monotonic", compare: "max" },
+
+  citesRulings: { kind: "commutative" },
+
+  lifecycle: { kind: "hard-conflict" },
+  bounds: { kind: "hard-conflict" },
+  parties: { kind: "hard-conflict" },
+  gates: { kind: "hard-conflict" },
+  treeProtocol: { kind: "hard-conflict" },
+  reviewBounds: { kind: "hard-conflict" },
+  unreachability: { kind: "hard-conflict" },
+};
+
 const RULES_BY_TYPE: Record<string, Record<string, MergeRule>> = {
   ticket: TICKET_RULES,
   issue: ISSUE_RULES,
   note: NOTE_RULES,
   lesson: LESSON_RULES,
+  arrangement: ARRANGEMENT_RULES,
 };
 
 export function getMergeRules(entityType: EntityType | string): Record<string, MergeRule> {

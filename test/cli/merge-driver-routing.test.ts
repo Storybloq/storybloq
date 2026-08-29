@@ -71,6 +71,48 @@ describe("T-387: merge driver routing", () => {
     expect(merged.title).toBe("Updated");
   });
 
+  function baseArrangement(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "a-0123456789abcdef",
+      lifecycle: "active",
+      bounds: ["T-473"],
+      parties: [
+        { role: "pen", client: "claude", identityAnchor: "claude-session-abc" },
+        { role: "worker", client: "claude", identityAnchor: "claude-session-def" },
+      ],
+      gates: [],
+      unreachability: { onIrreversibleWork: "hold" },
+      createdDate: "2026-08-27",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("T-478: arrangements/*.json clean merge returns 0 (routes to threeWayMerge via entityTypeFromPath)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "merge-"));
+    const arrangement = baseArrangement();
+    const base = writeTemp(dir, "base.json", arrangement);
+    const ours = writeTemp(dir, "ours.json", arrangement);
+    const theirs = writeTemp(dir, "theirs.json", { ...arrangement, citesRulings: ["r-0123456789abcdef"] });
+    const exit = handleMergeDriver(base, ours, theirs, ".story/arrangements/a-0123456789abcdef.json");
+    expect(exit).toBe(0);
+    const merged = JSON.parse(readFileSync(ours, "utf-8"));
+    expect(merged.citesRulings).toEqual(["r-0123456789abcdef"]);
+  });
+
+  it("T-478: arrangements/*.json hard-conflict field (lifecycle) returns 1 with _conflicts, never a silent pick", () => {
+    const dir = mkdtempSync(join(tmpdir(), "merge-"));
+    const arrangement = baseArrangement();
+    const base = writeTemp(dir, "base.json", arrangement);
+    const ours = writeTemp(dir, "ours.json", { ...arrangement, lifecycle: "suspended" });
+    const theirs = writeTemp(dir, "theirs.json", { ...arrangement, lifecycle: "closed" });
+    const exit = handleMergeDriver(base, ours, theirs, ".story/arrangements/a-0123456789abcdef.json");
+    expect(exit).toBe(1);
+    const merged = JSON.parse(readFileSync(ours, "utf-8"));
+    expect(Array.isArray(merged._conflicts)).toBe(true);
+    expect(merged._conflicts.length).toBeGreaterThan(0);
+  });
+
   it("unknown file returns 2", () => {
     const dir = mkdtempSync(join(tmpdir(), "merge-"));
     const obj = { foo: "bar" };

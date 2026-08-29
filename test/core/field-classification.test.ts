@@ -50,3 +50,25 @@ describe("T-385: field classification", () => {
     expect(Object.keys(rules).length).toBe(0);
   });
 });
+
+describe("T-478: arrangement field classification", () => {
+  it("classifies identity, monotonic, commutative, and hard-conflict fields per the ratified plan table", () => {
+    const rules = getMergeRules("arrangement");
+    expect(rules.id).toEqual({ kind: "identity" });
+    expect(rules.createdDate).toEqual({ kind: "identity" });
+    expect(rules.createdBy).toEqual({ kind: "identity" });
+    expect(rules.updatedAt).toEqual({ kind: "monotonic", compare: "max" });
+    expect(rules.citesRulings).toEqual({ kind: "commutative" });
+    expect(rules.lifecycle).toEqual({ kind: "hard-conflict" });
+    expect(rules.bounds).toEqual({ kind: "hard-conflict" });
+    expect(rules.parties).toEqual({ kind: "hard-conflict" });
+    expect(rules.gates).toEqual({ kind: "hard-conflict" });
+    expect(rules.treeProtocol).toEqual({ kind: "hard-conflict" });
+    expect(rules.reviewBounds).toEqual({ kind: "hard-conflict" });
+    expect(rules.unreachability).toEqual({ kind: "hard-conflict" });
+  });
+
+  it("has no coupled groups -- correct, not a degenerate answer (no field pairs analogous to ticket's attribution/ticket-claim groups)", () => {
+    expect(getCoupledGroups("arrangement")).toEqual([]);
+  });
+});

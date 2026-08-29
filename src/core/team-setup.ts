@@ -30,6 +30,7 @@ const GITATTRIBUTES_PATTERNS = [
   "issues/*.json merge=storybloq-json",
   "notes/*.json merge=storybloq-json",
   "lessons/*.json merge=storybloq-json",
+  "arrangements/*.json merge=storybloq-json",
   "config.json merge=storybloq-json",
   "roadmap.json merge=storybloq-json",
 ];

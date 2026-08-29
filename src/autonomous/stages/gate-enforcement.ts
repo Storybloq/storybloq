@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { arrangementCoversTicket } from "../../core/arrangement-bounds.js";
+import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import type { ArrangementGateSchema } from "../../models/arrangement.js";
 import type { GateAckLookupResult } from "../../core/gate-ack-loader.js";
 import { sanitizeDisplayText } from "../../core/display-text.js";
@@ -40,6 +41,15 @@ export function resolveGateStatus(
   let matched: { arrangementId: string; gates: ArrangementGate[] } | null = null;
   let sawUnresolved = false;
   for (const arrangement of arrangements) {
+    // T-478: checked BEFORE the lifecycle skip below, not after -- a
+    // conflicted arrangement's retained `lifecycle` could itself be the
+    // disputed field and could happen to read "closed", which would let the
+    // skip below silently resolve the ticket ungated instead of flagging it
+    // unresolved. Ordering is load-bearing here.
+    if (isArrangementConflicted(arrangement)) {
+      sawUnresolved = true;
+      continue;
+    }
     if (arrangement.lifecycle !== "active") continue;
     const coverage = arrangementCoversTicket(arrangement, canonicalTicketId, resolver);
     if (coverage === "unresolved") {

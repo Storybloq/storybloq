@@ -2,25 +2,33 @@ import { resolve } from "node:path";
 import { hasConflicts } from "../../core/conflicts.js";
 import { resolveConflicts, isEntityLevel, type ResolveOptions, type ResolveResult } from "../../core/resolve.js";
 import { resolveDocConflicts } from "../../core/resolve-doc.js";
+import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
 import { displayIdOf } from "../../core/resolver.js";
 import type { ProjectState } from "../../core/project-state.js";
 import type { LoadWarning } from "../../core/errors.js";
 import type { ConflictEntry } from "../../models/types.js";
+import type { Arrangement } from "../../models/arrangement.js";
 import type { CommandResult } from "../types.js";
 
 export type ConflictTarget =
   | { kind: "config" }
   | { kind: "roadmap" }
   | { kind: "ticket" | "issue" | "note" | "lesson"; entity: Record<string, unknown> }
+  | { kind: "arrangement"; entity: Arrangement }
   | { kind: "ambiguous"; matches: string[] }
   | { kind: "missing" };
 
 /**
  * Unified conflict-target lookup: config/roadmap by name (both the report ids
  * "config.json"/"roadmap.json" and the short aliases), entities through the
- * display-ID-aware resolvers like every other command.
+ * display-ID-aware resolvers like every other command, arrangements by direct
+ * `id` equality (no display-ID concept exists for them, per Decision 1).
  */
-export function resolveConflictTarget(state: ProjectState, id: string): ConflictTarget {
+export function resolveConflictTarget(
+  state: ProjectState,
+  id: string,
+  arrangements: readonly Arrangement[] = [],
+): ConflictTarget {
   if (id === "config" || id === "config.json") return { kind: "config" };
   if (id === "roadmap" || id === "roadmap.json") return { kind: "roadmap" };
 
@@ -33,6 +41,10 @@ export function resolveConflictTarget(state: ProjectState, id: string): Conflict
   for (const { kind, result } of chains) {
     if (result.kind === "found") return { kind, entity: result.item as Record<string, unknown> };
   }
+
+  const arrangement = arrangements.find((a) => a.id === id);
+  if (arrangement) return { kind: "arrangement", entity: arrangement };
+
   for (const { result } of chains) {
     if (result.kind === "ambiguous") {
       return { kind: "ambiguous", matches: result.matches.map((m) => (m as { id: string }).id) };
@@ -54,20 +66,42 @@ function diagnosticsSection(warnings: readonly LoadWarning[]): string[] {
   ];
 }
 
+function arrangementWarningsSection(warnings: readonly string[]): string[] {
+  if (warnings.length === 0) return [];
+  return [
+    "",
+    `Arrangement scan incomplete: ${warnings.join("; ")}. A damaged arrangement is hidden from this ` +
+    "list and cannot be confirmed clean. Run `storybloq validate` for details.",
+  ];
+}
+
 export async function handleConflictsList(
   root: string,
   format: "md" | "json",
 ): Promise<CommandResult> {
   const { loadProject } = await import("../../core/project-loader.js");
   const { state, warnings } = await loadProject(resolve(root));
-  const report = hasConflicts(state);
+  const arrangementScan = loadArrangementsSafe(root);
+  const report = hasConflicts(state, arrangementScan.arrangements);
 
   if (format === "json") {
-    return { output: JSON.stringify({ ok: true, data: report }, null, 2) };
+    return {
+      output: JSON.stringify(
+        { ok: true, data: report, arrangementWarnings: arrangementScan.warnings },
+        null,
+        2,
+      ),
+    };
   }
 
   if (!report.hasConflicts) {
-    return { output: ["No conflicts found.", ...diagnosticsSection(warnings)].join("\n") };
+    return {
+      output: [
+        "No conflicts found.",
+        ...diagnosticsSection(warnings),
+        ...arrangementWarningsSection(arrangementScan.warnings),
+      ].join("\n"),
+    };
   }
 
   const lines = ["## Conflicts", "", "| Type | ID | Fields |", "|------|----|--------|"];
@@ -85,6 +119,7 @@ export async function handleConflictsList(
     "For config.json/roadmap.json use `storybloq resolve config` / `storybloq resolve roadmap`.",
   );
   lines.push(...diagnosticsSection(warnings));
+  lines.push(...arrangementWarningsSection(arrangementScan.warnings));
   return { output: lines.join("\n") };
 }
 
@@ -141,15 +176,22 @@ export async function handleConflictsShow(
 ): Promise<CommandResult> {
   const { loadProject } = await import("../../core/project-loader.js");
   const { state } = await loadProject(resolve(root));
+  const arrangementScan = loadArrangementsSafe(root);
 
   // ISS-910: these branches must honor `format`. This command documents an
   // {"ok", ...} JSON contract in its --help, and a routine lookup failure
   // answering in prose hands an automated caller non-JSON on stdout -- the
   // exact parser breakage this issue exists to close. Failure shape matches
   // the sibling handleResolve: {ok: false, error}.
-  const target = resolveConflictTarget(state, id);
+  const target = resolveConflictTarget(state, id, arrangementScan.arrangements);
   if (target.kind === "missing") {
-    const message = `Entity ${id} not found.`;
+    // T-478: an incomplete arrangement scan means this id might be one of
+    // the unreadable entries, not genuinely nonexistent -- repair-oriented
+    // message instead of a flat not-found that could mislead.
+    const message = arrangementScan.warnings.length > 0
+      ? `Entity ${id} not found. Arrangement scan was incomplete (${arrangementScan.warnings.join("; ")}), so ` +
+        `this id may be one of the unreadable entries. Run \`storybloq validate\` for details.`
+      : `Entity ${id} not found.`;
     return {
       output: format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
       exitCode: 1,
@@ -171,6 +213,9 @@ export async function handleConflictsShow(
   } else if (target.kind === "roadmap") {
     holder = state.roadmap as Record<string, unknown>;
     label = "roadmap.json";
+  } else if (target.kind === "arrangement") {
+    holder = target.entity as unknown as Record<string, unknown>;
+    label = target.entity.id;
   } else {
     holder = target.entity;
     label = displayIdOf(target.entity as { id: string; displayId?: string | null });
@@ -215,12 +260,21 @@ export async function handleResolve(
   let exitCode: 0 | 1 = 0;
 
   await withConflictResolutionLock(root, async ({ state }) => {
-    const target = resolveConflictTarget(state, id);
+    // T-478: loaded INSIDE the lock, not before -- loading before the lock
+    // would let a resolve decision be computed against an arrangement
+    // snapshot that a concurrent write could invalidate before the lock is
+    // actually held (same TOCTOU class closed elsewhere in this plan).
+    const arrangementScan = loadArrangementsSafe(root);
+    const target = resolveConflictTarget(state, id, arrangementScan.arrangements);
 
     if (target.kind === "missing") {
-      output = format === "json"
-        ? JSON.stringify({ ok: false, error: `Entity ${id} not found.` }, null, 2)
+      const message = arrangementScan.warnings.length > 0
+        ? `Entity ${id} not found. Arrangement scan was incomplete (${arrangementScan.warnings.join("; ")}), so ` +
+          `this id may be one of the unreadable entries. Run \`storybloq validate\` for details.`
         : `Entity ${id} not found.`;
+      output = format === "json"
+        ? JSON.stringify({ ok: false, error: message }, null, 2)
+        : message;
       exitCode = 1;
       return;
     }
@@ -261,6 +315,11 @@ export async function handleResolve(
         );
       }
       label = "roadmap.json";
+    } else if (target.kind === "arrangement") {
+      const mutable = { ...target.entity };
+      result = resolveConflicts(mutable, resolveOptions);
+      await writeArrangementUnlocked(mutable as never, root);
+      label = target.entity.id;
     } else {
       const mutable = { ...target.entity };
       result = resolveConflicts(mutable, resolveOptions);

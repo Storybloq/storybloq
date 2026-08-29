@@ -6,12 +6,15 @@
  * open," unqualified.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
-import { resolveOrReadFrozenGateStatus } from "../../src/autonomous/stages/gate-enforcement.js";
+import { resolveOrReadFrozenGateStatus, resolveGateStatus } from "../../src/autonomous/stages/gate-enforcement.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
+import type { TicketRefResolver } from "../../src/core/arrangement-bounds.js";
+import { loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
+import { isArrangementConflicted } from "../../src/core/arrangement-authority.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();
@@ -78,5 +81,80 @@ describe("resolveOrReadFrozenGateStatus (T-474 never-fails-open)", () => {
 
     const second = await resolveOrReadFrozenGateStatus(ctx);
     expect(second).toEqual(first);
+  });
+});
+
+describe("T-478: resolveGateStatus fails closed on a conflicted arrangement, regardless of lifecycle ordering", () => {
+  let testRoot: string;
+  const canonicalTicketId = "t-aaa0000000000001";
+
+  const resolver: TicketRefResolver = {
+    resolveTicketRef: (ref: string) =>
+      ref === "T-001"
+        ? { kind: "found", item: { id: canonicalTicketId } as never }
+        : { kind: "missing" as const },
+  };
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(tmpdir(), "gate-enforcement-conflict-"));
+    mkdirSync(join(testRoot, ".story", "arrangements"), { recursive: true });
+  });
+
+  afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
+
+  function writeArrangement(id: string, overrides: Record<string, unknown> = {}): void {
+    writeFileSync(
+      join(testRoot, ".story", "arrangements", `${id}.json`),
+      JSON.stringify({
+        id,
+        lifecycle: "active",
+        bounds: ["T-001"],
+        parties: [
+          { role: "pen", client: "claude", identityAnchor: "pen-session" },
+          { role: "worker", client: "claude", identityAnchor: "worker-session" },
+        ],
+        gates: [],
+        unreachability: { onIrreversibleWork: "hold" },
+        createdDate: "2026-08-27",
+        updatedAt: "2026-08-27T00:00:00.000Z",
+        ...overrides,
+      }),
+    );
+  }
+
+  it("a conflicted arrangement resolves unresolved even when its retained lifecycle reads 'closed' -- the exact ordering regression flagged in round 2", () => {
+    // If the lifecycle skip ran BEFORE the conflict check, this arrangement
+    // would be silently skipped (lifecycle !== "active") and the ticket
+    // would resolve "ungated" instead of "unresolved" -- exactly the failure
+    // this test exists to catch.
+    writeArrangement("a-0123456789abcdef", {
+      lifecycle: "closed",
+      _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }],
+    });
+
+    // codex round-1 finding: `resolveGateStatus`'s "unresolved" result is ALSO
+    // what a rejected/unloadable scan produces -- assert the fixture actually
+    // loads clean and IS classified conflicted, so this test provably
+    // exercises the ordering check itself, not a loader-warning wrong path.
+    const scan = loadArrangementsSafe(testRoot);
+    expect(scan.warnings).toEqual([]);
+    expect(scan.arrangements).toHaveLength(1);
+    expect(isArrangementConflicted(scan.arrangements[0]!)).toBe(true);
+
+    const result = resolveGateStatus(testRoot, canonicalTicketId, resolver);
+
+    expect(result.status).toBe("unresolved");
+    expect(result.status).not.toBe("ungated");
+  });
+
+  it("an unconflicted, active, covering arrangement still resolves gated as before (no false-positive from the new check)", () => {
+    writeArrangement("a-fedcba9876543210", { gates: [{ name: "plan-ack", ackRole: "pen" }] });
+
+    const result = resolveGateStatus(testRoot, canonicalTicketId, resolver);
+
+    expect(result.status).toBe("gated");
+    if (result.status === "gated") {
+      expect(result.arrangementId).toBe("a-fedcba9876543210");
+    }
   });
 });

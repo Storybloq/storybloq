@@ -144,6 +144,23 @@ describe("handleGateAckCreate", () => {
     ).rejects.toThrow(CliValidationError);
   });
 
+  it("T-478: refuses a conflicted arrangement BEFORE ever reading its gates (a nonexistent gate name still surfaces the conflict error, not 'no such gate')", async () => {
+    const { dir } = await newProjectWithTicket();
+    const arrangementId = await newArrangementWithGates(dir, ["plan-ack"]);
+    const path = join(dir, ".story", "arrangements", `${arrangementId}.json`);
+    const raw = JSON.parse(await readFile(path, "utf-8")) as Arrangement;
+    await writeFile(path, JSON.stringify({
+      ...raw,
+      _conflicts: [{ fieldPath: "gates", kind: "field", base: [], ours: [], theirs: [] }],
+    }));
+    const planFile = join(dir, "plan.md");
+    await writeFile(planFile, "content");
+
+    await expect(
+      handleGateAckCreate({ arrangement: arrangementId, gate: "no-such-gate", ticket: "T-001", planFile }, "md", dir),
+    ).rejects.toThrow(/unresolved merge conflicts/);
+  });
+
   it("rejects a gate name not declared on the arrangement", async () => {
     const { dir } = await newProjectWithTicket();
     const arrangementId = await newArrangementWithGates(dir, ["plan-ack"]);

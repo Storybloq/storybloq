@@ -1,7 +1,110 @@
+import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
 import { assessRisk, normalizeRiskLevel } from "../review-depth.js";
 import { gitDiffStat, gitDiffNames } from "../git-inspector.js";
+import { resolveOrReadFrozenGateStatus, renderUnresolvedHold } from "./gate-enforcement.js";
+import { readPlanSnapshot } from "../../core/plan-snapshot.js";
+import { readBoundedRegularFile, PLAN_ACK_MAX_BYTES } from "../../core/pin-utils.js";
+
+/**
+ * ISS-1050 full fix: the byte bound on plan text embedded directly into this
+ * stage's instruction. Distinct from PLAN_ACK_MAX_BYTES (pin-utils.ts), which
+ * bounds a defensive read against a hostile/corrupted file -- this bounds a
+ * legitimate, self-authored plan against blowing out the prompt itself.
+ * Measured with Buffer.byteLength, not .length -- plan.md is UTF-8 and a
+ * multi-byte character would otherwise undercount against the real payload
+ * an LLM context actually pays for.
+ */
+export const IMPLEMENT_PROMPT_PLAN_MAX_BYTES = 200_000;
+
+function renderSnapshotUnreadableHold(filename: string, reason: string): string {
+  return [
+    "# Implement -- blocked",
+    "",
+    `This ticket's approved-plan snapshot (\`${filename}\`) could not be read: ${reason}.`,
+    "Do NOT treat plan.md as approved and do NOT implement from it. Escalate to your operator.",
+  ].join("\n");
+}
+
+function renderMissingSnapshotHold(): string {
+  return [
+    "# Implement -- blocked",
+    "",
+    "This ticket is duet-mode gated, but no approved-plan snapshot is on record for it.",
+    "Do NOT treat plan.md as approved and do NOT implement from it. Escalate to your operator -- PLAN_REVIEW may not have landed normally, or this session predates the snapshot mechanism.",
+  ].join("\n");
+}
+
+function renderOversizeSnapshotBlock(byteLength: number): string {
+  return [
+    "# Implement -- blocked",
+    "",
+    `The approved plan is too large to embed directly (${byteLength.toLocaleString()} bytes, over the ${IMPLEMENT_PROMPT_PLAN_MAX_BYTES.toLocaleString()}-byte embed bound).`,
+    "Reduce the plan's size and re-run PLAN_REVIEW; do not implement from a truncated read.",
+  ].join("\n");
+}
+
+type PlanSource =
+  | { kind: "embed"; text: string }
+  | { kind: "pointer" }
+  | { kind: "block"; instruction: string };
+
+/**
+ * ISS-1050 full fix: resolve what IMPLEMENT reads from, closing the
+ * plan-ack post-approval edit window structurally -- a gated landing embeds
+ * the exact content PLAN_REVIEW snapshotted, never a fresh (and potentially
+ * edited) read of plan.md.
+ *
+ * D1 (never fail open): a snapshot ref that is present but unreadable blocks
+ * regardless of current gate status (R2-FIX 2 -- no gate-status branching on
+ * this path); a gated item with NO ref at all also blocks, since a gated
+ * landing must always have produced one. Only when the ref is entirely
+ * absent AND the item is ungated does this fall back to reading plan.md
+ * directly -- the pre-ISS-1050 behavior, for the one case this mechanism was
+ * never protecting in the first place.
+ */
+async function resolvePlanSource(ctx: StageContext, absolutePlanPath: string): Promise<PlanSource> {
+  const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
+  if (gateStatus.status === "unresolved") {
+    return { kind: "block", instruction: renderUnresolvedHold(gateStatus.reason) };
+  }
+
+  const ref = ctx.state.approvedPlanSnapshot;
+  if (ref) {
+    const read = readPlanSnapshot(ctx.dir, ref);
+    if (read.status !== "ok") {
+      return { kind: "block", instruction: renderSnapshotUnreadableHold(ref.filename, read.reason) };
+    }
+    // R-A4-1: the size decision is made HERE, inside the snapshot-backed arm,
+    // while provenance is still known -- merging into a bare string before
+    // checking size would let an oversize snapshot-backed plan fall through
+    // to the pointer instruction below, which names the MUTABLE plan.md and
+    // reopens the exact post-advance edit window this fix exists to close.
+    const byteLength = Buffer.byteLength(read.text, "utf8");
+    if (byteLength > IMPLEMENT_PROMPT_PLAN_MAX_BYTES) {
+      return { kind: "block", instruction: renderOversizeSnapshotBlock(byteLength) };
+    }
+    return { kind: "embed", text: read.text };
+  }
+
+  if (gateStatus.status === "gated") {
+    return { kind: "block", instruction: renderMissingSnapshotHold() };
+  }
+
+  const fallback = readBoundedRegularFile(absolutePlanPath, PLAN_ACK_MAX_BYTES);
+  if (fallback.status !== "ok") {
+    return { kind: "pointer" };
+  }
+  const fallbackText = fallback.bytes.toString("utf-8");
+  // Ungated and never snapshotted -- this mechanism never protected this
+  // path, so an oversize plan here degrades to the pointer instruction (the
+  // pre-ISS-1050 behavior) rather than blocking.
+  if (Buffer.byteLength(fallbackText, "utf8") > IMPLEMENT_PROMPT_PLAN_MAX_BYTES) {
+    return { kind: "pointer" };
+  }
+  return { kind: "embed", text: fallbackText };
+}
 
 /**
  * IMPLEMENT stage -- Claude writes code to implement the approved plan.
@@ -20,11 +123,24 @@ export class ImplementStage implements WorkflowStage {
     // just cleared, rendered once here and never again -- `approvedPlanAckDeltas`
     // is not re-read by any later stage.
     const deltas = ctx.state.approvedPlanAckDeltas;
+
+    const source = await resolvePlanSource(ctx, join(ctx.dir, "plan.md"));
+    if (source.kind === "block") {
+      return { instruction: source.instruction, transitionedFrom: ctx.state.previousState ?? undefined };
+    }
+
+    // R-A4-1: the oversize decision is made inside resolvePlanSource, where
+    // provenance (snapshot-backed vs. never-protected) is still known -- by
+    // the time `source` reaches here, "embed" always means "safe to embed."
+    const planSection = source.kind === "pointer"
+      ? [`Implement the approved plan at \`${planPath}\`.`]
+      : ["## Approved plan", "", "```markdown", source.text, "```"];
+
     return {
       instruction: [
         `# Implement -- ${ticket?.id ?? "unknown"}: ${ticket?.title ?? ""}`,
         "",
-        `Implement the approved plan at \`${planPath}\`.`,
+        ...planSection,
         "",
         ...(deltas ? ["## Pen-approved plan-ack deltas (binding)", "", deltas, ""] : []),
         "When done, call `storybloq_autonomous_guide` with:",

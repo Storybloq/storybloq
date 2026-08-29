@@ -8,6 +8,7 @@ import {
   readGateAcksForTicket,
   writeGateAckUnlocked,
   writeGateAckContested,
+  type RefResolution,
 } from "../../src/core/gate-ack-loader.js";
 import { computeGateAckId, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
 
@@ -262,7 +263,7 @@ describe("readGateAcksForTicket", () => {
 
     it("branch: known-other -- a ref a resolver CONFIRMS is a different real ticket is excluded entirely, not tainting either bucket", async () => {
       await writeOtherTicketBroken(root);
-      const resolveKnownOther = (raw: string) => (raw === OTHER_TICKET_REF ? OTHER_TICKET_REF : null);
+      const resolveKnownOther = (raw: string): RefResolution => (raw === OTHER_TICKET_REF ? { kind: "found", id: OTHER_TICKET_REF } : { kind: "missing" });
       const result = readGateAcksForTicket(root, TICKET_REF, resolveKnownOther);
       expect(result.acks).toEqual([]);
       expect(result.scopedWarnings).toEqual([]);
@@ -277,7 +278,7 @@ describe("readGateAcksForTicket", () => {
         JSON.stringify({ id: "g-aliasbroken0000", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: DISPLAY_ALIAS, pin: { kind: "plan-hash" } }),
       );
       // Simulates ProjectState.resolveTicketRef: the display alias resolves to the SAME canonical ticket being queried.
-      const resolveSameTicketAlias = (raw: string) => (raw === DISPLAY_ALIAS ? TICKET_REF : null);
+      const resolveSameTicketAlias = (raw: string): RefResolution => (raw === DISPLAY_ALIAS ? { kind: "found", id: TICKET_REF } : { kind: "missing" });
       const result = readGateAcksForTicket(root, TICKET_REF, resolveSameTicketAlias);
       expect(result.acks).toEqual([]);
       expect(result.scopedWarnings).toHaveLength(1);

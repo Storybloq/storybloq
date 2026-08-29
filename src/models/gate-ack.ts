@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { TimestampSchema, ArrangementIdSchema, TicketRefSchema, GateAckIdSchema } from "./types.js";
+import { TimestampSchema, ArrangementIdSchema, TicketRefSchema, IssueRefSchema, GateAckIdSchema } from "./types.js";
 import { ARRANGEMENT_ROLES } from "./arrangement.js";
 
 export const GateAckPlanPinSchema = z
@@ -67,7 +67,10 @@ export const GateAckSchema = z
     arrangementId: ArrangementIdSchema,
     gateName: z.string().min(1).max(128), // must match an ArrangementGateSchema.name on the arrangement
     ackRole: z.enum(ARRANGEMENT_ROLES), // who acked -- validated at READ time against the gate's declared ackRole, not id material
-    ticketRef: TicketRefSchema, // canonical form only, resolved via `resolveRef` before write
+    // ISS-1049: field NAME kept for backward compatibility (existing gate-ack
+    // files on disk), but the value now accepts either a ticket or an issue
+    // ref -- canonical form only, resolved via `resolveRef` before write.
+    ticketRef: z.union([TicketRefSchema, IssueRefSchema]),
     pin: GateAckPinSchema,
     decidedAt: TimestampSchema,
     decidedBy: z.string().max(128).optional(),

@@ -387,7 +387,7 @@ export class PickTicketStage implements WorkflowStage {
       // T-474 section 5: resolved fresh for THIS ticket and reset
       // unconditionally, along with pendingPlanAck/approvedPlanAckDeltas/
       // approvedPlanSnapshot (ISS-1050) -- no cross-ticket carryover, ever.
-      frozenGate: resolveGateStatus(ctx.root, ticket.id, projectState),
+      frozenGate: resolveGateStatus(ctx.root, { kind: "ticket", id: ticket.id }, projectState),
       pendingPlanAck: null,
       approvedPlanAckDeltas: null,
       approvedPlanSnapshot: null,
@@ -605,10 +605,11 @@ export class PickTicketStage implements WorkflowStage {
       finalizeCheckpoint: null,
       finalizedItem: null,
       landingDecision: null,
-      // T-474 section 7 (ISS-1032-shaped descope): an issue-fix session has
-      // no ticket to gate, so this always resets to ungated -- also clears
-      // any stale hold left over from a prior ticket in the same session.
-      frozenGate: { status: "ungated" },
+      // T-474 section 7 (ISS-1032-shaped descope) closed by ISS-1049: an
+      // issue-fix session now resolves its OWN gate coverage, same as a
+      // ticket pick -- also clears any stale hold left over from a prior
+      // item in the same session.
+      frozenGate: resolveGateStatus(ctx.root, { kind: "issue", id: issue.id }, projectState),
       pendingPlanAck: null,
       approvedPlanAckDeltas: null,
       approvedPlanSnapshot: null,

@@ -1134,7 +1134,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     inputSchema: {
       arrangement: ArrangementIdSchema.describe("e.g. a-[canonical]"),
       gate: z.string().min(1).max(128).describe("Gate name declared on the arrangement (e.g. plan-ack, pre-commit-ack)"),
-      ticket: TicketRefSchema.describe("Ticket ref this ack applies to, display-form or canonical"),
+      ticket: z.union([TicketRefSchema, IssueRefSchema]).describe("Ticket or issue ref this ack applies to, display-form or canonical (ISS-1049)"),
       planFile: z.string().optional().describe("Path to plan.md -- computes a plan-hash pin"),
       fromStaged: z.boolean().optional().describe("Compute a tree-digest pin from the currently staged index"),
       codexSessionId: z.string().max(128).optional().describe("Independent-review session id, if any (acceptance 7)"),

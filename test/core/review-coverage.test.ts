@@ -70,9 +70,38 @@ describe("computeReviewCoverage", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("step 1: an issue ref is always notApplicable, regardless of any acks on disk", () => {
+  it("[Amendment A4] step 1: an issue ref with no gate-ack on disk is absent, NOT notApplicable -- issues are gate-ack-eligible since the WorkItemRef unification", () => {
     const result = computeReviewCoverage(root, ISSUE_REF, TOPOLOGY, false);
-    expect(result).toEqual({ gateAckCoverage: "notApplicable", reviewEvidence: "notApplicable" });
+    expect(result).toEqual({ gateAckCoverage: "absent", reviewEvidence: "notApplicable" });
+  });
+
+  it("[Amendment A4] matched: an issue ref with a matching gate-ack, with evidence", async () => {
+    await writeGateAckUnlocked(ack({ ticketRef: ISSUE_REF, reviewTrail: { present: true, verdict: "approve", codexSessionId: "sess-1", rounds: 2 } }), root);
+    const result = computeReviewCoverage(root, ISSUE_REF, TOPOLOGY, false);
+    expect(result.gateAckCoverage).toBe("matched");
+    expect(result.reviewEvidence).toBe("present");
+    expect(result.verdict).toBe("approve");
+  });
+
+  it("[Amendment A4] a corrupted ack attributed to an ISSUE is scoped to that issue, never poisoning a ticket's coverage nor forcing the project-wide unattributed bucket", async () => {
+    await writeGateAckUnlocked(ack({ reviewTrail: { present: true, verdict: "approve" } }), root); // clean ticket ack
+    const dir = join(root, ".story", "arrangement-acks");
+    await writeFile(
+      join(dir, "g-brokenforissue0.json"),
+      JSON.stringify({ id: "g-brokenforissue0", arrangementId: ARRANGEMENT_ID, gateName: GATE_NAME, ackRole: "pen", ticketRef: ISSUE_REF, pin: { kind: "plan-hash" } }),
+    );
+
+    // Scoped to the broken issue's own ref: unknown, not a confident absent.
+    const issueResult = computeReviewCoverage(root, ISSUE_REF, TOPOLOGY, false);
+    expect(issueResult.gateAckCoverage).toBe("unknown");
+
+    // The UNRELATED ticket's own clean scan is unaffected -- the corruption
+    // is attributable to the issue, so it must not also force the
+    // project-wide unattributed bucket for this run.
+    const warnings = scanForUnattributedGateAckWarnings(root);
+    expect(warnings.length).toBe(0);
+    const ticketResult = computeReviewCoverage(root, TICKET_REF, TOPOLOGY, false);
+    expect(ticketResult.gateAckCoverage).toBe("matched");
   });
 
   it("absent: a ticket ref with no gate-ack at all", () => {
@@ -144,9 +173,14 @@ describe("computeReviewCoverage", () => {
     expect(result.gateAckCoverage).toBe("matched");
   });
 
-  it("notApplicable is unaffected by runHasUnattributedCorruption -- issue refs are never gate-ack-eligible", () => {
+  it("[Amendment A4] an issue ref IS subject to runHasUnattributedCorruption, exactly like a ticket ref, since it is now gate-ack-eligible", () => {
     const result = computeReviewCoverage(root, ISSUE_REF, TOPOLOGY, true);
-    expect(result.gateAckCoverage).toBe("notApplicable");
+    expect(result.gateAckCoverage).toBe("unknown");
+  });
+
+  it("notApplicable: a ref that is neither ticket- nor issue-shaped stays notApplicable, unaffected by runHasUnattributedCorruption", () => {
+    const result = computeReviewCoverage(root, "n-0123456789abcdef", TOPOLOGY, true);
+    expect(result).toEqual({ gateAckCoverage: "notApplicable", reviewEvidence: "notApplicable" });
   });
 
   describe("project-wide unattributed-corruption doctrine (pen's gate-1 ruling, T-476 precedent)", () => {

@@ -1602,6 +1602,21 @@ export const SessionStateSchema = z.object({
   /** T-474: the pen's ratify-with-deltas text from the plan-ack gate that just cleared, rendered once at IMPLEMENT's enter() and never again. */
   approvedPlanAckDeltas: z.string().max(4096).nullable().optional(),
 
+  /**
+   * ISS-1050 full fix: the content-addressed plan snapshot ImplementStage
+   * reads from, written at PLAN_REVIEW's IMPLEMENT-landing decision. Absent
+   * means either a legacy session (predates this field), a landing that
+   * failed to snapshot, or PICK_TICKET's unconditional per-item reset --
+   * implement.ts's D1 branch is what keeps those cases from being treated
+   * alike when a plan-ack gate covers the item. The filename shape is NOT
+   * enforced at the schema level (a hand-corrupted value must cost the READ
+   * via plan-snapshot.ts's own validation, never the whole session parse).
+   */
+  approvedPlanSnapshot: z.object({
+    filename: z.string().min(1).max(200),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }).nullable().optional(),
+
   recentDeferrals: z.object({
     total: z.number(),
     critical: z.number(),

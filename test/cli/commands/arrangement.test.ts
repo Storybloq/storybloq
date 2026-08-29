@@ -94,7 +94,52 @@ function writeCanonicalIssue(dir: string, id: string, displayId: string): void {
   );
 }
 
+/**
+ * Orchestrator + non-team-mode node fixture (ISS-1077/A4): the node's ticket
+ * has NO canonical id at all (only team-mode projects mint one), which is
+ * exactly the case that falsified the original canonical-hash-only regex.
+ */
+async function newOrchestratorWithNodeTicket(): Promise<{ orchDir: string; nodeDir: string; nodeTicketId: string }> {
+  const nodeDir = await mkdtemp(join(tmpdir(), "arrangement-cli-node-"));
+  tmpDirs.push(nodeDir);
+  await initProject(nodeDir, { name: "engine" });
+  const created = await handleTicketCreate(
+    { title: "node ticket", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+    "json",
+    nodeDir,
+  );
+  const nodeTicketId = (JSON.parse(created.output) as { data: { id: string } }).data.id;
+
+  const orchDir = await mkdtemp(join(tmpdir(), "arrangement-cli-orch-"));
+  tmpDirs.push(orchDir);
+  await initProject(orchDir, { name: "orchestrator" });
+  const configPath = join(orchDir, ".story", "config.json");
+  const config = JSON.parse(await readFile(configPath, "utf-8"));
+  config.type = "orchestrator";
+  config.nodes = { engine: { path: nodeDir, health: "grey", dependsOn: [], stack: "", role: "", summary: "" } };
+  writeFileSync(configPath, JSON.stringify(config));
+
+  return { orchDir, nodeDir, nodeTicketId };
+}
+
 describe("handleArrangementCreate", () => {
+  it("creates an arrangement with a node-qualified bound against a non-team node ticket (ISS-1077/A4)", async () => {
+    const { orchDir, nodeTicketId } = await newOrchestratorWithNodeTicket();
+    const result = await handleArrangementCreate(
+      { bounds: [`engine:${nodeTicketId}`], parties: PARTIES, onIrreversibleWork: "hold" },
+      "md",
+      orchDir,
+    );
+    expect(result.output).toContain("a-");
+    const files = await import("node:fs/promises").then((fs) => fs.readdir(join(orchDir, ".story", "arrangements")));
+    expect(files).toHaveLength(1);
+    const raw = await readFile(join(orchDir, ".story", "arrangements", files[0]!), "utf-8");
+    const arrangement = JSON.parse(raw);
+    // Non-team node ticket has no canonical id -- the stored bound is
+    // display-form, exactly matching the resolved item's own `.id`.
+    expect(arrangement.bounds).toEqual([`engine:${nodeTicketId}`]);
+  });
+
   it("creates an arrangement with a display-form bound ref and writes it to disk", async () => {
     const { dir } = await newProjectWithTicket();
     const result = await handleArrangementCreate(

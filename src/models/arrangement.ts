@@ -9,6 +9,41 @@ import {
   RulingIdSchema,
   ConflictEntrySchema,
 } from "./types.js";
+import { CROSS_NODE_REF_REGEX } from "./ticket.js";
+
+/**
+ * ISS-1077: a node-qualified arrangement bound, e.g. `engine:t-<canonical>`
+ * or `engine:T-001`.
+ *
+ * Amendment A4 (run 7, post-ratification bug fix -- an earlier stricter
+ * canonical-hash-only regex was ratified at gate 1 and then falsified by the
+ * first real integration test): the real invariant Q2's ruling establishes
+ * is "verified-resolved at write time", NOT "hash-shaped". `resolveBoundRef`
+ * always resolves the ref against the node's OWN live project state before
+ * storing it, so the stored form is always the resolved item's actual `id`
+ * field -- canonical hash form for a team-mode node (where `id` IS the
+ * canonical id), display form (`T-NNN`/`ISS-NNN`) for a non-team-mode node
+ * (which has no separate canonical id at all; `id` is the only id it has).
+ * A display-form ref stored this way is exactly as stable as the node's own
+ * ids are, because it came from resolving against that node, not from an
+ * unverified caller-typed string. This is what distinguishes it from
+ * `crossNodeBlockedBy`'s lazy, resolved-fresh-on-every-read, never-verified
+ * refs -- both may be display-form strings, but this one was checked to
+ * exist and be unambiguous at write time.
+ *
+ * Residual (traced and accepted, fails closed): a HAND-EDITED or
+ * merge-mangled arrangement file can store `node:T-001` against a
+ * TEAM-MODE node whose actual item id is canonical. That string is
+ * schema-valid here (this schema cannot see what a node's mode is) but
+ * `arrangementCoversNodeItem` constructs canonical form for that item and
+ * will never match it -- coverage-dead, not wrong-authorization. An earmark
+ * against that item is refused/uncovered, never incorrectly authorized. See
+ * the coverage-residual test in arrangement-bounds.test.ts.
+ */
+export const NodeQualifiedBoundRefSchema = z.string().regex(
+  CROSS_NODE_REF_REGEX,
+  "Cross-node bound ref must match node:<id> (T-NNN, ISS-NNN, or canonical form)",
+);
 
 export const ARRANGEMENT_LIFECYCLE = ["active", "suspended", "closed"] as const;
 export type ArrangementLifecycle = (typeof ARRANGEMENT_LIFECYCLE)[number];
@@ -76,8 +111,13 @@ export const ArrangementSchema = z
     // Display-form OR canonical, same as every other ref field in this
     // codebase (TicketRefSchema/IssueRefSchema) -- the mixed ledger is
     // permanent, so a canonical-only ref is unimplementable on this
-    // project's own data.
-    bounds: z.array(z.union([TicketRefSchema, IssueRefSchema])).min(1),
+    // project's own data. ISS-1077 adds a THIRD member for cross-node bounds
+    // specifically -- also display-form OR canonical (amended by A4: a
+    // non-team node's items have no canonical form at all, so an
+    // originally-planned canonical-only restriction there was unimplementable
+    // too; see NodeQualifiedBoundRefSchema's docblock for the full rationale
+    // and its traced coverage residual).
+    bounds: z.array(z.union([TicketRefSchema, IssueRefSchema, NodeQualifiedBoundRefSchema])).min(1),
     parties: z.array(ArrangementPartySchema).min(2),
     gates: z.array(ArrangementGateSchema),
     treeProtocol: z

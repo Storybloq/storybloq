@@ -385,11 +385,12 @@ export class PickTicketStage implements WorkflowStage {
       landingDecision: null,
       ticketStartedAt: new Date().toISOString(),
       // T-474 section 5: resolved fresh for THIS ticket and reset
-      // unconditionally, along with pendingPlanAck/approvedPlanAckDeltas --
-      // no cross-ticket carryover, ever.
+      // unconditionally, along with pendingPlanAck/approvedPlanAckDeltas/
+      // approvedPlanSnapshot (ISS-1050) -- no cross-ticket carryover, ever.
       frozenGate: resolveGateStatus(ctx.root, ticket.id, projectState),
       pendingPlanAck: null,
       approvedPlanAckDeltas: null,
+      approvedPlanSnapshot: null,
       ...(claimObj ? { pendingTicketClaim: claimObj } : {}),
     });
 
@@ -610,6 +611,7 @@ export class PickTicketStage implements WorkflowStage {
       frozenGate: { status: "ungated" },
       pendingPlanAck: null,
       approvedPlanAckDeltas: null,
+      approvedPlanSnapshot: null,
     });
 
     return { action: "goto", target: "ISSUE_FIX" };

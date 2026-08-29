@@ -358,7 +358,7 @@ describe("FINALIZE pre-commit-ack gate (T-474)", () => {
     }
   });
 
-  it("issue-fix sessions (no ticket) are never gated -- ISS-1032-shaped descope", async () => {
+  it("an issue-fix session with no arrangement bounding IT is ungated, even when a DIFFERENT item is gated", async () => {
     const { root } = await newProjectWithGatedTicket();
     tempDirs.push(root);
     newFixture();
@@ -379,6 +379,103 @@ describe("FINALIZE pre-commit-ack gate (T-474)", () => {
     if (result.action === "retry") {
       expect(result.instruction).not.toContain("gate-ack");
     }
+  });
+
+  it("[ISS-1049] an issue-fix session bound by an arrangement IS gated: holds commit_done with no ack", async () => {
+    const root = mkdtempSync(join(tmpdir(), "finalize-gate-ack-issue-"));
+    await initProject(root, { name: "test" });
+    const { handleIssueCreate } = await import("../../src/cli/commands/issue.js");
+    await handleIssueCreate(
+      { title: "Duet issue", severity: "medium", impact: "test", components: [], relatedTickets: [], location: [] },
+      "json",
+      root,
+    );
+    const created = await handleArrangementCreate(
+      { bounds: ["ISS-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+      "json",
+      root,
+    );
+    const arrangementId = JSON.parse(created.output).data.id as string;
+    const arrPath = join(root, ".story", "arrangements", `${arrangementId}.json`);
+    const raw = JSON.parse(await readFile(arrPath, "utf-8"));
+    raw.gates = [{ name: PRECOMMIT_ACK_GATE_NAME, ackRole: "pen" }];
+    await writeFile(arrPath, JSON.stringify(raw));
+    tempDirs.push(root);
+    newFixture();
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
+    mockedGitUserEmail.mockResolvedValue(CLAIM_EMAIL);
+    mockedGitParentOf.mockResolvedValue({ ok: true, data: PARENT40 });
+    mockedGitTreeOf.mockResolvedValue({ ok: true, data: TREE40 });
+
+    const state = makeState("unused", {
+      ticket: undefined,
+      claimEpoch: undefined,
+      currentIssue: { id: "ISS-001", displayId: "ISS-001", title: "Duet issue", severity: "medium" },
+    } as Partial<FullSessionState>);
+    const ctx = new StageContext(root, sessionDir, state, makeRecipe());
+    const result = await stage.report(ctx, { completedAction: "commit_done", commitHash: A40 });
+    expect(result.action).toBe("retry");
+    if (result.action === "retry") {
+      expect(result.instruction).toContain(`requires a gate-ack from pen`);
+    }
+    expect(ctx.state.finalizeCheckpoint).not.toBe("committed");
+  });
+
+  it("[ISS-1049] an issue-fix session bound by an arrangement: accepts commit_done once a valid gate-ack matches", async () => {
+    const root = mkdtempSync(join(tmpdir(), "finalize-gate-ack-issue-ok-"));
+    await initProject(root, { name: "test" });
+    const { handleIssueCreate } = await import("../../src/cli/commands/issue.js");
+    await handleIssueCreate(
+      { title: "Duet issue", severity: "medium", impact: "test", components: [], relatedTickets: [], location: [] },
+      "json",
+      root,
+    );
+    const created = await handleArrangementCreate(
+      { bounds: ["ISS-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+      "json",
+      root,
+    );
+    const arrangementId = JSON.parse(created.output).data.id as string;
+    const arrPath = join(root, ".story", "arrangements", `${arrangementId}.json`);
+    const raw = JSON.parse(await readFile(arrPath, "utf-8"));
+    raw.gates = [{ name: PRECOMMIT_ACK_GATE_NAME, ackRole: "pen" }];
+    await writeFile(arrPath, JSON.stringify(raw));
+    tempDirs.push(root);
+    newFixture();
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitResolveCommit.mockResolvedValue({ ok: true, data: A40 });
+    mockedGitUserEmail.mockResolvedValue(CLAIM_EMAIL);
+    mockedGitParentOf.mockResolvedValue({ ok: true, data: PARENT40 });
+    mockedGitTreeOf.mockResolvedValue({ ok: true, data: TREE40 });
+
+    const pin: GateAckPin = { kind: "tree-digest", parentSha: PARENT40, treeId: TREE40 };
+    const ack: GateAck = {
+      id: computeGateAckId(arrangementId, PRECOMMIT_ACK_GATE_NAME, "ISS-001", pin),
+      arrangementId,
+      gateName: PRECOMMIT_ACK_GATE_NAME,
+      ackRole: "pen",
+      ticketRef: "ISS-001",
+      pin,
+      decidedAt: new Date().toISOString(),
+      reviewTrail: { present: false },
+      contested: false,
+    };
+    await writeGateAckUnlocked(ack, root);
+
+    const state = makeState("unused", {
+      ticket: undefined,
+      claimEpoch: undefined,
+      currentIssue: { id: "ISS-001", displayId: "ISS-001", title: "Duet issue", severity: "medium" },
+    } as Partial<FullSessionState>);
+    const ctx = new StageContext(root, sessionDir, state, makeRecipe());
+    const result = await stage.report(ctx, { completedAction: "commit_done", commitHash: A40 });
+    // Issue-fix mode's own routing (ISS-084, unrelated to the gate) always
+    // returns goto/COMPLETE rather than a bare advance -- the point here is
+    // only that the gate did NOT hold (contrast with the previous test).
+    expect(result.action).toBe("goto");
+    if (result.action === "goto") expect(result.target).toBe("COMPLETE");
+    expect(ctx.state.finalizeCheckpoint).toBe("committed");
   });
 
   describe("T-478: ISS-1050 interim -- plan-ack-without-pre-commit-ack risk warning", () => {

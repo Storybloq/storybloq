@@ -753,19 +753,18 @@ export class FinalizeStage implements WorkflowStage {
       };
     }
 
-    // T-474: pre-commit-ack gate, ticket-only (section 7's ISS-1032-shaped
-    // descope -- an issue-fix session has no ticket to gate). This is the
-    // load-bearing check: it runs AFTER attribution passes and BEFORE
-    // finalizeCheckpoint is ever written as "committed", inside the single
-    // convergence point every commit-acceptance path funnels through
-    // (confirmed by direct trace: FINALIZE's two `handleStage` branches and
-    // `handlePrecommit` all either call `handleCommit` directly or lead to a
-    // later `report()` call that does; the two auto-detect fast-forwards in
-    // `enter()` and `handleStage`'s ISS-046 branch also call it directly).
-    // ISS-1049 tracks the follow-up (an issue-fix-scoped enforcement path is
-    // not built here, the same way ISS-1032 tracks code-review-ceiling's own
-    // analogous gap).
-    if (ctx.state.ticket) {
+    // T-474 (ISS-1049: generalized to cover an issue-fix session too, closing
+    // the section 7 / ISS-1032-shaped descope this used to carry as
+    // ticket-only). This is the load-bearing check: it runs AFTER
+    // attribution passes and BEFORE finalizeCheckpoint is ever written as
+    // "committed", inside the single convergence point every
+    // commit-acceptance path funnels through (confirmed by direct trace:
+    // FINALIZE's two `handleStage` branches and `handlePrecommit` all either
+    // call `handleCommit` directly or lead to a later `report()` call that
+    // does; the two auto-detect fast-forwards in `enter()` and
+    // `handleStage`'s ISS-046 branch also call it directly).
+    const finalizingWorkItem = ctx.state.ticket ?? ctx.state.currentIssue;
+    if (finalizingWorkItem) {
       const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
       if (gateStatus.status === "unresolved") {
         return { action: "retry", instruction: renderUnresolvedHold(gateStatus.reason) };
@@ -785,7 +784,7 @@ export class FinalizeStage implements WorkflowStage {
           const lookup = findGateAck(ctx.root, {
             arrangementId: gateStatus.arrangementId,
             gateName: gate.name,
-            ticketRef: ctx.state.ticket.id,
+            ticketRef: finalizingWorkItem.id,
             pin,
             expectedAckRole: gate.ackRole,
           });
@@ -916,16 +915,17 @@ function ticketLabel(ctx: StageContext): string {
 }
 
 /**
- * T-474: courtesy check, NOT load-bearing -- the real check runs inside
- * `handleCommit`, after the commit already exists. This computes the SAME
- * kind of pin from the currently staged tree and withholds "Now commit" if
- * the gate status is unresolved or no valid ack exists yet, so the agent
- * isn't sent to commit only to be rejected after the fact. When a valid ack
- * carries `deltas`, appends them here -- the only point in the pre-commit
- * flow where rendering deltas is still timely, since `handleCommit` runs
- * AFTER the commit already exists (R3-FIX 5's pre-commit half). Any git
- * failure here falls through to the ordinary instruction: the load-bearing
- * check at `handleCommit` still runs regardless.
+ * T-474 (ISS-1049: generalized to an issue-fix session too): courtesy check,
+ * NOT load-bearing -- the real check runs inside `handleCommit`, after the
+ * commit already exists. This computes the SAME kind of pin from the
+ * currently staged tree and withholds "Now commit" if the gate status is
+ * unresolved or no valid ack exists yet, so the agent isn't sent to commit
+ * only to be rejected after the fact. When a valid ack carries `deltas`,
+ * appends them here -- the only point in the pre-commit flow where rendering
+ * deltas is still timely, since `handleCommit` runs AFTER the commit already
+ * exists (R3-FIX 5's pre-commit half). Any git failure here falls through to
+ * the ordinary instruction: the load-bearing check at `handleCommit` still
+ * runs regardless.
  */
 async function nowCommitInstruction(ctx: StageContext, headline: string): Promise<string> {
   const base = [
@@ -938,7 +938,8 @@ async function nowCommitInstruction(ctx: StageContext, headline: string): Promis
     'Call me with completedAction: "commit_done" and include the commitHash.',
   ];
 
-  if (!ctx.state.ticket) return base.join("\n");
+  const finalizingWorkItem = ctx.state.ticket ?? ctx.state.currentIssue;
+  if (!finalizingWorkItem) return base.join("\n");
   const gateStatus = await resolveOrReadFrozenGateStatus(ctx);
   if (gateStatus.status === "unresolved") return renderUnresolvedHold(gateStatus.reason);
   if (gateStatus.status !== "gated") return base.join("\n");
@@ -959,7 +960,7 @@ async function nowCommitInstruction(ctx: StageContext, headline: string): Promis
   const lookup = findGateAck(ctx.root, {
     arrangementId: gateStatus.arrangementId,
     gateName: gate.name,
-    ticketRef: ctx.state.ticket.id,
+    ticketRef: finalizingWorkItem.id,
     pin,
     expectedAckRole: gate.ackRole,
   });

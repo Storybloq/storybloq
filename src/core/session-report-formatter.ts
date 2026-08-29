@@ -322,18 +322,29 @@ function ceilingLines(state: FullSessionState): string[] {
   if (!escalation) return [];
   const counter = state.codeReviewRoundCounter;
 
-  // The ESCALATION's ticket is canonical, not the session's current one. A
+  // The ESCALATION's work item is canonical, not the session's current one. A
   // recovered or claim-lost session can be holding a different item by the time
   // this renders, and attributing one item's non-convergence to another is a
   // wrong answer rather than a vague one. The display id is borrowed only when
-  // the two agree.
-  const sameItem = !!escalation.ticketId && state.ticket?.id === escalation.ticketId;
-  const item = escalation.displayId
-    ?? (sameItem ? state.ticket?.displayId : undefined)
-    ?? escalation.ticketId
+  // the two agree, ON BOTH id AND kind -- a same-id different-kind pairing is
+  // not the same item.
+  const sameItem = !!escalation.workItemId && (
+    escalation.kind === "ticket"
+      ? state.ticket?.id === escalation.workItemId
+      : state.currentIssue?.id === escalation.workItemId
+  );
+  const currentDisplayId = escalation.kind === "ticket"
+    ? state.ticket?.displayId
+    : (state.currentIssue ? displayIdOf(state.currentIssue) : undefined);
+  const rawItem = escalation.displayId
+    ?? (sameItem ? currentDisplayId : undefined)
+    ?? escalation.workItemId
     ?? state.ticket?.displayId
     ?? state.ticket?.id
     ?? "the item";
+  // ISS-1049/ISS-1032: kind-aware label, mirroring `issue-fix.ts`'s own
+  // `displayIdOf` usage -- a bare id no longer disambiguates ticket from issue.
+  const item = rawItem === "the item" ? rawItem : `${escalation.kind === "issue" ? "issue" : "ticket"} ${rawItem}`;
 
   // THIS escalation's issues only. `filedDeferrals` is session-wide and also
   // holds deferrals filed earlier for unrelated reasons; listing those under a
@@ -384,21 +395,41 @@ function ceilingLines(state: FullSessionState): string[] {
   // ledger" -- that second claim is not this record's to make.
   const owns = (escalation.fingerprints ?? []).length > 0 || (escalation.findings ?? []).length > 0;
 
+  // codex round-2 finding: issues have no ticket claim and never sit at
+  // `inprogress` -- their lifecycle is `resolved`/`open` plus an earmark, and
+  // `parkCurrentIssue` REOPENS (or leaves untouched), it never "releases a
+  // claim". The unfinished/completed copy below must say so, not borrow the
+  // ticket's claim/inprogress language for an issue escalation.
+  const isIssue = escalation.kind === "issue";
+
   if (!escalation.completed) {
     const ledger = !owns
       ? "This ceiling stop had no open findings of its own to file."
       : filed.length > 0
         ? `Some findings were filed (${filed}) and others may not have been.`
         : "The findings may not have reached the ledger yet.";
+    const stateNote = isIssue
+      ? `${safe(item)} may still show status \`resolved\` from this session's fix, with ownership not yet reverified`
+      : `${safe(item)} may still be \`inprogress\``;
     return [
       ...head,
       "",
-      `**This stop did not finish.** ${ledger} ${safe(item)} may still be \`inprogress\`, and its work is uncommitted in the working tree. Check the ledger before starting the next session.`,
-      ...(counter && counter.ticketId === escalation.ticketId
+      `**This stop did not finish.** ${ledger} ${stateNote}, and its work is uncommitted in the working tree. Check the ledger before starting the next session.`,
+      ...(counter && counter.workItemId === escalation.workItemId && counter.kind === escalation.kind
         ? ["", `Rounds recorded for this item: ${counter.completedRounds}.`]
         : []),
     ];
   }
+
+  // Deliberately does NOT assert the outcome unconditionally. `parkCurrentTicket`
+  // releases the claim and flips status only when this session still owns the
+  // stamp; `parkCurrentIssue` reopens to `open` only when it can still prove
+  // ownership (status plus, post-Amendment-A5, an exact resolution-epoch
+  // match). The not-ours outcome, for either kind, leaves the item exactly as
+  // another session left it, and that outcome is not recorded here.
+  const outcomeNote = isIssue
+    ? "It was reopened to `open` unless the issue was missing or ownership could no longer be proven from its status, earmark, and resolution epoch; in that case it was left untouched"
+    : "Its claim was released back to the backlog unless it had already moved to another session";
 
   return [
     ...head,
@@ -407,12 +438,8 @@ function ceilingLines(state: FullSessionState): string[] {
       ? `The outstanding findings were filed as issues: ${filed}.`
       : "This ceiling stop had no open findings of its own to file.",
     "",
-    // Deliberately does NOT assert the ticket is back to `open`. The park
-    // releases the claim and flips the status only when this session still owns
-    // the stamp; the not-ours outcome leaves the item exactly as another
-    // session left it, and that outcome is not recorded here.
-    `**The work for ${safe(item)} is still uncommitted in the working tree.** That is why the session ended here rather than moving to the next item. Its claim was released back to the backlog unless it had already moved to another session, so check its ledger state, and review the tree before starting the next session${owns ? "; the filed issues carry what review could not get resolved" : "; this ceiling stop filed nothing of its own"}.`,
-    ...(counter && counter.ticketId === escalation.ticketId
+    `**The work for ${safe(item)} is still uncommitted in the working tree.** That is why the session ended here rather than moving to the next item. ${outcomeNote}, so check its ledger state, and review the tree before starting the next session${owns ? "; the filed issues carry what review could not get resolved" : "; this ceiling stop filed nothing of its own"}.`,
+    ...(counter && counter.workItemId === escalation.workItemId && counter.kind === escalation.kind
       ? ["", `Rounds recorded for this item: ${counter.completedRounds}.`]
       : []),
   ];

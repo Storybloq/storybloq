@@ -34,7 +34,7 @@ import {
   codeReviewHardCeiling,
   decideCeiling,
   nextRoundCounter,
-  roundsForTicket,
+  roundsForWorkItem,
 } from "../../src/autonomous/stages/code-review-ceiling.js";
 import { codeReviewLandingFloor } from "../../src/autonomous/session-diagnostics.js";
 import { StageContext } from "../../src/autonomous/stages/types.js";
@@ -123,32 +123,59 @@ describe("codeReviewHardCeiling", () => {
 // The counter, which is the part a naive implementation gets wrong
 // ---------------------------------------------------------------------------
 
-describe("the round counter is ticket-keyed and monotonic", () => {
+const TICKET_REF = { kind: "ticket" as const, id: TICKET };
+const ISSUE_REF = { kind: "issue" as const, id: "i-abc" };
+
+describe("the round counter is work-item-keyed and monotonic", () => {
   it("counts up for the same ticket", () => {
-    let c = nextRoundCounter(null, TICKET);
+    let c = nextRoundCounter(null, TICKET_REF);
     expect(c.completedRounds).toBe(1);
-    c = nextRoundCounter(c, TICKET);
-    c = nextRoundCounter(c, TICKET);
+    c = nextRoundCounter(c, TICKET_REF);
+    c = nextRoundCounter(c, TICKET_REF);
     expect(c.completedRounds).toBe(3);
   });
 
   /**
-   * THE INVARIANT. A newly selected ticket must never inherit a poisoned count,
+   * THE INVARIANT. A newly selected item must never inherit a poisoned count,
    * and making that a property of the identity rather than of a reset call site
    * is what makes it true across park-and-repick, claim-loss repick, recovery
-   * and ordinary next-ticket selection alike -- none of which need to remember
+   * and ordinary next-item selection alike -- none of which need to remember
    * to reset anything.
    */
   it("resets to 1 for a different ticket", () => {
-    const poisoned = { ticketId: "t-previous", completedRounds: 14 };
-    expect(nextRoundCounter(poisoned, TICKET).completedRounds).toBe(1);
+    const poisoned = { workItemId: "t-previous", kind: "ticket" as const, completedRounds: 14 };
+    expect(nextRoundCounter(poisoned, TICKET_REF).completedRounds).toBe(1);
+  });
+
+  /**
+   * A same-id counter belonging to the OTHER kind is not a smaller count, it
+   * is no count -- an issue and a ticket can share no id space in practice,
+   * but the kind check is what makes that a proven invariant rather than an
+   * assumption about id shapes never colliding.
+   */
+  it("resets to 1 when the id matches but the kind differs", () => {
+    const foreignKind = { workItemId: TICKET, kind: "issue" as const, completedRounds: 14 };
+    expect(nextRoundCounter(foreignKind, TICKET_REF).completedRounds).toBe(1);
   });
 
   it("reads as zero for a legacy state with no field, and for a foreign ticket", () => {
-    expect(roundsForTicket(null, TICKET)).toBe(0);
-    expect(roundsForTicket(undefined, TICKET)).toBe(0);
-    expect(roundsForTicket({ ticketId: "t-other", completedRounds: 9 }, TICKET)).toBe(0);
-    expect(roundsForTicket({ ticketId: TICKET, completedRounds: 9 }, null)).toBe(0);
+    expect(roundsForWorkItem(null, TICKET_REF)).toBe(0);
+    expect(roundsForWorkItem(undefined, TICKET_REF)).toBe(0);
+    expect(roundsForWorkItem({ workItemId: "t-other", kind: "ticket", completedRounds: 9 }, TICKET_REF)).toBe(0);
+    expect(roundsForWorkItem({ workItemId: TICKET, kind: "ticket", completedRounds: 9 }, null)).toBe(0);
+  });
+
+  it("reads as zero for a counter whose kind differs even when the id matches", () => {
+    expect(roundsForWorkItem({ workItemId: TICKET, kind: "issue", completedRounds: 9 }, TICKET_REF)).toBe(0);
+  });
+
+  it("counts up for the same issue, independently of ticket-keyed counters", () => {
+    let c = nextRoundCounter(null, ISSUE_REF);
+    expect(c.completedRounds).toBe(1);
+    c = nextRoundCounter(c, ISSUE_REF);
+    expect(c.completedRounds).toBe(2);
+    expect(roundsForWorkItem(c, ISSUE_REF)).toBe(2);
+    expect(roundsForWorkItem(c, TICKET_REF)).toBe(0);
   });
 
   /**
@@ -160,9 +187,9 @@ describe("the round counter is ticket-keyed and monotonic", () => {
    * how many rounds this ticket has burned.
    */
   it("is unaffected by reviews.code being cleared", () => {
-    const counter = { ticketId: TICKET, completedRounds: 8 };
+    const counter = { workItemId: TICKET, kind: "ticket" as const, completedRounds: 8 };
     const afterRedirect = makeState({ reviews: { plan: [], code: [] }, codeReviewRoundCounter: counter });
-    expect(roundsForTicket(afterRedirect.codeReviewRoundCounter, TICKET)).toBe(8);
+    expect(roundsForWorkItem(afterRedirect.codeReviewRoundCounter, TICKET_REF)).toBe(8);
     expect(afterRedirect.reviews.code.length).toBe(0);
   });
 });
@@ -177,11 +204,10 @@ describe("decideCeiling", () => {
 
   function decide(completedRounds: number, over: Partial<Parameters<typeof decideCeiling>[0]> = {}) {
     return decideCeiling({
-      state: makeState({ codeReviewRoundCounter: { ticketId: TICKET, completedRounds } }),
+      state: makeState({ codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds } }),
       stages,
       risk: "low",
       nextAction: "IMPLEMENT",
-      isIssueFix: false,
       ...over,
     });
   }
@@ -216,25 +242,35 @@ describe("decideCeiling", () => {
 
   it("never fires when the cap is unlimited", () => {
     expect(decideCeiling({
-      state: makeState({ codeReviewRoundCounter: { ticketId: TICKET, completedRounds: 99 } }),
-      stages: stagesWithCap(0), risk: "low", nextAction: "IMPLEMENT", isIssueFix: false,
+      state: makeState({ codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: 99 } }),
+      stages: stagesWithCap(0), risk: "low", nextAction: "IMPLEMENT",
     }).shouldPark).toBe(false);
   });
 
   /**
-   * Issue-fix sessions keep today's behaviour. The park path returns a
-   * transition with no ticket, which would loop, so a half-built ceiling there
-   * is worse than none -- ISS-1032 carries the gap rather than this pretending
-   * to cover it.
+   * ISS-1032: issue-fix sessions now trip the same ceiling as ticket sessions.
+   * A work item's presence -- ticket OR issue -- is what gates the ceiling; the
+   * park path now has a real issue-shaped target (`parkCurrentIssue`), so the
+   * old exemption (the park path had nowhere to route an issue) no longer
+   * applies.
    */
-  it("does not fire on the issue-fix path", () => {
-    expect(decide(ceiling + 5, { isIssueFix: true }).shouldPark).toBe(false);
+  it("fires on the issue-fix path exactly as it does for a ticket", () => {
+    const d = decideCeiling({
+      state: makeState({
+        ticket: undefined,
+        currentIssue: { id: ISSUE_REF.id, displayId: "ISS-1", title: "x", severity: "high" },
+        codeReviewRoundCounter: { workItemId: ISSUE_REF.id, kind: "issue", completedRounds: ceiling - 1 },
+      } as Partial<FullSessionState>),
+      stages, risk: "low", nextAction: "IMPLEMENT",
+    });
+    expect(d.counter).toEqual({ workItemId: ISSUE_REF.id, kind: "issue", completedRounds: ceiling });
+    expect(d.shouldPark).toBe(true);
   });
 
-  it("does not fire with no ticket to park", () => {
+  it("does not fire with no ticket and no issue to park", () => {
     expect(decideCeiling({
-      state: makeState({ ticket: undefined, codeReviewRoundCounter: null }),
-      stages, risk: "low", nextAction: "IMPLEMENT", isIssueFix: false,
+      state: makeState({ ticket: undefined, currentIssue: null, codeReviewRoundCounter: null }),
+      stages, risk: "low", nextAction: "IMPLEMENT",
     }).shouldPark).toBe(false);
   });
 
@@ -244,8 +280,26 @@ describe("decideCeiling", () => {
    */
   it("does not fire for a fresh ticket carrying a previous ticket's count", () => {
     const d = decideCeiling({
-      state: makeState({ codeReviewRoundCounter: { ticketId: "t-previous", completedRounds: 99 } }),
-      stages, risk: "low", nextAction: "IMPLEMENT", isIssueFix: false,
+      state: makeState({ codeReviewRoundCounter: { workItemId: "t-previous", kind: "ticket", completedRounds: 99 } }),
+      stages, risk: "low", nextAction: "IMPLEMENT",
+    });
+    expect(d.counter?.completedRounds).toBe(1);
+    expect(d.shouldPark).toBe(false);
+  });
+
+  /**
+   * A ticket-keyed counter does not carry over when the session now holds an
+   * ISSUE with the same round count -- the kind switch is itself a reset,
+   * exactly like an id switch.
+   */
+  it("does not fire for a freshly picked issue carrying a previous ticket's count", () => {
+    const d = decideCeiling({
+      state: makeState({
+        ticket: undefined,
+        currentIssue: { id: ISSUE_REF.id, displayId: "ISS-1", title: "x", severity: "high" },
+        codeReviewRoundCounter: { workItemId: ISSUE_REF.id, kind: "ticket", completedRounds: 99 },
+      } as Partial<FullSessionState>),
+      stages, risk: "low", nextAction: "IMPLEMENT",
     });
     expect(d.counter?.completedRounds).toBe(1);
     expect(d.shouldPark).toBe(false);
@@ -323,7 +377,7 @@ describe("the ceiling, end to end through the stage", () => {
 
   function atRound(n: number, over: Partial<FullSessionState> = {}): FullSessionState {
     return makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: n - 1 },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: n - 1 },
       ...over,
     });
   }
@@ -351,6 +405,40 @@ describe("the ceiling, end to end through the stage", () => {
     const { advance } = await reportRound(atRound(CEILING));
     expect(advance.action).toBe("goto");
     expect((advance as { target: string }).target).toBe("HANDOVER");
+  });
+
+  /**
+   * ISS-1032: an issue-fix session drives the SAME ceiling, through the SAME
+   * CodeReviewStage.report() call, and parks via `parkCurrentIssue` (not
+   * `parkCurrentTicket`) -- proving the dispatch in `escalateCeiling` and the
+   * `{kind:"issue", workItemId}` escalation shape built in `report()`, not
+   * just `decideCeiling`'s unit-level generalization.
+   */
+  it("an issue-fix session trips the same ceiling and parks the ISSUE, not a ticket", async () => {
+    const ISSUE_ID = "i-ce111n9000000001";
+    writeFileSync(join(root, ".story", "issues", `${ISSUE_ID}.json`), JSON.stringify({
+      id: ISSUE_ID, title: "Non-converging fix", status: "resolved", severity: "high",
+      components: [], impact: "test", resolution: "fixed in this session", location: [],
+      discoveredDate: "2026-08-21", resolvedDate: "2026-08-21", relatedTickets: [],
+      order: 10, phase: "p1",
+    }));
+    const issueState = atRound(CEILING, {
+      ticket: undefined,
+      currentIssue: { id: ISSUE_ID, displayId: "ISS-901", title: "Non-converging fix", severity: "high" },
+      codeReviewRoundCounter: { workItemId: ISSUE_ID, kind: "issue", completedRounds: CEILING - 1 },
+    } as Partial<FullSessionState>);
+    const { advance, ctx } = await reportRound(issueState);
+
+    expect(advance.action).toBe("goto");
+    expect((advance as { target: string }).target).toBe("HANDOVER");
+    expect(ctx.state.currentIssue).toBeNull();
+
+    const issueOnDisk = JSON.parse(readFileSync(join(root, ".story", "issues", `${ISSUE_ID}.json`), "utf-8"));
+    expect(issueOnDisk.status).toBe("open");
+
+    expect(ctx.state.pendingCeilingEscalation).toMatchObject({
+      workItemId: ISSUE_ID, kind: "issue", completed: true,
+    });
   });
 
   /**
@@ -421,7 +509,7 @@ describe("the ceiling, end to end through the stage", () => {
   it("persists the round it stopped at", async () => {
     const { ctx } = await reportRound(atRound(CEILING));
     expect(ctx.state.codeReviewRoundCounter?.completedRounds).toBe(CEILING);
-    expect(ctx.state.codeReviewRoundCounter?.ticketId).toBe(TICKET);
+    expect(ctx.state.codeReviewRoundCounter?.workItemId).toBe(TICKET);
   });
 
   /**
@@ -439,9 +527,9 @@ describe("the ceiling, end to end through the stage", () => {
     // this point is a NEW round -- which is why the interesting case is the one
     // below, where the record is still unfinished.
     const stuck = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING },
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
+        workItemId: TICKET, kind: "ticket", round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
         reason: "Code review reached its hard ceiling.",
         unresolvedCritical: 1, unresolvedMajor: 1, decidedAt: new Date().toISOString(),
       },
@@ -593,7 +681,7 @@ describe("the ceiling, end to end through the stage", () => {
     // fingerprint at the state level and never consult `dedupeKey` at all --
     // which is what this test is for.
     const stuck = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING },
       pendingCeilingEscalation: { ...record, completed: false },
       filedDeferrals: [],
       pendingDeferrals: record.fingerprints.map((fp, idx) => ({
@@ -620,9 +708,9 @@ describe("the ceiling, end to end through the stage", () => {
    */
   it("ignores an escalation recorded against a different ticket", async () => {
     const stale = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: 0 },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: 0 },
       pendingCeilingEscalation: {
-        ticketId: "t-someone-else", round: 9, ceiling: 9, maxReviewRounds: CAP,
+        workItemId: "t-someone-else", kind: "ticket", round: 9, ceiling: 9, maxReviewRounds: CAP,
         reason: "stale", unresolvedCritical: 1, unresolvedMajor: 0,
         decidedAt: new Date().toISOString(),
       },
@@ -718,9 +806,9 @@ describe("the ceiling, end to end through the stage", () => {
    */
   it("files from the record on a resume that carries no findings", async () => {
     const stuck = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING },
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
+        workItemId: TICKET, kind: "ticket", round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
         reason: "Code review reached its hard ceiling.",
         unresolvedCritical: 1, unresolvedMajor: 1, decidedAt: new Date().toISOString(),
         findings: [
@@ -767,9 +855,9 @@ describe("the ceiling, end to end through the stage", () => {
     // at the state write itself, lives in `code-review-ceiling-e2e.test.ts`;
     // this one isolates the key from everything around it.
     const lostWrite = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING },
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
+        workItemId: TICKET, kind: "ticket", round: CEILING, ceiling: CEILING, maxReviewRounds: CAP,
         reason: "Code review reached its hard ceiling.",
         unresolvedCritical: 1, unresolvedMajor: 1, decidedAt: new Date().toISOString(),
         findings: [], fingerprints: [],
@@ -820,7 +908,7 @@ describe("the ceiling, end to end through the stage", () => {
     const { CodeReviewStage } = await import("../../src/autonomous/stages/code-review.js");
     const later = makeState({
       sessionId: "s2",
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING - 1 },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING - 1 },
     } as Partial<FullSessionState>);
     const laterCtx = new StageContext(root, laterSessionDir, later, makeRecipe(CAP));
     await new CodeReviewStage().report(laterCtx, {
@@ -849,7 +937,7 @@ describe("the ceiling, end to end through the stage", () => {
       ticket: undefined,
       currentIssue: { id: "i-abc", displayId: "ISS-1", title: "x", severity: "high" },
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: 9, ceiling: 9, maxReviewRounds: CAP,
+        workItemId: TICKET, kind: "ticket", round: 9, ceiling: 9, maxReviewRounds: CAP,
         reason: "earlier item", unresolvedCritical: 1, unresolvedMajor: 0,
         decidedAt: new Date().toISOString(),
         // Carries real findings on purpose: an empty record cannot tell a guard
@@ -868,6 +956,32 @@ describe("the ceiling, end to end through the stage", () => {
   });
 
   /**
+   * Same ID, different KIND. The test above changes both id and kind at
+   * once, so it would still pass if the resume guard accidentally stopped
+   * checking `kind` and matched on id alone -- an issue and a ticket sharing
+   * one id string is not a real-world case (separate id namespaces), but the
+   * guard's own identity invariant (same as the round counter's) is that
+   * kind is part of the identity, not an id-shape assumption.
+   */
+  it("does not resume an escalation whose id matches but whose kind does not", async () => {
+    const mismatchedKind = makeState({
+      ticket: undefined,
+      currentIssue: { id: TICKET, displayId: "ISS-1", title: "x", severity: "high" },
+      pendingCeilingEscalation: {
+        workItemId: TICKET, kind: "ticket", round: 9, ceiling: 9, maxReviewRounds: CAP,
+        reason: "earlier item", unresolvedCritical: 1, unresolvedMajor: 0,
+        decidedAt: new Date().toISOString(),
+        findings: [{ severity: "critical", category: "correctness", description: "The earlier item's blocker" }],
+        fingerprints: [],
+      },
+    } as Partial<FullSessionState>);
+    const { advance, ctx } = await reportRound(mismatchedKind);
+    expect((advance as { target?: string }).target).not.toBe("HANDOVER");
+    expect(ctx.state.pendingCeilingEscalation?.completed).toBeFalsy();
+    expect(issuesOnDisk().length).toBe(0);
+  });
+
+  /**
    * A stale record from a previous item is KEPT, not deleted: it is the only
    * explanation of why that earlier item stopped, and the current item's
    * ceiling check ignores it on ticket identity anyway. This asserts the
@@ -877,15 +991,15 @@ describe("the ceiling, end to end through the stage", () => {
    */
   it("keeps a foreign-ticket escalation rather than discarding the evidence", async () => {
     const stale = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: 0 },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: 0 },
       pendingCeilingEscalation: {
-        ticketId: "t-someone-else", round: 9, ceiling: 9, maxReviewRounds: CAP,
+        workItemId: "t-someone-else", kind: "ticket", round: 9, ceiling: 9, maxReviewRounds: CAP,
         reason: "stale", unresolvedCritical: 1, unresolvedMajor: 0,
         decidedAt: new Date().toISOString(), findings: [], fingerprints: [],
       },
     } as Partial<FullSessionState>);
     const { ctx } = await reportRound(stale);
-    expect(ctx.state.pendingCeilingEscalation?.ticketId).toBe("t-someone-else");
+    expect(ctx.state.pendingCeilingEscalation?.workItemId).toBe("t-someone-else");
   });
 
   /**
@@ -969,7 +1083,7 @@ describe("the ceiling, end to end through the stage", () => {
    */
   it("parks once its own findings are filed, even with an unrelated deferral stuck", async () => {
     const withStuck = makeState({
-      codeReviewRoundCounter: { ticketId: TICKET, completedRounds: CEILING - 1 },
+      codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING - 1 },
       pendingDeferrals: [
         // A fingerprint past the 512-character bound on `dedupeKey`, so
         // `handleIssueCreate` refuses this entry every time and it stays queued
@@ -1051,9 +1165,9 @@ describe("the session report surfaces the escalation", () => {
         // occur while the real one rendered nothing.
         reviews: { plan: [], code: [] },
         ticket: undefined,
-        codeReviewRoundCounter: { ticketId: TICKET, completedRounds: 7 },
+        codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: 7 },
         pendingCeilingEscalation: {
-          ticketId: TICKET, displayId: "T-901", round: 7, ceiling: 7, maxReviewRounds: 4,
+          workItemId: TICKET, kind: "ticket", displayId: "T-901", round: 7, ceiling: 7, maxReviewRounds: 4,
           reason: "Code review reached its hard ceiling.",
           unresolvedCritical: 1, unresolvedMajor: 1,
           decidedAt: new Date().toISOString(), completed: true,
@@ -1084,7 +1198,7 @@ describe("the session report surfaces the escalation", () => {
    * the ledger" sends them looking for issues nobody ever meant to file.
    */
   const REJECT_ONLY = {
-    ticketId: TICKET, displayId: "T-901", round: 7, ceiling: 7, maxReviewRounds: 4,
+    workItemId: TICKET, kind: "ticket", displayId: "T-901", round: 7, ceiling: 7, maxReviewRounds: 4,
     reason: "Code review reached its hard ceiling without reaching a landable verdict.",
     unresolvedCritical: 0, unresolvedMajor: 0,
     decidedAt: new Date().toISOString(),
@@ -1100,6 +1214,67 @@ describe("the session report surfaces the escalation", () => {
     expect(text).toContain("no open findings of its own to file");
     expect(text).toContain("this ceiling stop filed nothing of its own");
     expect(text).not.toContain("the filed issues carry");
+  });
+
+  /**
+   * [codex round-2 finding] issues have no ticket claim and never sit at
+   * `inprogress` -- their lifecycle is `resolved`/`open` plus an earmark. The
+   * generalized ceiling report used to render ticket-specific lifecycle and
+   * claim language unconditionally for an issue escalation too.
+   */
+  it("[ISS-1032/ISS-1049] an ISSUE escalation renders issue-appropriate lifecycle and outcome language, never the ticket's inprogress/claim wording", async () => {
+    const finished = await render({
+      ticket: undefined,
+      currentIssue: null,
+      codeReviewRoundCounter: { workItemId: "i-abc", kind: "issue", completedRounds: 7 },
+      pendingCeilingEscalation: {
+        workItemId: "i-abc", kind: "issue", displayId: "ISS-901", round: 7, ceiling: 7, maxReviewRounds: 4,
+        reason: "Code review reached its hard ceiling.",
+        unresolvedCritical: 1, unresolvedMajor: 1,
+        decidedAt: new Date().toISOString(), completed: true,
+        fingerprints: ["f1"],
+      },
+    } as Partial<FullSessionState>);
+    expect(finished).toContain("Round ceiling reached");
+    expect(finished).not.toContain("inprogress");
+    expect(finished).not.toContain("claim was released");
+    expect(finished).toContain("reopened to `open`");
+
+    const unfinished = await render({
+      ticket: undefined,
+      currentIssue: null,
+      codeReviewRoundCounter: { workItemId: "i-abc", kind: "issue", completedRounds: 7 },
+      pendingCeilingEscalation: {
+        workItemId: "i-abc", kind: "issue", displayId: "ISS-901", round: 7, ceiling: 7, maxReviewRounds: 4,
+        reason: "Code review reached its hard ceiling.",
+        unresolvedCritical: 1, unresolvedMajor: 1,
+        decidedAt: new Date().toISOString(), completed: false,
+        fingerprints: ["f1"],
+      },
+      filedDeferrals: [],
+    } as Partial<FullSessionState>);
+    expect(unfinished).toContain("This stop did not finish");
+    expect(unfinished).not.toContain("may still be `inprogress`");
+    expect(unfinished).toContain("may still show status `resolved`");
+  });
+
+  it("[codex round-3 finding #3] a completed ISSUE escalation's outcome note also covers a missing issue and an unproven resolution epoch, not only status drift or a foreign earmark", async () => {
+    const finished = await render({
+      ticket: undefined,
+      currentIssue: null,
+      codeReviewRoundCounter: { workItemId: "i-abc", kind: "issue", completedRounds: 7 },
+      pendingCeilingEscalation: {
+        workItemId: "i-abc", kind: "issue", displayId: "ISS-901", round: 7, ceiling: 7, maxReviewRounds: 4,
+        reason: "Code review reached its hard ceiling.",
+        unresolvedCritical: 1, unresolvedMajor: 1,
+        decidedAt: new Date().toISOString(), completed: true,
+        fingerprints: ["f1"],
+      },
+    } as Partial<FullSessionState>);
+    expect(finished).toContain("reopened to `open`");
+    expect(finished).toContain("the issue was missing");
+    expect(finished).toContain("resolution epoch");
+    expect(finished).not.toContain("its status drifted, or a foreign earmark was present");
   });
 
   it("does not claim findings are owed when a reject-only stop did not finish", async () => {
@@ -1167,7 +1342,7 @@ describe("the session report surfaces the escalation", () => {
   it("says nothing was filed yet when the escalation has no fingerprints", async () => {
     const text = await render({
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: 7, ceiling: 7, maxReviewRounds: 4,
+        workItemId: TICKET, kind: "ticket", round: 7, ceiling: 7, maxReviewRounds: 4,
         reason: "Code review reached its hard ceiling.",
         unresolvedCritical: 1, unresolvedMajor: 1,
         decidedAt: new Date().toISOString(), completed: false, fingerprints: [],
@@ -1210,7 +1385,7 @@ describe("the session report surfaces the escalation", () => {
   it("still renders while the escalation is unfinished", async () => {
     const text = await render({
       pendingCeilingEscalation: {
-        ticketId: TICKET, round: 7, ceiling: 7, maxReviewRounds: 4,
+        workItemId: TICKET, kind: "ticket", round: 7, ceiling: 7, maxReviewRounds: 4,
         reason: "x", unresolvedCritical: 1, unresolvedMajor: 0,
         decidedAt: new Date().toISOString(), completed: false,
       },

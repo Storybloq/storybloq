@@ -1,6 +1,8 @@
 import { releaseClaimIfOwned } from "../../core/claims.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
+import { displayIdOf } from "../../core/resolver.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
+import { issueEpochProvesOwnership } from "../issue-resolution-epoch.js";
 import type { StageAdvance, StageContext } from "./types.js";
 import type { FullSessionState, GuideReportInput } from "../session-types.js";
 
@@ -380,6 +382,186 @@ export async function parkCurrentTicket(
             "Do NOT re-pick the parked item.",
             "Do NOT stop or summarize -- pick the next item immediately.",
           ],
+      transitionedFrom: from,
+    },
+  };
+}
+
+/**
+ * What `parkCurrentIssue` actually achieved.
+ *
+ * - `parked`        the issue was reopened to `open`, its same-session earmark
+ *                    (if any) cleared
+ * - `not-ours`      the issue is missing, its status has already drifted off
+ *                    `"resolved"` (this session's own established state), or a
+ *                    FOREIGN `assigned` earmark is present -- nothing written
+ * - `write-failed`  the ledger state is unknown; the session keeps everything
+ */
+type IssueParkOutcome = "parked" | "not-ours" | "write-failed";
+
+/**
+ * Parks the session's current ISSUE and routes to HANDOVER.
+ *
+ * ISS-1032: the ceiling's issue-shaped park target. Structurally mirrors
+ * `parkCurrentTicket`'s resumability contract (same reason-required guard, an
+ * explicit outcome discrimination, no silent success on a no-op path).
+ *
+ * Amendment A5 (pen ruling, codex round-1 finding #2): `status === "resolved"`
+ * ALONE is an ABA hazard -- a foreign session's own legitimate resolve ->
+ * reopen -> re-resolve cycle, completed between this session's status check
+ * and its park write, leaves `status === "resolved"` true throughout while
+ * ownership silently changed hands. `issueEpochProvesOwnership` closes that:
+ * when the issue carries a resolution epoch (stamped by `issue-fix.ts` at the
+ * same write that set `status: "resolved"`), it must match this session's own
+ * mirrored copy exactly. An issue with NO stamped epoch (pre-Amendment-A5)
+ * is the legacy-match case -- `status === "resolved"` stays sufficient alone,
+ * unaffected. There is still no CLAIM analogue for an issue (no merge-driver
+ * -rewritten `claim {user,branch,since}` group to reconcile); the epoch is
+ * the whole of the additional proof.
+ *
+ * `CODE_REVIEW` is the only reachable `ParkOrigin` for an issue today (issue
+ * fixes do not participate in the PLAN/PLAN_REVIEW `park_item` flow), so this
+ * always routes to HANDOVER regardless of `options.target` -- unlike
+ * `parkCurrentTicket`, which has a PICK_TICKET-routed caller too.
+ */
+export async function parkCurrentIssue(
+  ctx: StageContext,
+  report: GuideReportInput,
+  from: ParkOrigin,
+  options: ParkOptions = {},
+): Promise<StageAdvance> {
+  const issue = ctx.state.currentIssue;
+  const label = issue ? displayIdOf(issue) : "the current item";
+
+  const reason = (options.reason ?? report.notes ?? "").trim();
+  if (!reason) {
+    return {
+      action: "retry",
+      instruction: [
+        `"${PARK_ACTION}" requires a reason in \`notes\`.`,
+        "",
+        `Re-report with notes saying why ${label} cannot be resolved AS FILED. That text is written onto the item and is what the next session reads instead of rediscovering the block.`,
+        "",
+        "```json",
+        `{ "sessionId": "${ctx.state.sessionId}", "action": "report", "report": { "completedAction": "${PARK_ACTION}", "notes": "<why this item is not workable as filed>" } }`,
+        "```",
+      ].join("\n"),
+    };
+  }
+
+  if (!issue) {
+    return {
+      action: "retry",
+      instruction: "Nothing to park: this session holds no current issue.",
+    };
+  }
+
+  let outcome: IssueParkOutcome = "write-failed";
+
+  try {
+    const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+    await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
+      const current = ps.issues.find((i) => i.id === issue.id);
+      // This session set the issue to "resolved" itself, before CODE_REVIEW
+      // even ran (issue-fix.ts's report() refuses to leave ISSUE_FIX
+      // otherwise). A park's whole job is to UNDO that when the fix did not
+      // converge. If the issue is missing, or its status is anything OTHER
+      // than the "resolved" this session itself established, this session
+      // cannot prove the issue is still in the state it left it in -- write
+      // nothing, record `not-ours`, and let the caller decide the session's
+      // fate rather than silently clobbering a foreign write.
+      if (!current || current.status !== "resolved") {
+        outcome = "not-ours";
+        return;
+      }
+      // Amendment A5: status alone is not enough (see docblock above). A
+      // stamped epoch on the issue that does not match this session's own
+      // mirrored copy means a DIFFERENT session's resolution is the one
+      // standing, even though status still reads "resolved".
+      if (!issueEpochProvesOwnership(
+        (current as Record<string, unknown>).resolutionEpoch,
+        (ctx.state as Record<string, unknown>).issueResolutionEpoch,
+      )) {
+        outcome = "not-ours";
+        return;
+      }
+      // A `clearSameSessionEarmark` returning `cleared: false` for a FOREIGN
+      // earmark does not mean "leave it alone" -- it only means this call
+      // didn't clear it. Writing `status` on that same issue object
+      // unconditionally would still change its lifecycle underneath whoever
+      // holds the foreign earmark. Checked explicitly, BEFORE any write: a
+      // foreign `assigned` earmark is a hard `not-ours` -- no write to the
+      // issue at all, not merely an earmark left as-is on an otherwise-
+      // mutated record.
+      if (current.earmark?.stage === "assigned" && current.earmark.holderSession !== ctx.state.sessionId) {
+        outcome = "not-ours";
+        return;
+      }
+      const { cleared, item: next } = clearSameSessionEarmark(current, ctx.state.sessionId);
+      await writeIssueUnlocked({ ...(cleared ? next : current), status: "open" as const }, ctx.root);
+      outcome = "parked";
+    });
+  } catch {
+    // A thrown error must NOT proceed to clear currentIssue or advance -- the
+    // session stays able to retry the exact same park.
+    return {
+      action: "retry",
+      instruction: `Failed to reopen issue ${label} while parking. Re-report the same park action.`,
+    };
+  }
+
+  if (outcome === "write-failed") {
+    return {
+      action: "retry",
+      instruction: [
+        `# Park failed: ${label} was not written`,
+        "",
+        "The ledger write did not complete, so nothing has changed.",
+        "",
+        `Retry the same call. If it keeps failing, check \`.story/issues/\` for a lock or a permissions problem -- the session is intentionally still on ${label} rather than advancing past an item whose state is unknown.`,
+      ].join("\n"),
+    };
+  }
+
+  // `not-ours`: recorded and surfaced, but still allows the session to move
+  // on -- there is nothing further this session can safely do to an issue it
+  // no longer recognizes as its own, and refusing to advance would strand the
+  // ceiling escalation forever against a state it cannot change.
+  //
+  // Amendment A3 (pen ack, plan-run6.md gate-1): the plan file itself is
+  // byte-frozen at fae15038... and stays that way -- this enrichment is a
+  // declared amendment layered on top, not an edit to the frozen text. It
+  // mirrors `parkCurrentTicket`'s HANDOVER result block (lines 360-384
+  // above): that reminder trio is load-bearing for a ceiling park, not
+  // decoration -- without "do NOT re-pick / do NOT keep reviewing," the
+  // driving agent can bounce straight back into the loop the ceiling just
+  // stopped, and HANDOVER's own `enter()` has no way to know that context.
+  ctx.updateDraft({ currentIssue: null } as Partial<FullSessionState>);
+
+  const notes = outcome === "parked"
+    ? `${label} was reopened to \`open\`, and the reason above is recorded in this report.`
+    : `**The reason above was NOT recorded on ${label}.** Its state was no longer provably ours: its status no longer matched what this session left it in, or a foreign earmark is present -- writing to an issue another session may be working is exactly what this path refuses to do. ${label} was left untouched.`;
+
+  return {
+    action: "goto",
+    target: "HANDOVER",
+    result: {
+      instruction: [
+        outcome === "parked" ? `# Parked: ${label}` : `# Dropped: ${label} (state no longer provably ours)`,
+        "",
+        `**Reason:** ${reason}`,
+        "",
+        notes,
+        "",
+        "The uncommitted changes are still in the working tree. That is why this ends the session rather than moving on: the next item would otherwise build its baseline, its review and its commit on top of them.",
+        "",
+        "Write the handover now. Name the item, the round it stopped at, any issues filed (or that none were needed), and the files left dirty, so the next session reads the block instead of rediscovering it.",
+      ].join("\n"),
+      reminders: [
+        "Do NOT re-pick the parked item.",
+        "Do NOT keep reviewing -- the round ceiling was reached.",
+        "Write the handover, then stop.",
+      ],
       transitionedFrom: from,
     },
   };

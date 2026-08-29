@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+import * as projectLoader from "../../../src/core/project-loader.js";
 
 /**
  * ISS-922: PICK_TICKET now establishes the item's finalization baseline from a
@@ -378,6 +379,86 @@ describe("ISSUE_FIX stage", () => {
 
     const after = JSON.parse(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8"));
     expect(after.earmark).toEqual(foreignEarmark);
+  });
+
+  it("[codex round-2 finding #2] retries rather than proceeding to FINALIZE when the epoch stamp write fails", async () => {
+    const state0 = makeState({ state: "ISSUE_FIX", currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" } });
+    writeFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), JSON.stringify({
+      id: "ISS-001", title: "Critical bug", status: "resolved", severity: "critical",
+      components: ["core"], impact: "App crashes", resolution: "Fixed", resolvedDate: "2026-03-30",
+      discoveredDate: "2026-03-30", relatedTickets: [], location: [],
+    }));
+    const before = readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8");
+    const writeSpy = vi.spyOn(projectLoader, "writeIssueUnlocked").mockRejectedValueOnce(new Error("disk full"));
+
+    const { IssueFixStage } = await import("../../../src/autonomous/stages/issue-fix.js");
+    const stage = new IssueFixStage();
+    const ctx = new StageContext(testRoot, sessionDir, state0, makeRecipe());
+
+    const advance = await stage.report(ctx, { completedAction: "issue_fixed" });
+    expect(advance.action).toBe("retry");
+    // Nothing landed: no epoch stamped, no session mirror, issue byte-identical.
+    expect(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8")).toBe(before);
+    expect((ctx.state as unknown as Record<string, unknown>).issueResolutionEpoch).toBeUndefined();
+    writeSpy.mockRestore();
+  });
+
+  it("[codex round-2 finding #3, TOCTOU] refuses to stamp when the issue drifted off resolved between the unlocked check and the locked write", async () => {
+    const state0 = makeState({ state: "ISSUE_FIX", currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" } });
+    // The REAL on-disk file reflects a foreign session having already reopened
+    // it -- this is what the locked, fresh re-read inside the write must see.
+    writeFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), JSON.stringify({
+      id: "ISS-001", title: "Critical bug", status: "open", severity: "critical",
+      components: ["core"], impact: "App crashes", resolution: null, resolvedDate: null,
+      discoveredDate: "2026-03-30", relatedTickets: [], location: [],
+    }));
+    const before = readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8");
+
+    // The UNLOCKED check (report()'s own ctx.loadProject() call) is stale --
+    // it still observed the issue as "resolved", simulating the window
+    // between that read and the foreign reopen landing on disk.
+    const { loadProject } = await import("../../../src/core/project-loader.js");
+    const staleState = await loadProject(testRoot);
+    const staleIssue = staleState.state.issues.find((i) => i.id === "ISS-001")!;
+    vi.spyOn(projectLoader, "loadProject").mockResolvedValueOnce({
+      ...staleState,
+      state: {
+        ...staleState.state,
+        issues: staleState.state.issues.map((i) => i.id === "ISS-001" ? { ...staleIssue, status: "resolved" as const, resolution: "Fixed", resolvedDate: "2026-03-30" } : i),
+      },
+    });
+
+    const { IssueFixStage } = await import("../../../src/autonomous/stages/issue-fix.js");
+    const stage = new IssueFixStage();
+    const ctx = new StageContext(testRoot, sessionDir, state0, makeRecipe());
+
+    const advance = await stage.report(ctx, { completedAction: "issue_fixed" });
+    expect(advance.action).toBe("retry");
+    // The foreign reopen is left completely undisturbed: no epoch stamped on
+    // top of it, byte-identical to what the foreign session wrote.
+    expect(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8")).toBe(before);
+  });
+
+  it("[ISS-1032 Amendment A5] stamps a resolution epoch on the issue and mirrors it into session state", async () => {
+    const state0 = makeState({ state: "ISSUE_FIX", currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" } });
+    writeFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), JSON.stringify({
+      id: "ISS-001", title: "Critical bug", status: "resolved", severity: "critical",
+      components: ["core"], impact: "App crashes", resolution: "Fixed", resolvedDate: "2026-03-30",
+      discoveredDate: "2026-03-30", relatedTickets: [], location: [],
+    }));
+
+    const { IssueFixStage } = await import("../../../src/autonomous/stages/issue-fix.js");
+    const stage = new IssueFixStage();
+    const ctx = new StageContext(testRoot, sessionDir, state0, makeRecipe());
+
+    await stage.report(ctx, { completedAction: "issue_fixed" });
+
+    const after = JSON.parse(readFileSync(join(testRoot, ".story", "issues", "ISS-001.json"), "utf-8"));
+    expect(after.resolutionEpoch).toMatchObject({ issueId: "ISS-001", sessionId: state0.sessionId });
+    expect(typeof after.resolutionEpoch.establishedAt).toBe("string");
+
+    const mirrored = (ctx.state as unknown as Record<string, unknown>).issueResolutionEpoch;
+    expect(mirrored).toEqual(after.resolutionEpoch);
   });
 });
 

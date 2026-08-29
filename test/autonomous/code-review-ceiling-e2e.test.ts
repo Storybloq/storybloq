@@ -196,7 +196,7 @@ function seedSession(root: string, completedRounds: number) {
     // at session START, which this fixture does not run. Both are set, so the
     // fixture matches the shape a real session carries.
     resolvedStages: { CODE_REVIEW: { maxReviewRounds: CAP } },
-    codeReviewRoundCounter: { ticketId: CANON, completedRounds },
+    codeReviewRoundCounter: { workItemId: CANON, kind: "ticket", completedRounds },
     git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
     reviews: { plan: [], code: [] },
   } as unknown as FullSessionState);

@@ -130,6 +130,7 @@ function makeState(root: string, overrides: Partial<FullSessionState> = {}): Ful
     filedDeferrals: [],
     pendingDeferrals: [],
     deferralsUnfiled: false,
+    frozenGate: { status: "ungated" },
     ...overrides,
   } as unknown as FullSessionState;
 }

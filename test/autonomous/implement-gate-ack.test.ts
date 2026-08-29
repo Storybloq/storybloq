@@ -54,20 +54,20 @@ describe("ImplementStage.enter() (T-474 deltas rendering)", () => {
   afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
 
   it("renders the deltas section when approvedPlanAckDeltas is present", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState({ approvedPlanAckDeltas: "Follow up with a caching layer in a later ticket." }), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ frozenGate: { status: "ungated" }, approvedPlanAckDeltas: "Follow up with a caching layer in a later ticket." }), makeRecipe());
     const result = await stage.enter(ctx);
     expect(result.instruction).toContain("## Pen-approved plan-ack deltas (binding)");
     expect(result.instruction).toContain("Follow up with a caching layer in a later ticket.");
   });
 
   it("renders nothing extra when approvedPlanAckDeltas is absent", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState({ approvedPlanAckDeltas: null }), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ frozenGate: { status: "ungated" }, approvedPlanAckDeltas: null }), makeRecipe());
     const result = await stage.enter(ctx);
     expect(result.instruction).not.toContain("Pen-approved plan-ack deltas");
   });
 
   it("renders nothing extra when approvedPlanAckDeltas was never set (undefined)", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ frozenGate: { status: "ungated" } }), makeRecipe());
     const result = await stage.enter(ctx);
     expect(result.instruction).not.toContain("Pen-approved plan-ack deltas");
   });

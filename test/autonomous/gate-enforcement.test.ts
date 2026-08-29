@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import { resolveOrReadFrozenGateStatus, resolveGateStatus } from "../../src/autonomous/stages/gate-enforcement.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
-import type { TicketRefResolver } from "../../src/core/arrangement-bounds.js";
+import type { TicketRefResolver, IssueRefResolver } from "../../src/core/arrangement-bounds.js";
 import { loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
 import { isArrangementConflicted } from "../../src/core/arrangement-authority.js";
 
@@ -88,11 +88,12 @@ describe("T-478: resolveGateStatus fails closed on a conflicted arrangement, reg
   let testRoot: string;
   const canonicalTicketId = "t-aaa0000000000001";
 
-  const resolver: TicketRefResolver = {
+  const resolver: TicketRefResolver & IssueRefResolver = {
     resolveTicketRef: (ref: string) =>
       ref === "T-001"
         ? { kind: "found", item: { id: canonicalTicketId } as never }
         : { kind: "missing" as const },
+    resolveIssueRef: () => ({ kind: "missing" as const }),
   };
 
   beforeEach(() => {
@@ -141,7 +142,7 @@ describe("T-478: resolveGateStatus fails closed on a conflicted arrangement, reg
     expect(scan.arrangements).toHaveLength(1);
     expect(isArrangementConflicted(scan.arrangements[0]!)).toBe(true);
 
-    const result = resolveGateStatus(testRoot, canonicalTicketId, resolver);
+    const result = resolveGateStatus(testRoot, { kind: "ticket", id: canonicalTicketId }, resolver);
 
     expect(result.status).toBe("unresolved");
     expect(result.status).not.toBe("ungated");
@@ -150,7 +151,7 @@ describe("T-478: resolveGateStatus fails closed on a conflicted arrangement, reg
   it("an unconflicted, active, covering arrangement still resolves gated as before (no false-positive from the new check)", () => {
     writeArrangement("a-fedcba9876543210", { gates: [{ name: "plan-ack", ackRole: "pen" }] });
 
-    const result = resolveGateStatus(testRoot, canonicalTicketId, resolver);
+    const result = resolveGateStatus(testRoot, { kind: "ticket", id: canonicalTicketId }, resolver);
 
     expect(result.status).toBe("gated");
     if (result.status === "gated") {

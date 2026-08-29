@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { GateAckSchema, computeGateAckId, type GateAck, type GateAckPin } from "../models/gate-ack.js";
 import type { ArrangementRole } from "../models/arrangement.js";
-import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX } from "../models/types.js";
+import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX } from "../models/types.js";
 import { readBoundedRegularFile } from "./pin-utils.js";
 import { sanitizeDisplayText } from "./display-text.js";
 import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-loader.js";
@@ -164,14 +164,25 @@ function scanGateAckDir(root: string): GateAckDirScan {
         ? ((parsed as Record<string, unknown>).ticketRef as string)
         : null;
     // "Recoverable" (per this module's corruption doctrine, above) means the
-    // value could actually IDENTIFY a real ticket -- an empty string or
-    // garbage text is technically a string but can never equal a real
+    // value could actually IDENTIFY a real ticket OR issue -- an empty string
+    // or garbage text is technically a string but can never equal a real
     // canonical ticketRef, so treating it as attributed would silently drop
-    // it from BOTH this ticket's scoped warnings AND the project-wide
+    // it from BOTH this ref's scoped warnings AND the project-wide
     // unattributed-corruption bucket, exactly the "confident wrong answer"
     // the doctrine exists to prevent.
+    //
+    // ISS-1032/ISS-1049 (Amendment A4): `ticketRef` (the field name predates
+    // the WorkItemRef unification) now legitimately holds an issue ref too
+    // (models/gate-ack.ts's `ticketRef: z.union([TicketRefSchema,
+    // IssueRefSchema])`) -- recognizing only the ticket shape here left a
+    // corrupted ISSUE-linked ack unrecoverable, which forced the OVER-BROAD
+    // project-wide-corruption bucket (every ref in the run reads "unknown")
+    // instead of the correctly SCOPED one (only that issue reads "unknown").
     const rawTicketRef =
-      candidateTicketRef !== null && (TICKET_ID_REGEX.test(candidateTicketRef) || TICKET_CANONICAL_ID_REGEX.test(candidateTicketRef))
+      candidateTicketRef !== null && (
+        TICKET_ID_REGEX.test(candidateTicketRef) || TICKET_CANONICAL_ID_REGEX.test(candidateTicketRef) ||
+        ISSUE_ID_REGEX.test(candidateTicketRef) || ISSUE_CANONICAL_ID_REGEX.test(candidateTicketRef)
+      )
         ? candidateTicketRef
         : null;
     const result = GateAckSchema.safeParse(parsed);
@@ -270,23 +281,46 @@ export function unattributedWarningsFromScan(scan: GateAckDirScan): readonly str
 }
 
 /**
- * Resolves a raw ref string (e.g. a warning entry's `rawTicketRef`) to the
- * canonical ticket id it identifies, or `null` when it identifies no KNOWN
- * ticket. `ticketAcksFromScan` needs this rather than plain string equality
- * because this project's ledger is PERMANENTLY MIXED (CLAUDE.md): a ticket's
- * canonical id and its display id are different strings for a legacy ticket,
- * and a re-idented ticket can have PREVIOUS display ids too -- a corrupt
- * ack's raw `ticketRef` field could legitimately name the same real ticket
- * `computeReviewCoverage` was queried with, spelled a different way. Built at
- * the `storybloq landings` boundary from `ProjectState.resolveTicketRef`
- * (canonical + current display id + previous display ids, in one call); a
- * caller with no `ProjectState` (this module's own single-ticket tests) may
- * omit it entirely.
+ * `found`: resolves to exactly one known item, by id.
+ * `ambiguous`: resolves to MORE THAN ONE known item sharing that alias (a
+ * duplicate display id -- Team Mode's own documented "permanently mixed
+ * ledger" transient state, not a corruption of the ack itself).
+ * `missing`: identifies no known item at all.
  */
-export type TicketRefResolver = (raw: string) => string | null;
+export type RefResolution =
+  | { readonly kind: "found"; readonly id: string }
+  | { readonly kind: "ambiguous"; readonly ids: readonly string[] }
+  | { readonly kind: "missing" };
+
+/**
+ * Resolves a raw ref string (e.g. a warning entry's `rawTicketRef`) to the
+ * known item(s) it identifies. `ticketAcksFromScan` needs this rather than
+ * plain string equality because this project's ledger is PERMANENTLY MIXED
+ * (CLAUDE.md): a ticket's canonical id and its display id are different
+ * strings for a legacy ticket, and a re-idented ticket can have PREVIOUS
+ * display ids too -- a corrupt ack's raw `ticketRef` field could legitimately
+ * name the same real ticket `computeReviewCoverage` was queried with, spelled
+ * a different way. Built at the `storybloq landings` boundary from
+ * `ProjectState.resolveTicketRef`/`resolveIssueRef` (canonical + current
+ * display id + previous display ids, in one call, dispatched by the raw
+ * ref's own shape -- Amendment A4); a caller with no `ProjectState` (this
+ * module's own single-ticket tests) may omit it entirely.
+ *
+ * ISS-1032/ISS-1049 (Amendment A4, codex round-3 finding): `ambiguous` is
+ * its own outcome, never collapsed into the same "missing" bucket. A
+ * resolver that could only say "found" or "not found" made a genuinely
+ * ambiguous alias (two issues sharing one display id) indistinguishable from
+ * a totally unknown ref -- and `ticketAcksFromScan` routed BOTH to the
+ * unscoped `unattributedWarnings` bucket, which `computeReviewCoverage`
+ * never even reads (only `scopedWarnings` gates its verdict). The corrupted
+ * ack then poisoned NEITHER candidate item's own coverage, each of which
+ * read a confident `absent` instead of the `unknown` the doctrine requires
+ * whenever a scoped warning could belong to THIS item.
+ */
+export type TicketRefResolver = (raw: string) => RefResolution;
 
 /** The acceptor's ruling default (T-477 round-4 cap escalation): with no resolver, nothing can be confirmed as a DIFFERENT known ticket, so classification never excludes -- see `ticketAcksFromScan`. */
-const NO_KNOWN_TICKETS: TicketRefResolver = () => null;
+const NO_KNOWN_TICKETS: TicketRefResolver = () => ({ kind: "missing" });
 
 /**
  * T-477: ticket-scoped ack listing for the review-coverage view. Unlike
@@ -334,15 +368,28 @@ export function ticketAcksFromScan(
       unattributedWarnings.push(message);
       continue;
     }
-    const resolved = entry.rawTicketRef === ticketRef ? ticketRef : resolveTicketRef(entry.rawTicketRef);
-    if (resolved === ticketRef) {
+    if (entry.rawTicketRef === ticketRef) {
       scopedWarnings.push(message);
-    } else if (resolved === null) {
-      // Ticket-shaped but resolves to no KNOWN ticket -- fail-closed, not a
-      // confident "belongs to someone else".
+      continue;
+    }
+    const resolution = resolveTicketRef(entry.rawTicketRef);
+    if (resolution.kind === "found") {
+      if (resolution.id === ticketRef) scopedWarnings.push(message);
+      // else: resolved to a DIFFERENT known item -- excluded entirely, by design.
+    } else if (resolution.kind === "ambiguous") {
+      // ISS-1032/ISS-1049 (Amendment A4, codex round-3 finding): a duplicate
+      // display id resolves to SEVERAL known items. Scoped here only when
+      // THIS query's own ref is among them -- an ambiguity among some other,
+      // unrelated group of items is still safely excluded for us, but each
+      // of those OTHER items' own query would see itself among `ids` and get
+      // scoped in turn. Fail-closed to "could be ours", never silently
+      // dropped into the unscoped bucket `computeReviewCoverage` never reads.
+      if (resolution.ids.includes(ticketRef)) scopedWarnings.push(message);
+    } else {
+      // Ticket/issue-shaped but resolves to no KNOWN item at all -- fail-closed,
+      // not a confident "belongs to someone else".
       unattributedWarnings.push(message);
     }
-    // else: resolved to a DIFFERENT known ticket -- excluded entirely, by design.
   }
   return { acks, scopedWarnings, unattributedWarnings };
 }

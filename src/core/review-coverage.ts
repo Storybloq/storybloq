@@ -105,10 +105,13 @@ export function computeReviewCoverage(
   gateAckScan?: GateAckDirScan,
   resolveTicketRef?: TicketRefResolver,
 ): ReviewCoverage {
-  // Step 1: issue ref -> notApplicable, stop. GateAckPin's ticketRef is
-  // ticket-shaped-only (models/gate-ack.ts:70 / models/types.ts:184-189), so
-  // an issue-linked landing cannot have a matching gate-ack under T-474.
-  if (!isTicketShapedRef(ref)) return NOT_APPLICABLE;
+  // Step 1: notApplicable, stop -- but ONLY for a ref that is neither
+  // ticket- nor issue-shaped. ISS-1032/ISS-1049 (Amendment A4): `GateAckPin`'s
+  // `ticketRef` field is `z.union([TicketRefSchema, IssueRefSchema])`
+  // (models/gate-ack.ts) as of the WorkItemRef unification, so an
+  // issue-linked landing CAN have a matching gate-ack -- the T-474-era
+  // "ticket-shaped-only" premise this comment used to cite no longer holds.
+  if (!isTicketShapedRef(ref) && !isIssueShapedRef(ref)) return NOT_APPLICABLE;
 
   // Project-wide corruption doctrine (see module doc comment): checked
   // before this ticket's own scoped scan, since it overrides a clean result

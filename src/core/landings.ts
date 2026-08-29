@@ -227,11 +227,38 @@ function resolveSubjectToken(state: ProjectState, token: string): ResolvedToken 
  * ids in one call, which is exactly the alias set a corrupt ack's raw
  * `ticketRef` could legitimately be spelled with in this permanently-mixed
  * ledger.
+ *
+ * ISS-1032/ISS-1049 (Amendment A4): dispatches by the RAW ref's own shape --
+ * ticket-shaped through `resolveTicketRef`, issue-shaped through
+ * `resolveIssueRef` -- rather than only ever consulting the ticket resolver.
+ * `GateAckPin.ticketRef` (the field name predates the WorkItemRef
+ * unification) now legitimately holds an issue ref too, so a corrupted
+ * ack's raw ref spelled in DISPLAY form (`ISS-100`, not the canonical
+ * `i-...` this function is queried with) needs the issue-side alias set to
+ * resolve at all; without this, `ticketAcksFromScan`'s ticket-only resolver
+ * always returned null for it, misattributing the corruption to the
+ * project-wide unattributed bucket instead of scoping it to that one issue
+ * (codex round-2 finding: direct canonical-form issue refs happened to work
+ * through this file's own `entry.rawTicketRef === ticketRef` string-equality
+ * fast path, masking the gap in every test that used the canonical form).
+ *
+ * ISS-1032/ISS-1049 (Amendment A4, codex round-3 finding): preserves
+ * `ResolveResult`'s `ambiguous` outcome rather than collapsing it to the same
+ * `null`/missing result as a genuinely unknown ref. Two items sharing one
+ * display id is a real, documented transient ledger state (Team Mode's
+ * "Duplicate display ids"), not corruption -- a corrupted ack spelled with
+ * that shared alias could belong to EITHER item, and `ticketAcksFromScan`
+ * needs to see that it is ambiguous specifically to scope the resulting
+ * `unknown` to both candidates, rather than reporting a confident `absent`
+ * for both because the ambiguity fell into the bucket `computeReviewCoverage`
+ * never reads.
  */
 function makeTicketRefResolver(state: ProjectState): TicketRefResolver {
   return (raw) => {
-    const r = state.resolveTicketRef(raw);
-    return r.kind === "found" ? r.item.id : null;
+    const r = isIssueShapedRef(raw) ? state.resolveIssueRef(raw) : state.resolveTicketRef(raw);
+    if (r.kind === "found") return { kind: "found", id: r.item.id };
+    if (r.kind === "ambiguous") return { kind: "ambiguous", ids: r.matches.map((m) => m.id) };
+    return { kind: "missing" };
   };
 }
 

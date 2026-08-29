@@ -240,6 +240,39 @@ describe("handleGateAckCreate", () => {
     const ack = JSON.parse(result.output).data;
     expect(ack.reviewTrail).toEqual({ present: true, codexSessionId: "sess-1", verdict: "approve", rounds: 2 });
   });
+
+  it("[ISS-1049] --ticket accepts an ISSUE ref, resolved to its canonical id, same as a ticket ref", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "gate-ack-cli-issue-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    const { handleIssueCreate } = await import("../../../src/cli/commands/issue.js");
+    const createdIssue = await handleIssueCreate(
+      { title: "Duet gate-ack issue", severity: "medium", impact: "test", components: [], relatedTickets: [], location: [] },
+      "json",
+      dir,
+    );
+    const issueCanonicalId = JSON.parse(createdIssue.output).data.id as string;
+
+    const created = await handleArrangementCreate(
+      { bounds: ["ISS-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+      "json",
+      dir,
+    );
+    const arrangementId = JSON.parse(created.output).data.id as string;
+    const arrPath = join(dir, ".story", "arrangements", `${arrangementId}.json`);
+    const raw = JSON.parse(await readFile(arrPath, "utf-8")) as Arrangement;
+    raw.gates = [{ name: "pre-commit-ack", ackRole: "pen" }];
+    await writeFile(arrPath, JSON.stringify(raw));
+
+    initGitRepo(dir);
+    const result = await handleGateAckCreate(
+      { arrangement: arrangementId, gate: "pre-commit-ack", ticket: "ISS-001", fromStaged: true },
+      "json",
+      dir,
+    );
+    const ack = JSON.parse(result.output).data;
+    expect(ack.ticketRef).toBe(issueCanonicalId);
+  });
 });
 
 describe("handleGateAckGet / handleGateAckList", () => {

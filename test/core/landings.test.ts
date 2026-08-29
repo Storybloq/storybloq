@@ -76,14 +76,15 @@ describe("buildLandings", () => {
     expect(landing.unresolvedTokens).toEqual([]);
   });
 
-  it("resolves an issue ref and reports notApplicable coverage for it", async () => {
+  it("[Amendment A4] resolves an issue ref and reports absent coverage for it -- issues are gate-ack-eligible since the WorkItemRef unification, no longer notApplicable", async () => {
+    commit(root, "chore: unrelated first commit"); // gives the ISS-200 commit a real parent
     commit(root, "fix: ISS-200 -- patch the bug");
     const state = makeState({ issues: [makeIssue({ id: "i-0000000000000200", displayId: "ISS-200" })] });
     const result = okResult(buildLandings(root, state, {}));
     const landing = result.landings[0]!;
     expect(landing.refs[0]!.ref).toBe("i-0000000000000200");
-    expect(landing.refs[0]!.coverage.gateAckCoverage).toBe("notApplicable");
-    expect(landing.summary).toBe("not-applicable");
+    expect(landing.refs[0]!.coverage.gateAckCoverage).toBe("absent");
+    expect(landing.summary).toBe("needs-attention");
   });
 
   it("records a ref-shaped token that does not resolve as unresolved, not silently dropped", async () => {
@@ -274,6 +275,73 @@ describe("buildLandings", () => {
       // exactly what round-4 finding #2 caught: the alias mismatch used to
       // make this indistinguishable from a truly unattributable record.
       expect(result.unattributedGateAckWarnings).toEqual([]);
+    });
+
+    it("[Amendment A4, codex round-2 finding] a broken ack's ticketRef spelled in an issue's DISPLAY form is scoped to that issue via the real ProjectState resolver, not fail-closed globally", async () => {
+      commit(root, "chore: unrelated first commit"); // gives the ISS-500 commit a real parent
+      commit(root, "fix: ISS-500 -- patch it"); // subject uses the DISPLAY form
+      // Broken record whose OWN ticketRef is spelled in the issue's DISPLAY
+      // form -- while `buildLandings` classifies this commit's ref in its
+      // CANONICAL form (below). Direct canonical-to-canonical string equality
+      // (the fast path in gate-ack-loader.ts's `ticketAcksFromScan`) would
+      // never catch this; only the alias-set resolver, now dispatching
+      // issue-shaped raw refs to `resolveIssueRef`, does.
+      await writeFile(
+        join(root, ".story", "arrangement-acks", "g-aliasedbrokeni0.json"),
+        JSON.stringify({
+          id: "g-aliasedbrokeni0",
+          arrangementId: "a-0000000000000001",
+          gateName: "pre-commit-ack",
+          ackRole: "pen",
+          ticketRef: "ISS-500",
+          pin: { kind: "plan-hash" },
+        }),
+      );
+      const state = makeState({ issues: [makeIssue({ id: "i-0000000000000500", displayId: "ISS-500" })] });
+      const result = okResult(buildLandings(root, state, {}));
+      // Scoped to ISS-500 itself (its own coverage reads unknown over its
+      // own unreadable ack)...
+      const landing = result.landings.find((l) => l.subject.includes("ISS-500"))!;
+      expect(landing.refs[0]!.coverage.gateAckCoverage).toBe("unknown");
+      // ...and NOT leaked into the project-wide unattributed bucket.
+      expect(result.unattributedGateAckWarnings).toEqual([]);
+    });
+
+    it("[Amendment A4, codex round-3 finding] a corrupted ack citing a DUPLICATE display id shared by two issues scopes unknown to BOTH candidates, never a confident absent for either", async () => {
+      commit(root, "chore: unrelated first commit"); // gives both commits real parents
+      // The commit subjects use the CANONICAL form (unambiguous even though
+      // both issues share a display id) -- only the CORRUPTED ACK below uses
+      // the shared display form, which is the actual ambiguity under test.
+      commit(root, "fix: i-0000000000000601 -- patch the first one");
+      commit(root, "fix: i-0000000000000602 -- patch the second one, same display id");
+      // Two DIFFERENT issues sharing the SAME display id -- a real,
+      // documented transient ledger state (Team Mode's "Duplicate display
+      // ids"), not corruption. A corrupted ack spelled with that shared
+      // alias cannot be confidently excluded from either candidate.
+      await writeFile(
+        join(root, ".story", "arrangement-acks", "g-ambiguousref00.json"),
+        JSON.stringify({
+          id: "g-ambiguousref00",
+          arrangementId: "a-0000000000000001",
+          gateName: "pre-commit-ack",
+          ackRole: "pen",
+          ticketRef: "ISS-600",
+          pin: { kind: "plan-hash" },
+        }),
+      );
+      const state = makeState({
+        issues: [
+          makeIssue({ id: "i-0000000000000601", displayId: "ISS-600" }),
+          makeIssue({ id: "i-0000000000000602", displayId: "ISS-600" }),
+        ],
+      });
+      const result = okResult(buildLandings(root, state, {}));
+      const firstLanding = result.landings.find((l) => l.subject.includes("first"))!;
+      const secondLanding = result.landings.find((l) => l.subject.includes("second"))!;
+      expect(firstLanding.refs[0]!.coverage.gateAckCoverage).toBe("unknown");
+      expect(secondLanding.refs[0]!.coverage.gateAckCoverage).toBe("unknown");
+      expect(["absent"]).not.toContain(firstLanding.refs[0]!.coverage.gateAckCoverage);
+      expect(["absent"]).not.toContain(secondLanding.refs[0]!.coverage.gateAckCoverage);
     });
 
     it("the project-wide unattributed-corruption doctrine forces every gate-ack-eligible ref to unknown for the whole run", async () => {

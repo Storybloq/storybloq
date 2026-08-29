@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
-import { arrangementCoversTicket } from "../../core/arrangement-bounds.js";
+import { arrangementCoversWorkItem, type WorkItemRef, type TicketRefResolver, type IssueRefResolver } from "../../core/arrangement-bounds.js";
 import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import type { ArrangementGateSchema } from "../../models/arrangement.js";
 import type { GateAckLookupResult } from "../../core/gate-ack-loader.js";
@@ -14,24 +14,25 @@ export type ArrangementGate = z.infer<typeof ArrangementGateSchema>;
 export type FrozenGate = NonNullable<FullSessionState["frozenGate"]>;
 
 /**
- * T-474 section 5: resolve a ticket's duet-mode gate posture from
- * `.story/arrangements/` fresh.
+ * T-474 section 5 (ISS-1049: generalized to any work item, ticket or issue):
+ * resolve a work item's duet-mode gate posture from `.story/arrangements/`
+ * fresh.
  *
  * Any scan warning (an unreadable arrangement anywhere in the project) makes
  * the WHOLE result "unresolved", regardless of whether a positive match is
  * also found among the successfully parsed entries -- an unreadable entry
- * could itself be a second arrangement covering the same ticket, so a scan
- * is trusted only when completely clean.
+ * could itself be a second arrangement covering the same item, so a scan is
+ * trusted only when completely clean.
  *
- * More than one `active` arrangement matching the same ticket also resolves
+ * More than one `active` arrangement matching the same item also resolves
  * "unresolved" -- write-time uniqueness at `arrangement update` should
  * prevent this, but it is checked defensively here rather than picking one
  * arbitrarily.
  */
 export function resolveGateStatus(
   root: string,
-  canonicalTicketId: string,
-  resolver: Parameters<typeof arrangementCoversTicket>[2],
+  item: WorkItemRef,
+  resolver: TicketRefResolver & IssueRefResolver,
 ): FrozenGate {
   const { arrangements, warnings } = loadArrangementsSafe(root);
   if (warnings.length > 0) {
@@ -44,14 +45,14 @@ export function resolveGateStatus(
     // T-478: checked BEFORE the lifecycle skip below, not after -- a
     // conflicted arrangement's retained `lifecycle` could itself be the
     // disputed field and could happen to read "closed", which would let the
-    // skip below silently resolve the ticket ungated instead of flagging it
+    // skip below silently resolve the item ungated instead of flagging it
     // unresolved. Ordering is load-bearing here.
     if (isArrangementConflicted(arrangement)) {
       sawUnresolved = true;
       continue;
     }
     if (arrangement.lifecycle !== "active") continue;
-    const coverage = arrangementCoversTicket(arrangement, canonicalTicketId, resolver);
+    const coverage = arrangementCoversWorkItem(arrangement, item, resolver);
     if (coverage === "unresolved") {
       sawUnresolved = true;
       continue;
@@ -68,7 +69,7 @@ export function resolveGateStatus(
   }
 
   if (sawUnresolved) {
-    return { status: "unresolved", reason: "more than one active arrangement's coverage of this ticket could not be conclusively resolved" };
+    return { status: "unresolved", reason: "more than one active arrangement's coverage of this item could not be conclusively resolved" };
   }
   if (matched) return { status: "gated", arrangementId: matched.arrangementId, gates: matched.gates };
   return { status: "ungated" };
@@ -80,15 +81,22 @@ export function resolveGateStatus(
  * lazily, once, and cached via `ctx.writeState` so every later check in the
  * same session reads the same frozen value rather than re-scanning.
  *
- * Ticket-only (T-474 section 7, ISS-1032-shaped descope): an issue-fix
- * session (`ctx.state.ticket` absent) always resolves to `{status:
- * "ungated"}` here -- there is no ticket to resolve gates against.
+ * ISS-1049: generalized to resolve against whichever work item this session
+ * is actually holding -- `ctx.state.ticket` for a ticket session,
+ * `ctx.state.currentIssue` for an issue-fix session (closing the T-474
+ * section 7 / ISS-1032-shaped descope this used to hardcode as `ungated`).
+ * Only a session holding NEITHER (between items, or a shape this stage never
+ * runs for) has nothing to resolve gates against.
  */
 export async function resolveOrReadFrozenGateStatus(ctx: StageContext): Promise<FrozenGate> {
   if (ctx.state.frozenGate !== undefined) return ctx.state.frozenGate;
 
-  const ticketId = ctx.state.ticket?.id;
-  if (!ticketId) {
+  const item: WorkItemRef | null = ctx.state.ticket
+    ? { kind: "ticket", id: ctx.state.ticket.id }
+    : ctx.state.currentIssue
+      ? { kind: "issue", id: ctx.state.currentIssue.id }
+      : null;
+  if (!item) {
     const resolved: FrozenGate = { status: "ungated" };
     ctx.writeState({ frozenGate: resolved });
     return resolved;
@@ -107,7 +115,7 @@ export async function resolveOrReadFrozenGateStatus(ctx: StageContext): Promise<
   let resolved: FrozenGate;
   try {
     const { state: projectState } = await ctx.loadProject();
-    resolved = resolveGateStatus(ctx.root, ticketId, projectState);
+    resolved = resolveGateStatus(ctx.root, item, projectState);
   } catch (err) {
     resolved = { status: "unresolved", reason: `project load failed: ${sanitizeDisplayText(String(err))}`.slice(0, 1024) };
   }

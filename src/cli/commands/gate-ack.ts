@@ -17,9 +17,23 @@ import { GateAckSchema, computeGateAckId, type GateAck, type GateAckPin } from "
 import { CliValidationError } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { ProjectState } from "../../core/project-state.js";
-import type { OutputFormat } from "../../models/types.js";
+import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX, type OutputFormat } from "../../models/types.js";
 
-function resolveCanonicalTicketRef(ref: string, state: ProjectState): string {
+/**
+ * ISS-1049: `--ticket` accepts either a ticket or an issue ref -- flag name
+ * kept for backward compatibility, dispatched by pattern the same way
+ * `arrangement-bounds.ts`'s `arrangementCoversWorkItem` classifies a bound
+ * ref (ticket and issue patterns are syntactically disjoint).
+ */
+function resolveCanonicalWorkItemRef(ref: string, state: ProjectState): string {
+  const isIssueRef = ISSUE_ID_REGEX.test(ref) || ISSUE_CANONICAL_ID_REGEX.test(ref);
+  const isTicketRef = TICKET_ID_REGEX.test(ref) || TICKET_CANONICAL_ID_REGEX.test(ref);
+  if (isIssueRef && !isTicketRef) {
+    const result = state.resolveIssueRef(ref);
+    if (result.kind === "missing") throw new CliValidationError("invalid_input", `Issue ref "${ref}" not found`);
+    if (result.kind === "ambiguous") throw new CliValidationError("invalid_input", `Issue ref "${ref}" is ambiguous`);
+    return result.item.id;
+  }
   const result = state.resolveTicketRef(ref);
   if (result.kind === "missing") throw new CliValidationError("invalid_input", `Ticket ref "${ref}" not found`);
   if (result.kind === "ambiguous") throw new CliValidationError("invalid_input", `Ticket ref "${ref}" is ambiguous`);
@@ -122,7 +136,7 @@ export async function handleGateAckCreate(
       throw new CliValidationError("invalid_input", `Arrangement ${args.arrangement} has no gate named "${args.gate}"`);
     }
 
-    const ticketRef = resolveCanonicalTicketRef(args.ticket, state);
+    const ticketRef = resolveCanonicalWorkItemRef(args.ticket, state);
     const pin = args.planFile ? computePlanHashPin(args.planFile) : computeTreeDigestPin(root);
     const id = computeGateAckId(arrangement.id, gate.name, ticketRef, pin);
     const reviewTrail = args.verdict

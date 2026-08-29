@@ -7,8 +7,46 @@ import {
 } from "../../core/validation.js";
 import { validateIssueSourceRefs } from "../../core/issue-source-ref.js";
 import { loadRulingsSafe } from "../../core/ruling-loader.js";
+import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
+import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { ExitCode, formatValidation } from "../../core/output-formatter.js";
 import type { CommandContext, CommandResult } from "../types.js";
+
+/**
+ * ISS-1050 interim: surfaces a plan-ack-without-pre-commit-ack risk for any
+ * on-disk arrangement matching that shape, regardless of how it got there
+ * (hand-edit, future create/update once gates become configurable, or a
+ * merge-driver-produced record).
+ *
+ * Also surfaces `loadArrangementsSafe`'s own per-file loader warnings
+ * (codex round-1 finding, verified against source): `cli/commands/
+ * conflicts.ts`'s `arrangementWarningsSection` tells the user "Run
+ * `storybloq validate` for details" whenever the arrangement scan is
+ * incomplete -- that promise was broken without this, since nothing else in
+ * `validate` surfaced those warnings (`buildStatusArrangements` is
+ * `status`-only, and the reconcile/conflicts front-gates report at their own
+ * command's call time, not at `validate`'s).
+ */
+function arrangementFindings(root: string): ValidationFinding[] {
+  const { arrangements, warnings } = loadArrangementsSafe(root);
+  const findings: ValidationFinding[] = warnings.map((message) => ({
+    level: "warning",
+    code: "arrangement_loader_warning",
+    message,
+    entity: null,
+  }));
+  for (const arrangement of arrangements) {
+    for (const warning of arrangementGateRiskWarnings(arrangement.gates)) {
+      findings.push({
+        level: "warning",
+        code: "arrangement_gate_risk",
+        message: `arrangement ${arrangement.id}: ${warning}`,
+        entity: null,
+      });
+    }
+  }
+  return findings;
+}
 
 /**
  * T-476: this is the ONE `validate` call site that loads the ruling
@@ -35,7 +73,7 @@ function validateWithRulings(ctx: CommandContext): ValidationResult {
     message,
     entity: null,
   }));
-  return appendValidationFindings(merged, loaderFindings);
+  return appendValidationFindings(merged, [...loaderFindings, ...arrangementFindings(ctx.root)]);
 }
 
 export function handleValidate(ctx: CommandContext): CommandResult {

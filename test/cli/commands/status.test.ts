@@ -180,6 +180,20 @@ describe("handleStatus: arrangements (T-473)", () => {
     expect(out).not.toContain("## Arrangements");
   });
 
+  it("T-478: reports an arrangement_gate_risk-shaped warning for a plan-ack-without-pre-commit-ack arrangement (ISS-1050 interim)", async () => {
+    const root = tempRoot();
+    writeArrangement(root, { gates: [{ name: "plan-ack", ackRole: "pen" }] });
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+    expect(parsed.data.arrangementWarnings.some((w) => w.includes("plan-ack") && w.includes("pre-commit-ack") && w.includes("ISS-1050"))).toBe(true);
+  });
+
+  it("T-478: no gate-risk warning when both plan-ack and pre-commit-ack are configured", async () => {
+    const root = tempRoot();
+    writeArrangement(root, { gates: [{ name: "plan-ack", ackRole: "pen" }, { name: "pre-commit-ack", ackRole: "pen" }] });
+    const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+    expect(parsed.data.arrangementWarnings).toEqual([]);
+  });
+
   it("reports a warning, not a failure, for a bound ref that no longer resolves", async () => {
     const root = tempRoot();
     writeArrangement(root, { bounds: ["T-999"] });

@@ -17,6 +17,7 @@ import { handleArrangementCreate } from "../../src/cli/commands/arrangement.js";
 import { writeGateAckUnlocked } from "../../src/core/gate-ack-loader.js";
 import { computeGateAckId, PLAN_ACK_GATE_NAME, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
 import { sha256Bytes } from "../../src/core/pin-utils.js";
+import { SessionStateSchema } from "../../src/autonomous/session-types.js";
 
 const PARTIES = [
   { role: "pen" as const, client: "claude" as const, identityAnchor: "pen-session" },
@@ -335,5 +336,80 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
     expect(result.action).toBe("advance");
     expect(ctx.state.frozenGate).toEqual({ status: "ungated" });
+  });
+
+  describe("T-478: ISS-1050 interim -- plan-ack-without-pre-commit-ack risk warning", () => {
+    it("surfaces the gate-risk warning in the report()-path hold instruction (no ack recorded yet)", async () => {
+      // Default gateNames is [PLAN_ACK_GATE_NAME] alone -- the risky shape.
+      const { root, ticketId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      writeFileSync(join(sessionDir, "plan.md"), "# The plan\n\nDo the thing.\n");
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      expect(result.action).toBe("retry");
+      if (result.action === "retry") {
+        expect(result.instruction).toContain("plan-ack");
+        expect(result.instruction).toContain("pre-commit-ack");
+        expect(result.instruction).toContain("ISS-1050");
+      }
+    });
+
+    it("surfaces the gate-risk warning in the check_gate_ack-path hold instruction (renderGateAckHold branch)", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      writeFileSync(join(sessionDir, "plan.md"), "# Plan\n");
+      const planHash = sha256Bytes(readFileSync(join(sessionDir, "plan.md")));
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId, {
+        pendingPlanAck: { ticketId, arrangementId, gateName: PLAN_ACK_GATE_NAME, pinSha256: planHash },
+      }), makeRecipe());
+      // No gate-ack has been recorded for this pin -- handleCheckGateAck's
+      // final `lookup.status !== "valid"` branch, the OTHER renderGateAckHold
+      // call site (distinct from the report()-path one above).
+      const result = await stage.report(ctx, { completedAction: "check_gate_ack" });
+      expect(result.action).toBe("retry");
+      if (result.action === "retry") {
+        expect(result.instruction).toContain("plan-ack");
+        expect(result.instruction).toContain("pre-commit-ack");
+        expect(result.instruction).toContain("ISS-1050");
+      }
+    });
+
+    it("does not warn when the arrangement pairs plan-ack with pre-commit-ack", async () => {
+      const { root, ticketId } = await newProjectWithGatedTicket([PLAN_ACK_GATE_NAME, "pre-commit-ack"]);
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      writeFileSync(join(sessionDir, "plan.md"), "# The plan\n");
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      expect(result.action).toBe("retry");
+      if (result.action === "retry") {
+        expect(result.instruction).not.toContain("ISS-1050");
+      }
+    });
+
+    it("frozenGate's persisted session-state shape is unaffected -- round-trips through the real Zod schema with no extra or stripped fields", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+      tempDirs.push(root);
+      const sessionDir = newSessionDirIn(root);
+      writeFileSync(join(sessionDir, "plan.md"), "# The plan\n");
+
+      const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
+      await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+
+      const frozenGate = ctx.state.frozenGate;
+      expect(frozenGate).toEqual({ status: "gated", arrangementId, gates: [{ name: PLAN_ACK_GATE_NAME, ackRole: "pen" }] });
+      // Guards against a future edit that (re-)attaches the warning onto
+      // `frozenGate` without a matching Zod schema change (codex round 2's
+      // finding): such a field would survive the `toEqual` above but be
+      // silently stripped by this parse, which is the actual persistence
+      // path every session reload goes through.
+      const roundTripped = SessionStateSchema.shape.frozenGate.parse(frozenGate);
+      expect(roundTripped).toEqual(frozenGate);
+    });
   });
 });

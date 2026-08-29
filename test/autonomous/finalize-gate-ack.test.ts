@@ -41,7 +41,8 @@ import { initProject } from "../../src/core/init.js";
 import { handleTicketCreate } from "../../src/cli/commands/ticket.js";
 import { handleArrangementCreate } from "../../src/cli/commands/arrangement.js";
 import { writeGateAckUnlocked } from "../../src/core/gate-ack-loader.js";
-import { computeGateAckId, PRECOMMIT_ACK_GATE_NAME, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
+import { computeGateAckId, PRECOMMIT_ACK_GATE_NAME, PLAN_ACK_GATE_NAME, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
+import { SessionStateSchema } from "../../src/autonomous/session-types.js";
 
 const mockedGitHead = vi.mocked(gitHead);
 const mockedGitDiffTreeNames = vi.mocked(gitDiffTreeNames);
@@ -84,6 +85,28 @@ async function newProjectWithGatedTicket(): Promise<{ root: string; ticketId: st
   const path = join(root, ".story", "arrangements", `${arrangementId}.json`);
   const raw = JSON.parse(await readFile(path, "utf-8"));
   raw.gates = [{ name: PRECOMMIT_ACK_GATE_NAME, ackRole: "pen" }];
+  await writeFile(path, JSON.stringify(raw));
+  return { root, ticketId: "T-001", arrangementId };
+}
+
+/** T-478 (ISS-1050 interim): plan-ack configured with NO paired pre-commit-ack -- the risky shape. */
+async function newProjectWithPlanAckOnlyGatedTicket(): Promise<{ root: string; ticketId: string; arrangementId: string }> {
+  const root = mkdtempSync(join(tmpdir(), "finalize-gate-risk-"));
+  await initProject(root, { name: "test" });
+  await handleTicketCreate(
+    { title: "Duet ticket", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+    "md",
+    root,
+  );
+  const created = await handleArrangementCreate(
+    { bounds: ["T-001"], parties: PARTIES, onIrreversibleWork: "hold" },
+    "json",
+    root,
+  );
+  const arrangementId = JSON.parse(created.output).data.id as string;
+  const path = join(root, ".story", "arrangements", `${arrangementId}.json`);
+  const raw = JSON.parse(await readFile(path, "utf-8"));
+  raw.gates = [{ name: PLAN_ACK_GATE_NAME, ackRole: "pen" }];
   await writeFile(path, JSON.stringify(raw));
   return { root, ticketId: "T-001", arrangementId };
 }
@@ -356,5 +379,47 @@ describe("FINALIZE pre-commit-ack gate (T-474)", () => {
     if (result.action === "retry") {
       expect(result.instruction).not.toContain("gate-ack");
     }
+  });
+
+  describe("T-478: ISS-1050 interim -- plan-ack-without-pre-commit-ack risk warning", () => {
+    it("surfaces the gate-risk warning in the 'Now commit' instruction, with no gate-ack hold at all (no pre-commit-ack gate exists to hold on)", async () => {
+      const { root, ticketId } = await newProjectWithPlanAckOnlyGatedTicket();
+      tempDirs.push(root);
+      newFixture();
+      mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+      mockedGitDiffCachedNames.mockResolvedValue({ ok: true, data: [`.story/tickets/${ticketId}.json`, "src/thing.ts"] });
+
+      const ctx = new StageContext(root, sessionDir, makeState(ticketId, { finalizeCheckpoint: null }), makeRecipe());
+      const result = await stage.report(ctx, { completedAction: "files_staged" });
+      expect(result.action).toBe("retry");
+      if (result.action === "retry") {
+        expect(result.instruction).toContain("Now commit");
+        expect(result.instruction).toContain("plan-ack");
+        expect(result.instruction).toContain("pre-commit-ack");
+        expect(result.instruction).toContain("ISS-1050");
+      }
+    });
+
+    it("frozenGate's persisted session-state shape is unaffected -- round-trips through the real Zod schema with no extra or stripped fields", async () => {
+      const { root, ticketId, arrangementId } = await newProjectWithPlanAckOnlyGatedTicket();
+      tempDirs.push(root);
+      newFixture();
+      mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+      mockedGitDiffCachedNames.mockResolvedValue({ ok: true, data: [`.story/tickets/${ticketId}.json`, "src/thing.ts"] });
+
+      const ctx = new StageContext(root, sessionDir, makeState(ticketId, { finalizeCheckpoint: null }), makeRecipe());
+      await stage.report(ctx, { completedAction: "files_staged" });
+
+      const frozenGate = ctx.state.frozenGate;
+      expect(frozenGate).toEqual({ status: "gated", arrangementId, gates: [{ name: PLAN_ACK_GATE_NAME, ackRole: "pen" }] });
+      // The load-bearing check named by codex round 2: a future edit that
+      // (re-)attaches the warning onto `frozenGate` without a matching Zod
+      // schema change would pass the `toEqual` above (the in-memory object
+      // still has the extra field going INTO the parse) but get silently
+      // stripped coming back OUT of it -- exactly the strip-on-reload bug
+      // this test exists to catch.
+      const roundTripped = SessionStateSchema.shape.frozenGate.parse(frozenGate);
+      expect(roundTripped).toEqual(frozenGate);
+    });
   });
 });

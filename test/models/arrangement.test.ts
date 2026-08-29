@@ -45,6 +45,16 @@ describe("ArrangementSchema", () => {
       expect(result.success).toBe(true);
     });
 
+    it("accepts a canonical-form node-qualified bound (ISS-1077)", () => {
+      const result = ArrangementSchema.safeParse(baseArrangement({ bounds: ["engine:t-0123456789abcdef"] }));
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts a mix of local and node-qualified bounds", () => {
+      const result = ArrangementSchema.safeParse(baseArrangement({ bounds: ["T-473", "engine:i-0123456789abcdef"] }));
+      expect(result.success).toBe(true);
+    });
+
     it("accepts onIrreversibleWork: escalate", () => {
       const result = ArrangementSchema.safeParse(
         baseArrangement({ unreachability: { onIrreversibleWork: "escalate" } }),
@@ -206,6 +216,26 @@ describe("ArrangementSchema", () => {
           ],
         }),
       );
+      expect(result.success).toBe(false);
+    });
+
+    it("accepts a display-form node-qualified bound (ISS-1077, amended by A4)", () => {
+      // A non-team-mode node's items have no canonical id at all -- resolveBoundRef
+      // stores whatever shape the resolved item's own `.id` actually is. Display
+      // form is exactly as valid a stored bound as canonical form; see
+      // NodeQualifiedBoundRefSchema's docblock for the full rationale and the
+      // traced-and-fenced coverage residual this permits.
+      const result = ArrangementSchema.safeParse(baseArrangement({ bounds: ["engine:T-001"] }));
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects a node-qualified bound with a bad node-name shape", () => {
+      const result = ArrangementSchema.safeParse(baseArrangement({ bounds: ["Engine!:t-0123456789abcdef"] }));
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a node-qualified bound with neither ticket nor issue shape", () => {
+      const result = ArrangementSchema.safeParse(baseArrangement({ bounds: ["engine:x-0123456789abcdef"] }));
       expect(result.success).toBe(false);
     });
   });

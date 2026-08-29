@@ -1,9 +1,10 @@
-import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked } from "../../core/project-loader.js";
+import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked, loadProject } from "../../core/project-loader.js";
 import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
 import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import { earmarkMatchesArrangement } from "../../core/earmarks.js";
 import { generateCanonicalId } from "../../core/canonical-id.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
+import { resolveNodeRoot } from "../../mcp/node-resolution.js";
 import {
   formatArrangement,
   formatArrangementList,
@@ -20,6 +21,7 @@ import {
   type ArrangementParty,
 } from "../../models/arrangement.js";
 import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX, type OutputFormat } from "../../models/types.js";
+import { CROSS_NODE_REF_CAPTURE_REGEX } from "../../models/ticket.js";
 import { CliValidationError } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { ProjectState } from "../../core/project-state.js";
@@ -34,8 +36,51 @@ import type { ProjectState } from "../../core/project-state.js";
  * later collides. Ticket and issue ref patterns are syntactically disjoint
  * (`T-`/`t-` vs `ISS-`/`i-`), so there is no try-one-then-fall-back-to-the-
  * other ambiguity.
+ *
+ * ISS-1077 ([R2-FIX 3], amended by A4): a `node:ref` prefix is recognized
+ * BEFORE the local check (a `node:` prefix can never collide with a local
+ * pattern, so order doesn't matter for correctness, but checking it first
+ * makes the fail-closed path the first thing a reader sees). The node's OWN
+ * project is loaded and the item resolved within it, exactly like a local
+ * bound, then re-qualified with the node prefix around the resolved item's
+ * OWN `.id` (canonical hash form for a team-mode node, display form for a
+ * non-team-mode node -- see `NodeQualifiedBoundRefSchema`'s docblock in
+ * models/arrangement.ts for the full rationale) -- eager normalization (Q2
+ * ruling): an arrangement must never record a bound against unverified
+ * state. Any failure along that path (unknown node, unresolvable node path,
+ * node project fails to load, item missing/ambiguous on that node) throws,
+ * never silently drops the node qualifier.
  */
-function resolveBoundRef(ref: string, state: ProjectState): string {
+async function resolveBoundRef(ref: string, state: ProjectState, pinnedRoot: string): Promise<string> {
+  const crossNode = CROSS_NODE_REF_CAPTURE_REGEX.exec(ref);
+  if (crossNode) {
+    const [, nodeName, itemRef] = crossNode as unknown as [string, string, string];
+    const resolved = resolveNodeRoot(pinnedRoot, nodeName);
+    if (!resolved.ok) {
+      throw new CliValidationError("invalid_input", `Bound ref "${ref}": ${resolved.error}`);
+    }
+    let nodeState: ProjectState;
+    try {
+      ({ state: nodeState } = await loadProject(resolved.root));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new CliValidationError("invalid_input", `Bound ref "${ref}": node "${nodeName}" project failed to load (${message})`);
+    }
+    const isTicketRef = TICKET_ID_REGEX.test(itemRef) || TICKET_CANONICAL_ID_REGEX.test(itemRef);
+    const isIssueRef = ISSUE_ID_REGEX.test(itemRef) || ISSUE_CANONICAL_ID_REGEX.test(itemRef);
+    if (!isTicketRef && !isIssueRef) {
+      throw new CliValidationError("invalid_input", `Bound ref "${ref}": "${itemRef}" is neither a ticket nor an issue reference`);
+    }
+    const result = isTicketRef ? nodeState.resolveTicketRef(itemRef) : nodeState.resolveIssueRef(itemRef);
+    if (result.kind === "missing") {
+      throw new CliValidationError("invalid_input", `Bound ref "${ref}" not found on node "${nodeName}"`);
+    }
+    if (result.kind === "ambiguous") {
+      throw new CliValidationError("invalid_input", `Bound ref "${ref}" is ambiguous on node "${nodeName}"`);
+    }
+    return `${nodeName}:${result.item.id}`;
+  }
+
   const isTicketRef = TICKET_ID_REGEX.test(ref) || TICKET_CANONICAL_ID_REGEX.test(ref);
   const isIssueRef = ISSUE_ID_REGEX.test(ref) || ISSUE_CANONICAL_ID_REGEX.test(ref);
   if (!isTicketRef && !isIssueRef) {
@@ -122,7 +167,7 @@ export async function handleArrangementCreate(
   let created: Arrangement | undefined;
 
   await withProjectLock(root, { strict: true }, async ({ state }) => {
-    const resolvedBounds = args.bounds.map((ref) => resolveBoundRef(ref, state));
+    const resolvedBounds = await Promise.all(args.bounds.map((ref) => resolveBoundRef(ref, state, root)));
     const id = generateCanonicalId("a");
     const today = new Date().toISOString().slice(0, 10);
     const candidate = {

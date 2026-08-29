@@ -5,12 +5,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { handleTicketCreate } from "../../src/cli/commands/ticket.js";
 
+const PARTIES = [
+  { role: "pen", client: "claude", identityAnchor: "pen-task-1" },
+  { role: "worker", client: "claude", identityAnchor: "worker-task-1" },
+];
+
 interface RegisteredTool {
   config: { inputSchema?: unknown };
   handler: (args: Record<string, unknown>) => Promise<{
     content: Array<{ text: string }>;
     isError?: boolean;
   }>;
+}
+
+// Arrangement write tools render markdown ("Created arrangement a-xxx."), not
+// JSON -- runMcpWriteTool always calls its handler with format: "md" (T-474
+// binding: write tools are terminal-facing, not agent-JSON-facing). Extract
+// the id from that text instead of JSON.parse-ing it.
+function extractArrangementId(text: string): string {
+  const match = /\b(a-[0-9a-z]{16})\b/.exec(text);
+  if (!match) throw new Error(`No arrangement id found in: ${text}`);
+  return match[1]!;
 }
 
 function captureTools(root: string): Map<string, RegisteredTool> {
@@ -209,5 +224,32 @@ describe("ISS-1074: omitted-node collision refusal (MCP tools)", () => {
     const tools = captureTools(nodeDir);
     const created = await tools.get("storybloq_ticket_create")!.handler({ title: "x", type: "task", phase: "p0" });
     expect(created.content[0]!.text).not.toContain("Board:");
+  });
+});
+
+describe("ISS-1077: node-qualified arrangement bounds + earmark enforcement (C1-C5)", () => {
+  async function setup() {
+    const nodeDir = await createNodeProject("engine");
+    const orchDir = await createOrchestratorProject({ engine: { path: nodeDir } });
+    const nodeTicketId = await createTicketOn(nodeDir, "node ticket");
+    const tools = captureTools(orchDir);
+    return { orchDir, nodeDir, nodeTicketId, tools };
+  }
+
+  // codex round-1: renamed from "...normalized to canonical form" -- per
+  // Amendment A4, a non-team-mode node's ticket has no canonical form to
+  // normalize to at all; this test actually proves the bound is preserved
+  // verbatim in the item's own (here, display-form) id.
+  it("C1: records a node-qualified bound, preserved in the item's own id form", async () => {
+    const { nodeTicketId, tools } = await setup();
+    const created = await tools.get("storybloq_arrangement_create")!.handler({
+      bounds: [`engine:${nodeTicketId}`],
+      parties: PARTIES,
+      onIrreversibleWork: "hold",
+    });
+    expect(created.isError).toBeFalsy();
+    const arrangementId = extractArrangementId(created.content[0]!.text);
+    const got = await tools.get("storybloq_arrangement_get")!.handler({ id: arrangementId });
+    expect(got.content[0]!.text).toContain(`Bounds: engine:${nodeTicketId}`);
   });
 });

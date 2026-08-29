@@ -725,33 +725,80 @@ async function recoverPendingMutation(
   const mutation = state.pendingProjectMutation;
   if (!mutation || typeof mutation !== "object") return state;
   const m = mutation as Record<string, unknown>;
-  // ISS-090 + ISS-112: issue_update recovery with 3-way check (matches ticket_update pattern)
+  // ISS-090 + ISS-112 + ISS-1052: issue_update recovery. Read, classify, and
+  // (if needed) write all happen inside ONE `withProjectLock` transaction --
+  // matching the `ticket_update` branch below -- so no competing writer can
+  // land between the check and the write. The outer catch returns the
+  // UNCHANGED state (marker left set for the next attempt), never clearing it
+  // on a thrown lock/IO error, exactly like the `ticket_update` branch.
   if (m.type === "issue_update") {
     const targetId = m.target as string;
     const targetValue = m.value as string;
     const expectedCurrent = m.expectedCurrent as string | undefined;
+    const rawPreimage = m.preimageFingerprint;
+    const rawPostimage = m.postimageFingerprint;
+    const isValidFp = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+    const bothAbsent = rawPreimage === undefined && rawPostimage === undefined;
+    const bothValid = isValidFp(rawPreimage) && isValidFp(rawPostimage);
+    // Anything else -- one present/one absent, present-but-malformed (non-string,
+    // empty, null) -- is neither a genuine legacy marker nor a trustworthy modern
+    // one: silently folding a partial/malformed marker into the legacy
+    // status-only path would authorize a replay from data that was never
+    // validated as either shape.
+
+    let conflict = false;
     try {
-      const { loadProject } = await import("../core/project-loader.js");
-      const { state: projectState } = await loadProject(root);
-      const issue = projectState.issues.find(i => i.id === targetId);
-      if (issue) {
-        if (issue.status === targetValue) {
-          // Already applied -- clear marker
-        } else if (expectedCurrent && issue.status === expectedCurrent) {
-          // Safe to replay
-          const { handleIssueUpdate } = await import("../cli/commands/issue.js");
-          await handleIssueUpdate(targetId, { status: targetValue }, "json", root);
-        } else {
-          // Conflict: issue in unexpected state (e.g., manually resolved) -- do not revert
+      const { withProjectLock, writeIssueUnlocked } = await import("../core/project-loader.js");
+      const { entityFingerprint } = await import("./pending-artifacts.js");
+      await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
+        const issue = projectState.issues.find((i) => i.id === targetId);
+        const fail = (reason?: string) => {
+          conflict = true;
           appendEvent(dir, {
-            rev: state.revision,
-            type: "mutation_conflict",
-            timestamp: new Date().toISOString(),
-            data: { targetId, expected: expectedCurrent, actual: issue.status, transitionId: m.transitionId },
+            rev: state.revision, type: "mutation_conflict", timestamp: new Date().toISOString(),
+            data: { targetId, expected: expectedCurrent, actual: issue?.status ?? null, transitionId: m.transitionId, ...(reason && { reason }) },
           });
+        };
+        if (!issue) return fail("target-missing");
+        if (bothValid) {
+          const current = entityFingerprint(issue);
+          if (current === rawPostimage) return; // already applied
+          if (current === rawPreimage) {
+            // AM3 (T-478, codex round-1 finding): a valid preimage match only
+            // proves the issue hasn't drifted -- it says nothing about whether
+            // `targetValue` is what `rawPostimage` actually describes. Origin
+            // site (pick-ticket.ts ~570-571) computes `postimageFingerprint` as
+            // `entityFingerprint({ ...issue, status: "inprogress" })` -- the
+            // SAME naive spread-and-override construction used here, over the
+            // SAME literal this marker's `value` always carries -- never a
+            // fresh post-write disk read, so no `handleIssueUpdate` side-effect
+            // field (e.g. `resolvedDate`) is baked in on either side. The two
+            // constructions are sound to compare directly ONLY because they
+            // match this exactly; if a future origin site ever fingerprints a
+            // real post-write read instead, this check must be re-derived
+            // against that origin's own construction, not copied blindly.
+            const candidate = { ...issue, status: targetValue as typeof issue.status };
+            if (entityFingerprint(candidate) !== rawPostimage) return fail("inconsistent-marker");
+            await writeIssueUnlocked(candidate, root);
+            return;
+          }
+          return fail();
         }
-      }
-    } catch { /* best-effort -- leave marker cleared regardless */ }
+        if (bothAbsent) {
+          // Legacy compatibility: a marker written before fingerprinting existed.
+          if (issue.status === targetValue) return; // already applied
+          if (expectedCurrent && issue.status === expectedCurrent) {
+            await writeIssueUnlocked({ ...issue, status: targetValue as typeof issue.status }, root);
+            return;
+          }
+          return fail();
+        }
+        // Partial or malformed marker: neither shape is trustworthy.
+        return fail("malformed-marker");
+      });
+    } catch {
+      return state; // Lock/IO failure -- leave marker for next attempt, same as ticket_update branch
+    }
     const cleared = { ...state, pendingProjectMutation: null };
     return writeSessionAndRefresh(root, dir, cleared, "if-active");
   }

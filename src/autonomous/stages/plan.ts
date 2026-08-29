@@ -178,7 +178,12 @@ export class PlanStage implements WorkflowStage {
           };
         });
       } catch {
-        // Best-effort -- don't block plan review if ticket update fails
+        // ISS-1051: a thrown lock/IO error here is indistinguishable from a
+        // legitimate CAS refusal for correctness purposes -- both mean this
+        // session does not actually hold the ticket. Routing it through the
+        // same claimFailed/PICK_TICKET redirect below (rather than silently
+        // continuing) is what closes ISS-1051.
+        claimFailed = true;
       }
       // Persisted immediately rather than at the stage advance below. A crash in
       // between would otherwise leave a session that OWNS the ticket but carries

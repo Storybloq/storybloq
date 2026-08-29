@@ -13,6 +13,21 @@ export type ArrangementGate = z.infer<typeof ArrangementGateSchema>;
 /** Structural subset of ProjectState this module needs -- a real ProjectState satisfies it, and a test double doesn't need to construct a full one. */
 export type TicketRefResolver = Pick<ProjectState, "resolveTicketRef">;
 
+/** Structural subset of ProjectState `arrangementCoversIssue` needs, symmetric to `TicketRefResolver`. */
+export type IssueRefResolver = Pick<ProjectState, "resolveIssueRef">;
+
+/**
+ * ISS-1049: a work item is either a ticket or an issue. Every gate-enforcement
+ * mechanism this plan generalizes (frozenGate resolution, the CODE_REVIEW
+ * ceiling, the pre-commit-ack check) is keyed on one of these rather than on
+ * a bare ticket id -- see gate-enforcement.ts's `resolveOrReadFrozenGateStatus`
+ * and code-review-ceiling.ts's `decideCeiling` for the two production
+ * derivations of this type from session state.
+ */
+export type WorkItemRef =
+  | { readonly kind: "ticket"; readonly id: string }
+  | { readonly kind: "issue"; readonly id: string };
+
 /**
  * Does `arrangement`'s `bounds` cover `canonicalTicketId`?
  *
@@ -31,9 +46,11 @@ export type TicketRefResolver = Pick<ProjectState, "resolveTicketRef">;
  * - An issue-pattern bound is "unmatched" for a TICKET freeze, never
  *   "unresolved" -- it was existence-validated at arrangement write time,
  *   and a dangling issue bound adds no safety concern to ticket gating
- *   specifically (issue-fix sessions are out of scope for enforcement
- *   entirely in v1 -- see T-474's issue-fix descope argument). There is
- *   nothing a ticket freeze needs to prove about an issue bound.
+ *   specifically. There is nothing a ticket freeze needs to prove about an
+ *   issue bound. (ISS-1049: issue-fix enforcement is no longer out of scope
+ *   project-wide -- see `arrangementCoversIssue`'s symmetric case and
+ *   `arrangementCoversWorkItem`, the dispatching entry point for a caller
+ *   that doesn't already know which kind of work item it holds.)
  * - A ticket-pattern bound that fails to resolve (e.g. a deleted ticket) IS
  *   a real ambiguity and returns "unresolved" -- a freeze cannot rule out
  *   that the dangling ref would otherwise have matched.
@@ -54,6 +71,47 @@ export function arrangementCoversTicket(
     if (resolved.kind !== "found") sawUnresolvableTicketBound = true;
   }
   return sawUnresolvableTicketBound ? "unresolved" : "unmatched";
+}
+
+/**
+ * ISS-1049: the issue-freeze twin of `arrangementCoversTicket`, structurally
+ * mirrored (a ticket-pattern bound is "unmatched" here, never "unresolved" --
+ * symmetric to that function's issue-bound case).
+ */
+export function arrangementCoversIssue(
+  arrangement: Arrangement,
+  canonicalIssueId: string,
+  state: IssueRefResolver,
+): "matched" | "unmatched" | "unresolved" {
+  let sawUnresolvableIssueBound = false;
+  for (const boundRef of arrangement.bounds) {
+    const isIssueRef = ISSUE_ID_REGEX.test(boundRef) || ISSUE_CANONICAL_ID_REGEX.test(boundRef);
+    const isTicketRef = TICKET_ID_REGEX.test(boundRef) || TICKET_CANONICAL_ID_REGEX.test(boundRef);
+    if (isTicketRef && !isIssueRef) continue; // ticket bound -- unmatched for an issue freeze, never unresolved
+    if (!isIssueRef) continue; // neither pattern -- schema should prevent this; ignored defensively, not fatal
+    const resolved = state.resolveIssueRef(boundRef);
+    if (resolved.kind === "found" && resolved.item.id === canonicalIssueId) return "matched";
+    if (resolved.kind !== "found") sawUnresolvableIssueBound = true;
+  }
+  return sawUnresolvableIssueBound ? "unresolved" : "unmatched";
+}
+
+/**
+ * ISS-1049: dispatches to the kind-specific coverage function by `item.kind`.
+ * The one seam kept as a twin rather than unified -- ref-pattern coverage
+ * matching is inherently kind-specific (a different resolver per kind), so a
+ * single merged implementation would need the same kind-branch internally
+ * anyway. This is the entry point for a caller that holds a `WorkItemRef`
+ * without already knowing which kind it is.
+ */
+export function arrangementCoversWorkItem(
+  arrangement: Arrangement,
+  item: WorkItemRef,
+  state: TicketRefResolver & IssueRefResolver,
+): "matched" | "unmatched" | "unresolved" {
+  return item.kind === "ticket"
+    ? arrangementCoversTicket(arrangement, item.id, state)
+    : arrangementCoversIssue(arrangement, item.id, state);
 }
 
 const PLAN_ACK_GATE_NAME = "plan-ack";

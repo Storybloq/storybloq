@@ -67,6 +67,9 @@ beforeEach(() => {
   sessionDir = join(testRoot, ".story", "sessions", "test-session");
   mkdirSync(sessionDir, { recursive: true });
   setupProject(testRoot);
+  // T-470/ISS-1050: an approve that lands (SITE 2, plan-review.ts) snapshots
+  // plan.md, so a fixture exercising that path needs the file on disk.
+  writeFileSync(join(sessionDir, "plan.md"), "# The plan\n\nDo the thing.\n");
 });
 
 afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });

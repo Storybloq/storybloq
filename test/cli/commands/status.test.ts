@@ -248,6 +248,124 @@ describe("handleStatus: arrangements (T-473)", () => {
     expect(parsed.data.arrangementWarnings[0]).not.toContain("\n");
     expect(parsed.data.arrangementWarnings[0]).not.toContain("​");
   });
+
+  describe("ISS-1077: node-qualified bounds", () => {
+    function writeOrchestratorConfig(root: string, nodes: Record<string, { path: string }>): void {
+      mkdirSync(join(root, ".story"), { recursive: true });
+      writeFileSync(join(root, ".story", "config.json"), JSON.stringify({
+        version: 2, schemaVersion: 2, project: "orchestrator", type: "orchestrator", language: "typescript",
+        features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+        nodes: Object.fromEntries(Object.entries(nodes).map(([name, n]) => [name, { path: n.path, health: "grey", dependsOn: [], stack: "", role: "", summary: "" }])),
+      }));
+    }
+
+    const CANONICAL_NODE_TICKET = "t-0123456789abcdef";
+
+    function writeNodeProject(name: string, canonicalTicketId: string): string {
+      const dir = mkdtempSync(join(tmpdir(), `sb-status-node-${name}-`));
+      roots.push(dir);
+      const storyDir = join(dir, ".story");
+      mkdirSync(join(storyDir, "tickets"), { recursive: true });
+      writeFileSync(join(storyDir, "config.json"), JSON.stringify({
+        version: 2, schemaVersion: 2, project: name, type: "npm", language: "typescript",
+        features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+      }));
+      writeFileSync(join(storyDir, "roadmap.json"), JSON.stringify({
+        version: 2, title: "r", date: "2026-01-01", phases: [{ id: "p1", label: "P1", name: "P1", description: "" }], blockers: [],
+      }));
+      // Post-migration hash-filename shape: id IS the canonical form, displayId carries T-001.
+      writeFileSync(join(storyDir, "tickets", `${canonicalTicketId}.json`), JSON.stringify({
+        id: canonicalTicketId, displayId: "T-001", title: "node ticket", description: "", type: "task", status: "open", phase: "p1",
+        order: 1, createdDate: "2026-01-01", completedDate: null, blockedBy: [], updatedAt: "2026-01-01T00:00:00.000Z",
+      }));
+      return dir;
+    }
+
+    it("resolves cleanly against a node's own ticket, no warning", async () => {
+      const nodeDir = writeNodeProject("engine", CANONICAL_NODE_TICKET);
+      const root = tempRoot();
+      writeOrchestratorConfig(root, { engine: { path: nodeDir } });
+      writeArrangement(root, { bounds: [`engine:${CANONICAL_NODE_TICKET}`] });
+      const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings).toEqual([]);
+    });
+
+    it("reports a distinct 'unusable' warning, not a false-healthy 'found', when a team-mode node's bound is uniquely resolvable but not by its exact id (codex round 2)", async () => {
+      // Same single-ticket node fixture as the "resolves cleanly" test above,
+      // but bound by displayId ("T-001") instead of the canonical id. This
+      // uniquely resolves (exactly one ticket has that displayId -- not
+      // "ambiguous"), yet `arrangementCoversNodeItem`'s exact-string
+      // comparison would refuse it (A4-2's traced residual): the diagnostic
+      // must not report "found" for a bound that cannot actually authorize a
+      // write.
+      const nodeDir = writeNodeProject("engine", CANONICAL_NODE_TICKET);
+      const root = tempRoot();
+      writeOrchestratorConfig(root, { engine: { path: nodeDir } });
+      writeArrangement(root, { bounds: ["engine:T-001"] });
+      const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings.some((w) =>
+        w.includes("engine:T-001") && w.includes("engine") && !w.includes("ambiguous") && !w.includes("not found"),
+      )).toBe(true);
+    });
+
+    it("reports a warning naming the node when a node-qualified bound does not resolve there", async () => {
+      const nodeDir = writeNodeProject("engine", "T-001");
+      const root = tempRoot();
+      writeOrchestratorConfig(root, { engine: { path: nodeDir } });
+      writeArrangement(root, { bounds: ["engine:t-0123456789abcdef"] });
+      const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings.some((w) => w.includes("engine:t-0123456789abcdef") && w.includes("not found") && w.includes("engine"))).toBe(true);
+    });
+
+    it("reports a 'could not be checked' warning, not a failure, when the bound node cannot be resolved", async () => {
+      const root = tempRoot();
+      writeOrchestratorConfig(root, { broken: { path: join(tmpdir(), "sb-status-does-not-exist-" + Date.now()) } });
+      writeArrangement(root, { bounds: ["broken:t-0123456789abcdef"] });
+      const result = await handleStatus(ctxAt(root));
+      expect(result.exitCode).toBeUndefined();
+      const parsed = JSON.parse(result.output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings.some((w) => w.includes("broken") && w.includes("could not be checked"))).toBe(true);
+    });
+
+    it("reports a 'could not be checked' warning for a node-qualified bound naming a node that is not (or no longer) in orchestrator config", async () => {
+      const root = tempRoot();
+      writeOrchestratorConfig(root, {});
+      writeArrangement(root, { bounds: ["nosuchnode:t-0123456789abcdef"] });
+      const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings.some((w) => w.includes("nosuchnode") && w.includes("could not be checked"))).toBe(true);
+    });
+
+    it("reports a distinct 'ambiguous' warning, not a false-healthy 'found', when a display-form node bound matches more than one item (codex round 1: A4 residual must not be hidden)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sb-status-node-ambiguous-"));
+      roots.push(dir);
+      const storyDir = join(dir, ".story");
+      mkdirSync(join(storyDir, "tickets"), { recursive: true });
+      writeFileSync(join(storyDir, "config.json"), JSON.stringify({
+        version: 2, schemaVersion: 2, project: "engine", type: "npm", language: "typescript",
+        features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+      }));
+      writeFileSync(join(storyDir, "roadmap.json"), JSON.stringify({
+        version: 2, title: "r", date: "2026-01-01", phases: [{ id: "p1", label: "P1", name: "P1", description: "" }], blockers: [],
+      }));
+      // Two post-migration tickets sharing the same displayId -- exactly what
+      // makes `resolveTicketRef("T-001")` ambiguous rather than found/missing.
+      writeFileSync(join(storyDir, "tickets", "t-0123456789abcdef.json"), JSON.stringify({
+        id: "t-0123456789abcdef", displayId: "T-001", title: "first", description: "", type: "task", status: "open", phase: "p1",
+        order: 1, createdDate: "2026-01-01", completedDate: null, blockedBy: [], updatedAt: "2026-01-01T00:00:00.000Z",
+      }));
+      writeFileSync(join(storyDir, "tickets", "t-fedcba9876543210.json"), JSON.stringify({
+        id: "t-fedcba9876543210", displayId: "T-001", title: "second", description: "", type: "task", status: "open", phase: "p1",
+        order: 2, createdDate: "2026-01-01", completedDate: null, blockedBy: [], updatedAt: "2026-01-01T00:00:00.000Z",
+      }));
+
+      const root = tempRoot();
+      writeOrchestratorConfig(root, { engine: { path: dir } });
+      writeArrangement(root, { bounds: ["engine:T-001"] });
+      const parsed = JSON.parse((await handleStatus(ctxAt(root))).output) as { data: { arrangementWarnings: string[] } };
+      expect(parsed.data.arrangementWarnings.some((w) => w.includes("engine:T-001") && w.includes("ambiguous") && w.includes("engine"))).toBe(true);
+      expect(parsed.data.arrangementWarnings.some((w) => w.includes("could not be checked"))).toBe(false);
+    });
+  });
 });
 
 describe("handleStatus", () => {

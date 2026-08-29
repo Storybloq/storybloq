@@ -114,6 +114,44 @@ export function arrangementCoversWorkItem(
     : arrangementCoversIssue(arrangement, item.id, state);
 }
 
+/**
+ * ISS-1077: does `arrangement`'s `bounds` cover a NODE-QUALIFIED item?
+ * `itemId` must already be the node item's own resolved `.id` (resolved by
+ * the caller, e.g. C4's earmark handler after its own node resolution) --
+ * canonical form on a team-mode node, display form otherwise (Amendment A4:
+ * a non-team-mode node's ticket has no canonical form to normalize to at
+ * all, so "canonical" was never an accurate name for this parameter; codex
+ * round-2 finding, the comparison itself was always correct for either form,
+ * only the naming/doc was stale). This function's job is deliberately
+ * narrow: does the bounds list contain the exact qualified string
+ * `node:itemId`, nothing more. It does
+ * NOT re-verify that `nodeName` still resolves or that the item still
+ * exists -- those are each an EARLIER (C1, arrangement-create time) or LATER
+ * (C3's status read, or the caller's own node resolution before ever calling
+ * this) step's job. A node that later disappears from config, or a node-side
+ * item later deleted, does not make THIS function's answer ambiguous; it
+ * makes one of those other steps' own resolution fail, which they already
+ * handle with their own fail-closed logic.
+ *
+ * Deliberately NOT folded into `WorkItemRef`/`arrangementCoversWorkItem`:
+ * every real production consumer of `WorkItemRef` (`gate-enforcement.ts`,
+ * `code-review-ceiling.ts`) derives it from a session's OWN local ticket/issue
+ * -- never a node-qualified one, per the Q3 ruling that a session never
+ * enforces gates on another node's item. Widening `WorkItemRef` with an
+ * optional `node` field would add a member no production path would ever
+ * set, repeating the exact "unification the code doesn't support" mistake
+ * run 6's own process already caught and reversed once on this same type
+ * family. This is a deliberate parallel entry point for the one caller (the
+ * earmark coverage seam) that actually has a node-qualified target to check.
+ */
+export function arrangementCoversNodeItem(
+  arrangement: Arrangement,
+  nodeName: string,
+  itemId: string,
+): boolean {
+  return arrangement.bounds.includes(`${nodeName}:${itemId}`);
+}
+
 const PLAN_ACK_GATE_NAME = "plan-ack";
 const PRECOMMIT_ACK_GATE_NAME = "pre-commit-ack";
 

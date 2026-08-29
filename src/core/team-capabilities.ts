@@ -62,6 +62,10 @@ export function isTeamModeConfig(config: Pick<Config, "team">): boolean {
 export function assertTeamWriteCapabilities(config: Config): void {
   const team = config.team;
   if (!isTeamModeConfig(config)) return;
+  // isTeamModeConfig already guarantees `team` is defined here (it returns
+  // early otherwise) -- TS can't narrow across that separate function call,
+  // so this guard is pure narrowing, never reachable in practice.
+  if (!team) return;
 
   const minCliVersion = team.minCliVersion;
   if (typeof minCliVersion === "string" && minCliVersion.trim() !== "") {

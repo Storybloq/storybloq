@@ -9,7 +9,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { NODE_NAME_REGEX } from "../models/federation-config.js";
 import { CROSS_NODE_REF_REGEX } from "../models/ticket.js";
-import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, type McpToolResult } from "./node-resolution.js";
+import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, detectNodeCollision, type McpToolResult } from "./node-resolution.js";
 import { initProject } from "../core/init.js";
 import { handleNodeList } from "../cli/commands/node.js";
 import { resolveNodePath } from "../federation/resolver.js";
@@ -303,6 +303,7 @@ export async function runMcpWriteTool(
   pinnedRoot: string,
   handler: (root: string, format: "md") => Promise<CommandResult>,
   effectiveRoot?: string,
+  boardLabel?: string,
 ): Promise<McpToolResult> {
   try { touchMcpLiveness(pinnedRoot); } catch { /* best-effort */ }
   const writeRoot = effectiveRoot ?? pinnedRoot;
@@ -316,7 +317,8 @@ export async function runMcpWriteTool(
       };
     }
 
-    return { content: [{ type: "text", text: result.output }] };
+    const text = boardLabel ? `${result.output}\n\nBoard: ${boardLabel}` : result.output;
+    return { content: [{ type: "text", text }] };
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
       return { content: [{ type: "text", text: formatMcpError(err.code, err.message) }], isError: true };
@@ -340,6 +342,58 @@ function resolveEffectiveRoot(pinnedRoot: string, nodeName?: string): { root: st
     return { content: [{ type: "text" as const, text: resolved.error }], isError: true };
   }
   return { root: resolved.root };
+}
+
+/**
+ * ISS-1074 acceptance 2: names which board a write landed on, but only on an
+ * orchestrator project (a plain project has exactly one board -- labeling
+ * every write there would be pure noise, violating binding item 5's
+ * zero-added-friction rule).
+ */
+function boardLabelFor(pinnedRoot: string, nodeName?: string): string | undefined {
+  const config = readOrchestratorConfig(pinnedRoot);
+  if (!config || config.type !== "orchestrator") return undefined;
+  return nodeName ?? "the orchestrator board";
+}
+
+/**
+ * ISS-1074: the omitted-node ambiguity preflight for mutations against an
+ * EXISTING ref (ticket_update, issue_update, and -- from C4 -- the
+ * earmark-family mutations). Returns an `McpToolResult` refusal directly
+ * (matching `resolveEffectiveRoot`'s own failure shape) when the scan finds
+ * more than one candidate board, or cannot rule that out. Never called when
+ * `nodeName` is already given (nothing to disambiguate), and a no-op on a
+ * non-orchestrator project (`detectNodeCollision` itself short-circuits to
+ * "clear" there, per binding item 5).
+ */
+async function checkNodeCollision(
+  pinnedRoot: string,
+  nodeName: string | undefined,
+  displayId: string,
+  isTicketShaped: boolean,
+): Promise<McpToolResult | null> {
+  if (nodeName) return null;
+  const scan = await detectNodeCollision(pinnedRoot, displayId, isTicketShaped);
+  if (scan.status === "ambiguous") {
+    const boards = scan.candidates.map((c) => c.label).join(", ");
+    return {
+      content: [{
+        type: "text" as const,
+        text: `"${displayId}" exists on more than one board (${boards}) and "node" was not specified. Pass node= to disambiguate.`,
+      }],
+      isError: true,
+    };
+  }
+  if (scan.status === "indeterminate") {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Cannot confirm "${displayId}" is unambiguous: ${scan.reason} (unresolved: ${scan.unresolvedNodes.join(", ")}). Pass node= explicitly, or fix the node configuration.`,
+      }],
+      isError: true,
+    };
+  }
+  return null;
 }
 
 function resolveEffectiveRootForWrite(pinnedRoot: string, nodeName?: string): { root: string } | McpToolResult {
@@ -743,7 +797,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       },
       format,
       root,
-    ), eff.root);
+    ), eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
   server.registerTool("storybloq_ticket_update", {
@@ -764,7 +818,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
       node: nodeParam,
     },
-  }, (args) => {
+  }, async (args) => {
+    const collision = await checkNodeCollision(pinnedRoot, args.node, args.id, true);
+    if (collision) return collision;
     const eff = resolveEffectiveRootForWrite(pinnedRoot, args.node);
     if ("content" in eff) return eff;
     return runMcpWriteTool(pinnedRoot, (root, format) =>
@@ -787,7 +843,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         root,
         args.force,
       ),
-    eff.root);
+    eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
   server.registerTool("storybloq_ticket_meta_set", {
@@ -850,7 +906,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         format,
         root,
       ),
-    eff.root);
+    eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
   server.registerTool("storybloq_issue_update", {
@@ -872,7 +928,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
       node: nodeParam,
     },
-  }, (args) => {
+  }, async (args) => {
+    const collision = await checkNodeCollision(pinnedRoot, args.node, args.id, false);
+    if (collision) return collision;
     const eff = resolveEffectiveRootForWrite(pinnedRoot, args.node);
     if ("content" in eff) return eff;
     return runMcpWriteTool(pinnedRoot, (root, format) =>
@@ -896,7 +954,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         format,
         root,
       ),
-    eff.root);
+    eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
   server.registerTool("storybloq_issue_meta_set", {

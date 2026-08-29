@@ -21,8 +21,9 @@ import {
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
 import { decideCeiling, outstandingCeilingFindings } from "./code-review-ceiling.js";
-import { parkCurrentTicket } from "./park.js";
+import { parkCurrentTicket, parkCurrentIssue } from "./park.js";
 import type { FullSessionState } from "../session-types.js";
+import type { WorkItemRef } from "../../core/arrangement-bounds.js";
 
 /**
  * Finish a ceiling escalation: file the outstanding findings, then park.
@@ -47,7 +48,11 @@ import type { FullSessionState } from "../session-types.js";
  */
 async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
   const pending = ctx.state.pendingCeilingEscalation;
-  const label = ctx.state.ticket?.displayId ?? ctx.state.ticket?.id ?? "the current item";
+  const label = ctx.state.ticket
+    ? (ctx.state.ticket.displayId ?? ctx.state.ticket.id)
+    : ctx.state.currentIssue
+      ? displayIdOf(ctx.state.currentIssue)
+      : "the current item";
 
   // Read from the RECORD, not from the incoming report. The record was written
   // atomically with the decision, so first call and resume take the identical
@@ -104,12 +109,24 @@ async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
   const reason = pending?.reason
     ?? `Code review reached its hard ceiling of ${ceiling} rounds without reaching a landable verdict.`;
 
-  const advance = await parkCurrentTicket(
-    ctx,
-    { notes: reason } as GuideReportInput,
-    "CODE_REVIEW",
-    { reason, target: "HANDOVER" },
-  );
+  // Dispatch by which work item is actually current. `pending` is the
+  // escalation's own record and does not change which park target is used --
+  // both parkCurrentTicket and parkCurrentIssue independently verify against
+  // the CURRENT session/ledger state, and a resume must dispatch on the same
+  // item resumeCeilingEscalation just matched the record against.
+  const advance = ctx.state.ticket
+    ? await parkCurrentTicket(
+        ctx,
+        { notes: reason } as GuideReportInput,
+        "CODE_REVIEW",
+        { reason, target: "HANDOVER" },
+      )
+    : await parkCurrentIssue(
+        ctx,
+        { notes: reason } as GuideReportInput,
+        "CODE_REVIEW",
+        { reason, target: "HANDOVER" },
+      );
 
   // Marked completed only once the filing AND the transition are both settled.
   // A park that returned `retry` (the write-failed branch) leaves the record
@@ -124,7 +141,8 @@ async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
       pendingCeilingEscalation: current ? { ...current, completed: true } : null,
     } as Partial<FullSessionState>);
     ctx.appendEvent("code_review_ceiling", {
-      ticketId: pending?.ticketId ?? ctx.state.ticket?.id,
+      workItemId: pending?.workItemId ?? ctx.state.ticket?.id ?? ctx.state.currentIssue?.id,
+      kind: pending?.kind ?? (ctx.state.ticket ? "ticket" : "issue"),
       round,
       ceiling,
       maxReviewRounds: pending?.maxReviewRounds,
@@ -145,13 +163,17 @@ async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
 export async function resumeCeilingEscalation(ctx: StageContext): Promise<StageAdvance | null> {
   const pending = ctx.state.pendingCeilingEscalation;
   if (!pending || pending.completed) return null;
-  // EXACT match, and an absent ticket is a non-match rather than a pass.
+  // EXACT match on BOTH id and kind, and no current item is a non-match
+  // rather than a pass.
   //
-  // An escalation is ticket-only. Guarding on "both ids exist AND differ" let
-  // the record through whenever the session held an ISSUE or held nothing:
-  // filing could then complete, but `parkCurrentTicket` returns `retry` with no
-  // ticket to park, so every later CODE_REVIEW report resumed the same
-  // escalation and the current item could never progress.
+  // ISS-1032: an escalation can now belong to a ticket OR an issue. Guarding
+  // on "both ids exist AND differ" let the record through whenever the
+  // session held a DIFFERENT-KIND item or held nothing: filing could then
+  // complete, but the matching park function returns `retry` with no item of
+  // its own kind to park, so every later CODE_REVIEW report resumed the same
+  // escalation and the current item could never progress. A same-id
+  // different-kind pairing is not a match either -- kind and id together are
+  // the identity, same invariant as the round counter's.
   //
   // The record is KEPT rather than deleted. Its findings were durably queued
   // into `pendingDeferrals` BEFORE the escalation record was created -- that is
@@ -160,7 +182,12 @@ export async function resumeCeilingEscalation(ctx: StageContext): Promise<StageA
   // stopped, which is what the session report renders. Failing closed would
   // deadlock the current item over a record belonging to an item that is no
   // longer here.
-  if (ctx.state.ticket?.id !== pending.ticketId) return null;
+  const currentItem: WorkItemRef | null = ctx.state.ticket
+    ? { kind: "ticket", id: ctx.state.ticket.id }
+    : ctx.state.currentIssue
+      ? { kind: "issue", id: ctx.state.currentIssue.id }
+      : null;
+  if (!currentItem || currentItem.kind !== pending.kind || currentItem.id !== pending.workItemId) return null;
   return await escalateCeiling(ctx);
 }
 
@@ -539,7 +566,6 @@ export class CodeReviewStage implements WorkflowStage {
       stages: ctx.recipe.stages,
       risk,
       nextAction,
-      isIssueFix,
     });
 
     // CODE_REVIEW -> PLAN: full reset with verdict artifact.
@@ -641,11 +667,23 @@ export class CodeReviewStage implements WorkflowStage {
 
       const escalationFingerprints = await ctx.queueFindingsAsIssues(outstanding, "code");
 
+      // The counter's item is authoritative: it is the exact WorkItemRef
+      // decideCeiling derived and fired on, guaranteed non-null here because
+      // shouldPark can only be true when decideCeiling found a work item.
+      const escalationItem: WorkItemRef = ceilingDecision.counter
+        ? { kind: ceilingDecision.counter.kind, id: ceilingDecision.counter.workItemId }
+        : ctx.state.ticket
+          ? { kind: "ticket", id: ctx.state.ticket.id }
+          : { kind: "issue", id: ctx.state.currentIssue!.id };
+      // Captured NOW, while the item is still on the state. The park clears it
+      // before the transition, so the report has nowhere else to read it from.
+      const escalationDisplayId = escalationItem.kind === "ticket"
+        ? ctx.state.ticket?.displayId
+        : displayIdOf(ctx.state.currentIssue!);
       stateUpdate.pendingCeilingEscalation = {
-        ticketId: ctx.state.ticket?.id ?? "",
-        // Captured NOW, while the ticket is still on the state. The park clears
-        // it before the transition, so the report has nowhere else to read it.
-        ...(ctx.state.ticket?.displayId ? { displayId: ctx.state.ticket.displayId } : {}),
+        workItemId: escalationItem.id,
+        kind: escalationItem.kind,
+        ...(escalationDisplayId ? { displayId: escalationDisplayId } : {}),
         // The DURABLE count, not `roundNum`. `roundNum` is
         // `reviews.code.length + 1`, and that array is cleared by the
         // plan-redirect branch and by recovery -- so a ceiling reached on the

@@ -776,6 +776,57 @@ function clearExplicitlyNulledCodexBlock(raw: unknown): unknown {
   return next;
 }
 
+/** True for a non-empty string -- the type a genuine legacy field always carried. */
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+/**
+ * ISS-1049/ISS-1032 (T-470 B6): maps ONLY a genuine pre-rename
+ * `codeReviewRoundCounter` record (`{ticketId: <string>, completedRounds:
+ * <number>}`, no `workItemId`/`kind`) to `null` before validation runs.
+ *
+ * Deliberately narrower than a blanket `.catch(null)` on the wrapped object
+ * schema (codex round-1 finding), AND narrower than a bare key-presence check
+ * (codex round-3 finding): checking only that a `ticketId` KEY exists, with
+ * no `workItemId`/`kind`, still treats `{ticketId: 123, completedRounds:
+ * "corrupt"}` as safely legacy -- it has the right shape but the wrong types,
+ * which is corruption, not the pre-rename format. That would silently reset
+ * an in-progress ceiling round count exactly the way D1 forbids. Recognizing
+ * the VALUE types too means a same-shaped-but-corrupt record falls through to
+ * the current schema unchanged and fails the parse loudly instead.
+ */
+function preprocessLegacyRoundCounterShape(val: unknown): unknown {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) return val;
+  const raw = val as Record<string, unknown>;
+  if ("workItemId" in raw || "kind" in raw) return val;
+  return isNonEmptyString(raw.ticketId) && typeof raw.completedRounds === "number" ? null : val;
+}
+
+/**
+ * Same reasoning as `preprocessLegacyRoundCounterShape` above, for
+ * `pendingCeilingEscalation`'s richer pre-rename shape: every REQUIRED legacy
+ * field's type is checked, not merely `ticketId`'s presence, so a truncated
+ * or type-corrupted record (a real codex round-3 example: a legacy-shaped
+ * object missing `reason` or carrying a non-numeric `round`) fails the parse
+ * loudly rather than silently degrading to "no pending escalation".
+ */
+function preprocessLegacyPendingEscalationShape(val: unknown): unknown {
+  if (val === null || typeof val !== "object" || Array.isArray(val)) return val;
+  const raw = val as Record<string, unknown>;
+  if ("workItemId" in raw || "kind" in raw) return val;
+  const legacyShaped =
+    isNonEmptyString(raw.ticketId) &&
+    typeof raw.round === "number" &&
+    typeof raw.ceiling === "number" &&
+    typeof raw.maxReviewRounds === "number" &&
+    typeof raw.reason === "string" &&
+    typeof raw.unresolvedCritical === "number" &&
+    typeof raw.unresolvedMajor === "number" &&
+    typeof raw.decidedAt === "string";
+  return legacyShaped ? null : val;
+}
+
 export const SessionStateSchema = z.object({
   schemaVersion: z.literal(CURRENT_SESSION_SCHEMA_VERSION),
   sessionId: z.string().uuid(),
@@ -1370,16 +1421,33 @@ export const SessionStateSchema = z.object({
    * compaction is close to certain. Either would silently reset a ceiling read
    * off that array.
    *
-   * The ticket id makes the reset an IDENTITY INVARIANT rather than a
+   * The id+kind pair makes the reset an IDENTITY INVARIANT rather than a
    * convention some future call site can forget: recording a round resets the
-   * count when the id differs, and reading the ceiling accepts the count only
-   * when it matches the current ticket. A legacy state without the field reads
-   * as zero.
+   * count when the id or the kind differs, and reading the ceiling accepts
+   * the count only when it matches the current work item. A legacy state
+   * without the field reads as zero.
+   *
+   * ISS-1049/ISS-1032: `ticketId` renamed to `workItemId` + a new `kind` field
+   * (a work item is now a ticket OR an issue). `preprocessLegacyRoundCounterShape`
+   * maps ONLY the known pre-rename shape (`{ ticketId, completedRounds }`, no
+   * `kind`, no `workItemId`) to `null` before validation runs, landing at the
+   * same safe restart-at-0 posture as the legacy-field-absent case above,
+   * proven against the real schema in the resume-across-upgrade test
+   * (T-470/ISS-1049 B8). Deliberately NOT a blanket `.catch(null)`: that would
+   * convert ANY parse failure to null, including a malformed CURRENT-format
+   * record (a typo'd `kind`, a corrupted `completedRounds`) -- silently
+   * discarding an in-progress ceiling round count rather than failing loud,
+   * which is exactly the fail-open shape D1 forbids everywhere else in this
+   * batch (codex round-1 finding).
    */
-  codeReviewRoundCounter: z.object({
-    ticketId: z.string(),
-    completedRounds: z.number(),
-  }).nullable().default(null),
+  codeReviewRoundCounter: z.preprocess(
+    preprocessLegacyRoundCounterShape,
+    z.object({
+      workItemId: z.string(),
+      kind: z.enum(["ticket", "issue"]),
+      completedRounds: z.number(),
+    }).nullable().default(null),
+  ),
 
   /**
    * T-470: a ceiling escalation that has been DECIDED but not finished.
@@ -1402,8 +1470,13 @@ export const SessionStateSchema = z.object({
    * renders it, and a session that ended this way has to be able to say so. Same queue-then-drain shape as
    * `pendingDeferrals`, not a new subsystem.
    */
-  pendingCeilingEscalation: z.object({
-    ticketId: z.string(),
+  pendingCeilingEscalation: z.preprocess(preprocessLegacyPendingEscalationShape, z.object({
+    // ISS-1049/ISS-1032: `ticketId` renamed to `workItemId` + `kind`, same
+    // rationale and precise-preprocess safety as `codeReviewRoundCounter`
+    // above -- NOT a blanket `.catch(null)` (codex round-1 finding), and NOT
+    // a bare key-presence check either (codex round-3 finding).
+    workItemId: z.string(),
+    kind: z.enum(["ticket", "issue"]),
     /**
      * The item's DISPLAY id, carried on the record.
      *
@@ -1460,7 +1533,7 @@ export const SessionStateSchema = z.object({
      * nothing.
      */
     completed: z.boolean().default(false),
-  }).nullable().default(null),
+  }).nullable().default(null)),
 
   /**
    * ISS-598/ISS-1031: the ticket-scoped PLAN_REVIEW round counter.

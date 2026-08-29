@@ -101,6 +101,16 @@ const ISSUE_RULES: Record<string, MergeRule> = {
   // T-475: see the ticket rule of the same name -- identical treatment.
   earmark: { kind: "hard-conflict" },
 
+  // ISS-1032 (Amendment A5): an epoch is identity, not content -- it exists
+  // ONLY to prove which session's resolution is the one standing, mirroring
+  // `earmark`'s reasoning immediately above (a single self-contained field
+  // with nothing else to couple it to). A divergent `resolutionEpoch` means
+  // two sessions each resolved the same issue believing themselves the
+  // owner; picking either side silently would hand one of them a false
+  // ownership proof, so this must always surface as a real conflict rather
+  // than resolve arbitrarily.
+  resolutionEpoch: { kind: "hard-conflict" },
+
   deletedAt: { kind: "hard-conflict" },
   deletedBy: { kind: "hard-conflict" },
 };

@@ -30,6 +30,13 @@ describe("T-385: field classification", () => {
     expect(getMergeRules("issue").earmark).toEqual({ kind: "hard-conflict" });
   });
 
+  it("ISS-1032 (Amendment A5): resolutionEpoch is a deliberately-classified hard-conflict on issue, not a silent default", () => {
+    expect(getMergeRules("issue").resolutionEpoch).toEqual({ kind: "hard-conflict" });
+    // Ticket carries no resolutionEpoch concept -- confirming absence keeps
+    // this test honest about which entity the rule actually applies to.
+    expect(getMergeRules("ticket").resolutionEpoch).toBeUndefined();
+  });
+
   it("coupled groups are symmetric", () => {
     const groups = getCoupledGroups("ticket");
     expect(groups.length).toBeGreaterThan(0);

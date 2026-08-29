@@ -1,11 +1,12 @@
 import { displayIdOf } from "../../core/resolver.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput } from "../session-types.js";
+import type { GuideReportInput, FullSessionState } from "../session-types.js";
 import { effectiveReviewEffort } from "../review-effort.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
 import { formatCitedRulingsSection } from "../../core/output-formatter.js";
+import type { IssueResolutionEpoch } from "../issue-resolution-epoch.js";
 
 /**
  * ISSUE_FIX stage -- T-153: Fix a single issue picked from PICK_TICKET.
@@ -122,18 +123,52 @@ export class IssueFixStage implements WorkflowStage {
     // Section 5 (completion, new seam): the agent's own status-update write
     // just confirmed above landed a genuine resolution -- clear a
     // same-session assigned earmark left over from PICK_TICKET's issue-path
-    // acquisition, in a fresh locked write (best-effort: a failure here
-    // leaves a stale-eligible earmark for `validate` to flag, never blocks
-    // the fix from finalizing).
+    // acquisition, AND (ISS-1032, Amendment A5) mint this session's
+    // resolution epoch and stamp it onto the issue (passthrough field), in
+    // the SAME locked write, mirroring `claimEpoch`'s mint-at-acquisition
+    // precedent (plan.ts:190).
+    //
+    // Codex round-2 findings #2/#3: this used to be a best-effort write, and
+    // used to trust the UNLOCKED status check above without re-verifying
+    // inside the lock. Both were real holes: (a) a swallowed write failure
+    // left the epoch unstamped, silently falling back to the pre-A5
+    // status-only proof for THIS session's own resolution -- weakening, not
+    // merely failing to strengthen, the guarantee A5 exists to add; (b) a
+    // foreign session could reopen/reassign the issue in the window between
+    // the unlocked check and this write, and the old code would still stamp
+    // OUR epoch over that foreign state. Both are fixed by re-checking
+    // freshly-read state INSIDE the lock and treating a failed or refused
+    // stamp as retryable rather than silently proceeding to FINALIZE.
+    const epoch: IssueResolutionEpoch = {
+      issueId: issue.id,
+      sessionId: ctx.state.sessionId,
+      establishedAt: new Date().toISOString(),
+    };
+    let stamped = false;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
       await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
         const freshIssue = ps.issues.find((i) => i.id === issue.id);
-        if (!freshIssue) return;
-        const { cleared, item: next } = clearSameSessionEarmark(freshIssue, ctx.state.sessionId);
-        if (cleared) await writeIssueUnlocked(next, ctx.root);
+        // Re-verified here, not trusted from the unlocked check above (codex
+        // round-2 finding #3): a foreign session's own reopen/reassign could
+        // have landed in between.
+        if (!freshIssue || freshIssue.status !== "resolved") return;
+        if (freshIssue.earmark?.stage === "assigned" && freshIssue.earmark.holderSession !== ctx.state.sessionId) {
+          return;
+        }
+        const { item: next } = clearSameSessionEarmark(freshIssue, ctx.state.sessionId);
+        await writeIssueUnlocked({ ...next, resolutionEpoch: epoch } as typeof freshIssue, ctx.root);
+        stamped = true;
       });
-    } catch { /* best-effort */ }
+    } catch { /* stamped stays false, handled below */ }
+
+    if (!stamped) {
+      return {
+        action: "retry",
+        instruction: `Could not confirm ${issueLabel} is still resolved and owned by this session (it may have been reopened or reassigned). Re-check its status in .story/issues/${issue.id}.json and report again.`,
+      };
+    }
+    ctx.updateDraft({ issueResolutionEpoch: epoch } as Partial<FullSessionState>);
 
     // T-208: Optional code review for issue fixes.
     // T-461: a goto jumps straight to a stage without consulting its skip(),

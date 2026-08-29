@@ -1,5 +1,6 @@
 import { dialCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { normalizeSeverity, type FullSessionState } from "../session-types.js";
+import type { WorkItemRef } from "../../core/arrangement-bounds.js";
 
 /** Mirrors the local alias in `session-diagnostics.ts`, which does not export it. */
 type StageConfigMap = Readonly<Record<string, Readonly<Record<string, unknown>>>> | null | undefined;
@@ -53,7 +54,8 @@ export function codeReviewHardCeiling(
 }
 
 export interface RoundCounter {
-  readonly ticketId: string;
+  readonly workItemId: string;
+  readonly kind: "ticket" | "issue";
   readonly completedRounds: number;
 }
 
@@ -64,30 +66,34 @@ export interface RoundCounter {
  * the ceiling one round late, because the round in hand is not persisted until
  * after the routing decision is made.
  *
- * Resets to 1 when the ticket differs, so a newly selected item can never
- * inherit a poisoned count from the one before it -- including across a park
- * and re-pick, a claim-loss re-pick, and recovery.
+ * Resets to 1 when the work item differs -- by id OR by kind -- so a newly
+ * selected item can never inherit a poisoned count from the one before it,
+ * including across a park and re-pick, a claim-loss re-pick, recovery, and a
+ * ticket-to-issue (or issue-to-ticket) switch.
  */
 export function nextRoundCounter(
   previous: RoundCounter | null | undefined,
-  ticketId: string,
+  item: WorkItemRef,
 ): RoundCounter {
-  if (!previous || previous.ticketId !== ticketId) return { ticketId, completedRounds: 1 };
-  return { ticketId, completedRounds: previous.completedRounds + 1 };
+  if (!previous || previous.workItemId !== item.id || previous.kind !== item.kind) {
+    return { workItemId: item.id, kind: item.kind, completedRounds: 1 };
+  }
+  return { workItemId: item.id, kind: item.kind, completedRounds: previous.completedRounds + 1 };
 }
 
 /**
- * Completed rounds recorded for `ticketId`, or 0.
+ * Completed rounds recorded for `item`, or 0.
  *
- * The id check is the whole point: a counter belonging to another ticket is
- * not a smaller count, it is NO count, and treating it as one would carry a
- * previous item's rounds into this one's ceiling.
+ * The id+kind check is the whole point: a counter belonging to another work
+ * item -- by id or by kind -- is not a smaller count, it is NO count, and
+ * treating it as one would carry a previous item's rounds into this one's
+ * ceiling.
  */
-export function roundsForTicket(
+export function roundsForWorkItem(
   counter: RoundCounter | null | undefined,
-  ticketId: string | null | undefined,
+  item: WorkItemRef | null | undefined,
 ): number {
-  if (!counter || !ticketId || counter.ticketId !== ticketId) return 0;
+  if (!counter || !item || counter.workItemId !== item.id || counter.kind !== item.kind) return 0;
   return counter.completedRounds;
 }
 
@@ -105,24 +111,27 @@ export interface CeilingDecision {
  * `forcedLanding`, or the `roundNum >= 5` landing, so nothing that was going
  * to finish stops finishing.
  *
- * The ticket guard matters because the park path returns a transition with no
- * ticket, which would loop. Issue-fix sessions therefore keep today's
- * behaviour rather than getting a half-built ceiling; ISS-1032 carries that.
+ * ISS-1032: a work item's presence -- ticket OR issue -- is what gates the
+ * ceiling, not a ticket specifically. `parkCurrentIssue` (park.ts) gives the
+ * park path a real issue-shaped target, so the old ticket-only guard (the
+ * park path had nowhere to route an issue) no longer applies.
  */
 export function decideCeiling(args: {
   readonly state: FullSessionState;
   readonly stages: StageConfigMap;
   readonly risk: string | null | undefined;
   readonly nextAction: string;
-  readonly isIssueFix: boolean;
 }): CeilingDecision {
-  const ticketId = args.state.ticket?.id;
+  const item: WorkItemRef | null = args.state.ticket
+    ? { kind: "ticket", id: args.state.ticket.id }
+    : args.state.currentIssue
+      ? { kind: "issue", id: args.state.currentIssue.id }
+      : null;
   const ceiling = codeReviewHardCeiling(args.state, args.stages, args.risk);
-  if (!ticketId) return { shouldPark: false, ceiling, counter: null };
+  if (!item) return { shouldPark: false, ceiling, counter: null };
 
-  const counter = nextRoundCounter(args.state.codeReviewRoundCounter, ticketId);
+  const counter = nextRoundCounter(args.state.codeReviewRoundCounter, item);
   const shouldPark = ceiling > 0 &&
-    !args.isIssueFix &&
     args.nextAction !== "FINALIZE" &&
     counter.completedRounds >= ceiling;
 

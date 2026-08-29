@@ -723,3 +723,34 @@ describe("T-475: earmark field merge and cross-field invariant", () => {
     expect(c).toBeDefined();
   });
 });
+
+describe("ISS-1032 (Amendment A5): resolutionEpoch field merge on issue", () => {
+  function epoch(overrides: Record<string, unknown> = {}) {
+    return {
+      issueId: "ISS-001",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      establishedAt: "2026-08-28T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("merges clean when only one side stamps a resolutionEpoch", () => {
+    const base = issue({ resolutionEpoch: null });
+    const ours = issue({ resolutionEpoch: epoch() });
+    const theirs = issue({ resolutionEpoch: null });
+    const result = threeWayMerge(base, ours, theirs, "issue");
+    expect(result.clean).toBe(true);
+    expect(result.merged.resolutionEpoch).toEqual(epoch());
+  });
+
+  it("hard-conflicts on two DIFFERENT sessions' resolutionEpoch (the ABA-cycle case)", () => {
+    const base = issue({ resolutionEpoch: null });
+    const ours = issue({ resolutionEpoch: epoch({ sessionId: "11111111-1111-4111-8111-111111111111" }) });
+    const theirs = issue({ resolutionEpoch: epoch({ sessionId: "22222222-2222-4222-8222-222222222222" }) });
+    const result = threeWayMerge(base, ours, theirs, "issue");
+    expect(result.clean).toBe(false);
+    const c = result.conflicts.find((x) => x.field === "resolutionEpoch");
+    expect(c).toBeDefined();
+    expect(c!.kind).toBe("field");
+  });
+});

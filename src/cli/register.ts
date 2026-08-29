@@ -2832,16 +2832,127 @@ export function registerNoteCommand(yargs: Argv): Argv {
 // arrangement (T-473)
 // ---------------------------------------------------------------------------
 
-/** Parses one `--party role=pen,client=codex,identityAnchor=abc123` entry. */
-function parsePartySpec(spec: string): ArrangementParty {
+/**
+ * ISS-1078 ([R1-FIX 8]): parses the `key=value,key=value,...` fields of one
+ * `--party` entry, tolerating a comma INSIDE a value when the value is
+ * double-quoted (`modelTier="opus, fallback sonnet"`). Grammar:
+ *
+ * - A value may be wrapped in `"..."`; its closing quote must be immediately
+ *   followed by `,` or end-of-string (anything else after the close-quote is
+ *   refused as malformed, never silently truncated).
+ * - Inside quotes, `\"` is a literal quote and `\\` is a literal backslash;
+ *   no other backslash escape is recognized (refused by name).
+ * - An unquoted value may not contain a comma (unchanged from before this
+ *   fix) but may contain a raw `"` or `\` literally -- every existing
+ *   unquoted spec still parses byte-for-byte identically.
+ * - An unterminated quote is refused by name, never treated as an unquoted
+ *   value containing a literal quote character.
+ *
+ * `--party` is a single CLI argument, so a value containing a comma needs
+ * BOTH this quoting AND the shell's own quoting to survive argv splitting,
+ * e.g. `--party 'role=pen,client=codex,identityAnchor=session-1,modelTier="opus, fallback sonnet"'`
+ * (outer single-quotes are the shell's job, inner double-quotes are this
+ * parser's job) -- stated in the `--party` help text with this exact example.
+ */
+function parsePartyFields(spec: string): Record<string, string> {
   const fields: Record<string, string> = {};
-  for (const pair of spec.split(",")) {
-    const eq = pair.indexOf("=");
-    if (eq === -1) {
-      throw new CliValidationError("invalid_input", `Malformed --party entry (expected key=value pairs): "${spec}"`);
+  const n = spec.length;
+  let i = 0;
+  // `more` tracks whether a comma was actually consumed as a separator, so a
+  // TRAILING comma (nothing after it) still forces one more iteration that
+  // hits the `eq === -1` malformed check below -- matching the pre-fix
+  // `spec.split(",")` behavior, which produced a trailing empty segment and
+  // threw the same error. Ending cleanly at end-of-string (no trailing
+  // comma) does NOT force another iteration.
+  let more = true;
+  while (more) {
+    more = false;
+    const eq = spec.indexOf("=", i);
+    // A key never contains a comma, so a comma appearing BEFORE the next `=`
+    // means the fragment between `i` and that comma has no `=` at all --
+    // malformed, e.g. a stray `junk` between two valid `key=value` pairs.
+    // Without this check, `indexOf("=", i)` would search PAST that comma and
+    // silently absorb the garbage fragment into the next field's key (fixed
+    // post-gate-1, codex round 1: this is what the un-narrowed scan did).
+    const commaBeforeEq = spec.indexOf(",", i);
+    if (eq === -1 || (commaBeforeEq !== -1 && commaBeforeEq < eq)) {
+      const badFragment = commaBeforeEq !== -1 ? spec.slice(i, commaBeforeEq) : spec.slice(i);
+      throw new CliValidationError(
+        "invalid_input",
+        `Malformed --party entry (expected key=value pairs): "${spec}"` +
+        (badFragment.length > 0 ? ` (offending fragment: "${badFragment}")` : " (trailing comma with no following field)"),
+      );
     }
-    fields[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+    const key = spec.slice(i, eq).trim();
+    let cursor = eq + 1;
+    let value: string;
+    if (spec[cursor] === "\"") {
+      let out = "";
+      let j = cursor + 1;
+      let closed = false;
+      while (j < n) {
+        const ch = spec[j];
+        if (ch === "\\") {
+          const next = spec[j + 1];
+          if (next === "\"" || next === "\\") {
+            out += next;
+            j += 2;
+            continue;
+          }
+          throw new CliValidationError(
+            "invalid_input",
+            `Malformed --party entry: invalid escape "\\${next ?? ""}" in "${spec}" (only \\" and \\\\ are recognized)`,
+          );
+        }
+        if (ch === "\"") {
+          closed = true;
+          j += 1;
+          break;
+        }
+        out += ch;
+        j += 1;
+      }
+      if (!closed) {
+        throw new CliValidationError("invalid_input", `Malformed --party entry: unterminated quote in "${spec}"`);
+      }
+      if (j < n && spec[j] !== ",") {
+        throw new CliValidationError(
+          "invalid_input",
+          `Malformed --party entry: unexpected characters after closing quote in "${spec}"`,
+        );
+      }
+      value = out;
+      if (j < n) {
+        cursor = j + 1;
+        more = true;
+      } else {
+        cursor = j;
+      }
+    } else {
+      const comma = spec.indexOf(",", cursor);
+      if (comma === -1) {
+        value = spec.slice(cursor).trim();
+        cursor = n;
+      } else {
+        value = spec.slice(cursor, comma).trim();
+        cursor = comma + 1;
+        more = true;
+      }
+    }
+    fields[key] = value;
+    i = cursor;
   }
+  return fields;
+}
+
+/**
+ * Parses one `--party role=pen,client=codex,identityAnchor=abc123` entry.
+ * Exported for direct parser-level testing (ISS-1078) -- the argv-level CLI
+ * integration test in arrangement-party-spec.test.ts covers the full
+ * shell-quoting-plus-parser-quoting path separately.
+ */
+export function parsePartySpec(spec: string): ArrangementParty {
+  const fields = parsePartyFields(spec);
   const { role, client, identityAnchor, modelTier } = fields;
   if (!role || !ARRANGEMENT_ROLES.includes(role as (typeof ARRANGEMENT_ROLES)[number])) {
     throw new CliValidationError("invalid_input", `--party role must be one of ${ARRANGEMENT_ROLES.join(", ")}: "${spec}"`);
@@ -2927,7 +3038,13 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                   // splitting per entry.
                   party: {
                     ...LITERAL_KEEP_BLANK,
-                    describe: "role=pen|worker,client=claude|codex,identityAnchor=... (repeatable)",
+                    describe:
+                      "role=pen|worker,client=claude|codex,identityAnchor=... (repeatable). " +
+                      "A value containing a comma must be double-quoted, e.g. modelTier=\"opus, fallback sonnet\" " +
+                      "(\\\" and \\\\ are the only recognized escapes inside quotes; identityAnchor's own format " +
+                      "never contains a comma, so quoting mainly matters for free-text fields like modelTier). " +
+                      "Since --party is a single shell argument, also quote the WHOLE entry at the shell level: " +
+                      "--party 'role=pen,client=codex,identityAnchor=session-1,modelTier=\"opus, fallback sonnet\"'",
                   },
                 },
               ).demandOption(["bounds", "party"]),

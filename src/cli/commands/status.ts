@@ -17,6 +17,9 @@ import type { ProjectState } from "../../core/project-state.js";
 import { ownerTaskForCurrentClient } from "../../autonomous/client-profile.js";
 import { computeArrangementPresence, applyPresenceEnrichment, ownerIdentityOf, STATUS_ENRICHMENT_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
 import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
+import { CROSS_NODE_REF_CAPTURE_REGEX } from "../../models/ticket.js";
+import { resolveNodeRoot } from "../../mcp/node-resolution.js";
+import { loadProject } from "../../core/project-loader.js";
 
 /**
  * T-473: builds the active-only, status-display projection of arrangements,
@@ -36,12 +39,86 @@ import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
  * JSON, CLI Markdown, and the guard verdict via `loadArrangementsSafe`'s own
  * warnings) inherits clean strings from one source.
  */
-function buildStatusArrangements(root: string, state: ProjectState): StatusArrangements {
+/**
+ * ISS-1077 ([R3-FIX 6]): resolves a node-qualified bound's existence, one
+ * cached load per node name for the whole `buildStatusArrangements` call --
+ * multiple bounds naming the same node share one `loadProject`, not one per
+ * bound. Never throws: `buildStatusArrangements` is documented never-throwing,
+ * so a bad node config or an unreadable node project becomes an advisory
+ * warning string here, exactly like a missing/ambiguous local bound.
+ */
+async function resolveNodeQualifiedBound(
+  nodeName: string,
+  itemRef: string,
+  pinnedRoot: string,
+  nodeStateCache: Map<string, Promise<ProjectState | { error: string }>>,
+): Promise<"found" | "missing" | "ambiguous" | "unusable" | { error: string }> {
+  let cached = nodeStateCache.get(nodeName);
+  if (!cached) {
+    cached = (async () => {
+      const resolved = resolveNodeRoot(pinnedRoot, nodeName);
+      if (!resolved.ok) return { error: resolved.error };
+      try {
+        const { state } = await loadProject(resolved.root);
+        return state;
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    })();
+    nodeStateCache.set(nodeName, cached);
+  }
+  const outcome = await cached;
+  if ("error" in outcome) return outcome;
+  const isTicketRef = TICKET_ID_REGEX.test(itemRef) || TICKET_CANONICAL_ID_REGEX.test(itemRef);
+  const result = isTicketRef ? outcome.resolveTicketRef(itemRef) : outcome.resolveIssueRef(itemRef);
+  // ISS-1077 fixed post-gate-1 (codex round 1): ambiguous is reported
+  // distinctly, matching the local-bound path (lines below) -- treating it
+  // as "found" would hide exactly the kind of unresolvable reference A4's
+  // widened schema can now admit (e.g. a hand-edited display-form bound that
+  // matches more than one item on the node), silently reporting a healthy
+  // status for a bound that cannot actually be unambiguously revalidated.
+  if (result.kind === "missing") return "missing";
+  if (result.kind === "ambiguous") return "ambiguous";
+  // codex round-2 finding: a UNIQUELY resolvable bound can still be
+  // enforcement-dead. `arrangementCoversNodeItem` (the function actually
+  // consulted for earmark authorization) does an EXACT string match of the
+  // stored bound against the target's resolved `.id` -- it has no resolver,
+  // no displayId lookup, by design (A4's docblock: that job belongs to an
+  // earlier/later step, not this narrow membership check). So a bound that
+  // resolves here only via `displayId`/`previousDisplayId` (team-mode:
+  // `.id` is canonical, the bound stores display form; A4-2's traced
+  // residual) is coverage-dead even though it uniquely names a real item --
+  // reporting it as plain "found" would be a false-healthy status for a
+  // bound that cannot actually authorize anything. `matchedBy !== "id"` is
+  // exactly the resolver's own signal for "this ref string does not equal
+  // the item's actual `.id`", the same condition `arrangementCoversNodeItem`
+  // would fail on.
+  if (result.matchedBy !== "id") return "unusable";
+  return "found";
+}
+
+async function buildStatusArrangements(root: string, state: ProjectState): Promise<StatusArrangements> {
   const { arrangements, warnings } = loadArrangementsSafe(root);
   const active = arrangements.filter((a) => a.lifecycle !== "closed");
   const boundsWarnings: string[] = [];
+  const nodeStateCache = new Map<string, Promise<ProjectState | { error: string }>>();
   for (const a of active) {
     for (const ref of a.bounds) {
+      const crossNode = CROSS_NODE_REF_CAPTURE_REGEX.exec(ref);
+      if (crossNode) {
+        const [, nodeName, itemRef] = crossNode as unknown as [string, string, string];
+        const outcome = await resolveNodeQualifiedBound(nodeName, itemRef, root, nodeStateCache);
+        if (outcome === "missing") {
+          boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)} bound ${sanitizeDisplayText(ref)} not found on node "${sanitizeDisplayText(nodeName)}"`);
+        } else if (outcome === "ambiguous") {
+          boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)} bound ${sanitizeDisplayText(ref)} is ambiguous on node "${sanitizeDisplayText(nodeName)}"`);
+        } else if (outcome === "unusable") {
+          boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)} bound ${sanitizeDisplayText(ref)} resolves uniquely on node "${sanitizeDisplayText(nodeName)}" but not by its exact id -- it cannot authorize a write there; store the item's own id`);
+        } else if (typeof outcome === "object") {
+          boundsWarnings.push(`arrangement ${sanitizeDisplayText(a.id)} bound ${sanitizeDisplayText(ref)}: node "${sanitizeDisplayText(nodeName)}" could not be checked (${sanitizeDisplayText(outcome.error)})`);
+        }
+        continue;
+      }
       const isTicketRef = TICKET_ID_REGEX.test(ref) || TICKET_CANONICAL_ID_REGEX.test(ref);
       const isIssueRef = ISSUE_ID_REGEX.test(ref) || ISSUE_CANONICAL_ID_REGEX.test(ref);
       const result = isTicketRef
@@ -139,10 +216,11 @@ export async function handleStatus(ctx: CommandContext, clientTaskId?: string | 
     };
   }
 
-  // T-473: synchronous, never-throwing read -- see buildStatusArrangements's
-  // own docblock. Computed once and shared by both the orchestrator and
+  // T-473: never-throwing read (ISS-1077: now async, since a node-qualified
+  // bound needs a per-node project load -- see buildStatusArrangements's own
+  // docblock). Computed once and shared by both the orchestrator and
   // single-project branches below.
-  const arrangements = buildStatusArrangements(ctx.root, ctx.state);
+  const arrangements = await buildStatusArrangements(ctx.root, ctx.state);
 
   const isOrchestrator = config.type === "orchestrator";
   const nodes = config.nodes as Record<string, Record<string, unknown>> | undefined;

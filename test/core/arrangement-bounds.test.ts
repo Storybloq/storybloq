@@ -3,6 +3,7 @@ import {
   arrangementCoversTicket,
   arrangementCoversIssue,
   arrangementCoversWorkItem,
+  arrangementCoversNodeItem,
   arrangementGateRiskWarnings,
   type TicketRefResolver,
   type IssueRefResolver,
@@ -197,6 +198,40 @@ describe("[ISS-1049] arrangementCoversWorkItem", () => {
     const resolver = combinedResolver({ "T-474": { kind: "found", item: { id: CANONICAL_TICKET } } }, {});
     const item: WorkItemRef = { kind: "issue", id: CANONICAL_ISSUE };
     expect(arrangementCoversWorkItem(arrangement, item, resolver)).toBe("unmatched");
+  });
+});
+
+describe("[ISS-1077] arrangementCoversNodeItem", () => {
+  it("matches when bounds contains the exact node-qualified canonical string", () => {
+    const arrangement = baseArrangement({ bounds: [`engine:${CANONICAL_TICKET}`] });
+    expect(arrangementCoversNodeItem(arrangement, "engine", CANONICAL_TICKET)).toBe(true);
+  });
+
+  it("does not match a different node's qualified bound with the same canonical id", () => {
+    const arrangement = baseArrangement({ bounds: [`other-node:${CANONICAL_TICKET}`] });
+    expect(arrangementCoversNodeItem(arrangement, "engine", CANONICAL_TICKET)).toBe(false);
+  });
+
+  it("does not match a plain local bound sharing the same canonical id string ([R2-FIX 4] qualified-only)", () => {
+    const arrangement = baseArrangement({ bounds: [CANONICAL_TICKET] });
+    expect(arrangementCoversNodeItem(arrangement, "engine", CANONICAL_TICKET)).toBe(false);
+  });
+
+  it("does not match when nothing in bounds is node-qualified at all", () => {
+    const arrangement = baseArrangement({ bounds: ["T-474"] });
+    expect(arrangementCoversNodeItem(arrangement, "engine", CANONICAL_TICKET)).toBe(false);
+  });
+
+  it("A4-2 residual fence: a hand-edited display-form bound against a team-mode node's canonical item fails closed (uncovered, not authorized)", () => {
+    // Amendment A4 widened NodeQualifiedBoundRefSchema to accept display-form
+    // node-qualified bounds (schema-valid), because non-team nodes have no
+    // canonical id at all. The traced residual: a HAND-EDITED record could
+    // store `engine:T-001` for an item whose team-mode node actually resolves
+    // it to a canonical id. Coverage matching must still refuse it rather than
+    // authorize it -- exact-string matching against the real resolved
+    // canonical id already guarantees this, since the two strings differ.
+    const arrangement = baseArrangement({ bounds: ["engine:T-001"] });
+    expect(arrangementCoversNodeItem(arrangement, "engine", CANONICAL_TICKET)).toBe(false);
   });
 });
 

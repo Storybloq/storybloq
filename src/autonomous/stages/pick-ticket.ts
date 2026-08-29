@@ -574,8 +574,13 @@ export class PickTicketStage implements WorkflowStage {
     try {
       const { handleIssueUpdate } = await import("../../cli/commands/issue.js");
       await handleIssueUpdate(issue.id, { status: "inprogress" }, "json", ctx.root);
-    } catch { /* best-effort -- don't block on status update */ }
-    ctx.writeState({ pendingProjectMutation: null });
+      // ISS-1052: only clear the marker on confirmed success. A thrown error
+      // here (lock/IO failure) must leave the marker SET, not cleared -- the
+      // marker is what lets `recoverPendingMutation` (guide.ts) recognize and
+      // recover this write on the next entry point. Clearing it unconditionally
+      // regardless of outcome is the exact fail-open ISS-1052 exists to close.
+      ctx.writeState({ pendingProjectMutation: null });
+    } catch { /* best-effort -- don't block on status update; marker stays set for recovery */ }
 
     // T-461: same resolution for issues, by severity instead of type.
     const issueEffort = reviewEffortForIssue(

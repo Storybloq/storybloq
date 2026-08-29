@@ -135,6 +135,58 @@ describe("handleReconcile", () => {
     expect(readdirSync(join(root, ".story", "notes"))).toHaveLength(0);
   });
 
+  describe("T-478: arrangements front-gate wiring", () => {
+    it("a conflicted arrangement on disk blocks reconcile even when tickets are clean", async () => {
+      const root = createProject();
+      const arrangements = join(root, ".story", "arrangements");
+      mkdirSync(arrangements, { recursive: true });
+      writeJson(join(arrangements, "a-0123456789abcdef.json"), {
+        id: "a-0123456789abcdef",
+        lifecycle: "active",
+        bounds: ["T-001"],
+        parties: [
+          { role: "pen", client: "claude", identityAnchor: "claude-session-abc" },
+          { role: "worker", client: "claude", identityAnchor: "claude-session-def" },
+        ],
+        gates: [],
+        unreachability: { onIrreversibleWork: "hold" },
+        createdDate: "2026-08-27",
+        updatedAt: "2026-08-27T00:00:00.000Z",
+        _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }],
+      });
+
+      const result = await handleReconcile(root, { dryRun: false, ci: false, format: "md" });
+
+      expect(result.exitCode).toBe(ExitCode.VALIDATION_ERROR);
+      expect(result.output).toContain("Unresolved conflict on arrangement a-0123456789abcdef");
+    });
+
+    it("a clean arrangement on disk does not block reconcile", async () => {
+      const root = createProject();
+      const arrangements = join(root, ".story", "arrangements");
+      mkdirSync(arrangements, { recursive: true });
+      writeJson(join(arrangements, "a-fedcba9876543210.json"), {
+        id: "a-fedcba9876543210",
+        lifecycle: "active",
+        bounds: ["T-001"],
+        parties: [
+          { role: "pen", client: "claude", identityAnchor: "claude-session-abc" },
+          { role: "worker", client: "claude", identityAnchor: "claude-session-def" },
+        ],
+        gates: [],
+        unreachability: { onIrreversibleWork: "hold" },
+        createdDate: "2026-08-27",
+        updatedAt: "2026-08-27T00:00:00.000Z",
+      });
+
+      const result = await handleReconcile(root, { dryRun: false, ci: true, format: "json" });
+
+      expect(result.exitCode).toBe(ExitCode.OK);
+      const parsed = JSON.parse(result.output);
+      expect(parsed.data.clean).toBe(true);
+    });
+  });
+
   describe("ISS-805: --ci clean project with format json", () => {
     it("emits a parseable success envelope and exits OK", async () => {
       const root = createProject(); // no tickets: clean, no renames, no rank changes

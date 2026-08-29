@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { computeReconcilePlan } from "../../src/core/reconcile.js";
+import type { Arrangement } from "../../src/models/arrangement.js";
 import { makeTicket, makeIssue, makeNote, makeLesson, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 
 const state = (opts: Parameters<typeof makeState>[0]) =>
@@ -287,5 +288,76 @@ describe("computeReconcilePlan", () => {
     if (!result.ok) return;
     expect(result.plan.renames).toHaveLength(1);
     expect(result.plan.renames[0]!.id).toBe("t-zzz0000000000099");
+  });
+});
+
+function makeArrangement(overrides: Record<string, unknown> = {}): Arrangement {
+  return {
+    id: "a-0123456789abcdef",
+    lifecycle: "active",
+    bounds: ["T-473"],
+    parties: [
+      { role: "pen", client: "claude", identityAnchor: "claude-session-abc" },
+      { role: "worker", client: "claude", identityAnchor: "claude-session-def" },
+    ],
+    gates: [],
+    unreachability: { onIrreversibleWork: "hold" },
+    createdDate: "2026-08-27",
+    updatedAt: "2026-08-27T00:00:00.000Z",
+    ...overrides,
+  } as Arrangement;
+}
+
+describe("T-478: computeReconcilePlan arrangements front-gate", () => {
+  it("omitting arrangementScan leaves existing behavior fully unchanged", () => {
+    const s = state({
+      tickets: [makeTicket({ id: "t-aaa0000000000001", displayId: "T-001", createdDate: "2026-01-01" })],
+    });
+    const result = computeReconcilePlan(s);
+    expect(result.ok).toBe(true);
+  });
+
+  it("a non-empty arrangementScan.warnings fails the plan closed before any per-arrangement check runs", () => {
+    const s = state({
+      tickets: [makeTicket({ id: "t-aaa0000000000001", displayId: "T-001", createdDate: "2026-01-01" })],
+    });
+    const result = computeReconcilePlan(s, undefined, {
+      arrangements: [makeArrangement({ _conflicts: undefined })],
+      warnings: ["Could not read .story/arrangements/: symlink rejected"],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.some((e) => e.includes("Arrangement scan incomplete"))).toBe(true);
+    expect(result.errors.some((e) => e.includes("symlink rejected"))).toBe(true);
+  });
+
+  it("a conflicted arrangement (non-empty _conflicts) fails the plan closed, naming the arrangement id", () => {
+    const s = state({
+      tickets: [makeTicket({ id: "t-aaa0000000000001", displayId: "T-001", createdDate: "2026-01-01" })],
+    });
+    const conflicted = makeArrangement({
+      id: "a-conflictedaaaaaa",
+      _conflicts: [{ fieldPath: "lifecycle", kind: "field", base: "active", ours: "suspended", theirs: "closed" }],
+    });
+    const result = computeReconcilePlan(s, undefined, {
+      arrangements: [conflicted],
+      warnings: [],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.some((e) => e.includes("Unresolved conflict on arrangement a-conflictedaaaaaa"))).toBe(true);
+  });
+
+  it("a clean arrangementScan (no warnings, no conflicts) leaves the result ok and contributes zero renames", () => {
+    const s = state({
+      tickets: [makeTicket({ id: "t-aaa0000000000001", displayId: "T-001", createdDate: "2026-01-01" })],
+    });
+    const result = computeReconcilePlan(s, undefined, {
+      arrangements: [makeArrangement()],
+      warnings: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.renames).toHaveLength(0);
   });
 });

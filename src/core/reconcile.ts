@@ -3,6 +3,7 @@ import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { Note } from "../models/note.js";
 import type { Lesson } from "../models/lesson.js";
+import type { Arrangement } from "../models/arrangement.js";
 import type { ProjectState } from "./project-state.js";
 import { TICKET_ID_REGEX, ISSUE_ID_REGEX, NOTE_ID_REGEX, LESSON_ID_REGEX } from "../models/types.js";
 import {
@@ -199,7 +200,22 @@ function reconcileEntityType<T extends EntityWithTimestamp & Record<string, unkn
   return { renames, nextSeq };
 }
 
-export function computeReconcilePlan(state: ProjectState, context?: ReconcileContext): ReconcileResult {
+/**
+ * T-478: the full `loadArrangementsSafe(root)` result, not just the accepted
+ * `.arrangements` -- an unreadable arrangement file, a symlink-rejected
+ * directory (`core/readdir-safe.ts`'s new failure modes), or a schema-invalid
+ * record would silently drop out of `.arrangements` alone, and
+ * `reconcile`/`reconcile --ci` would report clean while a real unresolved
+ * conflict sits in a file the scan never saw. A non-empty `warnings` fails
+ * the whole plan closed (see below) BEFORE the per-arrangement `_conflicts`
+ * check ever runs: an incomplete scan cannot prove conflict absence.
+ */
+export interface ArrangementScan {
+  readonly arrangements: readonly Arrangement[];
+  readonly warnings: readonly string[];
+}
+
+export function computeReconcilePlan(state: ProjectState, context?: ReconcileContext, arrangementScan?: ArrangementScan): ReconcileResult {
   const errors: string[] = [];
 
   for (const t of state.tickets) {
@@ -220,6 +236,26 @@ export function computeReconcilePlan(state: ProjectState, context?: ReconcileCon
   for (const l of state.lessons) {
     if (hasConflicts(l as EntityWithTimestamp)) {
       errors.push(`Unresolved conflict on lesson ${l.id}. Run 'storybloq resolve' first.`);
+    }
+  }
+
+  // T-478 arrangements front-gate: an incomplete scan cannot prove conflict
+  // absence, so it fails the whole plan closed BEFORE the per-arrangement
+  // check below -- same posture as a ProjectState load failure would have,
+  // if arrangements were on the strict load path (they deliberately are not,
+  // per T-473's binding item 2; this is why the scan result must be passed
+  // in explicitly rather than read from `state`).
+  if (arrangementScan) {
+    if (arrangementScan.warnings.length > 0) {
+      for (const w of arrangementScan.warnings) {
+        errors.push(`Arrangement scan incomplete: ${w}. Run 'storybloq validate' for details.`);
+      }
+    } else {
+      for (const a of arrangementScan.arrangements) {
+        if (hasConflicts(a as EntityWithTimestamp)) {
+          errors.push(`Unresolved conflict on arrangement ${a.id}. Run 'storybloq resolve' first.`);
+        }
+      }
     }
   }
 

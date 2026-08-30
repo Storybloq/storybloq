@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, symlinkSync, chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { E2ECliFixture, CLI_PATH } from "../helpers/e2e-cli.js";
 
 // ISS-748 regression suite. Runs against the BUILT bundle: `npm run build` must
 // have produced a current dist/cli.js before this file can pass (same dependency
@@ -13,23 +14,39 @@ import { fileURLToPath } from "node:url";
 // read the wrong file (workspace root) or nothing at all (installed package).
 
 const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+const cliPath = CLI_PATH;
 const bakedVersion = (JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as {
   version: string;
 }).version;
 
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME.
+// This file's `runCli` accepts an arbitrary CLI script path (one test spawns a
+// copy staged under a fake node_modules install, not always CLI_PATH), which
+// runE2ECli's fixed CLI_PATH can't express -- so it stays a bespoke spawnSync
+// wrapper built directly on fixture.env() rather than routed through
+// runE2ECli, unified onto the SAME fixture instance as everything else here.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
+
+// Returns stdout only (fix direction d) on both the success and failure path.
 function runCli(cliJs: string, cwd: string, ...args: string[]): { code: number; out: string } {
-  try {
-    const out = execFileSync("node", [cliJs, ...args], {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { code: 0, out };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
-  }
+  const result = spawnSync("node", [cliJs, ...args], {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: fixture.env(),
+    timeout: 30_000,
+  });
+  const stdout = result.stdout ?? "";
+  const stderr = result.stderr ?? "";
+  fixture.recordResult({ stdout, stderr });
+  if (result.error) throw result.error;
+  return { code: result.status ?? 1, out: stdout };
 }
 
 function createTeamProject(minCliVersion: string, schemaVersion = 2): string {
@@ -186,12 +203,27 @@ describe("ISS-736: update banner stays out of non-interactive stderr", () => {
   // spawnSync (NOT execFileSync): stderr must be observable on exit-0 paths
   // too; execFileSync exposes it only via the thrown error object, which made
   // the first version of these assertions vacuously pass on any build.
+  //
+  // ISS-1091: DELIBERATE EXCEPTION TO F12, not a bypass -- these tests exist
+  // specifically to seed a controlled, non-fixture HOME with a pre-warmed
+  // stale update-check cache; the update-banner assertions below depend on
+  // that exact HOME, so fixture.env({HOME: home}) (which correctly keeps
+  // REJECTING a HOME override, per F12) cannot be used here. Instead this
+  // takes the fixture's isolated CODEX_HOME/STORYBLOQ_GLOBAL_DIR/
+  // XDG_CONFIG_HOME/STORYBLOQ_DISABLE_WAKER_SPAWN (via fixture.env()) and
+  // overrides only HOME/USERPROFILE on the resulting object, rather than
+  // going through fixture.env()'s own override parameter (which rejects a
+  // HOME override outright, by design, to stop a call site from silently
+  // widening its OWN isolation boundary -- not applicable here, since this
+  // reuses the fixture's other isolated paths and only swaps in a second,
+  // equally-scratch HOME of its own).
   function runWithHome(home: string, cwd: string, ...args: string[]): { status: number | null; stderr: string } {
     const r = spawnSync("node", [cliPath, ...args], {
       cwd,
       encoding: "utf-8",
-      env: { ...process.env, HOME: home },
+      env: { ...fixture.env(), HOME: home, USERPROFILE: home },
     });
+    fixture.recordResult({ stdout: r.stdout ?? "", stderr: r.stderr ?? "" });
     return { status: r.status, stderr: r.stderr ?? "" };
   }
 

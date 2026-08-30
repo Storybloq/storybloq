@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { discoverArrayRegistrations, registrationKey } from "./array-registration-inventory.js";
+import { E2ECliFixture, runE2ECli, CLI_PATH } from "../helpers/e2e-cli.js";
 
 // ISS-886 regression suite. Runs against the BUILT bundle: `npm run build` must
 // have produced a current dist/cli.js before this file can pass (same dependency
@@ -20,23 +19,26 @@ import { discoverArrayRegistrations, registrationKey } from "./array-registratio
 // merge-driver-e2e.test.ts); this file does it once since every test spawns.
 vi.setConfig({ testTimeout: 30_000 });
 
-const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+const cliPath = CLI_PATH;
 
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME
+// (test/helpers/e2e-cli.ts) so these subprocesses can never touch the real
+// developer machine's skills/config/hooks/cache, and never race a concurrent
+// CLI version's skill-marker refresh onto a captured stream.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
+
+// Returns stdout only (fix direction d) -- never mixes stderr into `out`, on
+// either the success or failure path, so a housekeeping notice on stderr can
+// never corrupt a JSON envelope this file parses out of `out`.
 function run(cwd: string, ...args: string[]): { code: number; out: string } {
-  try {
-    return {
-      code: 0,
-      out: execFileSync("node", [cliPath, ...args], {
-        cwd,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
-  }
+  const result = runE2ECli(fixture, args, { cwd });
+  return { code: result.status ?? 1, out: result.stdout };
 }
 
 /** Parses the JSON error envelope, asserting the output IS exactly one envelope. */
@@ -579,11 +581,23 @@ const MATRIX: Coverage[] = [
       expect(init.code, init.out).toBe(0);
       // --surface is explicit because the test env deliberately clears client
       // identity, so process-ancestry detection cannot resolve it.
+      //
+      // ISS-1091 discovery: `bus setup` with the default --delivery live
+      // preflights that the client's base Claude/Codex hooks are already
+      // registered (src/cli/commands/bus.ts:772-799) -- against a real
+      // developer HOME this always passed silently because a real,
+      // long-ago `storybloq setup` had globally installed those hooks, an
+      // undeclared dependency on real machine state that genuine HOME
+      // isolation exposes (exactly the defect class this run exists to
+      // find). This test is a registration-coverage check for --file's
+      // comma handling, not a hook-delivery test, so --delivery poll
+      // declares its true dependency surface instead of dragging hook
+      // installation into its scaffolding.
       const first = run(dir, "bus", "setup", "--client", "claude", "--task-id", "task-a",
-        "--surface", "claude_cli");
+        "--surface", "claude_cli", "--delivery", "poll");
       expect(first.code, first.out).toBe(0);
       const second = run(dir, "bus", "setup", "--client", "codex", "--task-id", "task-b",
-        "--surface", "codex_cli");
+        "--surface", "codex_cli", "--delivery", "poll");
       expect(second.code, second.out).toBe(0);
       seedTickets(dir, 1);
       // comma: "literal": a referenced path may legitimately contain a comma, and

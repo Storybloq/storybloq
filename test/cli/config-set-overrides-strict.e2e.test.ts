@@ -18,32 +18,27 @@
  * defect surface is the yargs registration and root middleware that
  * handler-level tests bypass entirely.
  */
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { E2ECliFixture, runE2ECli } from "../helpers/e2e-cli.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
-const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
+// Returns stdout only (fix direction d) on both the success and failure path.
 function run(cwd: string, ...args: string[]): { code: number; out: string } {
-  try {
-    return {
-      code: 0,
-      out: execFileSync("node", [cliPath, ...args], {
-        cwd,
-        encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return { code: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
-  }
+  const result = runE2ECli(fixture, args, { cwd });
+  return { code: result.status ?? 1, out: result.stdout };
 }
 
 const created: string[] = [];

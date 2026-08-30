@@ -1,13 +1,26 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { TicketSchema } from "../../src/models/ticket.js";
+import { E2ECliFixture, runE2ECli, CLI_PATH } from "../helpers/e2e-cli.js";
 
-const cliPath = resolve(fileURLToPath(import.meta.url), "../../../dist/cli.js");
+const cliPath = CLI_PATH;
 const driverCmd = `node ${cliPath} merge-driver %O %A %B %P`;
+
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME for
+// direct `cli()` invocations. `merge-driver` itself is explicitly in
+// housekeeping's skip list (shouldSkipHousekeeping), so the driver invocation
+// git launches internally during a merge is not part of this fix's scope --
+// only the direct cli()/`conflicts`/`resolve`/`ticket` calls this file makes.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
 function createTeamRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "merge-e2e-"));
@@ -45,14 +58,10 @@ function createTeamRepo(): string {
   return dir;
 }
 
+// Returns stdout only (fix direction d) on both the success and failure path.
 function cli(dir: string, ...args: string[]): { exitCode: number; stdout: string } {
-  try {
-    const stdout = execFileSync("node", [cliPath, ...args], { cwd: dir, encoding: "utf-8" });
-    return { exitCode: 0, stdout };
-  } catch (err: unknown) {
-    const e = err as { status?: number; stdout?: string; stderr?: string };
-    return { exitCode: e.status ?? 1, stdout: (e.stdout ?? "") + (e.stderr ?? "") };
-  }
+  const result = runE2ECli(fixture, args, { cwd: dir });
+  return { exitCode: result.status ?? 1, stdout: result.stdout };
 }
 
 function git(dir: string, ...args: string[]): string {

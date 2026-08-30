@@ -7,15 +7,21 @@
  * requested ref fixes should have changed. These tests drive the REAL CLI from
  * dist (like merge-driver-e2e), so they require `npm run build` first.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { serializeJSON } from "../../../src/core/project-loader.js";
+import { E2ECliFixture, runE2ECli } from "../../helpers/e2e-cli.js";
 
-const cliPath = resolve(fileURLToPath(import.meta.url), "../../../../dist/cli.js");
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
 function makeProject(): string {
   const dir = mkdtempSync(join(tmpdir(), "repair-e2e-"));
@@ -35,8 +41,16 @@ function makeProject(): string {
   return dir;
 }
 
+// Returns stdout only (fix direction d) on success; throws on a nonzero exit,
+// matching the original execFileSync-without-try/catch behavior class (no
+// test in this file expects a failure path, so the exact thrown shape doesn't
+// need to match Node's own child_process error object).
 function runRepair(dir: string): string {
-  return execFileSync("node", [cliPath, "repair"], { cwd: dir, encoding: "utf-8" });
+  const result = runE2ECli(fixture, ["repair"], { cwd: dir });
+  if (result.status !== 0) {
+    throw new Error(`storybloq repair exited ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  }
+  return result.stdout;
 }
 
 describe("ISS-738: repair write mode is a minimal patch, not a loader round-trip", () => {

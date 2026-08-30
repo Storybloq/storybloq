@@ -1,9 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { E2ECliFixture, runE2ECli } from "../helpers/e2e-cli.js";
 
 /**
  * T-442, end to end through the real CLI.
@@ -20,19 +19,19 @@ import { fileURLToPath } from "node:url";
 
 vi.setConfig({ testTimeout: 60_000 });
 
-const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
+// Returns stdout only (fix direction d) on both the success and failure path.
 function cli(cwd: string, ...args: string[]): { ok: boolean; out: string } {
-  try {
-    return {
-      ok: true,
-      out: execFileSync("node", [cliPath, ...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }),
-    };
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string };
-    return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
-  }
+  const result = runE2ECli(fixture, args, { cwd });
+  return { ok: result.status === 0, out: result.stdout };
 }
 
 function ticketPath(root: string): string {

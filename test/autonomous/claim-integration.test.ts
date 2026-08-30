@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { canClaim, buildClaim } from "../../src/core/claims.js";
 import { gitUserEmail } from "../../src/autonomous/git-inspector.js";
 import { makeTicket } from "../core/test-factories.js";
@@ -6,10 +10,25 @@ import type { Ticket } from "../../src/models/ticket.js";
 
 describe("autonomous claim integration", () => {
   describe("gitUserEmail", () => {
+    // ISS-1091: gitUserEmail(".") previously read the AMBIENT repo's git
+    // config (whatever real repo vitest's cwd happens to sit in), so this
+    // test only passed because the developer machine's global git config
+    // has user.email set. Seed a throwaway repo with a local user.email
+    // instead, same pattern as merge-driver-e2e.test.ts:14-16.
+    let dir: string;
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+
     it("returns a string email from git config", async () => {
-      const email = await gitUserEmail(".");
+      dir = mkdtempSync(join(tmpdir(), "claim-git-identity-"));
+      execFileSync("git", ["init"], { cwd: dir });
+      execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: dir });
+      execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+
+      const email = await gitUserEmail(dir);
       expect(typeof email).toBe("string");
-      expect(email).not.toBe("");
+      expect(email).toBe("test@test.com");
     });
   });
 

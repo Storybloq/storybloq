@@ -31,6 +31,7 @@ import { createSession, writeSessionSync } from "../../src/autonomous/session.js
 import { wakeClaimPath } from "../../src/autonomous/wake-claim.js";
 import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
+import { E2ECliFixture } from "../helpers/e2e-cli.js";
 
 const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
 const cliPath = join(pkgRoot, "dist", "cli.js");
@@ -45,6 +46,12 @@ let shimDir: string;
 let shimLog: string;
 let savedGlobalDir: string | undefined;
 let gitHeadHash: string; // real HEAD of the test repo, so guide resume validates cleanly
+// ISS-1091: a fresh fixture per test (matching this file's existing
+// per-test home/globalDir lifecycle, not a shared per-suite instance) --
+// home/globalDir are re-pointed at the fixture's own scratch paths so the
+// spawned CLI also gets isolated CODEX_HOME/XDG_CONFIG_HOME (F9: confirmed
+// per-test, no per-suite fixture needed here).
+let fixture: E2ECliFixture;
 
 interface LedgerFile {
   schemaVersion: number;
@@ -66,18 +73,17 @@ function runCli(args: string[], opts: { input?: string; env?: Record<string, str
     cwd: root,
     encoding: "utf-8",
     input: opts.input,
-    env: {
-      ...process.env,
-      HOME: home,
-      STORYBLOQ_GLOBAL_DIR: globalDir,
-      STORYBLOQ_DISABLE_WAKER_SPAWN: "1",
+    env: fixture.env({
       SHIM_LOG: shimLog,
       PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
       ...opts.env,
-    },
+    }),
     timeout: 30_000,
   });
-  return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+  const stdout = r.stdout ?? "";
+  const stderr = r.stderr ?? "";
+  fixture.recordResult({ stdout, stderr });
+  return { code: r.status ?? 1, stdout, stderr };
 }
 
 function stopFailurePayload(overrides: Record<string, unknown> = {}): string {
@@ -165,10 +171,11 @@ function readState(sessDir: string): FullSessionState {
   return JSON.parse(readFileSync(join(sessDir, "state.json"), "utf-8")) as FullSessionState;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  fixture = await E2ECliFixture.create();
+  home = fixture.home;
+  globalDir = fixture.globalDir;
   root = mkdtempSync(join(tmpdir(), "t424-e2e-"));
-  home = mkdtempSync(join(tmpdir(), "t424-e2e-home-"));
-  globalDir = mkdtempSync(join(tmpdir(), "t424-e2e-global-"));
   shimDir = join(root, "shim-bin");
   mkdirSync(shimDir, { recursive: true });
   shimLog = join(root, "claude-shim.log");
@@ -194,8 +201,7 @@ afterEach(async () => {
   if (savedGlobalDir === undefined) delete process.env.STORYBLOQ_GLOBAL_DIR;
   else process.env.STORYBLOQ_GLOBAL_DIR = savedGlobalDir;
   await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-  await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-  await rm(globalDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  await fixture.cleanup();
 });
 
 describe("limit-resume E2E (built CLI)", () => {
@@ -317,11 +323,10 @@ describe("limit-resume E2E (built CLI)", () => {
       const child = spawn("node", [cliPath, "session", "limit-stop"], {
         cwd: root,
         stdio: ["pipe", "ignore", "ignore"],
-        env: {
-          ...process.env, HOME: home, STORYBLOQ_GLOBAL_DIR: globalDir,
-          STORYBLOQ_DISABLE_WAKER_SPAWN: "1", SHIM_LOG: shimLog,
+        env: fixture.env({
+          SHIM_LOG: shimLog,
           PATH: `${shimDir}${delimiter}${process.env.PATH ?? ""}`,
-        },
+        }),
       });
       child.stdin!.end(stopFailurePayload());
       child.on("close", (code) => res(code ?? 1));

@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync, spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { E2ECliFixture, CLI_PATH } from "../helpers/e2e-cli.js";
 
 /**
  * ISS-892, end to end through the real MCP server.
@@ -16,8 +16,19 @@ import { fileURLToPath } from "node:url";
 
 vi.setConfig({ testTimeout: 60_000 });
 
-const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+const cliPath = CLI_PATH;
+
+// ISS-1091: isolated HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME.
+// This file keeps its own spawn/execFileSync calls verbatim (a long-lived MCP
+// stdio session in mcpSession() has signal/timeout/pipe semantics runE2ECli's
+// convenience wrapper would flatten) -- only the env source changes.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
 interface JsonRpcMessage {
   id?: number;
@@ -39,16 +50,23 @@ function mcpSession(
   requests: { id: number; method: string; params?: unknown }[],
 ): Promise<Map<number, JsonRpcMessage>> {
   return new Promise((resolvePromise, reject) => {
-    const proc = spawn("node", [cliPath, "--mcp"], { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = spawn("node", [cliPath, "--mcp"], { cwd, stdio: ["pipe", "pipe", "pipe"], env: fixture.env() });
     const responses = new Map<number, JsonRpcMessage>();
     let buffer = "";
     let stderr = "";
+    // F6: a running, NEVER-consumed record of everything read on stdout -- unlike
+    // `buffer`, which line-splitting mutates and drains as JSON-RPC lines are
+    // parsed, this keeps every banner/log line the notice-pattern check needs to
+    // see, even after `buffer` itself has moved past it.
+    let allStdout = "";
 
     proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     proc.on("error", reject);
 
     proc.stdout.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
+      const text = chunk.toString();
+      allStdout += text;
+      buffer += text;
       let nl: number;
       while ((nl = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, nl);
@@ -64,6 +82,7 @@ function mcpSession(
       }
       if (requests.every((r) => responses.has(r.id))) {
         proc.kill();
+        fixture.recordResult({ stdout: allStdout, stderr });
         resolvePromise(responses);
       }
     });
@@ -87,6 +106,7 @@ function mcpSession(
 
     setTimeout(() => {
       proc.kill();
+      fixture.recordResult({ stdout: allStdout, stderr });
       if (requests.every((r) => responses.has(r.id))) resolvePromise(responses);
       else reject(new Error(`MCP session timed out. stderr: ${stderr}`));
     }, 25_000);
@@ -109,6 +129,7 @@ function cli(cwd: string, ...args: string[]): string {
     cwd,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: fixture.env(),
   });
 }
 

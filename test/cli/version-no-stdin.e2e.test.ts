@@ -23,14 +23,29 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { E2ECliFixture, CLI_PATH } from "../helpers/e2e-cli.js";
 
 vi.setConfig({ testTimeout: 60_000 });
 
 const pkgRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const cliPath = join(pkgRoot, "dist", "cli.js");
+const cliPath = CLI_PATH;
+
+// ISS-1091: this suite's poisoned --import must stay the ONLY thing injected
+// into the child's module graph, so the spawn call itself stays verbatim;
+// only the env source is swapped to the shared fixture's isolated
+// HOME/CODEX_HOME/STORYBLOQ_GLOBAL_DIR/XDG_CONFIG_HOME, which is what stops
+// --version's unconditional preCommandHousekeeping pass from touching the
+// real ~/.claude/skills.
+let fixture: E2ECliFixture;
+beforeAll(async () => {
+  fixture = await E2ECliFixture.create();
+});
+afterAll(async () => {
+  await fixture.cleanup();
+});
 
 const SENTINEL = "STDIN-TOUCHED";
 
@@ -56,14 +71,17 @@ function runPoisoned(
     const proc = spawn(
       "node",
       ["--import", `data:text/javascript,${encodeURIComponent(POISON)}`, cliPath, ...args],
-      { cwd, stdio: ["pipe", "pipe", "pipe"] },
+      { cwd, stdio: ["pipe", "pipe", "pipe"], env: fixture.env() },
     );
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     proc.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     proc.on("error", reject);
-    proc.on("close", (code) => resolvePromise({ code, stdout, stderr }));
+    proc.on("close", (code) => {
+      fixture.recordResult({ stdout, stderr });
+      resolvePromise({ code, stdout, stderr });
+    });
     // Close stdin so a command that DOES read it terminates instead of hanging.
     proc.stdin.end();
   });

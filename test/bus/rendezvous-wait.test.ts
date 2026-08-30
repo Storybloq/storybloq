@@ -4,9 +4,9 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterEach, afterAll, beforeAll, describe, expect, it } from "vitest";
+import { E2ECliFixture, CLI_PATH } from "../helpers/e2e-cli.js";
 import { initProject } from "../../src/core/init.js";
 import { canonicalHash } from "../../src/bus/canonical.js";
 import { acknowledgeBusMessage, pollBus, sendBusMessage } from "../../src/bus/index.js";
@@ -435,7 +435,20 @@ describe("T-427 `bus poll --wait` CLI", () => {
 });
 
 describe("T-427 `bus poll --wait` process signal contract", () => {
-  const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist", "cli.js");
+  const cliPath = CLI_PATH;
+
+  // ISS-1091: this is the file's only real subprocess spawn (every other
+  // CLI-shaped call above routes through the in-process runBusCli() helper
+  // and stays untouched); env source swapped to the shared fixture's
+  // isolated HOME so the built CLI's preCommandHousekeeping pass never
+  // touches the real ~/.claude/skills, spawn call otherwise verbatim.
+  let cliFixture: E2ECliFixture;
+  beforeAll(async () => {
+    cliFixture = await E2ECliFixture.create();
+  });
+  afterAll(async () => {
+    await cliFixture.cleanup();
+  });
 
   async function waitForFile(path: string, timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
@@ -454,7 +467,7 @@ describe("T-427 `bus poll --wait` process signal contract", () => {
     const child = spawn(process.execPath, [
       cliPath, "bus", "poll", "--wait", "--timeout", "30",
       "--endpoint", f.a.endpointId, "--client", "codex", "--task-id", f.aTaskId,
-    ], { cwd: f.root, stdio: "ignore" });
+    ], { cwd: f.root, stdio: "ignore", env: cliFixture.env() });
 
     const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       child.on("exit", (code, signal) => resolve({ code, signal }));

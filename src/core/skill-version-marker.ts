@@ -20,6 +20,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { compareVersionStrings } from "./team-capabilities.js";
 
 const MARKER_FILE = ".storybloq-version";
 
@@ -95,12 +96,40 @@ export function writeSkillMarker(version: string, target: SkillInstallTarget = "
   }
 }
 
+/**
+ * ISS-1091 (R4, round-3 final form): the auto-refresh path must never
+ * downgrade. A missing or genuinely unparseable marker is treated as stale
+ * (today's behavior, unchanged). Otherwise a non-plain (prerelease/build-
+ * tagged) RUNNING version fails closed -- it never refreshes anything,
+ * since refreshing FROM a plain marker TO an unshippable local prerelease
+ * is never correct. A plain running version compares against the marker's
+ * numeric core: strictly newer refreshes, strictly older never refreshes
+ * (closes the round-3 blocker: a plain CLI must not refresh backward over
+ * an intentionally-installed newer prerelease), and an equal core refreshes
+ * only when the marker itself carried a prerelease/build suffix (a release
+ * finalizing its own prerelease).
+ */
+export function shouldRefresh(runningVersion: string, marker: string | null): boolean {
+  const PLAIN = /^\d+\.\d+\.\d+$/;
+  const CORE_MATCH = /^(\d+\.\d+\.\d+)([-+].*)?$/;
+  if (marker === null) return true; // no marker: today's behavior, unchanged
+  if (!PLAIN.test(runningVersion)) return false; // non-plain running version: fail closed, never refresh
+  const parsed = CORE_MATCH.exec(marker);
+  if (!parsed) return true; // marker has no parseable numeric core at all: genuinely malformed, normalize
+  const core = parsed[1]!;
+  const hadSuffix = parsed[2] !== undefined; // marker itself was a prerelease/build-tagged variant
+  const cmp = compareVersionStrings(runningVersion, core); // safe: both sides are plain x.y.z here
+  if (cmp > 0) return true; // running strictly newer than the marker's core: refresh
+  if (cmp < 0) return false; // running strictly older than the marker's core: never refresh
+  return hadSuffix; // same core: refresh only if the marker was itself a prerelease finalizing to this exact release
+}
+
 /** True when the skill dir exists AND the marker is stale or missing. */
 export function isSkillStale(runningVersion: string, target: SkillInstallTarget = "claude"): boolean {
   if (!runningVersion || runningVersion === "0.0.0-dev") return false;
   if (!existsSync(join(skillDir(target), "SKILL.md"))) return false; // no skill dir = not stale, just uninstalled
   const marker = readSkillMarker(target);
-  return marker !== runningVersion;
+  return shouldRefresh(runningVersion, marker);
 }
 
 /**

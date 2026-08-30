@@ -25,7 +25,7 @@ const MARKER_FILE = ".storybloq-version";
 
 export type SkillInstallTarget = "claude" | "codex" | "codexCompat";
 
-interface SkillTargetInfo {
+export interface SkillTargetInfo {
   readonly id: SkillInstallTarget;
   readonly client: "claude" | "codex";
   readonly dir: string;
@@ -60,11 +60,12 @@ function targetInfo(target: SkillInstallTarget): SkillTargetInfo {
   }
 }
 
-function skillTargets(): readonly SkillTargetInfo[] {
+/** ISS-1091 (F10): exported so the e2e acceptance probe's audited-path list can enumerate targets by walking this, instead of hand-duplicating the id list. */
+export function skillTargets(): readonly SkillTargetInfo[] {
   return [targetInfo("claude"), targetInfo("codex"), targetInfo("codexCompat")];
 }
 
-function skillDir(target: SkillInstallTarget = "claude"): string {
+export function skillDir(target: SkillInstallTarget = "claude"): string {
   return targetInfo(target).dir;
 }
 
@@ -102,7 +103,13 @@ export function isSkillStale(runningVersion: string, target: SkillInstallTarget 
   return marker !== runningVersion;
 }
 
-function codexConfigPath(): string {
+/**
+ * ISS-1091 (F10): exported for the e2e acceptance probe's audited-path list.
+ * Note this duplicates setup-skill.ts's own `codexConfigPath` -- both compute
+ * the identical path independently; see test/helpers/e2e-acceptance-probe.test.ts
+ * for the pinned-equal assertion documenting that duplication.
+ */
+export function codexConfigPath(): string {
   return join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
 }
 

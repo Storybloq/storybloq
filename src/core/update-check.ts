@@ -46,7 +46,8 @@ export interface UpdateInfo {
   updateAvailable: boolean;
 }
 
-function cachePath(): string {
+/** ISS-1091 (F10): exported for the e2e acceptance probe's audited-path list. */
+export function cachePath(): string {
   return join(homedir(), ".claude", "storybloq", "update-check.json");
 }
 

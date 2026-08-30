@@ -1306,11 +1306,19 @@ function codexHome(): string {
   return process.env.CODEX_HOME ?? join(homedir(), ".codex");
 }
 
-function codexHooksPath(): string {
+/** ISS-1091 (F10): exported for the e2e acceptance probe's audited-path list. */
+export function codexHooksPath(): string {
   return join(codexHome(), "hooks.json");
 }
 
-function codexConfigPath(): string {
+/**
+ * ISS-1091 (F10): exported for the e2e acceptance probe's audited-path list.
+ * Note this duplicates skill-version-marker.ts's own `codexConfigPath` -- both
+ * compute the identical path independently; see
+ * test/helpers/e2e-acceptance-probe.test.ts for the pinned-equal assertion
+ * documenting that duplication.
+ */
+export function codexConfigPath(): string {
   return join(codexHome(), "config.toml");
 }
 

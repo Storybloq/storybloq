@@ -76,6 +76,19 @@ The CLI also silently refreshes the skill dir and migrates any legacy hook entri
 
 Alternative install via the Claude Code plugin system: see [Storybloq/plugin-archive](https://github.com/Storybloq/plugin-archive) (legacy path; `storybloq setup --client all` is the recommended install).
 
+## Codex plugin marketplace
+
+```bash
+codex plugin marketplace add https://github.com/Storybloq/storybloq
+codex plugin add storybloq@storybloq
+```
+
+This installs the Storybloq skill only. It does not run this package's npm install, register the MCP server, or configure hooks -- those still need the CLI, which the skill's own bootstrap step installs for you the first time you invoke it: on your first `$story`, if the CLI or MCP server isn't set up yet, the skill runs `npm install -g @storybloq/storybloq@latest` followed by `storybloq setup --client codex --skip-skill` for you. `--skip-skill` skips re-copying the skill files, since the plugin already manages that copy -- passing it yourself only matters if you're driving `storybloq setup` directly instead of letting the skill's bootstrap step do it.
+
+If you already have a standalone Codex skill copy from a prior direct `storybloq setup --client codex` (at `~/.agents/skills/story/` and/or `~/.codex/skills/story/`), installing the marketplace plugin on top of it is an untested configuration, not a verified-harmless one -- Codex's handling of two same-named skill providers isn't something this project has tested. Recommended migration: move the existing copy OUT of the skills root rather than deleting it. A backup left under `~/.agents/skills/` (for example `story.bak`) still contains a `SKILL.md` and can be discovered as a second skill, which is the duplicate this procedure exists to remove, so park it one level up instead: `mkdir -p ~/.agents/story-skill-backups && mv ~/.agents/skills/story ~/.agents/story-skill-backups/story.$(date +%s)`, and the same for `~/.codex/skills/story` into `~/.codex/story-skill-backups/` if present. Restart Codex and confirm `$story` still works via the plugin-managed copy. To roll back, move the backup to its original path. Only then, separately and at your own discretion, remove the backup.
+
+If the CLI or MCP server is still missing after installing the plugin and invoking `$story` once, run the bootstrap command yourself: `npm install -g @storybloq/storybloq@latest && storybloq setup --client codex --skip-skill`.
+
 ## Bootstrap a project
 
 ```bash

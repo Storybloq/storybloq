@@ -1,0 +1,20 @@
+{
+  "name": "storybloq",
+  "interface": {
+    "displayName": "Storybloq"
+  },
+  "plugins": [
+    {
+      "name": "storybloq",
+      "source": {
+        "source": "local",
+        "path": "./plugins/storybloq"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

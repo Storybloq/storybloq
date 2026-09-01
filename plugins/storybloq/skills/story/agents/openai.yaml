@@ -1,0 +1,14 @@
+interface:
+  display_name: "Storybloq"
+  short_description: "Load project tickets, issues, handovers, and autonomous workflow state."
+  brand_color: "#7C4D2B"
+  default_prompt: "$story"
+
+policy:
+  allow_implicit_invocation: true
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "storybloq"
+      description: "Storybloq MCP server registered by storybloq setup."

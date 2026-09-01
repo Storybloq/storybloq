@@ -1,0 +1,24 @@
+{
+  "name": "storybloq",
+  "version": "1.13.0",
+  "description": "Project memory for Claude Code and Codex. Storybloq stores tickets, issues, handovers, and lessons in a .story/ folder inside your repo.",
+  "author": {
+    "name": "Amir Shayegh",
+    "url": "https://storybloq.com"
+  },
+  "homepage": "https://storybloq.com",
+  "repository": "https://github.com/Storybloq/storybloq",
+  "license": "PolyForm-Shield-1.0.0",
+  "keywords": ["storybloq", "codex", "openai-codex", "session-continuity", "agentic-development"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Storybloq",
+    "shortDescription": "Project memory for Claude Code and Codex.",
+    "longDescription": "Storybloq stores tickets, issues, handovers, and lessons in a .story/ folder inside your repo so every session starts where the last one left off.",
+    "developerName": "Amir Shayegh",
+    "category": "Productivity",
+    "capabilities": ["Project memory", "Session continuity", "Multi-session handovers"],
+    "websiteURL": "https://storybloq.com",
+    "defaultPrompt": ["Load project state with $story"]
+  }
+}

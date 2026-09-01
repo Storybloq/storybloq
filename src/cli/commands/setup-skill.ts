@@ -954,6 +954,20 @@ export async function removeHook(
 
 export interface SetupSkillOptions {
   skipHooks?: boolean;
+  /**
+   * ISS-834: skip handleSetupCodex's own skill-directory copy (both the
+   * primary `~/.agents/skills/story/` write and the `~/.codex/skills/story/`
+   * compat refresh). For a Codex install already managed by the
+   * `storybloq` marketplace plugin (which ships its own skill copy via
+   * `skills: "./skills/"` in its plugin.json), running the npm installer's
+   * copy step too would create a duplicate, competing skill provider.
+   * Has no effect on `handleSetupClaude` -- Claude Code's skill path is
+   * unrelated to the Codex plugin and stays unchanged, per ISS-834's own
+   * "Claude Code install path unchanged" instruction. Rejected as a usage
+   * error when combined with `client: "claude"` (see `handleSetup`), since
+   * there is no Claude-side copy step for it to skip.
+   */
+  skipSkill?: boolean;
 }
 
 export type SetupClient = "claude" | "codex" | "all";
@@ -1798,53 +1812,59 @@ export async function refreshExistingCodexHooks(
 }
 
 async function handleSetupCodex(options: SetupSkillOptions = {}): Promise<void> {
-  const { skipHooks = false } = options;
+  const { skipHooks = false, skipSkill = false } = options;
 
-  let srcSkillDir: string;
-  try {
-    srcSkillDir = resolveSkillSourceDir();
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Error: ${message}\n`);
-    process.stderr.write("This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq@latest\n");
-    process.exitCode = 1;
-    return;
-  }
-
-  // Primary Codex skill artifact: leave unwrapped so a total failure propagates
-  // to the top-level handler and sets a non-zero exit (parity with
-  // handleSetupClaude's primary writes). The no-setup self-heal path has its own
-  // non-fatal guard in autoRefreshSkillIfStale, so this does not affect it.
-  const skillDir = join(homedir(), ".agents", "skills", "story");
-  const existed = existsSync(join(skillDir, "SKILL.md"));
-  const writtenFiles = await copyDirRecursive(srcSkillDir, skillDir);
-  log(`${existed ? "Updated" : "Installed"} $story skill at ${skillDir}/`);
-  log(`  ${writtenFiles.join(" + ")} written`);
-
-  const compatSkillDir = join(codexHome(), "skills", "story");
   let compatRefreshSucceeded = false;
-  if (existsSync(join(compatSkillDir, "SKILL.md"))) {
+  if (!skipSkill) {
+    let srcSkillDir: string;
     try {
-      const compatFiles = await copyDirRecursive(srcSkillDir, compatSkillDir);
-      compatRefreshSucceeded = true;
-      log(`  Refreshed existing Codex skill copy at ${compatSkillDir}/ (${compatFiles.length} files)`);
+      srcSkillDir = resolveSkillSourceDir();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`Warning: Codex skill copy refresh failed: ${msg}\n`);
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Error: ${message}\n`);
+      process.stderr.write("This may indicate a corrupt installation. Try: npm install -g @storybloq/storybloq@latest\n");
+      process.exitCode = 1;
+      return;
     }
+
+    // Primary Codex skill artifact: leave unwrapped so a total failure propagates
+    // to the top-level handler and sets a non-zero exit (parity with
+    // handleSetupClaude's primary writes). The no-setup self-heal path has its own
+    // non-fatal guard in autoRefreshSkillIfStale, so this does not affect it.
+    const skillDir = join(homedir(), ".agents", "skills", "story");
+    const existed = existsSync(join(skillDir, "SKILL.md"));
+    const writtenFiles = await copyDirRecursive(srcSkillDir, skillDir);
+    log(`${existed ? "Updated" : "Installed"} $story skill at ${skillDir}/`);
+    log(`  ${writtenFiles.join(" + ")} written`);
+
+    const compatSkillDir = join(codexHome(), "skills", "story");
+    if (existsSync(join(compatSkillDir, "SKILL.md"))) {
+      try {
+        const compatFiles = await copyDirRecursive(srcSkillDir, compatSkillDir);
+        compatRefreshSucceeded = true;
+        log(`  Refreshed existing Codex skill copy at ${compatSkillDir}/ (${compatFiles.length} files)`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`Warning: Codex skill copy refresh failed: ${msg}\n`);
+      }
+    }
+  } else {
+    log("  Skill install skipped (--skip-skill)");
   }
 
-  try {
-    const { writeSkillMarker } = await import("../../core/skill-version-marker.js");
-    const pkgJson = JSON.parse(
-      await readFile(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf-8")
-    ) as { version?: string };
-    if (pkgJson.version) {
-      writeSkillMarker(pkgJson.version, "codex");
-      if (compatRefreshSucceeded) writeSkillMarker(pkgJson.version, "codexCompat");
+  if (!skipSkill) {
+    try {
+      const { writeSkillMarker } = await import("../../core/skill-version-marker.js");
+      const pkgJson = JSON.parse(
+        await readFile(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf-8")
+      ) as { version?: string };
+      if (pkgJson.version) {
+        writeSkillMarker(pkgJson.version, "codex");
+        if (compatRefreshSucceeded) writeSkillMarker(pkgJson.version, "codexCompat");
+      }
+    } catch {
+      // Marker write is best-effort; skill still works without it.
     }
-  } catch {
-    // Marker write is best-effort; skill still works without it.
   }
 
   let cliInPath = false;
@@ -1994,6 +2014,17 @@ export async function handleSetup(options: SetupOptions = {}): Promise<void> {
   const client = options.client ?? "all";
   if (!["claude", "codex", "all"].includes(client)) {
     process.stderr.write(`Invalid client "${client}". Expected claude, codex, or all.\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // ISS-834: --skip-skill only has an effect on handleSetupCodex; silently
+  // accepting it with --client claude would imply an effect it does not
+  // have. Reject rather than no-op.
+  if (client === "claude" && options.skipSkill) {
+    process.stderr.write(
+      '--skip-skill has no effect with --client claude; omit it or use --client codex/--client all.\n',
+    );
     process.exitCode = 1;
     return;
   }

@@ -4564,12 +4564,19 @@ export function registerSetupCommand(yargs: Argv): Argv {
           type: "boolean",
           default: false,
           description: "Skip hook registration",
+        })
+        .option("skip-skill", {
+          type: "boolean",
+          default: false,
+          description:
+            "Skip the Codex skill-directory copy (--client codex/all only) -- for an install already managed by the storybloq Codex marketplace plugin",
         }),
     async (argv) => {
       const { handleSetup } = await import("./commands/setup-skill.js");
       await handleSetup({
         client: argv.client as SetupClient,
         skipHooks: argv["skip-hooks"] === true,
+        skipSkill: argv["skip-skill"] === true,
       });
     },
   );

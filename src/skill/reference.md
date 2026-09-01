@@ -367,7 +367,7 @@ storybloq limit-status [--cancel <key>] [--requeue <key>] [--recent] [--format j
 Install Storybloq skill, MCP, and hooks for Claude, Codex, or both
 
 ```
-storybloq setup [--client claude|codex|all] [--skip-hooks]
+storybloq setup [--client claude|codex|all] [--skip-hooks] [--skip-skill]
 ```
 
 ### setup-skill

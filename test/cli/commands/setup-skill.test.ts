@@ -2449,3 +2449,117 @@ describe("T-414: orchestrate discoverability", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// --skip-skill (ISS-834)
+// ---------------------------------------------------------------------------
+
+describe("--skip-skill (ISS-834)", () => {
+  let tempDir: string;
+  let originalPath: string | undefined;
+  let originalHome: string | undefined;
+  let originalCodexHome: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), `storybloq-skip-skill-${randomUUID()}`);
+    await mkdir(tempDir, { recursive: true });
+    originalPath = process.env.PATH;
+    originalHome = process.env.HOME;
+    originalCodexHome = process.env.CODEX_HOME;
+    // Empty PATH: keeps handleSetupCodex out of the MCP-registration branch
+    // (cliInPath/codexInPath both false), which needs real `storybloq`/`codex`
+    // binaries this test has no business invoking.
+    process.env.PATH = "";
+    process.env.HOME = tempDir;
+    // CODEX_HOME is read by codexHome() (the compat skill copy and hooks.json
+    // paths) and by the codexCompat version marker. Left inherited, a
+    // developer or CI shell with CODEX_HOME set would let the non-skip test
+    // refresh a REAL compat copy and let the marker assertions read real
+    // state outside this fixture. Pin it under tempDir like HOME.
+    process.env.CODEX_HOME = join(tempDir, ".codex");
+  });
+
+  afterEach(async () => {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const codexSkillMd = () => join(tempDir, ".agents", "skills", "story", "SKILL.md");
+  const claudeSkillMd = () => join(tempDir, ".claude", "skills", "story", "SKILL.md");
+
+  it("skips the Codex skill copy when skipSkill is true", async () => {
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    await handleSetup({ client: "codex", skipHooks: true, skipSkill: true });
+    expect(existsSync(codexSkillMd())).toBe(false);
+  });
+
+  it("writes no version marker when skipSkill is true (no install happened to stamp)", async () => {
+    // A marker claims a version was written to the skill dir. Stamping one
+    // for a copy that never ran would tell autoRefreshSkillIfStale the
+    // plugin-managed skill (the only copy actually present) is this CLI's
+    // own up to date -- a stale-marker lie in the opposite direction from
+    // the bug the marker exists to catch.
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    const { readSkillMarker } = await import("../../../src/core/skill-version-marker.js");
+    await handleSetup({ client: "codex", skipHooks: true, skipSkill: true });
+    expect(readSkillMarker("codex")).toBe(null);
+    expect(readSkillMarker("codexCompat")).toBe(null);
+  });
+
+  it("performs the Codex skill copy when skipSkill is absent", async () => {
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    await handleSetup({ client: "codex", skipHooks: true });
+    expect(existsSync(codexSkillMd())).toBe(true);
+  });
+
+  it("--client claude is unaffected by skipSkill (D1 regression guard)", async () => {
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    // client: "all" with skipSkill: true -- Claude side must still copy while
+    // the Codex side is skipped. (client: "claude" alone with skipSkill is a
+    // usage error, covered below, so it cannot itself demonstrate this.)
+    await handleSetup({ client: "all", skipHooks: true, skipSkill: true });
+    expect(existsSync(claudeSkillMd())).toBe(true);
+    expect(existsSync(codexSkillMd())).toBe(false);
+  });
+
+  it("rejects --client claude --skip-skill with a usage error, not a silent no-op", async () => {
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    const prevExit = process.exitCode;
+    process.exitCode = undefined;
+    await handleSetup({ client: "claude", skipHooks: true, skipSkill: true });
+    const exitCode = process.exitCode;
+    process.exitCode = prevExit;
+    expect(exitCode).toBe(1);
+    // And it must not have silently proceeded to write the Claude skill copy.
+    expect(existsSync(claudeSkillMd())).toBe(false);
+  });
+
+  it("setup-skill (the Claude-only alias) rejects an unrecognized --skip-skill flag", async () => {
+    // `.strict()` here replicates what src/cli/index.ts applies at the top
+    // level for every real invocation (the command builder itself carries
+    // no --skip-skill option, so strict mode is what turns that absence
+    // into a rejection rather than a silently-accepted, ignored flag).
+    const { registerSetupSkillCommand } = await import("../../../src/cli/register.js");
+    const yargs = (await import("yargs")).default;
+    let threw = false;
+    try {
+      await registerSetupSkillCommand(yargs(["setup-skill", "--skip-skill"]))
+        .strict()
+        .exitProcess(false)
+        .parseAsync();
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+  });
+});

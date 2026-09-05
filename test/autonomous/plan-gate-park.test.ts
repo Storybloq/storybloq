@@ -569,9 +569,19 @@ describe("planGateNonApprovals lifecycle (ISS-904)", () => {
    * code. Ticket risk is "low" (seedHoldingSession), so minRounds=1 and this
    * fires on the very first round.
    */
+  // ISS-1114 narrows this case, and the narrowing is deliberate. The ratified
+  // ordering is about findings-CLEAN (no unresolved critical or major), and a
+  // revise carrying only a minor finding is exactly that: it still lands here,
+  // unchanged. What no longer lands is the findings-EMPTY sub-case, because a
+  // change-requesting verdict with zero findings supplies nothing to act on and
+  // landing on it is a false landing rather than a clean one. So the mechanism
+  // moves from `[]` to a single non-blocking finding and the ordering this test
+  // pins is untouched.
   it("a revise verdict with no unresolved critical/major lands at IMPLEMENT once past minRounds", async () => {
     const { session } = seedHoldingSession(root);
-    const result = await reviewRound(session.sessionId, "revise", []);
+    const result = await reviewRound(session.sessionId, "revise", [
+      { id: "f1", severity: "minor", category: "style", description: "Naming nit", disposition: "open" },
+    ]);
     expect(textOf(result)).not.toContain("park_item");
     expect(readState(root, session.sessionId).planGateNonApprovals).toBe(0);
     expect(readState(root, session.sessionId).state).toBe("IMPLEMENT");

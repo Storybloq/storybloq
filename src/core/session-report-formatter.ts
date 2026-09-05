@@ -362,19 +362,47 @@ function ceilingLines(state: FullSessionState): string[] {
     { noun: "issues" },
   );
 
-  const head = [
-    "",
-    "### Round ceiling reached",
-    "",
-    `Code review stopped at round ${safe(escalation.round)} of a ceiling of ${safe(escalation.ceiling)} (cap ${safe(escalation.maxReviewRounds)} plus grace) on **${safe(item)}**, with ${escalation.unresolvedCritical} unresolved critical and ${escalation.unresolvedMajor} major finding(s) outstanding.`,
-    "",
-    // Deliberately NOT phrased as "unresolved criticals". `decideCeiling` fires
-    // on any round that would continue rather than finalize, and a `reject`
-    // verdict continues with zero criticals outstanding -- so this sentence
-    // sitting under a report that just said "0 unresolved critical" would name
-    // a cause that is not the one that fired.
-    "The cap alone does not bound this case: forced landing requires a non-blocking outcome, so unresolved criticals and reject verdicts both continue past the cap without limit. The ceiling is what ends either loop.",
-  ];
+  // ISS-1114: BRANCH on what actually fired. An absent `trigger` is the
+  // round-ceiling park, because every record written before the field existed
+  // was one -- so legacy records render byte-identically to before.
+  //
+  // The round-ceiling copy below is not merely imprecise for an empty-verdict
+  // stop, it is false in every clause: that stop can happen on round 1, the cap
+  // is not what was reached, and there are zero findings outstanding by
+  // definition of the trigger. A reader arriving at a parked item needs to know
+  // that a reviewer stopped answering, not to be sent looking for a round
+  // ceiling that never fired.
+  const head = escalation.trigger === "empty-verdict"
+    ? [
+      "",
+      "### Review returned no findings to act on",
+      "",
+      `Code review stopped at round ${safe(escalation.round)} on **${safe(item)}**: the reviewer returned a verdict requesting changes while supplying no findings, and repeated it after the repair instruction was sent ${escalation.repairAttempts ?? 0} time(s).`,
+      "",
+      // The ambiguity is the point, and it is why the item was parked rather
+      // than advanced: a payload with no findings is consistent with a clean
+      // review that should have said approve AND with a review that never
+      // completed, and nothing in the verdict separates them. Advancing would
+      // have picked one of those readings silently.
+      // "Parking was REQUESTED" rather than "the item WAS parked": this head
+      // renders for an unfinished record too, where the park may not have
+      // landed, and the unfinished branch below says exactly that. Claiming the
+      // outcome here would contradict it two lines later.
+      "A verdict with no findings cannot distinguish a review that had nothing to say from one that did not complete, so parking was requested rather than advancing on this verdict. Nothing was implemented and no round landed on it.",
+    ]
+    : [
+      "",
+      "### Round ceiling reached",
+      "",
+      `Code review stopped at round ${safe(escalation.round)} of a ceiling of ${safe(escalation.ceiling)} (cap ${safe(escalation.maxReviewRounds)} plus grace) on **${safe(item)}**, with ${escalation.unresolvedCritical} unresolved critical and ${escalation.unresolvedMajor} major finding(s) outstanding.`,
+      "",
+      // Deliberately NOT phrased as "unresolved criticals". `decideCeiling` fires
+      // on any round that would continue rather than finalize, and a `reject`
+      // verdict continues with zero criticals outstanding -- so this sentence
+      // sitting under a report that just said "0 unresolved critical" would name
+      // a cause that is not the one that fired.
+      "The cap alone does not bound this case: forced landing requires a non-blocking outcome, so unresolved criticals and reject verdicts both continue past the cap without limit. The ceiling is what ends either loop.",
+    ];
 
   // An UNFINISHED escalation makes no lifecycle claims.
   //

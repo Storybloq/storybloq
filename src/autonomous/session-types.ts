@@ -1450,6 +1450,55 @@ export const SessionStateSchema = z.object({
   ),
 
   /**
+   * ISS-1114: every repair attempt spent on a contradictory review payload.
+   *
+   * A reviewer that returns `revise` or `request_changes` with zero findings
+   * has stated a defect and supplied nothing to act on. The gate sends a repair
+   * instruction and does NOT count the round, because the round produced no
+   * reviewable result. That correction has to leave a trace: an uncounted round
+   * is invisible to `reviews.code`, to the verdict artifacts and to the events
+   * log, so without this field a reviewer could burn arbitrary wall time and
+   * spend while the record showed a clean two-round review.
+   *
+   * ACCUMULATING, not a per-round slot. T-432 counts these after the fact, and
+   * a slot keyed by the current round would erase the history it needs. Growth
+   * is bounded: at most `REPAIR_ATTEMPT_CAP` entries per round, and rounds are
+   * bounded by the hard ceiling that this same mechanism escalates into.
+   *
+   * `round` is the PENDING ORDINAL, never `reviews.<stage>.length + 1`. Both
+   * arrays are cleared mid-run (`reviews.plan` on every reject, `reviews.code`
+   * on a plan redirect), so an array-derived number restarts at 1 in a new
+   * generation and would let attempts banked before the reset count against a
+   * fresh round. See `pendingRoundOrdinal` for the derivation and for why its
+   * no-counter fallback is 1 rather than the array length.
+   *
+   * Identity-scoped by `workItemId` + `kind` + `stage`, the same invariant
+   * `codeReviewRoundCounter` holds: a record belonging to another item is not a
+   * smaller count, it is NO count.
+   */
+  reviewRepairAttempts: z.array(z.object({
+    workItemId: z.string(),
+    kind: z.enum(["ticket", "issue"]),
+    stage: z.enum(["code", "plan"]),
+    round: z.number().int().positive(),
+    attempt: z.number().int().positive(),
+    verdict: z.string(),
+    reviewer: z.string(),
+    at: z.string(),
+    /**
+     * The interval for THIS attempt: measured from the previous matching
+     * attempt, or from `currentReviewStartedAt` for the first one.
+     *
+     * Deliberately not `now - currentReviewStartedAt`. The guard returns
+     * `retry` without clearing that field, so measuring from it would report
+     * cumulative round time on every attempt and the eventual valid verdict
+     * artifact would report the same span a third time. Chaining gives real
+     * per-attempt intervals with no extra state.
+     */
+    attemptDurationMs: z.number().int().nonnegative(),
+  })).default([]),
+
+  /**
    * T-470: a ceiling escalation that has been DECIDED but not finished.
    *
    * Persisting the ceiling round and filing its findings is not atomic. If
@@ -1493,6 +1542,34 @@ export const SessionStateSchema = z.object({
     reason: z.string(),
     unresolvedCritical: z.number(),
     unresolvedMajor: z.number(),
+    /**
+     * ISS-1114: WHAT fired, not what the ceiling was.
+     *
+     * OPTIONAL, and absent means `round-ceiling`. Every record written before
+     * this field existed was a round-ceiling park, so an absent value is not
+     * missing data, it is the original meaning preserved: no persisted record
+     * changes meaning and no migration is needed.
+     *
+     * `empty-verdict` is the ISS-1114 park: a reviewer returned a
+     * change-requesting verdict with no findings, and kept doing so after the
+     * repair instruction was sent `repairAttempts` times. `scope-drift` mirrors
+     * the plan-side enum and is reserved there for the same not-yet-promoted
+     * signal; it is never written here.
+     *
+     * The session report BRANCHES on this. A round-ceiling park and an
+     * empty-verdict park have different causes, and the round-ceiling copy
+     * ("stopped at round N of a ceiling of M", "the ceiling is what ends the
+     * loop") is false for an empty-verdict stop, which can happen on round 1.
+     */
+    trigger: z.enum(["round-ceiling", "scope-drift", "empty-verdict"]).optional(),
+    /**
+     * How many times the repair instruction was sent before this park.
+     *
+     * Optional because only the `empty-verdict` trigger produces it. Present on
+     * that trigger so the report can say the reviewer was asked and did not
+     * comply, which is what separates a stuck reviewer from a one-off.
+     */
+    repairAttempts: z.number().int().nonnegative().optional(),
     decidedAt: z.string(),
     /**
      * The outstanding findings this escalation exists to file.
@@ -1564,7 +1641,14 @@ export const SessionStateSchema = z.object({
     displayId: z.string().optional(),
     round: z.number().int().nonnegative(),
     ceiling: z.number().int().nonnegative(),
-    trigger: z.enum(["round-ceiling", "scope-drift"]),
+    // ISS-1114 APPENDS `empty-verdict`. `scope-drift` keeps its position and
+    // its reserved, never-fired meaning: the enum is extended, not reordered.
+    trigger: z.enum(["round-ceiling", "scope-drift", "empty-verdict"]),
+    /**
+     * ISS-1114: how many times the repair instruction was sent before this
+     * park. Optional because only the `empty-verdict` trigger produces it.
+     */
+    repairAttempts: z.number().int().nonnegative().optional(),
     reason: z.string(),
     unresolvedCritical: z.number().int().nonnegative(),
     unresolvedMajor: z.number().int().nonnegative(),

@@ -120,12 +120,17 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
     }
   });
 
+  // ISS-1114: this case used `findings: []`, which is now a contradictory
+  // payload that is repaired rather than recorded, so it can no longer produce
+  // the round this test counts. The empty array was incidental to the intent --
+  // the point is that revise PRESERVES history where the reject below CLEARS it
+  // -- so the verdict now carries a finding and the contrast is unchanged.
   it("revise preserves review history", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
     await stage.report(ctx, {
       completedAction: "plan_review_round",
       verdict: "revise",
-      findings: [],
+      findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
     });
     expect(ctx.state.reviews.plan.length).toBe(1);
   });

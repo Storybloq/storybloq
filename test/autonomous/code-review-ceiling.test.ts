@@ -1379,6 +1379,82 @@ describe("the session report surfaces the escalation", () => {
   });
 
   /**
+   * ISS-1114: an empty-verdict park is NOT a round ceiling, and every clause of
+   * the round-ceiling copy is false for it. That stop can happen on round 1, so
+   * "stopped at round N of a ceiling of M (cap X plus grace)" names a limit that
+   * was never reached; it carries zero findings by definition of the trigger, so
+   * the outstanding-findings clause reports a count that cannot be nonzero; and
+   * "the ceiling is what ends either loop" points a reader at a mechanism that
+   * did not fire. What actually happened is that a reviewer stopped supplying
+   * findings and did not resume after being asked.
+   */
+  it("[ISS-1114] renders an empty-verdict park as a reviewer failure, not a round ceiling", async () => {
+    const text = await render({
+      pendingCeilingEscalation: {
+        workItemId: TICKET, kind: "ticket", displayId: "T-901", round: 1, ceiling: 7, maxReviewRounds: 4,
+        trigger: "empty-verdict", repairAttempts: 2,
+        reason: "Code review round 1 for T-901 ended with an incomplete verdict from codex.",
+        unresolvedCritical: 0, unresolvedMajor: 0,
+        decidedAt: new Date().toISOString(), completed: true,
+        findings: [], fingerprints: [],
+      },
+      filedDeferrals: [],
+    } as Partial<FullSessionState>);
+
+    expect(text).toContain("Review returned no findings to act on");
+    expect(text).toContain("2 time(s)");
+    expect(text).toContain("cannot distinguish");
+    // The false clauses must be gone, not merely reworded around.
+    expect(text).not.toContain("Round ceiling reached");
+    expect(text).not.toContain("plus grace");
+    expect(text).not.toContain("The cap alone does not bound this case");
+    // Never claims the park LANDED: this head renders for unfinished records
+    // too, and the unfinished branch below it says the item may still be
+    // inprogress. "was parked" there would contradict this one two lines later.
+    expect(text).not.toContain("the item was parked");
+  });
+
+  /**
+   * The unfinished half of the same point. A crash between the escalation write
+   * and the park leaves `completed: false`, and the report must not assert an
+   * outcome that may not have happened.
+   */
+  it("[ISS-1114] does not claim an unfinished empty-verdict park landed", async () => {
+    const text = await render({
+      pendingCeilingEscalation: {
+        workItemId: TICKET, kind: "ticket", displayId: "T-901", round: 1, ceiling: 7, maxReviewRounds: 4,
+        trigger: "empty-verdict", repairAttempts: 2,
+        reason: "Code review round 1 for T-901 ended with an incomplete verdict from codex.",
+        unresolvedCritical: 0, unresolvedMajor: 0,
+        decidedAt: new Date().toISOString(), completed: false,
+        findings: [], fingerprints: [],
+      },
+      filedDeferrals: [],
+    } as Partial<FullSessionState>);
+
+    expect(text).toContain("Review returned no findings to act on");
+    expect(text).toContain("parking was requested");
+    expect(text).not.toContain("the item was parked");
+    // The existing unfinished-stop warning still fires, and now nothing above
+    // it contradicts it.
+    expect(text).toContain("may still be");
+  });
+
+  /**
+   * The compatibility half. Every record written before `trigger` existed was a
+   * round-ceiling park, so an ABSENT trigger has to render exactly as it did
+   * before: an optional field added to a persisted schema must not change the
+   * meaning of records already on disk.
+   */
+  it("[ISS-1114] renders a legacy record with no trigger exactly as a round ceiling", async () => {
+    const text = await render();
+    expect(text).toContain("Round ceiling reached");
+    expect(text).toContain("plus grace");
+    expect(text).toContain("The cap alone does not bound this case");
+    expect(text).not.toContain("Review returned no findings to act on");
+  });
+
+  /**
    * An UNFINISHED escalation is if anything more important to surface: the
    * session is mid-park and some findings may not be filed yet.
    */

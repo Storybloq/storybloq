@@ -12,7 +12,16 @@ import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-dept
 import { effectiveReviewEffort, effortDisclosureLine, effortMinRounds } from "../review-effort.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
-import { decidePlanCeiling } from "./plan-review-ceiling.js";
+import { decidePlanCeiling, planReviewHardCeiling } from "./plan-review-ceiling.js";
+import {
+  EMPTY_CHANGE_REQUEST_INSTRUCTION,
+  REPAIR_ATTEMPT_CAP,
+  isEmptyChangeRequest,
+  pendingRoundOrdinal,
+  countRepairAttempts,
+  buildRepairAttempt,
+  emptyVerdictParkReason,
+} from "./review-repair.js";
 import { outstandingCeilingFindings } from "./code-review-ceiling.js";
 import {
   buildRound1Baseline,
@@ -607,6 +616,83 @@ export class PlanReviewStage implements WorkflowStage {
     // Guard contradictory approve + critical/major (ISS-035)
     if (verdict === "approve" && hasCriticalOrMajor) {
       return { action: "retry", instruction: "Contradictory review payload: verdict is 'approve' but critical/major findings are present. Re-run the review or correct the verdict." };
+    }
+
+    // ISS-1114: the mirror guard. On THIS stage the consequence is a false
+    // landing rather than a wasted round, and that is the sharper harm. The
+    // ladder below runs `verdict === "approve" || (!hasCriticalOrMajor &&
+    // roundNum >= minRounds)` BEFORE `isRevise`, and an empty change-request has
+    // no critical or major findings, so from `minRounds` onward it routes
+    // straight to IMPLEMENT: the plan is treated as approved on the strength of
+    // a review that requested changes and named none. `minRounds` never exceeds
+    // 3, so this is reachable on round 2 or 3 of an ordinary ticket.
+    //
+    // Placed before the artifact write below, so a repaired round writes no
+    // artifact and is not counted -- same position and same three consequences
+    // as the code stage.
+    const emptyChangeRequest = isEmptyChangeRequest(verdict, findings);
+    // Plan review is ticket-scoped: `escalatePlanCeiling` parks tickets only.
+    // With no ticket there is no identity to scope an attempt to, so the guard
+    // falls through unchanged rather than keying a record on `undefined`.
+    const repairTicketId = ctx.state.ticket?.id;
+    if (emptyChangeRequest && repairTicketId) {
+      const counter = ctx.state.planReviewRoundCounter;
+      const matching = counter && counter.ticketId === repairTicketId ? counter.completedRounds : null;
+      const repairKey = {
+        workItemId: repairTicketId,
+        kind: "ticket" as const,
+        stage: "plan" as const,
+        round: pendingRoundOrdinal(matching),
+      };
+      const alreadySpent = countRepairAttempts(ctx.state.reviewRepairAttempts, repairKey);
+
+      if (alreadySpent >= REPAIR_ATTEMPT_CAP) {
+        // Parks through the EXISTING plan-side helper, unmodified. That helper
+        // targets PICK_TICKET rather than HANDOVER and handles tickets only;
+        // both are preserved deliberately. The trigger records what fired, not
+        // where the item goes, and forking a crash-safe path on a condition it
+        // was not written for would be a wider change than this ticket.
+        const label = ctx.state.ticket?.displayId ?? repairTicketId;
+        ctx.writeState({
+          pendingPlanCeilingEscalation: {
+            ticketId: repairTicketId,
+            ...(ctx.state.ticket?.displayId ? { displayId: ctx.state.ticket.displayId } : {}),
+            round: repairKey.round,
+            ceiling: planReviewHardCeiling(),
+            trigger: "empty-verdict" as const,
+            repairAttempts: alreadySpent,
+            reason: emptyVerdictParkReason({
+              stageLabel: "Plan",
+              round: repairKey.round,
+              label,
+              reviewer: reviewerBackend,
+              attempts: alreadySpent,
+            }),
+            unresolvedCritical: 0,
+            unresolvedMajor: 0,
+            decidedAt: new Date().toISOString(),
+            findings: [],
+            fingerprints: [],
+            completed: false,
+          },
+        } as Partial<FullSessionState>);
+        return await escalatePlanCeiling(ctx);
+      }
+
+      ctx.writeState({
+        reviewRepairAttempts: [
+          ...(ctx.state.reviewRepairAttempts ?? []),
+          buildRepairAttempt({
+            key: repairKey,
+            existing: ctx.state.reviewRepairAttempts,
+            verdict,
+            reviewer: reviewerBackend,
+            reviewStartedAt: ctx.state.currentReviewStartedAt,
+            nowMs: Date.now(),
+          }),
+        ],
+      } as Partial<FullSessionState>);
+      return { action: "retry", instruction: EMPTY_CHANGE_REQUEST_INSTRUCTION };
     }
 
     // T-263: Build and write review verdict artifact

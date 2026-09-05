@@ -449,10 +449,24 @@ describe("scope-drift telemetry through the stage (advisory only)", () => {
    * drift history or emit a hint. `isRevise && nextAction === "PLAN_REVIEW"`
    * already excludes a landing round from the drift gate; this pins it.
    */
+  // ISS-1114: this case reached the clean-findings landing path with `[]`
+  // findings, which is now a contradictory payload that is repaired rather than
+  // honored -- an empty change-request landing at IMPLEMENT is precisely the
+  // false landing that guard exists to stop. The empty array was only the
+  // MECHANISM for reaching the landing path, not the subject: this test is
+  // about drift not being computed on a landing round. It now lands with a
+  // single non-blocking finding, which takes the identical branch (no
+  // unresolved critical or major, roundNum >= minRounds) while remaining a
+  // coherent verdict. The finding's vocabulary is drawn from the baseline so it
+  // cannot manufacture a drift signal of its own.
   it("does not compute drift for a revise round that lands via the clean-findings path", async () => {
     writeFileSync(join(sDir, "plan.md"), PLAN_TEXT);
     const baseline = activeBaseline(["RetryQueue", "SyncEngine", "ConfigLoader"], PLAN_TEXT);
-    const { advance, ctx } = await reportRound(makeState({ planReviewBaseline: baseline }), "revise", []);
+    const { advance, ctx } = await reportRound(
+      makeState({ planReviewBaseline: baseline }),
+      "revise",
+      [{ severity: "minor", category: "style", description: "RetryQueue naming could be clearer", disposition: "open" }],
+    );
     expect(advance.action).toBe("advance");
     expect(ctx.state.planReviewDriftHistory).toBeNull();
   });

@@ -20,7 +20,16 @@ import {
   reviewDepthLine,
   shouldUseNativeCodexReview,
 } from "./codex-native.js";
-import { decideCeiling, outstandingCeilingFindings } from "./code-review-ceiling.js";
+import { decideCeiling, outstandingCeilingFindings, codeReviewHardCeiling } from "./code-review-ceiling.js";
+import {
+  EMPTY_CHANGE_REQUEST_INSTRUCTION,
+  REPAIR_ATTEMPT_CAP,
+  isEmptyChangeRequest,
+  pendingRoundOrdinal,
+  countRepairAttempts,
+  buildRepairAttempt,
+  emptyVerdictParkReason,
+} from "./review-repair.js";
 import { parkCurrentTicket, parkCurrentIssue } from "./park.js";
 import type { FullSessionState } from "../session-types.js";
 import type { WorkItemRef } from "../../core/arrangement-bounds.js";
@@ -481,6 +490,112 @@ export class CodeReviewStage implements WorkflowStage {
     }
     if (verdict === "approve" && planRedirect) {
       return { action: "retry", instruction: "Contradictory review payload: verdict is 'approve' but findings recommend replanning. Re-run the review or correct the verdict." };
+    }
+
+    // ISS-1114: the MIRROR of the guard above. `approve` with blocking findings
+    // has been caught since ISS-035; a change-request with NO findings was not,
+    // and it is the more expensive half. It reaches the ladder below as an
+    // ordinary revise, so it either routes to IMPLEMENT with nothing to
+    // implement or, at or above the landing floor, lands at FINALIZE on the
+    // strength of a review that asked for changes and named none.
+    //
+    // Placed HERE, beside the other contradiction guards and BEFORE
+    // `isChangeRequest`, for three reasons that are all consequences of
+    // position rather than of extra code: the round is not counted (it lives in
+    // a local array persisted at the single `writeState` far below), no verdict
+    // artifact is written, no `code_review` event is emitted -- and the T-461
+    // landing-floor region and the whole `nextAction` ladder stay byte-identical
+    // on this path, because nothing below is reached at all.
+    const emptyChangeRequest = isEmptyChangeRequest(verdict, findings);
+    // No work item means no identity to scope an attempt to. `decideCeiling`
+    // treats this same state as reachable and fails safe by declining to park,
+    // and this guard matches it: keying an attempt on `undefined` would either
+    // fail schema validation (silently dropping the record the guard exists to
+    // write) or collide across items. Falling through leaves today's behavior
+    // exactly as it is.
+    const repairItem: WorkItemRef | null = ctx.state.ticket
+      ? { kind: "ticket", id: ctx.state.ticket.id }
+      : ctx.state.currentIssue
+        ? { kind: "issue", id: ctx.state.currentIssue.id }
+        : null;
+    if (emptyChangeRequest && repairItem) {
+      const counter = ctx.state.codeReviewRoundCounter;
+      const matching = counter && counter.workItemId === repairItem.id && counter.kind === repairItem.kind
+        ? counter.completedRounds
+        : null;
+      const repairKey = {
+        workItemId: repairItem.id,
+        kind: repairItem.kind,
+        stage: "code" as const,
+        round: pendingRoundOrdinal(matching),
+      };
+      const alreadySpent = countRepairAttempts(ctx.state.reviewRepairAttempts, repairKey);
+
+      if (alreadySpent >= REPAIR_ATTEMPT_CAP) {
+        // The reviewer has now returned an empty change-request three times for
+        // ONE round with the instruction in hand. Park, reusing the ceiling
+        // escalation rather than adding a second escalation path: the record is
+        // written first and `escalateCeiling` is entered second, so a stop
+        // between them resumes through `resumeCeilingEscalation` at the top of
+        // `report` instead of reprocessing this payload as another round.
+        // Nothing needs queueing -- `findings` is empty by definition, so the
+        // queue call returns [] and the drain check is vacuously satisfied.
+        const label = ctx.state.ticket
+          ? (ctx.state.ticket.displayId ?? ctx.state.ticket.id)
+          : displayIdOf(ctx.state.currentIssue!);
+        const escalationDisplayId = repairItem.kind === "ticket"
+          ? ctx.state.ticket?.displayId
+          : displayIdOf(ctx.state.currentIssue!);
+        ctx.writeState({
+          pendingCeilingEscalation: {
+            workItemId: repairItem.id,
+            kind: repairItem.kind,
+            ...(escalationDisplayId ? { displayId: escalationDisplayId } : {}),
+            round: repairKey.round,
+            // The ceiling and cap ACTUALLY in effect, from the same sources the
+            // round-ceiling park reads. The trigger says what fired; it does not
+            // license writing a sentinel into a field that means something else.
+            ceiling: codeReviewHardCeiling(ctx.state, ctx.recipe.stages, risk),
+            maxReviewRounds,
+            trigger: "empty-verdict" as const,
+            repairAttempts: alreadySpent,
+            reason: emptyVerdictParkReason({
+              stageLabel: "Code",
+              round: repairKey.round,
+              label,
+              reviewer: reviewerBackend,
+              attempts: alreadySpent,
+            }),
+            // Zero by definition of the trigger, not by assumption: the
+            // predicate that got us here is `findings.length === 0`.
+            unresolvedCritical: 0,
+            unresolvedMajor: 0,
+            decidedAt: new Date().toISOString(),
+            findings: [],
+            fingerprints: [],
+            completed: false,
+          },
+        } as Partial<FullSessionState>);
+        return await escalateCeiling(ctx);
+      }
+
+      // `writeState`, never `updateDraft`: a draft is DISCARDED when a stage
+      // returns `retry`, which would drop every attempt record and leave the cap
+      // permanently unreachable.
+      ctx.writeState({
+        reviewRepairAttempts: [
+          ...(ctx.state.reviewRepairAttempts ?? []),
+          buildRepairAttempt({
+            key: repairKey,
+            existing: ctx.state.reviewRepairAttempts,
+            verdict,
+            reviewer: reviewerBackend,
+            reviewStartedAt: ctx.state.currentReviewStartedAt,
+            nowMs: Date.now(),
+          }),
+        ],
+      } as Partial<FullSessionState>);
+      return { action: "retry", instruction: EMPTY_CHANGE_REQUEST_INSTRUCTION };
     }
 
     const isChangeRequest = verdict === "revise" || verdict === "request_changes";

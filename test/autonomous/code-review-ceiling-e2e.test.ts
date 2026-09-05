@@ -73,6 +73,22 @@ const hoisted = vi.hoisted(() => ({
    */
   armThenFailNextWriteIf: null as null | ((next: Record<string, unknown>) => boolean),
   armed: false,
+  /**
+   * The PRE-PARK window, which the two hooks above cannot reach (ISS-1114).
+   *
+   * `armThenFailNextWriteIf` fails the write AFTER the matched one, and on a
+   * findings-free escalation the next write is the park's own -- landing after
+   * the claim has been released, so the resume can only refuse. That is a real
+   * window, but it is not the one a recovery test needs.
+   *
+   * This hook lets the matched write SUCCEED and throws immediately after it
+   * returns, which is the boundary that actually matters: the escalation record
+   * is durable, `escalateCeiling` never ran, and the claim is still held. A
+   * resume must therefore FINISH the park rather than decline it. The absence of
+   * an intervening write does not remove this window -- execution can stop
+   * between a write landing and the next statement running.
+   */
+  failAfterWriteIf: null as null | ((next: Record<string, unknown>) => boolean),
 }));
 vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/autonomous/session.js")>();
@@ -93,7 +109,15 @@ vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
         }
         if (arm(next)) hoisted.armed = true;
       }
-      return (actual.writeSessionSync as (d: string, n: unknown) => unknown)(dir, next);
+      const after = hoisted.failAfterWriteIf;
+      const failAfter = after ? after(next) : false;
+      const written = (actual.writeSessionSync as (d: string, n: unknown) => unknown)(dir, next);
+      if (failAfter) {
+        // The write LANDED; only what follows it is lost.
+        hoisted.failAfterWriteIf = null;
+        throw new Error("simulated crash immediately after the state write landed");
+      }
+      return written;
     },
   };
 });
@@ -223,6 +247,7 @@ afterEach(() => {
   hoisted.failStateWriteIf = null;
   hoisted.armThenFailNextWriteIf = null;
   hoisted.armed = false;
+  hoisted.failAfterWriteIf = null;
   killSidecarsInRoot(root);
   rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
@@ -482,6 +507,209 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     const after = readState(root, session.sessionId);
     expect(after.state).not.toBe("HANDOVER");
     expect(readTicket(root, CANON).status).toBe("inprogress");
+    expect(issues(root).length).toBe(0);
+  });
+
+  /**
+   * ISS-1114, through the real guide for the same two reasons this file exists.
+   *
+   * The empty-verdict park reuses `escalateCeiling` and therefore inherits
+   * `assertTransition` and the whole ledger side of the park, neither of which a
+   * stage-level test reaches. It ALSO differs from the round-ceiling park in the
+   * way that matters most here: it can fire at any round, including well below
+   * the ceiling, so the transition it requests is not one the ceiling path has
+   * already proven for that round number.
+   */
+
+  const EMPTY_ROUND = {
+    completedAction: "code_review_round",
+    verdict: "request_changes",
+    findings: [] as unknown[],
+  };
+
+  it("[ISS-1114] repairs twice, then parks to HANDOVER with the reason on the item", async () => {
+    // Deliberately far below the ceiling: this park is not the ceiling's.
+    const { session } = seedSession(root, 1);
+
+    for (const attempt of [1, 2]) {
+      const retry = await handleAutonomousGuide(root, {
+        action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      });
+      expect(retry.isError).toBeFalsy();
+      expect(textOf(retry)).toContain("supplies no actionable changes");
+      const mid = readState(root, session.sessionId);
+      expect(mid.state).toBe("CODE_REVIEW");
+      expect(mid.reviewRepairAttempts?.length).toBe(attempt);
+      // The repaired rounds are NOT rounds: nothing counted, nothing filed.
+      expect(mid.codeReviewRoundCounter?.completedRounds).toBe(1);
+      expect(mid.reviews.code.length).toBe(0);
+      expect(issues(root).length).toBe(0);
+    }
+
+    const parked = await handleAutonomousGuide(root, {
+      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+    });
+
+    // The park has to SUCCEED, not merely be requested. A transition the
+    // CODE_REVIEW row does not list throws AFTER the ledger is mutated, and an
+    // implementation that returned `retry` forever would leave every "nothing
+    // extra happened" assertion below satisfied while parking nothing.
+    expect(parked.isError).toBeFalsy();
+    expect(textOf(parked)).not.toContain("Invalid state transition");
+
+    const after = readState(root, session.sessionId);
+    expect(after.state).toBe("HANDOVER");
+    expect(after.pendingCeilingEscalation?.completed).toBe(true);
+    expect(after.pendingCeilingEscalation?.trigger).toBe("empty-verdict");
+    expect(after.pendingCeilingEscalation?.repairAttempts).toBe(2);
+    // Still exactly two attempts and still no counted round: the park itself
+    // must not bank a third attempt or convert the payload into a round.
+    expect(after.reviewRepairAttempts?.length).toBe(2);
+    expect(after.codeReviewRoundCounter?.completedRounds).toBe(1);
+    expect(after.reviews.code.length).toBe(0);
+    // An empty verdict owns no findings, so the park files nothing.
+    expect(issues(root).length).toBe(0);
+
+    const ticket = readTicket(root, CANON);
+    expect((ticket.park as { reason?: string } | undefined)?.reason)
+      .toContain("supplied no findings");
+    expect((ticket.park as { reason?: string } | undefined)?.reason)
+      .toContain("cannot distinguish");
+  });
+
+  /**
+   * The crash window that actually EXISTS on this path, asserted as it is
+   * rather than as I first assumed it was.
+   *
+   * An empty verdict owns no findings, so between the escalation write and the
+   * ledger park there is nothing to queue and nothing to drain -- which means no
+   * intervening session write. The first write after the escalation record is
+   * therefore the park's own, landing after the ticket's claim has been
+   * released. A resume then correctly refuses to advance (T-442 claim-lost)
+   * rather than parking twice or counting the payload as a round.
+   *
+   * That is NOT a property of this change. I verified it against the
+   * pre-existing path: a reject-only round-ceiling park, which likewise carries
+   * no findings to drain, crashes in the same window and its resume reports the
+   * same claim-lost refusal. The shared park owns this behavior; the
+   * empty-verdict trigger simply reaches it.
+   *
+   * What this test pins is the part that matters and is this change's own: the
+   * crash leaves the escalation record DURABLE and unfinished, no attempt is
+   * banked twice, no round is counted, and the refusal is explicit rather than
+   * a silent no-op. The pre-park window -- escalation written, park interrupted,
+   * resume finishes it -- is covered at stage level in
+   * `code-review-empty-verdict.test.ts`, where it can be injected directly.
+   */
+  it("[ISS-1114] leaves a crashed empty-verdict park durable and refuses to advance on resume", async () => {
+    const { session } = seedSession(root, 1);
+
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+
+    // Fire on the write AFTER the escalation record lands, so the record itself
+    // survives: it is the whole reason a resume can pick the park back up.
+    hoisted.armThenFailNextWriteIf = (next) =>
+      (next.pendingCeilingEscalation as { trigger?: string } | undefined)?.trigger === "empty-verdict";
+
+    const crashed = await handleAutonomousGuide(root, {
+      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+    });
+    expect(crashed.isError).toBe(true);
+
+    const crashState = readState(root, session.sessionId);
+    expect(crashState.state).toBe("CODE_REVIEW");
+    // Durable and unfinished: the decision survived the crash that followed it.
+    expect(crashState.pendingCeilingEscalation?.trigger).toBe("empty-verdict");
+    expect(crashState.pendingCeilingEscalation?.repairAttempts).toBe(2);
+    expect(crashState.pendingCeilingEscalation?.completed).toBeFalsy();
+    // Still exactly two attempts, still no counted round, still nothing filed.
+    expect(crashState.reviewRepairAttempts?.length).toBe(2);
+    expect(crashState.codeReviewRoundCounter?.completedRounds).toBe(1);
+    expect(crashState.reviews.code.length).toBe(0);
+    expect(issues(root).length).toBe(0);
+
+    const resumed = await handleAutonomousGuide(root, {
+      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+    });
+
+    // Explicit refusal, not a silent no-op and not a second park.
+    expect(resumed.isError).toBe(true);
+    expect(textOf(resumed)).toContain("Claim lost");
+
+    const after = readState(root, session.sessionId);
+    expect(after.reviewRepairAttempts?.length).toBe(2);
+    expect(after.codeReviewRoundCounter?.completedRounds).toBe(1);
+    expect(after.reviews.code.length).toBe(0);
+    expect(issues(root).length).toBe(0);
+  });
+
+  /**
+   * The window the test above does NOT reach, and the one a recovery claim
+   * actually rests on: the escalation record lands, and execution stops before
+   * `escalateCeiling` runs at all.
+   *
+   * I originally argued this window was untestable here, reasoning that a
+   * findings-free escalation queues nothing and drains nothing, so there is no
+   * intervening write to fail. That reasoning was wrong. "No intervening write"
+   * is not "no crash point": a process can stop between a write landing and the
+   * next statement running, which is exactly what `failAfterWriteIf` injects.
+   * Because the park has not run, the CLAIM IS STILL HELD -- so unlike the
+   * post-park crash below, the resume can and must finish the job.
+   *
+   * This is the test that distinguishes a working `resumeCeilingEscalation`
+   * from one that always returned `retry`. The success test above never enters
+   * the resume helper at all.
+   */
+  it("[ISS-1114] finishes the park on resume when the crash lands before it runs", async () => {
+    const { session } = seedSession(root, 1);
+
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+
+    // Let the escalation write SUCCEED, then stop. The record is durable and
+    // nothing after it ran.
+    hoisted.failAfterWriteIf = (next) =>
+      (next.pendingCeilingEscalation as { trigger?: string; completed?: boolean } | undefined)?.trigger
+        === "empty-verdict";
+
+    const crashed = await handleAutonomousGuide(root, {
+      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+    });
+    expect(crashed.isError).toBe(true);
+
+    const mid = readState(root, session.sessionId);
+    expect(mid.state).toBe("CODE_REVIEW");
+    expect(mid.pendingCeilingEscalation?.trigger).toBe("empty-verdict");
+    expect(mid.pendingCeilingEscalation?.completed).toBeFalsy();
+    // The park has not run, so the ticket is untouched and still claimed.
+    const midTicket = readTicket(root, CANON);
+    expect(midTicket.status).toBe("inprogress");
+    expect(midTicket.claimedBySession).toBe(session.sessionId);
+
+    const resumed = await handleAutonomousGuide(root, {
+      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+    });
+
+    // FINISHED, not merely declined. A resume that returned retry forever would
+    // leave state at CODE_REVIEW and the record unfinished, failing here.
+    expect(resumed.isError).toBeFalsy();
+    const after = readState(root, session.sessionId);
+    expect(after.state).toBe("HANDOVER");
+    expect(after.pendingCeilingEscalation?.completed).toBe(true);
+    expect(after.pendingCeilingEscalation?.trigger).toBe("empty-verdict");
+    expect(after.pendingCeilingEscalation?.repairAttempts).toBe(2);
+
+    // The ledger park actually happened: reason recorded, claim released.
+    const ticket = readTicket(root, CANON);
+    expect((ticket.park as { reason?: string } | undefined)?.reason).toContain("supplied no findings");
+    expect(ticket.claimedBySession ?? null).toBeNull();
+
+    // And the resume added nothing: no third attempt, no counted round, no
+    // artifact-bearing review, nothing filed.
+    expect(after.reviewRepairAttempts?.length).toBe(2);
+    expect(after.codeReviewRoundCounter?.completedRounds).toBe(1);
+    expect(after.reviews.code.length).toBe(0);
     expect(issues(root).length).toBe(0);
   });
 });

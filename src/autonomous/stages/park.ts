@@ -319,6 +319,15 @@ export async function parkCurrentTicket(
     claimEpoch: undefined,
     reviews: { plan: [], code: [] },
     planGateNonApprovals: 0,
+    // T-488: the attempt ends with the item. Leaving it behind would let the
+    // NEXT item's first round reuse this attempt's id and, with it, this
+    // item's implementer -- the stale-attribution case the binding exists to
+    // prevent. `reviewGenerationHistory` is deliberately NOT cleared here: it
+    // is the record of what happened to this item, and a park is precisely
+    // when someone will want to read it.
+    itemAttempt: null,
+    implementer: null,
+    pendingReviewAttempt: null,
     skippedTargets: withBothIdForms(ctx.state.skippedTargets ?? [], [ticketId, draft?.displayId]),
   } as Partial<FullSessionState>);
 
@@ -536,7 +545,13 @@ export async function parkCurrentIssue(
   // decoration -- without "do NOT re-pick / do NOT keep reviewing," the
   // driving agent can bounce straight back into the loop the ceiling just
   // stopped, and HANDOVER's own `enter()` has no way to know that context.
-  ctx.updateDraft({ currentIssue: null } as Partial<FullSessionState>);
+  // T-488: same as the ticket park above -- the attempt ends with the item.
+  ctx.updateDraft({
+    currentIssue: null,
+    itemAttempt: null,
+    implementer: null,
+    pendingReviewAttempt: null,
+  } as Partial<FullSessionState>);
 
   const notes = outcome === "parked"
     ? `${label} was reopened to \`open\`, and the reason above is recorded in this report.`

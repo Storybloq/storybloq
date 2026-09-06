@@ -5,6 +5,7 @@ import { displayIdOf } from "./resolver.js";
  */
 import { analyzeSessionDiagnostics } from "../autonomous/session-diagnostics.js";
 import { effectiveReviewEffort, effortDisclosureLine, isReviewEffort } from "../autonomous/review-effort.js";
+import { deriveJoinAvailability } from "../autonomous/review-identity.js";
 import type { FullSessionState, EventEntry } from "../autonomous/session-types.js";
 import type { OutputFormat } from "../models/types.js";
 import { safeJson, MAX_DISPLAY_SERIALIZED_LENGTH } from "./safe-json.js";
@@ -260,9 +261,65 @@ function buildReviewSection(state: FullSessionState): string {
 
   const lines = ["## Review Stats", ""];
 
+  /**
+   * T-488: the round's provenance, with every absent value printed as `-`.
+   *
+   * A dash is the point of this function. The alternative a report reaches for
+   * is a plausible filler -- the session's configured model, the last model
+   * seen, a generation guessed from the round number -- and every one of those
+   * reads as a FACT to whoever is looking at the report, which is exactly the
+   * kind of unrecoverable fiction this ticket exists to stop the record telling.
+   *
+   * Returns null, rendering nothing at all, for a round with no spine on it.
+   * That is not the same evasion: such a record predates these fields entirely,
+   * and four dashes would imply the round was measured and came back empty,
+   * when in truth it was never measured. Its line renders exactly as it did
+   * before this ticket, which is the honest rendering of a legacy record.
+   */
+  const provenanceLine = (r: {
+    reviewAttemptId?: unknown;
+    reviewerIdentity?: { model?: unknown; evidence?: unknown } | null;
+    backendRunId?: unknown;
+    backendRunIdKind?: unknown;
+    backendTurnId?: unknown;
+    generation?: unknown;
+    artifactStatus?: unknown;
+  }): string | null => {
+    if (typeof r.reviewAttemptId !== "string" || r.reviewAttemptId === "") return null;
+    const dash = (v: unknown): string =>
+      typeof v === "string" && v !== "" ? safe(v) : typeof v === "number" ? String(v) : "-";
+    const join = deriveJoinAvailability({
+      ...(typeof r.backendRunId === "string" ? { backendRunId: r.backendRunId } : {}),
+      ...(typeof r.backendRunIdKind === "string"
+        ? { backendRunIdKind: r.backendRunIdKind as "codex-session" | "agent-dispatch" | "lens-review" }
+        : {}),
+      ...(typeof r.backendTurnId === "string" ? { backendTurnId: r.backendTurnId } : {}),
+    });
+    return [
+      `      model ${dash(r.reviewerIdentity?.model)}`,
+      `evidence ${dash(r.reviewerIdentity?.evidence)}`,
+      `join ${join}`,
+      `gen ${dash(r.generation)}`,
+      // "artifact -" means the value was not recorded and the artifact's
+      // existence is UNKNOWN. It never means the artifact is missing, and a
+      // reader must not read it as either present or absent. It is also not a
+      // date stamp: a round written today omits fields its backend could not
+      // supply, so absence never establishes that a record is old.
+      `artifact ${dash(r.artifactStatus)}`,
+    ].join(", ");
+  };
+
   // The ROUND COUNT stays outside the bound in both blocks: it is the answer
   // this section exists to give, and only the per-round detail is cut.
-  const roundLine = (r: { round: unknown; verdict: unknown; findingCount: number; criticalCount: number; majorCount: number; reviewer: unknown; unresolvedCriticalCount?: number; effort?: unknown }): string => {
+  const roundLine = (r: {
+    round: unknown; verdict: unknown; findingCount: number; criticalCount: number;
+    majorCount: number; reviewer: unknown; unresolvedCriticalCount?: number; effort?: unknown;
+    // T-488 spine, all optional -- a legacy record carries none of it.
+    reviewAttemptId?: unknown;
+    reviewerIdentity?: { model?: unknown; evidence?: unknown } | null;
+    backendRunId?: unknown; backendRunIdKind?: unknown; backendTurnId?: unknown;
+    generation?: unknown; artifactStatus?: unknown;
+  }): string => {
     const unresolved = r.unresolvedCriticalCount === undefined ? "" : `, ${r.unresolvedCriticalCount} unresolved critical`;
     // T-461: only levels OTHER than standard are named. Standard is what every
     // pre-dial round ran at and what an unset dial still runs at, so annotating
@@ -270,7 +327,9 @@ function buildReviewSection(state: FullSessionState): string {
     // changed". A round with no recorded level is a pre-dial record and is left
     // alone for the same reason.
     const effort = isReviewEffort(r.effort) && r.effort !== "standard" ? ` @ ${r.effort}` : "";
-    return `  - Round ${safe(r.round)}: ${safe(r.verdict)} (${r.findingCount} findings, ${r.criticalCount} critical${unresolved}, ${r.majorCount} major) -- ${safe(r.reviewer)}${effort}`;
+    const head = `  - Round ${safe(r.round)}: ${safe(r.verdict)} (${r.findingCount} findings, ${r.criticalCount} critical${unresolved}, ${r.majorCount} major) -- ${safe(r.reviewer)}${effort}`;
+    const spine = provenanceLine(r);
+    return spine === null ? head : `${head}\n${spine}`;
   };
 
   if (plan.length > 0) {

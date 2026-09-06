@@ -308,14 +308,24 @@ describe("tool description contract (T-460)", () => {
     // assign/release) plus board-labeling and collision-preflight behavior,
     // measured at 51,711 bytes -- a deliberate, necessary growth (every one
     // of those tools needed federation awareness per ISS-1074/1076's own
-    // acceptance criteria), not a prose bloat to trim. This ceiling leaves
+    // acceptance criteria), not a prose bloat to trim; T-488 added nine
+    // optional provenance inputs to the autonomous_guide report object
+    // (reviewer/implementer model, tier, source, evidence, plus a backend turn
+    // id), measured at 52,692 bytes. That last growth is FIELD SURFACE, not
+    // prose: the descriptions were cut to two short lines precisely because of
+    // this ratchet, and the full guidance lives in autonomous-mode.md and
+    // `storybloq reference`, which are read once by whoever needs them rather
+    // than shipped to every client on every tools/list. The nine cannot be
+    // reduced further without losing something true -- dropping `source` would
+    // record an unpinned session default as an explicit pin, which is the exact
+    // fabrication the ticket exists to prevent. This ceiling leaves
     // ~500 bytes of headroom and fails once an edit gives back more than
     // that. Raising it is a deliberate act that belongs in a commit message,
     // which is the point. Deliberately NO lower bound: the cues above are
     // what protect against over-trimming, and a floor would fail an honest
     // future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(52_200);
+    expect(bytes).toBeLessThan(53_200);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {

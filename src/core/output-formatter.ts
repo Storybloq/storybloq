@@ -2612,6 +2612,35 @@ export function formatReference(
   lines.push("Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.");
 
   lines.push("");
+  lines.push("## Review verdict artifacts");
+  lines.push("");
+  lines.push("Every review round writes a JSON artifact to `.story/sessions/<sessionId>/telemetry/reviews/`. The filename is `<target>-<stage>-r<round>.json`, and `-g<generation>` is appended once a round belongs to a generation above the first. The generation is a SUFFIX so the `*-code-r*.json` glob external readers already use keeps matching; it is also carried in the payload, so no reader has to parse a filename to know it.");
+  lines.push("");
+  lines.push("A generation opens whenever the round numbering restarts -- a plan redirect out of code review, or a plan-review reject. Before generations existed, the restarted rounds reproduced existing filenames and were silently dropped; artifacts under one target can therefore still be a mixture of two generations that predate this field.");
+  lines.push("");
+  lines.push("### Joining a round to what produced it");
+  lines.push("");
+  lines.push("`backendRunId` carries the backend's own run id and `backendRunIdKind` says what that id is the id OF, which is what decides how precisely a round can be joined:");
+  lines.push("");
+  lines.push("| `backendRunIdKind` | scope of the run id | join is `exact` when |");
+  lines.push("|---|---|---|");
+  lines.push("| `codex-session` | a thread spanning many turns | `backendTurnId` is also present |");
+  lines.push("| `agent-dispatch` | one dispatch, already a single turn | always -- the dispatch id is turn-precise |");
+  lines.push("| `lens-review` | one review invocation | always -- the review id is the invocation |");
+  lines.push("");
+  lines.push("A `backendTurnId` without its parent `backendRunId` joins nothing and reads as `none`, and so does a record carrying neither. ABSENCE IS NEVER READ AS `exact`. Join quality is deliberately not a stored field: it is derived from these ids on every read, because a stored copy can contradict the ids it summarizes.");
+  lines.push("");
+  lines.push("`reviewAttemptId` identifies one round across all three of its sinks (the state record, this artifact, and the events log); `itemAttemptId` identifies one attempt at one work item across every round of it. Events are best-effort and may duplicate after a crash, so deduplicate by `reviewAttemptId`.");
+  lines.push("");
+  lines.push("`generation` has TWO readings and `itemAttemptId` is what tells them apart. Where `itemAttemptId` is present, the generation is attempt-scoped lineage: it advances when a redirect restarts the round numbering, so rounds of one attempt at different generations are different rounds and counting distinct generations counts replans. Where `itemAttemptId` is ABSENT, the round had no work item, there is no lineage for the number to describe, and the generation is only a filename discriminator. Rounds with no work item all share the `unknown` filename stem, so two unrelated sequences can meet at one path and one of them is advanced to avoid overwriting the other. Do not count generations as attempts on records that carry no `itemAttemptId`.");
+  lines.push("");
+  lines.push("### Reading absent values");
+  lines.push("");
+  lines.push("Every field in this spine is optional, and an absent one means the value was not recorded -- never that it was measured and came back empty. Absence does NOT date a record: a round written today omits `backendRunId` and `backendTurnId` when the backend supplied none, and omits `workItemId` and `itemAttemptId` when the round had no work item at all, so an absent field is not evidence that the record predates the field. Three cases are worth naming because they are easy to misread. An absent `normalizerVersion` means the severities may not be normalized at all, so a `blocking` severity is possible. An absent `artifactStatus` means the artifact's existence is UNKNOWN; it never means the artifact is missing, and it never means one exists. And `reviewerIdentity.evidence` distinguishes what was OBSERVED to run from what was merely CONFIGURED to run -- a pin recorded as `configured` is evidence of intent and never of execution, which is why `unknown`/`none` is a valid and preferred record rather than a guessed model name.");
+  lines.push("");
+  lines.push("`payloadConsistent` records whether a verdict agreed with the findings it carried. Reading its rate needs care: change-requesting verdicts with zero findings are now repaired before they become rounds, so they are counted in `reviewRepairAttempts` instead. Those are two separate populations and must never be summed.");
+
+  lines.push("");
   lines.push("## /story design");
   lines.push("");
   lines.push("Evaluate frontend code against platform-specific design best practices.");

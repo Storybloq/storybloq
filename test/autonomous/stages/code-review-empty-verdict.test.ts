@@ -179,6 +179,24 @@ describe("CodeReviewStage empty change-request guard (ISS-1114)", () => {
     });
   });
 
+  it("[T-488] a repaired round contributes NO payloadConsistent value at all", async () => {
+    // The caveat that has to travel with `payloadConsistent`. This guard now
+    // repairs the empty change-request, so it never becomes a round -- future
+    // rounds will read `true` almost always, and a reader taking that as "the
+    // contradiction stopped happening" would be wrong. The refused payloads are
+    // counted in `reviewRepairAttempts` instead. TWO POPULATIONS, NEVER SUMMED.
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe(3));
+
+    await stage.report(ctx, EMPTY_REPORT);
+
+    expect(ctx.state.reviews.code).toHaveLength(0);
+    expect(ctx.state.reviewRepairAttempts).toHaveLength(1);
+    // No envelope either: a refused payload must leave nothing behind that a
+    // later call could replay into a round.
+    expect(ctx.state.pendingReviewAttempt ?? null).toBeNull();
+    expect(ctx.state.itemAttempt ?? null).toBeNull();
+  });
+
   it("treats request_changes identically to revise", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe(3));
 

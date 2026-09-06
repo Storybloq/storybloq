@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput } from "../session-types.js";
+import type { GuideReportInput, FullSessionState } from "../session-types.js";
+import {
+  implementerProvenanceFromReport,
+  resolveItemAttempt,
+  type ItemAttempt,
+  type ReviewSubject,
+} from "../review-identity.js";
 import { assessRisk, normalizeRiskLevel } from "../review-depth.js";
 import { gitDiffStat, gitDiffNames } from "../git-inspector.js";
 import { resolveOrReadFrozenGateStatus, renderUnresolvedHold } from "./gate-enforcement.js";
@@ -177,10 +183,42 @@ export class ImplementStage implements WorkflowStage {
       }
     }
 
+    // T-488 D7: record what implemented, BOUND to the attempt it implemented
+    // for.
+    //
+    // The binding is the whole mechanism. A session runs up to
+    // `maxTicketsPerSession` items, and item B's PLAN_REVIEW runs before B's
+    // first IMPLEMENT -- so a session-level field would still hold item A's
+    // model at that moment and a snapshot would attach A's provenance to B's
+    // round. `implementerForRound` refuses any provenance whose attempt does
+    // not match the round's, which makes that misattribution impossible by
+    // construction rather than by ordering luck.
+    //
+    // `resolveItemAttempt` is called here rather than assumed: a session can
+    // resume directly into IMPLEMENT without passing acquisition, so this may
+    // be where the attempt is first established.
+    const subject: ReviewSubject | null = ctx.state.ticket
+      ? { workItemId: ctx.state.ticket.id, kind: "ticket" }
+      : ctx.state.currentIssue
+        ? { workItemId: ctx.state.currentIssue.id, kind: "issue" }
+        : null;
+    const { attempt } = resolveItemAttempt(
+      (ctx.state.itemAttempt ?? null) as ItemAttempt | null,
+      subject,
+      new Date().toISOString(),
+    );
+    const implementer = attempt
+      ? { itemAttemptId: attempt.id, ...implementerProvenanceFromReport(_report) }
+      // No attempt means no subject to bind to, and an unbound implementer is
+      // exactly the stale-attribution shape this replaced. Null, not a guess.
+      : null;
+
     // Stage field updates (persisted atomically with state transition by processAdvance)
     ctx.updateDraft({
       ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk } : ctx.state.ticket,
-    });
+      ...(attempt ? { itemAttempt: attempt } : {}),
+      implementer,
+    } as Partial<FullSessionState>);
 
     // T-139: Return plain advance -- let the next stage's enter() provide its own instruction.
     // Previously hardcoded CODE_REVIEW instruction here, but this breaks when

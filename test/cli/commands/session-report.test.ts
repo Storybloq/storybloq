@@ -437,6 +437,94 @@ describe("handleSessionReport", () => {
     expect(result.output).toContain(escapedCode("landable_uncommitted"));
   });
 
+  // --- T-488: absent provenance renders as a dash, never a fabricated value ---
+
+  /**
+   * The report is the surface an operator reads to decide whether to
+   * intervene. Every value it could reach for instead of a dash -- the
+   * session's configured model, the last model seen, a generation inferred
+   * from the round number -- reads as a FACT to that operator, and every one
+   * of them would be invented. So a missing value is shown as missing.
+   */
+  it("prints a dash for each provenance field a round does not carry", async () => {
+    const dir = makeSessionDir(testRoot);
+    writeState(dir, {
+      reviews: {
+        plan: [],
+        code: [{
+          round: 1, reviewer: "codex", verdict: "approve", findingCount: 0,
+          criticalCount: 0, majorCount: 0, suggestionCount: 0,
+          timestamp: new Date().toISOString(),
+          // A spine WITH holes: the round is identified, but nothing observed
+          // what ran, no backend id came back, and no generation was recorded.
+          reviewAttemptId: "11111111-1111-4111-8111-111111111111",
+        }],
+      },
+    });
+
+    const result = await handleSessionReport(SESSION_ID, testRoot);
+    expect(result.output).toContain("model -");
+    expect(result.output).toContain("evidence -");
+    expect(result.output).toContain("gen -");
+    expect(result.output).toContain("artifact -");
+    // Derived, not stored, and `none` is the correct answer with no ids at all.
+    expect(result.output).toContain("join none");
+    // The report must not resolve the unknown in either direction.
+    expect(result.output).not.toContain("artifact written");
+    expect(result.output).not.toContain("artifact exists");
+    expect(result.output).not.toContain("artifact missing");
+  });
+
+  it("prints the values it does have, and never upgrades a configured pin", async () => {
+    const dir = makeSessionDir(testRoot);
+    writeState(dir, {
+      reviews: {
+        plan: [],
+        code: [{
+          round: 1, reviewer: "codex", verdict: "approve", findingCount: 0,
+          criticalCount: 0, majorCount: 0, suggestionCount: 0,
+          timestamp: new Date().toISOString(),
+          reviewAttemptId: "11111111-1111-4111-8111-111111111111",
+          reviewerIdentity: { model: "gpt-6-astra", source: "explicit-pin", evidence: "configured" },
+          backendRunId: "sess-1", backendRunIdKind: "codex-session",
+          generation: 2, artifactStatus: "written",
+        }],
+      },
+    });
+
+    const result = await handleSessionReport(SESSION_ID, testRoot);
+    expect(result.output).toContain("model gpt-6-astra");
+    expect(result.output).toContain("evidence configured");
+    expect(result.output).toContain("gen 2");
+    expect(result.output).toContain("artifact written");
+    // A thread id alone is not a turn, so the join is session-scoped.
+    expect(result.output).toContain("join session-scoped");
+    expect(result.output).not.toContain("evidence observed");
+  });
+
+  it("renders a legacy round exactly as it always did, with no spine line at all", async () => {
+    // Four dashes would imply the round was measured and came back empty. It
+    // was never measured: these fields did not exist when it was written.
+    const dir = makeSessionDir(testRoot);
+    writeState(dir, {
+      reviews: {
+        plan: [],
+        code: [{
+          round: 1, reviewer: "codex", verdict: "approve", findingCount: 0,
+          criticalCount: 0, majorCount: 0, suggestionCount: 0,
+          timestamp: new Date().toISOString(),
+        }],
+      },
+    });
+
+    const result = await handleSessionReport(SESSION_ID, testRoot);
+    expect(result.output).toContain("Round 1: approve");
+    expect(result.output).not.toContain("model -");
+    expect(result.output).not.toContain("join ");
+    expect(result.output).not.toContain("artifact written");
+    expect(result.output).not.toContain("artifact exists");
+  });
+
   // --- JSON format ---
 
   it("returns structured JSON when format is json", async () => {

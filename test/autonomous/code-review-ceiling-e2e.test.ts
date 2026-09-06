@@ -272,6 +272,12 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     expect(after.state).toBe("HANDOVER");
     expect(after.ticket).toBeUndefined();
     expect(after.claimEpoch).toBeUndefined();
+    // T-488: the attempt ends with the item. Left behind, it would let the
+    // NEXT item's first round reuse this attempt's id and inherit this item's
+    // implementer, which is the stale attribution the binding exists to stop.
+    expect(after.itemAttempt ?? null).toBeNull();
+    expect(after.implementer ?? null).toBeNull();
+    expect(after.pendingReviewAttempt ?? null).toBeNull();
 
     // The reason is on the ITEM, not only in a gitignored session artifact.
     const ticket = readTicket(root, CANON);

@@ -5,13 +5,24 @@ import type { ClaimEpoch } from "../claim-reconciliation.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import { buildLensHistoryUpdate } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE, normalizeSeverity } from "../session-types.js";
+import { REVIEW_VERDICTS, REVIEW_VERDICTS_PROSE } from "../session-types.js";
 import { normalizeRiskLevel, requiredRounds, nextReviewer } from "../review-depth.js";
 import { effectiveReviewEffort, effortDisclosureLine, effortMinRounds } from "../review-effort.js";
 import { codeReviewLandingFloor, dialCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
-import { writeReviewVerdict, readReviewVerdict, buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
+import { buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
+import {
+  eventIdentity,
+  identityFields,
+  normalizeFindings,
+  prepareReviewRound,
+  upsertReviewRecord,
+  writeRoundArtifact,
+  type ItemAttempt,
+  type ReviewRoundIdentity,
+  type ReviewSubject,
+} from "../review-identity.js";
 import {
   currentStorybloqClient,
   nativeCodexReportInstruction,
@@ -75,9 +86,16 @@ async function escalateCeiling(ctx: StageContext): Promise<StageAdvance> {
   // rebuilds the queue if the write that created it was the one that was lost.
   const fingerprints = await ctx.queueFindingsAsIssues(outstanding, "code");
   if (pending && fingerprints.length > 0) {
-    // WRITTEN, not staged. A draft is discarded when this returns `retry`,
-    // and the whole point of recording these is that a failure part way
-    // through leaves a record knowing which findings are this escalation's.
+    // WRITTEN, not staged, and the reason is durability rather than anything
+    // about `retry`. The whole point of recording these is that a failure part
+    // way through leaves a record knowing which findings are this escalation's,
+    // and only a write that has already happened can do that.
+    //
+    // T-488 correction: this comment used to add "a draft is discarded when
+    // this returns `retry`", which is false. `processAdvance`'s retry branch
+    // writes `stuckRetryCount` on the same context, and any write on that
+    // context flushes a staged draft. The claim is struck rather than repaired
+    // because the durability reason above never depended on it.
     const merged = Array.from(new Set([...(pending.fingerprints ?? []), ...fingerprints]));
     if (merged.length !== (pending.fingerprints ?? []).length) {
       ctx.writeState({
@@ -427,15 +445,22 @@ export class CodeReviewStage implements WorkflowStage {
       return { action: "retry", instruction: `Invalid verdict. Re-submit with verdict: ${REVIEW_VERDICTS_PROSE}.` };
     }
 
-    const codeReviews = [...ctx.state.reviews.code];
-    const roundNum = codeReviews.length + 1;
+    let codeReviews = [...ctx.state.reviews.code];
+    // T-488: the ARRAY-derived ordinal, which is the right round number for a
+    // new round and the wrong one for a replay. A replay takes its round from
+    // the durable envelope instead, so a crash between sinks cannot renumber a
+    // round that was already accepted. `roundNum` below is the resolved one.
+    const arrayRound = codeReviews.length + 1;
     // T-461: see plan-review.ts -- the level belongs to the round, not to
     // whatever the session happens to be pinned to when someone reads it back.
     const roundEffort = effectiveReviewEffort(ctx.state, "CODE_REVIEW");
     // ISS-726: canonicalize severity up front so the suggestion-exemption and
     // critical/major contradiction guard below (and the per-severity counts and
     // lens history) cannot be bypassed by a miscased value.
-    const findings = (report.findings ?? []).map((f) => ({ ...f, severity: normalizeSeverity(f.severity) }));
+    // T-488: the same pass records what the reviewer actually reported, because
+    // most of that vocabulary survives normalization untouched and a reader
+    // otherwise cannot tell a normalized `high` from a raw one.
+    const findings = normalizeFindings(report.findings ?? []);
     const backends = reviewBackendsForStage("CODE_REVIEW", ctx.state);
     const computedReviewer = nextReviewer(codeReviews, backends, ctx.state.codexUnavailable, ctx.state.codexUnavailableSince);
     // ISS-102: Use actual reviewer from report, infer from notes, or fall back to computed
@@ -446,19 +471,12 @@ export class CodeReviewStage implements WorkflowStage {
       (f) => f.severity === "critical" &&
         f.disposition !== "addressed" && f.disposition !== "deferred",
     ).length;
-    codeReviews.push({
-      round: roundNum,
-      reviewer: reviewerBackend,
-      verdict,
-      findingCount: findings.length,
-      criticalCount: findings.filter((f) => f.severity === "critical").length,
-      unresolvedCriticalCount,
-      majorCount: findings.filter((f) => f.severity === "major").length,
-      suggestionCount: findings.filter((f) => f.severity === "suggestion").length,
-      codexSessionId: report.reviewerSessionId,
-      effort: roundEffort,
-      timestamp: new Date().toISOString(),
-    });
+    // T-488: the state record is built and UPSERTED after the artifact sink
+    // runs, not pushed here. Two reasons, and both are contract rather than
+    // taste. The artifact is the only sink that can detect a generation
+    // collision, so nothing else may record a generation it has not verified.
+    // And a blind push double-counts a replayed round, which the ceiling fires
+    // on -- so a duplicate would not be cosmetic, it could park an item early.
 
     // ISS-098: Detect codex unavailability from agent notes
     // ISS-110: Store timestamp instead of just boolean for TTL-based expiry
@@ -579,9 +597,20 @@ export class CodeReviewStage implements WorkflowStage {
         return await escalateCeiling(ctx);
       }
 
-      // `writeState`, never `updateDraft`: a draft is DISCARDED when a stage
-      // returns `retry`, which would drop every attempt record and leave the cap
-      // permanently unreachable.
+      // `writeState`, never `updateDraft`. The consequence this guards against
+      // is right and unchanged -- a lost attempt record leaves the cap
+      // permanently unreachable -- but the mechanism it used to name was not.
+      //
+      // T-488 correction: this said "a draft is DISCARDED when a stage returns
+      // `retry`". It is not. `processAdvance`'s retry branch writes
+      // `stuckRetryCount` on the same context (guide.ts), and every one of its
+      // branches writes before returning, so a staged draft is flushed on the
+      // retry path too. The real reason to write here is that staging would
+      // make a correctness-critical record depend on a downstream write this
+      // stage does not control, and `processAdvance` has two exits that write
+      // nothing at all: the auto-advance depth limit, and a pipeline exhausted
+      // with no HANDOVER stage registered. Both return `guideError` before any
+      // write, and either would drop a staged attempt record.
       ctx.writeState({
         reviewRepairAttempts: [
           ...(ctx.state.reviewRepairAttempts ?? []),
@@ -597,6 +626,41 @@ export class CodeReviewStage implements WorkflowStage {
       } as Partial<FullSessionState>);
       return { action: "retry", instruction: EMPTY_CHANGE_REQUEST_INSTRUCTION };
     }
+
+    // ── T-488: the round's identity, made durable before any sink ──────────
+    //
+    // Placed HERE, after every payload guard and before the routing ladder.
+    // After the guards because a refused payload must leave no envelope behind
+    // to be replayed. Before the ladder because a replay has to route on the
+    // round number it was ACCEPTED at, not on a fresh array-derived one.
+    //
+    // `target` and `summary` are hoisted from the artifact block below for the
+    // same reason: the fingerprint that decides replay-or-new has to pin the
+    // exact payload, and `summary` comes from free-text notes.
+    const target = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
+    const summary = report.notes || `Code review ${verdict}: ${findings.length} finding(s) (${criticalCount} critical, ${majorCount} major)`;
+    // No work item means no subject: the identity fields are written NEITHER
+    // way rather than filled with a placeholder, which is the same rule the
+    // ISS-1114 repair guard applies one screen up.
+    const reviewSubject: ReviewSubject | null = ctx.state.ticket
+      ? { workItemId: ctx.state.ticket.id, kind: "ticket" }
+      : ctx.state.currentIssue
+        ? { workItemId: ctx.state.currentIssue.id, kind: "issue" }
+        : null;
+    const prepared = prepareReviewRound(ctx, {
+      stage: "code",
+      subject: reviewSubject,
+      target,
+      verdict,
+      reviewer: reviewerBackend,
+      summary,
+      findings: findings as unknown as readonly Record<string, unknown>[],
+      arrayRound,
+      report,
+      effort: roundEffort,
+      nowIso: new Date().toISOString(),
+    });
+    const roundNum = prepared.round;
 
     const isChangeRequest = verdict === "revise" || verdict === "request_changes";
     // T-461: the light landing guard. At standard and thorough the floor IS the
@@ -626,18 +690,19 @@ export class CodeReviewStage implements WorkflowStage {
     }
 
     // T-263: Build and write review verdict artifact
-    const target = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
     const startedAt = ctx.state.currentReviewStartedAt;
     const startedMs = startedAt ? new Date(startedAt).getTime() : NaN;
     const durationMs = Number.isFinite(startedMs) ? Math.max(0, Date.now() - startedMs) : 0;
-    const summary = report.notes || `Code review ${verdict}: ${findings.length} finding(s) (${criticalCount} critical, ${majorCount} major)`;
     // ISS-720: for lens-backed reviews, record the path actually taken (whether
     // the verification gate ran) instead of trusting the configured backend tag.
     // reviewId/reviewerPath are lens-review observability, so both are recorded
     // only when the backend is lenses.
     const lensReviewId = reviewerBackend === "lenses" ? report.reviewId : undefined;
     const reviewerPath = lensReviewId ? classifyLensReviewPath(ctx.dir, lensReviewId) : undefined;
-    const artifact: ReviewVerdictArtifact = {
+    // T-488: rebuilt per generation, because a collision changes the identity
+    // block and the artifact has to carry the generation it is actually
+    // written at -- `generation` is in the content hash.
+    const buildCodeArtifact = (identity: ReviewRoundIdentity): ReviewVerdictArtifact => ({
       target,
       stage: "code",
       round: roundNum,
@@ -654,21 +719,40 @@ export class CodeReviewStage implements WorkflowStage {
       ...(lensReviewId ? { reviewId: lensReviewId } : {}),
       ...(reviewerPath ? { reviewerPath } : {}),
       effort: roundEffort,
+      ...identityFields(identity),
+    });
+    const artifactResult = writeRoundArtifact(ctx, {
+      identity: prepared.identity,
+      envelope: prepared.envelope,
+      attempt: (ctx.state.itemAttempt ?? null) as ItemAttempt | null,
+      buildArtifact: buildCodeArtifact,
+    });
+    if (artifactResult.kind === "retry") {
+      // No round is recorded against a generation the artifact sink could not
+      // verify. That is the whole reason the artifact goes first.
+      return { action: "retry", instruction: artifactResult.instruction };
+    }
+    const identity = artifactResult.identity;
+    const tier1Verdict = buildTier1Verdict(artifactResult.artifact);
+
+    // T-488: built here, after the sink that can still change the generation,
+    // and UPSERTED by `reviewAttemptId` so a replay cannot double-count.
+    const roundRecord = {
+      round: roundNum,
+      reviewer: reviewerBackend,
+      verdict,
+      findingCount: findings.length,
+      criticalCount,
+      unresolvedCriticalCount,
+      majorCount,
+      suggestionCount,
+      codexSessionId: report.reviewerSessionId,
+      effort: roundEffort,
+      timestamp: new Date().toISOString(),
+      ...identityFields(identity),
+      artifactStatus: artifactResult.artifactStatus,
     };
-    const writeResult = writeReviewVerdict(ctx.dir, artifact);
-
-    if (writeResult.status === "skipped") {
-      return { action: "retry", instruction: "Review artifact write failed (lock contention or I/O error). Re-report your review verdict." };
-    }
-
-    let tier1Verdict = buildTier1Verdict(artifact);
-    if (writeResult.status === "exists") {
-      const recovered = readReviewVerdict(ctx.dir, writeResult.contentHash);
-      if (!recovered) {
-        return { action: "retry", instruction: "Review artifact recovery failed (content mismatch). Re-report your review verdict." };
-      }
-      tier1Verdict = buildTier1Verdict(recovered);
-    }
+    codeReviews = upsertReviewRecord(codeReviews, roundRecord);
 
     // T-208: Issue-fix context
     const isIssueFix = !!ctx.state.currentIssue;
@@ -696,6 +780,7 @@ export class CodeReviewStage implements WorkflowStage {
     // is what the handover has left to say WHY sixty rounds went nowhere.
     if (nextAction === "PLAN" && !ceilingDecision.shouldPark) {
       clearCache(ctx.dir);
+      const redirectAttempt = (ctx.state.itemAttempt ?? null) as ItemAttempt | null;
       ctx.writeState({
         // The counter advances HERE too. It is the only durable record of a
         // completed round, and this branch clears the array `roundNum` is
@@ -703,6 +788,50 @@ export class CodeReviewStage implements WorkflowStage {
         // recommending PLAN would loop forever at a count that never moved,
         // which is the same unbounded shape the ceiling exists to close.
         ...(ceilingDecision.counter ? { codeReviewRoundCounter: ceilingDecision.counter } : {}),
+        // T-488 D9: APPENDED BEFORE THE CLEAR, so what the clear destroys is
+        // preserved rather than mourned in a comment. The clear itself is
+        // unchanged -- it is right for a replan, and this is what makes it also
+        // survivable for a session that ends instead of replanning.
+        reviewGenerationHistory: [
+          ...(ctx.state.reviewGenerationHistory ?? []),
+          {
+            ...(identity.itemAttemptId ? { itemAttemptId: identity.itemAttemptId } : {}),
+            generation: identity.generation,
+            ...(ctx.state.ticket?.realizedRisk ? { realizedRisk: ctx.state.ticket.realizedRisk } : {}),
+            lensReviewHistory: ctx.state.lensReviewHistory ?? [],
+            endedAt: new Date().toISOString(),
+            reason: "plan-redirect",
+          },
+        ],
+        // T-488 D3: the redirect is what OPENS a new generation. Round numbers
+        // restart from here, so without this the next generation's r1 would
+        // reproduce this generation's r1 filename, `writeReviewVerdict` would
+        // answer `exists`, and the round would be silently dropped -- the
+        // observed westworld `08a52602` shape, where nine rounds vanished and
+        // the twelve survivors read as one continuous run.
+        //
+        // This increment serves RETENTION, not collision avoidance. The
+        // artifact sink's collision guard would resolve the numbering on its
+        // own, and does exactly that at the plan stage's `reject`, which clears
+        // `reviews.plan` the same way and carries no increment. What only this
+        // site can supply is the boundary at the moment `reviewGenerationHistory`
+        // appends it, above. Stated because the asymmetry is deliberate and the
+        // next reader will otherwise read the plan side as a missing case.
+        ...(redirectAttempt
+          ? { itemAttempt: { ...redirectAttempt, generation: identity.generation + 1 } }
+          : {}),
+        // The envelope's round is complete for every sink that can report
+        // success. Events are best-effort by contract, so "attempted" is the
+        // most that can be waited for; it is attempted immediately below.
+        pendingReviewAttempt: null,
+        // The redirecting round reaches the artifact and the event but NOT the
+        // state array, because this clear is what a replan means and it takes
+        // the whole array with it. That is a known and deliberate limit of the
+        // state arrays rather than of this round: they undercount by
+        // construction on every redirect, exactly as `reviews.plan` does on
+        // every plan reject, which is why the ARTIFACT is the primary record
+        // and the arrays are a convenience. Preserving the records themselves
+        // across the boundary is T-492/T-432 work, not this ticket's.
         reviews: { plan: [], code: [] },
         lensReviewHistory: [],
         ticket: ctx.state.ticket ? { ...ctx.state.ticket, realizedRisk: undefined } : ctx.state.ticket,
@@ -717,6 +846,11 @@ export class CodeReviewStage implements WorkflowStage {
         findingCount: findings.length,
         effort: roundEffort,
         redirectedTo: isIssueFix ? "ISSUE_FIX" : "PLAN",
+        // T-488 D11: 422 review events across 130 local sessions carried ZERO
+        // item id, so nothing downstream could say which item a round belonged
+        // to. `appendEvent` stays best-effort and may duplicate on a replay;
+        // readers deduplicate by `reviewAttemptId`, which is why it is here.
+        ...eventIdentity(identity),
       });
 
       await ctx.fileDeferredFindings(findings, "code");
@@ -747,6 +881,40 @@ export class CodeReviewStage implements WorkflowStage {
       reviews: { ...ctx.state.reviews, code: codeReviews },
       lastReviewVerdict: tier1Verdict,
       currentReviewStartedAt: null,
+      // T-488: the state record has now landed, so the envelope has done its
+      // job. Cleared in the SAME write as the record, and the alternative is
+      // worse rather than merely tidier.
+      //
+      // Holding it past this write would shrink one window and open a strictly
+      // more damaging one. The payload fingerprint covers the verdict, summary
+      // and findings, so a genuine SECOND round that repeats them -- a reviewer
+      // returning the same answer because nothing changed -- becomes
+      // indistinguishable from a replay of the first, and the upsert then
+      // REPLACES round 1 instead of appending round 2. A round that really ran
+      // would disappear from the count the ceiling fires on.
+      //
+      // What the window costs by comparison is bounded: a crash between this
+      // write and the transition leaves a durably recorded, fully joinable
+      // round, and the resumed session runs one more review than it needed to.
+      // No identity is lost and no record is fabricated. Pinned both ways in
+      // `review-attempt-durability.test.ts`.
+      //
+      // Staging the clear with `ctx.updateDraft` so it commits atomically with
+      // the transition was considered and rejected. It IS achievable -- every
+      // branch of `processAdvance` calls `writeState` on this same context
+      // before returning, the retry branch included (it writes
+      // `stuckRetryCount`), and any such write flushes the draft. That is
+      // exactly the problem: it makes a correctness-critical clear depend on a
+      // downstream write that exists for an unrelated reason and that this code
+      // does not control. `processAdvance` already has two exits that write
+      // nothing (the auto-advance depth limit and a pipeline exhausted with no
+      // HANDOVER stage), and either would persist a landed record beside a live
+      // envelope. The next genuine round with a matching fingerprint would then
+      // replay into the recorded round and REPLACE it. That failure is silent
+      // and corrupts the count the ceiling fires on; the one this ordering
+      // accepts is visible and costs a review round. When two failure modes are
+      // indistinguishable at the decision point, over-record the work.
+      pendingReviewAttempt: null,
     };
     // T-470: the ticket-keyed counter, persisted with the round it counts.
     if (ceilingDecision.counter) stateUpdate.codeReviewRoundCounter = ceilingDecision.counter;
@@ -849,11 +1017,30 @@ export class CodeReviewStage implements WorkflowStage {
 
     accumulateVerificationCounters({ sessionDir: ctx.dir, state: ctx.state, writeState: ctx.writeState.bind(ctx) });
 
+    // EMITTED AFTER THE WRITE, and the third option here was examined rather
+    // than missed. A crash in this gap loses the event permanently: the record
+    // is durable, the envelope went out with it, and no replay can repair it.
+    // Moving this emit ABOVE the write would close that window without
+    // reopening the fingerprint collision the envelope ordering guards (a crash
+    // before the write leaves the envelope live, so the replay reuses the same
+    // `reviewAttemptId`, re-emits, and readers deduplicate on it).
+    //
+    // What decides against it is the `rev` stamp. `appendEvent` records
+    // `rev: this._state.revision`, and `writeState` is what advances that
+    // revision -- so emitting first would stamp the revision BEFORE the one
+    // containing this round's record, and `rev` would stop naming the state a
+    // reader can look the round up in. That correlation does real work: it is
+    // how a landing_decision at events.log rev 380 overturned a claim about
+    // T-056 this session. Events are best-effort by contract and the artifact
+    // is the primary record, so losing an event costs less than breaking the
+    // stamp that makes the surviving ones locatable.
     ctx.appendEvent("code_review", {
       round: roundNum,
       verdict,
       findingCount: findings.length,
       effort: roundEffort,
+      // T-488 D11: see the redirect emit above for why the ids are here.
+      ...eventIdentity(identity),
     });
 
     if (landingDecision) {

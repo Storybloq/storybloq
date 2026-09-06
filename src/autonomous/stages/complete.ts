@@ -33,6 +33,14 @@ export class CompleteStage implements WorkflowStage {
       contextPressure: { ...ctx.state.contextPressure, level: pressure },
       finalizeCheckpoint: null,
       finalizedItem: null,
+      // T-488: the attempt is over. Cleared here rather than left to the next
+      // pick, so a round that somehow ran between COMPLETE and the next
+      // acquisition could not inherit this item's attempt id or its
+      // implementer. `reviewGenerationHistory` survives -- it is the record of
+      // what the completed item cost.
+      itemAttempt: null,
+      implementer: null,
+      pendingReviewAttempt: null,
     });
 
     const ticketsDone = ctx.state.completedTickets.length;

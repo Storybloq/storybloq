@@ -1801,6 +1801,25 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         reviewerSessionId: z.string().optional().describe("Codex session ID"),
         reviewer: z.string().optional().describe("Actual reviewer backend used, e.g. 'agent' when codex was unavailable"),
         reviewId: z.string().optional().describe("From review_lenses_prepare/synthesize; pass on lens-backed review_round reports (ISS-720)."),
+        // T-488 provenance. Optional, never inferred: with none supplied the
+        // round records source "unknown", evidence "none", which is truthful.
+        //
+        // Deliberately NEARLY UNDESCRIBED, under the T-460 rule these fields
+        // would otherwise break: every byte here is paid on every tools/list by
+        // every client, and the full guidance already lives in
+        // autonomous-mode.md and `storybloq reference`, which are read once by
+        // whoever needs it rather than shipped to everyone forever.
+        reviewerModel: z.string().optional().describe("Model the reviewer ran on, if known. Omit rather than guess."),
+        reviewerTier: z.string().optional(),
+        reviewerSource: z.enum(["explicit-pin", "session-default"]).optional(),
+        reviewerEvidence: z.enum(["observed", "configured"]).optional().describe(
+          "'observed' only if the backend reported what ran; a pin you sent is 'configured'.",
+        ),
+        reviewerTurnId: z.string().optional(),
+        implementerModel: z.string().optional().describe("Model IMPLEMENT ran on; pass with implementation_done."),
+        implementerTier: z.string().optional(),
+        implementerSource: z.enum(["explicit-pin", "session-default"]).optional(),
+        implementerEvidence: z.enum(["observed", "configured"]).optional(),
         notes: z.string().optional(),
       }).optional().describe("Required for report action"),
     },

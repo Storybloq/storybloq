@@ -33,6 +33,12 @@ This file is referenced from SKILL.md for `/story auto` / `$story auto`, review,
 
 The fix-then-re-review rule holds at every level. At `off` no review runs, so no change request can exist and the rule is vacuously satisfied; at `light` the landing rule below is what keeps it true under a lower cap.
 
+### Recording what actually ran
+
+When you report a review round or `implementation_done`, you may name the model and tier behind it: `reviewerModel` / `reviewerTier` on a review round, `implementerModel` / `implementerTier` with `implementation_done`. Every one of these is optional and NONE of them is ever inferred. A round reported without them records `source: "unknown"`, `evidence: "none"`, which is a truthful record; a guessed model name is not, because it reads as a fact to whoever analyses the session later. `reviewerSource` and `implementerSource` are separate fields for a reason: naming a model does NOT say how that model came to be chosen, so a round that supplies a model and no source records the model with `source: "unknown"` rather than being read as a deliberate pin. Send `explicit-pin` or `session-default` only when you actually know which it was, because the pinned count is what a reader would use to ask whether pinning changes outcomes, and rounds nobody pinned inflate it.
+
+What you pass is recorded as INTENT, not as execution. A pin you sent is stored with `evidence: "configured"`, and only a value a backend itself reported back may be sent as `reviewerEvidence: "observed"`. The distinction is the whole point of the field: a dispatcher can say what it asked for, and nothing in the record may claim that is what ran unless something observed it. The implementer pin is recorded against the item's own attempt, so a later item in the same session cannot inherit it -- the case this closes is item B's plan review, which runs BEFORE B's first implement and would otherwise be attributed to item A's model.
+
 **Frontend design:** If the current ticket involves UI, frontend, components, layouts, or styling, read `design/design.md` in the same directory as the skill file for design principles. Load the relevant platform reference from `design/references/`. Apply the priority order (clarity > hierarchy > platform correctness > accessibility > state completeness) during both planning and implementation.
 
 ## Precedence: task-aware active-session guard
@@ -112,6 +118,8 @@ From `PLAN` or `PLAN_REVIEW`, report:
 
 The guide releases the claim, records your reason on the item, returns it to `open`,
 and moves this session to the next item. The rest of a targeted queue is preserved.
+
+In a duet, where a pen commissions the gates and a worker executes them, the pen is the dispatcher and the pins above are how it says what it commissioned. It passes the reviewer pin with the round it asked for and the implementer pin with the work it handed down, and both land as `configured` -- a pen naming the tier it dispatched is stating what it intended, which is exactly what a later reader needs and exactly what must not be confused with what executed. A pen that does not know what ran passes nothing, and the round records unknown rather than the pen's own model.
 
 | | `park_item` | `skip_ticket` |
 |---|---|---|

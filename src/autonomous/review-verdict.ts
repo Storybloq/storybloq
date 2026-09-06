@@ -227,6 +227,13 @@ const ARTIFACT_HASH_DECISIONS = {
   // values already differ when the normalizer differs. The version number adds
   // nothing to identity that the findings do not already carry.
   normalizerVersion: "excluded",
+  // INCLUDED, and deliberately so: this is WHAT THE ROUND WAS, the same
+  // category as target/stage/round/generation above it, not how the round was
+  // produced or what it cost. Two rounds over different trees are different
+  // rounds and must not share a hash. The KIND is included for the same
+  // reason: the same hex string means two different things under the two
+  // kinds, so a round that content-hashed a dirty diff is not the round that
+  // named a commit tree with a coincidentally equal value.
 } satisfies Record<keyof ReviewVerdictArtifact, HashDecision>;
 
 /**
@@ -249,6 +256,16 @@ const FINDING_HASH_DECISIONS = {
   disposition: "included",
   recommendedNextState: "included",
   rawSeverity: "included",
+  // ISS-1115 D4. All four are INCLUDED, for the same reason `disposition`
+  // beside them is: they are content the reviewer reported about the finding,
+  // which is WHAT THE ROUND WAS. The excluded side of this map is how a round
+  // was produced and what it cost, and none of these is that. A round that
+  // reported a finding as `reintroduced` is a different round from one that
+  // reported the same finding as `new`, and the hash should say so.
+  dispositionReason: "included",
+  origin: "included",
+  originClass: "included",
+  sinceRound: "included",
 } satisfies Record<keyof Finding, HashDecision>;
 
 /** Derived from the maps above, so there is exactly one source of truth. */

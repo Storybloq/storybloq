@@ -34,6 +34,14 @@ import {
   emptyVerdictParkReason,
 } from "./review-repair.js";
 import { outstandingCeilingFindings } from "./code-review-ceiling.js";
+import { buildReviewContextPacket } from "../review-context-packet.js";
+
+/**
+ * Plan review's packet budget. Smaller than code review's because the subject
+ * it shares an instruction with is a plan rather than a diff, and the plan text
+ * itself is not in this payload.
+ */
+const PLAN_REVIEW_CONTEXT_PACKET_BUDGET = 16000;
 import {
   buildRound1Baseline,
   hashPlanContent,
@@ -468,18 +476,52 @@ export class PlanReviewStage implements WorkflowStage {
     }
 
     const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";
+
+    // ── ISS-1115: the round context packet, plan stage ──────────────────────
+    //
+    // The code stage was wired first and this one was left cold, behind a green
+    // suite, because the edit meant to wire it threw before writing and the
+    // stage tests passed anyway. Both stages are acceptance for this item.
+    //
+    // THE SUBJECT HERE IS THE PLAN, NOT A DIFF. There is no `diffCommand` on
+    // this path and no "Pass the FULL unified diff" anchor; an earlier plan
+    // claimed both stages shared that anchor, which was asserted without
+    // opening this file. So the capture directive names plan.md.
+    const planCaptureDirective = [
+      "Review the plan at `.story/sessions/<session>/plan.md` (the session dir",
+      "for this run). Pass the FULL plan text to the reviewer; do not summarize",
+      "or truncate it.",
+    ].join(" ");
+
+    const planContextPacket = buildReviewContextPacket({
+      sessionDir: ctx.dir,
+      projectRoot: ctx.root,
+      target: ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown",
+      stage: "plan",
+      generation: ctx.state.itemAttempt?.generation ?? 0,
+      roundNum,
+      budget: PLAN_REVIEW_CONTEXT_PACKET_BUDGET,
+      captureDirective: planCaptureDirective,
+      planReviews: ctx.state.reviews.plan,
+    });
+
     return {
       instruction: [
         `# Plan Review -- Round ${roundNum} of ${Math.max(minRounds, roundNum)} minimum`,
         "",
         disclosure,
         "",
+        planContextPacket.text,
+        "",
         `Run a plan review using **${reviewer}**.`,
         "",
         [
           bridgeCodex
-            ? "Call `review_plan` MCP tool with the plan content."
-            : "Launch a code review agent to review the plan.",
+            // The handoff, stated rather than implied: this instruction goes to
+            // the IMPLEMENTING agent, which then composes the backend request.
+            // Saying "with the plan content" alone left the packet behind.
+            ? "Call `review_plan` MCP tool, passing BOTH the context above and the full plan content."
+            : "Launch a code review agent to review the plan, giving it the context above and the full plan content.",
           reviewDepthLine(effort, "plan", reviewer, ctx.state.config),
         ].filter(Boolean).join(" "),
         "",

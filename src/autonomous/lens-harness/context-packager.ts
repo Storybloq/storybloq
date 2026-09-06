@@ -14,6 +14,14 @@ import { join } from "node:path";
 import type { Stage } from "@storybloq/lenses";
 import { resolveAndValidate } from "./path-safety.js";
 
+/**
+ * Separate budgets on purpose. Sharing one would let the contract evict rules
+ * content, which is the failure this split exists to prevent. See ISS-1125 for
+ * why the RULES.md number is what it is and why it is not raised here.
+ */
+const RULES_BUDGET = 2000;
+const REVIEW_BUDGET = 3000;
+
 // ── Per-lens file routing ──────────────────────────────────────
 
 const SECURITY_GETS_ALL = true;
@@ -56,11 +64,40 @@ export function packageContext(opts: {
 }): PackagedContext {
   const { stage, diff, changedFiles, activeLenses, ticketDescription, projectRoot, tokenBudgetPerLens } = opts;
 
-  // Read project rules
+  // Read project rules.
+  //
+  // The 2000-character slice on RULES.md is PRE-EXISTING and is not fixed here:
+  // it silently truncates (this repo's RULES.md is 3497 bytes, so lenses have
+  // never seen its last three sections), and both halves of that defect, the
+  // missing marker and the too-small budget, are ISS-1125.
+  //
+  // What matters at THIS seam is that REVIEW.md does not make it worse.
+  // Appending the contract into the same 2000 characters would evict rules text
+  // that is already being lost, under a change whose whole purpose is to give
+  // reviewers more context. So the contract gets its OWN budget, and its
+  // truncation says so rather than cutting in silence.
   const rulesPath = join(projectRoot, "RULES.md");
-  const projectRules = existsSync(rulesPath)
-    ? readFileSync(rulesPath, "utf-8").slice(0, 2000)
+  const rulesText = existsSync(rulesPath)
+    ? readFileSync(rulesPath, "utf-8").slice(0, RULES_BUDGET)
     : "(no RULES.md found)";
+
+  const reviewPath = join(projectRoot, "REVIEW.md");
+  let reviewText = "";
+  if (existsSync(reviewPath)) {
+    try {
+      const raw = readFileSync(reviewPath, "utf-8");
+      // Text, ungated. Nothing here parses REVIEW.md or acts on its headings:
+      // a checklist-style REVIEW.md is useful review guidance even when it
+      // declares no structure at all, so the reviewer gets the file as written.
+      reviewText = raw.length > REVIEW_BUDGET
+        ? `${raw.slice(0, REVIEW_BUDGET)}\n\n[REVIEW.md truncated at ${REVIEW_BUDGET} characters]`
+        : raw;
+    } catch { /* unreadable contract is an absent contract */ }
+  }
+
+  const projectRules = reviewText === ""
+    ? rulesText
+    : `${rulesText}\n\n## REVIEW.md (quality contract)\n\n${reviewText}`;
 
   // Build file contents map (with path traversal + symlink protection)
   const fileContents = new Map<string, string>();

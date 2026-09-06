@@ -1791,6 +1791,27 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
             "'deferred' = valid but out of scope, AUTO-FILES a storybloq issue " +
             "(severity 'suggestion' is exempt).",
           ),
+          // ISS-1115 D4: provenance, on axes separate from `disposition`.
+          // Optional so round 1 and every existing caller are unaffected.
+          dispositionReason: z.string().optional().describe(
+            "Why this disposition. Use 'owner-accepted-risk' vs 'valid-deferred' to say " +
+            "which kind of 'deferred' this is: a risk someone chose to carry, or a real " +
+            "defect waiting for a later change.",
+          ),
+          origin: z.enum(["introduced", "pre-existing"]).optional().describe(
+            "Did this diff introduce the defect, or was it already there? Omit if unsure; " +
+            "an absent value is read as 'introduced'.",
+          ),
+          originClass: z.enum(["new", "reintroduced", "unchanged", "introduced-by-fix"])
+            .optional().describe(
+              "Relation to earlier rounds. 'new' = not raised before; 'reintroduced' = raised " +
+              "and accepted before, and the code changed under it (STILL BLOCKS, this is not " +
+              "an amnesty); 'unchanged' = same finding, nothing moved (pair with sinceRound); " +
+              "'introduced-by-fix' = the previous round's fix caused this.",
+            ),
+          sinceRound: z.number().int().positive().optional().describe(
+            "With originClass 'unchanged': the round this finding has been unchanged since.",
+          ),
           // ISS-717: previously omitted from this schema, so the SDK stripped it
           // and the PLAN-redirect guard in the review stages was unreachable.
           recommendedNextState: z.enum(["PLAN", "IMPLEMENT"]).optional().describe(

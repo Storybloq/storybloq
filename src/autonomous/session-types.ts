@@ -483,6 +483,53 @@ export interface Finding {
    * declared type says it cannot. `rawSeverity` is what lets a reader see that.
    */
   readonly rawSeverity?: string;
+
+  // ── ISS-1115 D4: provenance, on axes SEPARATE from `disposition` ─────────
+  // `disposition` says where a finding STANDS (open/addressed/contested/
+  // deferred) and is unchanged by this run. These say where it CAME FROM.
+  // Separate fields because they answer separate questions: a pre-existing
+  // defect can be newly noticed, and a defect this diff introduced can be one
+  // an earlier round already raised.
+  //
+  // Enums here because this is the WRITE side. The persisted artifact reads
+  // them back through the bare-string readers in review-identity.ts, per the
+  // T-328 rule that an enum on a persisted field does not drop a bad value, it
+  // makes the whole session unreadable.
+
+  /**
+   * Why this disposition was chosen. Its one load-bearing job in Run A is
+   * splitting `deferred` into `owner-accepted-risk` and `valid-deferred`,
+   * which the disposition enum cannot express and which are not the same
+   * thing: one is a risk someone chose to carry, the other is a real defect
+   * waiting on a later change. Free text; nothing depends on it yet.
+   */
+  readonly dispositionReason?: string;
+
+  /**
+   * Relative to the PR base. Absent means unknown, and READS as `introduced`.
+   *
+   * BARE STRING, like every persisted field here, and the comment above says so
+   * while an earlier version of this declaration was a union anyway. The union
+   * was wrong twice over: T-328's rule is that an enum on a persisted field
+   * does not drop a bad value, it makes the whole session unreadable; and a
+   * union here would make the three-way `originClass` read below unreachable
+   * from any typed path, since the type would forbid the unrecognised value
+   * that the guard exists to catch. Vocabulary is enforced on the WRITE side
+   * (the MCP tool schema and the native codex output schema) and interpreted by
+   * the readers in review-identity.ts.
+   */
+  readonly origin?: string;
+
+  /** Relative to prior rounds. `reintroduced` blocks regardless of disposition. */
+  readonly originClass?: string;
+
+  /**
+   * The round `unchanged` refers to. A SEPARATE number, deliberately: encoding
+   * it as `unchanged-since-round-4` would put a parameter inside an enum value,
+   * give the field an unbounded value space nobody can enumerate, and force
+   * every reader to parse an integer out of a string.
+   */
+  readonly sinceRound?: number;
 }
 
 // ---------------------------------------------------------------------------

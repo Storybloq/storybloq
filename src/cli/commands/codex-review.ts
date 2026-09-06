@@ -4,6 +4,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import { readSession, sessionDir } from "../../autonomous/session.js";
+import { buildReviewContextPacket } from "../../autonomous/review-context-packet.js";
+
+/**
+ * Native codex's packet budget. Lower than the guide stages' because this
+ * prompt is delivered on stdin to `codex exec` alongside a schema, and the
+ * reviewer reads the diff from disk rather than from the prompt.
+ */
+const NATIVE_CONTEXT_PACKET_BUDGET = 16000;
 import type { Finding, GuideReportInput, ReviewVerdict } from "../../autonomous/session-types.js";
 
 export type CodexReviewKind = "plan" | "code";
@@ -18,6 +26,10 @@ export interface CodexFinding {
   readonly line?: number | null;
   readonly suggestion?: string | null;
   readonly recommendedNextState?: "PLAN" | "IMPLEMENT";
+  readonly origin?: string;
+  readonly originClass?: string;
+  readonly sinceRound?: number;
+  readonly dispositionReason?: string;
 }
 
 interface CodexReviewOutput {
@@ -57,6 +69,24 @@ function reviewSchema(verdicts: readonly string[]): object {
             line: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
             suggestion: { anyOf: [{ type: "string" }, { type: "null" }] },
             recommendedNextState: { type: "string", enum: ["PLAN", "IMPLEMENT"] },
+            // ISS-1115: provenance. This object is `additionalProperties:
+            // false`, so without these four keys a native reviewer CANNOT EMIT
+            // a provenance field even when the prompt asks for one, and the
+            // laundering guard downstream would be protecting a field that
+            // never arrives. Optional, so an older reviewer that omits them
+            // still validates.
+            //
+            // `disposition` is deliberately NOT here. A reviewer REPORTS
+            // findings; dispositioning them is a later decision by someone
+            // else, and inviting a reviewer to mark its own finding
+            // `addressed` would hand it the laundering route directly.
+            origin: { type: "string", enum: ["introduced", "pre-existing"] },
+            originClass: {
+              type: "string",
+              enum: ["new", "reintroduced", "unchanged", "introduced-by-fix"],
+            },
+            sinceRound: { type: "integer", minimum: 1 },
+            dispositionReason: { type: "string" },
           },
         },
       },
@@ -160,28 +190,48 @@ export function buildCodeReviewDiffArtifact(root: string, diffBase: string): str
   return artifact + "\n";
 }
 
-export function planPrompt(sessionId: string): string {
+/**
+ * ISS-1115: the round context packet reaches the NATIVE route too.
+ *
+ * This route was missed entirely by the first three revisions of the plan,
+ * which counted two reviewer routes and then three, while this one returns from
+ * both stages BEFORE the packet insertion point. So a native codex reviewer
+ * read every round cold, which is the exact failure ISS-1115 was filed about,
+ * on the backend whose name is in the issue title.
+ *
+ * The packet arrives as a prefix rather than through a new channel because this
+ * command already resolves the session directory from `--session`, so there is
+ * nothing to plumb between processes. `context` is optional so the exported
+ * prompt builders stay callable without one.
+ */
+export function planPrompt(sessionId: string, context?: string): string {
   return [
-    "You are an independent Storybloq plan reviewer.",
-    `Read .story/sessions/${sessionId}/plan.md and any referenced files.`,
-    "Do not edit files.",
-    "Review for correctness, scope, missing risks, feasibility, and testability.",
-    "Return only JSON matching the provided schema.",
-    "Use verdict approve, revise, or reject.",
-    "If there are no blocking issues, return findings as an empty array.",
-  ].join(" ");
+    ...(context ? [context, ""] : []),
+    [
+      "You are an independent Storybloq plan reviewer.",
+      `Read .story/sessions/${sessionId}/plan.md and any referenced files.`,
+      "Do not edit files.",
+      "Review for correctness, scope, missing risks, feasibility, and testability.",
+      "Return only JSON matching the provided schema.",
+      "Use verdict approve, revise, or reject.",
+      "If there are no blocking issues, return findings as an empty array.",
+    ].join(" "),
+  ].join("\n");
 }
 
-export function codePrompt(sessionId: string): string {
+export function codePrompt(sessionId: string, context?: string): string {
   return [
-    "You are an independent Storybloq code reviewer.",
-    `Review the current ticket diff in .story/sessions/${sessionId}/review/diff.patch and the session artifacts under .story/sessions/${sessionId}/.`,
-    "Do not edit files.",
-    "Focus on bugs, regressions, security issues, missing tests, and behavior mismatches with the plan.",
-    "Return only JSON matching the provided schema.",
-    "Use verdict approve, request_changes, or reject.",
-    "Include file and line when available.",
-  ].join(" ");
+    ...(context ? [context, ""] : []),
+    [
+      "You are an independent Storybloq code reviewer.",
+      `Review the current ticket diff in .story/sessions/${sessionId}/review/diff.patch and the session artifacts under .story/sessions/${sessionId}/.`,
+      "Do not edit files.",
+      "Focus on bugs, regressions, security issues, missing tests, and behavior mismatches with the plan.",
+      "Return only JSON matching the provided schema.",
+      "Use verdict approve, request_changes, or reject.",
+      "Include file and line when available.",
+    ].join(" "),
+  ].join("\n");
 }
 
 async function runCodexExec(
@@ -254,8 +304,25 @@ export function normalizeFinding(finding: CodexFinding, index: number): Finding 
     severity,
     category: finding.category ?? "review",
     description: `${location}${description}${suggestion}`,
+    // Still defaulted, and still the reviewer's finding is `open` until someone
+    // dispositions it. The schema does not let a reviewer set this.
     disposition: "open",
     recommendedNextState: finding.recommendedNextState,
+    // ISS-1115: provenance SURVIVES normalization. This function used to build
+    // a fresh object and drop everything it did not name, so even a reviewer
+    // that reported `originClass: "reintroduced"` had it discarded here, one
+    // layer below the schema that would not have let it through anyway. Both
+    // had to be fixed or neither was worth fixing.
+    //
+    // Copied only when present, so an absent label stays absent rather than
+    // becoming a fabricated `new`, which D3 forbids: absent and unrecognised
+    // are different claims and neither may be invented.
+    ...(finding.origin === undefined ? {} : { origin: finding.origin }),
+    ...(finding.originClass === undefined ? {} : { originClass: finding.originClass }),
+    ...(finding.sinceRound === undefined ? {} : { sinceRound: finding.sinceRound }),
+    ...(finding.dispositionReason === undefined
+      ? {}
+      : { dispositionReason: finding.dispositionReason }),
   };
   // ISS-598 codex round 2: `Finding` deliberately has no `file` property (see
   // tools.ts's report.findings schema comment), but this normalizer used to
@@ -296,7 +363,29 @@ export async function handleCodexReview(options: CodexReviewOptions): Promise<Gu
   const outputPath = join(reviewDir, `${options.kind}-codex-output.json`);
   await writeFile(schemaPath, JSON.stringify(schemaForKind(options.kind), null, 2) + "\n", "utf-8");
 
-  const prompt = options.kind === "plan" ? planPrompt(options.sessionId) : codePrompt(options.sessionId);
+  // The packet is built HERE, from the session directory this command already
+  // resolved, and prefixed to the prompt. The capture directive names what this
+  // reviewer actually reads, which differs by kind: the native route is told
+  // where the file is rather than handed its bytes.
+  const priorRounds = options.kind === "plan"
+    ? (state.reviews?.plan?.length ?? 0)
+    : (state.reviews?.code?.length ?? 0);
+  const packet = buildReviewContextPacket({
+    sessionDir: dir,
+    projectRoot: root,
+    target: state.ticket?.id ?? state.currentIssue?.id ?? "unknown",
+    stage: options.kind,
+    generation: state.itemAttempt?.generation ?? 0,
+    roundNum: priorRounds + 1,
+    budget: NATIVE_CONTEXT_PACKET_BUDGET,
+    captureDirective: options.kind === "plan"
+      ? `Read the plan at .story/sessions/${options.sessionId}/plan.md in full.`
+      : `Read the diff at .story/sessions/${options.sessionId}/review/diff.patch in full.`,
+    planReviews: state.reviews?.plan,
+  });
+  const prompt = options.kind === "plan"
+    ? planPrompt(options.sessionId, packet.text)
+    : codePrompt(options.sessionId, packet.text);
   await writeFile(promptPath, prompt + "\n", "utf-8");
 
   if (options.kind === "plan") {

@@ -18,7 +18,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { telemetryDirPath } from "./liveness.js";
-import { normalizeSeverity } from "./session-types.js";
+import {
+  normalizeSeverity,
+  LENS_FINDING_DISPOSITIONS,
+  type LensFindingDisposition,
+} from "./session-types.js";
 import {
   artifactBelongsToAttempt,
   computeContentHash,
@@ -357,6 +361,177 @@ export function isPayloadConsistent(
  * honest reading: the corpus is a genuine mix, and artifacts exist carrying
  * severities the current normalizer would have changed.
  */
+// ---------------------------------------------------------------------------
+// ISS-1115 D4/D5: finding provenance, and the guard that rides on it
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the finding came from RELATIVE TO THE PR BASE. The lens harness already
+ * reasons in these terms; this names them for every backend.
+ */
+export const FINDING_ORIGINS = ["introduced", "pre-existing"] as const;
+export type FindingOrigin = typeof FINDING_ORIGINS[number];
+
+/**
+ * Where the finding stands RELATIVE TO PRIOR ROUNDS. A different question from
+ * `origin`, which is why it is a different field: a pre-existing defect can be
+ * newly noticed, and a defect the diff introduced can be one a previous round
+ * already raised.
+ *
+ * `unchanged` carries no round number. The round lives in `sinceRound`, because
+ * `unchanged-since-round-4` would put a parameter inside an enum value, give
+ * the field an unbounded value space nobody can enumerate, and make every
+ * reader parse an integer out of a string.
+ */
+export const FINDING_ORIGIN_CLASSES = [
+  "new",
+  "reintroduced",
+  "unchanged",
+  "introduced-by-fix",
+] as const;
+export type FindingOriginClass = typeof FINDING_ORIGIN_CLASSES[number];
+
+/**
+ * Read `origin` from a persisted or reported value.
+ *
+ * Anything unrecognised reads as `introduced`. That is the NOISIER of the two:
+ * `pre-existing` says the change did not cause this, and defaulting to it would
+ * let a corrupt or unknown value excuse a defect the diff actually introduced.
+ * Same direction as every other degradation in this run.
+ */
+export function readFindingOrigin(value: unknown): FindingOrigin {
+  return value === "pre-existing" ? "pre-existing" : "introduced";
+}
+
+/**
+ * Read `disposition`, defaulting to `open`.
+ *
+ * Every value other than `open` means settled in some way, so guessing one from
+ * an unreadable field is how a live finding disappears from a review.
+ */
+export function readFindingDisposition(value: unknown): LensFindingDisposition {
+  return typeof value === "string"
+    && (LENS_FINDING_DISPOSITIONS as readonly string[]).includes(value)
+    ? (value as LensFindingDisposition)
+    : "open";
+}
+
+/**
+ * The three states `originClass` can actually be in, kept APART.
+ *
+ * THE BUG THIS SHAPE EXISTS TO PREVENT, found by Codex at gate 1. The first
+ * version returned `undefined` for BOTH a missing field and a supplied value it
+ * did not recognise, which made them indistinguishable. So `originClass:
+ * "re-introduced"` -- one hyphen -- sailed straight through the guard built to
+ * stop exactly that, and did so silently.
+ *
+ * They are not the same claim and must not collapse:
+ *  - ABSENT: the reporter made no claim. Common, cheap, and on round 1 it is
+ *    all that is available to say, because the item asks for the label only
+ *    from round 2. Absence is NOT blocking on its own; what the round condition
+ *    makes of it belongs to the caller (see the stages' metadata repair).
+ *  - RECOGNISED: read as itself.
+ *  - UNRECOGNISED: a claim was made and could not be read. That is an
+ *    UNRESOLVED PROVENANCE condition. It blocks, and it does NOT assert the
+ *    finding was reintroduced, because that is not known. The raw value travels
+ *    with it so a message can quote what was actually written rather than
+ *    paraphrasing a value nobody recognised.
+ */
+export type OriginClassSlot =
+  | { readonly kind: "absent" }
+  | { readonly kind: "recognised"; readonly value: FindingOriginClass }
+  | { readonly kind: "unrecognised"; readonly raw: string };
+
+export function readOriginClassSlot(value: unknown): OriginClassSlot {
+  if (value === undefined || value === null) return { kind: "absent" };
+  if (typeof value === "string"
+    && (FINDING_ORIGIN_CLASSES as readonly string[]).includes(value)) {
+    return { kind: "recognised", value: value as FindingOriginClass };
+  }
+  // A non-string is still a claim that was made and could not be read, so it is
+  // unrecognised rather than absent. Serialised so the message can quote it.
+  return { kind: "unrecognised", raw: typeof value === "string" ? value : JSON.stringify(value) ?? "?" };
+}
+
+/**
+ * The recognised value, or `undefined`. A convenience over the slot, for
+ * callers that only care what the label SAYS and not whether one was attempted.
+ *
+ * Anything deciding whether a finding may land must use the slot instead, since
+ * this signature cannot express the difference the guard turns on.
+ */
+export function readFindingOriginClass(value: unknown): FindingOriginClass | undefined {
+  const slot = readOriginClassSlot(value);
+  return slot.kind === "recognised" ? slot.value : undefined;
+}
+
+/**
+ * What a finding's provenance says about whether it may land.
+ *
+ * One classifier, so every decision site asks the same question and gets the
+ * same answer. The round condition is deliberately NOT applied here: whether an
+ * `unlabelled` finding is acceptable depends on the round, and only the caller
+ * knows the round. Mixing that in would give this function two jobs and make
+ * the round-1 case untestable in isolation.
+ */
+export type ProvenanceCondition = "clean" | "reintroduced" | "unresolved" | "unlabelled";
+
+export interface FindingProvenance {
+  readonly condition: ProvenanceCondition;
+  /** Present only for `unresolved`: what the reporter actually wrote. */
+  readonly rawOriginClass?: string;
+}
+
+export function classifyFindingProvenance(raw: unknown): FindingProvenance {
+  if (typeof raw !== "object" || raw === null) return { condition: "unlabelled" };
+  const slot = readOriginClassSlot((raw as Record<string, unknown>).originClass);
+  switch (slot.kind) {
+    case "absent":
+      return { condition: "unlabelled" };
+    case "unrecognised":
+      return { condition: "unresolved", rawOriginClass: slot.raw };
+    case "recognised":
+      return slot.value === "reintroduced"
+        ? { condition: "reintroduced" }
+        : { condition: "clean" };
+  }
+}
+
+/**
+ * Read `sinceRound`. A positive integer or nothing; never coerced.
+ *
+ * `"4"` is rejected rather than parsed. A reader that coerces cannot tell a
+ * reviewer that reported a number from one that reported a sentence, and the
+ * whole reason this is its own field is to stop numbers travelling inside
+ * strings.
+ */
+export function readSinceRound(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+/**
+ * The laundering guard: a reintroduced finding blocks, whatever else it says.
+ *
+ * This function reads `originClass` and NOTHING ELSE. It deliberately does not
+ * consult `disposition`, because if it did, marking a finding `addressed` would
+ * be enough to push a real regression back through the gate. ISS-1115's own
+ * Pitfalls require that the residuals block cannot become a laundering path;
+ * putting the guard on the origin axis is what makes that unreachable rather
+ * than merely forbidden.
+ */
+export function findingIsBlockedByOrigin(raw: unknown): boolean {
+  const { condition } = classifyFindingProvenance(raw);
+  // Two conditions block, for two different reasons, and the difference is
+  // preserved everywhere a human will read it. `reintroduced` is a confirmed
+  // re-raise. `unresolved` is a label that could not be read, which is not a
+  // confirmed defect and must never be reported as one -- but it cannot be
+  // waved through either, because "unreadable" is exactly what a laundering
+  // attempt looks like from here.
+  return condition === "reintroduced" || condition === "unresolved";
+}
+
 export const SEVERITY_NORMALIZER_VERSION = 1;
 
 // ---------------------------------------------------------------------------

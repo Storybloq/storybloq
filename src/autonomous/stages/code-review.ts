@@ -12,6 +12,16 @@ import { codeReviewLandingFloor, dialCodeReviewMaxRounds } from "../session-diag
 import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
+import { buildReviewContextPacket } from "../review-context-packet.js";
+
+/**
+ * Flat character budget for the round context packet.
+ *
+ * Deliberately one number and not a chunking strategy: ISS-937 owns diff
+ * marshaling and is parked while this file is held, so the packet reports what
+ * it dropped rather than implementing the rider itself.
+ */
+const REVIEW_CONTEXT_PACKET_BUDGET = 24000;
 import {
   eventIdentity,
   identityFields,
@@ -327,16 +337,56 @@ export class CodeReviewStage implements WorkflowStage {
     // since the bridge shipped; CODE_REVIEW never did, so a Claude-client
     // session told to review with "codex" was left to guess which tool to call.
     const bridgeCodex = currentStorybloqClient() === "claude" && reviewer === "codex";
+
+    // ── ISS-1115: the round context packet ──────────────────────────────────
+    //
+    // Until now this branch's entire backend instruction was the diff, so every
+    // round after the first was a COLD READ: no prior findings, no dispositions,
+    // no project rules, no idea what an earlier round already accepted. The lens
+    // path has carried all of that for as long as it has existed.
+    //
+    // ONE THING TO KNOW BEFORE READING THE CALL. The guide does NOT hold the
+    // diff text here; the reviewer captures it by running the command below, so
+    // the non-droppable payload is the CAPTURE DIRECTIVE, not a diff. That is
+    // why it is named for what it is. The packet reserves it ahead of every
+    // section and never sheds it, which is a reservation and not a guarantee:
+    // nothing here can verify the reviewer actually runs the command.
+    const captureDirective = [
+      `Capture the diff with: ${diffCommand}`,
+      "",
+      "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
+    ].join("\n");
+
+    const contextPacket = buildReviewContextPacket({
+      sessionDir: ctx.dir,
+      projectRoot: ctx.root,
+      target: ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown",
+      stage: "code",
+      generation: ctx.state.itemAttempt?.generation ?? 0,
+      roundNum,
+      // A single flat budget, deliberately. Real chunk assembly belongs to
+      // ISS-937, which owns the diff-marshaling rider and is parked while this
+      // file is held; this call gives it a seam of exactly one number in and a
+      // report of what was dropped out, so it can land without rework here.
+      budget: REVIEW_CONTEXT_PACKET_BUDGET,
+      captureDirective,
+      planReviews: ctx.state.reviews.plan,
+    });
+
     return {
       instruction: [
         `# ${issueHeader} -- Round ${roundNum} of ${Math.max(rounds, roundNum)} minimum`,
         "",
         disclosure,
         "",
-        `Capture the diff with: ${diffCommand}`,
+        contextPacket.text,
         "",
-        "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
-        "",
+        contextPacket.priorCodexSessionId && bridgeCodex
+          // ISS-1115 item 3: continue the thread that reviewed the plan rather
+          // than opening a cold one. Recovered from state when intact, and from
+          // the T-488 artifact when a PLAN redirect cleared state.
+          ? `Pass \`session_id: "${contextPacket.priorCodexSessionId}"\` so the reviewer sees the plan it approved.\n`
+          : "",
         `Run a code review using **${reviewer}**.`,
         "",
         [

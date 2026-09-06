@@ -116,7 +116,11 @@ describe("PlanReviewStage.enter", () => {
       currentReviewEffortSource: "start-call",
     } as Partial<FullSessionState>))).instruction;
     expect(thorough).toContain("Review effort: thorough (start-call).");
-    expect(thorough).toContain("Call `review_plan` MCP tool with the plan content. Request a thorough review -- design soundness, edge cases, and failure modes. Pass deliberate: true.");
+    // ISS-1115: the bridge line now states the HANDOFF. The instruction goes to
+    // the implementing agent, which composes the backend request, so "with the
+    // plan content" left the context packet behind at exactly that step. The
+    // depth rider is unchanged and is still asserted on the same line.
+    expect(thorough).toContain("Call `review_plan` MCP tool, passing BOTH the context above and the full plan content. Request a thorough review -- design soundness, edge cases, and failure modes. Pass deliberate: true.");
 
     const lenses = (await stage.enter(ctxWith({
       currentReviewEffort: "thorough",

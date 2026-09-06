@@ -1,3 +1,4 @@
+import { computeIssueFlow, formatIssueFlow, ISSUE_FLOW_SEMANTICS } from "./issue-flow.js";
 import { displayIdOf } from "./resolver.js";
 import type { OutputFormat, ErrorCode } from "../models/types.js";
 import type { FederationState, FederationNodeEntry } from "../federation/state.js";
@@ -619,6 +620,33 @@ export interface StatusArrangements {
   readonly warnings: readonly string[];
 }
 
+/**
+ * T-432: the 30-day issue-flow window, computed once over the records the
+ * project load already parsed.
+ *
+ * `new Date()` lives HERE and nowhere deeper: `computeIssueFlow` takes `now` as
+ * a parameter so its behaviour at a window boundary is testable, and a function
+ * that reads the clock internally is not.
+ *
+ * RETURNS NULL WHEN THE RECORDS ARE NOT THERE, and the caller then prints the
+ * plain open count with no window at all. Several callers here pass a partial
+ * state carrying only the counts, and the previous line survived that because
+ * `activeIssueCount` is a number while this reads the array. The fix is not a
+ * defensive default: printing `+0 opened / -0 resolved` over records we never
+ * saw is a fabricated zero, which is the one thing this whole ticket exists to
+ * prevent. No records, no window.
+ */
+function statusIssueFlow(state: ProjectState): ReturnType<typeof computeIssueFlow> | null {
+  if (!Array.isArray(state.activeIssues)) return null;
+  return computeIssueFlow(state.activeIssues, 30, new Date());
+}
+
+/** The md line: the window when we have the records, the plain count when not. */
+function issueLine(state: ProjectState): string {
+  const flow = statusIssueFlow(state);
+  return flow === null ? `Issues: ${state.activeIssueCount} open` : formatIssueFlow(flow);
+}
+
 export function formatStatus(
   state: ProjectState,
   format: OutputFormat,
@@ -649,6 +677,16 @@ export function formatStatus(
     openTickets: state.leafTicketCount - state.completeLeafTicketCount,
     blockedTickets: state.blockedCount,
     openIssues: state.activeIssueCount,
+    // T-432: the same numbers the md line prints, so the two cannot disagree.
+    // `semantics` travels WITH them because "opened / resolved" is a balance of
+    // record dates, not a backlog delta, and a consumer reading only the numbers
+    // would have no way to know that.
+    issueFlow: (() => {
+      const flow = statusIssueFlow(state);
+      // NULL, not a zeroed object: a consumer must be able to tell "no
+      // issues opened in 30 days" from "the window could not be computed".
+      return flow === null ? null : { ...flow, semantics: ISSUE_FLOW_SEMANTICS };
+    })(),
     activeNotes: state.activeNoteCount,
     archivedNotes: state.archivedNoteCount,
     activeLessons: state.activeLessonCount,
@@ -709,7 +747,7 @@ export function formatStatus(
     `# ${escapeMarkdownInline(state.config.project)}`,
     "",
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
-    `Issues: ${state.activeIssueCount} open`,
+    issueLine(state),
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
     `Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`,
     `Handovers: ${state.handoverFilenames.length}`,
@@ -811,6 +849,17 @@ export function formatFederatedStatus(
   // T-473: appended last, matching `formatStatus`'s placement, same reasons.
   arrangements: StatusArrangements = { items: [], warnings: [] },
 ): string {
+  // NO ISSUE-FLOW LINE HERE, deliberately, and this comment is the plan's
+  // "or an explicit comment saying why not".
+  //
+  // The window is computed from `discoveredDate` and `resolvedDate` on issue
+  // RECORDS. This function receives `FederationState` and `Config`, never a
+  // `ProjectState`, and a federated node reaches it as a scan summary carrying
+  // `issueCount` and `openIssues` -- COUNTS, not dated records. A window cannot
+  // be derived from a count, and summing per-node counts into a "+N opened"
+  // would be a fabricated number of exactly the kind this whole ticket exists to
+  // prevent. Delivering it properly means re-scanning each node's issue files,
+  // which is a separate change and is not in this cut.
   const sanitizedNodes = fedState.nodes.map((node) => ({
     name: node.name,
     rawPath: node.rawPath,
@@ -2049,11 +2098,16 @@ export function formatRecap(
     lines.push("No snapshot found. Run `storybloq snapshot` to enable session diffs.");
     lines.push("");
     lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`);
-    lines.push(`Issues: ${state.activeIssueCount} open`);
+    lines.push(issueLine(state));
   } else {
     lines.push(`# ${escapeMarkdownInline(state.config.project)} -- Recap`);
     lines.push("");
     lines.push(`Since snapshot: ${recap.snapshot.createdAt}`);
+    // The SAME line status prints, on BOTH recap branches. It was wired only
+    // into the no-snapshot fallback below, so the branch a reader actually
+    // reaches -- the one with a snapshot -- never showed it, and the plan
+    // recorded the line as delivered on the strength of the other branch.
+    lines.push(issueLine(state));
     if (recap.partial) {
       lines.push("**Note:** Snapshot was taken from a project with integrity warnings. Diff may be incomplete.");
     }
@@ -2206,7 +2260,27 @@ export function formatRecap(
     lines.push(`- **Recently cleared:** ${actions.recentlyClearedBlockers.map(escapeMarkdownInline).join(", ")}`);
   }
 
-  if (!actions.nextTicket && actions.highSeverityIssues.length === 0 && actions.recentlyClearedBlockers.length === 0) {
+  // ISSUE-FLOW NUDGE. Fires on the RECORD-DATE BALANCE and says so in the same
+  // breath, because the two are not the same claim: a single `resolvedDate`
+  // cannot represent a close-reopen-close cycle and a deleted issue leaves no
+  // record at all, so this balance and the open backlog can move in opposite
+  // directions. Asserting backlog growth here would be a claim the records do
+  // not support.
+  //
+  // NULL means the issue records were not available to this caller, and that is
+  // NOT a balance of zero: no line, no nudge.
+  const nudgeFlow = statusIssueFlow(state);
+  const nudged = nudgeFlow !== null && nudgeFlow.net > 0;
+  if (nudged) {
+    lines.push(
+      `- **Issue flow:** ${nudgeFlow.opened} opened / ${nudgeFlow.resolved} resolved `
+      + `in the last ${nudgeFlow.windowDays}d by record date (net +${nudgeFlow.net}). `
+      + "That is a balance of record dates among retained issues, NOT a change in "
+      + "the open backlog.",
+    );
+  }
+
+  if (!actions.nextTicket && actions.highSeverityIssues.length === 0 && actions.recentlyClearedBlockers.length === 0 && !nudged) {
     lines.push("- No urgent actions.");
   }
 

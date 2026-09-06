@@ -1,3 +1,4 @@
+import { computeSessionRounds, type SessionRound } from "./review-stats.js";
 import { displayIdOf } from "./resolver.js";
 /**
  * Session report formatter -- renders 7-section structured analysis.
@@ -228,6 +229,42 @@ function buildTicketSection(state: FullSessionState): string {
   return lines.join("\n");
 }
 
+
+/**
+ * T-432: the rounds table.
+ *
+ * SCOPE IS THIS SESSION and the heading says so. These rows come from the
+ * session's own `reviews` arrays -- the P2 population -- not from the verdict
+ * artifacts that `storybloq review-stats` reports over, and the two must never
+ * be read as the same measurement: a state row carries no `target`, so it can
+ * summarise a session and a stage and can never speak for one work item.
+ *
+ * A ZERO DENOMINATOR PRINTS `-`. A stage with no change-request round has no
+ * "rounds naming no finding" rate, and printing `0%` there would read as
+ * evidence that this session's reviewers always named their findings.
+ */
+function roundsTable(
+  plan: readonly SessionRound[],
+  code: readonly SessionRound[],
+): string[] {
+  const metrics = [
+    ...(plan.length > 0 ? computeSessionRounds({ stage: "plan", rounds: plan }) : []),
+    ...(code.length > 0 ? computeSessionRounds({ stage: "code", rounds: code }) : []),
+  ];
+  if (metrics.length === 0) return [];
+  return [
+    "",
+    "**Rounds (this session only):**",
+    "",
+    "| Measure | n / d | Rate |",
+    "|---|---|---|",
+    ...metrics.map((m) =>
+      `| ${m.label} | ${m.numerator} / ${m.denominator} | `
+      + `${m.value === null ? "-" : `${(m.value * 100).toFixed(0)}%`} |`,
+    ),
+  ];
+}
+
 function buildReviewSection(state: FullSessionState): string {
   const plan = state.reviews.plan;
   const code = state.reviews.code;
@@ -356,6 +393,7 @@ function buildReviewSection(state: FullSessionState): string {
 
   const totalFindings = [...plan, ...code].reduce((sum, r) => sum + r.findingCount, 0);
   lines.push("", `**Total findings:** ${totalFindings}`);
+  lines.push(...roundsTable(plan, code));
 
   lines.push(...ceiling);
 

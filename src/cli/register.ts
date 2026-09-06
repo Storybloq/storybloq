@@ -156,6 +156,7 @@ export { registerBusCommand } from "./commands/bus.js";
 
 // New T-084 handler imports
 import { handleRecap } from "./commands/recap.js";
+import { handleReviewStats } from "./commands/review-stats.js";
 import { handleExport } from "./commands/export.js";
 import { handleSnapshot } from "./commands/snapshot.js";
 
@@ -2510,6 +2511,36 @@ export function registerRecapCommand(yargs: Argv): Argv {
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       await runReadCommand(format, handleRecap);
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// review-stats
+// ---------------------------------------------------------------------------
+
+export function registerReviewStatsCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "review-stats",
+    "Review efficiency metrics over review verdict artifacts",
+    (y) =>
+      addFormatOption(
+        y.option("fleet", {
+          type: "string",
+          describe:
+            "Scan every .story/ root under this directory. Root-level results are "
+            + "authoritative; the cross-root figure is a sum of root observations "
+            + "that may include duplicates, not unique fleet activity",
+        }),
+      ),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format);
+      await runReadCommand(format, (ctx) =>
+        handleReviewStats(
+          argv.fleet === undefined ? {} : { fleet: String(argv.fleet) },
+          ctx,
+        ),
+      );
     },
   );
 }

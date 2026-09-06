@@ -433,7 +433,15 @@ describe("scope-drift telemetry through the stage (advisory only)", () => {
       expect(round1.advance.instruction).not.toContain("Scope-drift signal");
     }
 
-    const round2 = await reportRound(round1.ctx.state, "revise", introducedFindings);
+    // Labelled, because ISS-1115 requires `originClass` from round 2 and an
+    // unlabelled round 2 is bounced once for a metadata repair BEFORE the drift
+    // telemetry is computed. That ordering is deliberate -- a payload that
+    // cannot be acted on as reported is refused before the round is recorded --
+    // and this pair is also the control for it: with the labels present, the
+    // drift advisory reaches the reviewer exactly as it did before the gate
+    // existed. Identical descriptions, so the drift fractions are unchanged.
+    const round2Findings = introducedFindings.map((f) => ({ ...f, originClass: "unchanged", sinceRound: 1 }));
+    const round2 = await reportRound(round1.ctx.state, "revise", round2Findings);
     expect(round2.advance.action).toBe("retry"); // never changes routing
     if (round2.advance.action === "retry") {
       expect(round2.advance.instruction).toContain("Scope-drift signal (advisory)");

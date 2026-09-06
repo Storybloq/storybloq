@@ -318,14 +318,24 @@ describe("tool description contract (T-460)", () => {
     // than shipped to every client on every tools/list. The nine cannot be
     // reduced further without losing something true -- dropping `source` would
     // record an unpinned session default as an explicit pin, which is the exact
-    // fabrication the ticket exists to prevent. This ceiling leaves
+    // fabrication the ticket exists to prevent. ISS-1115 added four optional
+    // provenance fields to the same report finding object (dispositionReason,
+    // origin, originClass, sinceRound), measured at 53,302 bytes. Same
+    // character as T-488's growth and trimmed the same way first: the initial
+    // descriptions restated the whole originClass taxonomy and gave back 381
+    // bytes when cut, because that taxonomy already ships in the round context
+    // packet's ORIGIN_RULE -- mandatory payload, every round, all three
+    // reviewer routes. What remains is the field surface itself and cannot go
+    // without losing the item's mechanism: a reviewer cannot label a re-raise
+    // through a schema that does not declare the field, and an undeclared key
+    // is stripped by the SDK before the stage ever sees it. This ceiling leaves
     // ~500 bytes of headroom and fails once an edit gives back more than
     // that. Raising it is a deliberate act that belongs in a commit message,
     // which is the point. Deliberately NO lower bound: the cues above are
     // what protect against over-trimming, and a floor would fail an honest
     // future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(53_200);
+    expect(bytes).toBeLessThan(53_900);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {

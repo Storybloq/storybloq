@@ -532,6 +532,198 @@ export function findingIsBlockedByOrigin(raw: unknown): boolean {
   return condition === "reintroduced" || condition === "unresolved";
 }
 
+/**
+ * Is this finding still outstanding, for every landing and escalation decision?
+ *
+ * THE ONE PREDICATE. Before this, the same disposition test was written out at
+ * seven separate decision sites across two stages, and the ISS-1115 origin
+ * clause had to be added to all seven or the item's guarantee would hold at
+ * whichever ones happened to get it. That is not a hypothetical: the sites do
+ * not agree on shape (one counts criticals, one asks `some`, one projects a
+ * list, one builds the deferred set), so a per-site edit is seven chances to
+ * write the condition slightly differently.
+ *
+ * TWO WAYS TO BE OUTSTANDING, and the second is the point of the item:
+ *
+ *  1. The disposition never settled it. `addressed` and `deferred` are the only
+ *     two that do; `open` and `contested` do not, and neither does a value
+ *     nobody recognises. Unchanged from ISS-073.
+ *  2. The PROVENANCE contradicts the disposition. A finding labelled
+ *     `reintroduced` was reported fixed and came back, and one whose label
+ *     could not be read made a claim that cannot be checked. Either way, a
+ *     `deferred` or `addressed` stamp on it is a claim the history refuses, and
+ *     the finding blocks anyway.
+ *
+ * The asymmetry in 2 is deliberate. A reviewer marking a re-raise `addressed`
+ * is the exact failure ISS-1115 exists to catch -- the defect that keeps coming
+ * back and keeps being waved through, which is invisible precisely because each
+ * individual round looks settled. Letting the disposition win here would mean
+ * the label is recorded, rendered into the next round's packet, and then
+ * ignored by every decision that matters.
+ *
+ * A CLEAN finding is unaffected: `clean` and `unlabelled` conditions do not
+ * block, so an addressed-and-clean finding lands exactly as it did before.
+ */
+export function findingIsUnresolved(raw: unknown): boolean {
+  const disposition = (raw as { disposition?: unknown } | null | undefined)?.disposition;
+  const settledByDisposition = disposition === "addressed" || disposition === "deferred";
+  return !settledByDisposition || findingIsBlockedByOrigin(raw);
+}
+
+/**
+ * Backends that can carry a provenance label, and the one that cannot.
+ *
+ * WHY THIS EXEMPTION EXISTS, and why it is not a shortcut. The report handler
+ * has FOUR backends, not the three the packet has: lens reports come through
+ * the same `report()` path as codex, agent and native codex. But
+ * `LensFindingSchema` and `MergedFindingSchema` in `@storybloq/lenses` are
+ * `.strict()` and carry no `originClass` at all, so a lens finding CANNOT
+ * express the label. A mandatory-label check applied handler-wide would put
+ * every lens round into a repair loop that the backend is physically incapable
+ * of exiting, which halts the fleet rather than degrading it.
+ *
+ * ISS-1115 says "No change to what lenses receive". That constrains lens INPUT;
+ * it does not license leaving lenses out of a change to the shared report path,
+ * and reading it that way is how this was nearly shipped.
+ *
+ * The exemption is RECORDED on the verdict artifact, never applied silently. A
+ * silent exemption and a check that failed to run are indistinguishable from
+ * the outside, and this run has already spent four review rounds on exactly
+ * that class of difference. Lifting it means widening the lens schemas, which
+ * is T-487's change.
+ */
+export const PROVENANCE_EXEMPT_BACKENDS: ReadonlySet<string> = new Set(["lenses"]);
+
+export function backendCanCarryProvenance(backend: string): boolean {
+  return !PROVENANCE_EXEMPT_BACKENDS.has(backend);
+}
+
+export const PROVENANCE_REPAIR_INSTRUCTION =
+  "Your findings are missing the `originClass` label, which is required from " +
+  "round 2. Re-report the SAME findings with `originClass` on each one (`new`, " +
+  "`reintroduced`, `unchanged` with `sinceRound`, or `introduced-by-fix`), and " +
+  "`origin` (`introduced` or `pre-existing`). Do not drop, add or reword any " +
+  "finding: this is a metadata repair, not another review.";
+
+export type ProvenanceGate =
+  | { readonly kind: "ok" }
+  | { readonly kind: "exempt"; readonly reason: string }
+  | { readonly kind: "repair"; readonly unlabelled: number; readonly instruction: string }
+  | { readonly kind: "unresolved"; readonly reasons: readonly string[] };
+
+export interface ProvenanceGateInput {
+  readonly roundNum: number;
+  readonly backend: string;
+  readonly findings: readonly unknown[];
+  /** Whether this round has already spent its one metadata repair. */
+  readonly repairSpent: boolean;
+  /**
+   * At or past the round ceiling, where no repair may be requested.
+   *
+   * An item at its ceiling is on its way to a human, and holding that up to ask
+   * for metadata would put a labelling concern ahead of the stop the ceiling
+   * exists to force. But NOT ASKING is not the same as being satisfied: the
+   * round is unresolved, so its findings block and it escalates. The stages
+   * previously skipped the retry and left the verdict as `repair`, which the
+   * round predicate reads as an ordinary round -- so an unlabelled finding
+   * marked `addressed` LANDED at the ceiling, and `decidePlanCeiling` exempts
+   * IMPLEMENT, so no human ever saw it. Codex found it in review round 2.
+   */
+  readonly atCeiling: boolean;
+}
+
+/**
+ * What a round's provenance labelling means for how the round proceeds.
+ *
+ * ONE PLACE, so both stages ask the same question and get the same answer, and
+ * so the round-1 case is testable without a stage.
+ *
+ * The outcomes are deliberately four rather than a boolean, because "the label
+ * could not be read" and "this round did not label anything" are different
+ * facts about different actors and lead to different remedies. Collapsing them
+ * would produce a message that sends someone to fix the wrong thing.
+ */
+/**
+ * The blocking predicate FOR ONE ROUND, given how that round's gate resolved.
+ *
+ * `findingIsUnresolved` deliberately does not block an UNLABELLED finding: the
+ * label requirement starts at round 2, legacy sessions carry none, and making
+ * an absent label blocking on its own would stop work that predates this item.
+ * The metadata gate is what handles a missing label, by asking for it.
+ *
+ * BUT THE GATE CAN GIVE UP. Once it returns `unresolved` -- the reviewer was
+ * asked for labels and did not supply them, or supplied one that cannot be read
+ * -- there is no longer any pending request to defer to, and treating the round
+ * as ordinary means a reviewer can settle a finding `addressed` while refusing
+ * to say whether it is the same defect returning. That is the laundering path
+ * this item exists to close, reached by declining to answer instead of by
+ * lying.
+ *
+ * So the override is ROUND-SCOPED and outcome-scoped: only for a round whose
+ * own gate ended unresolved, and only for the condition the gate gave up on.
+ * Every other round, and every finding in them, is judged exactly as before.
+ */
+export function roundBlockerPredicate(gate: ProvenanceGate): (raw: unknown) => boolean {
+  if (gate.kind !== "unresolved") return findingIsUnresolved;
+  return (raw) =>
+    findingIsUnresolved(raw) || classifyFindingProvenance(raw).condition === "unlabelled";
+}
+
+export function evaluateProvenanceGate(input: ProvenanceGateInput): ProvenanceGate {
+  const { roundNum, backend, findings, repairSpent, atCeiling } = input;
+
+  // Unrecognised labels are checked FIRST and on every round, including round
+  // 1. A reporter that wrote something unreadable made a claim; that is not the
+  // same as not labelling, it is not fixed by asking again, and it must not be
+  // excused by a round number.
+  const unresolved = findings
+    .map((f) => classifyFindingProvenance(f))
+    .filter((p) => p.condition === "unresolved")
+    .map((p) => `originClass "${p.rawOriginClass ?? "?"}" could not be read`);
+  if (unresolved.length > 0) return { kind: "unresolved", reasons: unresolved };
+
+  if (!backendCanCarryProvenance(backend)) {
+    return {
+      kind: "exempt",
+      reason: `backend "${backend}" cannot express originClass (strict schema); label not required`,
+    };
+  }
+
+  // Round 1 asks for no label. NOT because none is possible -- `origin` is
+  // determinable on any round and `originClass` would be `new` -- but because
+  // the item scopes the requirement to round 2+. The reason matters: the false
+  // version of it ("no label is possible") was in an earlier draft and a false
+  // premise in a design note propagates.
+  if (roundNum < 2) return { kind: "ok" };
+
+  const unlabelled = findings.filter(
+    (f) => classifyFindingProvenance(f).condition === "unlabelled",
+  ).length;
+  if (unlabelled === 0) return { kind: "ok" };
+
+  // BOUNDED AT ONE. Retrying forever stalls a round with no round consumed and
+  // no exit, which is a worse failure than the missing label. After the bound,
+  // the round proceeds and its findings are UNRESOLVED, so landing blocks and
+  // the escalation carries the reason -- rather than the findings being dropped,
+  // which would lose an evidenced defect over a metadata problem.
+  if (repairSpent) {
+    return {
+      kind: "unresolved",
+      reasons: [`${unlabelled} finding(s) still unlabelled after a metadata repair`],
+    };
+  }
+  // AT THE CEILING WE DO NOT ASK, AND WE DO NOT PRETEND. Same outcome as a
+  // spent repair, reached without spending one, and named differently so the
+  // record says which of the two happened.
+  if (atCeiling) {
+    return {
+      kind: "unresolved",
+      reasons: [`${unlabelled} finding(s) unlabelled; no repair requested at the round ceiling`],
+    };
+  }
+  return { kind: "repair", unlabelled, instruction: PROVENANCE_REPAIR_INSTRUCTION };
+}
+
 export const SEVERITY_NORMALIZER_VERSION = 1;
 
 // ---------------------------------------------------------------------------

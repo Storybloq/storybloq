@@ -13,6 +13,7 @@ import { clearCache } from "../lens-harness/cache.js";
 import { accumulateVerificationCounters } from "../lens-harness/verification-log.js";
 import { buildTier1Verdict, classifyLensReviewPath, type ReviewVerdictArtifact } from "../review-verdict.js";
 import { buildReviewContextPacket } from "../review-context-packet.js";
+import { evaluateProvenanceGate, roundBlockerPredicate } from "../review-identity.js";
 
 /**
  * Flat character budget for the round context packet.
@@ -517,9 +518,86 @@ export class CodeReviewStage implements WorkflowStage {
     const reviewerBackend = report.reviewer
       ?? (computedReviewer === "codex" && report.notes && /codex\b.*\b(unavail|limit|failed|down|error|usage)/i.test(report.notes) ? "agent" : null)
       ?? computedReviewer;
+
+    // ── ISS-1115 3.3a: the provenance gate, EVALUATED ──────────────────────
+    //
+    // Evaluated here and ACTED ON further down, and the split is deliberate.
+    // The verdict is a pure function of the payload, but every landing and
+    // escalation count below depends on it, so computing it after them would
+    // put the counts a round out of step with the gate that judges them. The
+    // retry it can produce still fires from its own place after the payload
+    // guards, because a refused payload must leave no envelope to be replayed.
+    const repairItem: WorkItemRef | null = ctx.state.ticket
+      ? { kind: "ticket", id: ctx.state.ticket.id }
+      : ctx.state.currentIssue
+        ? { kind: "issue", id: ctx.state.currentIssue.id }
+        : null;
+    // The round ordinal this gate scopes to, derived the same way the
+    // empty-verdict guard derives its own: from the durable counter, never from
+    // `reviews.code.length`, which both stages clear mid-run.
+    const provCounter = ctx.state.codeReviewRoundCounter;
+    const repairKeyRound = pendingRoundOrdinal(
+      provCounter && repairItem && provCounter.workItemId === repairItem.id
+        && provCounter.kind === repairItem.kind
+        ? provCounter.completedRounds
+        : null,
+    );
+    const provenanceRepairKey = repairItem ? {
+      workItemId: repairItem.id,
+      kind: repairItem.kind,
+      stage: "code" as const,
+      round: repairKeyRound,
+      trigger: "provenance" as const,
+    } : null;
+    const storedRisk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk;
+    const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
+    const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "CODE_REVIEW"), risk);
+    const maxReviewRounds = dialCodeReviewMaxRounds(ctx.state, ctx.recipe.stages, risk);
+    // At or past the ceiling the gate asks for nothing and marks the round
+    // unresolved instead, so it escalates rather than landing. See
+    // ProvenanceGateInput.atCeiling.
+    //
+    // MIRRORS decideCeiling EXACTLY, and must keep doing so. The first version
+    // read `>= hardCeiling || >= maxReviewRounds` and was wrong twice:
+    //
+    //  - `maxReviewRounds: 0` is a legal configured value meaning UNLIMITED.
+    //    `codeReviewHardCeiling` returns 0 for it and `decideCeiling` guards on
+    //    `ceiling > 0`, so it never parks. Against 0, every `repairKeyRound >=`
+    //    comparison is true, so the gate treated every round on such a project
+    //    as a ceiling round: no repair ever requested, findings always
+    //    blocking, and no park to end it. A fleet halt on exactly the
+    //    configuration that opted out of ceilings. Hence `hardCeiling > 0`.
+    //  - the `maxReviewRounds` clause fired throughout the GRACE window
+    //    (cap <= round < hard ceiling), where no park fires and a change
+    //    request lands via `forcedLanding`. "On its way to a human" is only
+    //    true where the park actually fires, so the clause is gone.
+    //
+    // `maxReviewRounds` is still read by the escalation and diagnostics blocks
+    // below; only this comparison drops it.
+    const codeHardCeiling = codeReviewHardCeiling(ctx.state, ctx.recipe.stages, risk);
+    const atCodeCeiling = codeHardCeiling > 0 && repairKeyRound >= codeHardCeiling;
+    const provenanceGate = evaluateProvenanceGate({
+      // `repairKeyRound`, not `roundNum`: the durable counter is the right
+      // source, since `reviews.code` is cleared on a plan redirect and would
+      // restart the count at 1 inside the same item.
+      roundNum: repairKeyRound,
+      backend: reviewerBackend,
+      findings,
+      repairSpent: provenanceRepairKey
+        ? countRepairAttempts(ctx.state.reviewRepairAttempts, provenanceRepairKey) >= 1
+        : false,
+      atCeiling: atCodeCeiling,
+    });
+    // THE ROUND'S BLOCKING PREDICATE. Identical to `findingIsUnresolved` on
+    // every ordinary round; on a round whose gate gave up, it also blocks the
+    // unlabelled findings the gate gave up on. Without this the `unresolved`
+    // verdict was computed and discarded, and a reviewer that refused the
+    // repair twice could still land an `addressed` finding with no provenance
+    // -- the same laundering the labels exist to prevent, reached by declining
+    // to answer rather than by lying. Codex found it in review.
+    const isBlockingFinding = roundBlockerPredicate(provenanceGate);
     const unresolvedCriticalCount = findings.filter(
-      (f) => f.severity === "critical" &&
-        f.disposition !== "addressed" && f.disposition !== "deferred",
+      (f) => f.severity === "critical" && isBlockingFinding(f),
     ).length;
     // T-488: the state record is built and UPSERTED after the artifact sink
     // runs, not pushed here. Two reasons, and both are contract rather than
@@ -534,14 +612,9 @@ export class CodeReviewStage implements WorkflowStage {
       ctx.writeState({ codexUnavailable: true, codexUnavailableSince: new Date().toISOString() });
     }
 
-    const storedRisk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk;
-    const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
-    const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "CODE_REVIEW"), risk);
-    const maxReviewRounds = dialCodeReviewMaxRounds(ctx.state, ctx.recipe.stages, risk);
     // ISS-073: Only count unresolved findings (open/contested) as contradictory with approve
     const hasCriticalOrMajor = findings.some(
-      (f) => (f.severity === "critical" || f.severity === "major") &&
-        f.disposition !== "addressed" && f.disposition !== "deferred",
+      (f) => (f.severity === "critical" || f.severity === "major") && isBlockingFinding(f),
     );
     const hasUnresolvedCritical = unresolvedCriticalCount > 0;
     const criticalCount = findings.filter((f) => f.severity === "critical").length;
@@ -552,11 +625,34 @@ export class CodeReviewStage implements WorkflowStage {
     // Check for PLAN redirect
     const planRedirect = findings.some((f) => f.recommendedNextState === "PLAN");
 
+    // ISS-1115: the ceiling approve that is neither honoured nor bounced.
+    //
+    // Once the gate gives up at the ceiling, its findings block, so an
+    // `approve` payload contradicts itself and the guard below would bounce it.
+    // At the ceiling that bounce is a TRAP: the retry returns before the round
+    // is recorded, before the artifact is written and before the escalation
+    // runs, so a reviewer repeating the same payload loops forever and only
+    // `stuckRetryCount` moves. The previous behaviour was the opposite failure
+    // -- the round landed and the ceiling park exempts the landing action, so
+    // no human was summoned either. Both lose the stop the ceiling exists to
+    // force, so the round is CONSUMED and RECORDED with the reviewer's actual
+    // verdict, and routed to a non-landing action so the park fires. Codex
+    // found both halves of this, in review rounds 2 and 3.
+    const provenanceStrandedApprove = verdict === "approve"
+      && provenanceGate.kind === "unresolved" && atCodeCeiling;
+
     // Guard contradictory approve payloads (ISS-035)
-    if (verdict === "approve" && hasCriticalOrMajor) {
+    if (verdict === "approve" && hasCriticalOrMajor && !provenanceStrandedApprove) {
       return { action: "retry", instruction: "Contradictory review payload: verdict is 'approve' but critical/major findings are present. Re-run the review or correct the verdict." };
     }
-    if (verdict === "approve" && planRedirect) {
+    // The SIBLING of the guard above, and it needs the same exemption for the
+    // same reason. A ceiling report can carry `approve`, an unlabelled
+    // addressed critical AND `recommendedNextState: "PLAN"` at once, and this
+    // guard bounces it before the routing branch is ever reached -- so the
+    // exemption on the first guard alone left exactly one payload shape still
+    // stranded. Missing the second copy of a guard is how the first fix looked
+    // complete; Codex found it in review round 4.
+    if (verdict === "approve" && planRedirect && !provenanceStrandedApprove) {
       return { action: "retry", instruction: "Contradictory review payload: verdict is 'approve' but findings recommend replanning. Re-run the review or correct the verdict." };
     }
 
@@ -581,11 +677,6 @@ export class CodeReviewStage implements WorkflowStage {
     // fail schema validation (silently dropping the record the guard exists to
     // write) or collide across items. Falling through leaves today's behavior
     // exactly as it is.
-    const repairItem: WorkItemRef | null = ctx.state.ticket
-      ? { kind: "ticket", id: ctx.state.ticket.id }
-      : ctx.state.currentIssue
-        ? { kind: "issue", id: ctx.state.currentIssue.id }
-        : null;
     if (emptyChangeRequest && repairItem) {
       const counter = ctx.state.codeReviewRoundCounter;
       const matching = counter && counter.workItemId === repairItem.id && counter.kind === repairItem.kind
@@ -677,6 +768,43 @@ export class CodeReviewStage implements WorkflowStage {
       return { action: "retry", instruction: EMPTY_CHANGE_REQUEST_INSTRUCTION };
     }
 
+    // ── ISS-1115 3.3a: the provenance gate ─────────────────────────────────
+    //
+    // Placed beside the empty-verdict repair because it is the same shape of
+    // problem -- a payload that cannot be acted on as reported -- and it must
+    // run BEFORE the round is recorded, for the same reason: a refused payload
+    // must leave no envelope behind to be replayed.
+    //
+    // It runs on EVERY backend, including lenses, which is why the exemption is
+    // inside the gate rather than around the call. Guarding the call site would
+    // put the fleet-stopping case in the one place a reader is least likely to
+    // look for it.
+    // IT NEVER PREEMPTS AN ESCALATION. The ceiling is handled inside the gate
+    // now, which is why there is no ceiling test here: at the ceiling the gate
+    // returns `unresolved` rather than `repair`, so this branch cannot fire and
+    // the round blocks its way to a human instead of quietly landing.
+    if (provenanceGate.kind === "repair" && provenanceRepairKey) {
+      // PERSIST FIRST, THEN RETRY. The attempt record is written before the
+      // retry is issued, so a crash between the two cannot lose the evidenced
+      // findings and cannot silently refund the bound. `writeState`, not
+      // `updateDraft`, for the reason the empty-verdict guard above states:
+      // `processAdvance` has exits that write nothing at all.
+      ctx.writeState({
+        reviewRepairAttempts: [
+          ...(ctx.state.reviewRepairAttempts ?? []),
+          buildRepairAttempt({
+            key: provenanceRepairKey,
+            existing: ctx.state.reviewRepairAttempts,
+            verdict,
+            reviewer: reviewerBackend,
+            reviewStartedAt: ctx.state.currentReviewStartedAt,
+            nowMs: Date.now(),
+          }),
+        ],
+      } as Partial<FullSessionState>);
+      return { action: "retry", instruction: provenanceGate.instruction };
+    }
+
     // ── T-488: the round's identity, made durable before any sink ──────────
     //
     // Placed HERE, after every payload guard and before the routing ladder.
@@ -723,7 +851,12 @@ export class CodeReviewStage implements WorkflowStage {
       !hasUnresolvedCritical && roundNum >= landingFloor && !planRedirect;
 
     let nextAction: "PLAN" | "IMPLEMENT" | "FINALIZE" | "CODE_REVIEW";
-    if (planRedirect && verdict !== "approve") {
+    if (provenanceStrandedApprove) {
+      // NOT `FINALIZE`: decideCeiling exempts it, which is how this round
+      // escaped escalation before. `roundNum >= 5` further down would otherwise
+      // land it at FINALIZE even with the approve suppressed.
+      nextAction = "IMPLEMENT";
+    } else if (planRedirect && verdict !== "approve") {
       nextAction = "PLAN";
     } else if (verdict === "reject" || (isChangeRequest && hasUnresolvedCritical)) {
       nextAction = "IMPLEMENT";
@@ -769,6 +902,24 @@ export class CodeReviewStage implements WorkflowStage {
       ...(lensReviewId ? { reviewId: lensReviewId } : {}),
       ...(reviewerPath ? { reviewerPath } : {}),
       effort: roundEffort,
+      // ISS-1115 3.3b: an exempt round SAYS it was exempt. Absent on every
+      // round that was actually required to label.
+      //
+      // It belongs HERE and not in the `prepareReviewRound` argument, where the
+      // first draft put it. That call takes a typed options object, an excess
+      // property arriving through a spread is not flagged, and the field was
+      // silently dropped: the exemption applied, the round passed, and nothing
+      // recorded why. tsc was green and only a test that read the written
+      // artifact found it.
+      ...(provenanceGate.kind === "exempt"
+        ? { provenanceExemption: provenanceGate.reason }
+        : {}),
+      // And a round whose gate GAVE UP says so, for the same reason. A round
+      // that was checked and a round that was asked and never answered land
+      // identically in the record otherwise.
+      ...(provenanceGate.kind === "unresolved"
+        ? { provenanceUnresolved: provenanceGate.reasons }
+        : {}),
       ...identityFields(identity),
     });
     const artifactResult = writeRoundArtifact(ctx, {
@@ -983,7 +1134,7 @@ export class CodeReviewStage implements WorkflowStage {
       // findings with it. Queue-then-decision fails the other way: the findings
       // are durable and the ordinary drain files them, and the lost decision
       // just means the next report is an ordinary round.
-      const outstanding = outstandingCeilingFindings(findings);
+      const outstanding = outstandingCeilingFindings(findings, isBlockingFinding);
 
       // The DEFERRED findings of this same round, queued here rather than
       // being left to the ordinary call further down.
@@ -1039,8 +1190,7 @@ export class CodeReviewStage implements WorkflowStage {
         // that were fixed or consciously set aside -- which is the opposite of
         // what a reader arriving at a stopped session needs from that number.
         unresolvedMajor: findings.filter(
-          (f) => f.severity === "major" &&
-            f.disposition !== "addressed" && f.disposition !== "deferred",
+          (f) => f.severity === "major" && isBlockingFinding(f),
         ).length,
         decidedAt: new Date().toISOString(),
         // Written WITH the decision. The resumed call arrives with no findings
@@ -1100,9 +1250,7 @@ export class CodeReviewStage implements WorkflowStage {
     const forcedDeferredFindings = forcedLanding
       ? findings
           .filter((f) =>
-            (f.severity === "major" || f.severity === "minor") &&
-            f.disposition !== "addressed" &&
-            f.disposition !== "deferred"
+            (f.severity === "major" || f.severity === "minor") && isBlockingFinding(f)
           )
           .map((f) => ({ ...f, disposition: "deferred" }))
       : [];

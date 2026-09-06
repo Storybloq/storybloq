@@ -279,11 +279,17 @@ describe("CodeReviewStage identity spine (T-488)", () => {
     // is finished, so an identical payload arriving again is a new round -- not
     // a replay to be swallowed.
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe(12));
+    // `originClass` from the SECOND report on: ISS-1115 requires the label from
+    // round 2, and an unlabelled round 2 is bounced once for a metadata repair
+    // instead of being recorded. Round 1 needs none, so only the second payload
+    // carries it, which is also the smallest fixture that proves the round
+    // condition is real rather than a blanket requirement.
     await stage.report(ctx, { ...APPROVE, verdict: "revise", findings: [
       { id: "F1", severity: "minor", category: "c", description: "d", disposition: "open" },
     ] } as never);
     await stage.report(ctx, { ...APPROVE, verdict: "revise", findings: [
-      { id: "F1", severity: "minor", category: "c", description: "d", disposition: "open" },
+      { id: "F1", severity: "minor", category: "c", description: "d", disposition: "open",
+        originClass: "unchanged", sinceRound: 1 },
     ] } as never);
 
     expect(ctx.state.reviews.code).toHaveLength(2);

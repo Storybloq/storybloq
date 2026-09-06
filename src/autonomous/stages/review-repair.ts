@@ -65,6 +65,8 @@ export interface ReviewRepairAttempt {
   readonly reviewer: string;
   readonly at: string;
   readonly attemptDurationMs: number;
+  /** Absent means the empty-verdict repair. See the schema note. */
+  readonly trigger?: string;
 }
 
 /** The identity a repair attempt is scoped to. */
@@ -73,6 +75,12 @@ export interface RepairAttemptKey {
   readonly kind: "ticket" | "issue";
   readonly stage: "code" | "plan";
   readonly round: number;
+  /**
+   * Absent matches the empty-verdict repair, INCLUDING every record written
+   * before this field existed. Two repairs with different bounds must not spend
+   * each other's budget.
+   */
+  readonly trigger?: string;
 }
 
 /**
@@ -125,7 +133,8 @@ export function countRepairAttempts(
     a.workItemId === key.workItemId &&
     a.kind === key.kind &&
     a.stage === key.stage &&
-    a.round === key.round,
+    a.round === key.round &&
+    (a.trigger ?? undefined) === (key.trigger ?? undefined),
   ).length;
 }
 
@@ -161,11 +170,16 @@ export function buildRepairAttempt(args: {
   readonly reviewStartedAt: string | null | undefined;
   readonly nowMs: number;
 }): ReviewRepairAttempt {
+  // Scoped by trigger for the same reason `countRepairAttempts` is: two repairs
+  // with different bounds share this array, and unscoped numbering would make
+  // an empty-verdict attempt 1 read as a provenance attempt 2, chaining the
+  // duration from the wrong predecessor and mis-numbering both.
   const priorForRound = (args.existing ?? []).filter((a) =>
     a.workItemId === args.key.workItemId &&
     a.kind === args.key.kind &&
     a.stage === args.key.stage &&
-    a.round === args.key.round,
+    a.round === args.key.round &&
+    (a.trigger ?? undefined) === (args.key.trigger ?? undefined),
   );
   const previous = priorForRound.length > 0 ? priorForRound[priorForRound.length - 1] : null;
   const base = previous ? previous.at : args.reviewStartedAt;
@@ -179,6 +193,7 @@ export function buildRepairAttempt(args: {
     reviewer: args.reviewer,
     at: new Date(args.nowMs).toISOString(),
     attemptDurationMs: attemptDurationMs(base, args.nowMs),
+    ...(args.key.trigger === undefined ? {} : { trigger: args.key.trigger }),
   };
 }
 

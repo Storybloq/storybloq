@@ -1653,6 +1653,18 @@ export const SessionStateSchema = z.object({
      * per-attempt intervals with no extra state.
      */
     attemptDurationMs: z.number().int().nonnegative(),
+    /**
+     * WHICH repair this attempt was, so two different repairs cannot spend each
+     * other's budget.
+     *
+     * Absent means the empty-verdict repair, which is the only kind that
+     * existed when this array was introduced, so every record written before
+     * ISS-1115 reads correctly without migration. `"provenance"` is the
+     * metadata repair added here: it has its own bound of one, and counting it
+     * against the empty-verdict cap of two would let a labelling problem park
+     * an item that had never returned an empty verdict at all.
+     */
+    trigger: z.string().optional(),
   })).default([]),
 
   /**
@@ -1862,6 +1874,21 @@ export const SessionStateSchema = z.object({
       severity: z.string(),
       category: z.string(),
       description: z.string(),
+      /**
+       * ISS-1115. Zod STRIPS undeclared keys, so before these three lines a
+       * finding's provenance survived exactly as long as the process did: the
+       * escalation was recorded with the label that made it a blocker, and the
+       * resume that read it back got the finding with the evidence removed.
+       * The park record then showed an `addressed` finding filed as
+       * outstanding with nothing saying why -- and the resume path is the one
+       * that files these as ledger issues.
+       *
+       * Bare strings, not enums, per T-328: an enum on a persisted field does
+       * not drop a corrupt value, it makes the whole session unreadable.
+       */
+      originClass: z.string().optional(),
+      origin: z.string().optional(),
+      sinceRound: z.number().int().nonnegative().optional(),
     })).default([]),
     /**
      * Fingerprints of the findings THIS escalation is filing.
@@ -1945,6 +1972,21 @@ export const SessionStateSchema = z.object({
       severity: z.string(),
       category: z.string(),
       description: z.string(),
+      /**
+       * ISS-1115. Zod STRIPS undeclared keys, so before these three lines a
+       * finding's provenance survived exactly as long as the process did: the
+       * escalation was recorded with the label that made it a blocker, and the
+       * resume that read it back got the finding with the evidence removed.
+       * The park record then showed an `addressed` finding filed as
+       * outstanding with nothing saying why -- and the resume path is the one
+       * that files these as ledger issues.
+       *
+       * Bare strings, not enums, per T-328: an enum on a persisted field does
+       * not drop a corrupt value, it makes the whole session unreadable.
+       */
+      originClass: z.string().optional(),
+      origin: z.string().optional(),
+      sinceRound: z.number().int().nonnegative().optional(),
     })).default([]),
     fingerprints: z.array(z.string()).default([]),
     completed: z.boolean().default(false),

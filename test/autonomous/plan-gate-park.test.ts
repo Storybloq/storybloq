@@ -510,8 +510,17 @@ describe("planGateNonApprovals lifecycle (ISS-904)", () => {
   // now requires an actual unresolved blocking finding each round -- a bare
   // "revise" with nothing to cite is exactly the clean-landing case this
   // ticket restored, not a case that stays open.
+  // ISS-1115: labelled, because these rounds run at round 2 and beyond and the
+  // provenance gate asks an unlabelled round-2 report to add the label before
+  // the round is recorded. Unlabelled here, the counter this file exists to
+  // test stops advancing and the failure looks like a counter bug. `unchanged`
+  // is the accurate label: the same finding persists across rounds unfixed,
+  // which is precisely the lifecycle these tests drive.
   const UNRESOLVED_MAJOR = [
-    { severity: "major", category: "design", description: "Missing rollback path", disposition: "open" },
+    {
+      severity: "major", category: "design", description: "Missing rollback path",
+      disposition: "open", originClass: "unchanged", sinceRound: 1,
+    },
   ];
 
   async function reviewRound(sessionId: string, verdict: string, findings: unknown[] = UNRESOLVED_MAJOR) {

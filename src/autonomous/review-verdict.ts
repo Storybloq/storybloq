@@ -48,6 +48,31 @@ export interface ReviewVerdictArtifact {
   // pre-dial artifact still parses and still hashes identically.
   readonly effort?: string;
 
+  /**
+   * ISS-1115 3.3b: why this round was not required to carry provenance labels.
+   *
+   * Present ONLY on an exempt round, and the exemption has exactly one cause
+   * today: `LensFindingSchema` and `MergedFindingSchema` in `@storybloq/lenses`
+   * are `.strict()` and carry no `originClass`, so a lens finding cannot
+   * express the label at all.
+   *
+   * RECORDED rather than applied silently, because a silent exemption and a
+   * check that failed to run are indistinguishable from outside, and telling
+   * those two apart is most of what this item is for. A reader of the artifact
+   * can see that the round was excused and why, instead of inferring it from
+   * the absence of a complaint.
+   */
+  readonly provenanceExemption?: string;
+  /**
+   * ISS-1115: the round's provenance gate gave up, and why.
+   *
+   * Written whenever the gate ends `unresolved`, which is how a reader tells a
+   * round whose labels were checked and accepted from one whose labels were
+   * asked for and never supplied. Those two rounds otherwise land identically
+   * in the record, and only one of them should be trusted.
+   */
+  readonly provenanceUnresolved?: readonly string[];
+
   // ── T-488 Run A: the identity and provenance spine ──────────────────────
   // All optional, all additive. An absent value means the record predates the
   // field, which is a different statement from a known-empty one, and every
@@ -215,6 +240,14 @@ const ARTIFACT_HASH_DECISIONS = {
   reviewId: "excluded",
   reviewerPath: "excluded",
   effort: "excluded",
+  // INCLUDED, unlike its neighbours here, and deliberately so. This is not
+  // production metadata: a round excused from labelling is a different round
+  // from one that was required to label and did, so the exemption belongs to
+  // the round's identity rather than to how it was produced.
+  provenanceExemption: "included",
+  // Identity, for the same reason the exemption is: it changes how the round's
+  // findings should be read, so a copy that lost it is not the same artifact.
+  provenanceUnresolved: "included",
   reviewAttemptId: "excluded",
   itemAttemptId: "excluded",
   backendRunId: "excluded",

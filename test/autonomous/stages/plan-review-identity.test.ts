@@ -94,6 +94,15 @@ const MINOR = {
   id: "F1", severity: "minor", category: "clarity", description: "tighten this", disposition: "open",
 } as const;
 
+/**
+ * The same finding, labelled. ISS-1115 requires `originClass` from round 2, and
+ * the plan-side round counter deliberately counts ACROSS rejects (ISS-904), so
+ * the report after a reject is round 2 even though `reviews.plan` was emptied.
+ * An unlabelled finding there is bounced once for a metadata repair rather than
+ * recorded, which is exactly what these numbering assertions were seeing.
+ */
+const MINOR_LABELLED = { ...MINOR, originClass: "unchanged", sinceRound: 1 } as const;
+
 describe("PlanReviewStage identity spine (T-488)", () => {
   let testRoot: string;
   let sessionDir: string;
@@ -193,7 +202,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     expect(ctx.state.reviews.plan).toHaveLength(0);
 
     await stage.report(ctx, {
-      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], notes: "after the rewrite",
+      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "after the rewrite",
     } as never);
 
     // Both survive, and the second says which generation it belongs to.
@@ -208,10 +217,10 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
     await stage.report(ctx, { completedAction: "plan_review_round", verdict: "reject", findings: [MINOR] } as never);
     await stage.report(ctx, {
-      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], notes: "g1 r1",
+      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "g1 r1",
     } as never);
     await stage.report(ctx, {
-      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], notes: "g1 r2",
+      completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "g1 r2",
     } as never);
 
     expect(artifactNames(sessionDir)).toEqual([

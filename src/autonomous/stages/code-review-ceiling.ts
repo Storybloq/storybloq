@@ -1,5 +1,6 @@
 import { dialCodeReviewMaxRounds } from "../session-diagnostics.js";
 import { normalizeSeverity, type FullSessionState } from "../session-types.js";
+import { findingIsBlockedByOrigin } from "../review-identity.js";
 import type { WorkItemRef } from "../../core/arrangement-bounds.js";
 
 /** Mirrors the local alias in `session-diagnostics.ts`, which does not export it. */
@@ -144,6 +145,25 @@ export interface CeilingFinding {
   readonly category: string;
   readonly description: string;
   readonly disposition?: string;
+  /**
+   * ISS-1115 provenance. Read as `unknown` by the classifier rather than typed
+   * as a union here, for the T-328 reason: these arrive off a persisted record
+   * and an enum on a persisted field does not drop a bad value, it makes the
+   * whole session unreadable.
+   */
+  readonly originClass?: string;
+  readonly origin?: string;
+  readonly sinceRound?: number;
+}
+
+/** What a ceiling stop files, with the evidence for why it is outstanding. */
+export interface OutstandingCeilingFinding {
+  readonly severity: string;
+  readonly category: string;
+  readonly description: string;
+  readonly originClass?: string;
+  readonly origin?: string;
+  readonly sinceRound?: number;
 }
 
 /**
@@ -166,6 +186,23 @@ export interface CeilingFinding {
  * A missing disposition reads as open, because an unreviewed finding has not
  * been dismissed by anyone.
  *
+ * ISS-1115 ADDS ONE ENTRY, and deliberately not three. A finding the round's
+ * predicate counts as outstanding -- provenance says `reintroduced` (reported
+ * fixed, came back), or the label could not be read, or the round's gate gave
+ * up asking for one -- is filed even when it carries `addressed` or `deferred`,
+ * because those two dispositions make FACTUAL claims about the finding's
+ * lifecycle -- "it is fixed", "it is out of scope for now" -- and a
+ * reintroduction label is direct evidence against them. A defect that keeps
+ * being fixed and keeps returning is invisible exactly because each round looks
+ * settled, and a ceiling stop is the moment that has to stop being true.
+ *
+ * `contested` is NOT extended this way and keeps its rule above. It makes a
+ * claim about the finding's VALIDITY, not its lifecycle, and reintroduction
+ * does not speak to validity: a false positive re-raised by a second reviewer
+ * is still a false positive. Filing it would mint a critical ledger issue for
+ * something the session explicitly decided was not real, which is the harm the
+ * allow-list exists to prevent.
+ *
  * DELIBERATELY NARROWER than the `unresolvedCritical` / `unresolvedMajor` counts
  * recorded beside it. Those mirror the engine's own routing rule
  * (`hasUnresolvedCritical`), which counts a contested critical as unresolved --
@@ -180,9 +217,46 @@ export interface CeilingFinding {
  */
 export function outstandingCeilingFindings(
   findings: readonly CeilingFinding[],
-): { severity: string; category: string; description: string }[] {
+  /**
+   * The ROUND's blocking predicate, not the bare origin guard.
+   *
+   * Required rather than defaulted, deliberately. With a default, a call site
+   * that forgot to pass it would keep the narrower behaviour and file fewer
+   * findings than the counts recorded beside it claim -- a park record that
+   * says `unresolvedCritical: 1` and lists nothing, which is the exact
+   * inconsistency this parameter exists to remove. Making it required turns
+   * that into a compile error.
+   */
+  isBlocking: (raw: unknown) => boolean,
+): OutstandingCeilingFinding[] {
   return findings
-    .filter((f) => (f.disposition == null || f.disposition === "open")
+    .filter((f) => (f.disposition == null || f.disposition === "open"
+        // `addressed` claims the defect is GONE, and nothing else files an
+        // addressed finding, so if this round could not confirm that claim the
+        // ceiling stop is the last place it can surface. Uses the round
+        // predicate, so "the gate gave up asking" counts here.
+        || (f.disposition === "addressed" && isBlocking(f))
+        // `deferred` is different, and the difference is the whole reason these
+        // are two clauses rather than one. The deferral path ALREADY files it,
+        // so adding it here is a second claim on the same finding by a path
+        // that calls it a blocker. That is worth doing on POSITIVE evidence
+        // against the disposition -- a re-raise, or a label that cannot be read
+        // -- and not on the mere ABSENCE of a label, which says nothing about
+        // whether the deferral was right. Widening this to the round predicate
+        // double-filed every deferred finding in any round whose gate gave up.
+        || (f.disposition === "deferred" && findingIsBlockedByOrigin(f)))
       && normalizeSeverity(f.severity) !== "suggestion")
-    .map((f) => ({ severity: f.severity, category: f.category, description: f.description }));
+    // The provenance travels WITH the finding. Without it the escalation says a
+    // finding is outstanding while the only evidence for that -- the label that
+    // overrode its disposition -- stays behind in the round, and the person
+    // reading the park record sees an `addressed` finding filed as a blocker
+    // with nothing explaining why.
+    .map((f) => ({
+      severity: f.severity,
+      category: f.category,
+      description: f.description,
+      ...(f.originClass === undefined ? {} : { originClass: f.originClass }),
+      ...(f.origin === undefined ? {} : { origin: f.origin }),
+      ...(f.sinceRound === undefined ? {} : { sinceRound: f.sinceRound }),
+    }));
 }

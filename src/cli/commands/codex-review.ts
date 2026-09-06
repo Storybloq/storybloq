@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { citationsForReviewTarget } from "../../autonomous/cited-rulings.js";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -370,10 +371,18 @@ export async function handleCodexReview(options: CodexReviewOptions): Promise<Gu
   const priorRounds = options.kind === "plan"
     ? (state.reviews?.plan?.length ?? 0)
     : (state.reviews?.code?.length ?? 0);
+  // T-494: the native codex route gets the same cited rulings as the two
+  // autonomous routes, through the same helper, so the three cannot drift on
+  // what a reviewer is shown or on what happens when the ledger is unreadable.
+  const packetTarget = state.ticket?.id ?? state.currentIssue?.id ?? "unknown";
+  const packetCitations = await citationsForReviewTarget(root, packetTarget);
   const packet = buildReviewContextPacket({
     sessionDir: dir,
     projectRoot: root,
-    target: state.ticket?.id ?? state.currentIssue?.id ?? "unknown",
+    target: packetTarget,
+    ...(packetCitations.kind === "resolved"
+      ? { citedRulings: packetCitations.citations }
+      : { citedRulingsUnavailable: packetCitations.reason }),
     stage: options.kind,
     generation: state.itemAttempt?.generation ?? 0,
     roundNum: priorRounds + 1,

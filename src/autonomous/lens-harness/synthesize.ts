@@ -63,6 +63,8 @@ export interface SynthesizeInput {
     readonly reviewRound: number;
     readonly reviewId: string;
     readonly secretsMetaFinding?: LensFinding | null;
+    /** T-494: lens id -> ruling ids whose content that lens did not receive. */
+    readonly citedRulingsUndelivered?: Record<string, readonly string[]>;
   };
   readonly sessionDir?: string;
   readonly sessionId?: string;
@@ -162,6 +164,68 @@ function loadMergerConfig(projectRoot: string | undefined, stage: Stage): Merger
   return parsed.success ? parsed.data : MergerConfigSchema.parse(undefined);
 }
 
+/** One retry window for an undelivered-rulings entry. */
+const CITED_RULINGS_RETRY_TTL_MS = 30 * 60 * 1000;
+
+/** Per-lens union of two undelivered maps, dropping empty entries. */
+function unionUndelivered(
+  ...maps: (Record<string, readonly string[]> | undefined)[]
+): Record<string, readonly string[]> {
+  const merged = new Map<string, Set<string>>();
+  for (const map of maps) {
+    for (const [lens, ids] of Object.entries(map ?? {})) {
+      if (ids.length === 0) continue;
+      const set = merged.get(lens) ?? new Set<string>();
+      for (const id of ids) set.add(id);
+      merged.set(lens, set);
+    }
+  }
+  return Object.fromEntries([...merged].map(([lens, ids]) => [lens, [...ids]]));
+}
+
+export const CITED_RULINGS_META_FINDING_ID = "storybloq-cited-rulings-undelivered";
+
+/**
+ * T-494: what a caller must DO, and when the rejection CLEARS.
+ *
+ * "Reduce scope and re-run" names the action and not the exit condition, and it
+ * is satisfiable by deleting the citations -- which would clear the signal by
+ * removing the thing it protects. So the text says to retain them, to cover the
+ * original scope across the reruns, and to accept only once every affected
+ * review reports nothing undelivered.
+ */
+function citedRulingsRetryPrompt(lensId: string, ids: readonly string[]): string {
+  return [
+    `The ${lensId} lens reviewed WITHOUT the following cited ruling(s): ${ids.join(", ")}.`,
+    "These are decisions that bind this item, so this review did not check the work against them.",
+    "Reduce the artifact or context supplied per review and rerun the affected lenses, RETAINING the item's ruling citations.",
+    "Cover the original review scope across the reruns.",
+    "Accept only after every affected review reports no undelivered cited rulings.",
+  ].join(" ");
+}
+
+/** The human-readable half. `nextActions` is what makes the verdict hold. */
+function citedRulingsMetaFinding(undelivered: Record<string, readonly string[]>): LensFinding {
+  const lines = Object.entries(undelivered)
+    .filter(([, ids]) => ids.length > 0)
+    .map(([lensId, ids]) => `${lensId}: ${ids.join(", ")}`);
+  return {
+    id: CITED_RULINGS_META_FINDING_ID,
+    severity: "blocking",
+    category: "context-delivery",
+    file: null,
+    line: null,
+    description:
+      "Cited rulings were not delivered to every lens in this review, so those lenses did not check the work " +
+      `against decisions that bind the item (${lines.join("; ")}). The verdict is held by nextActions, not by ` +
+      "this finding's severity: a project that demotes this lens does not thereby accept an incomplete review.",
+    suggestion:
+      "Reduce the artifact or context supplied per review and rerun the affected lenses, retaining the item's " +
+      "ruling citations. Accept only after every affected review reports no undelivered cited rulings.",
+    confidence: 1,
+  };
+}
+
 export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
   const stage: Stage = input.stage ?? "CODE_REVIEW";
   const reviewId = input.metadata.reviewId;
@@ -225,19 +289,54 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
   // from the live secrets gate each round, so a stale copy replayed from a
   // cache entry (e.g. one written by an older build) must never double with
   // the fresh injection below.
+  //
+  // T-494 rides the same scrub for the same reason, and it is REACHABLE where
+  // the secrets case is merely defensive. The cited-rulings finding is injected
+  // into `security` whichever lens missed its rulings, so when the affected
+  // lens is some OTHER lens, `security` is still cacheable and stores the
+  // finding. Replaying it would report a delivery failure that has since
+  // cleared, and double it with the fresh injection below.
+  const INJECTED_META_FINDING_IDS: readonly string[] = [
+    SECRETS_GATE_FINDING_ID,
+    CITED_RULINGS_META_FINDING_ID,
+  ];
   for (const [lens, entry] of parsed) {
     if (entry.output.status !== "ok") continue;
-    if (!entry.output.findings.some((f) => f.id === SECRETS_GATE_FINDING_ID)) continue;
+    if (!entry.output.findings.some((f) => INJECTED_META_FINDING_IDS.includes(f.id))) continue;
     parsed.set(lens, {
       ...entry,
       output: {
         ...entry.output,
         findings: entry.output.findings.filter(
-          (f) => f.id !== SECRETS_GATE_FINDING_ID,
+          (f) => !INJECTED_META_FINDING_IDS.includes(f.id),
         ),
       },
     });
   }
+
+  // T-494. Read here rather than at its injection below, because the cache
+  // write-back at the end of this function needs it too.
+  //
+  // UNION, not precedence, and the direction matters. `??` would let a caller
+  // that passes `{}` -- or a partial map -- erase a delivery failure `prepare`
+  // recorded on disk, clearing the verdict hold and re-enabling the cache
+  // write-back for a lens that provably never received its rulings. A union
+  // can only ever ADD a hold, which is the safe direction for a gate: a
+  // fabricated caller entry costs a rerun, an erased persisted one costs the
+  // guarantee. Note the live MCP path passes no metadata at all, so the
+  // persisted record is normally the only source.
+  const undelivered = unionUndelivered(
+    meta?.citedRulingsUndelivered,
+    input.metadata.citedRulingsUndelivered,
+  );
+
+  // Lenses whose entry below is FABRICATED by this harness rather than produced
+  // by a lens that ran. The write-back must never store one: filtering the
+  // injected finding out of a synthetic entry leaves an EMPTY findings array,
+  // which caches as a clean review by a lens that never saw the artifact, and a
+  // later same-key run then approves on it. Excluding the finding (the round-6
+  // fix) was necessary and not sufficient; the ENTRY is the problem.
+  const syntheticLenses = new Set<string>();
 
   // ── Secrets meta-finding injection (pre-pipeline) ─────────────────
   // Non-localized blocking finding: the anchor pass lets it through
@@ -264,6 +363,51 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
         },
         cached: false,
       });
+      syntheticLenses.add("security");
+      parseFailed.delete("security");
+    }
+  }
+
+  // ── T-494: undelivered cited rulings meta-finding (pre-pipeline) ──
+  //
+  // Runs AFTER the secrets injection, and the order is deliberate: whichever
+  // gate fires first CREATES the synthetic security entry and owns its `notes`,
+  // and the second appends to it. Secrets goes first so that when both fire the
+  // notes name the secrets gate, which is the higher-severity reason the entry
+  // exists at all.
+  //
+  // This finding is the REPORT. It is not the enforcement: see the nextActions
+  // reasoning at the pipeline call below.
+  const undeliveredLenses = Object.keys(undelivered).filter((l) => (undelivered[l] ?? []).length > 0);
+  const rulingNextActions = undeliveredLenses.map((lensId) => ({
+    lensId,
+    retryPrompt: citedRulingsRetryPrompt(lensId, undelivered[lensId] ?? []),
+    // `NextActionSchema` requires `int().min(2)`: this is the NEXT attempt, and
+    // passing `reviewRound` straight through would throw on a first round,
+    // which is exactly when a first delivery failure happens.
+    attempt: Math.max(2, (input.metadata.reviewRound ?? 1) + 1),
+    expiresAt: new Date(Date.now() + CITED_RULINGS_RETRY_TTL_MS).toISOString(),
+  }));
+
+  if (undeliveredLenses.length > 0) {
+    const rulingMeta = citedRulingsMetaFinding(undelivered);
+    const existing = parsed.get("security");
+    if (existing && existing.output.status === "ok") {
+      parsed.set("security", {
+        ...existing,
+        output: { ...existing.output, findings: [...existing.output.findings, rulingMeta] },
+      });
+    } else {
+      parsed.set("security", {
+        output: {
+          status: "ok",
+          findings: [rulingMeta],
+          error: null,
+          notes: "storybloq cited-rulings delivery",
+        },
+        cached: false,
+      });
+      syntheticLenses.add("security");
       parseFailed.delete("security");
     }
   }
@@ -346,13 +490,32 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
   const perLens: LensRunResult[] = [...parsed.entries()].map(
     ([lensId, { output }]) => ({ lensId: lensId as LensRunResult["lensId"], output }),
   );
+  // ── T-494: undelivered cited rulings ──────────────────────────────
+  //
+  // ENFORCEMENT IS `nextActions`, NOT THE FINDING. An earlier revision of this
+  // design claimed a blocking meta-finding forces a reject, on the secrets
+  // gate's precedent. It does not: the secrets finding blocks because its
+  // CATEGORY is `hardcoded-secrets`, which is in the DEFAULT `alwaysBlock` list,
+  // and both `alwaysBlock` and `neverBlock` are project configuration. A
+  // context-delivery category is in neither, and `neverBlock: ["security"]`
+  // demotes anything injected there.
+  //
+  // `nextActions` is policy-independent. `runMergerPipeline` computes
+  // `capped = nextActions.length > 0 || coreUncovered || !reviewComplete` and
+  // demotes an `approve` to `revise`, and `ReviewVerdictSchema` independently
+  // refuses "verdict cannot be 'approve' while nextActions.length > 0". Neither
+  // path reads a finding's severity, category, lens or confidence.
+  //
+  // This harness does NOT implement the package's stateful cooperative retry
+  // protocol: nothing here re-spawns a lens. The entry is emitted for the
+  // verdict floor and for the instruction payload the agent reads.
   const rawVerdict = runMergerPipeline({
     reviewId,
     sessionId: input.sessionId ?? reviewId,
     perLens,
     mergerConfig,
     parseErrors,
-    nextActions: [],
+    nextActions: rulingNextActions,
     lensCoverage,
     reviewComplete: true,
     ...(anchoring !== undefined ? { anchoring } : {}),
@@ -483,18 +646,32 @@ export function handleSynthesize(input: SynthesizeInput): SynthesizeOutput {
     for (const [lens, entry] of parsed) {
       if (entry.cached) continue;
       if (entry.output.status !== "ok") continue;
+      // T-494: a review that did not receive the rulings its item cites is
+      // never a cacheable clean result. Computing the fit before the cache
+      // lookup tells us what THIS run would deliver and nothing about what a
+      // CACHED reviewer received; without this, a later same-key run whose fit
+      // succeeds would serve findings from a reviewer that never saw the
+      // rulings, and the omission would clear with no lens re-run. Same shape
+      // as the secrets meta-finding exclusion below: never cache a thing that
+      // has to be established fresh.
+      if ((undelivered[lens] ?? []).length > 0) continue;
+      // A fabricated entry is not a review. See `syntheticLenses` above.
+      if (syntheticLenses.has(lens)) continue;
       const key = meta.cacheKeys[lens];
       if (!key) continue;
       try {
         writeToCache(
           input.sessionDir,
           key,
-          // Never cache the orchestrator secrets meta-finding: it is injected
-          // fresh each round from the live secrets gate. Caching it would
-          // replay a stale meta-finding as a lens finding AND double it with
-          // the fresh injection on the next identical round.
+          // Never cache an INJECTED meta-finding: both are re-derived fresh
+          // each round, from the live secrets gate and from this round's
+          // delivery result. Caching one would replay it as a lens finding AND
+          // double it with the fresh injection on the next identical round.
+          // The cited-rulings finding reaches this line whenever the lens that
+          // missed its rulings is not `security`, since `security` is then
+          // itself cacheable.
           entry.output.findings
-            .filter((f) => f.id !== SECRETS_GATE_FINDING_ID)
+            .filter((f) => !INJECTED_META_FINDING_IDS.includes(f.id))
             .map(stripServerFields),
         );
       } catch {

@@ -3237,7 +3237,15 @@ export function registerRulingCommand(yargs: Argv): Argv {
                   })
                   .option("date", { type: "string", demandOption: true, describe: "Ruling date (YYYY-MM-DD)" })
                   .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
-                { "scope-tag": { ...SPLIT_LIST, describe: "Scope tag (repeatable)" } },
+                {
+                  "scope-tag": { ...SPLIT_LIST, describe: "Scope tag (repeatable)" },
+                  cites: {
+                    ...SPLIT_LIST,
+                    describe:
+                      "Ticket or issue this ruling binds (repeatable). Adds the new ruling id to that item's citesRulings, " +
+                      "which is how the ruling reaches an agent working the item. Never replaces existing citations.",
+                  },
+                },
               ),
             ),
           async (argv) => {
@@ -3255,6 +3263,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
                   attribution: argv.attribution as string,
                   date: argv.date as string,
                   scopeTags: (argv["scope-tag"] as string[] | undefined) ?? [],
+                  cites: argv.cites as string[] | undefined,
                   clientTaskId: argv["client-task-id"] as string | undefined,
                 },
                 format,

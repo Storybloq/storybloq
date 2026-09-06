@@ -318,20 +318,63 @@ export function fencedBlock(content: string, lang?: string): string {
  * unconditional anti-laundering caveat, as a human reading `ticket get`.
  */
 export function formatCitedRulingsSection(resolutions: readonly CitationResolution[]): string {
-  if (resolutions.length === 0) return "";
+  return formatCitedRulingsSectionBounded(resolutions, Number.POSITIVE_INFINITY).text;
+}
+
+/** What a bounded render produced, and what it had to leave out. */
+export interface BoundedCitedRulings {
+  readonly text: string;
+  /** Rulings whose TEXT was replaced by a marker. Metadata is never dropped. */
+  readonly truncatedIds: readonly string[];
+}
+
+/**
+ * T-494: the ONE renderer, with an optional bound on ruling TEXT.
+ *
+ * Two tiers, because they fail differently. Id, status, stale label,
+ * attribution, recorder and date are ALWAYS present and never truncated: that
+ * is what makes a ruling's existence undeniable even when its text will not
+ * fit. Only TEXT is subject to the budget, and a dropped text is replaced by a
+ * marker naming how to fetch it, never by a silent slice.
+ *
+ * The bound is on text and NOT on the rendered block on purpose. Slicing the
+ * rendered block would cut mid-ruling and delete every id, caveat and status
+ * after the cut, which is precisely the guarantee this exists to provide.
+ *
+ * Inclusion is all-or-nothing per ruling and in CITATION ORDER: a ruling's text
+ * goes in only if the running total still fits after adding it. Best-fit
+ * packing would reorder rulings by length, and citation order is the order the
+ * recorder chose.
+ */
+export function formatCitedRulingsSectionBounded(
+  resolutions: readonly CitationResolution[],
+  textBudget: number,
+): BoundedCitedRulings {
+  if (resolutions.length === 0) return { text: "", truncatedIds: [] };
+  const truncatedIds: string[] = [];
+  let spent = 0;
   const lines = resolutions.map((resolution) => {
     const rendered = renderCitation(resolution);
     if (rendered.status === "resolved" && rendered.current) {
       const staleNote = rendered.stale ? ` (superseded by ${rendered.current.id})` : "";
+      const body = escapeMarkdownInline(rendered.current.text);
+      // Measured on the ESCAPED text, which is what actually lands in the
+      // block: escaping expands, so budgeting the raw text would under-count.
+      const fits = spent + body.length <= textBudget;
+      if (fits) spent += body.length;
+      else truncatedIds.push(rendered.current.id);
+      const head = fits
+        ? `- **${escapeMarkdownInline(rendered.citedId)}**${staleNote}: "${body}"`
+        : `- **${escapeMarkdownInline(rendered.citedId)}**${staleNote}: [text truncated, read with ruling_get ${rendered.current.id}]`;
       return [
-        `- **${escapeMarkdownInline(rendered.citedId)}**${staleNote}: "${escapeMarkdownInline(rendered.current.text)}"`,
+        head,
         `  ${rendered.current.attribution}, recorded by ${rendered.current.recordedBy.client}/${rendered.current.recordedBy.id} on ${rendered.current.date}`,
         `  > ${rendered.current.caveat}`,
       ].join("\n");
     }
     return `- **${escapeMarkdownInline(rendered.citedId)}**: ${rendered.warning ?? rendered.status}`;
   });
-  return `\n\n## Cited Rulings\n\n${lines.join("\n")}`;
+  return { text: `\n\n## Cited Rulings\n\n${lines.join("\n")}`, truncatedIds };
 }
 
 /** T-476: JSON-safe embedding for a citing item's resolved rulings. */

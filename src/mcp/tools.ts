@@ -17,6 +17,7 @@ import { TARGET_WORK_ID_REGEX, LENS_FINDING_DISPOSITIONS, OwnerGoneCandidateTake
 import { CLIENT_TASK_ID_PATTERN } from "../autonomous/client-profile.js";
 import { evaluateSessionGuard } from "../core/session-guard.js";
 import { findActiveSessionMinimal, readSessionResilient, sessionDir, isLeaseExpired, withSessionLock } from "../autonomous/session.js";
+import { citationsForReviewTarget } from "../autonomous/cited-rulings.js";
 import { withStalenessNote } from "../autonomous/binary-staleness.js";
 import { touchLastMcpCallFile } from "../autonomous/liveness.js";
 import { registerBusTools } from "./bus-tools.js";
@@ -1149,6 +1150,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       attribution: z.enum(RULING_ATTRIBUTIONS),
       date: z.string().min(1).describe("Date the ruling was made (YYYY-MM-DD)"),
       scopeTags: z.array(z.string()).optional().describe("Free-form tags for filtering, e.g. duet-mode, N-108"),
+      cites: z.array(z.string()).optional().describe(
+        "Ticket or issue refs this ruling binds. Adds the new ruling id to each item's citesRulings, which is how " +
+        "the ruling reaches an agent working the item. Unions with existing citations; never replaces them. An " +
+        "unresolvable ref refuses the whole create.",
+      ),
       clientTaskId: z.string().max(128).optional().describe("Caller identity, if not inferable from the environment"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
@@ -1158,6 +1164,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
         attribution: args.attribution,
         date: args.date,
         scopeTags: args.scopeTags ?? [],
+        cites: args.cites,
         clientTaskId: args.clientTaskId,
       },
       format,
@@ -1861,6 +1868,26 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
     });
   });
 
+  /**
+   * T-494: the item a lens review is about, from the session's own state.
+   *
+   * Read resiliently and best-effort: a session that cannot be read is not a
+   * reason to refuse a review, it is a reason to deliver no citations, which is
+   * the same outcome as a review that names no item.
+   */
+  function sessionItemRef(dir: string | undefined): string | undefined {
+    if (!dir) return undefined;
+    try {
+      // No assertion on the parsed state: the real type is what makes a rename
+      // of either field a compile error here rather than a silent stop to
+      // delivery, which is the failure this whole scope exists to fix.
+      const state = readSessionResilient(dir);
+      return state?.ticket?.id ?? state?.currentIssue?.id ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   // ── T-189: Multi-lens review MCP tools ─────────────────────
 
   server.registerTool("storybloq_review_lenses_prepare", {
@@ -1873,14 +1900,37 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       reviewRound: z.number().int().min(1).optional(),
       priorDeferrals: z.array(z.string()).optional().describe("issueKeys of findings deferred in prior rounds"),
       sessionId: z.string().uuid().optional().describe("Persists the round's cache and anchoring artifact for synthesize. Pass the same sessionId, reviewRound, and returned reviewId to synthesize."),
+      target: z.string().optional().describe("Ticket or issue under review; its cited rulings reach every lens. Defaults to the session's item."),
     },
-  }, (args) => {
+  }, async (args) => {
     try {
       const { dir: sDir, unknownId } = resolveGatedSessionDir(args.sessionId);
       if (unknownId) {
         return { content: [{ type: "text" as const, text: withStalenessNote(`Error: session ${unknownId} not found or corrupt`) }], isError: true };
       }
-      const result = handlePrepare({ ...args, projectRoot: pinnedRoot, sessionDir: sDir });
+      // T-494: the delivery wiring. `handlePrepare` accepts resolved citations
+      // but resolves nothing itself, so without this the lens prompts carry no
+      // rulings, the undelivered set is always empty, and the verdict hold can
+      // never fire -- the whole mechanism would be inert in production while
+      // its unit tests passed. The target is named explicitly or taken from the
+      // session's current item.
+      const target = args.target ?? sessionItemRef(sDir);
+      const citations = target ? await citationsForReviewTarget(pinnedRoot, target) : null;
+      const result = handlePrepare({
+        ...args,
+        projectRoot: pinnedRoot,
+        sessionDir: sDir,
+        ...(citations?.kind === "resolved" ? { citedRulings: citations.citations } : {}),
+        // A NAMED target whose citations could not be resolved is reported,
+        // never swallowed. It goes THROUGH handlePrepare rather than being
+        // attached to the returned payload here, so the reason reaches the lens
+        // prompts and the round's metadata by one route instead of reaching
+        // only the agent that made the call. It is reported rather than thrown
+        // because a lens review is context packaging, not an acceptance gate:
+        // refusing would stop a review the reviewer can still perform. A review
+        // that names no item at all owes no rulings and is silent.
+        ...(citations?.kind === "unavailable" ? { citedRulingsUnavailable: citations.reason } : {}),
+      });
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       const msg = err instanceof Error ? err.message.replace(/\/[^\s]+/g, "<path>") : "unknown error";
@@ -1905,6 +1955,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
       diff: z.string().optional().describe("Without it, findings are not evidence-anchored (unless prepare persisted an artifact) and not classified introduced vs pre-existing."),
       changedFiles: z.array(z.string()).optional(),
       sessionId: z.string().uuid().optional().describe("Enables anchoring against prepare's artifact and dedup of auto-filed pre-existing issues across rounds."),
+      citedRulingsUndelivered: z.record(z.string(), z.array(z.string())).optional().describe("Echo prepare's metadata field. Required without sessionId, or the delivery hold is lost."),
     },
   }, async (args) => {
     try {
@@ -1937,6 +1988,13 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string): void
           skippedLenses: args.skippedLenses,
           reviewRound: args.reviewRound ?? 1,
           reviewId: args.reviewId ?? "unknown",
+          // T-494: the ONLY route a delivery failure has on a sessionless
+          // review. With a sessionId, prepare persisted it and synthesize reads
+          // it back from harness meta; without one there is nothing on disk, so
+          // an unechoed map means the hold silently does not exist. Synthesize
+          // UNIONS this with whatever it read, so echoing it can only ever add
+          // a hold, never clear one.
+          ...(args.citedRulingsUndelivered ? { citedRulingsUndelivered: args.citedRulingsUndelivered } : {}),
         },
         projectRoot: pinnedRoot,
         sessionId: args.sessionId,

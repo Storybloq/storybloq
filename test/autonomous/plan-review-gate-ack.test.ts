@@ -4,7 +4,7 @@
  * path.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -14,11 +14,13 @@ import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { initProject } from "../../src/core/init.js";
 import { handleTicketCreate } from "../../src/cli/commands/ticket.js";
 import { handleArrangementCreate } from "../../src/cli/commands/arrangement.js";
+import { handleRulingCreate } from "../../src/cli/commands/ruling.js";
 import { writeGateAckUnlocked } from "../../src/core/gate-ack-loader.js";
 import { computeGateAckId, PLAN_ACK_GATE_NAME, type GateAck, type GateAckPin } from "../../src/models/gate-ack.js";
 import { sha256Bytes } from "../../src/core/pin-utils.js";
 import { SessionStateSchema } from "../../src/autonomous/session-types.js";
 import * as planSnapshotModule from "../../src/core/plan-snapshot.js";
+import * as planPinGuardModule from "../../src/autonomous/plan-pin-guard.js";
 const { readPlanSnapshot } = planSnapshotModule;
 
 const PARTIES = [
@@ -553,5 +555,108 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
         spy.mockRestore();
       }
     });
+  });
+});
+
+/**
+ * T-494 SITE A: the gate-ack pin, which both PINS a plan and, in plan mode,
+ * completes on it. The other two acceptance points live in
+ * `plan-pin-guard.test.ts`; this one belongs here because it needs the whole
+ * arrangement-plus-ack fixture above.
+ */
+describe("T-494 site A: the citation guard on the gate-ack pin", () => {
+  async function gatedAckFixture(planText: string): Promise<{
+    root: string; sessionDir: string; ctx: StageContext; rulingId: string;
+  }> {
+    const { root, ticketId, arrangementId } = await newProjectWithGatedTicket();
+    tempDirs.push(root);
+    const created = await handleRulingCreate(
+      {
+        text: "Rulings reach agents by citation, not by paste.",
+        attribution: "owner-direct",
+        date: "2026-09-06",
+        scopeTags: [],
+        cites: [ticketId],
+        clientTaskId: "test-task",
+      },
+      "json",
+      root,
+    );
+    const rulingId = JSON.parse(created.output).data.id as string;
+
+    const sessionDir = newSessionDirIn(root);
+    const planPath = join(sessionDir, "plan.md");
+    writeFileSync(planPath, planText.replace("<RULING>", rulingId));
+    const hash = sha256Bytes(readFileSync(planPath));
+    const pin: GateAckPin = { kind: "plan-hash", sha256: hash };
+    const ack: GateAck = {
+      id: computeGateAckId(arrangementId, PLAN_ACK_GATE_NAME, ticketId, pin),
+      arrangementId,
+      gateName: PLAN_ACK_GATE_NAME,
+      ackRole: "pen",
+      ticketRef: ticketId,
+      pin,
+      decidedAt: new Date().toISOString(),
+      reviewTrail: { present: false },
+      contested: false,
+    };
+    await writeGateAckUnlocked(ack, root);
+
+    const ctx = new StageContext(root, sessionDir, makeState(root, ticketId, {
+      pendingPlanAck: { ticketId, arrangementId, gateName: PLAN_ACK_GATE_NAME, pinSha256: hash },
+    }), makeRecipe());
+    return { root, sessionDir, ctx, rulingId };
+  }
+
+  it("refuses the pin when the plan omits a cited ruling, consuming no ack", async () => {
+    const { sessionDir, ctx, rulingId } = await gatedAckFixture("# Approved plan\n");
+
+    const result = await stage.report(ctx, { completedAction: "check_gate_ack" });
+
+    expect(result.action).toBe("retry");
+    if (result.action === "retry") expect(result.instruction).toContain(rulingId);
+    // Nothing is written on a refusal. The gate-ack lookup is a read, so the
+    // ack is still there to be used once the plan names what it owes, and the
+    // hold survives for the same reason.
+    expect(ctx.state.approvedPlanSnapshot ?? null).toBeNull();
+    expect(ctx.state.pendingPlanAck).not.toBeNull();
+    expect(readdirSync(sessionDir).filter((f) => f.startsWith("plan-approved-"))).toHaveLength(0);
+  });
+
+  it("pins once the plan names the ruling", async () => {
+    const { sessionDir, ctx } = await gatedAckFixture("# Approved plan\n\nPer <RULING>, do the thing.\n");
+
+    const result = await stage.report(ctx, { completedAction: "check_gate_ack" });
+
+    expect(result.action).toBe("advance");
+    expect(ctx.state.pendingPlanAck).toBeNull();
+    expect(readdirSync(sessionDir).filter((f) => f.startsWith("plan-approved-"))).toHaveLength(1);
+  });
+
+  it("refuses, and resets, when plan.md changes while its citations are being checked", async () => {
+    // The window T-494 reopens and closes again. The guard awaits -- it loads
+    // the ledger and resolves the citation chain -- so the reasoning that
+    // originally justified pinning `planRead.bytes` (only a synchronous
+    // findGateAck stood between the read and the snapshot) no longer holds.
+    // The edit is injected INSIDE the guard, which is exactly the race the
+    // re-read exists to catch. Spied at the module rather than through
+    // `ctx.loadProject`, because the guard loads the ledger directly and never
+    // touches the stage context's loader.
+    const { sessionDir, ctx } = await gatedAckFixture("# Approved plan\n\nPer <RULING>.\n");
+    const planPath = join(sessionDir, "plan.md");
+
+    const spy = vi
+      .spyOn(planPinGuardModule, "guardPlanNamesCitedRulings")
+      .mockImplementation(async () => {
+        writeFileSync(planPath, "# Approved plan -- EDITED mid-guard\n");
+        return { ok: true } as const;
+      });
+
+    const result = await stage.report(ctx, { completedAction: "check_gate_ack" });
+    spy.mockRestore();
+
+    expect(result.action).toBe("retry");
+    if (result.action === "retry") expect(result.instruction).toContain("plan.md changed");
+    expect(readdirSync(sessionDir).filter((f) => f.startsWith("plan-approved-"))).toHaveLength(0);
   });
 });

@@ -702,6 +702,24 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    // T-494: `--cites` binds the new ruling to the items it governs, in the
+    // same transaction that writes the ruling. Split-list like every other row
+    // here, so a comma-joined value must land as two separate citations.
+    key: "ruling create --cites",
+    check: (dir) => {
+      seedTickets(dir, 1);
+      seedIssue(dir);
+      const res = run(dir, "ruling", "create",
+        "--text", "verbatim text", "--attribution", "owner-direct", "--date", "2026-08-28",
+        "--client-task-id", "e2e-test-session",
+        "--cites", "T-001,ISS-001", "--format", "json");
+      expect(res.code, res.out).toBe(0);
+      const rulingId = (JSON.parse(res.out) as { data: { id: string } }).data.id;
+      expect(byDisplayId(dir, "tickets", "T-001").citesRulings).toEqual([rulingId]);
+      expect(byDisplayId(dir, "issues", "ISS-001").citesRulings).toEqual([rulingId]);
+    },
+  },
+  {
     key: "ruling create --scope-tag",
     check: (dir) => {
       const res = run(dir, "ruling", "create",

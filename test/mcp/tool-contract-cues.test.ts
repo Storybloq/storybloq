@@ -328,14 +328,24 @@ describe("tool description contract (T-460)", () => {
     // reviewer routes. What remains is the field surface itself and cannot go
     // without losing the item's mechanism: a reviewer cannot label a re-raise
     // through a schema that does not declare the field, and an undeclared key
-    // is stripped by the SDK before the stage ever sees it. This ceiling leaves
-    // ~500 bytes of headroom and fails once an edit gives back more than
-    // that. Raising it is a deliberate act that belongs in a commit message,
-    // which is the point. Deliberately NO lower bound: the cues above are
-    // what protect against over-trimming, and a floor would fail an honest
-    // future trim for being too good.
+    // is stripped by the SDK before the stage ever sees it. T-494 added two
+    // optional fields to the lens-review pair -- `target` on prepare and
+    // `citedRulingsUndelivered` on synthesize -- measured at 53,975 bytes.
+    // Field surface again, and the same undeclared-key argument is not an
+    // analogy here but the actual defect being fixed: a synthesize schema with
+    // no way to receive the delivery map let a review that never saw its item's
+    // rulings reach approve, because the SDK stripped the key the handler was
+    // ready to read. Trimmed first, as the ratchet intends: both descriptions
+    // were cut to the sentence that is not already in review-lenses.md and
+    // `storybloq reference`, giving back 208 bytes, and neither can go further
+    // without losing which field to echo or when it stops being optional.
+    // This ceiling leaves ~500 bytes of headroom and fails once an edit gives
+    // back more than that. Raising it is a deliberate act that belongs in a
+    // commit message, which is the point. Deliberately NO lower bound: the cues
+    // above are what protect against over-trimming, and a floor would fail an
+    // honest future trim for being too good.
     const bytes = Buffer.byteLength(await emittedPayload(), "utf8");
-    expect(bytes).toBeLessThan(53_900);
+    expect(bytes).toBeLessThan(54_500);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {

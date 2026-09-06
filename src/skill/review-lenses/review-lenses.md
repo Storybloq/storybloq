@@ -56,10 +56,26 @@ Call `storybloq_review_lenses_prepare` with:
   "diff": "<full diff text>",
   "changedFiles": ["src/foo.ts", "src/bar.ts"],
   "ticketDescription": "T-XXX: description of the ticket (or 'Manual review -- brief description' if no ticket)",
+  "target": "T-XXX",
   "reviewRound": 1,
   "priorDeferrals": []
 }
 ```
+
+`target` is the ticket or issue under review, and it is what makes the item's
+cited rulings reach every lens. Pass it whenever the review is about an item.
+Inside an autonomous session `sessionId` supplies it instead, so a call that
+already passes `sessionId` does not need it. Omit both and the lenses review
+without the decisions that bind the item, which is a defensible thing to do for
+a review that is about no item and a silent context loss for one that is not.
+
+If prepare returns a non-empty `metadata.citedRulingsUndelivered`, echo it back
+to `storybloq_review_lenses_synthesize` as `citedRulingsUndelivered`. On a review
+with a `sessionId` this is optional (prepare persisted it and synthesize reads it
+back); on a review WITHOUT one it is required, because there is nowhere on disk
+for prepare to have written it, and an unechoed map means the verdict hold that
+should stop an incomplete review silently does not exist. Echoing it can only add
+a hold, never clear one.
 
 For rounds 2+, increment `reviewRound` and pass issueKeys of findings you intentionally deferred:
 ```json

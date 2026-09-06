@@ -281,11 +281,25 @@ export async function loadProject(
  * Use inside withProjectLock when the lock is already held.
  * Performs Zod parse + guardPath + atomicWrite.
  */
-export async function writeTicketUnlocked(
+/**
+ * Validates a ticket and resolves where it goes, WITHOUT writing anything.
+ *
+ * T-494: `runTransactionUnlocked` takes `{ target, content }` and carries none
+ * of a writer's invariants -- no schema parse, no id check, no `guardPath`. So
+ * a caller that writes items through the transaction has to run them itself,
+ * and the only way that cannot drift from the writer is for the writer to call
+ * the same function. `writeTicketUnlocked` below is now exactly this plus the
+ * write.
+ *
+ * The target path comes from `parsed.id`, never from a display id: this ledger
+ * is permanently mixed, so a legacy item's `id` IS `T-001` while a
+ * post-migration item's `id` is the hash and its display id lives in a separate
+ * field. Re-deriving a filename from a display id writes a second, dark file.
+ */
+export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean },
-): Promise<void> {
+): Promise<{ target: string; content: string }> {
   const parsed = TicketSchema.parse(ticket);
   if (!TICKET_ID_REGEX.test(parsed.id) && !TICKET_CANONICAL_ID_REGEX.test(parsed.id)) {
     throw new ProjectLoaderError(
@@ -294,13 +308,21 @@ export async function writeTicketUnlocked(
     );
   }
   const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "tickets", `${parsed.id}.json`);
-  await guardPath(targetPath, wrapDir);
-  const json = serializeJSON(parsed);
+  const target = join(wrapDir, "tickets", `${parsed.id}.json`);
+  await guardPath(target, wrapDir);
+  return { target, content: serializeJSON(parsed) };
+}
+
+export async function writeTicketUnlocked(
+  ticket: Ticket,
+  root: string,
+  options?: { createOnly?: boolean },
+): Promise<void> {
+  const { target, content } = await prepareTicketWrite(ticket, root);
   if (options?.createOnly) {
-    await atomicCreate(targetPath, json);
+    await atomicCreate(target, content);
   } else {
-    await atomicWrite(targetPath, json);
+    await atomicWrite(target, content);
   }
 }
 
@@ -319,11 +341,11 @@ export async function writeTicket(
  * Writes an issue file WITHOUT acquiring the project lock.
  * Use inside withProjectLock when the lock is already held.
  */
-export async function writeIssueUnlocked(
+/** Issue counterpart of `prepareTicketWrite`; same T-494 rationale. */
+export async function prepareIssueWrite(
   issue: Issue,
   root: string,
-  options?: { createOnly?: boolean },
-): Promise<void> {
+): Promise<{ target: string; content: string }> {
   const parsed = IssueSchema.parse(issue);
   if (!ISSUE_ID_REGEX.test(parsed.id) && !ISSUE_CANONICAL_ID_REGEX.test(parsed.id)) {
     throw new ProjectLoaderError(
@@ -332,13 +354,21 @@ export async function writeIssueUnlocked(
     );
   }
   const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "issues", `${parsed.id}.json`);
-  await guardPath(targetPath, wrapDir);
-  const json = serializeJSON(parsed);
+  const target = join(wrapDir, "issues", `${parsed.id}.json`);
+  await guardPath(target, wrapDir);
+  return { target, content: serializeJSON(parsed) };
+}
+
+export async function writeIssueUnlocked(
+  issue: Issue,
+  root: string,
+  options?: { createOnly?: boolean },
+): Promise<void> {
+  const { target, content } = await prepareIssueWrite(issue, root);
   if (options?.createOnly) {
-    await atomicCreate(targetPath, json);
+    await atomicCreate(target, content);
   } else {
-    await atomicWrite(targetPath, json);
+    await atomicWrite(target, content);
   }
 }
 
@@ -911,6 +941,33 @@ interface TxnJournal {
 }
 
 /**
+ * T-494: a transaction that FAILED AFTER it began renaming.
+ *
+ * Distinct from a generic transaction failure because the correct caller
+ * response is the opposite one. Nothing was written before commit starts, so a
+ * retry is right; after it starts, some targets are already in place, the
+ * journal is deliberately left behind, and `doRecoverTransaction` completes the
+ * rest at the next lock acquisition -- so a retry writes a SECOND record beside
+ * the one recovery is about to finish. Callers that mint an id before the
+ * transaction must surface that id with this error, because it is the only
+ * handle the operator has on what recovery is going to complete.
+ */
+export class TransactionRecoveryPendingError extends ProjectLoaderError {
+  constructor(cause: unknown) {
+    // The underlying failure is carried in the MESSAGE and not only in `cause`.
+    // It is what an operator needs to know ("lock ownership lost" and "EIO on a
+    // rename" call for different responses), and it keeps the phase wrapper
+    // from hiding a message existing callers already match on.
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      "io_error",
+      `Transaction failed after it began committing; forward recovery is pending: ${detail}`,
+      cause,
+    );
+  }
+}
+
+/**
  * Executes multiple file operations atomically with a transaction journal.
  * Forward-only recovery: if any rename succeeds, complete remaining.
  * Does NOT acquire the lock -- caller must hold it.
@@ -1034,7 +1091,22 @@ export async function runTransactionUnlocked(
         /* best-effort cleanup; the original error above is what propagates */
       }
     }
-    // If commitStarted, leave journal for recovery on next load
+    // If commitStarted, leave journal for recovery on next load.
+    //
+    // T-494: the PHASE is part of the answer, not an implementation detail. A
+    // pre-commit failure wrote nothing and a retry is correct; a post-commit
+    // failure may have renamed some targets already, forward recovery will
+    // complete the rest at the next lock acquisition, and a retry of the same
+    // create would produce a DUPLICATE on top of the recovered one. A caller
+    // told only "Transaction failed" cannot tell those apart and will retry.
+    //
+    // THE PHASE CHECK COMES FIRST, and the order is the whole point. Putting it
+    // after the `ProjectLoaderError` passthrough (which is where it was) meant
+    // the most reachable post-commit failure of all skipped it: mid-commit lock
+    // fencing throws a `ProjectLoaderError` from inside the rename loop, so a
+    // caller lost the ruling id and the do-not-retry warning in exactly the
+    // case that most needs them.
+    if (commitStarted) throw new TransactionRecoveryPendingError(err);
     if (err instanceof ProjectLoaderError) throw err;
     throw new ProjectLoaderError("io_error", "Transaction failed", err);
   }

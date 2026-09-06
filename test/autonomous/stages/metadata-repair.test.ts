@@ -73,6 +73,13 @@ function setupProject(root: string): void {
     title: "test", date: "2026-09-05",
     phases: [{ id: "p1", label: "P1", name: "Phase 1", description: "Test" }], blockers: [],
   }));
+  // T-494: the plan-pin guard resolves the session's ticket in the ledger and
+  // fails closed when it cannot, so the ticket the session names must exist.
+  writeFileSync(join(storyDir, "tickets", "T-001.json"), JSON.stringify({
+    id: "T-001", title: "Test ticket", description: "A test.", type: "task",
+    status: "inprogress", phase: "p1", order: 10, createdDate: "2026-08-01",
+    completedDate: null, blockedBy: [],
+  }));
 }
 
 function seedArtifact(sessionDir: string, o: {

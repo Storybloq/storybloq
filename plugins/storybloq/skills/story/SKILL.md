@@ -297,6 +297,22 @@ When starting work on a ticket, update its status to `inprogress`. When done, up
 
 **Plan and code review:** Before implementing any plan, review it with the multi-lens review system. Read `review-lenses/review-lenses.md` in the same directory as this skill file and follow its workflow. This applies whether you used `/story plan`, native plan mode, or wrote the plan manually. The lens system runs 9 specialized reviewers in parallel (security, error handling, clean code, concurrency, performance, API design, test quality, accessibility, data safety) via the @storybloq/lenses registry and merges findings programmatically into a single verdict. After implementation, review the code diff the same way before committing.
 
+## Rulings
+
+A ruling is a decision that binds an item: an owner's call, an architecture decision, a gate outcome. Rulings reach agents by CITATION, never by paste. A decision pasted into a plan, a handover or a prompt is a copy, and copies drift; a citation means every agent working that item reads one record, and reads the version that is current now.
+
+**Recording one.** `storybloq ruling create --text "<verbatim>" --attribution <source> --date <YYYY-MM-DD> --cites T-123` records the ruling AND adds its id to that item's `citesRulings`, in one transaction. `--cites` is repeatable, takes tickets or issues, and never replaces an item's existing citations. The text is byte-verbatim: no markdown cleanup, no editing inside the quote. `--attribution` is a CLAIM asserted by whoever records it, not something storybloq verifies. The message that tells another agent about the ruling carries the id and a one-line summary, nothing more; the record is what the agent reads.
+
+**Reading one.** `storybloq ticket get T-123` shows the item's cited rulings resolved to their current versions, and `storybloq ruling get <id>` returns a single record. Cited rulings are also delivered into the plan-review, code-review and lens context packets automatically, so a reviewer sees them without being handed them. Delivery follows the ITEM: a lens review takes it from the session, or from `target` when there is no session, and a review that names no item is told nothing rather than told there is nothing.
+
+**Naming one in a plan.** A plan must name the CURRENT id of every ruling its item cites; the plan-pin gate refuses a plan that omits one, and refuses outright if any citation cannot be resolved to a single current ruling. Current is the word that matters: once a ruling has been superseded the item still cites the OLD id, and the one that binds is the successor. Name the current id. Naming the cited id as well is fine.
+
+That gate checks the id is MENTIONED. It does not check that the plan follows the ruling, and it cannot: an id copied out of a truncation marker satisfies it. Whether the work honours the decision is what the review is for.
+
+**Superseding, and duplicate decisions.** `storybloq ruling supersede <old> --text "<new verbatim>" --attribution <source> --date <YYYY-MM-DD>` records the replacement and links it; `--with <id>` links a ruling you already have. Two rulings may not both supersede the same predecessor -- that is a branch, no single ruling is current, and the plan gate refuses the item until it is resolved. Before superseding anything, read the item's cited rulings for a duplicate of it first, so the number of copies is known before the first supersede is written. If the SAME decision was recorded more than once, supersede EVERY copy, one superseding ruling per copy: a ruling supersedes at most one predecessor, so a single new record cannot retire two duplicates, and any copy left current is a copy some item can still cite and some agent can still be shown.
+
+**Checking coverage.** `storybloq validate` reports, as info, every current ruling that no ticket or issue cites: it will never reach an agent working an item. When the ruling scan or the item load was incomplete it says so and claims nothing either way, rather than guessing from a partial picture.
+
 ## Managing Tickets and Issues
 
 Ticket and issue create/update operations are available via both CLI and MCP tools. Delete remains CLI-only.

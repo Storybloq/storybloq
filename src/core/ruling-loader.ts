@@ -207,26 +207,51 @@ export function loadCitationContext(root: string): CitationResolutionContext {
  * `ruling supersede` (see `src/core/ruling.ts`). That single mutation still
  * goes through this same function with `createOnly` omitted.
  */
+/**
+ * Validates a ruling, ensures `.story/rulings` exists, and resolves the target,
+ * WITHOUT writing anything.
+ *
+ * T-494: `runTransactionUnlocked` carries none of these invariants, so a caller
+ * that writes a ruling through the transaction runs them here instead, and
+ * `writeRulingUnlocked` calls the same function so the two cannot drift. Two of
+ * these are not cosmetic. The `mkdir` is what lets the FIRST ruling in a project
+ * exist at all: without it the transaction's temp write fails ENOENT. The
+ * `RULING_MAX_BYTES` check on the SERIALIZED record is what stops a write-only
+ * ruling, because `readBoundedFile` above applies the same bound and would
+ * refuse to read back anything larger.
+ *
+ * `mkdir` and `guardPath` are effects rather than content, and they deliberately
+ * run here, before any transaction begins, so a failure lands in the
+ * pre-commit half where nothing has been renamed.
+ */
+export async function prepareRulingWrite(
+  ruling: Ruling,
+  root: string,
+): Promise<{ target: string; content: string }> {
+  const parsed = RulingSchema.parse(ruling);
+  if (!RULING_CANONICAL_ID_REGEX.test(parsed.id)) {
+    throw new ProjectLoaderError("invalid_input", `Invalid ruling ID: ${parsed.id}`);
+  }
+  const content = serializeJSON(parsed);
+  if (Buffer.byteLength(content, "utf8") > RULING_MAX_BYTES) {
+    throw new ProjectLoaderError("invalid_input", `Ruling record exceeds ${RULING_MAX_BYTES} bytes`);
+  }
+  const wrapDir = resolve(root, ".story");
+  const target = join(wrapDir, "rulings", `${parsed.id}.json`);
+  await mkdir(dirname(target), { recursive: true });
+  await guardPath(target, wrapDir);
+  return { target, content };
+}
+
 export async function writeRulingUnlocked(
   ruling: Ruling,
   root: string,
   options?: { createOnly?: boolean },
 ): Promise<void> {
-  const parsed = RulingSchema.parse(ruling);
-  if (!RULING_CANONICAL_ID_REGEX.test(parsed.id)) {
-    throw new ProjectLoaderError("invalid_input", `Invalid ruling ID: ${parsed.id}`);
-  }
-  const json = serializeJSON(parsed);
-  if (Buffer.byteLength(json, "utf8") > RULING_MAX_BYTES) {
-    throw new ProjectLoaderError("invalid_input", `Ruling record exceeds ${RULING_MAX_BYTES} bytes`);
-  }
-  const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "rulings", `${parsed.id}.json`);
-  await mkdir(dirname(targetPath), { recursive: true });
-  await guardPath(targetPath, wrapDir);
+  const { target, content } = await prepareRulingWrite(ruling, root);
   if (options?.createOnly) {
-    await atomicCreate(targetPath, json);
+    await atomicCreate(target, content);
   } else {
-    await atomicWrite(targetPath, json);
+    await atomicWrite(target, content);
   }
 }

@@ -232,3 +232,90 @@ describe("handleValidate", () => {
     });
   });
 });
+
+describe("T-494: the validate command supplies the citing-entity completeness half", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it("reports reachability UNKNOWN when the ticket/issue load dropped a corrupt entry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "validate-reach-"));
+    tmpDirs.push(root);
+    await mkdir(join(root, ".story"), { recursive: true });
+    await writeRulingUnlocked(makeRuling({ id: "r-0000000000000001" }), root);
+
+    // The unit tests can only prove `validateRulings` HONOURS the flag. This
+    // one proves the command actually computes it from the load warnings: a
+    // hardcoded `true` at the call site would pass every unit test and still
+    // claim "no ticket or issue cites this" over a ledger that dropped one.
+    const ctx = makeCtx({
+      root,
+      state: makeState({ tickets: [makeTicket({ id: "T-1" })] }),
+      warnings: [{ file: ".story/tickets/T-9.json", message: "unparseable", type: "parse_error" }],
+    });
+    const result = handleValidate(ctx);
+
+    expect(result.output).toContain("ruling_reachability_unknown");
+    expect(result.output).not.toContain("unreachable_ruling");
+  });
+
+  it("computes reachability when the load reported no integrity warnings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "validate-reach-ok-"));
+    tmpDirs.push(root);
+    await mkdir(join(root, ".story"), { recursive: true });
+    await writeRulingUnlocked(makeRuling({ id: "r-0000000000000001" }), root);
+
+    const ctx = makeCtx({
+      root,
+      state: makeState({ tickets: [makeTicket({ id: "T-1" })] }),
+      warnings: [{ file: ".story/tickets/T-9.json", message: "odd name", type: "naming_convention" }],
+    });
+    const result = handleValidate(ctx);
+
+    // A cosmetic warning drops no record, so it must not suppress the check.
+    expect(result.output).toContain("unreachable_ruling");
+    expect(result.output).not.toContain("ruling_reachability_unknown");
+  });
+
+  it("still computes reachability when the dropped entry was a NOTE, which cannot cite anything", async () => {
+    const root = await mkdtemp(join(tmpdir(), "validate-reach-note-"));
+    tmpDirs.push(root);
+    await mkdir(join(root, ".story"), { recursive: true });
+    await writeRulingUnlocked(makeRuling({ id: "r-0000000000000001" }), root);
+
+    // The question is "does any TICKET OR ISSUE cite this ruling", and nothing
+    // else has a citesRulings field. Treating every integrity warning as an
+    // incomplete citing-entity scan meant one corrupt note suppressed every
+    // reachability finding in the project and reported a scan that was, for
+    // this question, complete.
+    const ctx = makeCtx({
+      root,
+      state: makeState({ tickets: [makeTicket({ id: "T-1" })] }),
+      warnings: [{ file: ".story/notes/N-9.json", message: "unparseable", type: "parse_error" }],
+    });
+    const result = handleValidate(ctx);
+
+    expect(result.output).toContain("unreachable_ruling");
+    expect(result.output).not.toContain("ruling_reachability_unknown");
+  });
+
+  it("reports UNKNOWN for an ISSUE drop as well as a ticket drop", async () => {
+    const root = await mkdtemp(join(tmpdir(), "validate-reach-issue-"));
+    tmpDirs.push(root);
+    await mkdir(join(root, ".story"), { recursive: true });
+    await writeRulingUnlocked(makeRuling({ id: "r-0000000000000001" }), root);
+
+    // Both entity kinds can cite, so scoping the check to tickets alone would
+    // be the same bug in the other direction.
+    const ctx = makeCtx({
+      root,
+      state: makeState({ tickets: [makeTicket({ id: "T-1" })] }),
+      warnings: [{ file: ".story/issues/i-abc.json", message: "unparseable", type: "parse_error" }],
+    });
+    const result = handleValidate(ctx);
+
+    expect(result.output).toContain("ruling_reachability_unknown");
+    expect(result.output).not.toContain("unreachable_ruling");
+  });
+});

@@ -42,6 +42,20 @@ export interface ValidationAux {
   readonly unavailableRulingIds?: ReadonlySet<string>;
   readonly rulingScanCompleteness?: RulingScanCompleteness;
   readonly rulingHasUnrecoverableEntries?: boolean;
+  /**
+   * T-494: whether the TICKET AND ISSUE load dropped nothing.
+   *
+   * A complete ruling scan does not make a complete citation scan.
+   * `loadProjectUnlocked` treats tickets and issues as best-effort and skips
+   * corrupt entries with warnings, and this function only ever sees the
+   * survivors, so a ruling whose sole citation lives in a skipped item would
+   * look cited by nothing. Reachability needs BOTH halves.
+   *
+   * Absent means UNKNOWN, never complete: a caller that does not assert this
+   * has not established it, and defaulting to `true` would be exactly the
+   * fail-open the reachability check exists to close.
+   */
+  readonly citingEntityLoadComplete?: boolean;
 }
 
 // --- Main Validation ---
@@ -483,6 +497,7 @@ export function validateProject(
       aux.unavailableRulingIds ?? new Set(),
       aux.rulingScanCompleteness ?? "complete",
       aux.rulingHasUnrecoverableEntries ?? false,
+      aux.citingEntityLoadComplete === true,
       state,
       findings,
     );
@@ -732,6 +747,7 @@ function validateRulings(
   unavailableIds: ReadonlySet<string>,
   scanCompleteness: RulingScanCompleteness,
   hasUnrecoverableEntries: boolean,
+  citingEntityLoadComplete: boolean,
   state: ProjectState,
   findings: ValidationFinding[],
 ): void {
@@ -801,6 +817,7 @@ function validateRulings(
   // current state. Arrangements are off the strict ProjectState load path
   // (T-473 binding item 2) and are not part of this pure function's input.
   const ctx = buildCitationResolutionContext(rulings, unavailableIds, scanCompleteness, hasUnrecoverableEntries);
+  const reachedCurrentIds = new Set<string>();
   const citingEntities: ReadonlyArray<{ id: string; citesRulings?: readonly string[] }> = [
     ...state.tickets,
     ...state.issues,
@@ -840,6 +857,49 @@ function validateRulings(
       // "branch" and "cycle" resolutions are already reported once, keyed by
       // the ruling graph itself (ruling_supersedes_branch / supersedes_cycle
       // above) -- not duplicated per citing entity here.
+      if (resolution.status === "resolved") reachedCurrentIds.add(resolution.current.id);
     }
+  }
+
+  // T-494 reachability. Deliberately computed by FOLLOWING each citation to its
+  // tip (the `reachedCurrentIds` set above) rather than by set membership on
+  // cited ids: an item citing a superseded ruling still reaches the current one
+  // through the chain, and membership would report a live ruling as dark.
+  //
+  // The condition has TWO halves and needs both. The ruling scan must be
+  // complete with nothing unreadable, AND the ticket/issue load must have
+  // dropped nothing. Either false and no per-ruling claim is made at all,
+  // because "nothing cites this" is a statement about everything that exists,
+  // and a scan that could not see everything cannot support it.
+  const rulingScanComplete =
+    scanCompleteness === "complete" && unavailableIds.size === 0 && !hasUnrecoverableEntries;
+  if (!rulingScanComplete || !citingEntityLoadComplete) {
+    const incomplete: string[] = [];
+    if (!rulingScanComplete) incomplete.push("the ruling scan was incomplete or a ruling was unreadable");
+    if (!citingEntityLoadComplete) incomplete.push("the ticket and issue load dropped entries or did not report completeness");
+    findings.push({
+      level: "info",
+      code: "ruling_reachability_unknown",
+      message: `Ruling reachability was not computed: ${incomplete.join("; and ")}. No ruling is claimed cited or uncited.`,
+      entity: null,
+    });
+    return;
+  }
+
+  for (const r of rulings) {
+    // CURRENT means nothing supersedes it. A superseded ruling that nothing
+    // cites is not reported: being uncited is the correct end state for
+    // history, not a defect.
+    if ((index.successorsByTarget.get(r.id) ?? []).length > 0) continue;
+    if (reachedCurrentIds.has(r.id)) continue;
+    findings.push({
+      level: "info",
+      code: "unreachable_ruling",
+      // "no ticket or issue cites" rather than "unreachable": arrangements can
+      // carry citesRulings but are off this function's input by T-473 binding
+      // item 2, so a broader claim would overclaim what was actually checked.
+      message: `Ruling ${r.id} is current, and no ticket or issue cites it. It will not reach an agent working an item.`,
+      entity: r.id,
+    });
   }
 }

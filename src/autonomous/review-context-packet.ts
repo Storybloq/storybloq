@@ -39,6 +39,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { telemetryDirPath } from "./liveness.js";
+import { formatCitedRulingsSectionBounded } from "../core/output-formatter.js";
+import type { CitationResolution } from "../core/ruling.js";
 import {
   parseVerdictFilename,
   computeContentHash,
@@ -103,7 +105,28 @@ export interface BuildPacketParams {
   readonly captureDirective: string;
   /** `state.reviews.plan[]` when intact. Empty or absent after a redirect. */
   readonly planReviews?: readonly { readonly round: number; readonly codexSessionId?: string }[];
+  /**
+   * T-494: the resolved citations of the item under review. Resolved by the
+   * CALLER; this module does no ledger IO of its own, matching how it already
+   * receives everything else.
+   */
+  readonly citedRulings?: readonly CitationResolution[];
+  /**
+   * T-494: set INSTEAD of `citedRulings` when the citations could not be
+   * resolved at all. It becomes an omission, so the disclosure says the packet
+   * does not know what this item cites rather than showing a reviewer no
+   * rulings and no reason to doubt it.
+   */
+  readonly citedRulingsUnavailable?: string;
 }
+
+/**
+ * T-494: the ruling-TEXT budget, as a fraction of the round's budget rather
+ * than a constant, so the same citations render differently at the 16,000
+ * plan-review budget and the 24,000 code-review one. 25 percent gives 4,000 and
+ * 6,000. Only text is bounded; per-citation metadata is never dropped.
+ */
+export const CITED_RULINGS_TEXT_BUDGET_FRACTION = 0.25;
 
 /**
  * Dispositions that mean "a round reported this as settled". `addressed` is
@@ -429,6 +452,17 @@ export function buildReviewContextPacket(params: BuildPacketParams): ReviewConte
     sessionDir, projectRoot, target, stage, generation, roundNum, budget, captureDirective,
   } = params;
 
+  // T-494. Rendered ONCE, outside the trial loop, because the ruling bound is a
+  // function of the round's budget and not of any shedding decision. Rendering
+  // it per trial would be wasted work and would let a shedding decision change
+  // what a citation says, which is exactly the drift the single shared renderer
+  // exists to prevent.
+  const citedRulings = params.citedRulings ?? [];
+  const rulingsRender = formatCitedRulingsSectionBounded(
+    citedRulings,
+    Math.floor(budget * CITED_RULINGS_TEXT_BUDGET_FRACTION),
+  );
+
   const { rounds, rejected } = collectRounds(sessionDir, target, stage, generation);
   const priorRounds = [...rounds.values()]
     .filter((r) => r.round < roundNum)
@@ -440,6 +474,19 @@ export function buildReviewContextPacket(params: BuildPacketParams): ReviewConte
   // "we could not trust it" and "it was not there" are both gaps in the claim
   // this packet is making, and neither may be silent.
   const baseOmissions: string[] = [...rejected];
+  // Reported through the EXISTING omissions channel so the disclosure names it,
+  // rather than through a second reporting channel the reader has to know about.
+  if (params.citedRulingsUnavailable !== undefined) {
+    baseOmissions.push(
+      `cited rulings not resolved: ${params.citedRulingsUnavailable}. This packet does not know what this item cites.`,
+    );
+  }
+  if (rulingsRender.truncatedIds.length > 0) {
+    baseOmissions.push(
+      `${rulingsRender.truncatedIds.length} cited ruling text(s) truncated: ${rulingsRender.truncatedIds.join(", ")}. ` +
+      "Metadata for each is present above; read the full text with ruling_get.",
+    );
+  }
   for (let r = 1; r < roundNum; r++) {
     if (!rounds.has(r) && !rejected.some((x) => x.startsWith(`round ${r}:`))) {
       baseOmissions.push(`round ${r}: artifact not recovered`);
@@ -537,8 +584,16 @@ export function buildReviewContextPacket(params: BuildPacketParams): ReviewConte
         ...omissions.map((o) => `  - ${o}`),
       ].join("\n");
 
-    // The mandatory payload, in order, and always whole.
-    const mandatory = [ORIGIN_RULE, disclosure, captureDirective].join("\n\n");
+    // The mandatory payload, in order, and always whole. T-494 puts the cited
+    // rulings AFTER the origin rule and BEFORE the disclosure and the capture
+    // directive: they bind the work, so the reviewer reads them before being
+    // sent to the diff, and they are never dropped for size.
+    const mandatory = [
+      ORIGIN_RULE,
+      ...(rulingsRender.text === "" ? [] : [rulingsRender.text.trim()]),
+      disclosure,
+      captureDirective,
+    ].join("\n\n");
     const text = [...sections.map((s) => s.body), mandatory].join("\n\n");
 
     const completeness: PacketCompleteness =

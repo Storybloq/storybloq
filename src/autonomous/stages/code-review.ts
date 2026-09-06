@@ -1,4 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
+import { citationsForReviewTarget } from "../cited-rulings.js";
 import { releaseSessionClaim } from "../../core/claims.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import type { ClaimEpoch } from "../claim-reconciliation.js";
@@ -358,10 +359,17 @@ export class CodeReviewStage implements WorkflowStage {
       "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
     ].join("\n");
 
+    // T-494: same delivery as the plan round, same fresh-from-disk rule.
+    const codeTarget = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
+    const codeCitations = await citationsForReviewTarget(ctx.root, codeTarget);
+
     const contextPacket = buildReviewContextPacket({
       sessionDir: ctx.dir,
       projectRoot: ctx.root,
-      target: ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown",
+      target: codeTarget,
+      ...(codeCitations.kind === "resolved"
+        ? { citedRulings: codeCitations.citations }
+        : { citedRulingsUnavailable: codeCitations.reason }),
       stage: "code",
       generation: ctx.state.itemAttempt?.generation ?? 0,
       roundNum,

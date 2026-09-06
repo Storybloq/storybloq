@@ -1,5 +1,18 @@
-import { withProjectLock } from "../../core/project-loader.js";
-import { loadRulingsSafe, writeRulingUnlocked } from "../../core/ruling-loader.js";
+import { stat } from "node:fs/promises";
+import {
+  withProjectLock,
+  runTransactionUnlocked,
+  prepareTicketWrite,
+  prepareIssueWrite,
+  TransactionRecoveryPendingError,
+} from "../../core/project-loader.js";
+import {
+  loadRulingsSafe,
+  writeRulingUnlocked,
+  prepareRulingWrite,
+} from "../../core/ruling-loader.js";
+import { isIssueShapedRef, isTicketShapedRef } from "../../core/review-coverage.js";
+import type { ProjectState } from "../../core/project-state.js";
 import {
   buildCitationResolutionContext,
   resolveCitation,
@@ -15,6 +28,8 @@ import {
   type RulingAttribution,
 } from "../../models/ruling.js";
 import type { OwnerTaskLike } from "../../models/types.js";
+import type { Ticket } from "../../models/ticket.js";
+import type { Issue } from "../../models/issue.js";
 import {
   formatRuling,
   formatRulingList,
@@ -122,12 +137,78 @@ export function handleRulingGet(id: string, ctx: CommandContext): CommandResult 
 
 // --- Write handlers ---
 
+/** One cited item, resolved to the record that will be rewritten. */
+type CitedTarget =
+  | { kind: "ticket"; item: Ticket }
+  | { kind: "issue"; item: Issue };
+
+/**
+ * Resolves every `--cites` ref against loaded state and deduplicates by the
+ * resolved record, NOT by the ref the caller typed.
+ *
+ * Deduplication is load bearing rather than tidiness. `runTransactionUnlocked`
+ * derives its temp path deterministically as `${target}.${process.pid}.tmp`, so
+ * two operations on one target share it: the first `rename` consumes it and the
+ * second fails ENOENT AFTER the journal is marked `commitStarted`. A repeated
+ * ref would therefore be a mid-commit failure, not a harmless no-op. Both
+ * `--cites T-001 --cites T-001` and a display/canonical pair naming one item
+ * reach that, because `resolveTicketRef` accepts either form.
+ *
+ * An unresolvable or ambiguous ref REFUSES the whole create, before anything is
+ * written: a ruling whose citation silently did not land is worse than no
+ * ruling, because the recorder would believe it is reachable.
+ */
+function resolveCitedTargets(state: ProjectState, cites: readonly string[]): CitedTarget[] {
+  const byRecord = new Map<string, CitedTarget>();
+  for (const ref of cites) {
+    const trimmed = ref.trim();
+    if (trimmed === "") {
+      throw new CliValidationError("invalid_input", "Empty item ref in --cites");
+    }
+    const ticketShaped = isTicketShapedRef(trimmed);
+    const issueShaped = isIssueShapedRef(trimmed);
+    if (!ticketShaped && !issueShaped) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Cannot cite "${trimmed}": rulings are cited by tickets and issues only (T- or ISS- form, or a canonical t-/i- id)`,
+      );
+    }
+    const resolved = issueShaped ? state.resolveIssueRef(trimmed) : state.resolveTicketRef(trimmed);
+    if (resolved.kind === "missing") {
+      throw new CliValidationError("not_found", `Cannot cite "${trimmed}": no such item`);
+    }
+    if (resolved.kind === "ambiguous") {
+      throw new CliValidationError(
+        "conflict",
+        `Cannot cite "${trimmed}": ambiguous, matches ${resolved.matches.map((m) => m.id).join(", ")}`,
+      );
+    }
+    const kind = issueShaped ? "issue" : "ticket";
+    // The MAP keyed by the RESOLVED record is the dedupe. Keying by the ref the
+    // caller typed would not collapse a display/canonical pair naming one item,
+    // and `Map.set` on an existing key keeps its original insertion position, so
+    // first-seen order survives. An explicit has()/continue guard here was
+    // tried and is provably equivalent to the `set` alone, so it is not kept:
+    // a line that looks like the defence while the Map is doing the work
+    // invites someone to "simplify" the Map away later.
+    const key = `${kind}:${resolved.item.id}`;
+    byRecord.set(
+      key,
+      kind === "issue"
+        ? { kind: "issue", item: resolved.item as Issue }
+        : { kind: "ticket", item: resolved.item as Ticket },
+    );
+  }
+  return [...byRecord.values()];
+}
+
 export async function handleRulingCreate(
   args: {
     text: string;
     attribution: string;
     date: string;
     scopeTags: string[];
+    cites?: string[];
     clientTaskId?: string;
   },
   format: OutputFormat,
@@ -140,9 +221,17 @@ export async function handleRulingCreate(
     );
   }
   const recordedBy = requireCallerIdentity(args.clientTaskId);
+  const cites = args.cites ?? [];
 
   let created: Ruling | undefined;
-  await withProjectLock(root, { strict: true }, async () => {
+  // ONE LOCK. This handler already holds `.story/.lock`, which is NOT
+  // re-entrant, so the citation appends happen inside it rather than through a
+  // nested `withProjectLock`. Measured rather than assumed: a nested
+  // acquisition does not hang forever, it spins to `project-lock.ts`'s
+  // `DEFAULT_DEADLINE_MS` (5,000) and then THROWS a lock-acquisition error, so
+  // every cited create would fail five seconds in. Same verdict either way,
+  // different symptom, and the symptom is what a future debugger will see.
+  await withProjectLock(root, { strict: true }, async (loadResult) => {
     const candidate = {
       id: generateCanonicalId("r"),
       text: args.text,
@@ -153,12 +242,102 @@ export async function handleRulingCreate(
       supersedes: null,
     };
     const ruling = validateOrThrow(candidate);
-    await writeRulingUnlocked(ruling, root, { createOnly: true });
+
+    if (cites.length === 0) {
+      await writeRulingUnlocked(ruling, root, { createOnly: true });
+      created = ruling;
+      return;
+    }
+
+    const targets = resolveCitedTargets(loadResult.state, cites);
+
+    // SET-UNION, never replacement. `resolveCitesRulingsInput`'s
+    // full-replacement convention is right for an explicit `--cites-ruling`
+    // update and wrong here: this path adds one citation and must leave every
+    // other one standing. Items whose set does not change contribute no write.
+    const itemOps: Array<{ op: "write"; target: string; content: string }> = [];
+    for (const target of targets) {
+      const existing = target.item.citesRulings ?? [];
+      if (existing.includes(ruling.id)) continue;
+      const next = [...existing, ruling.id];
+      const prepared =
+        target.kind === "issue"
+          ? await prepareIssueWrite({ ...target.item, citesRulings: next }, root)
+          : await prepareTicketWrite({ ...target.item, citesRulings: next }, root);
+      itemOps.push({ op: "write", target: prepared.target, content: prepared.content });
+    }
+
+    // Carries every invariant the transaction does not: schema parse, id check,
+    // the serialized-byte cap the READER also applies, the `.story/rulings`
+    // mkdir the first ruling in a project needs, and `guardPath`.
+    const rulingPrepared = await prepareRulingWrite(ruling, root);
+
+    // No-overwrite, and weaker than `atomicCreate` on purpose: `rename` always
+    // overwrites, so the transaction cannot express create-only. Under this
+    // exclusive lock the check is exact. It defends against a minted-id
+    // collision and a leftover file, NOT against a concurrent writer -- the
+    // lock is what does that.
+    if (await pathExists(rulingPrepared.target)) {
+      throw new CliValidationError(
+        "conflict",
+        `Ruling ${ruling.id} already exists; refusing to overwrite it`,
+      );
+    }
+
+    // Items FIRST, ruling LAST. The transaction renames in order, and forward
+    // recovery completes a partial commit at the next lock acquisition, so this
+    // only decides which residue is visible in the window between. Items-first
+    // leaves citations pointing at a ruling that does not exist yet, which
+    // resolves as `missing`: a status every renderer prints as a warning and the
+    // plan-pin guard refuses on. Ruling-first would leave a ruling that nothing
+    // cites, which is silent and is precisely the failure this ticket exists to
+    // prevent. Fail loud, not dark.
+    try {
+      await runTransactionUnlocked(root, [
+        ...itemOps,
+        { op: "write", target: rulingPrepared.target, content: rulingPrepared.content },
+      ]);
+    } catch (err) {
+      // The plan's recovery-pending outcome, reported by NAME rather than
+      // collapsed into "Transaction failed".
+      //
+      // After the commit begins, some targets are already renamed and the
+      // journal is left in place so `doRecoverTransaction` finishes the rest at
+      // the next lock acquisition. The caller must not retry: a retry mints a
+      // second ruling beside the one recovery is about to complete, and with
+      // items-first ordering the citations already on disk point at THIS id. So
+      // the id is in the message -- it is the only handle the operator has on
+      // what recovery will finish.
+      if (err instanceof TransactionRecoveryPendingError) {
+        throw new CliValidationError(
+          "io_error",
+          `Ruling ${ruling.id}: the commit had already begun and forward recovery is pending. `
+            + `Do NOT retry this create: it would add a second ruling beside the one recovery completes. `
+            + `Run \`storybloq ruling get ${ruling.id}\` and \`storybloq validate\` to see what landed, then continue from there. `
+            // The underlying failure survives the translation too. Lock
+            // ownership lost and an EIO on a rename call for different
+            // responses, and the wrapper above carries it for exactly that
+            // reason -- dropping it one layer up would undo the point.
+            + `Underlying failure: ${err.message}`,
+        );
+      }
+      throw err;
+    }
     created = ruling;
   });
 
   if (!created) throw new Error("Ruling not created");
   return { output: formatRulingCreateResult(created, format) };
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
 }
 
 /**

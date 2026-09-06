@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { citationsForReviewTarget } from "../cited-rulings.js";
+import { guardPlanNamesCitedRulings } from "../plan-pin-guard.js";
 import { join } from "node:path";
 import { releaseSessionClaim } from "../../core/claims.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
@@ -268,12 +270,42 @@ async function handleCheckGateAck(ctx: StageContext, ticketId: string | undefine
     expectedAckRole: gate.ackRole,
   });
   if (lookup.status === "valid") {
-    // ISS-1050 full fix: `planRead.bytes` above is already fresh -- the only
-    // intervening step since that read is the synchronous `findGateAck` call,
-    // so no await could have raced a plan.md edit past this point. Blocking
-    // on a snapshot-write failure here (rather than advancing without a pin)
-    // is D1: a gated landing must never fail open.
-    const snapshot = await writePlanSnapshot(ctx.dir, planRead.bytes);
+    // T-494 SITE A. This path both PINS the plan and, in plan mode, completes
+    // on it, so the citation guard runs before either. The gate-ack lookup
+    // above is a read, so a refusal here consumes no ack and writes nothing.
+    const guardA = await guardPlanNamesCitedRulings(
+      ctx.root,
+      ctx.state.ticket?.id ?? ctx.state.currentIssue?.id,
+      planRead.bytes.toString("utf-8"),
+    );
+    if (!guardA.ok) return { action: "retry", instruction: guardA.instruction };
+
+    // T-494 reopens the ISS-1050 window and closes it again. The guard above
+    // awaits (it loads the ledger and resolves the citation chain), so
+    // `planRead.bytes` is no longer the freshest possible read and the
+    // original reasoning here -- that only a synchronous `findGateAck` sat
+    // between the read and the snapshot -- no longer holds. The re-read
+    // restores it: the bytes judged are the bytes pinned, and a plan edited
+    // while its citations were being checked is refused rather than pinned
+    // unjudged. Same shape and same refusal as the landing-branch recheck.
+    const rereadA = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+    if (rereadA.status !== "ok") {
+      return {
+        action: "retry",
+        instruction: `Cannot re-read plan.md after checking its cited rulings: ${rereadA.reason}. Escalate -- do not treat as approved.`,
+      };
+    }
+    if (sha256Bytes(rereadA.bytes) !== pending.pinSha256) {
+      resetPlanReviewGenerationState(ctx, { clearPendingPlanAck: true });
+      return {
+        action: "retry",
+        instruction: "plan.md changed while its cited rulings were being checked; that review no longer applies to the current content, and its history has been cleared. Submit a fresh PLAN_REVIEW report for the current plan.",
+      };
+    }
+
+    // Blocking on a snapshot-write failure here (rather than advancing
+    // without a pin) is D1: a gated landing must never fail open.
+    const snapshot = await writePlanSnapshot(ctx.dir, rereadA.bytes);
     if (snapshot.status !== "ok") {
       return {
         action: "retry",
@@ -494,10 +526,19 @@ export class PlanReviewStage implements WorkflowStage {
       "or truncate it.",
     ].join(" ");
 
+    // T-494: the rulings this item cites reach the reviewer through the packet's
+    // mandatory payload. Resolved fresh from disk here, never from the snapshot
+    // on session state.
+    const planTarget = ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown";
+    const planCitations = await citationsForReviewTarget(ctx.root, planTarget);
+
     const planContextPacket = buildReviewContextPacket({
       sessionDir: ctx.dir,
       projectRoot: ctx.root,
-      target: ctx.state.ticket?.id ?? ctx.state.currentIssue?.id ?? "unknown",
+      target: planTarget,
+      ...(planCitations.kind === "resolved"
+        ? { citedRulings: planCitations.citations }
+        : { citedRulingsUnavailable: planCitations.reason }),
       stage: "plan",
       generation: ctx.state.itemAttempt?.generation ?? 0,
       roundNum,
@@ -1276,6 +1317,56 @@ export class PlanReviewStage implements WorkflowStage {
         // second read would only add a redundant TOCTOU window, not close one.
         landedPlanBytes = recheck.bytes;
       }
+      // T-494 SITES B AND C. The guard runs before ANY path that accepts a
+      // plan, and the two here are accepted differently: the plan-mode branch
+      // below FINALIZES on the plan without writing a snapshot at all, while
+      // the landing below it PINS one. Anchoring the guard to the snapshot
+      // write would cover the landing and miss the completion entirely -- an
+      // ungated plan-only session reaches that branch with `landedPlanBytes`
+      // still null and ends without ever meeting a guard. When there is no
+      // snapshot, `plan.md` on disk IS the artifact of record, and a session
+      // that finalizes as `completed` blesses whatever it holds.
+      //
+      // So the ungated fresh read is hoisted ABOVE the mode check (it used to
+      // sit below it, serving only the landing) and both paths continue from
+      // the same guarded, re-read bytes.
+      if (!landedPlanBytes) {
+        const finalRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+        if (finalRead.status !== "ok") {
+          return {
+            action: "retry",
+            instruction: `Cannot read plan.md to check its cited rulings: ${finalRead.reason}. Escalate -- do not treat as approved.`,
+          };
+        }
+        landedPlanBytes = finalRead.bytes;
+      }
+      const guardBC = await guardPlanNamesCitedRulings(
+        ctx.root,
+        ctx.state.ticket?.id ?? ctx.state.currentIssue?.id,
+        landedPlanBytes.toString("utf-8"),
+      );
+      if (!guardBC.ok) return { action: "retry", instruction: guardBC.instruction };
+
+      // The same window ISS-1050 closed, reopened by the guard's own I/O and
+      // closed again. The comment on the read this replaced said it sat
+      // immediately before the advance so the snapshot captures exactly what
+      // is about to be implemented; the guard's await would have put ledger
+      // loading in between, so the bytes are re-read and compared here.
+      const guardedRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
+      if (guardedRead.status !== "ok") {
+        return {
+          action: "retry",
+          instruction: `Cannot re-read plan.md after checking its cited rulings: ${guardedRead.reason}. Escalate -- do not treat as approved.`,
+        };
+      }
+      if (sha256Bytes(guardedRead.bytes) !== sha256Bytes(landedPlanBytes)) {
+        return {
+          action: "retry",
+          instruction: "plan.md changed while its cited rulings were being checked; the checked content is not the current content. Re-report the same check to retry against the current plan.",
+        };
+      }
+      landedPlanBytes = guardedRead.bytes;
+
       // T-135: Plan mode exits after plan review approval
       if (ctx.state.mode === "plan") {
         ctx.finalizeSession({
@@ -1297,20 +1388,6 @@ export class PlanReviewStage implements WorkflowStage {
             transitionedFrom: "PLAN_REVIEW",
           },
         } as StageAdvance;
-      }
-      // ISS-1050 full fix (SITE 2 / ungated TOCTOU close): no plan-ack gate
-      // validated this round, so `landedPlanBytes` is still null -- a fresh
-      // read immediately before advancing, so the snapshot captures exactly
-      // what is about to be implemented rather than the round's earlier read.
-      if (!landedPlanBytes) {
-        const finalRead = readBoundedRegularFile(join(ctx.dir, "plan.md"), PLAN_ACK_MAX_BYTES);
-        if (finalRead.status !== "ok") {
-          return {
-            action: "retry",
-            instruction: `Cannot read plan.md to snapshot the approved plan: ${finalRead.reason}. Escalate -- do not treat as approved.`,
-          };
-        }
-        landedPlanBytes = finalRead.bytes;
       }
       // D1: never fail open -- a snapshot write failure blocks the transition
       // rather than advancing to IMPLEMENT with no pin.

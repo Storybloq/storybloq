@@ -300,6 +300,34 @@ Delete a lesson
 storybloq lesson delete <id> [--hard] [--format json|md]
 ```
 
+### ruling list
+List owner-ruling attestation records
+
+```
+storybloq ruling list [--scope-tag <tag>] [--superseded] [--format json|md]
+```
+
+### ruling get
+Get a ruling by ID
+
+```
+storybloq ruling get <id> [--format json|md]
+```
+
+### ruling create
+Record a ruling verbatim and cite it from the tickets or issues it binds
+
+```
+storybloq ruling create --text <text> --attribution <source> --date <YYYY-MM-DD> [--scope-tag <tag>] [--cites <item>] [--format json|md]
+```
+
+### ruling supersede
+Supersede a ruling: link an existing one with --with, or record a new superseding ruling
+
+```
+storybloq ruling supersede <id> (--with <id> | --text <text> --attribution <source> --date <YYYY-MM-DD>) [--scope-tag <tag>] [--format json|md]
+```
+
 ### validate
 Reference, schema, source-provenance, and loader-independent JSON checks
 
@@ -660,9 +688,13 @@ The base tools below are registered in full mode (inside a .story/ project). The
 - **storybloq_lesson_create** (title, content, context, source, tags?, supersedes?) - Create lesson
 - **storybloq_lesson_update** (id, title?, content?, context?, tags?, status?, supersedes?) - Update lesson
 - **storybloq_lesson_reinforce** (id) - Reinforce lesson: increment count and update lastValidated
+- **storybloq_ruling_list** (scopeTag?, superseded?) - List rulings, optionally filtered by scope tag or superseded state
+- **storybloq_ruling_get** (id) - Get a ruling by ID
+- **storybloq_ruling_create** (text, attribution, date, scopeTags?, cites?) - Record a ruling verbatim; cites adds its id to each named ticket or issue in the same transaction
+- **storybloq_ruling_supersede** (id, with?, text?, attribution?, date?, scopeTags?) - Supersede a ruling: link an existing one with `with`, or record a new superseding ruling
 - **storybloq_selftest** - Integration smoke test: create/update/delete cycle
-- **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, complete lens prompts
-- **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?) - Run the @storybloq/lenses merger pipeline programmatically over raw lens outputs; returns the ReviewVerdict envelope (no merger agent)
+- **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?, target?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts
+- **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Run the @storybloq/lenses merger pipeline programmatically over raw lens outputs; returns the ReviewVerdict envelope (no merger agent). Echo prepare's citedRulingsUndelivered here; without a sessionId it is the only route a delivery hold has
 - **storybloq_review_lenses_judge** (reviewVerdict, convergenceHistory?) - Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent)
 - **storybloq_autonomous_guide** (sessionId?, action, mode?, ticketId?, clientTaskId?, takeover?, reviewEffort?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
 - **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode

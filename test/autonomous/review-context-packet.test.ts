@@ -27,11 +27,15 @@
  *    claim nothing beyond that.
  */
 import { describe, it, expect } from "vitest";
+import { makeRuling } from "../core/test-factories.js";
+import { buildCitationResolutionContext, resolveCitation } from "../../src/core/ruling.js";
+import type { CitationResolution } from "../../src/core/ruling.js";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verdictFilename, computeContentHash, type ReviewVerdictArtifact } from "../../src/autonomous/review-verdict.js";
 import { buildReviewContextPacket } from "../../src/autonomous/review-context-packet.js";
+import type { ReviewContextPacket } from "../../src/autonomous/review-context-packet.js";
 
 function tmpSession(): string {
   const dir = mkdtempSync(join(tmpdir(), "packet-"));
@@ -728,5 +732,151 @@ describe("ISS-1115 3.4: artifact validation", () => {
     writeFileSync(path, JSON.stringify(body, null, 2), "utf-8");
 
     expect(build(dir).priorCodexSessionId).toBeUndefined();
+  });
+});
+
+describe("T-494: cited rulings in the packet", () => {
+  const CAVEAT = "Attribution is a CLAIM";
+
+  /** Builds N resolved citations whose ruling text is `size` characters. */
+  function resolvedCitations(specs: { id: string; size: number }[]): CitationResolution[] {
+    const rulings = specs.map((spec) =>
+      makeRuling({ id: spec.id, text: "x".repeat(spec.size) }),
+    );
+    const ctx = buildCitationResolutionContext(rulings, new Set(), "complete");
+    return specs.map((spec) => resolveCitation(spec.id, ctx));
+  }
+
+  function packetWith(citations: CitationResolution[], budget: number): ReviewContextPacket {
+    const dir = tmpSession();
+    return buildReviewContextPacket({
+      ...base,
+      budget,
+      sessionDir: dir,
+      projectRoot: dir,
+      citedRulings: citations,
+    });
+  }
+
+  it("places the block inside the MANDATORY payload, after the origin rule and before the disclosure", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 20 }]), 16_000);
+    const blockAt = packet.text.indexOf("## Cited Rulings");
+    const disclosureAt = packet.text.indexOf("CONTEXT COMPLETENESS");
+    const captureAt = packet.text.indexOf(base.captureDirective);
+    expect(blockAt).toBeGreaterThan(-1);
+    expect(blockAt).toBeLessThan(disclosureAt);
+    expect(disclosureAt).toBeLessThan(captureAt);
+  });
+
+  it("is NEVER dropped, even at a budget that drops every optional section", () => {
+    // The mandatory payload is what a reviewer is guaranteed. A ruling that
+    // silently vanishes under budget pressure is the failure this scope exists
+    // to prevent, so it must survive the smallest possible packet.
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 20 }]), 1);
+    expect(packet.text).toContain("## Cited Rulings");
+    expect(packet.text).toContain("r-0000000000000001");
+  });
+
+  it("renders a stale citation with the CURRENT text and the superseded label", () => {
+    const rulings = [
+      makeRuling({ id: "r-0000000000000001", text: "old decision" }),
+      makeRuling({ id: "r-0000000000000002", text: "new decision", supersedes: "r-0000000000000001" }),
+    ];
+    const ctx = buildCitationResolutionContext(rulings, new Set(), "complete");
+    const packet = packetWith([resolveCitation("r-0000000000000001", ctx)], 16_000);
+    expect(packet.text).toContain("superseded by r-0000000000000002");
+    expect(packet.text).toContain("new decision");
+    expect(packet.text).not.toContain("old decision");
+  });
+
+  it("renders each non-resolved status as its own line rather than dropping it", () => {
+    const ctx = buildCitationResolutionContext([], new Set(), "complete");
+    const packet = packetWith([resolveCitation("r-0000000000000009", ctx)], 16_000);
+    expect(packet.text).toContain("r-0000000000000009");
+  });
+
+  it("carries the anti-laundering caveat for every resolved citation", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 20 }]), 16_000);
+    expect(packet.text).toContain(CAVEAT);
+  });
+
+  // The plan's fixture table. The first two rows are the SAME input at two
+  // budgets, which is what proves the cap is derived from the round's budget
+  // rather than hardcoded.
+  it("fixture: 3 rulings of 1500 at budget 16000 (cap 4000) keeps 2 texts and marks 1", () => {
+    const packet = packetWith(
+      resolvedCitations([
+        { id: "r-0000000000000001", size: 1500 },
+        { id: "r-0000000000000002", size: 1500 },
+        { id: "r-0000000000000003", size: 1500 },
+      ]),
+      16_000,
+    );
+    expect(packet.text.match(/\[text truncated, read with ruling_get /g) ?? []).toHaveLength(1);
+    expect(packet.omissions.some((o) => o.includes("1") && o.includes("ruling"))).toBe(true);
+  });
+
+  it("fixture: the SAME 3 rulings at budget 24000 (cap 6000) keep all 3 texts", () => {
+    const packet = packetWith(
+      resolvedCitations([
+        { id: "r-0000000000000001", size: 1500 },
+        { id: "r-0000000000000002", size: 1500 },
+        { id: "r-0000000000000003", size: 1500 },
+      ]),
+      24_000,
+    );
+    expect(packet.text).not.toContain("[text truncated");
+    expect(packet.omissions.filter((o) => o.includes("ruling"))).toEqual([]);
+  });
+
+  it("fixture: a ruling of EXACTLY the cap is included (the comparison is inclusive)", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 4000 }]), 16_000);
+    expect(packet.text).not.toContain("[text truncated");
+  });
+
+  it("fixture: a ruling of cap+1 gets the marker (the same boundary from the other side)", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 4001 }]), 16_000);
+    expect(packet.text).toContain("[text truncated, read with ruling_get r-0000000000000001]");
+  });
+
+  it("keeps the ALWAYS-present tier for a ruling whose text was dropped", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 4001 }]), 16_000);
+    expect(packet.text).toContain("r-0000000000000001");
+    expect(packet.text).toContain("owner-direct");
+    expect(packet.text).toContain("2026-08-27");
+    expect(packet.text).toContain(CAVEAT);
+  });
+
+  it("includes texts in CITATION ORDER, all-or-nothing, not best-fit packing", () => {
+    // A long first ruling must not starve the block into markers while a
+    // shorter later one would have fitted: best-fit packing would reorder
+    // rulings by length, and citation order is the order the recorder chose.
+    const packet = packetWith(
+      resolvedCitations([
+        { id: "r-0000000000000001", size: 3900 },
+        { id: "r-0000000000000002", size: 50 },
+        { id: "r-0000000000000003", size: 50 },
+      ]),
+      16_000,
+    );
+    const firstAt = packet.text.indexOf("r-0000000000000001");
+    const secondAt = packet.text.indexOf("r-0000000000000002");
+    expect(firstAt).toBeLessThan(secondAt);
+    expect(packet.text).not.toContain("[text truncated, read with ruling_get r-0000000000000001]");
+  });
+
+  it("names the truncated count in the disclosure through the existing omissions channel", () => {
+    const packet = packetWith(resolvedCitations([{ id: "r-0000000000000001", size: 4001 }]), 16_000);
+    expect(packet.text).toContain("CONTEXT COMPLETENESS: INCOMPLETE");
+    expect(packet.omissions.some((o) => o.includes("ruling"))).toBe(true);
+    expect(packet.completeness).toBe("partial");
+  });
+
+  it("changes nothing at all when no citations are passed", () => {
+    const dir = tmpSession();
+    const withField = buildReviewContextPacket({ ...base, sessionDir: dir, projectRoot: dir, citedRulings: [] });
+    const without = buildReviewContextPacket({ ...base, sessionDir: dir, projectRoot: dir });
+    expect(withField.text).toBe(without.text);
+    expect(without.text).not.toContain("## Cited Rulings");
   });
 });

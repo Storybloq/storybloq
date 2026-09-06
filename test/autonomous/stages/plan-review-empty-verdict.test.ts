@@ -100,8 +100,9 @@ function setupProject(root: string, sessionDir: string): void {
     blockers: [],
   }));
   writeFileSync(join(storyDir, "tickets", "T-001.json"), JSON.stringify({
-    id: "T-001", title: "Test ticket", type: "task", status: "open", phase: "p1", order: 10,
-    description: "Test", blockedBy: [], parentTicket: null,
+    id: "T-001", title: "Test ticket", description: "A test.", type: "task",
+    status: "inprogress", phase: "p1", order: 10, createdDate: "2026-08-01",
+    completedDate: null, blockedBy: [],
   }));
   writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nA plan the landing path can snapshot.\n");
 }

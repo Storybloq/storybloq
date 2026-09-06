@@ -9,7 +9,7 @@ import {
   pollBus,
   pollV1,
   redeliverBusMessage,
-  sendBusMessage,
+  sendBusMessageWithWake,
   updateBusThread,
   updateV1Thread,
   BusError,
@@ -100,7 +100,9 @@ export function registerBusTools(server: McpServer, pinnedRoot: string, onCall?:
       inReplyTo: MessageIdSchema.nullable().optional(),
       idempotencyKey: z.string().min(1).max(128),
     },
-  }, (args) => invoke(() => sendBusMessage(pinnedRoot, {
+    // sendBusMessageWithWake, NOT sendBusMessage: both send surfaces run the
+    // wake tier, or it is live on one and dead on the other.
+  }, (args) => invoke(() => sendBusMessageWithWake(pinnedRoot, {
     endpointId: args.endpointId,
     clientTaskId: args.clientTaskId,
     threadId: args.threadId,

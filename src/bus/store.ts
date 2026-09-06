@@ -81,6 +81,7 @@ import {
   type BusSetupState,
   type BusSeverity,
   type BusStatePayload,
+  type BusWakePayload,
   type BusSummary,
   type BusThreadKind,
   type BusThreadRecord,
@@ -1387,6 +1388,51 @@ async function appendStateEntry(
   const next = await foldBusThread(paths.projectRoot, folded.thread.threadId);
   await writeDerivedThread(paths.projectRoot, next).catch(() => undefined);
   return next;
+}
+
+/**
+ * T-489: append a wake entry.
+ *
+ * Acquires `thread-<id>.lock` and re-folds INSIDE it, exactly like every other
+ * appender. This is not ceremony. The two duet participants hold DIFFERENT
+ * endpoint locks, so an endpoint-locked wake append racing a peer's reply would
+ * compute the same `seq` and `prevHash`, publish a conflicting entry and
+ * QUARANTINE the thread, and catching the error afterwards cannot unpublish it.
+ *
+ * Called only AFTER the network attempt has finished. A wake involves socket I/O
+ * and must never hold a thread lock while it waits.
+ *
+ * Hop count is unaffected: fold.ts increments hopCount only for `message`
+ * entries, and a test pins that rather than assuming it.
+ */
+export async function appendWakeEntry(
+  root: string,
+  threadId: string,
+  payload: BusWakePayload,
+): Promise<void> {
+  const paths = await resolveBusPaths(root);
+  if (!ThreadIdSchema.safeParse(threadId).success) {
+    throw new BusError("invalid_input", "Invalid Bus thread id");
+  }
+  await withHardenedLock(join(paths.locks, `thread-${threadId}.lock`), async () => {
+    const folded = await foldBusThread(paths.projectRoot, threadId);
+    if (folded.integrity !== "verified") {
+      throw new BusError("corrupt", folded.finding ?? "Thread is quarantined");
+    }
+    const entry = makeEntry({
+      type: "wake",
+      threadId,
+      seq: folded.validThroughSeq + 1,
+      prevHash: folded.lastHash,
+      payload,
+    });
+    await durableCreate(
+      join(paths.threads, threadId, "entries", entryFilename(entry)),
+      serialize(entry),
+    );
+    const next = await foldBusThread(paths.projectRoot, threadId);
+    await writeDerivedThread(paths.projectRoot, next).catch(() => undefined);
+  });
 }
 
 async function replyToThread(
@@ -3522,6 +3568,7 @@ async function summarizeFrom(
     client: endpoint.client,
     surface: endpoint.surface,
     state: endpoint.state,
+    wakePolicy: endpoint.wakePolicy,
   }));
   // A corrupt endpoint registry (a malformed record dropped from the parsed set)
   // makes readiness `invalid`, matching the v1 summary and the send path, which

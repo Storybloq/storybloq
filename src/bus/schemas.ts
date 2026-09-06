@@ -376,7 +376,11 @@ export const BusEndpointSchema = z.object({
   state: z.enum(["attached", "offline", "unknown"]),
   joinedAt: IsoTimestampSchema,
   lastSeenAt: IsoTimestampSchema,
-  wakePolicy: z.enum(["never", "offline_only"]),
+  // T-489: `idle` is a genuinely new category. `offline_only` (v1 spec 14.2) meant
+  // "launch a resume process for a proven-OFFLINE endpoint"; `idle` means the peer
+  // is ATTACHED and IDLE and we start a turn in a process already running. Default
+  // stays `never` (endpoints.ts), so no existing endpoint changes behaviour.
+  wakePolicy: z.enum(["never", "offline_only", "idle"]),
   lastPolledMailboxSeq: z.number().int().nonnegative(),
   lastBlockedMailboxSeq: z.number().int().nonnegative(),
   // T-427: PostToolUse (on-tool) delivery keeps its OWN block high-water so the
@@ -386,6 +390,24 @@ export const BusEndpointSchema = z.object({
   // type -- a `.default()` here would diverge them and break the generic
   // readJsonNoFollow inference. Consumers treat an absent value as 0.
   lastToolBlockedMailboxSeq: z.number().int().nonnegative().optional(),
+  // T-489 idle-wake tier. All four are nullable, optional and UNDEFAULTED per the
+  // house pattern: a `.default()` diverges the parsed OUTPUT type from the INPUT
+  // type and breaks the generic readJsonNoFollow inference.
+  //
+  // clientSessionName is recorded as OBSERVED-FROM-LISTAGENTS at setup (name plus
+  // ref), never as something a session knew about itself: NO SESSION HAS A
+  // SELF-KNOWN ADDRESS, both ends learn it only by reading ListAgents.
+  clientSessionName: z.string().min(1).max(512).nullable().optional(),
+  // The socket path that actually carries the message. Not derivable from the
+  // name, so it is stored separately; unavailable is null, never guessed.
+  clientTransportAddress: z.string().min(1).max(4096).nullable().optional(),
+  lastWakeAt: IsoTimestampSchema.nullable().optional(),
+  // Telemetry for EVERY outcome including skips. A skip is a local decision that
+  // never touched the peer, so it belongs here and NOT in the shared, hash-chained,
+  // peer-visible thread. Left as a bounded string rather than an enum because the
+  // skip/failure vocabulary is open-ended (`skipped:*`, `failed:*`) and a closed
+  // enum would reject a newer reason rather than record it.
+  lastWakeResult: z.string().min(1).max(256).nullable().optional(),
   // T-427: on-tool activation proof (see BusHookActivationSchema). Additive,
   // passthrough-safe; an older endpoint record simply parses this as undefined and
   // gains it on the next durable write. Consumers treat undefined/null the same
@@ -549,10 +571,46 @@ export function describeDeliveryTiers(caps: BusDeliveryCapabilities): string {
   return tiers.length === 0 ? "poll" : tiers.join(" + ");
 }
 
+/**
+ * T-489 compile-time exhaustiveness guard.
+ *
+ * Paired with, never a substitute for, the RUNTIME unknown branches. The two
+ * answer different questions: this proves we handle every variant WE know about,
+ * so adding one to a local union fails the BUILD; a runtime branch handles a
+ * variant a NEWER SERVER sends, which our union does not contain and no amount of
+ * type checking can catch.
+ */
+export function assertNever(value: never, context: string): never {
+  throw new Error(`${context}: unhandled variant ${JSON.stringify(value)}`);
+}
+
+/**
+ * T-489 wake tier label, sibling to describeDeliveryTiers so the tier wording has
+ * exactly one home and cannot drift between the core formatter and the CLI.
+ *
+ * Returns null when no wake tier is enabled, so callers append nothing rather than
+ * printing an empty tier.
+ */
+export function describeWakeTier(policy: BusEndpoint["wakePolicy"]): string | null {
+  switch (policy) {
+    case "never":
+      return null;
+    case "offline_only":
+      return "wake (offline only)";
+    case "idle":
+      return "wake (idle)";
+    default:
+      return assertNever(policy, "describeWakeTier");
+  }
+}
+
 export interface BusParticipantSummary {
   readonly client: BusClient;
   readonly surface: BusSurface;
   readonly state: "attached" | "offline" | "unknown";
+  // T-489: the wake tier is per-ENDPOINT, not per project, so status has to read it
+  // from each participant rather than from a single project-wide setting.
+  readonly wakePolicy: BusEndpoint["wakePolicy"];
 }
 
 export interface BusSummary {

@@ -1303,6 +1303,10 @@ export async function summarizeV1(root: string): Promise<BusSummary> {
       client: endpoint.client,
       surface: endpoint.surface,
       state: endpoint.state ?? "unknown",
+      // T-489: a v1 endpoint predates the wake tier entirely. Reported as "never"
+      // because that is the truth about a v1 runtime, not as a placeholder: nothing
+      // can wake it, and a v1 runtime is drainable but not migrated.
+      wakePolicy: "never" as const,
     })),
     // A v1 runtime is drainable but not migrated; steer the reader to `bus setup`.
     nextActions: ["run: storybloq bus setup"],

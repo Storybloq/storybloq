@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/storybloq-storybloq-badge.png)](https://mseep.ai/app/storybloq-storybloq)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Storybloq/storybloq/main/assets/logo.png" width="120" alt="Storybloq logo" />
 </p>

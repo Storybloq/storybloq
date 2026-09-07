@@ -690,7 +690,14 @@ describe("ISS-1115 3.3b: lenses are exempt, and the exemption is recorded", () =
     const artifact = artifacts(sessionDir)[0]!;
     expect(artifact.provenanceExemption).toBeTruthy();
     expect(String(artifact.provenanceExemption)).toContain("lenses");
-    expect(String(artifact.provenanceExemption)).toMatch(/cannot express originClass/);
+    // T-487 step 2: the PERSISTED reason must not still claim the lens schemas
+    // cannot express originClass. They can, as of @storybloq/lenses 0.5.0. The
+    // exemption stands because no lens emits it (ISS-1138). This artifact is
+    // read later by someone deciding whether the check ran, so a stale reason
+    // here is a false claim on the record, not a stale comment.
+    expect(String(artifact.provenanceExemption)).not.toMatch(/cannot express|strict schema/i);
+    expect(String(artifact.provenanceExemption)).toMatch(/emits it yet/i);
+    expect(String(artifact.provenanceExemption)).toContain("ISS-1138");
   });
 
   it("does NOT write an exemption onto a round that was actually required to label", async () => {

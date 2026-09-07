@@ -17,6 +17,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { FindingOriginClassSchema, FindingOriginSchema } from "@storybloq/lenses";
 import { telemetryDirPath } from "./liveness.js";
 import {
   normalizeSeverity,
@@ -368,8 +369,15 @@ export function isPayloadConsistent(
 /**
  * Where the finding came from RELATIVE TO THE PR BASE. The lens harness already
  * reasons in these terms; this names them for every backend.
+ *
+ * T-487 step 2: RE-EXPORTED from `@storybloq/lenses` rather than restated.
+ * These values were a second copy that happened to agree, and both files
+ * carried a comment promising they mirrored each other, which is a promise no
+ * comment can keep. `.options` on a zod enum is the enum's own readonly tuple,
+ * so this is the SAME array rather than an equal one, and the type below still
+ * derives from it exactly as before.
  */
-export const FINDING_ORIGINS = ["introduced", "pre-existing"] as const;
+export const FINDING_ORIGINS = FindingOriginSchema.options;
 export type FindingOrigin = typeof FINDING_ORIGINS[number];
 
 /**
@@ -383,12 +391,7 @@ export type FindingOrigin = typeof FINDING_ORIGINS[number];
  * the field an unbounded value space nobody can enumerate, and make every
  * reader parse an integer out of a string.
  */
-export const FINDING_ORIGIN_CLASSES = [
-  "new",
-  "reintroduced",
-  "unchanged",
-  "introduced-by-fix",
-] as const;
+export const FINDING_ORIGIN_CLASSES = FindingOriginClassSchema.options;
 export type FindingOriginClass = typeof FINDING_ORIGIN_CLASSES[number];
 
 /**
@@ -575,22 +578,36 @@ export function findingIsUnresolved(raw: unknown): boolean {
  *
  * WHY THIS EXEMPTION EXISTS, and why it is not a shortcut. The report handler
  * has FOUR backends, not the three the packet has: lens reports come through
- * the same `report()` path as codex, agent and native codex. But
- * `LensFindingSchema` and `MergedFindingSchema` in `@storybloq/lenses` are
- * `.strict()` and carry no `originClass` at all, so a lens finding CANNOT
- * express the label. A mandatory-label check applied handler-wide would put
- * every lens round into a repair loop that the backend is physically incapable
- * of exiting, which halts the fleet rather than degrading it.
+ * the same `report()` path as codex, agent and native codex. A mandatory-label
+ * check applied handler-wide would put every lens round into a repair loop the
+ * backend cannot exit, which halts the fleet rather than degrading it.
  *
  * ISS-1115 says "No change to what lenses receive". That constrains lens INPUT;
  * it does not license leaving lenses out of a change to the shared report path,
  * and reading it that way is how this was nearly shipped.
  *
- * The exemption is RECORDED on the verdict artifact, never applied silently. A
- * silent exemption and a check that failed to run are indistinguishable from
- * the outside, and this run has already spent four review rounds on exactly
- * that class of difference. Lifting it means widening the lens schemas, which
- * is T-487's change.
+ * T-487 STEP 2: THE REASON CHANGED, THE EXEMPTION DID NOT, AND THE DIFFERENCE
+ * MATTERS. Until `@storybloq/lenses@0.5.0` the reason was capability:
+ * `LensFindingSchema` and `MergedFindingSchema` were `.strict()` and declared
+ * no `originClass`, so a lens finding COULD NOT express the label. Step 1
+ * widened both (`principle`, `dispositionReason`, `origin`, `originClass`,
+ * `sinceRound`, all optional). The schemas can express it now.
+ *
+ * The exemption stays because no lens EMITS provenance. Removing it today
+ * would demand a label from a backend that has the room to carry one and
+ * nothing to put in it, which is the repair loop again by another route.
+ * ISS-1138 owns the emit side, together with where a member-level claim goes
+ * when a merge has to choose between members.
+ *
+ * The stale reason was not a comment problem. It is RECORDED on the verdict
+ * artifact, so it is a persisted claim a later reader relies on, and "the
+ * schema cannot express it" would have gone on reading as authoritative while
+ * being false. An absence that reads as a zero is this ticket's whole subject;
+ * a reason that reads as current and is not is the same defect wearing prose.
+ *
+ * The exemption is RECORDED, never applied silently. A silent exemption and a
+ * check that failed to run are indistinguishable from the outside, and this
+ * run has already spent four review rounds on that class of difference.
  */
 export const PROVENANCE_EXEMPT_BACKENDS: ReadonlySet<string> = new Set(["lenses"]);
 
@@ -685,7 +702,7 @@ export function evaluateProvenanceGate(input: ProvenanceGateInput): ProvenanceGa
   if (!backendCanCarryProvenance(backend)) {
     return {
       kind: "exempt",
-      reason: `backend "${backend}" cannot express originClass (strict schema); label not required`,
+      reason: `backend "${backend}" carries no provenance: its schemas accept originClass (@storybloq/lenses 0.5.0) but no lens emits it yet (ISS-1138); label not required`,
     };
   }
 

@@ -89,10 +89,19 @@ describe("ISS-1115 3.3b: the lens exemption", () => {
     // A silent exemption and a check that failed to run look identical from
     // outside, and telling them apart is the whole reason this is reported.
     const g = gate({ backend: "lenses", findings: [f()] });
-    if (g.kind === "exempt") {
-      expect(g.reason).toContain("lenses");
-      expect(g.reason).toMatch(/cannot express originClass/);
-    }
+    // Asserted BEFORE the narrowing guard: the previous form wrapped both
+    // assertions in `if (g.kind === "exempt")`, so a gate that stopped
+    // exempting would have passed this test vacuously (T-487 step 2).
+    expect(g.kind).toBe("exempt");
+    if (g.kind !== "exempt") return;
+    expect(g.reason).toContain("lenses");
+    // T-487 step 2: the reason is no longer schema INCAPACITY. @storybloq/lenses
+    // 0.5.0 accepts originClass; the exemption survives because no lens EMITS
+    // it, and ISS-1138 owns that. Pinned as the true fact rather than as
+    // whatever string happens to be there.
+    expect(g.reason).not.toMatch(/cannot express|strict schema/i);
+    expect(g.reason).toMatch(/emits it yet/i);
+    expect(g.reason).toContain("ISS-1138");
   });
 
   it("exempts NOBODY else", () => {

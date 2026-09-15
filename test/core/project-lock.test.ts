@@ -40,10 +40,18 @@ vi.mock("../../src/core/limit-lock.js", async (importOriginal) => {
 // that acquires its own lock. Defaults to delegating to the real
 // implementation, so every other test (including direct
 // verifyProjectLockOwnership calls elsewhere in this file) is unaffected.
-const fencingOverride = vi.hoisted(() => ({ failNextN: 0 }));
+const fencingOverride = vi.hoisted(() => ({
+  failNextN: 0,
+  failAfterCalls: null as number | null,
+  calls: 0,
+}));
 vi.mock("../../src/core/project-lock.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/project-lock.js")>();
   const verifyProjectLockOwnership = ((handle: unknown) => {
+    fencingOverride.calls += 1;
+    if (fencingOverride.failAfterCalls !== null && fencingOverride.calls > fencingOverride.failAfterCalls) {
+      return false;
+    }
     if (fencingOverride.failNextN > 0) {
       fencingOverride.failNextN -= 1;
       return false;
@@ -63,8 +71,18 @@ vi.mock("../../src/core/project-lock.js", async (importOriginal) => {
 // bypassed when the test process runs as root (common in CI containers),
 // which would make that technique silently no-op rather than fail loudly.
 const statOverride = vi.hoisted(() => ({ failPathSuffix: null as string | null }));
+const openOverride = vi.hoisted(() => ({ failDirectoryPath: null as string | null }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const open = (async (path: unknown, flags: unknown, mode?: unknown) => {
+    if (openOverride.failDirectoryPath && path === openOverride.failDirectoryPath) {
+      openOverride.failDirectoryPath = null;
+      const err = new Error("simulated Windows directory fsync failure") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      throw err;
+    }
+    return (actual.open as (...a: unknown[]) => Promise<unknown>)(path, flags, mode);
+  }) as typeof actual.open;
   const stat = (async (path: unknown, opts?: unknown) => {
     if (statOverride.failPathSuffix && typeof path === "string" && path.endsWith(statOverride.failPathSuffix)) {
       statOverride.failPathSuffix = null;
@@ -74,7 +92,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }
     return (actual.stat as (...a: unknown[]) => Promise<unknown>)(path, opts);
   }) as typeof actual.stat;
-  return { ...actual, stat };
+  return { ...actual, open, stat };
 });
 
 import {
@@ -655,16 +673,24 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
 
   beforeEach(() => {
     fencingOverride.failNextN = 0;
+    fencingOverride.failAfterCalls = null;
+    fencingOverride.calls = 0;
     statOverride.failPathSuffix = null;
+    openOverride.failDirectoryPath = null;
   });
 
   afterEach(async () => {
     // A leftover armed override would silently mask which fencing/stat check
     // a later test actually exercised (or let it pass for the wrong reason).
     expect(fencingOverride.failNextN).toBe(0);
+    expect(fencingOverride.failAfterCalls).toBe(null);
     expect(statOverride.failPathSuffix).toBe(null);
+    expect(openOverride.failDirectoryPath).toBe(null);
     fencingOverride.failNextN = 0;
+    fencingOverride.failAfterCalls = null;
+    fencingOverride.calls = 0;
     statOverride.failPathSuffix = null;
+    openOverride.failDirectoryPath = null;
     if (testRoot) await rm(testRoot, { recursive: true, force: true });
   });
 
@@ -793,6 +819,41 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     const err = await forceOwnershipLossDuring(testRoot, () => atomicCreate(target, JSON.stringify(ticket("T-021"))));
     expect(err).toBeInstanceOf(ProjectLoaderError);
     expect(existsSync(target)).toBe(false);
+  });
+
+  it("atomicCreate succeeds after link when parent-directory durability sync is unsupported", async () => {
+    testRoot = await createProject();
+    const ticketsDir = join(testRoot, ".story", "tickets");
+    const target = join(ticketsDir, "T-023.json");
+    const content = JSON.stringify(ticket("T-023"));
+    openOverride.failDirectoryPath = ticketsDir;
+
+    await expect(atomicCreate(target, content)).resolves.toBeUndefined();
+    expect(await readFile(target, "utf-8")).toBe(content);
+  });
+
+  it("treats fence loss at journal removal as success and leaves an idempotent recovery journal", async () => {
+    testRoot = await createProject();
+    const wrapDir = join(testRoot, ".story");
+    const target = join(wrapDir, "tickets", "T-024.json");
+    const content = JSON.stringify(ticket("T-024"));
+
+    await withProjectLock(testRoot, { strict: false }, async () => {
+      fencingOverride.calls = 0;
+      fencingOverride.failAfterCalls = 1;
+      try {
+        await expect(runTransactionUnlocked(testRoot, [{ op: "write", target, content }])).resolves.toBeUndefined();
+      } finally {
+        fencingOverride.failAfterCalls = null;
+      }
+    });
+
+    expect(await readFile(target, "utf-8")).toBe(content);
+    expect(existsSync(join(wrapDir, ".txn.json"))).toBe(true);
+
+    await loadProject(testRoot);
+    expect(await readFile(target, "utf-8")).toBe(content);
+    expect(existsSync(join(wrapDir, ".txn.json"))).toBe(false);
   });
 
   it("fenced choke point: fencedUnlink (real site: deleteTicket hard-delete path) aborts on ownership loss", async () => {

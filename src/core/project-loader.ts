@@ -1072,7 +1072,13 @@ export async function runTransactionUnlocked(
     }
 
     // 6. Remove journal
-    await removeJournal();
+    try {
+      await removeJournal();
+    } catch (err) {
+      if (!isProjectLockFencingError(err)) throw err;
+      // Every entry is already applied and durable. Keep the journal for the
+      // next holder's idempotent forward recovery instead of reporting failure.
+    }
   } catch (err) {
     if (!commitStarted) {
       // Safe to clean up -- no renames have happened
@@ -1539,8 +1545,13 @@ export async function atomicCreate(
     fd = undefined;
     checkProjectLockFencing();
     await link(tempPath, targetPath);
-    const parentFd = await open(dirname(targetPath), "r");
-    try { await parentFd.sync(); } finally { await parentFd.close(); }
+    try {
+      const parentFd = await open(dirname(targetPath), "r");
+      try { await parentFd.sync(); } finally { await parentFd.close(); }
+    } catch {
+      // The link already committed the create; directory fsync is best-effort
+      // because directory handles cannot be synced reliably on Windows.
+    }
   } catch (err) {
     if (err instanceof ProjectLoaderError) throw err;
     const code = (err as NodeJS.ErrnoException).code;
@@ -1686,6 +1697,11 @@ export async function guardPath(
 // can fence their commit syscall without changing withLock's ~13 internal call
 // sites or withProjectLock/runTransactionUnlocked's external ones.
 const projectLockContext = new AsyncLocalStorage<ProjectLockHandle>();
+const PROJECT_LOCK_FENCING_MESSAGE = "Lock ownership lost before commit; write was not applied";
+
+function isProjectLockFencingError(err: unknown): err is ProjectLoaderError {
+  return err instanceof ProjectLoaderError && err.message === PROJECT_LOCK_FENCING_MESSAGE;
+}
 
 /**
  * Fencing check for a commit syscall: does the ambient lock (if any) still
@@ -1699,7 +1715,7 @@ function checkProjectLockFencing(): void {
   const handle = projectLockContext.getStore();
   if (!handle) return;
   if (!verifyProjectLockOwnership(handle)) {
-    throw new ProjectLoaderError("io_error", "Lock ownership lost before commit; write was not applied");
+    throw new ProjectLoaderError("io_error", PROJECT_LOCK_FENCING_MESSAGE);
   }
 }
 

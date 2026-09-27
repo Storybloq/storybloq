@@ -174,8 +174,7 @@ Check if the storybloq MCP tools are available.
 ## Step 1: Check Project
 
 - If `.story/` exists in the current working directory (or a parent) -> proceed to Step 2
-- If no `.story/` but project indicators exist (code, manifest, .git) -> read `setup-flow.md` in the same directory as this skill file and follow the AI-Assisted Setup Flow (if not found, tell user to run `storybloq setup --client all`)
-- If no `.story/` and no project indicators -> explain what storybloq is and suggest navigating to a project
+- If no `.story/` -> read `setup-flow.md` and follow the AI-Assisted Setup Flow, whether the folder holds code, only documents, or nothing but an idea. Only when the user did not ask for setup and the folder is empty: explain storybloq and offer to set it up here
 
 ## Step 2: Load Context (Default /story Behavior)
 
@@ -195,11 +194,11 @@ Call these in order:
 
 ## Step 2b: Empty Scaffold Check
 
-After `storybloq_status` returns, check in order:
+Using the retained status payload, check in order (`setup-flow.md` sits beside this file; if it is missing, tell the user to run `storybloq setup --client all`):
 
-1. **Integrity guard** -- if the response starts with "Warning:" and contains "item(s) skipped due to data integrity issues", this is NOT an empty scaffold. Tell the user to run `storybloq validate`. Continue Step 2/3 normally.
-2. **Scaffold detection** -- check BOTH: output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`. If met AND the project has code indicators (git history, package manifest, source files), read `setup-flow.md` in the same directory as this skill file and follow the AI-Assisted Setup Flow (section 1b). After setup completes, restart Step 2 from the top (the project now has data to load).
-3. **Empty without code** -- if scaffold detected but no code indicators (truly empty directory), continue to Step 3 which will show: "Your project is set up but has no tickets yet. Would you like me to help you create your first phase and tickets?"
+1. **Integrity guard** -- a non-empty top-level `warnings` array (JSON), or a response starting "Warning:" that contains "item(s) skipped due to data integrity issues" (Markdown), means this is NOT an empty scaffold. Tell the user to run `storybloq validate`. Continue Step 2/3 normally.
+2. **Scaffold detection (JSON)** -- `data.isEmptyScaffold` is `true`, with or without code: read `setup-flow.md` and follow the AI-Assisted Setup Flow as an interrupted scaffold. After setup completes, restart Step 2 from the top.
+3. **Legacy Markdown payload** (mode A, older server) -- the output contains "## Getting Started" AND shows `Tickets: 0/0 complete` + `Handovers: 0`: route exactly as in 2.
 
 ## Step 3: Present Summary
 

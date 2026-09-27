@@ -1,0 +1,66 @@
+{
+  "fixture": "empty-idea",
+  "class": "empty",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "librarian adds a tool to the catalogue",
+      "source": "owner answer: first version"
+    },
+    {
+      "id": "R2",
+      "text": "librarian lends a tool to a member with a due date",
+      "source": "owner answer: first version"
+    },
+    {
+      "id": "R3",
+      "text": "librarian records a return",
+      "source": "owner answer: first version"
+    },
+    {
+      "id": "R4",
+      "text": "librarian sees overdue loans",
+      "source": "owner answer: first version"
+    },
+    {
+      "id": "R5",
+      "text": "members see what is available",
+      "source": "owner answer: users"
+    },
+    {
+      "id": "C1",
+      "text": "runs in a browser on the library's one shared laptop",
+      "source": "owner answer: constraints",
+      "constraint": true
+    },
+    {
+      "id": "C2",
+      "text": "no member data leaves the building: no hosted service or external call receives member data",
+      "source": "owner answer: constraints",
+      "constraint": true
+    },
+    {
+      "id": "D1",
+      "text": "reservations and email reminders deferred",
+      "source": "owner answer: later",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "first version",
+    "scope boundaries",
+    "constraints",
+    "existing material"
+  ],
+  "answeredInMaterial": [],
+  "expectedRecipe": {
+    "testStages": "disabled"
+  },
+  "rules": [
+    "no stack recommended unless it blocks planning",
+    "member data stays in the building: no hosted database, third-party service or network call receives member data (a service that never sees member data, such as a font or a package registry, is not a violation)",
+    "verification includes a check that no member data leaves the building",
+    "the shared-laptop setting is reflected in sign-in and data handling (no per-person accounts are assumed)"
+  ]
+}

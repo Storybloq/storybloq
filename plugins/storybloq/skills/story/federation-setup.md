@@ -212,7 +212,7 @@ Use `AskUserQuestion`:
 - question: "Set up tickets and phases for each node now?"
 - header: "Nodes"
 - options:
-  - "Yes, guide me through each (Recommended)" -- run the setup-flow.md interview for each node
+  - "Yes, guide me through each (Recommended)" -- run the setup-flow.md setup for each node
   - "Set up one at a time" -- start with the first node, return here after each
   - "Skip" -- the user will set up nodes later by cd-ing into each and running `/story`
 

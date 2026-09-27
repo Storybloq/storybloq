@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "schemaVersion": 2,
+  "project": "scaffold-demo",
+  "type": "generic",
+  "language": "unknown",
+  "features": {
+    "tickets": true,
+    "issues": true,
+    "handovers": true,
+    "roadmap": true,
+    "reviews": true
+  }
+}

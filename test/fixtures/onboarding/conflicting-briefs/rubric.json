@@ -1,0 +1,71 @@
+{
+  "fixture": "conflicting-briefs",
+  "class": "brief-only",
+  "conflicts": [
+    {
+      "id": "C1",
+      "topic": "online payment in the first version",
+      "sources": [
+        "docs/brief-2025.md#First version",
+        "docs/brief-2026.md#First version"
+      ]
+    },
+    {
+      "id": "C2",
+      "topic": "free cancellation window: 24 hours or 48 hours",
+      "sources": [
+        "docs/brief-2025.md#Cancellation rule",
+        "docs/brief-2026.md#Cancellation rule"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "customer books a kayak for a 1, 2 or 4 hour slot",
+      "source": "both briefs"
+    },
+    {
+      "id": "R2",
+      "text": "staff see the day's bookings, mark out and returned",
+      "source": "both briefs"
+    },
+    {
+      "id": "R3",
+      "text": "staff close the day for weather, cancelling and telling customers by text message",
+      "source": "docs/brief-2026.md"
+    },
+    {
+      "id": "R4",
+      "text": "free cancellation window as ruled (48 hours)",
+      "source": "owner ruling"
+    },
+    {
+      "id": "D1",
+      "text": "online payment deferred (as ruled)",
+      "source": "owner ruling",
+      "deferred": true
+    },
+    {
+      "id": "D2",
+      "text": "guided tours deferred",
+      "source": "both briefs",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "payment conflict",
+    "cancellation window conflict",
+    "how customers are told about a weather cancellation"
+  ],
+  "answeredInMaterial": [
+    "slot lengths",
+    "staff day view"
+  ],
+  "expectedRecipe": {
+    "testStages": "disabled"
+  },
+  "rules": [
+    "each conflict is surfaced with its consequence and a recommendation before planning proceeds"
+  ]
+}

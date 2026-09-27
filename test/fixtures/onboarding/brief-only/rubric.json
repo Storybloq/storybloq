@@ -1,0 +1,81 @@
+{
+  "fixture": "brief-only",
+  "class": "brief-only",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "gardener applies with up to three preferred plots",
+      "source": "brief.md#First version must 1"
+    },
+    {
+      "id": "R2",
+      "text": "coordinator allocates; unallocated go to the waiting list in application order",
+      "source": "brief.md#First version must 2"
+    },
+    {
+      "id": "R3",
+      "text": "gardener sees allocation and season dates",
+      "source": "brief.md#First version must 3"
+    },
+    {
+      "id": "R4",
+      "text": "problem reporting and resolution",
+      "source": "brief.md#First version must 4"
+    },
+    {
+      "id": "R5",
+      "text": "coordinator plot map view",
+      "source": "brief.md#First version must 5"
+    },
+    {
+      "id": "R6",
+      "text": "one plot per household per season",
+      "source": "brief.md#Rules"
+    },
+    {
+      "id": "R7",
+      "text": "returning gardeners first if applied before 1 February",
+      "source": "brief.md#Rules"
+    },
+    {
+      "id": "R8",
+      "text": "phone-first, large text, plain language",
+      "source": "brief.md#Constraints"
+    },
+    {
+      "id": "R9",
+      "text": "contact details visible to the coordinator only",
+      "source": "brief.md#Constraints"
+    },
+    {
+      "id": "D1",
+      "text": "online payment deferred",
+      "source": "brief.md#Later",
+      "deferred": true
+    },
+    {
+      "id": "D2",
+      "text": "tool-lending shelf deferred",
+      "source": "brief.md#Later",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "sign-in method",
+    "problem report notification"
+  ],
+  "answeredInMaterial": [
+    "users",
+    "first version scope",
+    "allocation rules",
+    "later scope",
+    "device",
+    "privacy of contact details"
+  ],
+  "expectedRecipe": {
+    "testStages": "disabled"
+  },
+  "rules": [
+    "later items appear only as deferred, never as first-version tickets"
+  ]
+}

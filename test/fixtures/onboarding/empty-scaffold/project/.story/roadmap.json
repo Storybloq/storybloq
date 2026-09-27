@@ -1,0 +1,13 @@
+{
+  "title": "scaffold-demo",
+  "date": "2026-09-01",
+  "phases": [
+    {
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup",
+      "description": "Initial project setup."
+    }
+  ],
+  "blockers": []
+}

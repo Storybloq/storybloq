@@ -728,208 +728,277 @@ describe("setup-skill", () => {
     ).toBe(true);
   });
 
+  it("SKILL.md Step 1 routes every folder without .story/ to setup-flow (T-536)", async () => {
+    const skill = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    const step1 = skill.slice(skill.indexOf("## Step 1: Check Project"), skill.indexOf("## Step 2: Load Context"));
+    expect(step1).toContain("If no `.story/` -> read `setup-flow.md`");
+    expect(step1).toContain("only documents, or nothing but an idea");
+    expect(step1).toContain("offer to set it up here");
+    expect(step1).not.toContain("suggest navigating to a project");
+    expect(step1).not.toContain("project indicators");
+  });
+
+  it("SKILL.md Step 2b routes on isEmptyScaffold from JSON, integrity first, Markdown fallback kept (T-536)", async () => {
+    const skill = await readFile(join(PROJECT_ROOT, "src", "skill", "SKILL.md"), "utf-8");
+    const step2b = skill.slice(skill.indexOf("## Step 2b"), skill.indexOf("## Step 3"));
+    const integrity = step2b.indexOf("**Integrity guard**");
+    const json = step2b.indexOf("`data.isEmptyScaffold` is `true`");
+    const markdown = step2b.indexOf("**Legacy Markdown payload**");
+    expect(integrity).toBeGreaterThanOrEqual(0);
+    expect(json).toBeGreaterThan(integrity);
+    expect(markdown).toBeGreaterThan(json);
+    expect(step2b).toContain("non-empty top-level `warnings` array");
+    expect(step2b).toContain("item(s) skipped due to data integrity issues");
+    expect(step2b).toContain("with or without code");
+    expect(step2b).not.toContain("code indicators");
+    expect(step2b).not.toContain("no tickets yet");
+  });
+
   // -------------------------------------------------------------------------
   // Support file content validation
   // -------------------------------------------------------------------------
 
-  it("setup-flow.md contains all setup flow sections", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("## AI-Assisted Setup Flow");
-    expect(content).toContain("#### 1a. Detect Project Type");
-    expect(content).toContain("#### 1b. Existing Project");
-    expect(content).toContain("#### 1c. New Project");
-    expect(content).toContain("#### 1d. Present Proposal");
-    expect(content).toContain("#### 1d2. Refinement and Review");
-    expect(content).toContain("#### 1e. Execute on Approval");
-    expect(content).toContain("#### 1f. Post-Setup");
+  // T-536: setup-flow.md is product-first discovery, complete planning and
+  // review by default. Sections are found by their stable step id ("1a",
+  // "1c2"), not their title, so a contract fails on behaviour rather than on a
+  // renamed heading; the titles have their own test. Each contract reads only
+  // its section's text, so a phrase moved into the wrong section fails instead
+  // of passing on a stray match elsewhere in the file.
+  const readSetupFlow = (): Promise<string> =>
+    readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
+  // A step T-536 renumbered, mapped to the id it had before, so the contracts run
+  // against the pre-T-536 flow and fail on its content rather than on a missing
+  // heading. Used only when the current id is absent; the heading test pins it.
+  const FORMER_STEP_IDS: Readonly<Record<string, string>> = { "1c2": "1d2" };
+  const flowSection = (content: string, id: string): string => {
+    const heading = (step: string): RegExpExecArray | null => new RegExp(`^#### ${step.replace(".", "\\.")}\\. [^\\n]*$`, "m").exec(content);
+    const m = heading(id) ?? (FORMER_STEP_IDS[id] !== undefined ? heading(FORMER_STEP_IDS[id]!) : null);
+    expect(m, `setup-flow.md has no step ${id}`).not.toBeNull();
+    const rest = content.slice(m!.index + m![0].length);
+    const next = rest.search(/\n#{2,4} /);
+    return next === -1 ? rest : rest.slice(0, next);
+  };
+
+  /** The execution contract, as a list of problems, so the mutation tests below can prove it bites. */
+  const executionProblems = (content: string): string[] => {
+    const problems: string[] = [];
+    const pkg = flowSection(content, "1d");
+    const execute = flowSection(content, "1e");
+    if (!pkg.includes('nothing in 1e runs until the user explicitly chooses "Approve setup"')) problems.push("no wait for an explicit approval");
+    if (!execute.includes('Everything below runs only after "Approve setup".')) problems.push("execution not gated on approval");
+    if (!/\*\*Pass 1:\*\* Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy`/.test(execute)) problems.push("pass 1 does not create without blockedBy");
+    if (!execute.includes("Keep the id each call returns")) problems.push("pass 1 does not keep the returned ids");
+    if (!/\*\*Pass 2:\*\* Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned/.test(execute)) problems.push("pass 2 does not wire dependencies from the returned ids");
+    if (!execute.includes("Validate: no cycles, no self-references")) problems.push("no dependency validation");
+    const pass1 = execute.indexOf("**Pass 1:**");
+    const pass2 = execute.indexOf("**Pass 2:**");
+    if (pass1 < 0 || pass2 < 0 || pass2 < pass1) problems.push("pass 2 does not follow pass 1");
+    return problems;
+  };
+
+  it("setup-flow.md keeps the section headings SKILL.md and the flow cite", async () => {
+    const content = await readSetupFlow();
+    for (const heading of [
+      "## AI-Assisted Setup Flow",
+      "#### 1a. Discover",
+      "#### 1b. Understand the Material",
+      "#### 1c. Establish Success",
+      "#### 1c2. Plan and Review",
+      "#### 1d. Present Proposal",
+      "#### 1e. Execute on Approval",
+      "#### 1f. Post-Setup",
+    ]) {
+      expect(content).toContain(heading);
+    }
   });
 
-  it("setup-flow.md uses two-axis taxonomy (surface + characteristics)", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("primary surface");
-    expect(content).toContain("special characteristics");
-    expect(content).toContain("multiSelect: true");
+  it("setup-flow.md discovery: four folder classes, no length or manifest gate, relevant material only", async () => {
+    const discover = flowSection(await readSetupFlow(), "1a");
+    for (const cls of ["`empty`", "`brief-only`", "`existing`", "`interrupted`"]) expect(discover).toContain(cls);
+    expect(discover).toContain("no manifest or git requirement and no minimum length");
+    expect(discover).toMatch(/Skip caches, build outputs, vendored dependencies/);
   });
 
-  it("setup-flow.md characteristics are never skipped even when stack is named", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Do NOT skip characteristics");
+  it("setup-flow.md understanding: every brief read, source references, evidence before completion, conflicts ruled", async () => {
+    const understand = flowSection(await readSetupFlow(), "1b");
+    expect(understand).toContain("the README included");
+    expect(understand).toContain("no size or heading-word filter");
+    expect(understand).not.toMatch(/>\s*100 lines/);
+    expect(understand).toContain("source reference");
+    for (const label of ["**requirement**", "**proposal**", "**existing behaviour**", "**unresolved decision**"]) {
+      expect(understand).toContain(label);
+    }
+    expect(understand).toContain("**Evidence before completion.**");
+    expect(understand).toContain("complete only when the code has it");
+    expect(understand).toMatch(/each conflict with its consequence and a recommendation/);
+    expect(understand).toContain("Inspect only what changes the plan");
   });
 
-  it("setup-flow.md has summary breaks between gate clusters", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("--- Summary break ---");
+  it("setup-flow.md success: supplied answers reused, only unresolved material gaps asked, postponed decisions block only their work", async () => {
+    const success = flowSection(await readSetupFlow(), "1c");
+    expect(success).toContain("Reuse what the brief and the conversation already answered");
+    expect(success).toContain("**material gaps** -- unresolved questions whose answer would change the plan");
+    expect(success).toContain("When the material already answers everything, ask nothing.");
+    expect(success).toContain("A decision the user postpones is recorded as an open owner decision: only the work it affects waits on it");
+    expect(success).toContain("sensitive or regulated domain");
+    expect(success).toContain("Label assumptions as assumptions");
+    expect(success).toContain("never ask them again");
+    // The eval harness bounds its own discovery rounds; the product flow carries no round cap and no forced question.
+    expect(success).not.toMatch(/at most (three|3) rounds/);
+    expect(success).not.toMatch(/always gets at least one round/);
   });
 
-  it("setup-flow.md 1b includes brief/PRD scan", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Project brief / PRD scan");
-    expect(content).toContain("Brief precedence");
+  it("setup-flow.md planning: no quotas, the ticket template with no empty label, coverage map, real dependencies, sizing by verifiability", async () => {
+    const content = await readSetupFlow();
+    const plan = flowSection(content, "1c2");
+    expect(content).not.toMatch(/3-7 phases/);
+    expect(content).not.toMatch(/2-5 each/);
+    expect(plan).toContain("no phase or ticket quotas");
+    for (const field of ["Outcome:", "Scope:", "Excludes:", "Acceptance:", "Behaviour:", "Verification:", "Prerequisites:", "Assumptions:"]) {
+      expect(plan).toContain(field);
+    }
+    expect(plan).toContain("never leave it empty");
+    expect(plan).toContain("**Coverage map.**");
+    expect(plan).toContain("never silently promoted");
+    expect(plan).toContain("`blockedBy` reflects real prerequisites only, never automatic chaining from phase order");
+    expect(plan).toContain("split a ticket only when one slice cannot be implemented and verified as a unit");
+    expect(plan).not.toMatch(/Split a ticket that spans several entities, an API and its UI/);
   });
 
-  it("setup-flow.md 1d2 refinement covers descriptions, dependencies, sizing, and missing entities", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("blockedBy");
-    expect(content).toContain("split oversized tickets");
-    expect(content).toContain("missing");
-    expect(content).toContain("core differentiator");
-    expect(content).toContain("undecided tech choices");
+  it("setup-flow.md checkpoints: three kinds, the Checkpoint: title convention, owner criteria, blocking only affected work", async () => {
+    const plan = flowSection(await readSetupFlow(), "1c2");
+    for (const kind of ["**early artifact review**", "**milestone demonstration**", "**first-version acceptance**"]) {
+      expect(plan).toContain(kind);
+    }
+    expect(plan).toContain("titled `Checkpoint: <what the owner reviews>`");
+    expect(plan).toContain("`Question:` for a decision, or `Criteria:` for a demonstration or acceptance");
+    expect(plan).toContain("only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint");
+    expect(plan).toContain("Stage-1 limitation: nothing enforces the gate yet");
   });
 
-  it("setup-flow.md review uses autonomous mode backend selection", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("review_plan");
-    expect(content).toContain("Maximum 2 review rounds");
+  it("setup-flow.md review: on by default, capability order, two rounds, a visible retry-or-continue stop", async () => {
+    const plan = flowSection(await readSetupFlow(), "1c2");
+    expect(plan).toContain("**Independent review, by default.**");
+    expect(plan).toContain("This runs before anything is shown for approval, every time.");
+    const codex = plan.indexOf("`codex exec --output-schema`");
+    const mcp = plan.indexOf("`review_plan`");
+    const agent = plan.indexOf("an independent agent");
+    expect(codex).toBeGreaterThanOrEqual(0);
+    expect(mcp).toBeGreaterThan(codex);
+    expect(agent).toBeGreaterThan(mcp);
+    expect(plan).toContain("Maximum 2 review rounds");
+    expect(plan).toContain("never weakened");
+    expect(plan).toContain('"Retry the review"');
+    expect(plan).toContain('"Continue without independent review"');
+    expect(plan).toContain("Stop there until the user answers");
+    expect(await readSetupFlow()).not.toContain("Review skipped -- no review backends available");
   });
 
-  it("setup-flow.md 1e includes two-pass creation and CLAUDE.md/RULES.md generation", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Pass 1:");
-    expect(content).toContain("Pass 2:");
-    expect(content).toContain("CLAUDE.md generation");
-    expect(content).toContain("RULES.md generation");
-    expect(content).toContain("Sanitization");
+  it("setup-flow.md package: three options, one approval covering tickets, files, quality and git", async () => {
+    const content = await readSetupFlow();
+    const pkg = flowSection(content, "1d");
+    for (const option of ['"Approve setup"', '"Adjust the plan"', '"Inspect details"']) expect(pkg).toContain(option);
+    expect(content).not.toContain("Create as-is");
+    expect(content).not.toContain("Refine + get a second opinion");
+    expect(pkg).toContain("**Governance files**");
+    expect(pkg).toContain("`REVIEW.md`");
+    expect(pkg).toContain("**Quality level**");
+    for (const level of ["**Full pipeline**", "**Tests only**", "**Minimal**"]) expect(pkg).toContain(level);
+    expect(pkg).toContain("**Git:**");
+    expect(pkg).toContain("One approval covers everything listed");
+    expect(flowSection(content, "1e")).not.toMatch(/AskUserQuestion/);
   });
 
-  it("setup-flow.md has single combined approval + refinement question", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    // One question combines approval and refinement depth
-    expect(content).toContain("How should I proceed with this proposal");
-    expect(content).toContain("Refine + get a second opinion (Recommended)");
-    expect(content).toContain("Create as-is");
-    expect(content).toContain("Adjust first");
-    // Refinement has explicit steps A-D with required gates
-    expect(content).toContain("Do NOT skip this section");
-    expect(content).toContain("Step D: Ask user to approve before creating");
+  it("setup-flow.md ordering: review before the package question, an explicit approval before any write", async () => {
+    const content = await readSetupFlow();
+    const review = content.indexOf("**Independent review, by default.**");
+    const question = content.indexOf('question: "How should I proceed with this setup?"');
+    const wait = content.indexOf('nothing in 1e runs until the user explicitly chooses "Approve setup"');
+    const init = content.indexOf("Call `storybloq_init`");
+    const firstPhase = content.indexOf("Call `storybloq_phase_create`");
+    const governance = content.indexOf("**CLAUDE.md generation**");
+    const gitInit = content.indexOf("run `git init`");
+    for (const at of [review, question, wait, init, firstPhase, governance, gitInit]) expect(at).toBeGreaterThanOrEqual(0);
+    expect(review).toBeLessThan(question);
+    expect(question).toBeLessThan(wait);
+    for (const write of [init, firstPhase, governance, gitInit]) expect(wait).toBeLessThan(write);
   });
 
-  it("setup-flow.md has system shape and execution model as separate gates", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("How should the system be structured");
-    expect(content).toContain("How does processing work");
+  it("setup-flow.md execution: two-pass creation with dependency wiring, gated on an explicit approval", async () => {
+    expect(executionProblems(await readSetupFlow())).toEqual([]);
   });
 
-  it("setup-flow.md has BaaS as a first-class system shape option", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("managed backend (Supabase/Firebase)");
-    // BaaS skips ORM but auth still fires
-    expect(content).toContain("skip ORM choice");
-    expect(content).toContain("Auth gate still fires");
+  it("the execution contract catches a removed dependency pass and a removed wait for approval", async () => {
+    const content = await readSetupFlow();
+    const mutants: [string, string, RegExp][] = [
+      ["pass 2 removed", "**Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned.", /pass 2 does not wire/],
+      ["cycle check removed", "Validate: no cycles, no self-references.", /no dependency validation/],
+      ["wait removed", ' Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup".', /no wait for an explicit approval/],
+      ["gate removed", 'Everything below runs only after "Approve setup".', /execution not gated/],
+    ];
+    for (const [name, text, expected] of mutants) {
+      expect(content, `${name}: the mutated text must exist`).toContain(text);
+      expect(executionProblems(content.replace(text, "")).join(), name).toMatch(expected);
+    }
   });
 
-  it("setup-flow.md domain complexity is multiSelect", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    const domainSection = content.split("Step 4d")[1]!.split("Step 4e")[0]!;
-    expect(domainSection).toContain("multiSelect: true");
+  it("setup-flow.md execution: init only when .story/ is absent, scaffold reused without force, readiness by capability, phases after p0", async () => {
+    const content = await readSetupFlow();
+    const execute = flowSection(content, "1e");
+    expect(execute).toContain("**Initialise only when `.story/` is absent.**");
+    expect(execute).toContain("init is never forced over them");
+    expect(execute).toContain("`p0`");
+    expect(execute).toContain("**Readiness by capability.**");
+    for (const tool of ["`storybloq_phase_create`", "`storybloq_ticket_create`", "`storybloq_ticket_update`", "`storybloq_issue_create`", "`storybloq_snapshot`"]) {
+      expect(execute).toContain(tool);
+    }
+    expect(execute).toContain("fall back to the CLI");
+    expect(execute).toContain("stop with a concrete blocker");
+    expect(content).not.toMatch(/only 2 tools|exactly two tools/);
+    expect(execute).toContain('the first goes `after: "p0"` without `atStart`; only on an empty roadmap does the first use `atStart: true`');
+    expect(execute).not.toContain("the first with `atStart: true` (after `p0`");
   });
 
-  it("setup-flow.md AI pattern supports primary + secondary (composable)", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("primary AI pattern");
-    expect(content).toContain("secondary capabilities");
-    expect(content).toContain("Structured generation");
+  it("setup-flow.md execution: all four stages written explicitly; BUILD and VERIFY only for Full pipeline with established commands", async () => {
+    const execute = flowSection(await readSetupFlow(), "1e");
+    expect(execute).toContain("config set-overrides");
+    expect(execute).toContain("all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `\"enabled\"` value");
+    expect(execute).toContain("a reused scaffold may already carry overrides");
+    expect(execute).toContain("write `WRITE_TESTS` and `TEST` with that same command");
+    expect(execute).toContain('write both with `"enabled": false` and record the proposed command as pending');
+    expect(execute).toContain("Never leave them to the defaults");
+    expect(execute).toContain("`\"enabled\": true` only for Full pipeline, and only with commands established from the manifests");
+    expect(execute).toContain("Tests only, Minimal, pending tooling, and project types VERIFY does not apply to");
+    expect(execute).toContain("never execute an install, test, build or dev server during setup");
+    expect(execute).toContain("never gets `npm test`");
+    expect(execute).not.toContain("no overrides needed");
+    expect(execute).not.toContain("enable them with their commands only when established");
   });
 
-  it("setup-flow.md has quality checks gate with three tiers", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("quality checks");
-    expect(content).toContain("Full pipeline (Recommended)");
-    expect(content).toContain("Tests only");
-    expect(content).toContain("Minimal");
+  it("setup-flow.md keeps the preserved invariants of execution and post-setup", async () => {
+    const content = await readSetupFlow();
+    const execute = flowSection(content, "1e");
+    expect(execute).toContain("Sanitization");
+    expect(execute).toContain("**Verify after write.**");
+    expect(execute).toContain("`review-contract-template.md`");
+    expect(execute).toContain("TDD for business logic");
+    const post = flowSection(content, "1f");
+    expect(post).toContain("/story");
+    expect(post).toContain("/story auto");
+    expect(post).toContain("$story");
+    expect(post).toContain("$story auto");
+    expect(post).toContain("Verification tooling to establish:");
+    expect(post).toContain("coverage map");
+    expect(post).toContain("the review outcome or the recorded skip");
   });
 
-  it("setup-flow.md 1e configures recipe stages via CLI after init", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("config set-overrides");
-    expect(content).toContain("WRITE_TESTS");
-    expect(content).toContain("VERIFY");
-    expect(content).toContain("BUILD");
-  });
-
-  it("setup-flow.md AI safety is two questions: audience then sensitive domain", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Who interacts with the AI output");
-    expect(content).toContain("Is this a sensitive domain");
-  });
-
-  it("setup-flow.md auth gate is NOT skipped for no-database projects", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain('Do NOT skip for "no database"');
-  });
-
-  it("setup-flow.md auth suggests Firebase Auth and Clerk as easy options", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Firebase Auth");
-    expect(content).toContain("Clerk");
-  });
-
-  it("setup-flow.md sensitive domain gate exists outside AI branch", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    // Step 4f is in Cluster 4, not inside Cluster 5 (AI)
-    const cluster4 = content.split("--- Cluster 4")[1]!.split("--- Cluster 5")[0]!;
-    expect(cluster4).toContain("sensitive/regulated domain");
-  });
-
-  it("setup-flow.md has simple project fast path", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Simple project fast path");
-    expect(content).toContain("straightforward site");
-  });
-
-  it("setup-flow.md has design source gate for UI projects", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("Do you have designs");
-    expect(content).toContain("mockups / Figma");
-    expect(content).toContain("start from scratch");
-  });
-
-  it("setup-flow.md three-strike protects critical gates", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("3 out of any 4 gates");
-    expect(content).toContain("auth model, sensitive domain, and primary AI pattern are never silently collapsed");
-  });
-
-  it("setup-flow.md TDD recommendation is conditional", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    // TDD is tied to domain complexity, not universal
-    expect(content).toContain("TDD for business logic");
-    expect(content).toMatch(/tied.*gate answers/i);
-  });
-
-  it("setup-flow.md appendix has Default Stack Recommendations with disclaimer", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("## Appendix: Default Stack Recommendations");
-    expect(content).toContain("these are defaults, not absolutes");
-  });
-
-  it("setup-flow.md appendix covers AI, BaaS, and full-stack categories", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("### AI / LLM application");
-    expect(content).toContain("### BaaS / backendless");
-    expect(content).toContain("### Full-stack / multi-service");
-  });
-
-  it("setup-flow.md uses outcome-oriented gate language", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    // Outcome-oriented, not jargon
-    expect(content).toContain("How do users log in");
-    expect(content).toContain("What data does this system store");
-    expect(content).toContain("How should this go live");
-    expect(content).toContain("How should the system be structured");
-  });
-
-  it("setup-flow.md LLM recommendation says product default", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    expect(content).toContain("product default");
-  });
-
-  it("setup-flow.md post-setup mentions /story and /story auto", async () => {
-    const content = await readFile(join(PROJECT_ROOT, "src", "skill", "setup-flow.md"), "utf-8");
-    const postSetup = content.split("1f. Post-Setup")[1]!;
-    expect(postSetup).toContain("/story");
-    expect(postSetup).toContain("/story auto");
-    expect(postSetup).toContain("$story");
-    expect(postSetup).toContain("$story auto");
+  it("setup-flow.md names no vendor as a default", async () => {
+    const content = await readSetupFlow();
+    expect(content).not.toContain("product default");
+    expect(content).not.toMatch(/Firebase Auth or Clerk/);
+    expect(content).not.toContain("## Appendix: Default Stack Recommendations");
+    expect(content).not.toMatch(/\(Recommended\)/);
+    expect(content).toContain("no house favourite");
   });
 
   it("autonomous-mode.md contains autonomous and tiered mode sections", async () => {

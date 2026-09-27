@@ -1,566 +1,221 @@
 # Setup Flow -- AI-Assisted Project Initialization
 
-This file is referenced from SKILL.md when no `.story/` directory exists but project indicators are present. SKILL.md has already determined that setup is needed before routing here.
+This file is referenced from SKILL.md whenever a project has no `.story/` yet, whatever the folder holds: an idea in the conversation, only documents, or code. SKILL.md has already determined that setup is needed before routing here.
 
 **Skill command name:** When this file references `/story` in user-facing output, use the actual command that invoked you (e.g., `/story` for Claude Code, `$story` for Codex, `/story:go` for plugin install). Same for `/story auto` -- use `$story auto` in Codex or `/story:go auto` if invoked as a plugin.
 
-**If arriving from Step 2b (scaffold detection):** The project already has an empty `.story/` scaffold but no tickets. Skip 1a and start at **1b. Existing Project -- Analyze**.
+**If arriving from Step 2b (interrupted scaffold):** `.story/` already exists and the status payload says `isEmptyScaffold: true`. Classify the folder as `interrupted` in 1a and continue from there. Setup reuses that scaffold (see 1e); it never runs init over it.
 
-## Design Rules
+## Setup Principles
 
-These rules govern the entire setup flow. Follow them at every gate.
+These govern the whole flow.
 
-1. **Every "Not sure" recommendation must reference at least one prior answer.** Example: "Monolith -- you described a billing tool for solo contractors, keep it simple." Builds trust, teaches why the choice matters.
-2. **Three-strike acceleration:** If user picks "Not sure" 3 out of any 4 gates, shift to: "Based on what you've told me, I'll recommend the rest. You can review everything in the proposal." Generate recommendations for remaining gates, surface them in the proposal as **editable assumptions** (clearly marked, not presented as certainties). **Exception:** auth model, sensitive domain, and primary AI pattern are never silently collapsed -- always ask these even in acceleration mode.
-3. **Never three bounded-choice gates in a row without a break.** Breaks are: free-text questions, visible mini-summaries, or output. Insert a summary after each cluster of gates.
-4. **Infer domain concerns from descriptions and entities, don't add gates.** If someone describes a collaborative whiteboard, detect realtime and generate websocket/presence tickets. If they describe a SaaS with pricing tiers, generate billing/subscription tickets. The interview captures *what*; the ticket generator knows *what that implies*.
-5. **Unrecognized types (Other):** ask architecture + deployment, skip domain-specific gates unless free-text mentions data or users.
-6. **Deployment recommendations are contextual, not stack-hardcoded.** Long-running processes, websockets, compliance, self-hosting preferences override the stack-based default.
-7. **Claude as recommended LLM is a product-opinionated choice.** storybloq is built on Claude. State this explicitly: "Claude is the product default for the storybloq ecosystem. Choose based on your needs."
-8. **Phrase gates as outcome decisions, not system jargon.** "How do users log in?" not "Auth model?" "What data does this system store?" not "Data layer?" "How should this go live?" not "Deployment target?"
+1. **Product first.** Setup is about what the user wants to exist and how they will know it works, not about picking a stack. Ask about outcomes, not system jargon: "How do people sign in?" not "Auth model?"
+2. **Reuse before asking.** Anything the brief, the code or the conversation already answers is never asked again. Every question must be about a gap that changes the plan.
+3. **Infer domain concerns from the material.** A collaborative whiteboard implies realtime and presence work; pricing tiers imply billing work. The ticket generator knows what a description implies; do not add a question for it.
+4. **Technology stays the user's.** Keep explicit technology choices exactly as given. Recommend a stack, provider or service only when the user asks, or when none is stated and the gap blocks planning; then give the options with their trade-offs and no house favourite.
+5. **Nothing invented.** No invented user research, performance targets, domain rules or completion claims. Label an assumption as an assumption.
+6. **Nothing is written before approval.** Discovery, questions, planning and review make no setup writes: no `storybloq_init`, no create or update call, no file write, no `git init`. One approval of the setup package authorises all of it.
 
 ## AI-Assisted Setup Flow
 
-This flow creates a meaningful `.story/` project instead of empty scaffolding. Your AI client analyzes the project, proposes structure, and creates everything via MCP tools.
+This flow creates a meaningful `.story/` project instead of empty scaffolding. Your AI client reads the material, agrees what success means, plans and reviews the work, shows one setup package, and creates everything on approval.
 
-#### 1a. Detect Project Type
+Before starting, introduce storybloq in 3-4 sentences, not a sales pitch:
 
-Check for project indicators to determine if this is an **existing project** or a **new/empty project**:
-
-- `package.json` -> npm/node (read `name`, `description`, check for `typescript` dep)
-- `Cargo.toml` -> Rust
-- `go.mod` -> Go
-- `pyproject.toml` / `requirements.txt` -> Python
-- `*.xcodeproj` / `Package.swift` -> Swift/macOS
-- `*.sln` / `*.csproj` -> C#/.NET
-- `Gemfile` -> Ruby
-- `build.gradle.kts` / `build.gradle` -> Android/Kotlin/Java (or Spring Boot)
-- `pubspec.yaml` -> Flutter/Dart
-- `angular.json` -> Angular
-- `svelte.config.js` -> SvelteKit
-- `.git/` -> has version history
-
-If none found (empty or near-empty directory) -> skip to **1c. New Project -- Interview**.
-
-#### 1b. Existing Project -- Analyze
-
-Before diving into analysis, briefly introduce storybloq to the user:
-
-"Storybloq tracks your project's roadmap, tickets, issues, and session handovers in a `.story/` directory. Every Storybloq session starts by reading this context, so you never re-explain your project from scratch. Sessions build on each other: decisions, blockers, and lessons carry forward automatically. I'll analyze your project and propose a structure. You can adjust everything before I create anything."
-
-Keep it to 3-4 sentences. Not a sales pitch, just enough that the user knows what they're opting into and that they're in control.
-
-Read these files to understand the project (skip any that don't exist, skip files > 50KB):
-
-1. **README.md** -- project description, goals, feature list, roadmap/TODO sections
-2. **Package manifest** -- project name, dependencies, scripts
-3. **CLAUDE.md** -- existing project spec (if any)
-4. **Top-level directory listing** -- identify major components (src/, test/, docs/, etc.)
-5. **Git summary** -- `git log --oneline -20` for recent work patterns
-6. **GitHub issues (ask user first)** -- `gh issue list --limit 30 --state open --json number,title,labels,body,createdAt`. If gh fails (auth, rate limit, no remote), skip cleanly and note "GitHub import skipped: [reason]"
-7. **Project brief / PRD scan** -- glob for `*.md` files in project root and `docs/`. For each candidate (exclude CHANGELOG, LICENSE, CONTRIBUTING, README which is already read above):
-   - If file is >100 lines and contains headings matching "entities", "schema", "architecture", "tech stack", "roadmap", "phases", "milestones", "screens", or "API" -- treat as a project brief
-   - Read at most 2 candidate briefs (prefer the longest matching file)
-   - Extract into structured notes for use in later steps: entity schemas (names, fields, relationships), technical decisions (stack choices, architecture), screen/page inventory, business rules and domain logic, key constraints
-   - Summarize once here; do not re-read the full brief at later steps
-
-**Brief precedence:** If multiple sources describe the project:
-- Existing `CLAUDE.md` is the authority for current project state
-- A PRD/brief file is the authority for proposed scope and specifications
-- README is a product overview (may be outdated or aspirational)
-- If two briefs disagree on stack, entities, or milestones, ask the user to choose
-
-**Framework-specific deep scan** -- after detecting the project type in 1a, scan deeper into framework conventions to understand architecture:
-
-- **Next.js / Nuxt:** Check `app/` vs `pages/` routing, scan `app/api/` or `pages/api/` for API routes, read `next.config.*` / `nuxt.config.*`, check for middleware.
-- **Express / Fastify / Koa:** Scan for route files (`routes/`, `src/routes/`), look for `router.get/post` patterns, identify service/controller layers.
-- **NestJS:** Read `nest-cli.json`, scan `src/` for `*.module.ts`, check for controllers and services.
-- **React (CRA / Vite) / Vue / Svelte:** Check `src/components/` structure, look for state management imports (redux, zustand, pinia), identify routing setup.
-- **Angular:** Read `angular.json`, scan `src/app/` for modules and components, check for services and guards.
-- **Django / FastAPI / Flask:** Check for `manage.py`, scan for app directories or router files, look at models and migrations.
-- **Spring Boot:** Check `pom.xml` or `build.gradle` for Spring deps, scan `src/main/java` for controller/service/repository layers.
-- **Rust:** Check `Cargo.toml` for workspace members, scan for `mod.rs` / `lib.rs` structure, identify crate types.
-- **Swift / Xcode:** Check `.xcodeproj` or `Package.swift`, identify SwiftUI vs UIKit, scan for targets.
-- **Android (Kotlin/Java):** Check `build.gradle.kts`, scan `app/src/main/` for activity/fragment/composable structure, check `AndroidManifest.xml`, identify Compose vs XML layouts.
-- **Flutter / Dart:** Check `pubspec.yaml`, scan `lib/` for feature folders (models/, screens/, widgets/, services/), check for state management imports (provider, riverpod, bloc).
-- **Go:** Check `go.mod`, scan for `cmd/` and `internal/`/`pkg/`, check for `Makefile`.
-- **Monorepo:** If `packages/`, `apps/`, or workspace config detected, list each package with its purpose before proposing phases.
-- **Other:** Scan `src/` two levels deep and identify dominant patterns (MVC, service layers, feature folders).
-
-When the detected stack has common architectural variants (e.g., App Router vs Pages Router, Expo vs bare), use AskUserQuestion to confirm instead of guessing. Only ask when the choice changes ticket topology. Otherwise infer silently.
-
-**Derive project metadata:**
-- **name**: from package manifest `name` field, or directory name
-- **type**: from package manager (npm, cargo, pip, etc.)
-- **language**: from file extensions and manifest
-
-**Assess project stage** from the data -- don't use fixed thresholds. A project with 3 commits and a half-written README is greenfield. A project with 500+ commits, test suites, and release tags is mature. A project with 200 commits and active PRs is active development. Use your judgment.
-
-**Propose 3-7 phases** reflecting the project's actual development trajectory. Examples:
-- Library: setup -> core-api -> documentation -> testing -> publishing
-- App: mvp -> auth -> data-layer -> ui-polish -> deployment
-- Mid-development project: capture completed work as early phases, then plan forward
-
-**Propose initial tickets** per active phase (2-5 each), based on:
-- README TODOs or roadmap sections (treat as hints, not ground truth)
-- GitHub issues if imported -- infer from label semantics: bug/defect labels -> issues, enhancement/feature labels -> tickets
-- Brief entity specs and roadmap sections (if a brief was found)
-- Obvious gaps (missing tests, no CI, no docs, etc.)
-- If more than 30 GitHub issues exist, note "Showing 30 of N. Additional issues can be imported later."
-
-**Important:** Only mark phases complete if explicitly confirmed by user or docs -- do NOT infer completion from git history alone.
-
-After analysis, skip to **1d. Present Proposal**.
-
-#### 1c. New Project -- Interview
-
-This is a guided funnel using a mix of free text and structured choices via the `AskUserQuestion` tool. The flow adapts to the user's confidence level and project complexity.
-
-**--- Cluster 1: Identity ---**
-
-**Step 1:** Ask the user: "What are you building?" (free text -- project name and purpose)
-
-Parse the answer. If the user already named a stack ("billing app in Next.js"), confirm it and skip surface + stack questions. Do NOT skip characteristics -- stack doesn't tell us if it's AI-powered, realtime, or marketplace.
-
-**Step 2a:** Use `AskUserQuestion`:
-- question: "What's the primary surface?"
-- header: "Surface"
-- options:
-  - "Web app" -- SaaS, dashboard, admin panel
-  - "Mobile app" -- iOS, Android, cross-platform
-  - "API / backend service" -- REST, GraphQL, microservice
-  - "Website / content site" -- landing page, blog, docs
-- (Other always available: desktop, CLI, library, package, etc. If Other, ask one free-text follow-up for primary delivery target.)
-
-**Step 2b:** Use `AskUserQuestion`:
-- question: "Any special characteristics?"
-- header: "Traits"
-- multiSelect: true
-- options:
-  - "AI / LLM powered" -- chatbot, RAG, agent, AI features
-  - "Realtime / collaboration" -- live updates, websockets, multiplayer
-  - "Marketplace / multi-role" -- multiple user types, separate views
-  - "Content-heavy / CMS" -- admin panel, editorial workflow
-- (None of these always available)
-
-Surface drives stack recommendations. Characteristics drive additional gates and inferred tickets. Composes cleanly: AI health app = Web + AI. Marketplace = Web + Marketplace. Scales by adding characteristics, not conflicting top-level types.
-
-**Simple project fast path:** If surface is Website/content + no AI/realtime/marketplace traits + no brief detected, offer early exit: "This looks like a straightforward site. Want me to skip the detailed questions and go straight to milestones?" If yes: default to Astro + Vercel/Netlify, no auth, no data model. Skip clusters 2-4 entirely. Defaults shown in proposal as editable assumptions. Portfolio user flow: name -> Website -> None -> "Skip?" -> milestones -> proposal. ~4 steps total.
-
-**--- Cluster 2: Stack + design ---**
-
-**Step 3:** Use `AskUserQuestion` with top 3-4 stacks from the **Default Stack Recommendations** appendix at the bottom of this file. Context-aware: characteristics influence ranking. AI + Web -> Next.js + Vercel AI SDK rises to top. Skip if stack was already confirmed in Step 1.
-
-**Step 4:** Framework-specific `AskUserQuestion` only when the choice changes ticket topology:
-- Next.js: App Router (Recommended) vs Pages Router
-- React Native: Expo (Recommended) vs bare
-- ORM: Drizzle (SQL-friendly, lightweight) vs Prisma (higher-level DX, generated types)
-- Other framework-specific choices from the appendix
-
-**--- Summary break ---**
-Show: "So far: [name] is a [surface] + [traits] built with [stack]."
-
-**Step 4a:** Design source (skip for APIs, CLIs, libraries, backends). Use `AskUserQuestion`:
-- question: "Do you have designs?"
-- header: "Design"
-- options:
-  - "Yes, mockups / Figma" -- UI tickets reference designs. Usually skip component library question (implied by mockups, though user can override).
-  - "Rough idea / sketches" -- UI tickets include design decisions
-  - "No, start from scratch" -- generate design foundation tickets (color palette, typography, layout, component selection)
-  - "Not sure yet"
-
-Component library is inferred from the stack, not asked as a separate gate. Next.js defaults to shadcn/ui, Flutter to Material, React Native to NativeBase/Paper. Only ask if the stack doesn't have a clear default or the user picked "No, start from scratch" (where the component system is part of the design foundation tickets).
-
-**--- Cluster 3: System structure ---**
-
-**Step 4b:** System shape (skip for static sites, CLIs, libs). Use `AskUserQuestion`:
-- question: "How should the system be structured?"
-- header: "Shape"
-- options:
-  - "One app does everything" -- monolith, single deployable. Recommended for solo/small projects.
-  - "Frontend + backend separately" -- separate frontend and API
-  - "Frontend + managed backend (Supabase/Firebase)" -- BaaS handles DB, auth, storage. You build the frontend. Fastest path to MVP.
-  - "Not sure -- recommend one"
-
-BaaS as a first-class path. If selected: skip ORM choice (BaaS handles it), adjust deployment to match (Vercel + Supabase, or Firebase Hosting + Firebase). Auth gate still fires -- the user still decides what kind of auth (no auth, individual, team/org), but tickets generated are BaaS-specific (Supabase RLS policies, Firebase Security Rules) instead of custom middleware. Generates different tickets: BaaS setup, client SDK integration, security rules, instead of custom API + auth tickets.
-
-**BaaS + AI edge case:** If the user also selected "AI / LLM powered" as a characteristic, AI gates still fire normally. For document ownership tickets (RAG + auth), reference "Supabase RLS policies" or "Firebase Security Rules" instead of "custom row-level access." The AI cluster's data model tickets adapt to the BaaS context.
-
-**Step 4b-ii:** Execution model (skip for static sites, CLIs, libs, content sites, BaaS projects). Use `AskUserQuestion`:
-- question: "How does processing work?"
-- header: "Processing"
-- options:
-  - "Users request, system responds" -- standard web flow
-  - "Background processing needed" -- queues, workers, scheduled tasks
-  - "Both" -- user-facing + background processing
-  - "Not sure -- recommend one"
-
-Note: realtime/event-driven is inferred from the "Realtime" characteristic (design rule 4), not asked as an option here.
-
-**Step 4b2:** Deployment (skip for libraries, CLIs, packages). Use `AskUserQuestion`:
-- question: "How should this go live?"
-- header: "Deploy"
-- options:
-  - "Easiest path" -- Vercel, Netlify, Railway, Fly.io. Connect repo, push to deploy. Minimal infrastructure work.
-  - "Full control (AWS/GCP/Azure)" -- you manage everything. More setup: infrastructure-as-code, containers, CI/CD pipelines.
-  - "Self-hosted / own servers" -- Docker Compose, nginx. You manage the hardware and networking.
-  - "Not sure -- recommend one"
-
-Recommendations are contextual: consider prior answers about compliance, long-running processes, websockets, self-hosting preferences -- not just stack.
-
-**--- Summary break ---**
-Show: "[name]: [shape], deploying to [platform]. Now let me understand the data."
-
-**--- Cluster 4: Data + domain + auth ---**
-
-**Step 4c:** Data model (skip for clearly stateless: static sites, simple CLIs, no persistence. Also skip for BaaS -- handled by BaaS schema setup.) Use `AskUserQuestion`:
-- question: "What data does this system store?"
-- header: "Data"
-- options:
-  - "I know the main things" -> follow up with free text: "What are the main objects and how they relate? (e.g., users have many projects, invoices belong to projects, projects have status workflows)"
-  - "Help me figure it out" -> Claude proposes entities from brief/interview answers
-  - "Keep it simple for now" -- start minimal, add later
-  - "Nothing -- no database needed"
-
-**Step 4d:** Domain complexity (skip for static sites, CLIs, libs, "no database", "keep it simple", BaaS). Use `AskUserQuestion`:
-- question: "What kind of rules does this system have?"
-- header: "Rules"
-- multiSelect: true
-- options:
-  - "Workflows / approvals" -- things move through stages, need approval, have status transitions
-  - "Multiple organizations / teams" -- different groups see different data, separate access
-  - "None of the above" -- straightforward data, no special rules (exclusive: if selected, deselects the others)
-  - "Not sure -- recommend one"
-
-Multi-select because these are orthogonal: a system can have both workflows AND org scoping. "None of the above" is the exclusive fallback for simple CRUD projects.
-
-**Step 4e:** Auth / identity (skip for static sites, CLIs, libs, packages. Do NOT skip for "no database" -- auth can be external/stateless: JWT, Clerk, Auth0, API keys). Use `AskUserQuestion`:
-- question: "How do users log in?"
-- header: "Auth"
-- options:
-  - "No login needed" -- single user or public access
-  - "Individual accounts" -- email/password, social login. Easiest setup: Firebase Auth, Clerk, or Supabase Auth.
-  - "Team / organization accounts" -- multi-user, org scoping
-  - "External auth / SSO" -- enterprise IdP, OAuth providers
-- (Other always available: API keys only, guest+optional, machine clients, etc. + "Not sure -- recommend one")
-
-When recommending auth setup for individual accounts, suggest Firebase Auth or Clerk as the easiest options. These handle email/password, social login, session management, and JWT with minimal code. Only recommend custom auth when the user has specific requirements.
-
-**Step 4f:** Sensitive domain. This is the canonical sensitive domain gate for ALL projects. The AI safety cluster (Cluster 5) references this answer instead of re-asking. Bias toward asking -- skip only for projects that are clearly non-sensitive (portfolio, blog, dev tool, game). Ask for anything with user data, business transactions, or professional use cases. Use `AskUserQuestion`:
-- question: "Is this in a sensitive/regulated domain?"
-- header: "Domain"
-- options:
-  - "Yes (health, legal, finance, compliance)" -- audit logging, privacy controls, disclaimers, stricter testing, compliance tickets
-  - "No"
-  - "Not sure"
-
-This exists outside the AI branch because a non-AI health billing platform still needs audit trails and compliance tickets.
-
-**--- Cluster 5: AI-specific (only when AI characteristic selected in Step 2b) ---**
-
-**AI pattern:** Use `AskUserQuestion`:
-- question: "What's the primary AI pattern?"
-- header: "AI Pattern"
-- options:
-  - "RAG" -- knowledge base Q&A, document search, domain answers
-  - "Agentic / tool use" -- AI that takes actions, calls APIs
-  - "Conversational" -- chatbot, assistant, guided interaction
-  - "Structured generation" -- extract data, classify, generate reports, transform inputs to JSON
-- (Other + "Not sure -- recommend one")
-
-Follow up: "Any secondary capabilities?" (multiSelect, optional). Same options minus the one already picked. This handles real AI products that are RAG + conversational, or agentic + structured generation.
-
-**LLM provider:** Use `AskUserQuestion`:
-- question: "Which LLM provider?"
-- header: "LLM"
-- options:
-  - "Anthropic Claude (product default)" -- Claude API / Agent SDK. storybloq ecosystem default; choose based on your needs.
-  - "OpenAI" -- GPT models
-  - "Google Gemini" -- multimodal, good pricing
-  - "Self-hosted" -- Qwen, Llama, Mistral via Ollama/vLLM
-- (Other: multi-provider, custom, etc.)
-
-**AI processing:** Use `AskUserQuestion`:
-- question: "How does AI processing work?"
-- header: "Processing"
-- options:
-  - "Synchronous" -- user sends, waits for response
-  - "Async / background" -- ingestion, batch, workers
-  - "Both" -- sync chat + async ingestion
-  - "Not sure -- recommend one"
-
-**Vector database (if RAG primary or secondary):** Use `AskUserQuestion`:
-- question: "Vector database?"
-- header: "Vector DB"
-- options:
-  - "pgvector (Recommended)" -- PostgreSQL extension, simple
-  - "Pinecone" -- managed, scalable
-  - "Qdrant" -- open-source, self-hosted
-  - "Not sure -- recommend one"
-
-**AI audience + safety:** Use `AskUserQuestion`:
-- question: "Who interacts with the AI output?"
-- header: "Audience"
-- options:
-  - "Public users" -- guardrails, content filtering, rate limiting
-  - "Internal users" -- lighter guardrails
-  - "Backend / pipeline" -- skip safety layer
-  - "Not sure -- recommend one"
-
-If public or internal, check whether sensitive domain was already answered in Step 4f. If yes, use that answer. If Step 4f was skipped (e.g., AI-only project where sensitive domain wasn't obvious from the description), ask now with `AskUserQuestion`:
-- question: "Is this a sensitive domain?"
-- header: "Domain"
-- options:
-  - "Yes (health, legal, finance)" -- audit logging, evals, disclaimers, stricter testing
-  - "No"
-
-Sensitive domain is orthogonal to audience: an internal health app still needs audit logging.
-
-AI gates generate tickets the current flow would miss:
-- LLM client setup (provider SDK, error handling, retries, streaming)
-- Prompt engineering / system prompt design
-- RAG pipeline (if RAG): ingestion, chunking, embedding, retrieval, reranking
-- Secondary AI capabilities as additional tickets
-- Guardrails / safety layer (if user-facing)
-- Evaluation framework (how do you know it's working?)
-- Cost monitoring / token tracking
-- Conversation/session storage
-- Background workers (if async)
-- Document ownership model (if RAG + auth)
-- Audit logging + disclaimers (if sensitive domain)
-
-**--- Quality checks (skip for static sites, content-only, simple portfolios) ---**
-
-**Step 4g:** Quality checks for autonomous mode. Use `AskUserQuestion`:
-- question: "How should I handle quality checks when working on your tickets?"
-- header: "Quality"
-- options:
-  - "Full pipeline (Recommended)" -- I'll write tests first (TDD), run them after building, smoke test your endpoints, and validate the build
-  - "Tests only" -- I'll run tests after building, skip endpoint and build checks
-  - "Minimal" -- just build and commit, no automated checks
-- (Other always available for custom configuration)
-
-If domain complexity includes workflows/approvals or sensitive domain was selected, bias toward "Full pipeline" and explain why: "Recommended because your project has [business rules / sensitive domain] -- TDD catches bugs before they ship."
-
-Quality level maps to autonomous recipe stages (configured in step 1e):
-- **Full pipeline:** WRITE_TESTS + TEST + VERIFY + BUILD (all enabled)
-- **Tests only:** TEST (enabled), others disabled
-- **Minimal:** all stages disabled
-
-Stage-specific details (test command, dev server URL, build command) are inferred from the stack silently -- never shown to the user.
-
-**--- Milestones ---**
-
-**Step 5:** "What are the major milestones?" (free text)
-
-**Step 6:** "What's the first thing to build?" (free text)
-
-Propose phases and initial tickets from all gathered answers.
+"Storybloq tracks your project's roadmap, tickets, issues, and session handovers in a `.story/` directory. Every Storybloq session starts by reading this context, so you never re-explain your project from scratch. I'll read what's here, ask only about what's missing, and propose a reviewed plan. Nothing is created until you approve it."
+
+#### 1a. Discover
+
+Read the folder once and classify it:
+
+- **`empty`** -- nothing but an idea in the conversation (an empty or near-empty directory).
+- **`brief-only`** -- documents (Markdown, text, PDF, design exports) and no code.
+- **`existing`** -- code, with or without a manifest or git history.
+- **`interrupted`** -- a `.story/` scaffold with `isEmptyScaffold: true` (the Step 2b case). It can also hold code or documents; read those as for the other classes.
+
+There is no manifest or git requirement and no minimum length. Relevant material is manifests, documents, source roots and design files. Skip caches, build outputs, vendored dependencies, lockfile internals and review databases unless the user points at them.
+
+For code, note the manifests and what they declare (`package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, `Package.swift`, `*.xcodeproj`, `build.gradle(.kts)`, `pubspec.yaml`, `Gemfile`, `*.csproj`, and so on). A folder can hold several: a frontend and a backend each with its own manifest are two parts of one project, and each part is recorded separately.
+
+Ask the user before importing GitHub issues (`gh issue list --limit 30 --state open --json number,title,labels,body,createdAt`). If `gh` fails (auth, rate limit, no remote), skip cleanly and note "GitHub import skipped: [reason]". With more than 30 issues, note "Showing 30 of N. Additional issues can be imported later."
+
+#### 1b. Understand the Material
+
+Read every candidate brief once: any Markdown, text or PDF document the user names, or that sits at the root or in `docs/`, the README included. There is no size or heading-word filter; read a very large file by section. Skip only changelogs, licences and contribution guides unless they are named. Read `CLAUDE.md`, `AGENTS.md` and `RULES.md` when present, the top-level listing, and for an existing codebase `git log --oneline -20`.
+
+For each fact you will use, keep a source reference (file and heading, or "conversation") and label it:
+
+- **requirement** -- something the first version must do;
+- **proposal** -- an idea the material floats but does not commit to;
+- **existing behaviour** -- something the code already does;
+- **unresolved decision** -- a choice the material leaves open.
+
+**Evidence before completion.** In an existing codebase, a capability named in a brief is complete only when the code has it: grep for the route, model or screen, or read the file, and record that evidence with the fact. A brief that claims more than the code implements is normal; the difference becomes planned work, never a completed ticket.
+
+**Conflicts.** When sources disagree (scope, a domain rule, a technology), list each conflict with its consequence and a recommendation, and let the user rule before planning depends on it. Default precedence: an existing `CLAUDE.md` or `AGENTS.md` describes current state, a brief or PRD describes proposed scope, and a README is an overview that may be outdated or aspirational.
+
+**Inspect only what changes the plan.** Read framework structure (routing layout, API folders, module or feature folders, workspace packages) only as far as it changes the tickets. When a variant changes ticket topology (for example two routing models), confirm it with the user instead of guessing.
+
+**Derive project metadata:** name from the manifest or the directory; type from the package manager; language from the manifest and file extensions. For a mixed stack, record every part. Assess the stage from the evidence (commits, tests, releases) without fixed thresholds.
+
+#### 1c. Establish Success
+
+Reuse what the brief and the conversation already answered. Ask only about **material gaps** -- unresolved questions whose answer would change the plan -- a few at a time, in free text or with `AskUserQuestion`. When the material already answers everything, ask nothing. A decision the user postpones is recorded as an open owner decision: only the work it affects waits on it, and the rest is planned normally. The topics, where the material leaves them open:
+
+- the intended users, the problem they have, and the primary journey;
+- what a successful first version lets them do;
+- scope boundaries: what is in the first version, and what is a later ambition;
+- product constraints where relevant: design, accessibility, correctness, privacy, reliability, operating cost, and whether this is a sensitive or regulated domain (health, legal, finance, compliance), which adds audit, privacy and stricter verification work;
+- what exists to build on: designs, domain expertise, reference examples, representative test data.
+
+Write the result as a concise product brief with observable acceptance conditions ("a signed-in user can export a month of entries as CSV"), each carrying its source reference. Label assumptions as assumptions. Later steps cite these answers; never ask them again.
+
+#### 1c2. Plan and Review
+
+This runs before anything is shown for approval, every time.
+
+**Decompose the entire in-scope brief** by outcomes and real dependencies. There are no phase or ticket quotas: as many phases and tickets as the scope needs.
+
+- Phases are milestones. Each says what the user will be able to demonstrate when it is done.
+- Tickets are coherent, demonstrable slices. Foundation work names the capabilities it enables.
+- `blockedBy` reflects real prerequisites only, never automatic chaining from phase order.
+- Several entities, or an API with its UI, are sizing signals: split a ticket only when one slice cannot be implemented and verified as a unit. Decompose the core differentiator instead of leaving it as one ticket.
+- For an existing codebase, capture verified completed work as completed tickets only when the evidence from 1b supports it.
+
+**Every implementation ticket's description** follows one template:
+
+```
+Outcome: <what the user can do>, from <source reference>
+Scope: <included>. Excludes: <explicit exclusions>
+Acceptance: <observable criteria>
+Behaviour: <failure, empty, loading, recovery and accessibility behaviour, where relevant>
+Verification: <how acceptance is shown>. Prerequisites: <...>. Assumptions: <unresolved assumptions>
+```
+
+Every label carries content. Where one does not apply, write `none` (for example `Excludes: none`); never leave it empty. Outcome, Scope, Acceptance and Verification always say something concrete.
+
+**Coverage map.** Every requirement from 1b and 1c maps to a ticket, an owner decision, or an explicit deferral. Later-version requirements are listed as deferred and never silently promoted into the first version.
+
+**Owner checkpoints.** Plan them where the work needs the owner's eyes. Three kinds:
+
+- **early artifact review** -- a design, prototype, sample output or API interaction the owner looks at before dependent work continues;
+- **milestone demonstration** -- the owner sees a milestone working;
+- **first-version acceptance** -- the owner accepts the first version against the agreed outcomes.
+
+Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner reviews>`. Its description holds `Question:` for a decision, or `Criteria:` for a demonstration or acceptance, and names the artifact the owner reviews. The ticket is `blockedBy` the work that produces what it reviews, and only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint; unrelated work stays unblocked. Stage-1 limitation: nothing enforces the gate yet, so a checkpoint ticket can be closed like any other ticket. Say so in the package.
+
+**Independent review, by default.** Review the full plan with an available supported reviewer, trying them in this capability order:
+
+1. a native Codex CLI, as a read-only `codex exec --output-schema` review;
+2. the `review_plan` MCP tool;
+3. an independent agent, if the client can start one.
+
+The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Maximum 2 review rounds; incorporate the findings. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
+
+**When no reviewer is available**, or every call fails, say so plainly and use `AskUserQuestion`: "Retry the review" or "Continue without independent review". Stop there until the user answers. A retry runs the order again; continuing records the skip, which appears in the package, the setup summary and the initial handover.
 
 #### 1d. Present Proposal
 
-Show the user a structured proposal (table format, not raw JSON):
-- **Project:** name, type, language
-- **System shape + execution model**
-- **Deployment target**
-- **Core entities + key relationships** (if defined)
-- **Domain complexity** (workflows, org scoping, or simple CRUD)
-- **Auth / identity model**
-- **AI pattern + provider + processing** (if AI project)
-- **Quality checks** (Full pipeline / Tests only / Minimal)
-- **Any inferred concerns** (realtime, billing, etc. per design rule 4)
-- **Editable assumptions** (if three-strike acceleration was used, clearly marked)
-- **Unresolved decisions**
-- **Phases** (table: id, name, description)
-- **Tickets per phase** (title, type, status)
-- **Issues** (if GitHub import was used)
+Present one setup package. A readable summary comes first:
 
-Before asking for approval, briefly explain what they're looking at:
+- the product outcome and the first-version boundary;
+- the milestones and what each one demonstrates;
+- the important unresolved decisions and labelled assumptions;
+- the work that can begin immediately;
+- the review outcome (findings incorporated, findings still open) or the recorded review skip, and the stage-1 checkpoint limitation when checkpoints are planned.
 
-"**How this works:** Phases are milestones in your project's development. They track progress from setup to shipping. Tickets are specific work items within each phase. After setup, invoking Storybloq at the start of any supported AI coding session loads this context automatically. Your AI client will know your project's state, what was done last session, and what to work on next."
+Then the ticket inventory grouped by milestone. Each ticket shows its purpose, its dependencies and any checkpoint it waits on. Then what else the approval covers:
 
-Then use ONE `AskUserQuestion` that combines approval and refinement depth (do not ask two separate questions):
-- question: "How should I proceed with this proposal?"
-- header: "Proceed"
+- **Project:** name, type, language (every part of a mixed stack).
+- **Governance files** to write: `CLAUDE.md` (or `AGENTS.md`), `RULES.md` and `REVIEW.md`, each previewed on request. Omit a file that already exists; it is never overwritten.
+- **Quality level** with its recipe stages: **Full pipeline**, **Tests only** or **Minimal**. Propose Full pipeline for business rules, workflows, multiple organisations, AI evaluation needs or a sensitive domain, and say why. Show each stage command as proposed and whether it is established from the manifests or still pending (see 1e).
+- **Git:** `git init` when the folder is not a repository, and the `.gitignore` entries.
+- For an `interrupted` scaffold: the existing `p0` phase kept first, and any difference between the existing config and the package (name, type, language), which is reported, not overwritten.
+- Imported GitHub issues, if any.
+
+Explain briefly what they are looking at: "Phases are milestones in your project's development. Tickets are specific work items within each phase. After setup, invoking Storybloq at the start of any supported AI coding session loads this context automatically."
+
+Then ONE `AskUserQuestion`:
+- question: "How should I proceed with this setup?"
+- header: "Setup"
 - options:
-  - "Refine + get a second opinion (Recommended)" -- I'll add descriptions, dependencies, and sizing, then have an independent reviewer check my work before creating anything
-  - "Refine tickets" -- I'll add descriptions, figure out dependencies, and flag oversized tickets
-  - "Create as-is" -- create tickets now as shown
-  - "Adjust first" -- I want to change phases or tickets before proceeding
-- (Other always available for free-text feedback)
+  - "Approve setup" -- create everything listed in this package
+  - "Adjust the plan" -- change scope, milestones, tickets, files, quality level or git
+  - "Inspect details" -- expand a ticket, a file preview or the coverage map
 
-If "Adjust first": ask what they want to change, iterate, then re-show this same AskUserQuestion. Loop until they pick a create/refine option.
-
-If "Create as-is" and no brief exists: warn "Note: tickets will have titles only -- you can add descriptions later." Then proceed to **1e. Execute on Approval**.
-
-#### 1d2. Refinement and Review
-
-**IMPORTANT: Do NOT skip this section. Do NOT go straight to creating tickets.** The user chose refinement and/or review. You must complete all steps below before moving to 1e (Execute).
-
-**Step A: Refine the proposal internally.** Do not show intermediate work to the user. Use brief/PRD notes from 1b, or infer from interview answers if no brief.
-
-What to do:
-- Add 3-4 sentence descriptions to each ticket
-- Infer `blockedBy` from phase ordering and domain logic
-- Flag and split oversized tickets (3+ entities, API+UI in one, 3+ models)
-- Cross-reference brief entities against tickets, add missing ones
-- Detect core differentiator -- decompose if single ticket
-- Surface undecided tech choices
-
-**Step B: Run independent review (if user chose "Refine + review").** This step is REQUIRED when the user selected the review option. Do NOT skip it.
-- If native Codex CLI is available, run a read-only `codex exec --output-schema` review of the full refined proposal.
-- If native Codex is unavailable and `review_plan` MCP tool is available, call it with the full refined proposal.
-- Otherwise spawn an independent Claude agent to audit for gaps.
-- If neither is available, note "Review skipped -- no review backends available."
-- Maximum 2 review rounds.
-- Incorporate findings into the proposal.
-
-**Step C: Show the compact summary to the user.** This is REQUIRED. Do NOT go to 1e without showing this. Do NOT show every ticket with its description -- show a summary of what changed:
-
-```
-Refinement complete. Here's what changed:
-
-- Added descriptions to 14 tickets
-- Added 8 dependency links (blockedBy chains)
-- No tickets flagged for splitting (all well-scoped)
-- [If review ran] Independent review: 2 suggestions incorporated
-  - T-005 split into T-005a/T-005b (was too broad)
-  - T-012 added blockedBy T-006 (missing dependency)
-
-Updated proposal:
-
-[Show the same phase + ticket table as before, but now with a "Deps" column]
-
-| Ticket | Title                    | Phase      | Deps      |
-|--------|--------------------------|------------|-----------|
-| T-001  | Project setup            | foundation | --        |
-| T-002  | Database schema design   | foundation | T-001     |
-| T-006  | Auth setup               | foundation | T-001     |
-| ...    | ...                      | ...        | ...       |
-```
-
-**Step D: Ask user to approve before creating.** This is REQUIRED. Do NOT proceed to 1e without this approval.
-
-Use `AskUserQuestion`:
-- question: "Ready to create?"
-- header: "Create"
-- options:
-  - "Create everything (Recommended)"
-  - "Let me adjust first" -- iterate, then re-ask
-  - "Show me the full details" -- expand all ticket descriptions (for users who want to inspect)
-
-Only proceed to **1e. Execute on Approval** after the user selects "Create everything."
+"Inspect details" shows what the user asks for and re-asks the same question. "Adjust the plan" iterates, reruns the review only when the change is material, re-shows the package and re-asks. One approval covers everything listed. Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup".
 
 #### 1e. Execute on Approval
 
-**Two-pass ticket creation:**
+Everything below runs only after "Approve setup".
 
-1. Call `storybloq_init` with name, type, language -- after this, all MCP tools become available dynamically
+1. **Initialise only when `.story/` is absent.** Call `storybloq_init` with name, type and language. For an `interrupted` scaffold, skip init: its config and phases are reused as they are, and init is never forced over them. A default `p0` "Setup" phase (which a fresh init also writes) stays first, and setup phases go after it. If the scaffold is no longer empty (tickets, issues, handovers or non-default phases appeared), stop and name what you found.
 
-1b. **Configure autonomous recipe stages** based on the quality check answer from Step 4g. Construct a JSON object and apply via Bash:
-    ```
-    storybloq config set-overrides --json '<JSON>'
-    ```
+2. **Readiness by capability.** The creation tools are `storybloq_phase_create`, `storybloq_ticket_create`, `storybloq_ticket_update`, `storybloq_issue_create` and `storybloq_snapshot`. After init (or at once for a reused scaffold), check which are callable. For any that are not, call the client's tool discovery/search tool (`ToolSearch`, `tool_search`, or equivalent) by exact name, with a small result limit. In Codex, use the `limit` field for that result limit. Some clients cache the pre-init tool list and only refresh when asked. If a tool is still missing, fall back to the CLI via `Bash` (`storybloq phase create ...`, `storybloq ticket create ...`, `storybloq ticket update ...`, `storybloq issue create ...`, `storybloq snapshot`) and note that a client restart may be needed. If the CLI is unavailable too, stop with a concrete blocker naming the missing tools and the restart step.
 
-    **Quality level -> stage mapping:**
+3. **Configure the recipe stages** for the approved quality level. Construct one JSON object and apply it via Bash:
+   ```
+   storybloq config set-overrides --json '<JSON>'
+   ```
+   The default recipe enables `WRITE_TESTS` and `TEST` with `npm test`, an override only replaces what it names, and a reused scaffold may already carry overrides. So all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `"enabled"` value:
 
-    Full pipeline:
-    ```json
-    { "stages": {
-      "WRITE_TESTS": { "enabled": true, "onExhaustion": "plan" },
-      "TEST": { "enabled": true, "command": "<detected>" },
-      "VERIFY": { "enabled": true, "startCommand": "<detected>", "readinessUrl": "<detected>" },
-      "BUILD": { "enabled": true, "command": "<detected>" }
-    }}
-    ```
+   - **Test command established** (a real test script in the manifest, or a real test target in the build file): write `WRITE_TESTS` and `TEST` with that same command. Full pipeline enables both; Tests only enables `TEST` and writes `WRITE_TESTS` with `"enabled": false`; Minimal writes both with `"enabled": false`.
+   - **Test command not established** (an empty project, or a manifest with no test script): write both with `"enabled": false` and record the proposed command as pending. Never leave them to the defaults.
+   - **`BUILD` and `VERIFY`:** `"enabled": true` only for Full pipeline, and only with commands established from the manifests (VERIFY also needs an applicable project type, below). Everything else writes them with `"enabled": false`: Tests only, Minimal, pending tooling, and project types VERIFY does not apply to. Record a pending proposal as pending.
 
-    Tests only:
-    ```json
-    { "stages": {
-      "TEST": { "enabled": true, "command": "<detected>" }
-    }}
-    ```
+   Full pipeline with an established test command, for example:
+   ```json
+   { "stages": {
+     "WRITE_TESTS": { "enabled": true, "command": "<established>", "onExhaustion": "plan" },
+     "TEST": { "enabled": true, "command": "<established>" },
+     "BUILD": { "enabled": true, "command": "<established>" },
+     "VERIFY": { "enabled": true, "startCommand": "<established>", "readinessUrl": "<established>" }
+   }}
+   ```
 
-    Minimal: no overrides needed (default recipe handles it).
+   Nothing is established by running it: read the command from the manifest or build file, never execute an install, test, build or dev server during setup. The table below lists candidates to look for, not values to write:
 
-    **Stack -> command detection (fill in `<detected>` values):**
+   | Stack | Test | Dev server | Readiness URL | Build |
+   |-------|------|------------|---------------|-------|
+   | Node (`package.json` scripts) | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
+   | Vite / SvelteKit | `npm test` | `npm run dev` | `http://localhost:5173` | `npm run build` |
+   | Python (pytest configured) | `pytest` | per framework | `http://localhost:8000` | -- |
+   | Django | `python manage.py test` | `python manage.py runserver` | `http://localhost:8000` | -- |
+   | Go | `go test ./...` | `go run .` | `http://localhost:8080` | -- |
+   | Rust | `cargo test` | -- | -- | `cargo build` |
+   | Flutter | `flutter test` | -- | -- | `flutter build` |
 
-    | Stack | Test command | Dev server | Readiness URL | Build command |
-    |-------|-------------|------------|---------------|---------------|
-    | Next.js | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
-    | Nuxt | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
-    | SvelteKit | `npm test` | `npm run dev` | `http://localhost:5173` | `npm run build` |
-    | Vite (React/Vue) | `npm test` | `npm run dev` | `http://localhost:5173` | `npm run build` |
-    | FastAPI | `pytest` | `uvicorn main:app --reload` | `http://localhost:8000` | -- |
-    | Django | `python manage.py test` | `python manage.py runserver` | `http://localhost:8000` | -- |
-    | Express/Fastify | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
-    | Go | `go test ./...` | `go run .` | `http://localhost:8080` | -- |
-    | Rust | `cargo test` | -- | -- | `cargo build` |
-    | Flutter | `flutter test` | -- | -- | `flutter build` |
-    | Default | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
+   A Python project with no `package.json` never gets `npm test`. Skip VERIFY for static sites, CLIs, libraries, packages, mobile-only apps and projects with no custom server.
 
-    Skip VERIFY when: static site, CLI, library, package, mobile-only, BaaS (no custom server).
-    Skip BUILD when: Python, Go (compiled at test time).
+4. Call `storybloq_phase_create` for each phase. When `p0` exists (a fresh init writes it, and a reused scaffold keeps it), the first goes `after: "p0"` without `atStart`; only on an empty roadmap does the first use `atStart: true`. Each later phase goes `after:` the id the previous call returned.
+5. **Pass 1:** Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy` (ticket IDs don't exist until after creation). Keep the id each call returns.
+6. Call `storybloq_issue_create` for each imported GitHub issue.
+7. **Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned. Validate: no cycles, no self-references.
+8. Call `storybloq_ticket_update` to mark already-complete tickets as `complete` (only those with code evidence).
+9. Write the approved governance files (below), then git (below).
+10. Call `storybloq_snapshot` to save the initial baseline.
 
-**Force-surface post-init MCP tools.** Right after `storybloq_init` returns, call the client's tool discovery/search tool (`ToolSearch`, `tool_search`, or equivalent) with `query: "storybloq"` and a result limit high enough to surface the full tool set. In Codex, use the `limit` field for that result limit. The MCP server registers the remaining tools when init completes, but some clients cache the pre-init tool list and only refresh when explicitly prompted. This one call makes `storybloq_phase_create`, `storybloq_ticket_create`, etc. dispatchable without a client restart. If tool discovery returns only 2 tools (init + status), the full tool set didn't register server-side -- fall back to CLI via `Bash` (`storybloq phase create ...`, `storybloq ticket create ...`) and note in the summary that a client restart may be needed.
-
-2. Call `storybloq_phase_create` for each phase -- first phase with `atStart: true`, subsequent with `after: <previous-phase-id>`
-3. **Pass 1:** Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy` (ticket IDs don't exist until after creation)
-4. Call `storybloq_issue_create` for each imported GitHub issue
-5. **Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, now that all IDs exist. Validate: no cycles, no self-references.
-6. Call `storybloq_ticket_update` to mark already-complete tickets as `complete`
-7. Call `storybloq_snapshot` to save initial baseline
-
-**Narrate every MCP call as it happens.** Bulk summaries ("51 tickets created") hide the mechanism and feel like magic (in a bad way). After each creation or update, surface a one-line visible narration to the user. Examples:
+**Narrate every MCP call as it happens**, one line each, never a bulk summary:
 - `-> storybloq · phase "foundation" created`
-- `-> storybloq · ticket T-003 "Supabase schema + RLS" created (phase: foundation)`
-- `-> storybloq · issue ISS-001 "Consistency budget" filed (severity: high)`
+- `-> storybloq · ticket T-003 "Account sign-in" created (phase: foundation)`
 - `-> storybloq · T-015 wired: blocked by T-010, T-014`
 
-This makes the file convention visible, turns the tools into a demo of themselves, and gives the user confidence that something real is happening under the hood. Keep each narration to one line; don't interleave with long prose.
+**CLAUDE.md generation** (when approved in the package):
 
-**CLAUDE.md generation:** If a brief/PRD was read in step 1b AND no `CLAUDE.md` exists in the project root, use `AskUserQuestion` for governance files:
-- question: "Write project governance files?"
-- header: "Files"
-- options:
-  - "Write both (Recommended)" -- CLAUDE.md and RULES.md
-  - "CLAUDE.md only"
-  - "RULES.md only"
-  - "Skip" -- I'll write them manually
+*Always present:* project purpose (1-2 sentences); the product outcome and first-version boundary; tech stack as stated by the user or the code; architecture as it exists or is planned; testing strategy (TDD when the RULES.md TDD line applies).
 
-**If writing CLAUDE.md**, generate with tiered structure:
+*Present when relevant:* deployment target, core entities and relationships (names, not full schemas), domain rules and workflows, identity model, tenancy, AI pattern and provider as chosen.
 
-*Always present:*
-- Project purpose (1-2 sentences)
-- Tech stack and key dependencies (including any pivots from the brief, with rationale)
-- Architecture pattern (shape + execution model) + rationale
-- Testing strategy (TDD when applicable -- see RULES.md generation)
-
-*Present when relevant:*
-- Deployment target + hosting model
-- Core entities + key relationships (names + relationships, not full schemas)
-- Domain complexity (workflows, org scoping)
-- Auth / identity model
-- AI pattern + provider + processing model
-- Tenancy model
-- State machines / workflows
-
-*Flagged for resolution:*
-- Undecided tech choices (flagged as TBD with options)
+*Flagged for resolution:* undecided choices, marked TBD with the options.
 
 **Sanitization:** Never copy secrets, tokens, credentials, API keys, connection strings, customer-identifying data, or internal-only endpoints into generated files.
 
-Show a preview of the generated content to the user. Only write after explicit approval.
+**Verify after write.** After each `Write`, `Read` the file back and record its byte count. If the read fails, the write did not land -- the summary must say so ("CLAUDE.md write failed -- please create manually") rather than claim success. If it succeeds, include the size ("CLAUDE.md created (2,814 chars)"). A hallucinated "created" is indistinguishable from a real one without this step.
 
-**Verify after write.** After the `Write` call completes, `Read` the file back and record its byte count. If the read fails, the write did not land -- the summary must say so ("CLAUDE.md write failed -- please create manually") rather than claim success. If the read succeeds, include the size in the summary ("CLAUDE.md created (2,814 chars)"). A hallucinated "created" is indistinguishable from a real one without this step; setup is the user's first impression of storybloq, so silent failures here are uniquely damaging.
+**RULES.md generation** (when approved) captures domain rules (e.g., "all monetary calculations use fixed-point arithmetic, not floats"), API constraints, data integrity rules (soft deletes, audit trails, idempotency) and testing requirements for core business logic.
 
-**If writing RULES.md**, generate capturing:
-- Domain-specific rules (e.g., "all monetary calculations use fixed-point arithmetic, not floats")
-- API design constraints (versioning, auth requirements, response format)
-- Data integrity rules (soft deletes, audit trails, idempotency requirements)
-- Testing requirements for core business logic
-
-**TDD recommendation:** Add when domain complexity includes "Workflows/approvals" or "Multiple organizations/teams", or project has AI evaluation needs, or project has a sensitive domain. This is mechanical -- tied directly to gate answers, no judgment calls:
+**TDD recommendation:** Add it when the material shows business rules or workflows, multiple organisations, AI evaluation needs, or a sensitive domain. It is tied to those facts, not to judgement:
 
 ```
 - TDD for business logic: write tests first for core functional code
@@ -568,163 +223,38 @@ Show a preview of the generated content to the user. Only write after explicit a
   AI evaluation harnesses). Tests define the contract before implementation.
 ```
 
-Same sanitization and preview rules as CLAUDE.md. Only write after explicit approval.
+Same sanitization and read-back rules as CLAUDE.md.
 
-**REVIEW.md generation:** REVIEW.md is the project's review contract. Verification backends read it and ordinary coding sessions do not. `storybloq init` does not write it: a contract nobody agreed to is worse than no contract, so it is proposed here and the user edits or rejects it before it lands. `storybloq validate` warns when review backends are configured and REVIEW.md is absent or unparseable, so a project set up without one sees that warning until it writes one.
+**REVIEW.md generation:** REVIEW.md is the project's review contract. Verification backends read it and ordinary coding sessions do not. `storybloq init` does not write it: a contract nobody agreed to is worse than no contract, so it is part of the package and the user edits or rejects it before it lands. `storybloq validate` warns when review backends are configured and REVIEW.md is absent or unparseable.
 
-Ask this separately from the CLAUDE.md/RULES.md question -- three files do not fit in four options. Use `AskUserQuestion`:
-- question: "Write REVIEW.md, the contract your reviewers read?"
-- header: "Review"
-- options:
-  - "Write it (Recommended)" -- six principles with default blocking classes, yours to edit
-  - "Write it, then set exclusions" -- same file, then fill the Outside line together
-  - "Skip" -- reviewers fall back to whatever they infer
+**Write `review-contract-template.md` verbatim.** Read it from the same directory as this skill file (if it is not found, tell the user to run `storybloq setup --client all`). The six definitions in it are fixed wording. What a project changes is the blocking classes, the Outside line, and whatever repository detail it adds BELOW the principles. Do not paraphrase it and do not reorder it: the lens backend receives only the first 3000 characters of REVIEW.md, head-truncated, so a principle moved below the repository detail is one a lens reviewer is asked to name without ever being shown it.
 
-**Write `review-contract-template.md` verbatim.** Read it from the same directory as this skill file (if
-it is not found, tell the user to run `storybloq setup --client all`). The six definitions in it are fixed
-wording. What a project changes is the blocking classes, the Outside line, and whatever repository detail
-it adds BELOW the principles. Do not paraphrase it and do not reorder it: the lens backend receives only
-the first 3000 characters of REVIEW.md, head-truncated, so a principle moved below the repository detail
-is one a lens reviewer is asked to name without ever being shown it.
+**The Outside line.** The template ships three lens ids on it. Entries there take a subject OUT of the contract, which means a finding on that subject is never capped and keeps the severity its reviewer gave it -- Outside is the loud side, not a way to silence anything. If the user asked to set exclusions, say that in one sentence, then write what they name as one plain comma-separated line under the heading. Never bullet the entries: the parser reads every line under that heading as entries and does not strip a `- ` prefix, so a bulleted entry matches nothing. An empty line is the widest coverage and the quietest gate, and `storybloq validate` warns about one.
 
-**The Outside line.** The template ships three lens ids on it. Entries there take a subject OUT of the
-contract, which means a finding on that subject is never capped and keeps the severity its reviewer gave
-it -- Outside is the loud side, not a way to silence anything. Say that in one sentence if the user picked
-"set exclusions", then write what they name as one plain comma-separated line under the heading. Never
-bullet the entries: the parser reads every line under that heading as entries and does not strip a `- `
-prefix, so a bulleted entry matches nothing. An empty line is the widest coverage and the quietest gate,
-and `storybloq validate` warns about one.
+Same sanitization and read-back rules as CLAUDE.md -- a REVIEW.md reported as created but never written is worse than none, because the warning that would have caught it stops firing.
 
-Same sanitization and preview rules as CLAUDE.md. Only write after explicit approval, and apply the same Read-back verification -- a REVIEW.md reported as created but never written is worse than none, because the warning that would have caught it stops firing.
+**Git (autonomous mode depends on it).** Run `git rev-parse --show-toplevel` via `Bash`. If it errors and the package included git initialisation, run `git init` and narrate `-> git · repository initialized at <path>`. Then create or append to `.gitignore` any missing entries:
+```
+.story/snapshots/
+.story/sessions/
+.story/status.json
+```
 
 #### 1f. Post-Setup
 
-After creation completes:
+**Summary.** Confirm what was created with concrete, verified counts: do not say "CLAUDE.md created" unless the read-back confirmed it, and do not give a ticket count unless every create call returned success; the counts must equal what is on disk. Example: "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md (2,814 chars), RULES.md (1,206 chars). Git repo initialized." Then:
 
-**Git check (autonomous mode depends on it).** Run `git rev-parse --show-toplevel` via `Bash`. If it errors, the directory is not a git repo, and autonomous mode will later refuse to start. Use `AskUserQuestion`:
-- question: "Initialize a git repo here? Autonomous mode requires it."
-- header: "Git"
-- options:
-  - "Yes, initialize (Recommended)" -- runs `git init` and seeds `.gitignore`
-  - "No, I'll handle it later"
+- the review outcome, or "Independent review skipped at the user's request";
+- one line per pending item: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)".
 
-If the user picks "Yes":
-- Run `git init`
-- Create or append to `.gitignore`:
-  ```
-  .story/snapshots/
-  .story/sessions/
-  .story/status.json
-  ```
-- Narrate: `-> git · repository initialized at <path>`
-
-If the repo already exists, just verify `.gitignore` contains `.story/snapshots/` and `.story/sessions/` and append any missing entries.
-
-**Summary.** Confirm what was created. Use concrete, verified counts -- do not say "CLAUDE.md created" unless the post-write Read confirmed it; do not say "51 tickets created" unless every ticket-create call returned success. Example good summary: "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md (2,814 chars), RULES.md (1,206 chars). Git repo initialized."
-
-**Initial handover.** Write an initial handover documenting the setup decisions. Explicitly capture which gates were answered and what was chosen: surface, characteristics, stack, system shape, execution model, deployment, data model, domain complexity, auth model, sensitive domain, quality checks level, AI pattern/provider/processing (if applicable), design source. This handover is the source of truth for decisions; CLAUDE.md is the project description.
+**Initial handover and setup note.** Write an initial handover that records the product brief and its acceptance conditions, the coverage map, the answers from 1c, the conflicts and how they were ruled, the approved quality level with its established and pending commands, the review outcome or the recorded skip, and the checkpoint tickets with the stage-1 limitation. Also create a setup note (`storybloq_note_create`, tag `setup`) holding the coverage map and the pending verification tooling. The handover is the source of truth for setup decisions; CLAUDE.md is the project description.
 
 Present a brief completion message and tell the user how to start:
 
 "Your project is set up -- [X] phases, [Y] tickets, AGENTS.md/CLAUDE.md, and RULES.md created. Type **`/story`** in Claude Code or **`$story`** in Codex at the start of any session to load context and see what to work on. Or use **`/story auto`** / **`$story auto`** to work through the tickets autonomously."
 
-Keep it to 2-3 sentences. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work. No need for a manual.
+Keep it to 2-3 sentences. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work.
 
 **Hooks note (Claude Code).** When `storybloq setup` registered hooks, the session now carries context-pressure awareness (T-499): a SessionStart hook captures the auto-compact setting for the process, a synchronous UserPromptSubmit hook samples the transcript tail on every prompt and injects one line only when pressure is imperative or compact-needed, and the Stop hook samples at every turn end. Nothing to configure; `storybloq session intel` shows the current numbers. Machine-wide opt-out: `~/.claude/storybloq/config.json` `{"sessionIntel": {"enabled": false}}`, then re-run `storybloq setup` or any CLI command to remove the hooks.
 
-**Design evaluation hint** (show only when project surface is Web app, Mobile app, or Desktop app):
-
-Add one more line after the completion message: "Tip: Run `/story design` anytime to evaluate your frontend against [detected platform] best practices and generate improvement issues."
-
-Note: Use the actual command that invoked this flow (e.g., `/story design` for standalone, `/story:go design` for plugin).
-
----
-
-## Appendix: Default Stack Recommendations
-
-Choose based on team familiarity, hosting model, and product shape; these are defaults, not absolutes.
-
-### Web application
-- Next.js + TypeScript (Recommended) -- full-stack React, SSR, API routes, easiest deploy via Vercel. Best for: solo devs, startups, fast shipping.
-- SvelteKit + TypeScript -- lighter, less boilerplate, excellent DX. Best for: minimal framework overhead.
-- Django + Python -- batteries-included, built-in admin, ORM, auth. Best for: data-heavy apps, Python teams.
-- Rails -- convention-over-config. Best for: fastest 0-to-MVP.
-
-### AI / LLM application
-- Next.js + TypeScript + Vercel AI SDK (Recommended for web AI) -- streaming UI, provider-agnostic. Best for: AI products with web interface.
-- Python + FastAPI + provider SDK -- direct integration, no orchestration overhead. Best for: most AI apps. Add LangChain only when multi-step orchestration matters.
-- Python + FastAPI + LlamaIndex -- simpler for pure retrieval. Best for: knowledge base Q&A.
-- TypeScript + Anthropic SDK / Agent SDK -- Claude-native. Best for: agents and tool use.
-
-### BaaS / backendless
-- Supabase (Recommended) -- Postgres, auth, realtime, storage built-in. Best for: fast MVP, solo devs, speed over control.
-- Firebase -- Google ecosystem, NoSQL, good mobile support. Best for: mobile-first, Google Cloud teams.
-- Convex -- reactive database, no REST. Best for: realtime-first apps.
-
-### Website / content site
-- Astro (Recommended) -- zero JS default, islands. Best for: marketing, blogs, docs.
-- Next.js -- when site needs dynamic features.
-- Hugo -- pure static, fast builds. Best for: large content sites.
-- Docusaurus -- documentation sites. React-based.
-
-### Mobile app
-- Flutter + Dart -- cross-platform, consistent UI, single codebase. Best for: mobile-primary projects wanting one tightly controlled UI system.
-- React Native + Expo + TypeScript -- cross-platform, shares logic with web. Best for: teams already using React.
-- Swift + SwiftUI -- iOS/macOS native. Best for: iOS-only, deep OS integration.
-- Kotlin + Compose -- Android native. Best for: Android-only.
-
-(Neither Flutter nor React Native is a universal winner. Recommendation depends on team context.)
-
-### Full-stack / multi-service
-- Next.js + NestJS + PostgreSQL -- TypeScript end-to-end, structured API. Best for: strong typing, module organization.
-- Next.js + FastAPI + PostgreSQL -- TS frontend, Python API. Best for: AI features in the API.
-- React + Go + PostgreSQL -- lightweight. Best for: high-throughput services.
-- Monorepo (Turborepo/Nx) when sharing types/utils; polyrepo when teams are independent.
-
-### Desktop app
-- Tauri + TypeScript -- cross-platform, Rust backend, small binaries. Best for: lightweight tools.
-- Electron + TypeScript -- cross-platform, largest ecosystem. Best for: feature-rich apps.
-- Swift + SwiftUI -- macOS native. Best for: Mac-only.
-- .NET MAUI -- Windows + macOS. Best for: C#/.NET teams.
-
-### API / backend
-- Node.js + Fastify + TypeScript -- fast, lean. Best for: microservices, performance.
-- NestJS + TypeScript -- structured, enterprise-friendly. Best for: larger teams, complex domains.
-- Python + FastAPI -- auto-docs, async. Best for: Python teams, AI, data-heavy.
-- Go -- compiled, high-throughput. Best for: infrastructure services.
-- Rust + Axum -- maximum performance. Best for: systems-level APIs.
-
-### CLI tool
-- TypeScript + Node.js -- fast to build, npm distribution.
-- Rust -- single binary, fast. Best for: performance, wide distribution.
-- Go -- single binary, fast compile. Best for: DevOps, infra CLIs.
-- Python + Typer -- fastest to prototype. Best for: internal tools.
-
-### Library / package
-- TypeScript -- npm, widest web reach.
-- Rust -- crates.io, WASM target.
-- Python -- PyPI, data science.
-
-### Framework-specific choices (ask only when it affects tickets)
-- Next.js: App Router (Recommended) vs Pages Router
-- React Native: Expo (Recommended) vs bare
-- Node.js ORM: Drizzle (SQL-friendly, lightweight) vs Prisma (higher-level DX, generated types)
-- Python ORM: SQLAlchemy vs Django ORM
-- Database: PostgreSQL (Recommended), SQLite (local), MongoDB (documents), MySQL (legacy)
-- Component library (web): shadcn/ui (Recommended for Next.js), Material UI, Chakra UI, None/custom
-- Component library (mobile): default to framework built-in (Flutter Material, RN Paper/NativeBase)
-
-### Deployment / hosting
-- Vercel (Recommended for Next.js/Astro) -- zero-config, git push deploy
-- Netlify -- static + serverless
-- Railway -- full-stack, databases included
-- Fly.io -- containers, global edge
-- AWS / GCP / Azure -- maximum control, complex setup
-- Self-hosted / VPS -- Docker Compose + nginx, full control
-
-### AI-specific choices
-- LLM: Anthropic Claude (product default), OpenAI, Google Gemini, Self-hosted (Qwen/Llama/Mistral), Multi-provider
-- Pattern: RAG, Agentic, Conversational, Structured generation (composable: primary + secondary)
-- Processing: Sync, Async, Both
-- Vector DB: pgvector (Recommended), Pinecone, Qdrant, Chroma
-- Safety: by audience (public/internal/backend) + domain sensitivity (separate axis)
+**Design evaluation hint** (show only for a web, mobile or desktop app): add one line after the completion message: "Tip: Run `/story design` anytime to evaluate your frontend against [detected platform] best practices and generate improvement issues." Use the actual command that invoked this flow (e.g., `/story design` for standalone, `/story:go design` for plugin).

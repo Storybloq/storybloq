@@ -1,0 +1,12 @@
+{
+  "name": "shelfmate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Small lending catalogue for a school book room",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {}
+}

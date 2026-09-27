@@ -1,0 +1,52 @@
+{
+  "fixture": "empty-scaffold",
+  "class": "interrupted",
+  "scaffold": {
+    "keepPhase": "p0",
+    "configUnchanged": [
+      "project",
+      "type",
+      "language"
+    ],
+    "configDifference": "project name scaffold-demo vs Recipe Swap"
+  },
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "member posts a recipe",
+      "source": "brief.md"
+    },
+    {
+      "id": "R2",
+      "text": "member browses recipes",
+      "source": "brief.md"
+    },
+    {
+      "id": "R3",
+      "text": "member saves a recipe to their list",
+      "source": "brief.md"
+    },
+    {
+      "id": "D1",
+      "text": "comments deferred",
+      "source": "brief.md",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "sign-in"
+  ],
+  "answeredInMaterial": [
+    "first version scope"
+  ],
+  "expectedRecipe": {
+    "testStages": "disabled"
+  },
+  "rules": [
+    "no storybloq_init call",
+    "p0 kept first",
+    "config project/type/language not overwritten",
+    "the package notes the config difference"
+  ]
+}

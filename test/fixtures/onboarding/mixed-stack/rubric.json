@@ -1,0 +1,65 @@
+{
+  "fixture": "mixed-stack",
+  "class": "existing",
+  "parts": [
+    {
+      "path": "frontend",
+      "manifest": "frontend/package.json",
+      "candidateTest": "npm test (vitest run)",
+      "candidateBuild": "npm run build"
+    },
+    {
+      "path": "backend",
+      "manifest": "backend/pyproject.toml",
+      "candidateTest": "pytest"
+    }
+  ],
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "door volunteer adds a visitor",
+      "source": "BRIEF.md"
+    },
+    {
+      "id": "R2",
+      "text": "repairer takes the next visitor",
+      "source": "BRIEF.md"
+    },
+    {
+      "id": "R3",
+      "text": "repairer marks a repair finished",
+      "source": "BRIEF.md"
+    },
+    {
+      "id": "R4",
+      "text": "board page refreshes on its own",
+      "source": "BRIEF.md"
+    },
+    {
+      "id": "D1",
+      "text": "text-message alerts deferred",
+      "source": "BRIEF.md",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "data retention",
+    "board refresh interval"
+  ],
+  "answeredInMaterial": [
+    "first version scope"
+  ],
+  "expectedRecipe": {
+    "testStages": "disabled-or-components",
+    "components": [
+      "frontend",
+      "backend"
+    ]
+  },
+  "rules": [
+    "both manifests are recognised",
+    "pending or proposed commands are listed per part",
+    "a test command, if enabled, runs each part from its own directory; a root-level npm test or pytest is wrong"
+  ]
+}

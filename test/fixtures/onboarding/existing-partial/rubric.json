@@ -1,0 +1,50 @@
+{
+  "fixture": "existing-partial",
+  "class": "existing",
+  "codeEvidence": {
+    "complete": [
+      "list books",
+      "add book"
+    ],
+    "claimedButMissing": [
+      "search by title or author",
+      "lending and returns"
+    ]
+  },
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "search by title or author",
+      "source": "README.md#Status (claimed done, not in code)"
+    },
+    {
+      "id": "R2",
+      "text": "lend a book to a pupil and record the return",
+      "source": "README.md#Status (claimed done, not in code)"
+    },
+    {
+      "id": "R3",
+      "text": "overdue list",
+      "source": "README.md#Still to do"
+    },
+    {
+      "id": "R4",
+      "text": "persistence across restarts",
+      "source": "README.md#Still to do"
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "first version"
+  ],
+  "answeredInMaterial": [
+    "catalogue exists"
+  ],
+  "expectedRecipe": {
+    "testStages": "same-command",
+    "command": "npm test"
+  },
+  "rules": [
+    "no capability is called complete without code evidence: search and lending are planned work, not completed tickets"
+  ]
+}

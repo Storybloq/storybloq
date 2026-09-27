@@ -1,0 +1,44 @@
+{
+  "fixture": "non-npm-tests",
+  "class": "existing",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "read volunteers and unavailable days from CSV",
+      "source": "README.md"
+    },
+    {
+      "id": "R2",
+      "text": "fair assignment: the difference between any two volunteers' shift counts is at most one (3 against 1 is rejected); when availability makes that impossible, the rota says so",
+      "source": "README.md"
+    },
+    {
+      "id": "R3",
+      "text": "print the rota",
+      "source": "README.md"
+    },
+    {
+      "id": "D1",
+      "text": "emailing volunteers deferred",
+      "source": "README.md",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "availability granularity",
+    "what happens when availability makes a fair rota impossible"
+  ],
+  "answeredInMaterial": [
+    "first version scope",
+    "language"
+  ],
+  "expectedRecipe": {
+    "testStages": "same-command",
+    "command": "pytest"
+  },
+  "rules": [
+    "never npm test",
+    "the fairness acceptance names the boundary (a difference of two fails) and the infeasible case"
+  ]
+}

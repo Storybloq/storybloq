@@ -15,6 +15,7 @@ import {
   effectiveMergeDriver,
 } from "../../src/core/team-setup.js";
 import { STORY_GITIGNORE_ENTRIES } from "../../src/core/init.js";
+import { RULING_LIFECYCLE_MIN_CLI_VERSION } from "../../src/core/team-capabilities.js";
 
 function createTempGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "team-setup-"));
@@ -145,7 +146,8 @@ describe("T-388: team-setup", () => {
       await updateConfigVersion(root);
       const config = JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf-8"));
       expect(config.team.idAllocator).toBe("git-refs");
-      expect(config.team.minCliVersion).toBe("1.0.0");
+      // T-522: a CLI that meets the ruling fence raises it; the other fields stand.
+      expect(config.team.minCliVersion).toBe(RULING_LIFECYCLE_MIN_CLI_VERSION);
       expect(config.team.mergeDriverVersion).toBe(MERGE_DRIVER_VERSION);
       expect(config.customField).toBe("preserved");
     });

@@ -9,7 +9,7 @@ import { IssueSchema } from "../models/issue.js";
 import type { ProjectState } from "./project-state.js";
 import type { Catalog } from "./catalog.js";
 import { catalogConflictScope } from "./catalog-conflicts.js";
-import { CONFIG_MAX_BYTES, readBoundedFileDetailed, type BoundedRead, type BoundedReader } from "./limit-config.js";
+import { CONFIG_MAX_BYTES, readBoundedFileDetailed, type BoundedRead, type BoundedReader } from "./bounded-read.js";
 import { RULING_MAX_BYTES, loadRulingsSafe, loadUpwardBoardAt, type LoadRulingsResult } from "./ruling-loader.js";
 import { CATALOG_MAX_BYTES } from "./catalog.js";
 import { readdirSafe, verifyContainment, verifyDirIdentity, type DirIdentity } from "./readdir-safe.js";

@@ -42,7 +42,7 @@ import {
   handleSessionStop,
 } from "../../src/cli/commands/session-compact.js";
 import { recordDirectStop, readLimitLedger, limitRecordKey, mutateLimitLedger } from "../../src/core/limit-ledger.js";
-import { captureProcessSignatureSync } from "../../src/core/limit-lock.js";
+import { captureProcessSignatureSync } from "../../src/core/process-identity.js";
 import { spawnSync } from "node:child_process";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 

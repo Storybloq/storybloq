@@ -57,7 +57,7 @@ import {
   type LimitStopInput,
 } from "../../../src/core/limit-ledger.js";
 import { createSession, writeSessionSync, prepareForLimitStop } from "../../../src/autonomous/session.js";
-import { captureProcessSignatureSync } from "../../../src/core/limit-lock.js";
+import { captureProcessSignatureSync } from "../../../src/core/process-identity.js";
 import { spawnSync } from "node:child_process";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 

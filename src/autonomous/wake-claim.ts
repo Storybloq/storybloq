@@ -19,7 +19,7 @@
 import * as fs from "node:fs";
 import { basename, join } from "node:path";
 import { hasArgvSignature } from "./liveness.js";
-import { storybloqGlobalDir } from "../core/limit-ledger.js";
+import { storybloqGlobalDir } from "../core/global-config.js";
 
 export const WAKE_ATTEMPT_ENV = "STORYBLOQ_WAKE_ATTEMPT";
 

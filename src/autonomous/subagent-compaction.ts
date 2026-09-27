@@ -24,7 +24,7 @@
 import { closeSync, lstatSync, opendirSync, readSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { dirname, join } from "node:path";
-import { openTranscriptReadOnly } from "./limit-transcript.js";
+import { openTranscriptReadOnly } from "../core/transcript-open.js";
 import { findResumableSession } from "./session.js";
 import { authorizeTranscriptPath } from "../core/session-intel/transcript-locate.js";
 import { MAX_LINE_BYTES, isSyntheticAssistantRecord, parseTranscriptObject } from "../core/session-intel/transcript-scan.js";

@@ -6,7 +6,7 @@ import { verifyDirIdentity, type DirIdentity } from "../../core/readdir-safe.js"
 import { checkCapabilities, resolveHead } from "../../core/capability.js";
 import { glossaryCatalog } from "../../core/glossary.js";
 import { currentCliVersion } from "../../core/team-capabilities.js";
-import { readBoundedFileDetailed } from "../../core/limit-config.js";
+import { readBoundedFileDetailed } from "../../core/bounded-read.js";
 import { ExitCode, formatError } from "../../core/output-formatter.js";
 import type { OutputFormat } from "../../models/types.js";
 import {

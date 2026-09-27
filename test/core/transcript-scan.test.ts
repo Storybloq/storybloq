@@ -13,7 +13,7 @@ import {
   scanTail,
   type ScanRequest,
 } from "../../src/core/session-intel/transcript-scan.js";
-import { openTranscriptReadOnly } from "../../src/autonomous/limit-transcript.js";
+import { openTranscriptReadOnly } from "../../src/core/transcript-open.js";
 import { SID, assistantRecord, boundaryRecord, growingSession, localCommandRecord, metaRecord, userRecord, writeTranscript } from "./session-intel-fixtures.js";
 
 function withDir(fn: (dir: string) => void): void {

@@ -13,7 +13,7 @@ import { readSubprocessSummaries } from "../../autonomous/subprocess-registry.js
 import { writeStatusFile } from "../../autonomous/status-writer.js";
 import { readCoarseTokenPressureForSession } from "../../core/session-intel/status-projection.js";
 import { collectProbes, reduceHealthState } from "../../autonomous/health-model.js";
-import { isStopHookStatusWriteEnabled } from "../../core/limit-config.js";
+import { isStopHookStatusWriteEnabled } from "../../core/stop-hook-config.js";
 import { isPresenceEnabled, removePresenceRecords } from "../../presence/handler.js";
 import {
   busRuntimeLostAdvisory,

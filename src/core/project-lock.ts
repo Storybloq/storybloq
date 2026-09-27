@@ -58,7 +58,7 @@ import * as fs from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { safeUnlinkLock } from "../autonomous/liveness.js";
-import { captureProcessSignatureSync, inspectProcessIdentitySync, type ProcessIdentity } from "./limit-lock.js";
+import { captureProcessSignatureSync, inspectProcessIdentitySync, type ProcessIdentity } from "./process-identity.js";
 import { ProjectLoaderError } from "./errors.js";
 
 const LOCK_MAX_BYTES = 4_096;

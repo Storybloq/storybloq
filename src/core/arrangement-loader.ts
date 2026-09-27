@@ -5,7 +5,7 @@ import { ARRANGEMENT_CANONICAL_ID_REGEX } from "../models/types.js";
 import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-loader.js";
 import { ProjectLoaderError } from "./errors.js";
 import { sanitizeDisplayText } from "./display-text.js";
-import { readBoundedFile } from "./limit-config.js";
+import { readBoundedFile } from "./bounded-read.js";
 import { readdirSafe, verifyContainment, verifyDirIdentity } from "./readdir-safe.js";
 
 /**

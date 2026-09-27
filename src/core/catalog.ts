@@ -17,7 +17,7 @@ import { isDeepStrictEqual } from "node:util";
 import { lstatSync, existsSync, realpathSync } from "node:fs";
 import type { z } from "zod";
 import { readdirSafe, verifyContainment, verifyDirIdentity, type DirIdentity } from "./readdir-safe.js";
-import { readBoundedFileDetailed, type BoundedReader } from "./limit-config.js";
+import { readBoundedFileDetailed, type BoundedReader } from "./bounded-read.js";
 import { sanitizeDisplayPath, sanitizeDisplayText, MAX_PROSE_LENGTH } from "./display-text.js";
 import { withProjectLock, withConflictResolutionLock, atomicWrite } from "./project-loader.js";
 import { ProjectLoaderError } from "./errors.js";

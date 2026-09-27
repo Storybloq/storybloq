@@ -29,7 +29,7 @@ import {
   countLegacyHooks,
   sweepLegacyHooks,
 } from "../../../src/core/hook-migration.js";
-import { isSessionIntelGloballyDisabled } from "../../../src/core/limit-ledger.js";
+import { isSessionIntelGloballyDisabled } from "../../../src/core/global-config.js";
 
 const BIN = "/usr/local/bin/storybloq";
 const START_CMD = formatHookCommand(BIN, INTELSTART_SUBCOMMAND);

@@ -9,7 +9,7 @@
  */
 
 import { join } from "node:path";
-import { readBoundedFile } from "../limit-config.js";
+import { readBoundedFile } from "../bounded-read.js";
 import { HEALTH_CHECK_IDS, HEALTH_CONFIG_KEY, type HealthCheckConfig, type HealthCheckId } from "./types.js";
 
 export function resolveHealthCheckConfig(rawBlock: unknown): HealthCheckConfig {

@@ -21,7 +21,7 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, lstatSync, readSync } from "node:fs";
-import { openTranscriptReadOnly } from "../../autonomous/limit-transcript.js";
+import { openTranscriptReadOnly } from "../transcript-open.js";
 import type { Epoch, SessionIntelObservation } from "../../presence/session-intel-fields.js";
 import type {
   ModelEvidence,

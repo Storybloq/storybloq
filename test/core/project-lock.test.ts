@@ -20,10 +20,10 @@ import { join } from "node:path";
 
 // inspectProcessIdentitySync is spied on (not mocked away) to prove the
 // module-level identity cache actually avoids redundant calls, while every
-// other limit-lock export stays real.
+// other process-identity export stays real.
 const identitySpy = vi.hoisted(() => ({ calls: 0 }));
-vi.mock("../../src/core/limit-lock.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/core/limit-lock.js")>();
+vi.mock("../../src/core/process-identity.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/core/process-identity.js")>();
   const inspectProcessIdentitySync = ((pid: number, sig: string | null) => {
     identitySpy.calls += 1;
     return actual.inspectProcessIdentitySync(pid, sig);
@@ -289,7 +289,7 @@ describe("project-lock", () => {
 
   it("SIGSTOP'd live holder (verified-alive via a real matching signature) is never stolen; SIGCONT + release lets a contender through", async () => {
     const { spawn } = await import("node:child_process");
-    const { captureProcessSignatureSync } = await import("../../src/core/limit-lock.js");
+    const { captureProcessSignatureSync } = await import("../../src/core/process-identity.js");
     const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => process.exit(0)); setTimeout(() => {}, 30000)"], {
       stdio: "ignore",
     });

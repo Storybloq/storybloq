@@ -13,7 +13,7 @@
  */
 
 import { join } from "node:path";
-import { readBoundedFile } from "../limit-config.js";
+import { readBoundedFile } from "../bounded-read.js";
 
 export interface SessionIntelConfig {
   readonly enabled: boolean;

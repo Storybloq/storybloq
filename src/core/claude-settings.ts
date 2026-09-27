@@ -19,7 +19,7 @@
  */
 
 import { join } from "node:path";
-import { readBoundedFileDetailed } from "./limit-config.js";
+import { readBoundedFileDetailed } from "./bounded-read.js";
 import { defaultSettingsPath } from "./hook-migration.js";
 
 export type AutoCompactWindowSource = "user" | "project" | "local";

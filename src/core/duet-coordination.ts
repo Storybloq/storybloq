@@ -12,7 +12,7 @@ import { ownerTaskForCurrentClient } from "../autonomous/client-profile.js";
 import { CliValidationError } from "../cli/helpers.js";
 import { loadArrangementsSafe, ARRANGEMENT_MAX_BYTES } from "./arrangement-loader.js";
 import { isArrangementConflicted } from "./arrangement-authority.js";
-import { readBoundedFile } from "./limit-config.js";
+import { readBoundedFile } from "./bounded-read.js";
 import { withProjectLock, runTransactionUnlocked, serializeJSON, prepareTicketWrite, prepareIssueWrite } from "./project-loader.js";
 
 export const DUET_STATE_MAX_BYTES = 2 * 1024 * 1024;

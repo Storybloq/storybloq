@@ -5,7 +5,7 @@ import { RULING_CANONICAL_ID_REGEX } from "../models/types.js";
 import { atomicCreate, atomicWrite, guardPath, serializeJSON } from "./project-loader.js";
 import { ProjectLoaderError } from "./errors.js";
 import { sanitizeDisplayText } from "./display-text.js";
-import { collapseBoundedRead, readBoundedFileDetailed, type BoundedReader } from "./limit-config.js";
+import { collapseBoundedRead, readBoundedFileDetailed, type BoundedReader } from "./bounded-read.js";
 import { buildCitationResolutionContext, buildSuccessorIndex, lifecycleMapFor, type CitationResolutionContext, type UpwardBoard } from "./ruling.js";
 import type { RulingLifecycle } from "./ruling-lifecycle.js";
 import { readdirSafe, verifyContainment, verifyDirIdentity } from "./readdir-safe.js";

@@ -940,7 +940,7 @@ export async function ensureSessionIntelHooksRegistered(
   const bin = binPath ?? resolveStorybloqBin();
   if (!bin) return { changed: false, action: "unchanged" };
 
-  const { isSessionIntelGloballyDisabled } = await import("../../core/limit-ledger.js");
+  const { isSessionIntelGloballyDisabled } = await import("../../core/global-config.js");
   if (isSessionIntelGloballyDisabled()) {
     const r1 = await removeHook("SessionStart", formatHookCommand(bin, INTELSTART_SUBCOMMAND), settingsPath);
     const r2 = await removeHook("UserPromptSubmit", formatHookCommand(bin, INTELPROMPT_SUBCOMMAND), settingsPath);

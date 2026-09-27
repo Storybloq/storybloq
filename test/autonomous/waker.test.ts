@@ -47,7 +47,8 @@ import {
   type LimitRecord,
   type LimitStopInput,
 } from "../../src/core/limit-ledger.js";
-import { acquireLimitLock, releaseLimitLock, renewLimitLock, captureProcessSignatureSync } from "../../src/core/limit-lock.js";
+import { acquireLimitLock, releaseLimitLock, renewLimitLock } from "../../src/core/limit-lock.js";
+import { captureProcessSignatureSync } from "../../src/core/process-identity.js";
 import { safeUnlinkLock } from "../../src/autonomous/liveness.js";
 import { spawnSync } from "node:child_process";
 import { readWakeClaim, wakeClaimPath } from "../../src/autonomous/wake-claim.js";

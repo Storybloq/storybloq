@@ -66,8 +66,8 @@ import {
   releaseLimitLock,
   renewLimitLock,
   withLimitLock,
-  inspectProcessIdentitySync,
 } from "../core/limit-lock.js";
+import { inspectProcessIdentitySync } from "../core/process-identity.js";
 import { readLimitResumeConfig, type LimitResumeConfig } from "../core/limit-config.js";
 import { sendDesktopNotification } from "../core/notify.js";
 import { hasArgvSignature, probeArgvSignature, readOwnerHeartbeat } from "./liveness.js";

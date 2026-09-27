@@ -35,7 +35,7 @@ import {
   refreshStatusForSession,
 } from "../../src/autonomous/status-writer.js";
 import { activePayload, handleHookStatus } from "../../src/cli/commands/hook-status.js";
-import { isStopHookStatusWriteEnabled } from "../../src/core/limit-config.js";
+import { isStopHookStatusWriteEnabled } from "../../src/core/stop-hook-config.js";
 import { buildActivePayload } from "../../src/autonomous/status-payload.js";
 import type { StatusPayload, StatusPayloadActive } from "../../src/autonomous/session-types.js";
 

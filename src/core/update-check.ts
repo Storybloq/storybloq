@@ -30,7 +30,7 @@ import { writeFileSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync }
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { readBoundedFile } from "./limit-config.js";
+import { readBoundedFile } from "./bounded-read.js";
 
 const NPM_REGISTRY_URL = "https://registry.npmjs.org/@storybloq/storybloq/latest";
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours (ISS-1237: a day hid a same-day release)

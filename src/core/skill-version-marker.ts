@@ -30,7 +30,7 @@ import { join, relative, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { compareVersionStrings } from "./team-capabilities.js";
-import { readBoundedFile } from "./limit-config.js";
+import { readBoundedFile } from "./bounded-read.js";
 
 /** T-502: exported so the health check's default adapter reads the same file name. */
 export const SKILL_MARKER_FILE = ".storybloq-version";

@@ -10,47 +10,28 @@ import {
   findActiveSessionFull,
   findResumableSession,
   findSessionById,
-  listAllSessionsDetailed,
   prepareForCompact,
-  prepareForLimitStop,
   markCompactionObserved,
   writeSessionSync,
   withSessionLock,
   appendEvent,
   refreshLease,
   isLeaseExpired,
-  CLEARED_LIMIT_FIELDS,
+  withoutLimitKeys,
+  isCompactParkStale,
+  LIMIT_KEYS,
   type ActiveSessionInfo,
 } from "../../autonomous/session.js";
-import { sanitizeDisplayText } from "../../core/display-text.js";
-import { boundedList } from "../../core/bounded-list.js";
 import {
   limitRecordKey,
   readLimitLedger,
   resolveOwnerlessRecord,
   peekLimitRecord,
   markInteractive,
-  beginCancellation,
-  completeCancellation,
-  clearCancellingAttempt,
-  blockCancellation,
-  writePreparingIntent,
-  verifyPreparingIntent,
-  activateIntent,
-  abortIntent,
-  recordDirectStop,
-  repairParkedSessionRecord,
-  isLimitResumeGloballyDisabled,
-  claimAbandoned,
   LIMIT_STATUS_META,
   type LimitRecordStatus,
   type LimitRecord,
-  type LimitStopInput,
 } from "../../core/limit-ledger.js";
-import { readLimitResumeConfig } from "../../core/limit-config.js";
-import { resolveResetAt, LIMIT_PARSER_VERSION } from "../../autonomous/limit-reset-parser.js";
-import { scanTranscriptTailForLimit } from "../../autonomous/limit-transcript.js";
-import { gitHead } from "../../autonomous/git-inspector.js";
 import { withLimitLock } from "../../core/limit-lock.js";
 import {
   WAKE_ATTEMPT_ENV,
@@ -63,17 +44,21 @@ import {
 } from "../../autonomous/wake-claim.js";
 import { WORKFLOW_STATES } from "../../autonomous/session-types.js";
 import {
+  checkSurvivingWakeAttempts,
+  normalizeRetiredLimitPark,
+  normalizeRetiredLimitParkLocked,
+} from "../../autonomous/retired-limit-park.js";
+import {
   normalizeClientTaskId,
   ownerTaskForClient,
   type StorybloqClient,
 } from "../../autonomous/client-profile.js";
 import { resolveSessionOwnership, callerMayAct } from "../../autonomous/session-ownership.js";
-import { writeShutdownMarker, probeArgvSignature } from "../../autonomous/liveness.js";
+import { writeShutdownMarker } from "../../autonomous/liveness.js";
 import { loadProject } from "../../core/project-loader.js";
 import { writeResumeMarker, removeResumeMarker } from "../../autonomous/resume-marker.js";
 import { findLatestHandover } from "../../federation/handover-utils.js";
 import { join } from "node:path";
-import { realpathSync } from "node:fs";
 import {
   busRuntimeLostAdvisory,
   consumeCompactionSuccession,
@@ -187,23 +172,32 @@ export async function handleSessionCompactPrepare(
 
   try {
     await withSessionLock(root, async () => {
-      const active = findActiveSessionFull(root);
-      if (!active) return; // No active session -- silent no-op
+      const found = findActiveSessionFull(root);
+      if (!found) return; // No active session -- silent no-op
 
       // ISS-899: was one of five hand-rolled copies of the ownership
       // precedence. Behaviour is unchanged -- callerMayAct is exactly the old
       // `sameOwner || legacySameOwner || fullyUnownedLegacy`, including its
       // fail-closed treatment of a caller with no identity in BOTH via cases.
       const callerTask = ownerTaskForClient(client, clientTaskId);
-      const ownership = resolveSessionOwnership(active.state, callerTask);
+      const ownership = resolveSessionOwnership(found.state, callerTask);
 
       if (!callerMayAct(ownership)) {
         process.stderr.write(
-          `[storybloq] compact-prepare skipped: active session ${active.state.sessionId} ` +
+          `[storybloq] compact-prepare skipped: active session ${found.state.sessionId} ` +
           `is not owned by this ${client} task.\n`,
         );
         return;
       }
+
+      // T-534: a legacy usage-limit park is normalised before this hook acts
+      // on it; a failure refuses rather than compacting an unnormalised park.
+      const retired = await normalizeRetiredLimitParkLocked(root, found.dir, found.state);
+      if (retired.kind === "failed") {
+        process.stderr.write(`[storybloq] compact-prepare skipped: ${retired.reason}\n`);
+        return;
+      }
+      const active: ActiveSessionInfo = { ...found, state: retired.state };
 
       // prepareForCompact FIRST (fast state.json write -- ensures compactPending persisted)
       try {
@@ -813,10 +807,6 @@ export async function handleSessionResumePrompt(
       return;
     }
 
-    // T-424: opportunistic waker respawn (reboot/crash recovery). Cheap
-    // lockless probe inside; must never affect the resume prompt.
-    await spawnWakerBestEffort();
-
     let busMarker = "";
     let codexSurface: BusSurface | null = null;
     if (clientTaskId) {
@@ -919,7 +909,7 @@ export async function handleSessionResumePrompt(
     }
 
     let { info } = match;
-    const { stale } = match;
+    let { stale } = match;
     const sessionId = info.state.sessionId;
     const callerTask = ownerTaskForClient(
       client,
@@ -929,14 +919,61 @@ export async function handleSessionResumePrompt(
     // STATE WRITE (markCompactionObserved below). Behaviour is unchanged:
     // verifiedSameOwner is exactly callerMayAct, and hasRecordedOwner is
     // "the resolver found an owner of either kind".
-    const ownership = resolveSessionOwnership(info.state, callerTask);
-    const hasRecordedOwner = ownership.kind !== "unowned";
-    const verifiedSameOwner = callerMayAct(ownership);
-    const leaseExpired = isLeaseExpired(info.state);
-    const ticket = sanitizeForContext(
-      info.state.ticket?.displayId ?? info.state.ticket?.id ?? "The autonomous ticket",
+    let ownership = resolveSessionOwnership(info.state, callerTask);
+    let hasRecordedOwner = ownership.kind !== "unowned";
+    let verifiedSameOwner = callerMayAct(ownership);
+    let leaseExpired = isLeaseExpired(info.state);
+    const ticketLabel = (state: typeof info.state): string => sanitizeForContext(
+      state.ticket?.displayId ?? state.ticket?.id ?? "The autonomous ticket",
       40,
     );
+    let ticket = ticketLabel(info.state);
+
+    // T-534: every park a verified owner would mark or be told to resume goes
+    // through the normaliser first, with or without limit keys: a key-free park
+    // can still have a retired wake attempt running it, and the normaliser
+    // refuses that. Ownership is decided again on the state read under the
+    // lock. A failure names why and gives no resume instruction, so nothing
+    // resumes an unnormalised park or one a wake child may be running.
+    if (verifiedSameOwner) {
+      const retired = await normalizeRetiredLimitPark(root, sessionId, {
+        mayAct: (state) => callerMayAct(resolveSessionOwnership(state, callerTask)),
+      });
+      if (retired.kind === "failed") {
+        // One sentence per fact: a wake attempt still recorded for a session
+        // with no limit key is not a park the retired auto-resume wrote.
+        const cause = retired.cause;
+        const fact =
+          cause.kind === "recorded-attempt"
+            ? cause.attemptId === null
+              ? "a legacy usage-limit wake attempt may still be recorded for this session (limit-ledger.json is unreadable)"
+              : `a legacy usage-limit wake attempt ${sanitizeForContext(cause.attemptId, 80)} is still recorded for this session (limit-ledger.json)`
+            : cause.kind === "legacy-park"
+              ? "it was stopped by the retired usage-limit auto-resume"
+              : "it could not be read to check for the retired usage-limit auto-resume";
+        writeResumeMessage(
+          `Autonomous session ${sessionId} cannot resume yet: ${fact}. ${sanitizeForContext(retired.reason, 400)}\n`,
+        );
+        return;
+      }
+      // Adopt the returned state for either success kind: "unchanged" can mean
+      // a concurrent normalisation (or resume) already rewrote the session, so
+      // the discovery read above is stale. Everything below is recomputed.
+      info = { ...info, state: retired.state };
+      if (info.state.status !== "active" || info.state.state !== "COMPACT" || !info.state.compactPending) {
+        // No longer a resumable park (resumed or ended meanwhile): no instruction.
+        if ((options.codexHookJson && clientTaskId) || busMarker) writeResumeMessage("");
+        return;
+      }
+      ownership = resolveSessionOwnership(info.state, callerTask);
+      hasRecordedOwner = ownership.kind !== "unowned";
+      verifiedSameOwner = callerMayAct(ownership);
+      leaseExpired = isLeaseExpired(info.state);
+      ticket = ticketLabel(info.state);
+      // A park that still carries limit keys was not ours to normalise; keep
+      // discovery's verdict for it. A normalised one follows the ordinary rule.
+      stale = LIMIT_KEYS.some((k) => k in info.state) ? stale : isCompactParkStale(info.state);
+    }
 
     // The SessionStart hook is the proof that client context actually changed.
     // A guide-level pre_compact call only prepares state and must not reset
@@ -1001,6 +1038,7 @@ export async function handleSessionResumePrompt(
 
     // T-424: limit-parked sessions get limit-aware handling (self-wake
     // recognition, interactive-reopen supersede, gated instructions).
+    // T-534: unreachable after the normalisation above; removed in C3.
     if (info.state.interruptionKind === "limit") {
       emitLimitResumePrompt({ info, sessionId, taskArg, stale, writeResumeMessage });
       return;
@@ -1046,159 +1084,21 @@ export async function handleSessionResumePrompt(
 // session-clear-compact (admin escape hatch)
 // ---------------------------------------------------------------------------
 
-/** Phase-1 result of the admin stand-down: the caller completes the cancel AFTER its own session write. */
-interface CancelStandDown {
-  key: string;
-  generation: number;
-}
-
-/**
- * T-424: ledger stand-down when an admin command destroys a pending limit
- * auto-resume. Order matters: the ledger record is CAS'd to `cancelling`
- * (non-dispatchable) FIRST, and only then is the wake claim revoked -- the
- * reverse order leaves a window where a waker passes its ledger recheck,
- * writes a fresh claim, and spawns a child mid-cancel.
- *
- * The caller may mutate session state ONLY when this returns (returning means
- * no wake child exists or its death was CONFIRMED), and must call
- * completeCancellation with the returned key/generation AFTER its session
- * write -- so a crash at any point leaves a `cancelling` record that
- * reconciliation finishes, never a `cancelled` record beside a still-parked
- * session.
- *
- * THROWS (leaving the record non-dispatchable and session state UNTOUCHED)
- * when:
- *  - the ledger lock is unavailable (a dispatchable record must not outlive
- *    a cleared session as untracked work);
- *  - a wake attempt is mid-spawn (claimed, childPid not yet recorded) -- the
- *    waker's spawn CAS fails against `cancelling`, terminates the child, and
- *    finish-cancel completes the stand-down;
- *  - a live wake child could not be CONFIRMED terminated -- the record stands
- *    down to manual/cancellation_blocked with the attempt preserved, and
- *    session state is never cleared under a live child.
- */
-async function cancelLimitAutoResume(info: ActiveSessionInfo): Promise<CancelStandDown | null> {
-  const clientTaskId = info.state.ownerTask?.client === "claude"
-    ? info.state.ownerTask.id
-    : info.state.claudeCodeSessionId ?? null;
-  let key: string;
-  if (clientTaskId) {
-    key = limitRecordKey(clientTaskId);
-  } else {
-    // The session lost both owner identifiers, so we cannot derive the ledger
-    // key. A non-terminal record (possibly tracking a live child) may still
-    // exist -- locate it by storybloqSessionId + the session's CURRENT episode
-    // (limitEventId) and cancel THAT. resolveOwnerlessRecord reads UNDER the
-    // ledger lock and THROWS on lock-unavailable/ambiguous, so we fail CLOSED
-    // (leave the session untouched) rather than clearing it off a lockless empty
-    // read that merely could not see the live record. A manually-resumed session
-    // keeps its storybloqSessionId but is re-parked under a new clientTaskId, so
-    // the limitEventId match avoids cancelling a stale episode while the current
-    // record stays dispatchable.
-    let found: LimitRecord | null;
-    try {
-      found = resolveOwnerlessRecord(info.state.sessionId, info.state.limitEventId);
-    } catch (err) {
-      throw new Error(
-        "Could not stand down the pending limit auto-resume (ledger unavailable or ambiguous: " +
-        `${err instanceof Error ? err.message : String(err)}). Retry in a moment.`,
-      );
-    }
-    if (!found) {
-      clearWakeClaim(info.dir);
-      return null;
-    }
-    key = found.key;
-  }
-  let begun: ReturnType<typeof beginCancellation>;
-  try {
-    begun = beginCancellation(key);
-  } catch (err) {
-    throw new Error(
-      "Could not stand down the pending limit auto-resume (ledger busy: " +
-      `${err instanceof Error ? err.message : String(err)}). Retry in a moment.`,
-    );
-  }
-  clearWakeClaim(info.dir);
-  if (!begun) return null; // no record / already terminal: nothing to stand down
-  const attempt = begun.record.attempt;
-  if (attempt && attempt.childPid == null) {
-    if (!claimAbandoned(attempt)) {
-      // LIVE claim: the claimant is alive (possibly suspended) and a wake child
-      // may materialize immediately after this check. The record is now
-      // `cancelling`, so the waker's spawn CAS fails and it terminates its own
-      // child; finish-cancel then completes the stand-down (including the
-      // session-side clear).
-      throw new Error(
-        "A limit auto-resume attempt is mid-spawn for this session. It has been stood down; " +
-        "the background waker will stop the child and finish clearing the parked state shortly. " +
-        "Retry this command in a moment.",
-      );
-    }
-    // ABANDONED claim: the claimant process is CONFIRMED dead (not merely
-    // slow/suspended), so no child exists. Drop the attempt via the cancel-flow
-    // clear and return the stand-down so the caller's completeCancellation
-    // terminalizes it SYNCHRONOUSLY -- never rely on a waker that the kill
-    // switch may keep from ever starting (which would strand it `cancelling`).
-    clearCancellingAttempt(key, attempt.id);
-    return { key, generation: begun.record.generation };
-  }
-  if (attempt) {
-    const markers = wakeChildMarkers(begun.record.clientTaskId, attempt.id);
-    const confirmed = await terminateWakeChildConfirmed(attempt.childPid!, markers);
-    if (!confirmed) {
-      try {
-        blockCancellation(key);
-      } catch {
-        // Record stays `cancelling`; reconciliation retries the termination.
-      }
-      throw new Error(
-        `Could not stop the running wake child (pid ${attempt.childPid}). The auto-resume is stood ` +
-        "down and the parked session state was left intact (never cleared under a live child). " +
-        'Check "storybloq limit-status" and retry once the child exits.',
-      );
-    }
-    // Death CONFIRMED: drop the possibly-live-child evidence through the
-    // cancel-flow path so the caller's completeCancellation (which refuses
-    // while an attempt remains) can terminalize the stand-down.
-    clearCancellingAttempt(key, attempt.id);
-  }
-  return { key, generation: begun.record.generation };
-}
-
-/** Confirmed termination for the CLI cancel path: SIGTERM -> verify -> SIGKILL -> verify, identity-checked. */
-async function terminateWakeChildConfirmed(pid: number, markers: readonly string[]): Promise<boolean> {
-  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-  if (probeArgvSignature(pid, markers) === "absent") return true;
-  signalWakeChild(pid, markers, "SIGTERM");
-  await sleep(500);
-  if (probeArgvSignature(pid, markers) !== "absent") {
-    signalWakeChild(pid, markers, "SIGKILL");
-    await sleep(500);
-  }
-  return probeArgvSignature(pid, markers) === "absent";
-}
-
 /**
  * Admin command to clear stale compact markers.
  * - Valid preCompactState: repairs compactPending, clears resumeBlocked, and refreshes compactPreparedAt.
  *   User must call resume for actual state restoration (HEAD validation runs there).
  * - Invalid preCompactState: ends session (SESSION_END + admin_recovery).
- * - Limit-parked sessions (interruptionKind="limit") require --force and stand
- *   down the pending auto-resume (ledger cancel + limit fields cleared).
+ * - T-534: a legacy usage-limit park is normalised first and refuses while a
+ *   wake attempt may still run it. --force bypasses only a FINALIZE park whose
+ *   landed commit git cannot classify, which recovers to IMPLEMENT.
  */
 export async function handleSessionClearCompact(
   root: string,
   sessionId?: string,
   opts: { force?: boolean } = {},
 ): Promise<string> {
-  // Deferred cancel completion: written AFTER the session mutation commits so
-  // a crash in between leaves `cancelling` (reconciliation finishes it), never
-  // `cancelled` beside a still-parked session. Held in an object so the value
-  // assigned inside the locked callback survives to the post-lock completion
-  // (a bare `let` reassigned only in a closure is narrowed away by TS).
-  const cancelHolder: { pending: CancelStandDown | null } = { pending: null };
-  const message = await withSessionLock(root, async () => {
+  return withSessionLock(root, async () => {
     let info: ActiveSessionInfo | null = null;
 
     if (sessionId) {
@@ -1217,19 +1117,13 @@ export async function handleSessionClearCompact(
       throw new Error(`Session ${info.state.sessionId} is not in compact-pending state`);
     }
 
-    // T-424: a limit-parked session has a PENDING AUTO-RESUME that this
-    // command destroys. Require an explicit --force.
-    const isLimitKind = info.state.interruptionKind === "limit";
-    if (isLimitKind && !opts.force) {
-      const resumeAtText = info.state.limitResumeAt
-        ? ` (scheduled around ${new Date(info.state.limitResumeAt).toLocaleString()})`
-        : "";
-      throw new Error(
-        `Session ${info.state.sessionId} is limit-stopped with a pending auto-resume${resumeAtText}. ` +
-        "Clearing it destroys that auto-resume. Re-run with --force to proceed.",
-      );
-    }
-    if (isLimitKind) cancelHolder.pending = await cancelLimitAutoResume(info);
+    // T-534: a legacy usage-limit park is normalised first, refusing while a
+    // wake attempt may still run it. --force bypasses only a FINALIZE park
+    // whose landed commit git cannot classify, recovering it to IMPLEMENT.
+    const retired = await normalizeRetiredLimitParkLocked(root, info.dir, info.state, { forceUnavailableGit: opts.force === true });
+    if (retired.kind === "failed") throw new Error(retired.reason);
+    const wasLimitPark = retired.kind === "normalized" && retired.transition !== "stripped";
+    info = { ...info, state: retired.state };
 
     const preCompactState = info.state.preCompactState;
     const SAFE_RESUME_STATES = WORKFLOW_STATES.filter(s => s !== "COMPACT" && s !== "SESSION_END");
@@ -1237,27 +1131,23 @@ export async function handleSessionClearCompact(
 
     if (isValidState) {
       // Valid: repair the marker and keep the session discoverable for resume.
-      // For a forced limit clear this also converts the interruption to plain
-      // compact kind, so resume no longer routes through the limit gates.
-      writeSessionSync(info.dir, {
+      writeSessionSync(info.dir, withoutLimitKeys({
         ...info.state,
         compactPending: true,
         resumeBlocked: false,
         compactPreparedAt: new Date().toISOString(),
         compactObservedAt: null,
-        ...CLEARED_LIMIT_FIELDS,
-      });
-      // Accurate recovery expectation for the FINALIZE manual-recovery path:
-      // preCompactState stays FINALIZE. A clean-HEAD resume re-enters FINALIZE
-      // at its recorded finalizeCheckpoint (already-landed commits detected,
-      // not repeated); only external HEAD drift routes RECOVERY_MAPPING to
-      // IMPLEMENT with the code checkpoint reset.
-      const finalizeNote = isLimitKind && preCompactState === "FINALIZE"
-        ? "\nNote: this session stopped during FINALIZE; resume re-enters FINALIZE at its recorded checkpoint " +
-          "and skips finalization steps that already landed (an existing commit is detected, not repeated). " +
-          "If git HEAD moved externally while stopped, resume instead recovers to IMPLEMENT with the code " +
-          "checkpoint reset. You confirmed commit state -- remove or amend any duplicates first."
-        : "";
+      }));
+      // T-534: say which way a retired FINALIZE park was normalised.
+      const finalizeNote = !wasLimitPark || retired.kind !== "normalized"
+        ? ""
+        : retired.transition === "finalize-kept"
+          ? "\nNote: this session stopped during FINALIZE and its item commit is in place; resume re-enters " +
+            "FINALIZE at its recorded checkpoint and does not repeat the commit."
+          : retired.transition === "finalize-recovered"
+            ? "\nNote: this session stopped during FINALIZE and no item commit was confirmed; resume recovers " +
+              "to IMPLEMENT with the code checkpoint reset."
+            : "";
       const hasKnownLiveOwner = !isLeaseExpired(info.state) &&
         (!!info.state.ownerTask || !!info.state.claudeCodeSessionId);
       if (hasKnownLiveOwner) {
@@ -1270,7 +1160,7 @@ export async function handleSessionClearCompact(
     }
 
     // Invalid: end session
-    const written = writeSessionSync(info.dir, {
+    const written = writeSessionSync(info.dir, withoutLimitKeys({
       ...info.state,
       state: "SESSION_END",
       previousState: info.state.state,
@@ -1280,8 +1170,7 @@ export async function handleSessionClearCompact(
       compactPreparedAt: null,
       compactObservedAt: null,
       resumeBlocked: false,
-      ...CLEARED_LIMIT_FIELDS,
-    });
+    }));
     writeShutdownMarker(info.dir);
 
     appendEvent(info.dir, {
@@ -1300,17 +1189,6 @@ export async function handleSessionClearCompact(
 
     return `Session ${info.state.sessionId} ended (unrecoverable -- invalid preCompactState: ${preCompactState ?? "null"}). Run "start" for a new session.`;
   });
-
-  const pendingCancel = cancelHolder.pending;
-  if (pendingCancel) {
-    const done = completeCancellation(pendingCancel.key, Date.now(), pendingCancel.generation);
-    if (!done) {
-      return message +
-        "\nNote: a new usage-limit stop superseded the cancelled auto-resume while this command ran. " +
-        'Run "storybloq limit-status" to inspect it.';
-    }
-  }
-  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,11 +1201,7 @@ export async function handleSessionClearCompact(
  * CLI-only (not MCP) -- autonomous agent cannot invoke.
  */
 export async function handleSessionStop(root: string, sessionId?: string): Promise<string> {
-  // Same deferred completion protocol as clear-compact: complete the ledger
-  // cancel only AFTER SESSION_END commits (object holder so the closure
-  // assignment survives TS narrowing to the post-lock completion).
-  const cancelHolder: { pending: CancelStandDown | null } = { pending: null };
-  const message = await withSessionLock(root, async () => {
+  return withSessionLock(root, async () => {
     let info: ActiveSessionInfo | null = null;
 
     if (sessionId) {
@@ -1340,6 +1214,16 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
 
     if (info.state.status !== "active") {
       throw new Error(`Session ${info.state.sessionId} is not active (status: ${info.state.status})`);
+    }
+
+    // T-534: SESSION_END is never written under a usage-limit wake attempt
+    // the retired runtime may still be running for this session. Checked
+    // before the ticket release so a refusal leaves everything untouched.
+    // Keyed on the ledger, never on interruptionKind (a strip can remove the
+    // key while an attempt still runs).
+    {
+      const attempts = checkSurvivingWakeAttempts(info.state.sessionId);
+      if (attempts.kind === "held") throw new Error(attempts.reason);
     }
 
     // Release ticket claim (best-effort, same as cancel)
@@ -1374,14 +1258,8 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
     // The deferralsUnfiled flag signals that manual issue filing is needed
     const hasUnfiledDeferrals = (info.state.pendingDeferrals ?? []).length > 0;
 
-    // T-424: an admin stop also stands down any pending limit auto-resume.
-    // Throws (leaving the session untouched) while a wake child is mid-spawn
-    // or could not be confirmed terminated -- SESSION_END must never be
-    // written under a live child.
-    if (info.state.interruptionKind === "limit") cancelHolder.pending = await cancelLimitAutoResume(info);
-
     // Write SESSION_END
-    const written = writeSessionSync(info.dir, {
+    const written = writeSessionSync(info.dir, withoutLimitKeys({
       ...info.state,
       state: "SESSION_END",
       previousState: info.state.state,
@@ -1394,9 +1272,8 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
       resumeBlocked: false,
       preCompactState: null,
       resumeFromRevision: null,
-      ...CLEARED_LIMIT_FIELDS,
       ticket: undefined,
-    });
+    }));
     // T-260: Cross-process finalization (marker only, no PID kill)
     writeShutdownMarker(info.dir);
 
@@ -1412,32 +1289,11 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
 
     return `Session ${info.state.sessionId} stopped.${ticketReleased ? ` Ticket ${ticketId} released to open.` : ticketId ? ` Ticket ${ticketId} may need manual cleanup.` : ""}`;
   });
-
-  const pendingCancel = cancelHolder.pending;
-  if (pendingCancel) {
-    const done = completeCancellation(pendingCancel.key, Date.now(), pendingCancel.generation);
-    if (!done) {
-      return message +
-        "\nNote: a new usage-limit stop superseded the cancelled auto-resume while this command ran. " +
-        'Run "storybloq limit-status" to inspect it.';
-    }
-  }
-  return message;
 }
 
 // ---------------------------------------------------------------------------
 // session-limit-stop (StopFailure hook)  [T-424]
 // ---------------------------------------------------------------------------
-
-/** Best-effort waker spawn; module lands with the waker (dynamic import so the hook never hard-depends on it). */
-async function spawnWakerBestEffort(): Promise<void> {
-  try {
-    const { spawnWakerIfNeeded } = await import("../../autonomous/waker.js");
-    spawnWakerIfNeeded();
-  } catch {
-    // Waker respawn is opportunistic; housekeeping retries on the next CLI run.
-  }
-}
 
 export interface SessionLimitStopOptions {
   readonly clientTaskId?: string;
@@ -1450,336 +1306,16 @@ export interface SessionLimitStopOptions {
 }
 
 /**
- * StopFailure hook entry point. Records a usage-limit stop so the waker can
- * auto-resume at reset. Mirrors handleSessionCompactPrepare's contract:
- * silent no-op without .story/, stderr on real failures, ALWAYS exits 0
- * (a hook failure must never worsen an already-stopped session).
- *
- * Ledger-first intent protocol for autonomous sessions: a non-dispatchable
- * `preparing` record lands BEFORE session state is touched, then session prep
- * happens under the session lock, then the record CAS-activates to `stopped`.
- * A crash at any point leaves a globally discoverable intent for
- * reconcileLimitLedger. Lock hierarchy: the ledger lock is held only inside
- * the limit-ledger helpers, never across the session lock (intent -> release
- * -> session lock -> release -> activate).
+ * T-534 tombstone. Installs that still carry the StopFailure hook land here:
+ * the usage-limit auto-resume is retired, so this only runs the retirement
+ * (which removes the hook itself), writes nothing to stdout and never fails.
+ * No park, ledger record or waker is created.
  */
-export async function handleSessionLimitStop(options: SessionLimitStopOptions = {}): Promise<void> {
+export async function handleSessionLimitStop(_options: SessionLimitStopOptions = {}): Promise<void> {
   try {
-    // The registered matcher is "rate_limit", so errorType is normally either
-    // that or absent (older client not forwarding the field). Anything else
-    // reached us through a hand-edited matcher: not our event.
-    if (options.errorType !== undefined && options.errorType !== "rate_limit") return;
-
-    const clientTaskId = normalizeClientTaskId(options.clientTaskId)
-      ?? normalizeClientTaskId(process.env.CLAUDE_CODE_SESSION_ID);
-    if (!clientTaskId) return; // No client session id => nothing to --resume later.
-
-    const discovered = discoverProjectRoot(options.cwd);
-    if (!discovered) return; // No .story/ -- silent no-op
-    let root = discovered;
-    try {
-      root = realpathSync(discovered);
-    } catch {
-      // Canonicalization is best-effort; the discovered path still works.
-    }
-
-    if (isLimitResumeGloballyDisabled()) return;
-    const config = readLimitResumeConfig(root);
-    if (!config.enabled) return;
-
-    const now = options.now ?? Date.now();
-
-    // Reset time from the transcript tail. The format is undocumented, so this
-    // is best-effort: no entry or unparseable banner => configured fallback.
-    // Identity-filtered: the transcript path arrives from user-writable hook
-    // stdin, so an entry naming ANOTHER session or project must not supply
-    // this stop's reset schedule.
-    let banner: ReturnType<typeof scanTranscriptTailForLimit> = null;
-    try {
-      // sessionId is the discriminating identity (unique per session); cwd is
-      // deliberately not constrained here -- sessions legitimately run from
-      // subdirectories of the project root.
-      banner = scanTranscriptTailForLimit(options.transcriptPath, undefined, {
-        sessionId: clientTaskId,
-      });
-    } catch {
-      banner = null;
-    }
-    const reset = resolveResetAt(banner?.bannerText ?? null, {
-      fallbackMs: config.fallbackResetMs,
-      now: new Date(now),
-    });
-
-    // Classify autonomous-vs-plain: ANY active session owned by this client
-    // task, INCLUDING expired-lease and already-COMPACT sessions (a re-limit
-    // during a pending resume must stay autonomous, so findActiveSessionFull's
-    // lease filter is wrong here).
-    // `listAllSessionsDetailed`, not `listAllSessions` (ISS-897). The plain
-    // one drops every session it cannot parse with a bare `continue`, and this
-    // is an OWNERSHIP decision: a single bad field -- `startedAt: null` is
-    // enough (post-ISS-907, optional scalars forgive null but required fields
-    // still reject it) -- makes this task's own autonomous session vanish from
-    // the list, `owned` comes back empty, and the limit stop is recorded as a
-    // PLAIN session. That is the concealment this issue exists to close,
-    // reached through a classifier rather than through a display.
-    //
-    // And it can THROW here, which needs stating precisely rather than as "the
-    // old one could not". The old enumerator already rethrew every non-ENOENT
-    // error, EACCES included -- so that case reached this command as an
-    // uncaught throw and produced NO limit-stop record at all. What changed is
-    // the ENOENT family: a dangling or removed sessions root used to answer
-    // "empty project", which was the concealment, and now throws as well.
-    //
-    // So this catch is doing two different jobs. For the ENOENT family it keeps
-    // the new fix from turning a concealed classification into no record; for
-    // EACCES it repairs a pre-existing silent loss. Both matter because this
-    // runs on a usage-limit stop: losing the record means the session is never
-    // parked, the waker never spawns, and nothing anywhere says why. Recording
-    // it as plain is wrong in a recoverable way; recording nothing is not.
-    //
-    // So: enumerate defensively, say so loudly, and continue to the same plain
-    // path the old code reached silently.
-    let all: ReturnType<typeof listAllSessionsDetailed>;
-    try {
-      all = listAllSessionsDetailed(root);
-    } catch (err) {
-      // Sanitized: the message carries the PATH, which is workspace-controlled
-      // and can hold an ESC or a newline. The per-directory warning below
-      // already does this; a raw interpolation here would let a project path
-      // redraw the line reporting the limit stop.
-      const detail = sanitizeDisplayText(err instanceof Error ? err.message : String(err));
-      process.stderr.write(
-        `[storybloq] limit stop: \`.story/sessions\` could not be enumerated ` +
-          `(${detail}), so ownership could not be determined. ` +
-          `Recording this stop as a PLAIN session. If an autonomous session is running it will not be parked; ` +
-          `run \`storybloq session list\` to see why the directory could not be read.\n`,
-      );
-      all = { sessions: [], damaged: [], unavailable: [], incompatible: [] };
-    }
-    // ISS-899: a FIFTH copy of the ownership precedence lived here, found by the
-    // architecture pin rather than by reading. Exactly equivalent: clientTaskId
-    // is non-empty by the guard at the top of this function, so the caller task
-    // always resolves and "same" means what the two hand-rolled branches meant.
-    const limitStopCaller = ownerTaskForClient("claude", clientTaskId);
-    const owned = all.sessions.filter((s) => {
-      if (s.state.status !== "active") return false;
-      return resolveSessionOwnership(s.state, limitStopCaller).kind === "same";
-    });
-    owned.sort((a, b) => (b.state.startedAt ?? "").localeCompare(a.state.startedAt ?? ""));
-    const session = owned[0];
-
-    // Be exact about what this can and cannot fix. An unreadable session may be
-    // this task's, and there is no way to find out: the owner is recorded INSIDE
-    // the file that will not parse. So the classification cannot be corrected
-    // here, and parking such a session is impossible anyway -- this build can
-    // neither read nor write its state.
-    //
-    // What was wrong was that it happened in SILENCE. A limit stop recorded as
-    // `plain` over a damaged autonomous session leaves that session unparked
-    // with nothing anywhere saying so, and the next session finds a stale
-    // record it cannot explain. Naming the entries turns an invisible
-    // misclassification into a visible one, which is the difference between a
-    // bug an operator can act on and one they cannot see.
-    if (!session) {
-      const unreadable = [
-        ...all.damaged.map((d) => d.sourceDir),
-        ...all.unavailable.map((d) => d.sourceDir),
-        ...all.incompatible.map((d) => d.sourceDir),
-      ];
-      if (unreadable.length > 0) {
-        process.stderr.write(
-          `[storybloq] limit stop: no readable autonomous session for this task, but ` +
-            `${unreadable.length} session director${unreadable.length === 1 ? "y" : "ies"} could not be read ` +
-            `(${boundedList(unreadable.map((u) => sanitizeDisplayText(u)), { noun: "directories" })}). ` +
-            `Recording this stop as a PLAIN session. If one of those is this task's session it will not be parked; ` +
-            `run \`storybloq session list\` to see why they could not be read.\n`,
-        );
-      }
-    }
-
-    let headHash: string | null = null;
-    try {
-      const head = await gitHead(root);
-      if (head.ok) headHash = head.data.hash;
-    } catch {
-      headHash = null;
-    }
-
-    const baseInput = {
-      clientTaskId,
-      projectRoot: root,
-      cwd: options.cwd ?? root,
-      limitType: banner?.limitType ?? "unknown",
-      transcriptPath: options.transcriptPath ?? null,
-      detectedAt: now,
-      resetAt: reset.at,
-      resetSource: reset.source,
-      rawBanner: banner?.bannerText ?? null,
-      parserVersion: LIMIT_PARSER_VERSION,
-      gitHead: headHash,
-    } satisfies Partial<LimitStopInput>;
-
-    if (!session) {
-      // Plain session: single-phase ledger record, no session state to prepare.
-      recordDirectStop({
-        ...baseInput,
-        storybloqSessionId: null,
-        sessionType: "plain",
-        mode: config.plainMode === "headless" ? "headless" : "notify",
-      });
-      await spawnWakerBestEffort();
-      return;
-    }
-
-    // Autonomous session. FINALIZE stops are recorded notify-only (replaying
-    // finalization is not proven idempotent; see T-425) -- the session is
-    // still parked so it stays discoverable and explicitly recoverable.
-    const resumeTarget = session.state.state === "COMPACT"
-      ? session.state.preCompactState ?? session.state.state
-      : session.state.state === "HANDOVER" ? "PICK_TICKET" : session.state.state;
-    const isFinalize = resumeTarget === "FINALIZE";
-
-    const intent = writePreparingIntent({
-      ...baseInput,
-      storybloqSessionId: session.state.sessionId,
-      sessionType: "autonomous",
-      mode: isFinalize ? "notify" : "headless",
-      reasonCode: isFinalize ? "finalize_stop" : null,
-    });
-
-    // Deduplicated onto an existing intent/record (no owner token): its owner
-    // (or reconciliation) owns session preparation. A NON-OWNER must not mutate
-    // session state -- if it parked the session and the real owner then aborted
-    // its intent, the parked session would have no ledger pointer (orphan). The
-    // existing record already covers this stop episode; just ensure a waker.
-    if (intent.ownerToken === null) {
-      await spawnWakerBestEffort();
-      return;
-    }
-
-    // Tracks whether prepareForLimitStop COMMITTED session state: past that
-    // point the session is parked with this limitEventId, so any failure must
-    // activate (never abort) the intent -- aborting would strand a parked
-    // session with no ledger pointer, and a plain fallback would misfile it.
-    let prepared = false;
-
-    // Activate the intent to `stopped`; if the CAS is lost, REPAIR. This runs
-    // UNDER the session lock, immediately after the session is committed-parked
-    // under intent.limitEventId: holding the lock guarantees no concurrent
-    // handler can re-park the session between the park and this repair, so
-    // intent.limitEventId IS the session's current event. A newer ledger
-    // generation may still have bumped past our CAS (writePreparingIntent needs
-    // only the ledger lock, not the session lock), so activateIntent can lose
-    // even here -- repairParkedSessionRecord then ensures a non-terminal record
-    // names our event (bypassing the dedupe window, which would otherwise merge
-    // onto the newer foreign-event record and keep ITS event, orphaning the
-    // parked session).
-    const ownerToken = intent.ownerToken; // non-null past the dedupe guard above
-    const activateOrRepair = (): void => {
-      if (activateIntent(intent.key, ownerToken, intent.generation)) return;
-      const installed = repairParkedSessionRecord(
-        {
-          ...baseInput,
-          storybloqSessionId: session.state.sessionId,
-          sessionType: "autonomous",
-          mode: isFinalize ? "notify" : "headless",
-          reasonCode: isFinalize ? "finalize_stop" : null,
-        },
-        intent.limitEventId,
-      );
-      process.stderr.write(
-        installed
-          ? "[storybloq] limit-stop: refiled a fresh record for the parked session (activation CAS lost)\n"
-          : "[storybloq] limit-stop: intent activation superseded; another handler owns this event's record\n",
-      );
-    };
-    try {
-      await withSessionLock(root, async () => {
-        const current = findSessionById(root, session.state.sessionId);
-        if (!current || current.state.status !== "active") {
-          throw new Error(`session ${session.state.sessionId} no longer active`);
-        }
-        // Re-verify our intent immediately before writing session state: a
-        // superseding generation (concurrent handler) must not be clobbered.
-        // (Deduped non-owner handlers already returned above, so we always own
-        // a token here and must prove it still owns the record before parking.)
-        if (!verifyPreparingIntent(intent.key, ownerToken, intent.generation)) {
-          throw new Error("limit-stop intent superseded before session prep");
-        }
-        prepareForLimitStop(current.dir, refreshLease(current.state), {
-          expectedHead: headHash ?? undefined,
-          permissionMode: options.permissionMode ?? null,
-          resumeAt: reset.at,
-          limitEventId: intent.limitEventId,
-        });
-        prepared = true;
-        // The resume marker is a UX aid for /story recovery, not correctness:
-        // best-effort AFTER the state commit, never a reason to abort it.
-        try {
-          writeResumeMarker(root, current.state.sessionId, {
-            ticket: current.state.ticket,
-            completedTickets: current.state.completedTickets,
-            resolvedIssues: current.state.resolvedIssues,
-            preCompactState: current.state.preCompactState ?? current.state.state,
-          });
-        } catch {
-          // ignore
-        }
-        // Activate/repair the ledger while STILL holding the session lock, so
-        // the ledger record and the just-parked session commit to the same
-        // event atomically w.r.t. any concurrent re-park.
-        activateOrRepair();
-      });
-    } catch (err) {
-      if (prepared) {
-        // Session state IS parked but the lock body threw after commit (e.g. the
-        // lock release itself). This re-acquires a FRESH lock, so unlike the
-        // in-lock primary path we can no longer assume the session is still
-        // parked under intent.limitEventId: between the failed scope and this
-        // re-acquisition another StopFailure may have re-parked it under a newer
-        // event. Repair ONLY while the session is still limit-pending under OUR
-        // event -- otherwise a newer handler (or reconciliation) owns it, and
-        // installing our stale event would orphan the newer park. A failure to
-        // re-acquire is swallowed (reconciliation is the final backstop).
-        try {
-          await withSessionLock(root, () => {
-            const cur = findSessionById(root, session.state.sessionId);
-            const stillOurs =
-              cur != null &&
-              cur.state.interruptionKind === "limit" &&
-              cur.state.limitStopPending === true &&
-              cur.state.limitEventId === intent.limitEventId;
-            if (stillOurs) activateOrRepair();
-          });
-        } catch {
-          // ignore -- reconciliation will repair from the persisted intent
-        }
-      } else {
-        const aborted = abortIntent(intent.key, ownerToken, intent.generation);
-        // Fall back to a notify-only plain record ONLY when we still owned
-        // the intent: if the abort lost its CAS, a newer generation owns the
-        // record and overwriting it would reclassify the newer autonomous
-        // episode as a plain stop.
-        if (aborted) {
-          recordDirectStop({
-            ...baseInput,
-            storybloqSessionId: null,
-            sessionType: "plain",
-            mode: "notify",
-          });
-        }
-      }
-      process.stderr.write(
-        `[storybloq] limit-stop: session prep failed (${err instanceof Error ? err.message : String(err)})\n`,
-      );
-    }
-
-    await spawnWakerBestEffort();
-  } catch (err) {
-    // Never throw, never exit non-zero: the session is already stopped and a
-    // hook failure must not add noise or block the client.
-    process.stderr.write(
-      `[storybloq] limit-stop failed: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+    const { retireLimitAutoResumeBestEffort } = await import("../limit-retirement-entry.js");
+    await retireLimitAutoResumeBestEffort(process.env.STORYBLOQ_VERSION ?? "0.0.0-dev");
+  } catch {
+    // Never throw, never exit non-zero: the session is already stopped.
   }
 }

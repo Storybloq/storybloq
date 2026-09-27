@@ -12,27 +12,9 @@ import { PRECOMMIT_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.
 import { agentFallbackLines } from "./review-gate.js";
 import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { pendingKnowledgeReview, routeAfterFinalize } from "./knowledge-routing.js";
+import { finalizeEnterRoute, inspectLandedCommit, itemBaseline } from "../landed-commit.js";
 
-/**
- * The commit from which the CURRENT item must produce a new, validated commit
- * (ISS-922). Initialized at item pick; reset when drift invalidates the epoch.
- *
- * NOT expectedHead: that records the last OBSERVED head, and park,
- * resume-drift and checkout all legitimately advance it -- onto the very
- * commit FINALIZE has not yet seen. That is what closed all three exits from
- * this stage and stranded a session with no supported recovery.
- *
- * NOT mergeBase either: it is the fork point from main for the first item, so
- * on a feature branch it sits behind HEAD before any work exists, which would
- * fire the already-committed shortcut against a pre-existing branch commit.
- *
- * The fallback chain covers session state written by an older CLI, which
- * carries no itemBaseHead. diagnoseStrandedCommit() makes the refusal
- * actionable when that older state is itself already poisoned.
- */
-function itemBaseline(state: FullSessionState): string | undefined {
-  return state.git.itemBaseHead ?? state.git.expectedHead ?? state.git.initHead;
-}
+// itemBaseline (ISS-922) lives in landed-commit.ts (T-534), shared with the retirement.
 
 /**
  * Does `candidate` LOOK like this item's work commit, stranded by a baseline a
@@ -268,45 +250,14 @@ export class FinalizeStage implements WorkflowStage {
     // ISS-105/ISS-106: Detect pre-existing commit before instructing staging.
     // Agents in the issue-fix pipeline typically commit before reporting back,
     // so HEAD has already advanced. Skip the staging ceremony entirely.
-    const previousHead = itemBaseline(ctx.state);
-    if (previousHead) {
-      const headResult = await gitHead(ctx.root);
-      if (headResult.ok && headResult.data.hash !== previousHead) {
-        // HEAD advanced -- validate and fast-forward to handleCommit
-        const treeResult = await gitDiffTreeNames(ctx.root, headResult.data.hash);
-        const ticketId = ctx.state.ticket?.id;
-        if (ticketId) {
-          const ticketPath = `.story/tickets/${ticketId}.json`;
-          // ISS-982/R2-F1: `!treeResult.ok` must ALSO fall through, not just a
-          // confirmed miss -- the original `treeResult.ok && !includes` gate
-          // was fail-OPEN on a git error (false && x is false, taking the
-          // proceed branch with an unverified tree).
-          if (!treeResult.ok || !treeResult.data.includes(ticketPath)) {
-            // Commit exists but missing ticket file, or the tree could not be
-            // verified -- fall through to staging instruction.
-          } else {
-            ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
-            return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
-          }
-        }
-        const issueId = ctx.state.currentIssue?.id;
-        if (issueId) {
-          const issuePath = `.story/issues/${issueId}.json`;
-          // ISS-982/R2-F1: same fail-open fix as the ticket branch above.
-          if (!treeResult.ok || !treeResult.data.includes(issuePath)) {
-            // Commit exists but missing issue file, or the tree could not be
-            // verified -- fall through to staging instruction.
-          } else {
-            ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
-            return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
-          }
-        }
-        // No ticket or issue to validate -- accept the commit as-is
-        if (!ticketId && !issueId) {
-          ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
-          return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: headResult.data.hash });
-        }
-      }
+    // ISS-982/R2-F1: a commit whose tree could not be read never takes the
+    // fast path (fail-closed); a session with no ticket or issue accepts the
+    // commit as-is. T-534: the checks live in landed-commit.ts, shared with
+    // the retirement, which applies a stricter rule to the same evidence.
+    const evidence = await inspectLandedCommit(ctx.root, ctx.state, itemBaseline(ctx.state) ?? null, { ancestry: false });
+    if (finalizeEnterRoute(evidence) === "fast-path" && evidence.head !== null) {
+      ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
+      return this.handleCommit(ctx, { completedAction: "commit_done", commitHash: evidence.head });
     }
 
     const landingDecision = ctx.state.landingDecision?.stage === "CODE_REVIEW"

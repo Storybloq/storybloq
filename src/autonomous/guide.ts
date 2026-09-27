@@ -65,13 +65,21 @@ import {
   type SessionConfig,
   prepareForCompact,
   wasCompactionObserved,
-  CLEARED_LIMIT_FIELDS,
+  withoutLimitKeys,
   findResumableSession,
   readEvents,
   readSession,
   readSessionResilient,
   type ActiveSessionInfo,
 } from "./session.js";
+import { RECOVERY_MAPPING, recoveryResets } from "./recovery-state.js";
+import {
+  checkSurvivingWakeAttempts,
+  normalizeProjectParksLocked,
+  normalizeRetiredLimitParkLocked,
+  describeRetiredParkFailure,
+  type FailedPark,
+} from "./retired-limit-park.js";
 import { isFinishedOrphan, isOrphanCandidate, type OrphanCheckContext } from "./orphan-detector.js";
 import { deriveLeaseState } from "../core/session-scan.js";
 import { assertTransition } from "./state-machine.js";
@@ -299,31 +307,9 @@ function checkSessionStillActive(dir: string): SessionActivityCheck {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Recovery mapping -- exported for test completeness checks (ISS-040)
-// ---------------------------------------------------------------------------
-
-export const RECOVERY_MAPPING: Readonly<Record<string, { state: string; resetPlan: boolean; resetCode: boolean }>> = {
-  PICK_TICKET:    { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-  COMPLETE:       { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-  HANDOVER:       { state: "SESSION_END", resetPlan: false, resetCode: false },
-  PLAN:           { state: "PLAN",        resetPlan: true,  resetCode: false },
-  IMPLEMENT:      { state: "PLAN",        resetPlan: true,  resetCode: false },
-  WRITE_TESTS:    { state: "PLAN",        resetPlan: true,  resetCode: false },
-  BUILD:          { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
-  VERIFY:         { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
-  PLAN_REVIEW:    { state: "PLAN",        resetPlan: true,  resetCode: true  },
-  TEST:           { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
-  CODE_REVIEW:    { state: "PLAN",        resetPlan: true,  resetCode: true  },
-  FINALIZE:       { state: "IMPLEMENT",   resetPlan: false, resetCode: true  },
-  // T-527: the item is committed and the review owed stays owed; a reset that
-  // took the implementation commit off HEAD's history surfaces as
-  // knowledge_diverged on the next report, never as a new baseline.
-  KNOWLEDGE_REVIEW: { state: "KNOWLEDGE_REVIEW", resetPlan: false, resetCode: false },
-  LESSON_CAPTURE: { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-  ISSUE_FIX:      { state: "ISSUE_FIX",   resetPlan: false, resetCode: false },  // T-208: self-recover to avoid dangling currentIssue
-  ISSUE_SWEEP:    { state: "PICK_TICKET", resetPlan: false, resetCode: false },
-};
+// Recovery mapping -- exported for test completeness checks (ISS-040). T-534:
+// it lives in recovery-state.ts, shared with the usage-limit retirement.
+export { RECOVERY_MAPPING } from "./recovery-state.js";
 
 // ---------------------------------------------------------------------------
 // Recommend options builder (ISS-018, ISS-019)
@@ -1308,9 +1294,45 @@ async function trySupersedeFinishedOrphan(
 // start -- INIT + LOAD_CONTEXT → PICK_TICKET
 // ---------------------------------------------------------------------------
 
+/**
+ * T-534: legacy usage-limit parks are normalised before discovery, because
+ * start reports, supersedes or reclaims the sessions it finds. Every park that
+ * could not be normalised is reported in the response; start refuses only when
+ * the session it would select, resume or supersede is one of them, so an
+ * unrelated failed park never blocks new work. A nonterminal session with no
+ * limit key still fails while a retired wake attempt may be running it. Only parks this caller may act
+ * on are normalised (an expired lease, or no live ownership conflict, on the
+ * state as found); a live session another task owns is left untouched, and
+ * start's own refusal for it follows below.
+ */
 async function handleStart(root: string, args: GuideInput): Promise<McpToolResult> {
+  const failedParks = await normalizeProjectParksLocked(
+    root,
+    (state) => liveOwnershipConflict(state, args.clientTaskId) === null,
+  );
+  const result = await handleStartAfterNormalization(root, args, new Map(failedParks.map((f) => [f.dir, f])));
+  if (failedParks.length === 0) return result;
+  const note =
+    "\n\nNote: sessions left untouched by the usage-limit retirement:\n" +
+    failedParks.map((f) => `- ${describeRetiredParkFailure(f.sessionId, f)}`).join("\n");
+  const [first, ...rest] = result.content;
+  if (first && first.type === "text") return { ...result, content: [{ ...first, text: first.text + note }, ...rest] };
+  return { ...result, content: [...result.content, { type: "text", text: note.trimStart() }] };
+}
+
+function refuseFailedPark(park: FailedPark): McpToolResult {
+  return guideError(new Error(`Cannot start: ${describeRetiredParkFailure(park.sessionId, park)}`));
+}
+
+async function handleStartAfterNormalization(
+  root: string,
+  args: GuideInput,
+  failedParks: ReadonlyMap<string, FailedPark>,
+): Promise<McpToolResult> {
   // ISS-024: recover pending mutations on existing sessions before checking
   let existing = findActiveSessionFull(root);
+  const failedExisting = existing ? failedParks.get(existing.dir) : undefined;
+  if (failedExisting) return refuseFailedPark(failedExisting);
   if (existing && !isLeaseExpired(existing.state)) {
     // ISS-899 cell (a): refuse BEFORE recovery, not after. recoverPendingMutation
     // replays another task's pending session and project writes, so a refusal
@@ -1395,6 +1417,8 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // (findActiveSessionFull filters expired leases, so compacted sessions >45min old are invisible)
   if (!existing) {
     const resumable = findResumableSession(root);
+    const failedResumable = resumable ? failedParks.get(resumable.info.dir) : undefined;
+    if (failedResumable) return refuseFailedPark(failedResumable);
     if (resumable) {
       // T-250: finished-orphan auto-supersede -- silently reclaim the slot if
       // every targeted work item is verifiably complete on disk and every
@@ -1422,6 +1446,9 @@ async function handleStart(root: string, args: GuideInput): Promise<McpToolResul
   // possibly be finished orphans (wrong mode, no targetWork, lease still
   // fresh) so we only pay the load cost when at least one candidate exists.
   const staleSessions = findStaleSessions(root);
+  // A failed park start would supersede below is one it would act on: refuse.
+  const failedStale = staleSessions.map((st) => failedParks.get(st.dir)).find((f) => f !== undefined);
+  if (failedStale) return refuseFailedPark(failedStale);
   let staleOrphanCtx: OrphanCheckContext | undefined;
   if (staleSessions.some((s) => isOrphanCandidate(s.state))) {
     try {
@@ -2881,6 +2908,19 @@ async function handleCandidateTakeoverResume(
     ));
   }
 
+  // T-534: the candidate handshake confirms a session revision, so no
+  // normalisation write happens first (upgraded sessions carry defaulted limit
+  // keys, and a strip would invalidate every first handshake). It only refuses
+  // while a retired wake attempt may still be running this session.
+  // Keyed on the ledger, never on interruptionKind: a strip can remove the
+  // key while an attempt still runs, so the key is no proof of absence.
+  {
+    const attempts = checkSurvivingWakeAttempts(info.state.sessionId);
+    if (attempts.kind === "held") {
+      return guideError(new Error(`Cannot recover session ${info.state.sessionId}: ${attempts.reason}`));
+    }
+  }
+
   const input: CandidateHandshakeInput = {
     sessionId: info.state.sessionId,
     clientTaskId: args.clientTaskId,
@@ -3064,6 +3104,19 @@ async function handleCandidateCancel(
     return guideError(new Error(
       `Recovering session ${sessionId} requires a valid clientTaskId so the cancellation can be attributed.`,
     ));
+  }
+
+  // T-534: the candidate handshake confirms a session revision, so no
+  // normalisation write happens first (upgraded sessions carry defaulted limit
+  // keys, and a strip would invalidate every first handshake). It only refuses
+  // while a retired wake attempt may still be running this session.
+  // Keyed on the ledger, never on interruptionKind: a strip can remove the
+  // key while an attempt still runs, so the key is no proof of absence.
+  {
+    const attempts = checkSurvivingWakeAttempts(info.state.sessionId);
+    if (attempts.kind === "held") {
+      return guideError(new Error(`Cannot cancel session ${info.state.sessionId}: ${attempts.reason}`));
+    }
   }
 
   const input: CandidateHandshakeInput = {
@@ -3279,35 +3332,6 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     ));
   }
 
-  // T-424: a usage-limit stop during FINALIZE must never replay finalization
-  // through the generic resume path without the user first verifying what
-  // landed (finalization is not proven idempotent; a blind replay risks
-  // duplicate commits/pushes). Enforced BEFORE pending-mutation recovery
-  // and deferral draining -- an ordinary FINALIZE limit resume must perform NO
-  // resume-side mutation before rejecting -- and here in the guide (not just
-  // at waker dispatch) so an interactive reopen cannot trip it either.
-  // Keyed on interruptionKind === "limit": clearing that field is the explicit
-  // "I verified git state" acknowledgment (clear-compact --force clears it but
-  // deliberately keeps preCompactState=FINALIZE so resume re-enters at the
-  // checkpoint -- a broad preCompactState gate would wedge that post-verify
-  // resume). Cancelling a FINALIZE park keeps it limit-kind for the same reason
-  // (see downgradeLimitParkToCompact), so this gate still fires for it.
-  // After clear-compact --force, a clean-HEAD resume re-enters FINALIZE at its
-  // recorded finalizeCheckpoint (already-landed commits are detected and
-  // skipped); only external HEAD drift routes RECOVERY_MAPPING[FINALIZE] ->
-  // IMPLEMENT with the code checkpoint reset. See T-425 for the replay-safe
-  // staged recovery that will lift this gate.
-  if (info.state.interruptionKind === "limit" && info.state.preCompactState === "FINALIZE") {
-    return guideError(new Error(
-      `Session ${args.sessionId} was stopped by a usage limit during FINALIZE. ` +
-      "Auto-resume is disabled for finalization because replaying it can duplicate commits. " +
-      "Manual recovery: verify what landed with `git log` (commit, push, ticket updates), " +
-      `then run "storybloq session clear-compact ${args.sessionId} --force" and resume; ` +
-      "the session re-enters FINALIZE at its recorded checkpoint (an already-landed commit " +
-      "is detected and not repeated), so remove or amend duplicates first.",
-    ));
-  }
-
   const callerTask = ownerTaskForCurrentClient(args.clientTaskId);
   const leaseWasExpired = isLeaseExpired(info.state);
   // ISS-899: derived from the ONE shared resolver, never recomputed here. This
@@ -3347,6 +3371,50 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       "explicit owner-gone-candidate confirmation flow.",
     ));
   }
+  // T-534: a legacy usage-limit park is normalised before anything below acts
+  // on it (the caller holds the outer session lock), and only after the
+  // ownership refusals above, which read the original state: a foreign or
+  // unidentified caller is refused with state.json untouched. A failure
+  // refuses the resume with the reason; nothing below ever sees an
+  // unnormalised park. Normalisation never changes ownerTask or the lease.
+  {
+    const retired = await normalizeRetiredLimitParkLocked(root, info.dir, info.state);
+    if (retired.kind === "failed") {
+      return guideError(new Error(`Cannot resume session ${args.sessionId}: ${retired.reason}`));
+    }
+    info = { ...info, state: retired.state };
+  }
+
+  // T-534: backstop only (C2); a normalised park never reaches it. Removed in C3.
+  // T-424: a usage-limit stop during FINALIZE must never replay finalization
+  // through the generic resume path without the user first verifying what
+  // landed (finalization is not proven idempotent; a blind replay risks
+  // duplicate commits/pushes). Enforced BEFORE pending-mutation recovery
+  // and deferral draining -- an ordinary FINALIZE limit resume must perform NO
+  // resume-side mutation before rejecting -- and here in the guide (not just
+  // at waker dispatch) so an interactive reopen cannot trip it either.
+  // Keyed on interruptionKind === "limit": clearing that field is the explicit
+  // "I verified git state" acknowledgment (clear-compact --force clears it but
+  // deliberately keeps preCompactState=FINALIZE so resume re-enters at the
+  // checkpoint -- a broad preCompactState gate would wedge that post-verify
+  // resume). Cancelling a FINALIZE park keeps it limit-kind for the same reason
+  // (see downgradeLimitParkToCompact), so this gate still fires for it.
+  // After clear-compact --force, a clean-HEAD resume re-enters FINALIZE at its
+  // recorded finalizeCheckpoint (already-landed commits are detected and
+  // skipped); only external HEAD drift routes RECOVERY_MAPPING[FINALIZE] ->
+  // IMPLEMENT with the code checkpoint reset. See T-425 for the replay-safe
+  // staged recovery that will lift this gate.
+  if (info.state.interruptionKind === "limit" && info.state.preCompactState === "FINALIZE") {
+    return guideError(new Error(
+      `Session ${args.sessionId} was stopped by a usage limit during FINALIZE. ` +
+      "Auto-resume is disabled for finalization because replaying it can duplicate commits. " +
+      "Manual recovery: verify what landed with `git log` (commit, push, ticket updates), " +
+      `then run "storybloq session clear-compact ${args.sessionId} --force" and resume; ` +
+      "the session re-enters FINALIZE at its recorded checkpoint (an already-landed commit " +
+      "is detected and not repeated), so remove or amend duplicates first.",
+    ));
+  }
+
   const shouldRebindOwner = !!callerTask && (
     leaseWasExpired || legacySameOwner || unownedLegacy || (knownForeignOwner && args.takeover === true)
   );
@@ -3495,16 +3563,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       mapping = { state: "HANDOVER", resetPlan: false, resetCode: false };
     }
 
-    const recoveryReviews = {
-      plan: mapping.resetPlan ? [] : info.state.reviews.plan,
-      code: mapping.resetCode ? [] : info.state.reviews.code,
-    };
-
-    const recoveryTicket = info.state.ticket
-      ? { ...info.state.ticket, realizedRisk: undefined, lastPlanHash: undefined }
-      : undefined;
-
-    let driftWritten = writeSessionAndRefresh(root, info.dir, {
+    let driftWritten = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
       ...refreshedResumeState,
       state: mapping.state,
       previousState: "COMPACT",
@@ -3514,14 +3573,9 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       compactPreparedAt: null,
       compactObservedAt: null,
       resumeBlocked: false,
-      ...CLEARED_LIMIT_FIELDS,
-      finalizeCheckpoint: null,
-      finalizedItem: null,
-      // T-527: a pending review is kept whatever the drift did; anything else is cleared.
-      knowledgeReview: info.state.knowledgeReview?.status === "pending" ? info.state.knowledgeReview : null,
-      landingDecision: null,
-      reviews: recoveryReviews,
-      ticket: recoveryTicket,
+      // T-534: the recovery resets are shared with the retirement's FINALIZE
+      // normalisation (recovery-state.ts); the limit keys are omitted, never written.
+      ...recoveryResets(info.state, mapping),
       guideCallCount: resumedGuideCallCount,
       contextPressure: resumedContextPressure,
       // ISS-922: divergent drift invalidated this item's work and reviews, so
@@ -3530,7 +3584,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       sidecarPid: resumeSidecarPid,
       ownerTask: reboundOwnerTask,
       claudeCodeSessionId: reboundClaudeCodeSessionId,
-    } as FullSessionState, "always");
+    } as FullSessionState), "always");
 
     appendEvent(info.dir, {
       rev: driftWritten.revision,
@@ -3744,7 +3798,8 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
 
   // Branch A: HEAD matches -- normal resume (or own-commit drift from T-184)
   // Reset pressure only when SessionStart confirmed that client compaction occurred.
-  const written = writeSessionAndRefresh(root, info.dir, {
+  // T-534: the limit keys are omitted, never written back.
+  const written = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
     ...refreshedResumeState,
     state: resumeState,
     preCompactState: null,
@@ -3753,7 +3808,6 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     compactPreparedAt: null,
     compactObservedAt: null,
     resumeBlocked: false,
-    ...CLEARED_LIMIT_FIELDS,
     guideCallCount: resumedGuideCallCount,
     contextPressure: resumedContextPressure,
     // T-184: Update expectedHead on own-commit drift (mergeBase stays at branch-off point).
@@ -3764,7 +3818,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     sidecarPid: resumeSidecarPid,
     ownerTask: reboundOwnerTask,
     claudeCodeSessionId: reboundClaudeCodeSessionId,
-  } as FullSessionState, "always");
+  } as FullSessionState), "always");
   appendEvent(info.dir, {
     rev: written.revision,
     type: "resumed",
@@ -3956,13 +4010,24 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
   if (preCompactLookup.kind !== "found") {
     return guideError(new Error(describeSessionLookupFailure(args.sessionId, preCompactLookup)));
   }
-  const info = preCompactLookup.info;
+  let info = preCompactLookup.info;
 
   const activityCheck = checkSessionStillActive(info.dir);
   if (activityCheck.kind === "refused") {
     return guideError(new Error(
       `Cannot prepare session ${args.sessionId} for compaction: ${activityCheck.reason}`,
     ));
+  }
+
+  // T-534: adoption below is itself a persistent write (it rebinds the owner,
+  // renews the lease and bumps the revision), so the read-only check for a
+  // retired wake attempt that may still be running this session comes first.
+  // The normalisation after the ownership refusal repeats it under the lock.
+  {
+    const attempts = checkSurvivingWakeAttempts(info.state.sessionId);
+    if (attempts.kind === "held") {
+      return guideError(new Error(`Cannot prepare session ${args.sessionId} for compaction: ${attempts.reason}`));
+    }
   }
 
   const adoption = adoptExpiredLease(
@@ -3975,8 +4040,12 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
   // ISS-899: capture expiry BEFORE the refresh below, so the cell (a) gate sees
   // the lease the caller actually found rather than the one we just renewed.
   const leaseWasExpired = isLeaseExpired(info.state);
-  const state = adoption.adopted ? adoption.state : refreshLease(adoption.state);
-  const ownershipConflict = liveOwnershipConflict(state, args.clientTaskId, true, leaseWasExpired);
+  const ownershipConflict = liveOwnershipConflict(
+    adoption.adopted ? adoption.state : refreshLease(adoption.state),
+    args.clientTaskId,
+    true,
+    leaseWasExpired,
+  );
   if (ownershipConflict) {
     return guideError(new Error(
       `Cannot prepare session ${args.sessionId} for compaction: ${ownershipConflict.reason}. ` +
@@ -3985,6 +4054,16 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
         : "Continue from its owning task."),
     ));
   }
+
+  // T-534: a legacy usage-limit park is normalised before the compact write,
+  // and only after the ownership refusal above, so a foreign or unidentified
+  // caller leaves state.json untouched. A failure refuses with the reason.
+  const retired = await normalizeRetiredLimitParkLocked(root, info.dir, adoption.state);
+  if (retired.kind === "failed") {
+    return guideError(new Error(`Cannot prepare session ${args.sessionId} for compaction: ${retired.reason}`));
+  }
+  info = { ...info, state: retired.state };
+  const state = adoption.adopted ? retired.state : refreshLease(retired.state);
 
   // ISS-032: delegate to shared helper
   const headResult = await gitHead(root);
@@ -4146,6 +4225,17 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // auto-selected session can reach here.
   if (args.ownerGoneCandidateCancel !== undefined) {
     return handleCandidateCancel(root, args, info, args.ownerGoneCandidateCancel);
+  }
+
+  // T-534: SESSION_END is never written under a usage-limit wake attempt the
+  // retired runtime may still be running for this session (as session stop).
+  // Keyed on the ledger, never on interruptionKind: a strip can remove the
+  // key while an attempt still runs, so the key is no proof of absence.
+  {
+    const attempts = checkSurvivingWakeAttempts(info.state.sessionId);
+    if (attempts.kind === "held") {
+      return guideError(new Error(`Cannot cancel session ${args.sessionId}: ${attempts.reason}`));
+    }
   }
 
   const ownershipConflict = liveOwnershipConflict(info.state, args.clientTaskId);

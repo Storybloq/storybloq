@@ -452,8 +452,6 @@ async function markLimitEvidenceAndRespawn(clientTaskId: string | null): Promise
         }
       }
     }
-    const { spawnWakerIfNeeded } = await import("../../autonomous/waker.js");
-    spawnWakerIfNeeded();
   } catch {
     // Best-effort -- never delay or fail the Stop hook.
   }

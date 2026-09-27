@@ -116,16 +116,7 @@ export async function preCommandHousekeeping(version: string, argv: string[] = [
   }
   if (!isSetupSkippingHooks) {
     try {
-      // T-424: self-healing hook reconcile (cheap settings.json check) + waker
-      // respawn when non-terminal limit records exist with no live waker. This
-      // is the reboot/crash recovery story for pending auto-resumes.
-      const { ensureLimitHooksRegistered } = await import("./commands/setup-skill.js");
-      await ensureLimitHooksRegistered();
-    } catch {
-      // Best-effort.
-    }
-    try {
-      // T-499: the session-intel hooks reconcile the same way.
+      // T-499: self-healing session-intel hook reconcile (cheap settings.json check).
       const { ensureSessionIntelHooksRegistered } = await import("./commands/setup-skill.js");
       await ensureSessionIntelHooksRegistered();
     } catch {
@@ -145,11 +136,16 @@ export async function preCommandHousekeeping(version: string, argv: string[] = [
   } catch {
     // Best-effort.
   }
-  try {
-    const { spawnWakerIfNeeded } = await import("../autonomous/waker.js");
-    spawnWakerIfNeeded();
-  } catch {
-    // Best-effort.
+  if (!isSetupSkippingHooks) {
+    try {
+      // T-534: retire the usage-limit auto-resume (hooks, waker, global
+      // artifacts). One lstat once the marker exists; never blocks the command.
+      // `setup --skip-hooks` leaves settings.json alone; the next command retires.
+      const { retireLimitAutoResumeBestEffort } = await import("./limit-retirement-entry.js");
+      await retireLimitAutoResumeBestEffort(version);
+    } catch {
+      // Best-effort.
+    }
   }
   try {
     const { refreshUpdateCacheInBackground } = await import("../core/update-check.js");

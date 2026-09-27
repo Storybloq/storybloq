@@ -5321,16 +5321,16 @@ export function registerHookBusToolCommand(yargs: Argv): Argv {
 export function registerLimitStatusCommand(yargs: Argv): Argv {
   return yargs.command(
     "limit-status",
-    "Show pending usage-limit auto-resumes (global, all projects)",
+    "Show what the retired usage-limit ledger still holds (read-only)",
     (y) =>
       addFormatOption(y
         .option("cancel", {
           type: "string",
-          describe: "Cancel the pending auto-resume for a record key or client session id",
+          describe: "Retired with the usage-limit auto-resume (T-534); refused",
         })
         .option("requeue", {
           type: "string",
-          describe: "Return a manual/failed record to the wake queue",
+          describe: "Retired with the usage-limit auto-resume (T-534); refused",
         })
         .option("recent", {
           type: "boolean",

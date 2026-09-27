@@ -2744,6 +2744,102 @@ describe("--skip-skill (ISS-834)", () => {
 // overwritten, not even "0" or "".
 // ---------------------------------------------------------------------------
 
+describe("setup retires the usage-limit auto-resume (T-534)", () => {
+  let tempDir: string;
+  let binDir: string;
+  let saved: Record<string, string | undefined>;
+  let savedCwd: string;
+  const ENV_KEYS = ["PATH", "HOME", "CODEX_HOME", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_PROJECT_ROOT", "CLAUDESTORY_PROJECT_ROOT"] as const;
+
+  beforeEach(async () => {
+    tempDir = join(tmpdir(), `storybloq-setup-retire-${randomUUID()}`);
+    binDir = join(tempDir, "bin");
+    await mkdir(binDir, { recursive: true });
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    savedCwd = process.cwd();
+    // Stub binaries: `storybloq --version` succeeds so the hooks block runs
+    // with an absolute bin, and `claude` records its argv instead of touching
+    // the real MCP registration.
+    await writeFile(join(binDir, "storybloq"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await writeFile(join(binDir, "claude"), `#!/bin/sh\necho "$@" >> "${join(tempDir, "claude-calls.log")}"\nexit 0\n`, { mode: 0o755 });
+    process.env.PATH = binDir;
+    process.env.HOME = tempDir;
+    process.env.CODEX_HOME = join(tempDir, ".codex");
+    process.env.STORYBLOQ_GLOBAL_DIR = join(tempDir, "global");
+    // An explicit project root with no .story/ resolves to no project (the
+    // override never falls back to walking up), so the retirement's session
+    // step has no current project and cannot reach a real checkout.
+    process.env.STORYBLOQ_PROJECT_ROOT = join(tempDir, "no-project");
+    delete process.env.CLAUDESTORY_PROJECT_ROOT;
+    process.chdir(tempDir);
+  });
+
+  afterEach(async () => {
+    process.chdir(savedCwd);
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("removes the limit hooks and global artifacts and writes the marker", async () => {
+    if (process.platform === "win32") return;
+    const globalDir = join(tempDir, "global");
+    await mkdir(join(globalDir, "wake-claims"), { recursive: true });
+    // One record names a session in a project that no longer exists: the
+    // retirement leaves it untouched and setup must say so.
+    await writeFile(join(globalDir, "limit-ledger.json"), JSON.stringify({
+      schemaVersion: 1,
+      records: {
+        "claude:t1": { clientTaskId: "t1", projectRoot: join(tempDir, "gone-project"), storybloqSessionId: "s1" },
+      },
+    }));
+    const settingsPath = join(tempDir, ".claude", "settings.json");
+    await mkdir(dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify({
+      hooks: {
+        StopFailure: [{ matcher: "rate_limit", hooks: [{ type: "command", command: `${join(binDir, "storybloq")} session limit-stop` }] }],
+        SessionStart: [{ matcher: "resume", hooks: [{ type: "command", command: `${join(binDir, "storybloq")} session resume-prompt` }] }],
+      },
+    }));
+
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    const out: string[] = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => {
+      out.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await handleSetup({ client: "claude" });
+    } finally {
+      process.stdout.write = realWrite;
+    }
+
+    expect(out.join("")).toContain("Usage-limit auto-resume retired");
+    expect(out.join("")).toMatch(/Usage-limit auto-resume retirement: session skipped: .*gone-project.*missing/);
+    expect(existsSync(join(tempDir, "claude-calls.log"))).toBe(true);
+    expect(existsSync(join(globalDir, ".limit-retired-v1"))).toBe(true);
+    expect(existsSync(join(globalDir, "limit-ledger.json"))).toBe(false);
+    expect(existsSync(join(globalDir, "wake-claims"))).toBe(false);
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+    };
+    expect(settings.hooks.StopFailure).toBeUndefined();
+    expect((settings.hooks.SessionStart ?? []).some((g) => g.matcher === "resume")).toBe(false);
+    const commands = Object.values(settings.hooks).flatMap((groups) => groups.flatMap((g) => g.hooks.map((h) => h.command)));
+    expect(commands.some((c) => c.includes("limit-stop"))).toBe(false);
+  });
+
+  it("--skip-hooks leaves the retirement to the next command (no marker)", async () => {
+    if (process.platform === "win32") return;
+    const { handleSetup } = await import("../../../src/cli/commands/setup-skill.js");
+    await handleSetup({ client: "claude", skipHooks: true });
+    expect(existsSync(join(tempDir, "global", ".limit-retired-v1"))).toBe(false);
+  });
+});
+
 describe("enableFunctionHooksEnv / removeFunctionHooksEnv (T-516)", () => {
   let tempDir: string;
   let settingsPath: string;

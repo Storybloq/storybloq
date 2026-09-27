@@ -186,14 +186,12 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     expect(stop).toContain(`${binPath} hook-status`);
   });
 
-  it("autoRefreshSkillIfStale leaves the legacy hook types absent but installs the limit hooks (no legacy to migrate)", async () => {
+  it("autoRefreshSkillIfStale leaves the legacy hook types absent and installs no limit hooks (no legacy to migrate)", async () => {
     // User intentionally removed hooks or installed skill-only. When there is
     // nothing to migrate, the count-gated legacy sweep must NOT re-add the
-    // PreCompact/SessionStart(compact)/Stop hooks. The T-424 limit hooks are
-    // the deliberate exception: ensureLimitHooksRegistered runs UNCONDITIONALLY
-    // on version advance (the sweep can never install an absent hook type, so
-    // upgrades would otherwise never reach the installed base); its opt-out is
-    // the global kill switch, not hook absence.
+    // PreCompact/SessionStart(compact)/Stop hooks. T-534: the usage-limit
+    // hooks are retired, so the refresh installs none; only the session-intel
+    // hooks reconcile un-gated.
     const binDir = join(tempDir, "bin");
     await mkdir(binDir, { recursive: true });
     const binPath = join(binDir, "storybloq");
@@ -226,14 +224,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     // Legacy hook types stay absent (user intent preserved)...
     expect(settings.hooks?.PreCompact).toBeUndefined();
     expect(settings.hooks?.Stop).toBeUndefined();
-    // ...but the limit hooks are installed: StopFailure(rate_limit) plus the
-    // SessionStart "resume" group and nothing else.
-    expect(settings.hooks?.StopFailure).toEqual([
-      { matcher: "rate_limit", hooks: [{ type: "command", command: `${binPath} session limit-stop` }] },
-    ]);
-    // T-499: the session-intel hooks reconcile the same un-gated way.
+    expect(settings.hooks?.StopFailure).toBeUndefined();
+    // T-499: the session-intel hooks reconcile un-gated.
     expect(settings.hooks?.SessionStart).toEqual([
-      { matcher: "resume", hooks: [{ type: "command", command: `${binPath} session resume-prompt` }] },
       { matcher: "startup|resume|clear|compact", hooks: [{ type: "command", command: `${binPath} session intel-start`, timeout: 5 }] },
     ]);
     expect(settings.hooks?.UserPromptSubmit).toEqual([
@@ -528,18 +521,14 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     // claudestory gone, canonical PreCompact present.
     expect(pre.some((c) => c.includes("claudestory"))).toBe(false);
     expect(pre).toContain(`${binPath} session compact-prepare`);
-    // Stop was not migrated, so it stays absent. SessionStart's ONLY entry is
-    // the T-424 limit "resume" group (installed unconditionally on version
-    // advance); the compact-matcher group was not migrated and stays absent.
+    // Stop was not migrated, so it stays absent, and the compact-matcher
+    // group was not migrated either. T-534: no limit hook is installed; the
+    // intel-start group is the only SessionStart entry (T-499, un-gated).
     expect(settings.hooks.Stop).toBeUndefined();
     expect(settings.hooks.SessionStart).toEqual([
-      { matcher: "resume", hooks: [{ type: "command", command: `${binPath} session resume-prompt` }] },
-      // T-499: the intel-start group is installed the same un-gated way.
       { matcher: "startup|resume|clear|compact", hooks: [{ type: "command", command: `${binPath} session intel-start`, timeout: 5 }] },
     ]);
-    expect(settings.hooks.StopFailure).toEqual([
-      { matcher: "rate_limit", hooks: [{ type: "command", command: `${binPath} session limit-stop` }] },
-    ]);
+    expect(settings.hooks.StopFailure).toBeUndefined();
   });
 
   it("autoRefreshSkillIfStale skips hook sweep when resolveStorybloqBin returns null", async () => {

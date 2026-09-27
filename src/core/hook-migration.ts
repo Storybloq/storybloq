@@ -25,6 +25,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
 import { atomicWriteFollowingSymlink } from "./symlink-write.js";
+import { withSettingsWriteLock } from "./settings-write-lock.js";
 
 /** `~/.claude/settings.json`. Exported for T-499's autoCompactWindow reader, which merges it with the project layers. */
 export function defaultSettingsPath(): string {
@@ -263,6 +264,15 @@ export async function migrateLegacyHookVariants(
   settingsPath?: string,
 ): Promise<number> {
   const path = settingsPath ?? defaultSettingsPath();
+  return withSettingsWriteLock(path, 0, () => migrateLegacyHookVariantsLocked(hookType, subcommand, newCommand, path));
+}
+
+async function migrateLegacyHookVariantsLocked(
+  hookType: string,
+  subcommand: string,
+  newCommand: string,
+  path: string,
+): Promise<number> {
   if (!existsSync(path)) return 0;
 
   let raw: string;

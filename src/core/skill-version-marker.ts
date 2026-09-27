@@ -372,8 +372,9 @@ export async function autoRefreshSkillIfStale(
   opts: { reconcileLimitHooks?: boolean } = {},
 ): Promise<boolean> {
   // Default true for ordinary upgrades; a `setup --skip-hooks` invocation
-  // passes false so the version refresh does not install limit hooks the user
-  // explicitly opted out of.
+  // passes false so the version refresh does not install hooks the user
+  // explicitly opted out of. (The name predates T-534; it now gates only the
+  // session-intel reconcile.)
   const reconcileLimitHooks = opts.reconcileLimitHooks !== false;
   // ISS-1302: the bundle is fingerprinted once per invocation, and only when
   // a copy is installed for it to be compared with.
@@ -518,29 +519,9 @@ export async function autoRefreshSkillIfStale(
         );
       }
 
-      // T-424: reconcile the limit-stop hooks (not count-gated: the legacy
-      // sweep only touches existing entries and can never install an absent
-      // hook type, so upgrades would otherwise never add StopFailure to the
-      // installed base). Honors the global kill switch (disabled => removed)
-      // AND a `setup --skip-hooks` opt-out (reconcileLimitHooks === false).
-      if (reconcileLimitHooks) {
-        try {
-          const { ensureLimitHooksRegistered } = await import("../cli/commands/setup-skill.js");
-          const limitHooks = await ensureLimitHooksRegistered(undefined, bin);
-          if (limitHooks.action === "installed") {
-            process.stderr.write("storybloq: registered limit-stop auto-resume hooks on version advance\n");
-          } else if (limitHooks.action === "removed") {
-            process.stderr.write("storybloq: removed limit-stop hooks (auto-resume disabled globally)\n");
-          }
-        } catch (limitErr: unknown) {
-          const limitMsg = limitErr instanceof Error ? limitErr.message : String(limitErr);
-          process.stderr.write(
-            `storybloq: limit-stop hook reconcile failed (non-fatal): ${limitMsg}\n`,
-          );
-        }
-      }
-      // T-499: same shape for the session-intel hooks (un-gated, kill-switch
-      // aware, honors --skip-hooks through the same flag).
+      // T-499: reconcile the session-intel hooks (not count-gated, kill-switch
+      // aware, honors --skip-hooks). T-534: the limit-stop hooks are no longer
+      // installed here; the retirement migration removes them.
       if (reconcileLimitHooks) {
         try {
           const { ensureSessionIntelHooksRegistered } = await import("../cli/commands/setup-skill.js");

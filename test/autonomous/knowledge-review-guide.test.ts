@@ -11,8 +11,8 @@
  * knowledge_diverged on the next report. The stage's rules themselves are in
  * test/autonomous/stages/knowledge-review.test.ts.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -33,11 +33,39 @@ const DATE = "2026-09-22";
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const r of roots.splice(0)) {
     killSidecarsInRoot(r);
     rmSync(r, { recursive: true, force: true });
   }
 });
+
+/**
+ * T-534: a resume of a limit park reads the retired runtime's global ledger.
+ * Point the global dir at a scratch directory and seed a ledger whose only
+ * attempt belongs to another session and has exited, so the read is real and
+ * never touches the operator's ~/.claude.
+ */
+function isolateGlobalLedger(root: string): string {
+  // Outside the repository, so no fixture commit's `git add -A` picks it up.
+  const globalDir = mkdtempSync(join(tmpdir(), "kr-guide-global-"));
+  roots.push(globalDir);
+  vi.stubEnv("STORYBLOQ_GLOBAL_DIR", globalDir);
+  const deadPid = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid!;
+  const ledgerPath = join(globalDir, "limit-ledger.json");
+  writeFileSync(ledgerPath, JSON.stringify({
+    schemaVersion: 1,
+    records: {
+      "claude:other-task": {
+        clientTaskId: "other-task",
+        projectRoot: root,
+        storybloqSessionId: "00000000-0000-4000-8000-000000000000",
+        attempt: { id: "a-other", childPid: deadPid },
+      },
+    },
+  }));
+  return ledgerPath;
+}
 
 function git(root: string, args: string[]): string {
   return execFileSync("git", args, { cwd: root, env: GIT_ENV, encoding: "utf-8" }).trim();
@@ -313,6 +341,8 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
 
   it("a limit stop resumes headless into the stage (not the FINALIZE refusal), and a same-key report after the resume is idempotent", async () => {
     const fx = await setupProject();
+    const ledgerPath = isolateGlobalLedger(fx.root);
+    const ledgerBefore = readFileSync(ledgerPath, "utf-8");
     const { sessionId, dir } = finalizeSession(fx);
     await commitDone(fx, sessionId);
     const review = readState(dir).knowledgeReview;
@@ -327,6 +357,7 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
     expect(resumed.text).not.toContain("stopped by a usage limit during FINALIZE");
     expect(resumed.text).toContain(`# Knowledge review: ${fx.displayId}`);
     expect(readState(dir)).toMatchObject({ state: "KNOWLEDGE_REVIEW", knowledgeReview: review });
+    expect(readFileSync(ledgerPath, "utf-8")).toBe(ledgerBefore);
 
     const body = { completedAction: "knowledge_reviewed", knowledgeImpact: noneImpact(fx) };
     const first = await report(fx.root, sessionId, body);
@@ -344,6 +375,7 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
 
   it("an acceptance whose response was lost to a limit stop is not stored twice when the report is replayed after the resume", async () => {
     const fx = await setupProject();
+    isolateGlobalLedger(fx.root);
     const { sessionId, dir } = finalizeSession(fx);
     await commitDone(fx, sessionId);
     const body = { completedAction: "knowledge_reviewed", knowledgeImpact: noneImpact(fx) };

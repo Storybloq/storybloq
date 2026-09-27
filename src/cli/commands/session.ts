@@ -38,6 +38,7 @@ import {
   type IncompatibleCause,
 } from "../../autonomous/session-selector.js";
 import { CURRENT_SESSION_SCHEMA_VERSION } from "../../autonomous/session-types.js";
+import { checkSurvivingWakeAttempts } from "../../autonomous/retired-limit-park.js";
 import {
   computeSessionDirAge,
   AGED_ANOMALY_WINDOW_MS,
@@ -870,6 +871,15 @@ export async function handleSessionRepair(
           }
         } else if (!isLeaseExpired(fresh)) {
           mutationSkipped.push({ sessionId: c.sessionId, reason: "lease_refreshed" });
+          continue;
+        }
+
+        // T-534: never supersede a session a retired usage-limit wake attempt
+        // may still be running. Checked for every candidate: the ledger, not
+        // interruptionKind, is the evidence (a strip can remove the key while
+        // an attempt still runs).
+        if (checkSurvivingWakeAttempts(fresh.sessionId).kind === "held") {
+          mutationSkipped.push({ sessionId: c.sessionId, reason: "usage_limit_wake_attempt" });
           continue;
         }
 

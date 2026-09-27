@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { parseHookCommand, STORYBLOQ_LEGACY_BASENAMES, type HookEntry, type MatcherGroup } from "./hook-migration.js";
 import { atomicWriteFollowingSymlink } from "./symlink-write.js";
+import { withSettingsWriteLock } from "./settings-write-lock.js";
 
 export interface HookRowKey {
   /** `storybloq:<subcommand>`, the same for every owned basename. */
@@ -337,6 +338,14 @@ export function dedupeHookRows(settings: unknown, globalCommandFor: GlobalComman
  */
 export async function reconcileDuplicateHookRows(settingsPath: string, globalCommandFor: GlobalCommandFor): Promise<DedupeOutcome> {
   const nothing: DedupeOutcome = { changed: false, reconciled: [], unresolved: [], pruned: [] };
+  return withSettingsWriteLock(settingsPath, nothing, () => reconcileDuplicateHookRowsLocked(settingsPath, globalCommandFor, nothing));
+}
+
+async function reconcileDuplicateHookRowsLocked(
+  settingsPath: string,
+  globalCommandFor: GlobalCommandFor,
+  nothing: DedupeOutcome,
+): Promise<DedupeOutcome> {
   if (!existsSync(settingsPath)) return nothing;
   let settings: unknown;
   try {

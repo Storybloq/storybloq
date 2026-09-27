@@ -30,6 +30,7 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   gitRevListAncestryPath: vi.fn(),
   gitCommitterEmail: vi.fn(),
   gitUserEmail: vi.fn(),
+  gitIsAncestor: vi.fn(),
 }));
 
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
@@ -42,6 +43,7 @@ import {
   gitRevListAncestryPath,
   gitCommitterEmail,
   gitUserEmail,
+  gitIsAncestor,
 } from "../../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 
@@ -52,6 +54,7 @@ const mockedGitResolveCommit = vi.mocked(gitResolveCommit);
 const mockedGitRevListAncestryPath = vi.mocked(gitRevListAncestryPath);
 const mockedGitCommitterEmail = vi.mocked(gitCommitterEmail);
 const mockedGitUserEmail = vi.mocked(gitUserEmail);
+const mockedGitIsAncestor = vi.mocked(gitIsAncestor);
 
 const A40 = "a".repeat(40);
 const B40 = "b".repeat(40);
@@ -164,6 +167,7 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     mockedGitRevListAncestryPath.mockReset();
     mockedGitCommitterEmail.mockReset();
     mockedGitUserEmail.mockReset();
+    mockedGitIsAncestor.mockReset();
   });
 
   afterEach(() => {
@@ -451,6 +455,8 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
   // -------------------------------------------------------------------------
   it("13. itemless commit is refused when committer mismatches the live git identity", async () => {
     mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    // An itemless commit's tree carries no item file to look for.
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [] });
     mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: OTHER_EMAIL });
     mockedGitUserEmail.mockResolvedValue(LIVE_EMAIL);
 
@@ -571,6 +577,67 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     expect(readState(sessionDir).resolvedIssuesMeta).toEqual([
       { id: "ISS-999", reviewEffort: "off", source: "item" },
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // T-534: enter() is refactored onto landed-commit.ts. Its rule never
+  // consults ancestry, so a divergent HEAD or a failed ancestry probe changes
+  // nothing; these pin the behaviour from before the extraction.
+  // -------------------------------------------------------------------------
+  it("T-534a. enter() fast-forwards a divergent HEAD whose commit carries the ticket, without an ancestry probe", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json"] });
+    mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: CLAIM_EMAIL });
+    mockedGitIsAncestor.mockResolvedValue({ ok: true, data: false });
+
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const result = await stage.enter(ctx);
+
+    expect((result as { action?: string })).toEqual({ action: "goto", target: "KNOWLEDGE_REVIEW" });
+    expect(readState(sessionDir)?.finalizeCheckpoint).toBe("committed");
+    expect(mockedGitIsAncestor).not.toHaveBeenCalled();
+  });
+
+  it("T-534b. enter() is unaffected by an ancestry-probe failure", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json"] });
+    mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: CLAIM_EMAIL });
+    mockedGitIsAncestor.mockResolvedValue({ ok: false, reason: "git_error", message: "boom" });
+
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const result = await stage.enter(ctx);
+
+    expect((result as { action?: string })).toEqual({ action: "goto", target: "KNOWLEDGE_REVIEW" });
+    expect(mockedGitIsAncestor).not.toHaveBeenCalled();
+  });
+
+  it("T-534c. enter() stages a moved HEAD whose commit lacks the item file", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: ["src/unrelated.ts"] });
+
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const result = await stage.enter(ctx);
+
+    expect((result as { action?: string }).action).toBeUndefined();
+    expect((result as { instruction?: string }).instruction).toContain("Finalize");
+    expect(readState(sessionDir)?.finalizeCheckpoint).not.toBe("committed");
+  });
+
+  it("T-534d. enter() hands an unattributed commit (no ticket or issue) to handleCommit, even when the tree read fails", async () => {
+    mockedGitHead.mockResolvedValue({ ok: true, data: { hash: A40, branch: "main" } });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: false, reason: "git_error", message: "boom" });
+    // handleCommit's attribution check passes: the committer is the live identity.
+    mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: LIVE_EMAIL });
+    mockedGitUserEmail.mockResolvedValue(LIVE_EMAIL);
+
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ ticket: undefined, claimEpoch: undefined }), makeRecipe());
+    await stage.enter(ctx);
+
+    // The fast path's first write is the precommit_passed checkpoint.
+    const written = readState(sessionDir);
+    expect(written).not.toBeNull();
+    expect(["precommit_passed", "committed"]).toContain(written?.finalizeCheckpoint);
+    expect(mockedGitIsAncestor).not.toHaveBeenCalled();
   });
 });
 

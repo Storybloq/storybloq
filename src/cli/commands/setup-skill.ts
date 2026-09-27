@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { assertNoSelfOverlap, atomicWriteFollowingSymlink, resolveSymlinkTarget } from "../../core/symlink-write.js";
+import { withSettingsWriteLock } from "../../core/settings-write-lock.js";
 import { resolveBundledBridge, type BundledBridge } from "../../core/bridge-resolve.js";
 import { cmdExpands, shellArg, winShellArgv } from "../../core/shell-arg.js";
 import { readFileThreeValued } from "../../core/health/deps.js";
@@ -455,19 +456,30 @@ async function registerHook(
   hookEntry: HookEntry,
   settingsPath?: string,
   matcher?: string,
-  opts?: {
-    /**
-     * T-424: scope the exists-check to the target matcher group. Needed when
-     * the SAME command is deliberately registered under two matcher groups
-     * (session resume-prompt under "compact" and "resume").
-     */
-    scopeIdempotencyToMatcher?: boolean;
-    /** ISS-1222 test seam: the validated global launcher's command for a subcommand. */
-    globalCommandFor?: GlobalCommandFor;
-  },
+  opts?: RegisterHookOptions,
 ): Promise<"registered" | "exists" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  return withSettingsWriteLock(path, "skipped", () => registerHookLocked(hookType, hookEntry, path, matcher, opts));
+}
 
+interface RegisterHookOptions {
+  /**
+   * T-424: scope the exists-check to the target matcher group. Needed when
+   * the SAME command is deliberately registered under two matcher groups
+   * (session resume-prompt under "compact" and "resume").
+   */
+  scopeIdempotencyToMatcher?: boolean;
+  /** ISS-1222 test seam: the validated global launcher's command for a subcommand. */
+  globalCommandFor?: GlobalCommandFor;
+}
+
+async function registerHookLocked(
+  hookType: string,
+  hookEntry: HookEntry,
+  path: string,
+  matcher?: string,
+  opts?: RegisterHookOptions,
+): Promise<"registered" | "exists" | "skipped"> {
   // Read existing settings
   let raw = "{}";
   if (existsSync(path)) {
@@ -766,6 +778,15 @@ export async function removeHookFromMatcherGroup(
   settingsPath?: string,
 ): Promise<"removed" | "not_found" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  return withSettingsWriteLock(path, "skipped", () => removeHookFromMatcherGroupLocked(hookType, command, matcher, path));
+}
+
+async function removeHookFromMatcherGroupLocked(
+  hookType: string,
+  command: string,
+  matcher: string,
+  path: string,
+): Promise<"removed" | "not_found" | "skipped"> {
 
   let raw = "{}";
   if (existsSync(path)) {
@@ -976,7 +997,16 @@ export async function enableClaudeBusHooks(
   if (sessionRegistered === "skipped" || stopRegistered === "skipped") {
     return { changed: false, skipped: true };
   }
+  return withSettingsWriteLock(path, { changed: false, skipped: true }, () =>
+    upgradeClaudeBusHookRows(path, sessionCommand, stopCommand));
+}
 
+/** The locked half of `enableClaudeBusHooks`: rewrites the rows the registrars just ensured. */
+async function upgradeClaudeBusHookRows(
+  path: string,
+  sessionCommand: string,
+  stopCommand: string,
+): Promise<{ changed: boolean; skipped: boolean }> {
   let settings: Record<string, unknown>;
   try {
     settings = JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
@@ -1146,6 +1176,14 @@ export async function removeHook(
   settingsPath?: string,
 ): Promise<"removed" | "not_found" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  return withSettingsWriteLock(path, "skipped", () => removeHookLocked(hookType, command, path));
+}
+
+async function removeHookLocked(
+  hookType: string,
+  command: string,
+  path: string,
+): Promise<"removed" | "not_found" | "skipped"> {
 
   let raw = "{}";
   if (existsSync(path)) {
@@ -1249,6 +1287,12 @@ export async function enableFunctionHooksEnv(
   settingsPath?: string,
 ): Promise<"set" | "exists" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  return withSettingsWriteLock(path, "skipped", () => enableFunctionHooksEnvLocked(path));
+}
+
+async function enableFunctionHooksEnvLocked(
+  path: string,
+): Promise<"set" | "exists" | "skipped"> {
   const what = "the function-hooks switch";
 
   const settings = await readSettingsObject(path, what);
@@ -1289,6 +1333,12 @@ export async function removeFunctionHooksEnv(
   settingsPath?: string,
 ): Promise<"removed" | "not_found" | "skipped"> {
   const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  return withSettingsWriteLock(path, "skipped", () => removeFunctionHooksEnvLocked(path));
+}
+
+async function removeFunctionHooksEnvLocked(
+  path: string,
+): Promise<"removed" | "not_found" | "skipped"> {
 
   if (!existsSync(path)) return "not_found";
 
@@ -1831,15 +1881,16 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
       }
     }
 
-    // T-424: limit-stop hooks honor the global kill switch (removed when disabled).
-    const limitHooks = await ensureLimitHooksRegistered(undefined, resolvedBin);
-    if (limitHooks.action === "installed") {
-      log("  StopFailure hook registered - usage-limit stops auto-resume at reset");
-    } else if (limitHooks.action === "removed") {
-      log("  StopFailure hook removed - usage-limit auto-resume is disabled globally");
-    } else {
-      log("  StopFailure hook already configured (or disabled globally)");
+    // T-534: the usage-limit auto-resume is retired; setup removes its hooks,
+    // waker and global artifacts instead of installing them.
+    const { retireLimitAutoResumeBestEffort, sessionAttentionNotes } = await import("../limit-retirement-entry.js");
+    const retirement = await retireLimitAutoResumeBestEffort(process.env.STORYBLOQ_VERSION ?? "0.0.0-dev", { report: "none" });
+    if (retirement.kind === "retired") {
+      log("  Usage-limit auto-resume retired - Claude Code continues at a usage limit on its own");
+    } else if (retirement.kind === "incomplete") {
+      for (const problem of retirement.problems) log(`  Usage-limit auto-resume retirement incomplete: ${problem}`);
     }
+    for (const note of sessionAttentionNotes(retirement)) log(`  Usage-limit auto-resume retirement: ${note}`);
 
     // T-499: session-intel hooks (SessionStart capture + UserPromptSubmit sample).
     const intelHooks = await ensureSessionIntelHooksRegistered(undefined, resolvedBin);

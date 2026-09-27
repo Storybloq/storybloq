@@ -1311,6 +1311,20 @@ export function validateLimitPermissionMode(mode: string | null | undefined): Li
  * the COMPACT markers plus every limit field -- so a later ordinary compaction
  * or an independent new limit stop starts clean.
  */
+/**
+ * T-534: the five session keys the retired usage-limit auto-resume wrote.
+ * Writers omit them (withoutLimitKeys) instead of spreading
+ * CLEARED_LIMIT_FIELDS, which would write them back as null/false; the
+ * retirement's normalisation strips any a legacy write persisted.
+ */
+export const LIMIT_KEYS = ["interruptionKind", "limitStopPending", "limitResumeAt", "limitPermissionMode", "limitEventId"] as const;
+
+export function withoutLimitKeys<T extends object>(state: T): T {
+  const copy = { ...state } as Record<string, unknown>;
+  for (const key of LIMIT_KEYS) delete copy[key];
+  return copy as T;
+}
+
 export const CLEARED_LIMIT_FIELDS = {
   interruptionKind: null,
   limitStopPending: false,
@@ -1329,7 +1343,7 @@ export const CLEARED_LIMIT_FIELDS = {
  * downgradeLimitParkToCompact instead.
  */
 export function clearInterruption(dir: string, state: FullSessionState): FullSessionState {
-  return writeSessionSync(dir, {
+  return writeSessionSync(dir, withoutLimitKeys({
     ...state,
     compactPending: false,
     compactPreparedAt: null,
@@ -1337,8 +1351,7 @@ export function clearInterruption(dir: string, state: FullSessionState): FullSes
     preCompactState: null,
     resumeFromRevision: null,
     resumeBlocked: false,
-    ...CLEARED_LIMIT_FIELDS,
-  });
+  }));
 }
 
 /**
@@ -1377,15 +1390,14 @@ export function downgradeLimitParkToCompact(dir: string, state: FullSessionState
       limitPermissionMode: null,
     });
   }
-  return writeSessionSync(dir, {
+  return writeSessionSync(dir, withoutLimitKeys({
     ...state,
     state: "COMPACT",
     compactPending: true,
     compactPreparedAt: new Date().toISOString(),
     compactObservedAt: null,
     resumeBlocked: false,
-    ...CLEARED_LIMIT_FIELDS,
-  });
+  }));
 }
 
 export interface LimitStopPrepareOptions {
@@ -1478,6 +1490,15 @@ export function prepareForLimitStop(
   };
 }
 
+/** An ordinary compact park older than this is stale for the SessionStart hook. */
+export const COMPACT_FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
+
+/** The ordinary staleness rule for a compact park (an unparseable or missing time is stale). */
+export function isCompactParkStale(state: FullSessionState, now = Date.now()): boolean {
+  const preparedAt = state.compactPreparedAt ? new Date(state.compactPreparedAt).getTime() : 0;
+  return now - (Number.isNaN(preparedAt) ? 0 : preparedAt) > COMPACT_FRESHNESS_MS;
+}
+
 /**
  * Find a resumable session (compactPending + active + workspace match).
  * Used by session-resume-prompt CLI (SessionStart hook).
@@ -1500,7 +1521,6 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
     return null;
   }
 
-  const FRESHNESS_MS = 60 * 60 * 1000; // 1 hour
   // T-424: a limit-parked session legitimately waits hours-to-days for its
   // reset; the 1h compact window would flag every limit resume stale (and the
   // stale text steers users to clear-compact, destroying the pending resume).
@@ -1528,7 +1548,7 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
     const preparedAtValid = Number.isNaN(preparedAt) ? 0 : preparedAt;
     const isStale = session.interruptionKind === "limit" && session.limitResumeAt != null
       ? Date.now() > session.limitResumeAt + LIMIT_RESUME_GRACE_MS
-      : Date.now() - preparedAtValid > FRESHNESS_MS;
+      : isCompactParkStale(session);
 
     if (preparedAtValid > bestPreparedAt) {
       best = { info: { state: session, dir }, stale: isStale };

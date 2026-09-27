@@ -11,21 +11,45 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { readFile, writeFile, mkdir, rm, chmod } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { join, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
+// T-534: housekeeping runs the usage-limit retirement, which cleans up the
+// global dir and normalises sessions of the current project. Every path it can
+// reach is pinned inside the fixture: HOME, the global dir, the project root
+// (explicit, so discovery never walks up from the runner's cwd into a real
+// checkout), the cwd itself, and CODEX_HOME: the skill auto-refresh writes
+// $CODEX_HOME/skills/story, config.toml and the Codex hooks, so a run from
+// inside Codex would otherwise reach the operator's install.
+const ISOLATED_ENV = ["HOME", "PATH", "CODEX_HOME", "STORYBLOQ_GLOBAL_DIR", "STORYBLOQ_PROJECT_ROOT", "CLAUDESTORY_PROJECT_ROOT"] as const;
+
+function inside(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 describe("preCommandHousekeeping end-to-end", () => {
   let tempDir: string;
-  let originalHome: string | undefined;
-  let originalPath: string | undefined;
+  let projectDir: string;
+  let savedEnv: Record<string, string | undefined>;
+  let savedCwd: string;
 
   beforeEach(async () => {
     tempDir = join(tmpdir(), `storybloq-housekeeping-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
-    originalHome = process.env.HOME;
-    originalPath = process.env.PATH;
+    savedEnv = Object.fromEntries(ISOLATED_ENV.map((k) => [k, process.env[k]]));
+    savedCwd = process.cwd();
+    projectDir = join(tempDir, "project");
+    await mkdir(join(projectDir, ".story"), { recursive: true });
+    await writeFile(join(projectDir, ".story", "config.json"), "{}\n", "utf-8");
     process.env.HOME = tempDir;
+    process.env.CODEX_HOME = join(tempDir, ".codex");
+    process.env.STORYBLOQ_GLOBAL_DIR = join(tempDir, ".claude", "storybloq");
+    process.env.STORYBLOQ_PROJECT_ROOT = projectDir;
+    delete process.env.CLAUDESTORY_PROJECT_ROOT;
+    process.chdir(projectDir);
     const skillDir = join(tempDir, ".claude", "skills", "story");
     await mkdir(skillDir, { recursive: true });
     await writeFile(join(skillDir, "SKILL.md"), "# stub\n", "utf-8");
@@ -34,11 +58,32 @@ describe("preCommandHousekeeping end-to-end", () => {
   });
 
   afterEach(async () => {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalPath === undefined) delete process.env.PATH;
-    else process.env.PATH = originalPath;
+    process.chdir(savedCwd);
+    for (const k of ISOLATED_ENV) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("pins every retirement target inside the fixture before any housekeeping runs (T-534)", async () => {
+    const { storybloqGlobalDir } = await import("../../src/core/global-config.js");
+    const { discoverProjectRoot } = await import("../../src/core/project-root-discovery.js");
+    const { skillTargets, codexConfigPath: markerCodexConfigPath } = await import("../../src/core/skill-version-marker.js");
+    const { codexConfigPath, codexHooksPath } = await import("../../src/cli/commands/setup-skill.js");
+    const { defaultSettingsPath } = await import("../../src/core/hook-migration.js");
+    const { realpathSync } = await import("node:fs");
+    const realTemp = realpathSync(tempDir);
+    expect(inside(tempDir, storybloqGlobalDir())).toBe(true);
+    // The skill auto-refresh and hook reconcile targets, Claude and Codex.
+    for (const target of skillTargets()) expect(inside(tempDir, target.dir)).toBe(true);
+    for (const path of [markerCodexConfigPath(), codexConfigPath(), codexHooksPath(), defaultSettingsPath()]) {
+      expect(inside(tempDir, path)).toBe(true);
+    }
+    const root = discoverProjectRoot();
+    expect(root).not.toBeNull();
+    expect(inside(realTemp, realpathSync(root!))).toBe(true);
+    expect(inside(realTemp, realpathSync(process.cwd()))).toBe(true);
   });
 
   it("preCommandHousekeeping sweeps legacy hooks end-to-end via the real CLI entrypoint", async () => {
@@ -128,38 +173,43 @@ describe("preCommandHousekeeping end-to-end", () => {
       expect(settings.hooks?.StopFailure).toBeUndefined();
       expect(settings.hooks?.SessionStart).toBeUndefined();
       expect((settings.hooks as Record<string, unknown> | undefined)?.UserPromptSubmit).toBeUndefined();
+      // T-534: `--skip-hooks` also skips the retirement, so nothing is recorded.
+      expect(existsSync(join(tempDir, ".claude", "storybloq", ".limit-retired-v1"))).toBe(false);
     } finally {
       if (savedDisable === undefined) delete process.env.STORYBLOQ_DISABLE_WAKER_SPAWN;
       else process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = savedDisable;
     }
   });
 
-  it("installs limit hooks through housekeeping for an ordinary (non-skip) invocation", async () => {
+  it("retires the limit hooks through housekeeping for an ordinary invocation and installs none (T-534)", async () => {
     const { binPath, settingsPath } = await seedBinAndHookFreeSettings();
-    const savedDisable = process.env.STORYBLOQ_DISABLE_WAKER_SPAWN;
-    process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = "1";
-    try {
-      const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
-      await preCommandHousekeeping("1.1.6", ["status"]);
+    await writeFile(settingsPath, JSON.stringify({
+      model: "opus",
+      hooks: {
+        StopFailure: [{ matcher: "rate_limit", hooks: [{ type: "command", command: `${binPath} session limit-stop` }] }],
+        SessionStart: [{ matcher: "resume", hooks: [{ type: "command", command: `${binPath} session resume-prompt` }] }],
+      },
+    }, null, 2), "utf-8");
 
-      const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as {
-        hooks?: { StopFailure?: Array<{ matcher: string; hooks: Array<{ command: string }> }>;
-                  SessionStart?: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
-      };
-      expect(settings.hooks?.StopFailure).toEqual([
-        { matcher: "rate_limit", hooks: [{ type: "command", command: `${binPath} session limit-stop` }] },
-      ]);
-      const resume = (settings.hooks?.SessionStart ?? []).find((g) => g.matcher === "resume");
-      expect(resume?.hooks).toEqual([{ type: "command", command: `${binPath} session resume-prompt` }]);
-      // T-499: both session-intel hooks arrive through the same housekeeping pass.
-      const intelStart = (settings.hooks?.SessionStart ?? []).find((g) => g.matcher === "startup|resume|clear|compact");
-      expect(intelStart?.hooks).toEqual([{ type: "command", command: `${binPath} session intel-start`, timeout: 5 }]);
-      const prompt = (settings.hooks as { UserPromptSubmit?: Array<{ matcher: string; hooks: unknown[] }> } | undefined)?.UserPromptSubmit;
-      expect(prompt).toEqual([{ matcher: "", hooks: [{ type: "command", command: `${binPath} session intel-prompt`, timeout: 10 }] }]);
-    } finally {
-      if (savedDisable === undefined) delete process.env.STORYBLOQ_DISABLE_WAKER_SPAWN;
-      else process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = savedDisable;
-    }
+    const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
+    await preCommandHousekeeping("1.1.6", ["status"]);
+    await preCommandHousekeeping("1.1.6", ["status"]);
+
+    const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as {
+      model?: string;
+      hooks?: { StopFailure?: unknown; SessionStart?: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+    };
+    expect(settings.model).toBe("opus");
+    expect(settings.hooks?.StopFailure).toBeUndefined();
+    expect((settings.hooks?.SessionStart ?? []).find((g) => g.matcher === "resume")).toBeUndefined();
+    // T-499: the session-intel hooks still arrive through the same pass.
+    const intelStart = (settings.hooks?.SessionStart ?? []).find((g) => g.matcher === "startup|resume|clear|compact");
+    expect(intelStart?.hooks).toEqual([{ type: "command", command: `${binPath} session intel-start`, timeout: 5 }]);
+    const prompt = (settings.hooks as { UserPromptSubmit?: Array<{ matcher: string; hooks: unknown[] }> } | undefined)?.UserPromptSubmit;
+    expect(prompt).toEqual([{ matcher: "", hooks: [{ type: "command", command: `${binPath} session intel-prompt`, timeout: 10 }] }]);
+    // The retirement finished once and recorded it.
+    const marker = JSON.parse(await readFile(join(tempDir, ".claude", "storybloq", ".limit-retired-v1"), "utf-8")) as { cliVersion: string };
+    expect(marker.cliVersion).toBe("1.1.6");
   });
 });
 

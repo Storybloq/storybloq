@@ -1,6 +1,6 @@
 /**
- * T-424: `storybloq limit-status` -- list / cancel / requeue, plus the
- * project-scoped summary helper feeding storybloq_status.
+ * T-424: `storybloq limit-status` -- the listing (read-only since T-534),
+ * plus the project-scoped summary helper feeding storybloq_status.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
@@ -49,45 +49,12 @@ vi.mock("../../../src/autonomous/wake-claim.js", async (orig) => {
 import { handleLimitStatus } from "../../../src/cli/commands/limit-status.js";
 import {
   recordDirectStop,
-  readLimitLedger,
   limitRecordKey,
   mutateLimitLedger,
   listLimitStops,
   listLimitStopsForProject,
   type LimitStopInput,
 } from "../../../src/core/limit-ledger.js";
-import { createSession, writeSessionSync, prepareForLimitStop } from "../../../src/autonomous/session.js";
-import { captureProcessSignatureSync } from "../../../src/core/process-identity.js";
-import { spawnSync } from "node:child_process";
-import type { FullSessionState } from "../../../src/autonomous/session-types.js";
-
-// Process signatures exist only on darwin/linux; elsewhere a live claimant
-// resolves to "unknown" (no signature to confirm). A recorded-but-unknown
-// claimant is PRESERVED regardless of age -- the wall-clock fallback applies
-// ONLY to legacy attempts with no recorded claimant (claimantPid == null).
-// SIG_SUPPORTED gates only the cases that need a POSITIVE "alive" identity.
-const SIG_SUPPORTED = process.platform === "darwin" || process.platform === "linux";
-function deadPid(): number {
-  return spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" }).pid!;
-}
-/** Attempt fields for a CONFIRMED-DEAD claimant (drives claimAbandoned by death, not age). */
-function deadClaimant(): { claimantPid: number; claimantSignature: string | null } {
-  return { claimantPid: deadPid(), claimantSignature: null };
-}
-/** Attempt fields for a LIVE claimant (this test process). */
-function liveClaimant(): { claimantPid: number; claimantSignature: string | null } {
-  return { claimantPid: process.pid, claimantSignature: captureProcessSignatureSync(process.pid) };
-}
-/**
- * Attempt fields for a claimant whose identity resolves to "unknown" on EVERY
- * platform: a live pid (this process) with no recorded signature, so
- * inspectProcessIdentitySync returns "unknown" (alive, but no signature to
- * confirm). A recorded-but-unknown claimant may still be alive/suspended and
- * must never be abandoned on age.
- */
-function unknownClaimant(): { claimantPid: number; claimantSignature: string | null } {
-  return { claimantPid: process.pid, claimantSignature: null };
-}
 
 const TASK_ID = "task-limitstatus-0001";
 const KEY = limitRecordKey(TASK_ID);
@@ -207,273 +174,24 @@ describe("limit-status list", () => {
   });
 });
 
-describe("limit-status --cancel", () => {
-  it("reports unknown keys", async () => {
-    const result = await handleLimitStatus({ cancel: "claude:nope" });
-    expect(result.errorCode).toBe("not_found");
-  });
-
-  it("cancels a plain record with no live child", async () => {
+describe("limit-status is read-only (T-534)", () => {
+  it("refuses --cancel and --requeue and leaves the ledger byte-identical", async () => {
     recordDirectStop(baseStop());
-    const result = await handleLimitStatus({ cancel: TASK_ID }); // bare id accepted
-    expect(result.errorCode).toBeUndefined();
-    expect(result.output).toContain("Cancelled");
-    expect(readLimitLedger().records[KEY]?.status).toBe("cancelled");
+    const before = readFileSync(join(globalDir, "limit-ledger.json"), "utf-8");
+    for (const options of [{ cancel: KEY }, { requeue: KEY }, { cancel: TASK_ID }, { cancel: KEY, requeue: KEY }]) {
+      const result = await handleLimitStatus(options);
+      expect(result.errorCode).toBe("invalid_input");
+    }
+    expect(readFileSync(join(globalDir, "limit-ledger.json"), "utf-8")).toBe(before);
+    expect(h.signals).toEqual([]);
   });
 
-  it("cancels an autonomous record and clears the session interruption", async () => {
-    const session = createSession(root, "coding", realpathSync(root));
-    const sessDir = join(root, ".story", "sessions", session.sessionId);
-    const state = writeSessionSync(sessDir, {
-      ...session,
-      state: "IMPLEMENT",
-      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123" },
-      reviews: { plan: [], code: [] },
-    } as FullSessionState);
-    const up = recordDirectStop(baseStop({
-      storybloqSessionId: state.sessionId,
-      sessionType: "autonomous",
-      mode: "headless",
-    }));
-    prepareForLimitStop(sessDir, JSON.parse(readFileSync(join(sessDir, "state.json"), "utf-8")) as FullSessionState, {
-      permissionMode: null, resumeAt: Date.now() + 3_600_000, limitEventId: up.limitEventId,
-    });
-
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.output).toContain("Cancelled");
-    expect(readLimitLedger().records[KEY]?.status).toBe("cancelled");
-
-    const cleared = JSON.parse(readFileSync(join(sessDir, "state.json"), "utf-8")) as FullSessionState;
-    // Cancellation DOWNGRADES the limit park to an ordinary compact park so the
-    // session stays recoverable -- compactPending stays true (never stranded as
-    // COMPACT-but-not-pending); only the limit-specific fields are cleared.
-    expect(cleared.compactPending).toBe(true);
-    expect(cleared.state).toBe("COMPACT");
-    expect(cleared.interruptionKind).toBeNull();
-    expect(cleared.limitStopPending).toBe(false);
-    expect(cleared.limitEventId).toBeNull();
-  });
-
-  it("rejects cancelling a terminal record", async () => {
+  it("lists without writing the ledger or offering cancel or requeue", async () => {
     recordDirectStop(baseStop());
-    mutateLimitLedger((ledger) => {
-      ledger.records[KEY]!.status = "cancelled";
-      return true;
-    });
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBe("invalid_input");
-  });
-
-  it("leaves a resuming record with a NULL-childPid attempt in cancelling (claim-to-spawn window)", async () => {
-    // The waker claimed but has not recorded a child yet: a spawn may still
-    // materialize. Cancellation must NOT terminalize or clear session state --
-    // it stands the record down to `cancelling` and the waker finishes it.
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "resuming";
-      rec.attempt = {
-        id: "wa-inflight", token: "t", generation: rec.generation,
-        childPid: null, spawnedAt: null, transcriptOffset: null,
-        stateRevision: null, lastProgressAt: Date.now(),
-      };
-      return true;
-    });
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBeUndefined();
-    expect(result.output).toContain("mid-spawn");
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelling"); // NOT cancelled
-    expect(rec.attempt?.id).toBe("wa-inflight");
-  });
-
-  it("completes synchronously when a null-childPid claim's CLAIMANT is confirmed dead (crashed without spawning)", async () => {
-    // A null-childPid attempt whose claimant is CONFIRMED DEAD is abandoned: no
-    // child will ever materialize (a live child carries a concrete pid). The
-    // cancel must terminalize HERE -- never rely on a waker that the kill switch
-    // may keep from starting, which would strand it `cancelling`. Positive
-    // death evidence, not wall-clock age, drives this.
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "resuming";
-      rec.attempt = {
-        id: "wa-stale", token: "t", generation: rec.generation,
-        childPid: null, spawnedAt: null, transcriptOffset: null,
-        lastProgressAt: Date.now(), // FRESH age -- death, not age, is what completes it
-        ...deadClaimant(),
-      };
-      return true;
-    });
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBeUndefined();
-    expect(result.output).not.toContain("mid-spawn");
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelled");
-    expect(rec.attempt).toBeNull();
-    expect(h.signals).toHaveLength(0); // no child to signal
-  });
-
-  it("does NOT complete a null-childPid cancel while a SUSPENDED (alive) claimant could still spawn, even past the stale age", async () => {
-    if (!SIG_SUPPORTED) return; // requires a positive "alive" identity
-    // A claimant that is alive but aged past CLAIM_SPAWN_STALE_MS (suspended,
-    // e.g. across laptop sleep) may still resume and spawn a child. The cancel
-    // must NOT terminalize on age alone -- it stays `cancelling` (retry later).
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "resuming";
-      rec.attempt = {
-        id: "wa-suspended", token: "t", generation: rec.generation,
-        childPid: null, spawnedAt: null, transcriptOffset: null,
-        lastProgressAt: Date.now() - 130_000, // aged, but claimant alive
-        ...liveClaimant(),
-      };
-      return true;
-    });
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.output).toContain("mid-spawn");
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelling"); // NOT cancelled
-    expect(rec.attempt?.id).toBe("wa-suspended");
-  });
-
-  it("does NOT complete a null-childPid cancel while claimant identity is UNKNOWN, even past the stale age (all platforms)", async () => {
-    // Identity is "unknown" on a platform with no process signature, or after a
-    // transient signature/proc-inspection failure. A recorded claimant whose
-    // identity is unknown may still be alive/suspended -- age must NOT abandon
-    // it, or a resumed claimant would spawn an untracked child. Platform-
-    // independent: unknownClaimant resolves "unknown" everywhere.
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "resuming";
-      rec.attempt = {
-        id: "wa-unknown", token: "t", generation: rec.generation,
-        childPid: null, spawnedAt: null, transcriptOffset: null,
-        lastProgressAt: Date.now() - 130_000, // aged, identity unknown
-        ...unknownClaimant(),
-      };
-      return true;
-    });
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.output).toContain("mid-spawn");
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelling"); // NOT cancelled -- age never overrides a recorded claimant
-    expect(rec.attempt?.id).toBe("wa-unknown");
-  });
-
-  function seedLiveChild(childPid: number): void {
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "resuming";
-      rec.attempt = {
-        id: "wa-live", token: "t", generation: rec.generation,
-        childPid, spawnedAt: Date.now(), transcriptOffset: null,
-        stateRevision: null, lastProgressAt: Date.now(),
-      };
-      return true;
-    });
-  }
-
-  it("completes synchronously when the child is already absent (no waker needed)", async () => {
-    // Confirmed-absent pid: the CLI cancel must terminalize HERE (no signal, no
-    // stuck `cancelling`) even though waker spawning is disabled (kill-switch).
-    h.probe = () => "absent";
-    seedLiveChild(4242);
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBeUndefined();
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelled");
-    expect(rec.attempt).toBeNull();
-    expect(h.signals).toHaveLength(0); // nothing to signal
-  });
-
-  it("SIGTERMs a live killable child, confirms death, and completes synchronously", async () => {
-    // Live until signalled, then absent: SIGTERM is delivered, death confirmed,
-    // and the cancel completes without any waker.
-    h.probe = (pid) => (h.signals.some((s) => s.pid === pid) ? "absent" : "match");
-    seedLiveChild(4242);
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBeUndefined();
-    expect(h.signals.some((s) => s.pid === 4242 && s.signal === "SIGTERM")).toBe(true);
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("cancelled");
-    expect(rec.attempt).toBeNull();
-  });
-
-  it("blocks the cancel (attempt preserved, no signal to an unidentified pid) when death cannot be confirmed", async () => {
-    // Identity-unknown throughout: the child's argv never matches, so -- exactly
-    // like production's hasArgvSignature gate -- NO signal is ever delivered to
-    // the unidentified pid, and death cannot be confirmed. The cancel stands
-    // down to manual/cancellation_blocked with the attempt evidence PRESERVED,
-    // synchronously (never stuck `cancelling`), even with waker spawning off.
-    h.probe = () => "unknown";
-    seedLiveChild(4242);
-    const result = await handleLimitStatus({ cancel: KEY });
-    expect(result.errorCode).toBe("invalid_input");
-    expect(result.output).toContain("4242");
-    const rec = readLimitLedger().records[KEY]!;
-    expect(rec.status).toBe("manual");
-    expect(rec.reasonCode).toBe("cancellation_blocked");
-    expect(rec.attempt?.childPid).toBe(4242);
-    // No signal is delivered to a pid we cannot positively identify as our child.
-    expect(h.signals).toHaveLength(0);
-  });
-});
-
-describe("limit-status --requeue", () => {
-  it("returns a manual record to the queue with attempts reset", async () => {
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "manual";
-      rec.reasonCode = "bypass_not_opted_in";
-      rec.wakeAttempts = 4;
-      return true;
-    });
-
-    const result = await handleLimitStatus({ requeue: KEY });
-    expect(result.errorCode).toBeUndefined();
-    const rec = readLimitLedger().records[KEY];
-    expect(rec?.status).toBe("stopped");
-    expect(rec?.wakeAttempts).toBe(0);
-    expect(rec?.reasonCode).toBeNull();
-  });
-
-  it("rejects requeueing a dispatchable record", async () => {
-    recordDirectStop(baseStop());
-    const result = await handleLimitStatus({ requeue: KEY });
-    expect(result.errorCode).toBe("invalid_input");
-  });
-
-  it("refuses to requeue a blocked cancellation whose child evidence still stands", async () => {
-    recordDirectStop(baseStop({ mode: "headless" }));
-    mutateLimitLedger((ledger) => {
-      const rec = ledger.records[KEY]!;
-      rec.status = "manual";
-      rec.reasonCode = "cancellation_blocked";
-      rec.attempt = {
-        id: "wa-blocked", token: "t", generation: rec.generation,
-        childPid: 4_040, spawnedAt: Date.now() - 60_000, transcriptOffset: null,
-        stateRevision: null, lastProgressAt: Date.now() - 60_000,
-      };
-      return true;
-    });
-
-    const result = await handleLimitStatus({ requeue: KEY });
-    expect(result.errorCode).toBe("invalid_input");
-    expect(result.output).toContain("4040");
-    expect(result.output).toContain("refused");
-    const rec = readLimitLedger().records[KEY];
-    expect(rec?.status).toBe("manual");
-    expect(rec?.attempt?.childPid).toBe(4_040);
-  });
-
-  it("rejects --cancel combined with --requeue", async () => {
-    const result = await handleLimitStatus({ cancel: KEY, requeue: KEY });
-    expect(result.errorCode).toBe("invalid_input");
+    const before = readFileSync(join(globalDir, "limit-ledger.json"), "utf-8");
+    const result = await handleLimitStatus({ recent: true });
+    expect(result.output).not.toMatch(/--cancel|--requeue/);
+    expect(readFileSync(join(globalDir, "limit-ledger.json"), "utf-8")).toBe(before);
   });
 });
 

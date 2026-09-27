@@ -11,13 +11,13 @@ import { fileURLToPath } from "node:url";
 
 import {
   bareToolName, checkRecipe, checkStop, classifyStop, claudeTurn, codexRolloutModels, codexTurn, componentCommandFindings, degradedFindings,
-  dependencyCycles, digestChanges, executionCalls, isCheckpointTicket, isTestInvocation, resolveTestStages, reviewerInvocations, runVerdict, shellCommands,
-  shellQuote, shellSequence, summaryCounts, ticketFindings, treeDigest, writeCalls, type EvalCall, type EvalTurn, type JudgeResult,
+  dependencyCycles, digestChanges, executionCalls, isCheckpointTicket, isCitationOnly, isRuntimeState, isTestInvocation, readStop, resolveTestStages, reviewerInvocations, runtimeExclusion,
+  runVerdict, readTurnStop, semanticStopLine, shellCommands, shellQuote, shellSequence, stopRoute, STOP_RULE_VERSION, summaryCounts, ticketFindings, TREE_EXCLUSION_LINE, treeCheckOutcome, treeDigest, turnArgs, writeCalls, type EvalCall, type EvalTurn, type JudgeResult,
 } from "../../scripts/onboarding-eval-lib.js";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import {
   ADJUSTMENT_REVIEW_LINE, ADJUSTMENT_SKIP_LINE, finalize, finalizeRecord, fixtureEvidence, isolationProblems, launcherScript, materializeFixture,
-  ownerScript, REVIEW_LINE, scrubClientEnv, semanticLinesFor,
+  ownerScript, REVIEW_LINE, runSemanticLines, scrubClientEnv, semanticLinesFor,
 } from "../../scripts/onboarding-eval-run.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "onboarding");
@@ -158,17 +158,17 @@ describe("executionCalls", () => {
 
 describe("stop points", () => {
   it("classifies the package, the review stop and a discovery question", () => {
-    expect(classifyStop("...\n- Approve setup\n- Adjust the plan\n- Inspect details")).toBe("package");
+    expect(classifyStop("...\n\n- Approve setup\n- Adjust the plan\n- Inspect details")).toBe("package");
     expect(classifyStop("No reviewer is available. Retry the review, or continue without independent review?")).toBe("review-unavailable");
-    expect(classifyStop("Who will use this first?")).toBe("discovery");
+    expect(readStop("Who will use this first?")).toEqual({ kind: "semantic", candidate: "discovery" });
     expect(classifyStop("Created 3 phases.")).toBe("none");
   });
 
   it("classifies only the terminal interaction: a package asked mid-turn and followed by other text is not a package stop", () => {
     const shownThenWorked = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details\n\nI went ahead and looked at the tests.\n\nAll done.";
-    expect(classifyStop(shownThenWorked)).toBe("none");
+    expect(readStop(shownThenWorked)).toEqual({ kind: "semantic", candidate: "package" });
     expect(classifyStop("Here is the package.\n\nHow should I proceed with this setup?\n- Approve setup\n- Adjust the plan\n- Inspect details")).toBe("package");
-    expect(classifyStop("Who uses it?\n\nI will assume librarians.")).toBe("none");
+    expect(readStop("Who uses it?\n\nI will assume librarians.")).toEqual({ kind: "semantic", candidate: "discovery" });
   });
 
   it("drops an answered or failed structured question and keeps one left pending as the last main-agent call", () => {
@@ -184,11 +184,12 @@ describe("stop points", () => {
     expect(failed.stopText).toBe("Done for now.");
     expect(classifyStop(failed.stopText)).toBe("none");
     const pending = claudeTurn([ask("q2"), { type: "result", subtype: "success", result: "Here is the package." }]);
-    expect(classifyStop(pending.stopText)).toBe("package");
+    // The pending question is kept; the result text before it is prose the judge rules on.
+    expect(readTurnStop(pending)).toEqual({ kind: "semantic", candidate: "package" });
   });
 
   it("drops a pending Claude question that later main-agent text or tool use superseded, but not a nested agent's activity", () => {
-    const ask = { type: "assistant", request_id: "q", message: { model: "m", content: [{ type: "tool_use", id: "q", name: "AskUserQuestion", input: { questions: [{ question: "Approve setup?", options: [{ label: "Approve setup" }, { label: "Adjust the plan" }, { label: "Inspect details" }] }] } }] } };
+    const ask = { type: "assistant", request_id: "q", message: { model: "m", content: [{ type: "tool_use", id: "q", name: "AskUserQuestion", input: { questions: [{ question: "How should I proceed with this setup?", options: [{ label: "Approve setup" }, { label: "Adjust the plan" }, { label: "Inspect details" }] }] } }] } };
     const result = { type: "result", subtype: "success", result: "I will assume the defaults." };
     const thenText = claudeTurn([ask, { type: "assistant", request_id: "t", message: { model: "m", content: [{ type: "text", text: "I will assume the defaults." }] } }, result]);
     expect(thenText.stopText).toBe("I will assume the defaults.");
@@ -196,7 +197,8 @@ describe("stop points", () => {
     const thenTool = claudeTurn([ask, { type: "assistant", request_id: "b", message: { model: "m", content: [{ type: "tool_use", id: "b", name: "Bash", input: { command: "ls" } }] } }, result]);
     expect(thenTool.stopText).toBe("");
     const nestedAfter = claudeTurn([ask, { type: "assistant", parent_tool_use_id: "a0", request_id: "n", message: { model: "m", content: [{ type: "text", text: "nested chatter" }] } }, result]);
-    expect(classifyStop(nestedAfter.stopText)).toBe("package");
+    expect(nestedAfter.pendingQuestion?.preamble).toBe("I will assume the defaults.");
+    expect(readTurnStop(nestedAfter)).toEqual({ kind: "semantic", candidate: "package" });
   });
 
   it("drops a Codex message that tool activity followed, and keeps one that came last", () => {
@@ -626,5 +628,377 @@ describe("runner safety", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("regressions from the 2026-09-27 Codex batch", () => {
+  const RUNS = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "onboarding-eval-runs");
+  const verbatim = <T>(name: string): T => JSON.parse(readFileSync(join(RUNS, name), "utf-8")) as T;
+  const run1Command = verbatim<string>("run1-command.json");
+
+  it("ends option parsing before the prompt on every client form, so a `- ` answer is the prompt (run 3)", () => {
+    const base = { model: "m", project: "/p", claudeArgs: ["--disallowedTools", "Agent", "Task"], sessionId: "s" };
+    for (const spec of [
+      { ...base, client: "codex" as const, first: true },
+      { ...base, client: "codex" as const, first: false },
+      { ...base, client: "claude" as const, first: true },
+      { ...base, client: "claude" as const, first: false },
+    ]) {
+      const args = turnArgs(spec, "- ");
+      expect(args.slice(-2), `${spec.client} first=${spec.first}`).toEqual(["--", "- "]);
+      expect(args.indexOf("--"), `${spec.client} first=${spec.first}`).toBe(args.length - 2);
+    }
+    expect(turnArgs({ ...base, client: "codex", first: false }, "x").slice(0, 3)).toEqual(["exec", "resume", "s"]);
+    expect(turnArgs({ ...base, client: "claude", first: true }, "x")).toEqual(["-p", "--disallowedTools", "Agent", "Task", "--session-id", "s", "--", "x"]);
+  });
+
+  it("reads run 1's reviewer launch as no write: `git init` in a prompt argument is data (run 1)", () => {
+    expect(run1Command).toContain("git init");
+    expect(writeCalls([bash(run1Command)])).toEqual([]);
+  });
+
+  it("detects writes structurally, through lists, pipelines and nested shells", () => {
+    const writes = [
+      "cd x && git init", "git -C web init", "true; git init", "/bin/zsh -lc \"cd x && git init\"", "bash -c 'sh -c \"git init\"'",
+      "npx storybloq init", "npx -y @storybloq/storybloq@latest ticket create --title t", "eval 'git init'", "echo \"$(git init)\"",
+      "echo hi > CLAUDE.md", "zsh -lc 'echo hi >> notes.md'", "cat a | tee b",
+    ];
+    for (const cmd of writes) expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    const reads = [
+      "codex exec 'Review: the package will git init and storybloq init'", "echo \"a > b\"", "grep -n 'git init' notes.md",
+      "zsh -lc \"codex exec 'then echo x > y'\"", "git status", "storybloq status",
+    ];
+    for (const cmd of reads) expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+  });
+
+  it("classifies run 1's multi-line nested command once: the process substitution inside, not the wrapper outside (run 1)", () => {
+    const hits = executionCalls([bash(run1Command)]);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.kind).toBe("review");
+    expect(hits[0]!.segment).toMatch(/--output-schema <\($/);
+    expect(hits[0]!.segment).not.toContain("zsh");
+  });
+
+  it("still reviews a construct the wrapper's own shell runs, and one inside a live double-quoted substitution", () => {
+    expect(reviews("zsh -lc \"echo $(date)\"")).toHaveLength(1);
+    expect(reviews("echo \"`date`\"")).toHaveLength(1);
+    expect(reviews("echo 'no $(sub) here'")).toEqual([]);
+    expect(reviews("cat <<EOF\nx\nEOF")).not.toEqual([]);
+  });
+
+  it("reads run 1's stop as semantic, candidate package: its closing paragraph carries words beyond a citation (run 1)", () => {
+    const stop = checkStop(turn(verbatim<string>("run1-stop.json")), ["discovery", "package"]);
+    expect(stop).toMatchObject({ kind: "semantic", candidate: "package", ok: true });
+    expect(stopRoute(stop)).toBe("package");
+  });
+
+  it("reads run 2's stop as semantic, candidate discovery, and the run goes to the judge with that line required (run 2)", () => {
+    const text = verbatim<string>("run2-stop.json");
+    const stop = checkStop(turn(text), ["discovery", "package"]);
+    expect(stop).toMatchObject({ kind: "semantic", candidate: "discovery", ok: true, reasons: [] });
+    expect(stopRoute(stop)).toBe("discovery");
+    const line = semanticStopLine("opening", "discovery");
+    expect(line).toContain("opening");
+    const packet = JSON.stringify({ turns: [{ label: "opening", assistant: text }] });
+    expect(runVerdict([], packet, null, [line]).verdict).toBe("PENDING_SEMANTIC");
+    const ruled = (verdict: "pass" | "fail"): JudgeResult => ({ packetSha256: sha256(packet), observedModel: "m", lines: [{ line, verdict, reason: "r" }] });
+    expect(runVerdict([], packet, ruled("pass"), [line]).verdict).toBe("PASS");
+    expect(runVerdict([], packet, ruled("fail"), [line]).verdict).toBe("FAIL");
+    expect(runVerdict([], packet, { ...ruled("pass"), lines: [] }, [line]).verdict).toBe("FAIL");
+  });
+
+  it("drops a trailing paragraph only when nothing remains after its marker, links, paths, punctuation and the connective allowlist", () => {
+    expect(readStop("Who uses it?\n\nSee [setup-flow.md](x).\n\nSource: the skill.")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("Who uses it?\n\n[setup-flow.md](x)")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("Who uses it?\n\n`.story/skills/setup-flow.md`")).toEqual({ kind: "semantic", candidate: "discovery" });
+    // A relative slash token is not an explicit citation form: residue, so the judge rules.
+    expect(classifyStop("Who uses it?\n\n`skills/story/setup-flow.md`")).toBe("semantic");
+    expect(readStop("Who uses it?\n\nThis comes from the story skill's [setup-flow.md](x).")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("Who uses it?\n\nPer the guidance document from `SKILL.md`.")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(isCitationOnly("Source: the skill’s file.")).toBe(true);
+    // Allowlist words alone are not a citation: it needs a marker, a link or a path.
+    expect(isCitationOnly("The skill.")).toBe(false);
+    // Any residue keeps the paragraph, whatever its words: the judge rules on it.
+    for (const residue of [
+      "The [setup flow](x) asks this before planning.",
+      "Note: the setup flow asks this first.",
+      "I will assume librarians, per [the brief](x).",
+      "See [the guide](x). The other workflow applies instead.",
+      "Per [the brief](x), librarians rather than members.",
+      "See [the guide](x) and pick a workflow.",
+    ]) {
+      expect(isCitationOnly(residue)).toBe(false);
+      expect(readStop(`Who uses it?\n\n${residue}`)).toEqual({ kind: "semantic", candidate: "discovery" });
+    }
+    expect(classifyStop("Who uses it?\n\nSee [a](x).\n\nPlease pick one.\n\nSource: the skill.")).toBe("semantic");
+    expect(classifyStop("Created 3 phases.")).toBe("none");
+    expect(classifyStop("Created 3 phases.\n\nSee [docs](x).")).toBe("none");
+    // Options named in prose are not the option list: the judge rules on the sentence around them.
+    expect(readStop("Would you like to __approve setup__, *adjust the plan* or INSPECT DETAILS?")).toEqual({ kind: "semantic", candidate: "package" });
+    expect(readStop("Would you like to approve setup or adjust the plan?")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("Would you like to approve, adjust or inspect?")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("Would you like to disapprove setup, readjust the plan or reinspect details?")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(STOP_RULE_VERSION).toMatch(/^2026-09-27\.13:/);
+  });
+
+  it("keeps link labels, bare words with a slash or a dot, and any question as residue: each ending is semantic with one judge line (Codex round 3)", () => {
+    const options = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details";
+    for (const ending of ["Next.js", "yes/no", "[Choose a different workflow](https://example.com)", "See [the guide](x)?"]) {
+      expect(isCitationOnly(ending)).toBe(false);
+      const stop = checkStop(turn(`${options}\n\n${ending}`), ["discovery", "package"]);
+      expect(stop).toMatchObject({ kind: "semantic", candidate: "package" });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+      expect(runVerdict([], "{}", null, [semanticStopLine("opening", "package")]).verdict).toBe("PENDING_SEMANTIC");
+    }
+    expect(isCitationOnly("See [setup-flow.md](https://example.com).")).toBe(true);
+    expect(isCitationOnly("Source: .story/config.json")).toBe(true);
+    expect(isCitationOnly("Source: /private/tmp/x/setup-flow.md")).toBe(true);
+    expect(isCitationOnly("Source: `SKILL.md`.")).toBe(true);
+    expect(isCitationOnly("Source: skills/story")).toBe(false);
+    expect(isCitationOnly("Source: setup-flow.md")).toBe(true);
+    expect(isCitationOnly("Source: ./docs/setup-flow.md")).toBe(true);
+    expect(isCitationOnly("Source: ~/notes/setup-flow.md")).toBe(true);
+    expect(isCitationOnly("Source: notes.txt")).toBe(false);
+    expect(isCitationOnly("Source: the [setup-flow.md](x)?")).toBe(false);
+    // One word outside the allowlist is residue, however long or short.
+    expect(isCitationOnly("Source: the [skill](x), definitively.")).toBe(false);
+    expect(isCitationOnly("Source: the [skill](x), so.")).toBe(false);
+    expect(isCitationOnly("Source: the [skill](x).")).toBe(true);
+  });
+
+  it("strips a slash token only in an explicit citation form: a relative slash token is residue, bare or as a link label (Codex round 4)", () => {
+    const options = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details";
+    for (const ending of ["Node.js/Next.js", "[Node.js/Next.js](https://example.com)", "Source: docs/setup-flow.md"]) {
+      expect(isCitationOnly(ending)).toBe(false);
+      for (const [question, candidate] of [["Which stack should we use?", "discovery"], [options, "package"]] as const) {
+        const stop = checkStop(turn(`${question}\n\n${ending}`), ["discovery", "package"]);
+        expect(stop).toMatchObject({ kind: "semantic", candidate });
+        expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", candidate)]);
+      }
+    }
+  });
+
+  it("keeps a package clean after a non-option closing paragraph only when it is exactly one listed selection question (Codex rounds 5 and 6)", () => {
+    const options = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details";
+    const forms = ["Which would you like?", "Which one would you like?", "Which would you like to do?", "What would you like to do?", "How would you like to proceed?",
+      "Which option do you prefer?", "Which do you prefer?", "Which one should we pick?", "Which should we do?"];
+    for (const plain of [...forms, "**Which would you like?**", "  which  WOULD you   like?  "]) {
+      expect(readStop(`${options}\n\n${plain}`)).toEqual({ kind: "package", candidate: null });
+    }
+    for (const other of [
+      "I choose option one. Should we proceed?", "I choose option one. Which would you like?", "Which would you like? I recommend approving.",
+      "Should I deploy now?", "Which would you like, Node.js/Next.js?", "Which would you like to deploy?", "Would you like which?", "**Should I deploy now?**", "Which should we do.",
+      "See [the guide](x)?", "Which would you like, per [the brief](x)?", "Which would you like, given setup-flow.md?", "See the setup guidance before choosing?",
+    ]) {
+      const stop = checkStop(turn(`${options}\n\n${other}`), ["discovery", "package"]);
+      expect(stop).toMatchObject({ kind: "semantic", candidate: "package" });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+    }
+    // The bold non-form question is semantic through the package rule itself: without the options it is a discovery question, and the judge rules on it.
+    expect(readStop("**Should I deploy now?**")).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readStop("**Who uses it?**\n\nSource: the skill.")).toEqual({ kind: "semantic", candidate: "discovery" });
+  });
+
+  it("keeps a package clean only when its closing paragraph is the option list, with at most one listed prefix line, or one listed selection question (Codex rounds 9 and 10)", () => {
+    const list = "- Approve setup\n- Adjust the plan\n- Inspect details";
+    // The skill's package question, verbatim from setup-flow.md: `- question: "How should I proceed with this setup?"`.
+    const skillQuestion = "How should I proceed with this setup?";
+    const ask = { type: "assistant", request_id: "q", message: { model: "m", content: [{ type: "tool_use", id: "q", name: "AskUserQuestion", input: { questions: [{ question: skillQuestion, options: [{ label: "Approve setup" }, { label: "Adjust the plan" }, { label: "Inspect details" }] }] } }] } };
+    // The structured path: with no result text the rendered question is read like any ending, and it is the option list.
+    const bare = claudeTurn([ask, { type: "result", subtype: "success", result: "" }]);
+    expect(bare.stopText).toBe(`${skillQuestion}\nApprove setup\nAdjust the plan\nInspect details`);
+    expect(readTurnStop(bare)).toEqual({ kind: "package", candidate: null });
+    expect(checkStop(bare, ["package"])).toMatchObject({ kind: "package", ok: true });
+    // Whitespace-only result text is no text.
+    expect(readTurnStop(claudeTurn([ask, { type: "result", subtype: "success", result: " \n " }]))).toEqual({ kind: "package", candidate: null });
+    // Any result text before it is prose the harness does not validate: semantic, one judge line, candidate from the question's shape.
+    // A preamble ending in a blank line leaves the rendered question as its own paragraph, so only the structured rule sends it to the judge.
+    for (const preamble of ["I selected Approve setup for you.", "Here is the package.", "I selected Approve setup for you.\n\n"]) {
+      const asked = claudeTurn([ask, { type: "result", subtype: "success", result: preamble }]);
+      expect(asked.stopText).toBe(`${preamble}\n${skillQuestion}\nApprove setup\nAdjust the plan\nInspect details`);
+      const stop = checkStop(asked, ["discovery", "package"]);
+      expect(stop, preamble).toMatchObject({ kind: "semantic", candidate: "package", ok: true });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+    }
+    // The preamble is every main-agent text block before the question, not the result text alone; stopText (the packet's assistant ending) carries it.
+    const said = "I selected Approve setup for you.";
+    const askBlock = ask.message.content[0]!;
+    const sameMessage = claudeTurn([{ type: "assistant", request_id: "q", message: { model: "m", content: [{ type: "text", text: said }, askBlock] } }, { type: "result", subtype: "success", result: "" }]);
+    const earlierMessage = claudeTurn([
+      { type: "assistant", request_id: "t", message: { model: "m", content: [{ type: "text", text: said }] } },
+      { type: "assistant", request_id: "b", message: { model: "m", content: [{ type: "tool_use", id: "b", name: "Bash", input: { command: "ls" } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "b", content: "ok" }] } },
+      ask, { type: "result", subtype: "success", result: "" },
+    ]);
+    for (const t of [sameMessage, earlierMessage]) {
+      expect(t.stopText).toBe(`${said}\n${skillQuestion}\nApprove setup\nAdjust the plan\nInspect details`);
+      const stop = checkStop(t, ["discovery", "package"]);
+      expect(stop).toMatchObject({ kind: "semantic", candidate: "package" });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+    }
+    // A result that repeats the last text block is counted once.
+    expect(claudeTurn([{ type: "assistant", request_id: "q", message: { model: "m", content: [{ type: "text", text: said }, askBlock] } }, { type: "result", subtype: "success", result: said }]).stopText)
+      .toBe(`${said}\n${skillQuestion}\nApprove setup\nAdjust the plan\nInspect details`);
+    // Nested agents' text is not the main agent's and adds nothing.
+    expect(readTurnStop(claudeTurn([{ type: "assistant", parent_tool_use_id: "a0", request_id: "n", message: { model: "m", content: [{ type: "text", text: said }] } }, ask, { type: "result", subtype: "success", result: "" }]))).toEqual({ kind: "package", candidate: null });
+    const askWho = { type: "assistant", request_id: "w", message: { model: "m", content: [{ type: "tool_use", id: "w", name: "AskUserQuestion", input: { questions: [{ question: "Who uses it?", options: [{ label: "Librarians" }, { label: "Members" }] }] } }] } };
+    expect(readTurnStop(claudeTurn([askWho, { type: "result", subtype: "success", result: "I will assume librarians." }]))).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(readTurnStop(claudeTurn([askWho, { type: "result", subtype: "success", result: "  \n" }]))).toEqual({ kind: "semantic", candidate: "discovery" });
+    for (const clean of [
+      `Here is the package.\n\n${list}`, `Here is the package.\n\n${skillQuestion}\n${list}`, `Here is the package.\n\nWhich would you like?\n${list}`,
+      "Here is the package.\n\n1. **Approve setup**\n2. Adjust the plan\n3. inspect details", `Here is the package.\n\n${list}\n\nWhich would you like?`,
+    ]) {
+      expect(readStop(clean), clean).toEqual({ kind: "package", candidate: null });
+    }
+    for (const ending of [
+      `I selected Approve setup for you.\n${list}`, `Here are your options:\n${list}`, `Here is the package.\n${list}`,
+      `Which would you like?\nI selected Approve setup for you.\n${list}`, `${skillQuestion}\nWhich would you like?\n${list}`,
+      `Here is the package.\n\n${list}\n\nI selected Approve setup for you.`, `Here is the package.\n\n${list}\n\nI recommend Approve setup. Which would you like?`,
+      `Here is the package.\n\n${list}\nI picked Approve setup.`, "I chose Approve setup over Adjust the plan.\n- Inspect details",
+      "Here is the package.\n\n- Approve setup (recommended)\n- Adjust the plan\n- Inspect details", "Here is the package.\n\n- Approve setup\n- Adjust the plan\n- Inspect details\n- Approve setup",
+      "You could also Adjust the plan.\n\n- Approve setup\n- Approve setup\n- Inspect details",
+      "Approve setup / Adjust the plan / Inspect details",
+    ]) {
+      const stop = checkStop(turn(ending), ["discovery", "package"]);
+      expect(stop, ending).toMatchObject({ kind: "semantic", candidate: "package", ok: true });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+    }
+    // Options spread over three paragraphs never read as a package: the stop fails as unexpected rather than passing clean.
+    const spread = "Here is the package.\n- Approve setup\n\n- Adjust the plan\n\n- Inspect details";
+    expect(readStop(spread)).toEqual({ kind: "none", candidate: null });
+    expect(checkStop(turn(spread), ["discovery", "package"]).ok).toBe(false);
+  });
+
+  it("never keeps a discovery stop clean: any question in an ending without the package is semantic with one judge line (Codex round 8)", () => {
+    for (const asked of [
+      "Who uses it?", "**Who uses it?**", "Some context first.\n\nWho uses it?",
+      "I will assume librarians, so should I proceed?", "I will assume librarians; should I proceed?", "I will assume librarians.Should I proceed?",
+      "Who uses it?\n\n**I will assume librarians. Should I proceed?**", "Who uses it?\n\nI will assume librarians. Should I proceed?",
+      "Who uses it? Librarians, I assume.", "I will assume librarians. Who uses it?",
+    ]) {
+      const stop = checkStop(turn(asked), ["discovery", "package"]);
+      expect(stop, asked).toMatchObject({ kind: "semantic", candidate: "discovery", ok: true });
+      expect(stopRoute(stop)).toBe("discovery");
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "discovery")]);
+    }
+    for (const done of ["Created 3 phases. All done.", "Created 3 phases.\n\nSource: the skill."]) {
+      expect(readStop(done)).toEqual({ kind: "none", candidate: null });
+      expect(checkStop(turn(done), ["discovery", "package"]).ok).toBe(false);
+    }
+    const options = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details";
+    for (const form of ["Which would you like?", "Which one would you like?", "Which would you like to do?", "What would you like to do?", "How would you like to proceed?",
+      "Which option do you prefer?", "Which do you prefer?", "Which one should we pick?", "Which should we do?"]) {
+      expect(readStop(`${options}\n\n${form}`)).toEqual({ kind: "package", candidate: null });
+    }
+  });
+
+  it("does not strip either Codex example, and neither passes its stop check as clean (Codex rounds 1 and 2)", () => {
+    const redirect = "Approve setup / Adjust the plan / Inspect details\n\nSee [the guide](x). Please choose a different workflow there.";
+    const librarians = "Who uses it?\n\nPer [the brief](x), librarians.";
+    expect(isCitationOnly("See [the guide](x). Please choose a different workflow there.")).toBe(false);
+    expect(isCitationOnly("Per [the brief](x), librarians.")).toBe(false);
+    expect(readStop(redirect)).toEqual({ kind: "semantic", candidate: "package" });
+    expect(readStop(librarians)).toEqual({ kind: "semantic", candidate: "discovery" });
+    expect(classifyStop("Approve setup / Adjust the plan / Inspect details\n\nChoose a different workflow at [the guide](url).")).toBe("semantic");
+  });
+
+  it("reads quoted executable names like the shell does: eval, source, xargs and find -exec are reviewed, and a write behind them counts", () => {
+    expect(reviews(`"eval" "npm test"`)).toEqual(["eval npm test [eval]"]);
+    expect(reviews(`'xargs' npm test`)).toEqual(["xargs npm test [xargs]"]);
+    expect(reviews(`"source" ./env.sh`)).toEqual(["source ./env.sh [source]"]);
+    expect(reviews(`find . "-exec" rm x ";"`)).toHaveLength(1);
+    expect(reviews("echo eval xargs source")).toEqual([]);
+    expect(writeCalls([bash(`"eval" "git init"`)])).toHaveLength(1);
+    expect(writeCalls([bash(`xargs -I{} git init`)])).toHaveLength(1);
+    expect(writeCalls([bash(`echo "eval git init"`)])).toEqual([]);
+  });
+
+  it("matches a gitignore ** segment across zero directories, so a re-included config write is still reported (Codex round 1)", () => {
+    const exclusion = { source: ".story/.gitignore" as const, patterns: ["*", "!**/config.json"] };
+    expect(isRuntimeState(".story/config.json", exclusion)).toBe(false);
+    expect(isRuntimeState(".story/a/b/config.json", exclusion)).toBe(false);
+    expect(digestChanges({}, { ".story/config.json": "x", ".story/telemetry/p.json": "y" }, exclusion)).toEqual([".story/config.json"]);
+    const inner = { source: ".story/.gitignore" as const, patterns: ["/sessions/**/state.json", "cache/**"] };
+    expect(isRuntimeState(".story/sessions/state.json", inner)).toBe(true);
+    expect(isRuntimeState(".story/sessions/a/b/state.json", inner)).toBe(true);
+    expect(isRuntimeState(".story/cache/x/y.json", inner)).toBe(true);
+    expect(isRuntimeState(".story/tickets/state.json", inner)).toBe(false);
+  });
+
+  it("disables exclusion entirely when .story/.gitignore holds a pattern form it cannot read: every change reported, never clean (Codex round 2)", () => {
+    const work = mkdtempSync(join(tmpdir(), "eval-exclusion-"));
+    try {
+      const project = materializeFixture("empty-scaffold", work);
+      writeFileSync(join(project, ".story", ".gitignore"), "/sessions/\n!/sessions/important[.]json\n");
+      const exclusion = runtimeExclusion(project);
+      expect(exclusion).toEqual({ source: "disabled", patterns: [], unsupported: "!/sessions/important[.]json" });
+      const changes = digestChanges({ ".story/sessions/important.json": "a" }, { ".story/sessions/important.json": "b", ".story/servers/a": "y" }, exclusion);
+      expect(changes).toEqual([".story/servers/a", ".story/sessions/important.json"]);
+      expect(treeCheckOutcome("opening", changes, exclusion)).toEqual({ clean: false, failure: null, judge: true });
+      expect(treeCheckOutcome("opening", [], exclusion)).toEqual({ clean: false, failure: null, judge: true });
+      expect(TREE_EXCLUSION_LINE).toContain("unsupported");
+      writeFileSync(join(project, ".story", ".gitignore"), "a**b\n");
+      expect(runtimeExclusion(project)).toMatchObject({ source: "disabled", unsupported: "a**b" });
+      rmSync(join(project, ".story", ".gitignore"));
+      expect(runtimeExclusion(project).source).toBe("fixed set");
+      mkdirSync(join(project, ".story", ".gitignore"));
+      expect(runtimeExclusion(project).source).toBe("disabled");
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it("requires a judge line per semantic stop and, with exclusion disabled, the tree line even when nothing changed", () => {
+    const disabled = { source: "disabled" as const, patterns: [], unsupported: "a**b" };
+    const fixed = { source: "fixed set" as const, patterns: ["/sessions/"] };
+    const turns = [
+      { label: "opening", stop: { kind: "semantic" as const, candidate: "discovery" as const } },
+      { label: "discovery-1", stop: { kind: "package" as const, candidate: null } },
+      { label: "approve", stop: null },
+    ];
+    const base = semanticLinesFor(false);
+    expect(runSemanticLines(false, turns, fixed)).toEqual([...base, semanticStopLine("opening", "discovery")]);
+    expect(runSemanticLines(false, turns, disabled)).toEqual([...base, semanticStopLine("opening", "discovery"), TREE_EXCLUSION_LINE]);
+    expect(runSemanticLines(false, turns.slice(1), fixed)).toEqual(base);
+    expect(runSemanticLines(false, turns.slice(1, 2), disabled)).toEqual([...base, TREE_EXCLUSION_LINE]);
+  });
+
+  it("fails the tree check mechanically on a reported change while exclusion is in force", () => {
+    const exclusion = { source: "fixed set" as const, patterns: ["/sessions/"] };
+    expect(treeCheckOutcome("opening", [".story/config.json"], exclusion)).toEqual({ clean: false, failure: "opening: project changed before approval: .story/config.json", judge: false });
+    expect(treeCheckOutcome("opening", [], exclusion)).toEqual({ clean: true, failure: null, judge: false });
+  });
+
+  it("ignores the runtime state minted under .story before approval, per the fixture's .story/.gitignore (run 4)", () => {
+    const work = mkdtempSync(join(tmpdir(), "eval-exclusion-"));
+    try {
+      const exclusion = runtimeExclusion(materializeFixture("empty-scaffold", work));
+      expect(exclusion.source).toBe(".story/.gitignore");
+      const changed = verbatim<string[]>("run4-tree-changes.json");
+      const after = Object.fromEntries(changed.map((k) => [k, k.endsWith("/") ? "dir" : "x"]));
+      expect(digestChanges({}, after)).toEqual(changed);
+      expect(digestChanges({}, after, exclusion)).toEqual([]);
+      expect(digestChanges({}, { ...after, ".story/tickets/T-001.json": "x", "notes.md": "y" }, exclusion)).toEqual([".story/tickets/T-001.json", "notes.md"]);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it("uses the fixed runtime set without a .story/.gitignore, and never excludes a .story it did not only mint", () => {
+    const work = mkdtempSync(join(tmpdir(), "eval-exclusion-"));
+    try {
+      const exclusion = runtimeExclusion(materializeFixture("brief-only", work));
+      expect(exclusion.source).toBe("fixed set");
+      const minted = { ".story/": "dir", ".story/telemetry/": "dir", ".story/telemetry/presence/": "dir", ".story/telemetry/presence/a.json": "x", ".story/.lock": "x" };
+      expect(digestChanges({}, minted, exclusion)).toEqual([]);
+      expect(digestChanges({}, { ...minted, ".story/config.json": "x" }, exclusion)).toEqual([".story/", ".story/config.json"]);
+      expect(digestChanges({}, { ".story/": "dir" }, exclusion)).toEqual([".story/"]);
+      expect(isRuntimeState("telemetry/a.json", exclusion)).toBe(false);
+      expect(isRuntimeState(".story/tickets/telemetry/a.json", exclusion)).toBe(false);
+    } finally { rmSync(work, { recursive: true, force: true }); }
+  });
+
+  it("applies gitignore order: a later negation re-includes", () => {
+    const exclusion = { source: ".story/.gitignore" as const, patterns: ["sessions/", "!sessions/keep.json", "*.tmp"] };
+    expect(isRuntimeState(".story/sessions/a/state.json", exclusion)).toBe(true);
+    expect(isRuntimeState(".story/sessions/keep.json", exclusion)).toBe(false);
+    expect(isRuntimeState(".story/tickets/x.tmp", exclusion)).toBe(true);
+    expect(isRuntimeState(".story/tickets/x.json", exclusion)).toBe(false);
   });
 });

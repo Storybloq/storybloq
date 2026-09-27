@@ -44,8 +44,8 @@ import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from
 import { parseStream, sha256 } from "./continuity-lib.js";
 import {
   checkRecipe, checkStop, claudeTurn, codexRolloutModels, codexTurn, degradedFindings, digestChanges, executionCalls, resolveTestStages,
-  reviewerInvocations, runVerdict, setupRecordText, shellQuote, summaryCounts, ticketFindings, treeDigest, writeCalls,
-  type EvalCall, type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type StopCheck, type StopKind,
+  reviewerInvocations, runtimeExclusion, runVerdict, semanticStopLine, STOP_RULE_VERSION, stopRoute, TREE_EXCLUSION_LINE, treeCheckOutcome, setupRecordText, shellQuote, summaryCounts, ticketFindings, treeDigest, turnArgs, writeCalls,
+  type EvalCall, type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -277,14 +277,8 @@ function rolloutModels(codexHome: string, threadId: string): string[] {
 }
 
 function runTurn(o: Options, ctx: { readonly project: string; readonly env: NodeJS.ProcessEnv; readonly clientBin: string; readonly claudeArgs: readonly string[]; sessionId: string | null; first: boolean }, prompt: string): TurnResult {
-  let args: string[];
   const bin = ctx.clientBin;
-  if (o.client === "claude") {
-    args = ["-p", prompt, ...ctx.claudeArgs, ...(ctx.first ? ["--session-id", ctx.sessionId!] : ["--resume", ctx.sessionId!])];
-  } else {
-    const common = ["--json", "--model", o.model, "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"];
-    args = ctx.first ? ["exec", ...common, "-C", ctx.project, prompt] : ["exec", "resume", ctx.sessionId!, ...common, prompt];
-  }
+  const args = turnArgs({ client: o.client, model: o.model, project: ctx.project, claudeArgs: ctx.claudeArgs, sessionId: ctx.sessionId, first: ctx.first }, prompt);
   const r = spawnSync(bin, args, { cwd: ctx.project, env: ctx.env, encoding: "utf-8", timeout: o.timeoutMs, maxBuffer: 512 * 1024 * 1024 });
   const raw = r.stdout ?? "";
   const stderr = r.stderr ?? "";
@@ -374,6 +368,7 @@ async function main(): Promise<void> {
   const identity = { ...buildIdentity(), clientBin, cliLauncher: launcher, effectivePaths, codexReviewerAuth: existsSync(join(env.CODEX_HOME!, "auth.json")) };
 
   const before = treeDigest(project);
+  const exclusion = runtimeExclusion(project);
   const ctx = { project, env, clientBin, claudeArgs, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
   const turns: { label: string; prompt: string; stop: StopCheck | null; stopText: string; models: readonly string[]; exitCode: number | null; infraFailure: string | null; treeChanges: string[]; callRange: [number, number] }[] = [];
   const allCalls: EvalCall[] = [];
@@ -394,9 +389,10 @@ async function main(): Promise<void> {
     allCalls.push(...r.turn.calls);
     if (r.infraFailure) { infraFailed = true; failures.push(`${label}: infrastructure: ${r.infraFailure} (stderr in ${stem}.stderr.txt)`); }
     const stop = expected ? checkStop(r.turn, expected) : null;
-    const treeChanges = expected ? digestChanges(before, treeDigest(project)) : [];
+    const treeChanges = expected ? digestChanges(before, treeDigest(project), exclusion) : [];
     if (stop && !stop.ok) failures.push(`${label}: ${stop.reasons.join("; ")}`);
-    if (treeChanges.length > 0) failures.push(`${label}: project changed before approval: ${treeChanges.join(", ")}`);
+    const tree = expected ? treeCheckOutcome(label, treeChanges, exclusion) : null;
+    if (tree?.failure) failures.push(tree.failure);
     turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, allCalls.length] });
     return r.turn;
   };
@@ -406,7 +402,7 @@ async function main(): Promise<void> {
   let rounds = 0;
   let reviewSkipped = false;
   for (let guard = 0; guard < MAX_DISCOVERY_ROUNDS + 3 && !infraFailed; guard++) {
-    const kind = turns.at(-1)!.stop?.kind;
+    const kind = stopRoute(turns.at(-1)!.stop);
     if (kind === "package") break;
     if (kind === "review-unavailable") {
       if (o.variant !== "reviewer-unavailable") failures.push("review reported unavailable in a variant where a reviewer is available");
@@ -419,20 +415,20 @@ async function main(): Promise<void> {
     break;
   }
   if (o.variant === "reviewer-unavailable" && !reviewSkipped && !infraFailed) failures.push("the reviewer-unavailable stop never came");
-  const firstPackageTurn = turns.findIndex((x) => x.stop?.kind === "package");
-  if (!infraFailed && turns.at(-1)!.stop?.kind === "package") {
+  const firstPackageTurn = turns.findIndex((x) => stopRoute(x.stop) === "package");
+  if (!infraFailed && stopRoute(turns.at(-1)!.stop) === "package") {
     send("inspect", "Inspect details: show me the coverage map.", ["package"]);
     send("adjust", script.adjustment, ["package"]);
     t = send("approve", script.approval, null);
   }
 
   // Every proposal the owner was shown, by turn, with a hash the evidence below is linked to.
-  const proposals = turns.filter((x) => x.stop?.kind === "package").map((x) => ({ turn: x.label, sha256: sha256(x.stopText), text: x.stopText }));
+  const proposals = turns.filter((x) => stopRoute(x.stop) === "package").map((x) => ({ turn: x.label, sha256: sha256(x.stopText), text: x.stopText }));
   // Each candidate review with what it was given and returned, the turn it ran in, and the proposal it preceded.
   const turnOf = (index: number): string => turns.find((x) => index >= x.callRange[0] && index < x.callRange[1])?.label ?? "unknown";
   const candidates = reviewerInvocations(allCalls).map((r) => {
     const turnAt = turns.findIndex((x) => r.index >= x.callRange[0] && r.index < x.callRange[1]);
-    const next = turns.slice(Math.max(turnAt, 0)).find((x) => x.stop?.kind === "package");
+    const next = turns.slice(Math.max(turnAt, 0)).find((x) => stopRoute(x.stop) === "package");
     return { ...r, turn: turnOf(r.index), precedesProposal: next ? sha256(next.stopText) : null };
   });
   const beforePackage = firstPackageTurn < 0 ? allCalls.length : turns[firstPackageTurn]!.callRange[1];
@@ -444,7 +440,7 @@ async function main(): Promise<void> {
   };
   // A candidate must exist before the package was first shown, unless the owner explicitly skipped review; the judge then binds the ruling to one.
   if (!reviewSkipped && !infraFailed && !reviewEvidence.beforeFirstPackage.some((r) => r.ok)) failures.push("no successful supported reviewer invocation with a captured result before the package was shown");
-  const semanticLines: string[] = semanticLinesFor(reviewSkipped);
+  const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion);
   const bound: Record<string, number[]> = reviewSkipped ? {} : { [REVIEW_LINE]: reviewEvidence.beforeFirstPackage.filter((r) => r.ok).map((r) => r.index) };
 
   // Before approval nothing ran; after it, still no install, test, build or dev server, nested agents included.
@@ -504,10 +500,14 @@ async function main(): Promise<void> {
     runId,
     semanticLines,
     reviewSkipped,
+    harnessNormalisation: {
+      stop: STOP_RULE_VERSION,
+      treeExclusion: exclusion,
+    },
     rubric,
     briefs,
     projectFiles,
-    turns: turns.map((x) => ({ label: x.label, prompt: x.prompt, stop: x.stop?.kind ?? null, assistant: x.stopText })),
+    turns: turns.map((x) => ({ label: x.label, prompt: x.prompt, stop: x.stop?.kind ?? null, candidate: x.stop?.candidate ?? null, assistant: x.stopText, treeChanges: x.treeChanges })),
     proposals,
     reviewEvidence,
     tickets: ledgerRecords,
@@ -520,7 +520,7 @@ async function main(): Promise<void> {
   mkdirSync(recordDir, { recursive: true });
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model,
-    modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, turns, discoveryRounds: rounds, reviewSkipped, reviewEvidence,
+    modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: rounds, reviewSkipped, reviewEvidence,
     writesAfterApproval: writeCalls(allCalls).length, inspection, failures, infraFailed,
     semanticLines, bound, packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
@@ -556,6 +556,19 @@ export const ADJUSTMENT_SKIP_LINE = "the owner's explicit skip of independent re
 /** The semantic lines a run asks for: the review lines depend on whether the owner explicitly skipped review (packet.reviewSkipped). */
 export function semanticLinesFor(reviewSkipped: boolean): string[] {
   return [...SEMANTIC_LINES, ...(reviewSkipped ? [ADJUSTMENT_SKIP_LINE] : [ADJUSTMENT_REVIEW_LINE, REVIEW_LINE])];
+}
+
+/**
+ * Every line the judge must rule on for this run: the rubric, plus one per
+ * semantic stop and, when tree exclusion was disabled, the tree line. Neither
+ * of those is a mechanical result, so each needs a ruling (even with no change).
+ */
+export function runSemanticLines(reviewSkipped: boolean, turns: readonly { readonly label: string; readonly stop: Pick<StopCheck, "kind" | "candidate"> | null }[], exclusion: RuntimeExclusion): string[] {
+  return [
+    ...semanticLinesFor(reviewSkipped),
+    ...turns.filter((x) => x.stop?.kind === "semantic").map((x) => semanticStopLine(x.label, x.stop!.candidate!)),
+    ...(exclusion.source === "disabled" && turns.some((x) => x.stop !== null) ? [TREE_EXCLUSION_LINE] : []),
+  ];
 }
 
 /** The fixture's text files, split into briefs (prose documents) and everything else, each file capped for the packet. */

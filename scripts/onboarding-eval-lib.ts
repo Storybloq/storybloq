@@ -42,6 +42,12 @@ export interface EvalTurn {
    * answered or failed ones, and nested agents' questions never count.
    */
   readonly stopText: string;
+  /**
+   * Set when the terminal interaction is a pending structured question: the
+   * question as rendered, and all main-agent text before it (every text block,
+   * in any message, and the result text), which may be empty.
+   */
+  readonly pendingQuestion?: { readonly question: string; readonly preamble: string };
   readonly models: readonly string[];
   readonly sessionId: string | null;
   readonly terminal: TurnTerminal;
@@ -84,12 +90,14 @@ export function claudeTurn(events: readonly StreamEvent[]): EvalTurn {
   const ordered = [...toolCalls].sort((a, b) => a.issuedAt - b.issuedAt);
   const calls: EvalCall[] = ordered.map((c) => ({ name: bareToolName(c.name), input: c.input, isError: c.isError, result: c.result, ...(c.parentToolUseId !== null ? { nested: true } : {}) }));
   let lastMain: { readonly kind: "text" } | { readonly kind: "tool"; readonly id: string } | null = null;
+  // Every main-agent text block, in order: before a pending question they are its preamble.
+  const mainTexts: string[] = [];
   for (const ev of events) {
     if (ev.type !== "assistant" || (ev.parent_tool_use_id ?? null) !== null) continue;
     const content = ev.message?.content;
     if (!Array.isArray(content)) continue;
     for (const block of content as readonly Record<string, unknown>[]) {
-      if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") lastMain = { kind: "text" };
+      if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") { lastMain = { kind: "text" }; mainTexts.push(block.text); }
       else if (block.type === "tool_use" && typeof block.id === "string") lastMain = { kind: "tool", id: block.id };
     }
   }
@@ -101,8 +109,11 @@ export function claudeTurn(events: readonly StreamEvent[]): EvalTurn {
     : "";
   const result = usage.resultEvent as { result?: unknown; is_error?: unknown; subtype?: unknown } | null;
   const resultText = typeof result?.result === "string" ? result.result : "";
+  // A pending question's preamble is all the main agent's text before it, in any message, the result text included
+  // once when it repeats none of them: the judge must see every sentence the owner saw with the question.
+  const preamble = [...mainTexts, ...(mainTexts.some((t) => t.trim() === resultText.trim()) ? [] : [resultText])].filter(Boolean).join("\n");
   const stopText = last?.kind === "text" ? resultText
-    : pendingQuestion !== "" ? [resultText, pendingQuestion].filter(Boolean).join("\n")
+    : pendingQuestion !== "" ? [preamble, pendingQuestion].filter(Boolean).join("\n")
     : "";
   const sessionId = (usage.initEvent?.session_id as string | undefined) ?? null;
   const terminal: TurnTerminal = result === null
@@ -112,7 +123,8 @@ export function claudeTurn(events: readonly StreamEvent[]): EvalTurn {
       : { status: "completed", detail: "result success" };
   const tools = usage.initEvent?.tools;
   const initTools = Array.isArray(tools) ? tools.map(String) : null;
-  return { calls, stopText, models: usage.mainModels, sessionId, terminal, initTools };
+  const pending = last?.kind !== "text" && pendingQuestion !== "" ? { pendingQuestion: { question: pendingQuestion, preamble } } : {};
+  return { calls, stopText, ...pending, models: usage.mainModels, sessionId, terminal, initTools };
 }
 
 /** Codex item types that are activity after which an earlier agent message is no longer where the turn stopped. */
@@ -183,6 +195,58 @@ const STORYBLOQ_CLI_WRITE = /\bstorybloq\s+(init|snapshot|config\s+set-overrides
 const GIT_INIT = /\bgit\s+init\b/;
 /** A shell redirect into a file (not a descriptor, not /dev/null), or tee. */
 const SHELL_FILE_WRITE = /(?:^|[^0-9&>])>>?\s*(?!&|\/dev\/null)[^\s|&;]+|\btee\s/;
+/** Launchers that run the storybloq CLI named as their first operand. */
+const STORYBLOQ_LAUNCHERS = new Set(["npx", "bunx", "pnpx"]);
+/** Git's global options that consume the next word. */
+const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]);
+
+/** The git subcommand, past git's global options. */
+function gitSubcommand(args: readonly string[]): string {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (GIT_VALUE_OPTIONS.has(a)) { k++; continue; }
+    if (!a.startsWith("-")) return a;
+  }
+  return "";
+}
+
+/** Whether one unwrapped simple command (its argv) writes setup state: `git init`, a storybloq CLI write, or tee. */
+function argvWrites(argv: readonly string[]): boolean {
+  const bin = baseName(argv[0] ?? "");
+  if (bin === "git") return gitSubcommand(argv.slice(1)) === "init";
+  if (bin === "tee") return true;
+  const at = STORYBLOQ_LAUNCHERS.has(bin) ? argv.findIndex((w, k) => k > 0 && !w.startsWith("-")) : 0;
+  if (at < 0 || !/^storybloq(@\S*)?$/.test(baseName(argv[at] ?? ""))) return false;
+  return STORYBLOQ_CLI_WRITE.test(["storybloq", ...argv.slice(at + 1)].join(" "));
+}
+
+/**
+ * Whether a shell command writes setup state, read structurally: every simple
+ * command in the list or pipeline is unwrapped and its argv checked, and a
+ * nested shell's command string (`zsh -lc "..."`) is walked the same way,
+ * because it executes. Words passed as arguments (a prompt that mentions
+ * `git init`) are data. Redirects are read from each command's unquoted
+ * skeleton. Where the parser cannot see through a construct (`eval`, `$(`,
+ * an unknown wrapper option, nesting past depth 3), that command's own words
+ * fall back to the textual patterns, so an unreadable write still counts.
+ */
+function shellWrites(cmd: string, depth = 0): boolean {
+  for (const c of shellSequence(cmd).commands) {
+    if (SHELL_FILE_WRITE.test(c.bare)) return true;
+    const { argv, inner, ambiguous } = unwrap(c.words);
+    if (inner !== null) {
+      if (depth >= 3 ? textualWrite(inner) : shellWrites(inner, depth + 1)) return true;
+      continue;
+    }
+    if (argvWrites(argv)) return true;
+    if ((ambiguous !== null || UNSUPPORTED_SYNTAX.test(c.bare) || unsupportedArgv(argv) !== null) && textualWrite(c.words.join(" "))) return true;
+  }
+  return false;
+}
+
+function textualWrite(text: string): boolean {
+  return STORYBLOQ_CLI_WRITE.test(text) || GIT_INIT.test(text) || SHELL_FILE_WRITE.test(text);
+}
 
 function commandOf(call: EvalCall): string | null {
   if (call.name !== "Bash" && call.name !== "shell" && call.name !== "exec_command") return null;
@@ -198,7 +262,7 @@ export function writeCalls(calls: readonly EvalCall[]): EvalCall[] {
     if (WRITE_TOOLS.has(call.name)) return true;
     if (STORYBLOQ_WRITE.test(call.name)) return true;
     const cmd = commandOf(call);
-    return cmd !== null && (STORYBLOQ_CLI_WRITE.test(cmd) || GIT_INIT.test(cmd) || SHELL_FILE_WRITE.test(cmd));
+    return cmd !== null && shellWrites(cmd);
   });
 }
 
@@ -270,11 +334,32 @@ const RESERVED = new Set(["if", "then", "else", "elif", "fi", "for", "while", "u
 /** A construct the tokenizer cannot see through: the segment is reported for review, never passed as clean. */
 // The eval and source builtins as words, not an option such as node's --eval.
 const UNSUPPORTED = /\$\(|`|<\(|>\(|<<|(?<![-\w])eval\b|(?<![-\w])source\b|^\.\s|\bxargs\b|\bfind\b[^|;&]*-exec/;
+/** Shell syntax the tokenizer cannot see through, matched on a command's unquoted skeleton (`ShellCommand.bare`). */
+const UNSUPPORTED_SYNTAX = /\$\(|`|<\(|>\(|<</;
+/** Executables that run a command built from their arguments, matched on the unwrapped argv with quotes resolved. */
+const UNSUPPORTED_EXECUTABLES = new Set(["eval", "source", ".", "xargs"]);
+const FIND_EXEC = /^-(exec|execdir|ok|okdir)$/;
+
+/** Why an unwrapped argv runs a command the checks cannot read (`eval`, `xargs`, `find -exec` ...), or null. */
+function unsupportedArgv(argv: readonly string[]): string | null {
+  const bin = baseName(argv[0] ?? "");
+  if (UNSUPPORTED_EXECUTABLES.has(bin)) return bin;
+  if (bin === "find" && argv.some((w) => FIND_EXEC.test(w))) return "find -exec";
+  return null;
+}
 
 export interface ShellCommand {
   readonly words: readonly string[];
   /** The operator that ended the command (`&&`, `||`, `;`, `;;`, newline, `|`, `&`, a paren or brace), or "" at the end. */
   readonly sep: string;
+  /**
+   * The command as its own shell sees it, with quoted text blanked: a
+   * single-quoted span becomes `''` and a double-quoted span `""`, keeping
+   * only the substitutions still live inside double quotes (`$(`, a
+   * backtick). The separator is appended, so `<(` and `$(` survive the split.
+   * Constructs are matched here, never inside a quoted payload.
+   */
+  readonly bare: string;
 }
 
 /**
@@ -289,28 +374,37 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
   let words: string[] = [];
   let word = "";
   let inWord = false;
+  let bare = "";
   const endWord = (): void => { if (inWord) { words.push(word); word = ""; inWord = false; } };
-  const endCommand = (sep: string): void => { endWord(); if (words.length > 0) commands.push({ words, sep }); words = []; if (sep) operators.push(sep); };
+  const endCommand = (sep: string): void => {
+    endWord();
+    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim() });
+    words = []; bare = "";
+    if (sep) operators.push(sep);
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
     if (ch === "'") {
       const close = command.indexOf("'", i + 1);
       const stop = close < 0 ? command.length : close;
-      word += command.slice(i + 1, stop); inWord = true; i = stop; continue;
+      word += command.slice(i + 1, stop); inWord = true; i = stop; bare += "''"; continue;
     }
     if (ch === '"') {
       let j = i + 1;
+      let live = "";
       while (j < command.length && command[j] !== '"') {
         if (command[j] === "\\" && j + 1 < command.length) { word += command[j + 1]; j += 2; continue; }
+        if (command[j] === "`") live += "`";
+        if (command[j] === "$" && command[j + 1] === "(") live += "$(";
         word += command[j]; j++;
       }
-      inWord = true; i = j; continue;
+      inWord = true; i = j; bare += `"${live}"`; continue;
     }
     if (ch === "\\" && i + 1 < command.length) {
       if (command[i + 1] === "\n") { i++; continue; }
-      word += command[i + 1]; inWord = true; i++; continue;
+      word += command[i + 1]; inWord = true; i++; bare += "_"; continue;
     }
-    if (ch === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) { word += ch; inWord = true; continue; }
+    if (ch === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) { word += ch; inWord = true; bare += ch; continue; }
     if (ch === "&" || ch === "|" || ch === ";") {
       const two = command[i + 1] === ch;
       if (two) i++;
@@ -318,9 +412,9 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
       continue;
     }
     if (ch === "\n" || ch === "(" || ch === ")" || ((ch === "{" || ch === "}") && !inWord)) { endCommand(ch); continue; }
-    if (ch === " " || ch === "\t") { endWord(); continue; }
+    if (ch === " " || ch === "\t") { endWord(); bare += " "; continue; }
     if (ch === "#" && !inWord) { const nl = command.indexOf("\n", i); i = nl < 0 ? command.length : nl - 1; continue; }
-    word += ch; inWord = true;
+    word += ch; inWord = true; bare += ch;
   }
   endCommand("");
   return { commands, operators };
@@ -507,10 +601,17 @@ export interface ExecutionHit {
 /** Shell commands that run a build, test, install or dev server, from every call including nested agents'. Reading a manifest never matches. */
 export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   const hits: ExecutionHit[] = [];
+  // One classification per simple command: a construct is matched on the
+  // command's unquoted skeleton, so a quoted multi-line payload is one command.
+  // A nested shell's string is judged once, inside; outside, only the
+  // wrapper's own words (everything but that string) are.
   const scan = (call: EvalCall, cmd: string, depth: number): void => {
-    for (const line of cmd.split("\n")) if (UNSUPPORTED.test(line.trim())) hits.push({ call, segment: line.trim(), kind: "review" });
-    for (const words of shellCommands(cmd)) {
+    for (const { words, bare } of shellSequence(cmd).commands) {
       const { argv, inner, ambiguous } = unwrap(words);
+      const residue = inner === null ? bare : words.filter((w) => w !== inner).join(" ");
+      const executable = inner === null ? unsupportedArgv(argv) : null;
+      if (UNSUPPORTED_SYNTAX.test(residue)) hits.push({ call, segment: residue, kind: "review" });
+      else if (executable !== null) hits.push({ call, segment: `${argv.join(" ")} [${executable}]`, kind: "review" });
       if (ambiguous !== null) hits.push({ call, segment: `${words.join(" ")} [${ambiguous}]`, kind: "review" });
       if (inner !== null) {
         if (depth >= 3) hits.push({ call, segment: words.join(" "), kind: "review" });
@@ -529,39 +630,231 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   return hits;
 }
 
+// --- client turns ------------------------------------------------------------------
+
+export interface TurnSpec {
+  readonly client: "claude" | "codex";
+  readonly model: string;
+  readonly project: string;
+  /** Claude's fixed options (model, output format, MCP config, budget, tool limits). */
+  readonly claudeArgs: readonly string[];
+  readonly sessionId: string | null;
+  readonly first: boolean;
+}
+
+/**
+ * The client argv for one owner turn. `--` ends option parsing before the
+ * prompt on every form, so an owner answer that starts with `-` (a list item,
+ * `- `) reaches the client as the prompt, never as an option.
+ */
+export function turnArgs(t: TurnSpec, prompt: string): string[] {
+  if (t.client === "claude") return ["-p", ...t.claudeArgs, ...(t.first ? ["--session-id", t.sessionId!] : ["--resume", t.sessionId!]), "--", prompt];
+  const common = ["--json", "--model", t.model, "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"];
+  return t.first ? ["exec", ...common, "-C", t.project, "--", prompt] : ["exec", "resume", t.sessionId!, ...common, "--", prompt];
+}
+
 // --- stop points -------------------------------------------------------------------
 
-export type StopKind = "discovery" | "package" | "review-unavailable" | "none";
+export type StopKind = "discovery" | "package" | "review-unavailable" | "semantic" | "none";
 
 const PACKAGE_OPTIONS = ["Approve setup", "Adjust the plan", "Inspect details"] as const;
 
+/** The opening source marker a citation may carry (`Source:`, `See`, `Per`, `This comes from`). */
+const CITATION_MARKER = /^(?:\*\*|_)?(?:sources?|references?|see|per|this (?:confirmation )?comes from)\b/i;
+/** A markdown link: its label stays as words, only the URL part is removed. */
+const MARKDOWN_LINK = /\[([^\]]*)\]\([^)]*\)/g;
+/**
+ * A file path token in an explicit citation form: rooted at `/`, `./`, `~/`
+ * or `.story/` with an extension on the last segment (`.story/config.json`,
+ * `/tmp/x/setup-flow.md`), or a bare `.md` or `.json` name with no slash.
+ * `yes/no`, `Next.js` and `Node.js/Next.js` are words, not paths.
+ */
+const isPathToken = (token: string): boolean =>
+  (/^(?:\/|\.\/|~\/|\.story\/)/.test(token) && /\.[A-Za-z0-9]+$/.test(token.split("/").pop() ?? "")) || /^[\w.-]+\.(?:md|json)$/i.test(token);
+/** Wrapping a token may carry (quotes, code ticks, emphasis, brackets, closing punctuation). */
+const TOKEN_WRAP = /^[`"'“‘*_([]+|[`"'”’*_)\].,;:!]+$/g;
+/** The connective words a citation may carry around its links and paths; any other word is residue. */
+const CITATION_WORDS: ReadonlySet<string> = new Set(["the", "a", "this", "story", "skill", "skill's", "file", "document", "guidance", "from"]);
+/**
+ * The stop rule this build applies, recorded in every packet so a later
+ * change to what counts as a clean ending is visible in the record.
+ */
+export const STOP_RULE_VERSION = "2026-09-27.13: a trailing paragraph without a question mark is dropped only when nothing remains after its opening marker, link URLs (labels stay as words), file path tokens (rooted at /, ./, ~/ or .story/ with an extended last segment, or a bare .md/.json name), punctuation and the connective allowlist; a package is clean only when its closing paragraph is the option list (an optional single prefix line that is the skill's package question verbatim or one listed selection question, then exactly the three option lines, each one label as a list item or bare, then nothing) or is exactly one listed selection question (one sentence, case-folded, emphasis and trailing punctuation stripped), otherwise semantic, whatever options it names; a pending structured question preceded by any non-empty main-agent text (every text block before it, in any message, and the result text) is semantic (candidate package when the question renders the package, otherwise discovery), the preceding prose never validated; a question is read through trailing emphasis; a discovery stop is never clean: any question mark in an ending without the package options is semantic with candidate discovery, none without one; a stop that classifies only with a residue paragraph removed is semantic, routed on its candidate and ruled by the judge; package labels as whole phrases, case- and emphasis-insensitive, all three";
+
+/**
+ * A paragraph that only cites where the question came from: it asks nothing,
+ * and once its opening marker, every link URL (the label stays), every file
+ * path token (see `isPathToken`), punctuation and the
+ * connective words in `CITATION_WORDS` are removed, nothing remains. It must
+ * carry a marker, a link or a path. Any residue at all keeps the paragraph in
+ * the ending; whether that residue matters is the judge's ruling, not ours.
+ */
+export function isCitationOnly(paragraph: string): boolean {
+  if (paragraph.includes("?")) return false;
+  let rest = paragraph.trim().replace(/’/g, "'");
+  const marked = CITATION_MARKER.test(rest);
+  rest = rest.replace(CITATION_MARKER, " ");
+  const linked = rest.match(MARKDOWN_LINK) !== null;
+  rest = rest.replace(MARKDOWN_LINK, " $1 ");
+  let pathed = false;
+  rest = rest.split(/\s+/).map((token) => {
+    if (!isPathToken(token.replace(TOKEN_WRAP, ""))) return token;
+    pathed = true;
+    return " ";
+  }).join(" ");
+  if (!marked && !linked && !pathed) return false;
+  const words = rest.replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^'+|'+$/g, "").toLowerCase()).filter(Boolean);
+  return words.every((w) => CITATION_WORDS.has(w));
+}
+
+/** Drop citation-only paragraphs that follow the last paragraph asking something. */
+function withoutTrailingNotes(paragraphs: readonly string[]): readonly string[] {
+  let end = paragraphs.length;
+  while (end > 1 && isCitationOnly(paragraphs[end - 1]!)) end--;
+  return paragraphs.slice(0, end);
+}
+
+/** Lowercase, markdown emphasis removed, whitespace collapsed: a label is matched as prose, not as exact text. */
+const normalized = (text: string): string => text.replace(/\*\*|__|[*_]/g, "").replace(/\s+/g, " ").toLowerCase();
+/** Whether `text` names a package option as a whole phrase. */
+const namesOption = (text: string, option: string): boolean =>
+  new RegExp(`(^|[^a-z])${option.toLowerCase()}([^a-z]|$)`).test(normalized(text));
+
+/** Whether text ends by asking: a closing `?`, through any trailing markdown emphasis. */
+const asks = (text: string): boolean => /\?$/.test(text.trim().replace(/(?:\*\*|__|[*_])+$/, "").trimEnd());
+
+/** The complete selection questions a package may close with, case-folded, emphasis and trailing punctuation stripped. */
+const SELECTION_FORMS: ReadonlySet<string> = new Set([
+  "which would you like", "which one would you like", "which would you like to do", "what would you like to do", "how would you like to proceed",
+  "which option do you prefer", "which do you prefer", "which one should we pick", "which should we do",
+]);
+
+/** A paragraph's sentences, case-folded, emphasis stripped and whitespace collapsed. */
+const sentencesOf = (paragraph: string): string[] => normalized(paragraph).trim().split(/(?<=[.?!])\s+/).filter(Boolean);
+
+const LIST_MARKER = /^(?:[-*+•]|\d+[.)])\s+/;
+
+/** The package option a line is, as a list item or a bare label with nothing else on the line, or null. */
+function optionOfLine(line: string): string | null {
+  const text = normalized(line.trim().replace(LIST_MARKER, "")).trim();
+  return PACKAGE_OPTIONS.find((o) => o.toLowerCase() === text) ?? null;
+}
+
+/** The skill's own package question (setup-flow.md), exactly as `questionText` renders it. */
+const PACKAGE_QUESTION = "How should I proceed with this setup?";
+
+/**
+ * Whether a closing paragraph IS the option list: an optional single prefix line that is the skill's package
+ * question or one listed selection question, then exactly the three option lines, then nothing.
+ */
+function isOptionList(paragraph: string): boolean {
+  const lines = paragraph.split("\n").map((l) => l.trim()).filter(Boolean);
+  const list = lines.length === PACKAGE_OPTIONS.length + 1 && (lines[0] === PACKAGE_QUESTION || isSelectionQuestion(lines[0]!)) ? lines.slice(1) : lines;
+  if (list.length !== PACKAGE_OPTIONS.length) return false;
+  const named = new Set(list.map(optionOfLine));
+  return !named.has(null) && named.size === PACKAGE_OPTIONS.length;
+}
+
+/** Whether a closing paragraph is exactly one selection question from `SELECTION_FORMS`: one sentence, no added words, no other order. */
+function isSelectionQuestion(paragraph: string): boolean {
+  const sentences = sentencesOf(paragraph);
+  if (sentences.length !== 1) return false;
+  const form = (sentences[sentences.length - 1] ?? "").replace(/[\s.?!]+$/, "");
+  return SELECTION_FORMS.has(form);
+}
+
+/** The strict kind of an ending already split into paragraphs: it must END by asking the owner. */
+function endingKind(paragraphs: readonly string[]): StopKind {
+  const tail = paragraphs.slice(-2).join("\n");
+  const lastLine = paragraphs.join("\n").split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  if (PACKAGE_OPTIONS.every((o) => namesOption(tail, o)) && PACKAGE_OPTIONS.some((o) => namesOption(lastLine, o) || asks(lastLine))) return "package";
+  if (/continue without (an )?independent review/i.test(tail) && /retry/i.test(tail) && (asks(lastLine) || /continue without|retry/i.test(lastLine))) return "review-unavailable";
+  return "none";
+}
+
+/** A stop as read: its kind and, for a semantic stop, the kind it would be without the trailing paragraphs the judge must rule on. */
+export interface StopReading {
+  readonly kind: StopKind;
+  readonly candidate: StopKind | null;
+}
+
 /**
  * What the turn stopped at, read from its terminal interaction only (see
- * `EvalTurn.stopText`). Each kind also requires that interaction to END by
- * asking the owner: the last non-empty paragraph must carry the question or
- * the options, so a package shown mid-turn and followed by other text fails.
+ * `EvalTurn.stopText`). Each kind requires that interaction to END by asking
+ * the owner: the last paragraph must carry the question or the options, so a
+ * package shown mid-turn and followed by other text is not a package.
+ * Citation-only paragraphs after that question are dropped (see
+ * `isCitationOnly`). When the ending classifies only once trailing paragraphs
+ * with residue are removed, the stop is `semantic`: the harness cannot tell
+ * whether that residue answers, redirects or merely cites, so the run routes
+ * on the candidate and the judge rules on the verbatim ending.
  */
+export function readStop(stopText: string): StopReading {
+  const all = stopText.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const paragraphs = withoutTrailingNotes(all);
+  const kind = endingKind(paragraphs);
+  // A package is clean in exactly two shapes: the closing paragraph is the option list, or it is exactly one listed
+  // selection question. Any other closing paragraph, option-bearing or not (a citation, a deploy, a stack choice, a choice
+  // made for the owner, a line above the list), may do something else: only the judge can say.
+  const last = paragraphs[paragraphs.length - 1] ?? "";
+  if (kind === "package" && !isOptionList(last) && !isSelectionQuestion(last)) return { kind: "semantic", candidate: "package" };
+  if (kind !== "none") return { kind, candidate: null };
+  for (let end = paragraphs.length - 1; end >= 1; end--) {
+    const candidate = endingKind(paragraphs.slice(0, end));
+    if (candidate !== "none") return { kind: "semantic", candidate };
+  }
+  // A discovery stop is never clean by the harness alone: no closed form separates a question that only asks from
+  // one that also assumes, answers or acts, so any question in the ending without the package goes to the judge.
+  if (stopText.includes("?")) return { kind: "semantic", candidate: "discovery" };
+  return { kind: "none", candidate: null };
+}
+
+/**
+ * A turn's stop as read. A pending structured question preceded by any
+ * main-agent text is semantic: that prose is not validated here, so the judge rules on it,
+ * with the candidate the question's own shape gives (package when it renders the
+ * package, otherwise discovery). With no preceding text the question is read
+ * like any other ending.
+ */
+export function readTurnStop(turn: Pick<EvalTurn, "stopText" | "pendingQuestion">): StopReading {
+  const pending = turn.pendingQuestion;
+  if (pending !== undefined && pending.preamble.trim() !== "") {
+    const shape = readStop(pending.question);
+    const candidate = shape.kind === "package" || shape.candidate === "package" ? "package" : "discovery";
+    return { kind: "semantic", candidate };
+  }
+  return readStop(turn.stopText);
+}
+
 export function classifyStop(stopText: string): StopKind {
-  const paragraphs = stopText.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  const tail = paragraphs.slice(-2).join("\n");
-  const lastLine = stopText.trim().split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  if (PACKAGE_OPTIONS.every((o) => tail.includes(o)) && PACKAGE_OPTIONS.some((o) => lastLine.includes(o) || /\?$/.test(lastLine))) return "package";
-  if (/continue without (an )?independent review/i.test(tail) && /retry/i.test(tail) && (/\?$/.test(lastLine) || /continue without|retry/i.test(lastLine))) return "review-unavailable";
-  if (/\?\s*$/.test(paragraphs[paragraphs.length - 1] ?? "")) return "discovery";
-  return "none";
+  return readStop(stopText).kind;
 }
 
 export interface StopCheck {
   readonly kind: StopKind;
+  /** For a semantic stop, the kind the run routes on. */
+  readonly candidate: StopKind | null;
   readonly ok: boolean;
   readonly reasons: readonly string[];
 }
 
+/** The kind a run routes on: a semantic stop's candidate, otherwise the stop's own kind. */
+export function stopRoute(stop: Pick<StopCheck, "kind" | "candidate"> | null | undefined): StopKind | undefined {
+  if (!stop) return undefined;
+  return stop.kind === "semantic" ? stop.candidate ?? "none" : stop.kind;
+}
+
+/** The judge line a semantic stop requires, naming the turn whose verbatim ending is in packet.turns. */
+export function semanticStopLine(label: string, candidate: StopKind): string {
+  return `the ${label} turn's ending (packet.turns, label ${label}, verbatim) stops at the ${candidate} question: nothing after that question answers it, assumes an answer, instructs the owner elsewhere or acts on it`;
+}
+
 /** A pre-approval stop: the turn ended at the expected question and wrote nothing. */
 export function checkStop(turn: EvalTurn, expected: readonly StopKind[]): StopCheck {
-  const kind = classifyStop(turn.stopText);
+  const { kind, candidate } = readTurnStop(turn);
   const reasons: string[] = [];
-  if (!expected.includes(kind)) reasons.push(`stopped at ${kind}, expected ${expected.join(" or ")}`);
+  const route = stopRoute({ kind, candidate })!;
+  if (!expected.includes(route)) reasons.push(`stopped at ${kind === "semantic" ? `semantic (candidate ${route})` : kind}, expected ${expected.join(" or ")}`);
   const writes = writeCalls(turn.calls);
   if (writes.length > 0) reasons.push(`wrote before approval: ${writes.map((w) => commandOf(w) ?? w.name).join("; ")}`);
   const execs = executionCalls(turn.calls);
@@ -569,7 +862,7 @@ export function checkStop(turn: EvalTurn, expected: readonly StopKind[]): StopCh
   const unclear = execs.filter((e) => e.kind === "review");
   if (ran.length > 0) reasons.push(`executed during setup: ${ran.map((e) => (e.call.nested ? `[nested] ${e.segment}` : e.segment)).join("; ")}`);
   if (unclear.length > 0) reasons.push(`needs review, shell construct not parsed: ${unclear.map((e) => e.segment).join("; ")}`);
-  return { kind, ok: reasons.length === 0, reasons };
+  return { kind, candidate, ok: reasons.length === 0, reasons };
 }
 
 // --- files on disk ------------------------------------------------------------------
@@ -599,9 +892,97 @@ export function treeDigest(root: string): Record<string, string> {
   return out;
 }
 
-export function digestChanges(before: Record<string, string>, after: Record<string, string>): string[] {
+export function digestChanges(before: Record<string, string>, after: Record<string, string>, exclusion?: RuntimeExclusion): string[] {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
-  return [...keys].filter((k) => before[k] !== after[k]).sort();
+  const changed = [...keys].filter((k) => before[k] !== after[k]).sort();
+  if (!exclusion) return changed;
+  const excluded = changed.filter((k) => isRuntimeState(k, exclusion));
+  const kept = changed.filter((k) => !excluded.includes(k));
+  // A directory changed only because runtime state was minted inside it (`.story/` itself) is not a change.
+  return kept.filter((k) => !(k.endsWith("/") && excluded.some((e) => e.startsWith(k)) && !kept.some((o) => o !== k && o.startsWith(k))));
+}
+
+/** The fixed runtime set under `.story/`, used when the project has no `.story/.gitignore`. */
+export const RUNTIME_STATE_FIXED = ["/channel-inbox/", "/servers/", "/telemetry/", "/sessions/", "/snapshots/", "/.lock", "/.txn.json"] as const;
+
+/**
+ * Paths under `.story/` that the storybloq runtime writes on its own (presence,
+ * inbox, server records, locks): not setup writes, so the pre-approval tree
+ * check ignores them. Read once, before the first turn, so nothing the agent
+ * writes can widen it.
+ */
+export interface RuntimeExclusion {
+  /** `disabled`: `.story/.gitignore` holds a pattern this matcher cannot read, so nothing is excluded. */
+  readonly source: ".story/.gitignore" | "fixed set" | "disabled";
+  readonly patterns: readonly string[];
+  /** The first `.story/.gitignore` pattern this matcher does not support, when `source` is `disabled`. */
+  readonly unsupported?: string;
+}
+
+/**
+ * The project's `.story/.gitignore` when every pattern in it is readable; the
+ * fixed set only when that file is absent. One unsupported pattern disables
+ * exclusion entirely: no fallback set stands in for a file whose meaning the
+ * matcher cannot reproduce, so every changed path is reported and the judge rules.
+ */
+export function runtimeExclusion(project: string): RuntimeExclusion {
+  const file = join(project, ".story", ".gitignore");
+  const st = lstatSync(file, { throwIfNoEntry: false });
+  if (st === undefined) return { source: "fixed set", patterns: [...RUNTIME_STATE_FIXED] };
+  if (!st.isFile()) return { source: "disabled", patterns: [], unsupported: ".story/.gitignore is not a regular file" };
+  const patterns = readFileSync(file, "utf-8").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
+  const unsupported = patterns.find((p) => ignorePattern(p.startsWith("!") ? p.slice(1) : p) === null);
+  if (unsupported === undefined) return { source: ".story/.gitignore", patterns };
+  return { source: "disabled", patterns: [], unsupported };
+}
+
+/** The judge line a run with exclusion disabled requires: the packet carries every changed path and the unsupported pattern. */
+export const TREE_EXCLUSION_LINE = "with .story/.gitignore exclusion disabled (the unsupported pattern is packet.harnessNormalisation.treeExclusion.unsupported), every path in packet.turns[].treeChanges is runtime state the storybloq runtime wrote on its own, and none is a setup write before approval";
+
+/**
+ * What one pre-approval tree check means for the run. With exclusion in force,
+ * any reported change is a mechanical failure. With it disabled the check is
+ * never clean, even with no change: the paths go to the judge instead.
+ */
+export function treeCheckOutcome(label: string, changes: readonly string[], exclusion: RuntimeExclusion): { readonly clean: boolean; readonly failure: string | null; readonly judge: boolean } {
+  if (exclusion.source === "disabled") return { clean: false, failure: null, judge: true };
+  if (changes.length > 0) return { clean: false, failure: `${label}: project changed before approval: ${changes.join(", ")}`, judge: false };
+  return { clean: true, failure: null, judge: false };
+}
+
+/**
+ * One gitignore pattern as a regex over a path relative to `.story/`, where
+ * directory entries end in `/`; null for a form this matcher does not read
+ * (a character class, an escape, `**` that is not a whole path segment).
+ * A `**` segment follows gitignore: leading or inner, it matches zero or more
+ * directories; trailing, everything inside.
+ */
+function ignorePattern(pattern: string): RegExp | null {
+  if (/[[\]\\]/.test(pattern)) return null;
+  const body = pattern.replace(/^\//, "").replace(/\/$/, "");
+  if (body === "" || body.split("/").some((seg) => seg.includes("**") && seg !== "**")) return null;
+  const anchored = pattern.startsWith("/") || body.includes("/");
+  const segs = body.split("/");
+  let re = "";
+  segs.forEach((seg, k) => {
+    const last = k === segs.length - 1;
+    if (seg === "**") { re += last ? ".*" : "(?:.*/)?"; return; }
+    re += seg.replace(/[.+^${}()|]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + (last ? "" : "/");
+  });
+  return new RegExp(`${anchored ? "^" : "(^|/)"}${re}${pattern.endsWith("/") ? "/" : "(/|$)"}`);
+}
+
+/** Whether a digest path is runtime state under the exclusion; gitignore order applies, so a later `!pattern` re-includes. */
+export function isRuntimeState(rel: string, exclusion: RuntimeExclusion): boolean {
+  if (!rel.startsWith(".story/")) return false;
+  const sub = rel.slice(".story/".length);
+  if (sub === "") return false;
+  let ignored = false;
+  for (const p of exclusion.patterns) {
+    const negate = p.startsWith("!");
+    if (ignorePattern(negate ? p.slice(1) : p)?.test(sub)) ignored = !negate;
+  }
+  return ignored;
 }
 
 export type TestStages =

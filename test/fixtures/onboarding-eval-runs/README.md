@@ -36,5 +36,28 @@ double quotes) and every other quoted operand as data. Past nesting depth 3
 it reads the text unblanked, which fails closed: a quoted prompt that deep
 counts as a write (`WRITE_RULE_VERSION`, named in the packet as
 `harnessNormalisation.write`).
+- `run7-review-command.json`: non-npm-tests run 7 (third batch), the
+  agent's reviewer launch: a read-only `codex exec` whose schema comes from
+  `3<<'SCHEMA'` and whose prompt comes from `<<'REVIEW_PROMPT'`. The prompt's
+  prose carries `count > minimum count+1`, which the parser once split into
+  its own command and read as a redirect. Under a quoted delimiter the body
+  is data: it must read as no write and as review only.
+- `run6-interpreter-heredoc.json`: mixed-stack run 6 (third batch), a
+  `python3 - <<'PY'` script that makes its ledger writes through
+  `subprocess`. The harness cannot read that script, so it is review, never
+  clean, and its writes are not counted: `writesAfterApproval` is a lower
+  bound whenever a construct under review carries the writes.
+- Here-document delimiters (a regression class, not a fixture). Only a
+  simple delimiter word is modelled: `[A-Za-z0-9_]+` bare, or wrapped whole
+  in one pair of single or double quotes, or behind one backslash. Any other
+  word (a backslash or quote inside it such as `"E\\OF"`, mixed quoting such
+  as `'E'"OF"`, a continuation such as `EO\` then a newline, `$`, a carriage
+  return from a CRLF line) needs the shell's quote removal to find its end.
+  It is complex: everything after it is read unblanked, fail-closed, and the
+  command is review ("complex here-document delimiter"). Earlier readers
+  re-implemented quote removal and failed open three ways: a CRLF delimiter
+  that never matched its line, an escaped backslash inside double quotes,
+  and a continuation read as quoting. Every simple quoted spelling carries a
+  termination proof: a write after its delimiter line still counts.
 - `run4-tree-changes.json`: empty-scaffold run 4, the runtime state the
   storybloq server minted under `.story/` before approval.

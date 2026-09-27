@@ -703,6 +703,70 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     expect(writeCalls([bash("codex exec 'plan: git init, then storybloq init > log' <<'X'\n{}\nX")])).toEqual([]);
   });
 
+  it("reads the third batch's run 7 reviewer launch as no write and review only: a quoted here-document body is data (run 7)", () => {
+    const run7 = verbatim<string>("run7-review-command.json");
+    expect(run7).toContain("3<<'SCHEMA' <<'REVIEW_PROMPT'");
+    expect(run7).toContain("count > minimum count+1");
+    expect(run7.startsWith("/bin/zsh -lc \"")).toBe(true);
+    expect(writeCalls([bash(run7)])).toEqual([]);
+    expect(executionCalls([bash(run7)]).map((h) => h.kind)).toEqual(["review"]);
+    // The same launch outside its nested shell.
+    const inner = shellSequence(run7).commands[0]!.words[2]!;
+    expect(inner.startsWith("codex exec ")).toBe(true);
+    expect(writeCalls([bash(inner)])).toEqual([]);
+    // A quoted delimiter in every spelling: the shell never expands the body.
+    for (const cmd of [
+      "cat <<'EOF'\ncount > minimum\nEOF", "cat <<\"EOF\"\ncount > minimum\nEOF", "cat <<\\EOF\ncount > minimum\nEOF", "cat 3<<'EOF'\ncount > minimum\nEOF",
+      "cat <<-'EOF'\n\tcount > minimum\n\tEOF", "codex exec - 3<<'S' <<'P'\n{}\nS\ncount > minimum\nP",
+      "codex exec - <<'P' | head -5\nsay git init > x\nP", "zsh -lc \"codex exec - <<'P'\ncount > minimum\nP\"",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+    }
+    // Only a simple delimiter word is modelled. Any other word needs the shell's quote removal, so its end is not known:
+    // everything after it is read, fail-closed, and the command is review with that reason.
+    for (const cmd of [
+      "cat <<\"E\\\\OF\"\ntext\nE\\OF\ngit init", "cat <<EO\\\nF\n$(git init)\nEOF", "cat <<'E'\"OF\"\ncount > minimum\nEOF",
+      "cat <<'EOF'\r\ncount > minimum\r\nEOF\r\n", "cat <<\\\\EOF\nx > y\n\\EOF", "cat <<'E OF'\nx > y\nE OF", "cat <<$X\nx > y\n$X", "cat <<'E-F'\nx > y\nE-F",
+      // The end of a complex body is not guessed: a blank line, then a quoted here-document the real terminator sits inside.
+      "cat <<\"E\\\\OF\"\n\ncat <<'X'\nE\\OF\ngit init\nX",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+      expect(reviews(cmd), cmd).toContainEqual(expect.stringMatching(/\[complex here-document delimiter\]$/));
+    }
+    for (const cmd of ["cat <<'EOF'\nx\nEOF", "cat <<EOF\nx\nEOF", "cat <<\\EOF\nx\nEOF", "cat <<\"EOF\"\nx\nEOF", "cat <<-EOF_2\nx\nEOF_2"]) {
+      expect(reviews(cmd).join(" "), cmd).not.toContain("complex here-document delimiter");
+    }
+    // An unquoted delimiter leaves the body read, fail-closed, and a command after the delimiter line is a command.
+    for (const cmd of [
+      "cat <<EOF\ncount > minimum\nEOF", "cat <<-EOF\n\tcount > minimum\n\tEOF", "cat 3<<EOF\ncount > minimum\nEOF", "cat <<EOF\n$(git init)\nEOF",
+      "cat <<'EOF'\nx\nEOF\necho hi > notes.md", "codex exec - 3<<'S' <<'P'\n{}\nS\ncount > minimum\nP\ngit init", "cat <<'A' <<B\nsafe > a\nA\nunsafe > b\nB",
+      "zsh -lc \"cat <<EOF\ncount > minimum\nEOF\"",
+      // Every simple quoted spelling ends at its delimiter line, and a complex one reads everything after it: the command after it is read.
+      "cat <<\"EOF\"\ncount > minimum\nEOF\ngit init", "cat <<\\EOF\ncount > minimum\nEOF\ngit init", "cat 3<<'EOF'\ncount > minimum\nEOF\ngit init",
+      "cat <<-'EOF'\n\tcount > minimum\n\tEOF\ngit init", "cat <<'E'\"OF\"\ncount > minimum\nEOF\ngit init", "cat <<'EOF'\r\ncount > minimum\r\nEOF\r\ngit init",
+      // A here-string is not a here-document, and an arithmetic shift that reads as one leaves the rest read, fail-closed.
+      "cat <<< 'EOF'\ngit init", "echo $((1 << 2))\ngit init", "echo $((1<<2))\ngit init",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    }
+  });
+
+  it("reads a here-document an interpreter runs as review, never clean, quoted delimiter or not (run 6)", () => {
+    const run6 = verbatim<string>("run6-interpreter-heredoc.json");
+    expect(run6).toContain("python3 - <<'PY'");
+    expect(run6).toContain("run('phase','create'");
+    // Its ledger writes run inside the script: they are not counted, so the count is a lower bound, and the call is review.
+    expect(writeCalls([bash(run6)])).toEqual([]);
+    expect(reviews(run6)).toEqual([expect.stringMatching(/\[heredoc into python3\]$/)]);
+    for (const bin of ["python3", "python", "python3.11", "/usr/bin/python3", "node", "sh", "bash", "zsh", "dash", "ksh", "perl", "ruby"]) {
+      for (const cmd of [`${bin} - <<'EOF'\nopen('x', 'w').write('y')\nEOF`, `${bin} <<EOF\nwrite it\nEOF`, `cd x && ${bin} - 3<<"EOF"\nrun\nEOF`]) {
+        expect(reviews(cmd), cmd).toContainEqual(expect.stringMatching(/\[heredoc into [\w.]+\]$/));
+      }
+    }
+    // A reader that is not an interpreter stays plain review, never named as a script.
+    expect(reviews("cat <<'EOF'\nx\nEOF")).toEqual(["cat <<''"]);
+  });
+
   it("walks the quoted text the shell runs as code: eval operands and double-quoted substitutions, never source operands", () => {
     for (const cmd of ["eval 'git init'", "\"eval\" \"git init\"", "echo \"$(git init)\"", "echo \"`git init`\"", "zsh -lc 'eval \"storybloq init\"'", "echo \"$(cd x && (git init))\""]) {
       expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
@@ -713,7 +777,9 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
   });
 
   it("names the write rule, and its fail-closed depth, beside the stop rule", () => {
-    expect(WRITE_RULE_VERSION).toMatch(/^2026-09-27\.5:/);
+    expect(WRITE_RULE_VERSION).toMatch(/^2026-09-27\.7:/);
+    expect(WRITE_RULE_VERSION).toContain("is complex: its end is not known, so everything after it is read unblanked, fail-closed");
+    expect(WRITE_RULE_VERSION).toContain("writesAfterApproval is a lower bound whenever a needs-review construct carries the writes");
     expect(WRITE_RULE_VERSION).toContain("past nesting depth 3 the text is read unblanked, fail-closed");
     const prompt = "codex exec 'the plan runs git init'";
     const nest = (cmd: string, n: number): string => (n === 0 ? cmd : nest(`zsh -c ${shellQuote(cmd)}`, n - 1));

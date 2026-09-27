@@ -356,7 +356,7 @@ function commandOf(call: EvalCall): string | null {
  * The write rule the packet names beside the stop rule, so a reader of a
  * record knows which classifier produced its writes.
  */
-export const WRITE_RULE_VERSION = "2026-09-27.5: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init`, a storybloq CLI write or tee, or whose unquoted skeleton redirects into a file; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write";
+export const WRITE_RULE_VERSION = "2026-09-27.7: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init`, a storybloq CLI write or tee, or whose unquoted skeleton redirects into a file; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write; a here-document's body is never read as commands, and only a simple delimiter word is modelled ([A-Za-z0-9_]+ bare, or wrapped whole in one pair of single quotes or of double quotes, or behind one backslash, any fd prefix, <<- included): under a simple quoted one the shell never expands the body, so it is data, and under a simple unquoted one it is read unblanked, fail-closed; any other delimiter word (a backslash or quote inside it, mixed quoting, a continuation, $, a backtick, a carriage return, any non-word character) is complex: its end is not known, so everything after it is read unblanked, fail-closed, and the command is needs-review (complex here-document delimiter); a here-document an interpreter reads (python, node, sh, bash, zsh, dash, ksh, perl, ruby), quoted delimiter or not, is a script the harness cannot read, so it is needs-review, never clean, and its writes are not counted: writesAfterApproval is a lower bound whenever a needs-review construct carries the writes";
 
 /** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, shell redirects, `git init`. */
 export function writeCalls(calls: readonly EvalCall[]): EvalCall[] {
@@ -438,6 +438,8 @@ const RESERVED = new Set(["if", "then", "else", "elif", "fi", "for", "while", "u
 const UNSUPPORTED = /\$\(|`|<\(|>\(|<<|(?<![-\w])eval\b|(?<![-\w])source\b|^\.\s|\bxargs\b|\bfind\b[^|;&]*-exec/;
 /** Shell syntax the tokenizer cannot see through, matched on a command's unquoted skeleton (`ShellCommand.bare`). */
 const UNSUPPORTED_SYNTAX = /\$\(|`|<\(|>\(|<</;
+/** Interpreters that run a here-document as a script (`python3 - <<'PY'`, `bash <<EOF`). */
+const HEREDOC_INTERPRETERS = /^(python[0-9.]*|node|sh|bash|zsh|dash|ksh|perl|ruby)$/;
 /** Executables that run a command built from their arguments, matched on the unwrapped argv with quotes resolved. */
 const UNSUPPORTED_EXECUTABLES = new Set(["eval", "source", ".", "xargs"]);
 const FIND_EXEC = /^-(exec|execdir|ok|okdir)$/;
@@ -467,13 +469,62 @@ export interface ShellCommand {
    * a backtick span): quoted text the shell runs, so it is code, not data.
    */
   readonly live: readonly string[];
+  /** The command reads a here-document (`<<`, `3<<-`), whatever its delimiter. */
+  readonly heredoc: boolean;
+  /** One of its here-documents has a delimiter word outside the simple forms, so its end is not known. */
+  readonly heredocComplex: boolean;
+}
+
+/**
+ * A here-document's delimiter, read from the word after `<<` or `<<-`. Only a
+ * simple word is modelled: `[A-Za-z0-9_]+` bare, or wrapped whole in one pair
+ * of single or double quotes, or behind one backslash. Every other word is
+ * complex (a backslash or quote inside it, mixed quoting, a continuation, `$`,
+ * any other character), because reading it needs the shell's quote removal.
+ */
+interface Heredoc {
+  readonly delimiter: string;
+  readonly form: "unquoted" | "quoted" | "complex";
+  /** `<<-`: leading tabs are stripped from each body line, the delimiter line included. */
+  readonly strip: boolean;
+  /** The index in `commands` of the command that reads it. */
+  readonly at: number;
+}
+
+/** The characters that end a shell word: a blank, a newline or a metacharacter. */
+const WORD_END = "(?=[ \\t\\n;|&<>()]|$)";
+const SIMPLE_DELIMITERS: readonly { readonly form: "unquoted" | "quoted"; readonly re: RegExp }[] = [
+  { form: "unquoted", re: new RegExp(`^([A-Za-z0-9_]+)${WORD_END}`) },
+  { form: "quoted", re: new RegExp(`^'([A-Za-z0-9_]+)'${WORD_END}`) },
+  { form: "quoted", re: new RegExp(`^"([A-Za-z0-9_]+)"${WORD_END}`) },
+  { form: "quoted", re: new RegExp(`^\\\\([A-Za-z0-9_]+)${WORD_END}`) },
+];
+
+/** The delimiter word that starts at `from` (after `<<`): its form, and for a simple word the text of its terminator line. */
+function heredocDelimiter(command: string, from: number): Omit<Heredoc, "at"> {
+  let k = from;
+  const strip = command[k] === "-";
+  if (strip) k++;
+  while (command[k] === " " || command[k] === "\t") k++;
+  const rest = command.slice(k);
+  for (const { form, re } of SIMPLE_DELIMITERS) {
+    const m = re.exec(rest);
+    if (m !== null) return { delimiter: m[1]!, form, strip };
+  }
+  return { delimiter: "", form: "complex", strip };
 }
 
 /**
  * Split one shell command into simple commands, honouring quotes, and report
  * every operator seen (including a bare `(` that ends no command), so a caller
  * can refuse structures it does not model. A `&` inside a redirect (`2>&1`,
- * `&>file`) is part of the word.
+ * `&>file`) is part of the word. A here-document's body, the lines after the
+ * newline that ends its command, is never split into commands: under a simple
+ * quoted delimiter (`<<'X'`, `<<"X"`, `<<\X`) the shell never expands it, so it
+ * is data and is dropped; under an unquoted one it can carry `$(...)`, so it is
+ * appended to its command's skeleton unblanked, fail-closed. Under a complex
+ * delimiter its end is not known, so everything after it stays on the
+ * skeleton, fail-closed, and the command is flagged.
  */
 export function shellSequence(command: string): { readonly commands: readonly ShellCommand[]; readonly operators: readonly string[] } {
   const commands: ShellCommand[] = [];
@@ -483,15 +534,44 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
   let inWord = false;
   let bare = "";
   let live: string[] = [];
+  let heredoc = false;
+  let heredocComplex = false;
+  let pending: Heredoc[] = [];
   const endWord = (): void => { if (inWord) { words.push(word); word = ""; inWord = false; } };
   const endCommand = (sep: string): void => {
     endWord();
-    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim(), live });
-    words = []; bare = ""; live = [];
+    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim(), live, heredoc, heredocComplex });
+    words = []; bare = ""; live = []; heredoc = false; heredocComplex = false;
     if (sep) operators.push(sep);
+  };
+  /** Consume the pending bodies from `from`, in order; returns the index after the last one. */
+  const readBodies = (from: number): number => {
+    let pos = from;
+    for (const h of pending) {
+      const body: string[] = [];
+      if (h.form === "complex") { body.push(command.slice(pos)); pos = command.length; }
+      while (pos < command.length) {
+        const nl = command.indexOf("\n", pos);
+        const end = nl < 0 ? command.length : nl;
+        const line = command.slice(pos, end);
+        pos = end + 1;
+        if ((h.strip ? line.replace(/^\t+/, "") : line) === h.delimiter) break;
+        body.push(line);
+      }
+      const target = commands[h.at];
+      if (h.form !== "quoted" && target !== undefined) commands[h.at] = { ...target, bare: `${target.bare}\n${body.join("\n")}` };
+    }
+    pending = [];
+    return Math.min(pos, command.length);
   };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!;
+    if (ch === "<" && command[i + 1] === "<" && command[i + 2] !== "<" && command[i - 1] !== "<") {
+      const h: Heredoc = { ...heredocDelimiter(command, i + 2), at: commands.length };
+      pending.push(h);
+      heredoc = true;
+      if (h.form === "complex") heredocComplex = true;
+    }
     if (ch === "'") {
       const close = command.indexOf("'", i + 1);
       const stop = close < 0 ? command.length : close;
@@ -530,6 +610,7 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
       endCommand(two ? ch + ch : ch);
       continue;
     }
+    if (ch === "\n" && pending.length > 0) { endCommand(ch); i = readBodies(i + 1) - 1; continue; }
     if (ch === "\n" || ch === "(" || ch === ")" || ((ch === "{" || ch === "}") && !inWord)) { endCommand(ch); continue; }
     if (ch === " " || ch === "\t") { endWord(); bare += " "; continue; }
     if (ch === "#" && !inWord) { const nl = command.indexOf("\n", i); i = nl < 0 ? command.length : nl - 1; continue; }
@@ -746,11 +827,15 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   // A nested shell's string is judged once, inside; outside, only the
   // wrapper's own words (everything but that string) are.
   const scan = (call: EvalCall, cmd: string, depth: number): void => {
-    for (const { words, bare } of shellSequence(cmd).commands) {
+    for (const { words, bare, heredoc, heredocComplex } of shellSequence(cmd).commands) {
       const { argv, inner, ambiguous } = unwrap(words);
       const residue = inner === null ? bare : words.filter((w) => w !== inner).join(" ");
       const executable = inner === null ? unsupportedArgv(argv) : null;
-      if (UNSUPPORTED_SYNTAX.test(residue)) hits.push({ call, segment: residue, kind: "review" });
+      // A here-document an interpreter reads is a script the checks cannot read, quoted delimiter or not.
+      const interpreter = heredoc && inner === null && HEREDOC_INTERPRETERS.test(baseName(argv[0] ?? "")) ? baseName(argv[0]!) : null;
+      const reasons = [...(interpreter !== null ? [`heredoc into ${interpreter}`] : []), ...(heredocComplex ? ["complex here-document delimiter"] : [])];
+      if (reasons.length > 0) hits.push({ call, segment: `${residue} [${reasons.join("; ")}]`, kind: "review" });
+      else if (UNSUPPORTED_SYNTAX.test(residue)) hits.push({ call, segment: residue, kind: "review" });
       else if (executable !== null) hits.push({ call, segment: `${argv.join(" ")} [${executable}]`, kind: "review" });
       if (ambiguous !== null) hits.push({ call, segment: `${words.join(" ")} [${ambiguous}]`, kind: "review" });
       if (inner !== null) {

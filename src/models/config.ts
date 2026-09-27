@@ -214,6 +214,10 @@ export const ConfigSchema = z
       // sit unconverted (reserved) or unclaimed (assigned, no matching
       // ticket claim; always for issues per AM-b) before it is flagged.
       earmarkStaleThresholdHours: z.number().min(0).optional(),
+      // ISS-1282: `{ geminiRuling: "r-..." }`, the owner ruling under which a
+      // Gemini-observed bridge review may satisfy a gate. Permissive for the
+      // reviewEffort reason; the review stages read and validate it.
+      reviewGate: z.unknown().optional(),
     }).optional(),
     nodes: z.record(z.string(), z.unknown()).optional(),
     orchestrator: z.string().optional(),

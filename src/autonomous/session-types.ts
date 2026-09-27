@@ -1031,6 +1031,19 @@ const REVIEW_RECORD_IDENTITY_FIELDS = {
   reviewerIdentity: RecordProvenanceSchema,
   implementer: RecordProvenanceSchema,
   artifactStatus: forgiveNull(z.string()).catch(undefined),
+  // ISS-1282: present only on a bridge round the receipt gate accepted.
+  reviewGate: z.object({
+    observed: z.array(z.object({ provider: z.string(), model: z.string() })),
+    disclosure: forgiveNull(z.string()),
+  }).optional().catch(undefined),
+  // ISS-1282: bridge reports refused on this round's key before it landed.
+  // Written only when nonzero, on whatever backend the round finally used.
+  gateRefusalsBeforeAccept: forgiveNull(z.number()).catch(undefined),
+  // ISS-1282: why an agent round stood in for the bridge, when one did.
+  gateFallback: z.object({
+    reason: z.enum(["codex-unavailable", "bridge-refusals"]),
+    sessionRefusals: z.number(),
+  }).optional().catch(undefined),
 } as const;
 
 export const SessionStateSchema = z.object({
@@ -1784,6 +1797,24 @@ export const SessionStateSchema = z.object({
      * an item that had never returned an empty verdict at all.
      */
     trigger: z.string().optional(),
+  })).default([]),
+
+  /**
+   * ISS-1282: bridge review reports the guide refused because their receipt
+   * did not prove a gate-grade review (see review-gate-receipt.ts).
+   *
+   * Keyed exactly like `reviewRepairAttempts`, by the durable pending-round
+   * ordinal, so a refusal survives a crash and is counted against the round it
+   * was refused at. Read to escalate: the third refusal on a key names the
+   * agent fallback, the fifth marks codex unavailable.
+   */
+  reviewGateRefusals: z.array(z.object({
+    workItemId: z.string(),
+    kind: z.enum(["ticket", "issue"]),
+    stage: z.enum(["code", "plan"]),
+    round: z.number().int().positive(),
+    reason: z.string(),
+    at: z.string(),
   })).default([]),
 
   /**
@@ -3095,6 +3126,13 @@ export interface GuideReportInput {
    * without another schema round.
    */
   readonly reviewerTurnId?: string;
+  /**
+   * ISS-1282: a codex-bridge round's own receipts, unchecked here: one per
+   * bridge call, each with the REVIEWED line, where the call ran, and that
+   * call's `models[]` verbatim with its session id. The review stages
+   * validate them before a bridge round may count.
+   */
+  readonly reviewReceipts?: unknown;
   /** The model IMPLEMENT ran on, reported with `implementation_done`. */
   readonly implementerModel?: string;
   readonly implementerTier?: string;

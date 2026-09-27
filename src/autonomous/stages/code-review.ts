@@ -65,6 +65,7 @@ import {
   emptyVerdictParkReason,
 } from "./review-repair.js";
 import { parkCurrentTicket, parkCurrentIssue } from "./park.js";
+import { bridgeReviewRules, fallbackField, refusalsField, reviewBaseline, reviewGateField, runBridgeReceiptGate, type GateKey } from "./review-gate.js";
 import type { FullSessionState } from "../session-types.js";
 import type { WorkItemRef } from "../../core/arrangement-bounds.js";
 import { currentPointer, pointerMapUnreadable, renderGovernanceHold, runGoverningGate } from "../plan-context.js";
@@ -447,7 +448,11 @@ export class CodeReviewStage implements WorkflowStage {
     const captureDirective = [
       `Capture the diff with: ${diffCommand}`,
       "",
-      "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
+      // ISS-1282: on the bridge the old "~500 lines, same session_id" advice is
+      // what let an oversize diff review on a smaller model; the rules replace it.
+      bridgeCodex
+        ? `**IMPORTANT:** ${bridgeReviewRules("code", reviewBaseline(ctx.state))}`
+        : "**IMPORTANT:** Pass the FULL unified diff to the reviewer. For diffs over ~500 lines, use file-scoped chunks (`git diff <mergebase> -- <filepath>`) across separate calls (pass the same session_id). Do NOT summarize or truncate any individual chunk.",
     ].join("\n");
 
     // T-494: same delivery as the plan round, same fresh-from-disk rule.
@@ -667,6 +672,22 @@ export class CodeReviewStage implements WorkflowStage {
       round: repairKeyRound,
       trigger: "provenance" as const,
     } : null;
+
+    // ── ISS-1282: the bridge receipt gate ───────────────────────────────────
+    // Before the provenance gate and every sink: a refused bridge report
+    // leaves no envelope, artifact, round or repair attempt behind. Keyed by
+    // the same durable ordinal as the repair key above.
+    const gateKey: GateKey | null = repairItem
+      ? { workItemId: repairItem.id, kind: repairItem.kind, stage: "code", round: repairKeyRound }
+      : null;
+    const bridgeGate = await runBridgeReceiptGate(ctx, { stage: "code", reviewerBackend, report, key: gateKey });
+    if (bridgeGate.kind === "retry") return { action: "retry", instruction: bridgeGate.instruction };
+    const gatedReport = bridgeGate.kind === "pass" ? { ...report, ...bridgeGate.reportOverride } : report;
+    const gateFields = {
+      ...(bridgeGate.kind === "pass" ? { reviewGate: reviewGateField(bridgeGate.reviewGate) } : {}),
+      ...refusalsField(ctx.state, gateKey),
+      ...fallbackField(ctx.state, { reviewer: reviewerBackend, computedReviewer, backends }),
+    };
     const storedRisk = ctx.state.ticket?.realizedRisk ?? ctx.state.ticket?.risk;
     const risk = storedRisk == null ? "low" : normalizeRiskLevel(storedRisk, "high");
     const minRounds = effortMinRounds(effectiveReviewEffort(ctx.state, "CODE_REVIEW"), risk);
@@ -1016,7 +1037,7 @@ export class CodeReviewStage implements WorkflowStage {
       summary,
       findings: findings as unknown as readonly Record<string, unknown>[],
       arrayRound,
-      report,
+      report: gatedReport,
       effort: roundEffort,
       nowIso: new Date().toISOString(),
     });
@@ -1105,6 +1126,7 @@ export class CodeReviewStage implements WorkflowStage {
       ...(provenanceGate.kind === "unresolved"
         ? { provenanceUnresolved: provenanceGate.reasons }
         : {}),
+      ...gateFields,
       ...identityFields(identity),
     });
     const artifactResult = writeRoundArtifact(ctx, {
@@ -1137,6 +1159,7 @@ export class CodeReviewStage implements WorkflowStage {
       // ISS-950: the record and the artifact must AGREE, so the same absent-or-
       // present rule applies to both.
       ...(report.capReasons ? { capReasons: [...report.capReasons] } : {}),
+      ...gateFields,
       timestamp: new Date().toISOString(),
       ...identityFields(identity),
       artifactStatus: artifactResult.artifactStatus,

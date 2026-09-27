@@ -57,6 +57,8 @@ describe("hash classification maps", () => {
       reviewerIdentity: { source: "unknown", evidence: "none" },
       implementer: { source: "unknown", evidence: "none" },
       artifactStatus: "written",
+      reviewGate: { observed: [{ provider: "codex", model: "gpt-6-astra" }] }, gateRefusalsBeforeAccept: 1,
+      gateFallback: { reason: "bridge-refusals", sessionRefusals: 3 },
     });
     for (const key of Object.keys(populated)) {
       expect(HASH_DECISIONS.artifact[key], `unclassified artifact key: ${key}`).toBeDefined();
@@ -86,8 +88,8 @@ describe("hash classification maps", () => {
       .filter(([, d]) => d === "excluded").map(([k]) => k).sort();
     expect(excluded).toEqual([
       "artifactStatus", "backendRunId", "backendRunIdKind", "backendTurnId",
-      "durationMs", "effort", "implementer", "itemAttemptId", "normalizerVersion",
-      "reviewAttemptId", "reviewId", "reviewerIdentity", "reviewerPath", "timestamp",
+      "durationMs", "effort", "gateFallback", "gateRefusalsBeforeAccept", "implementer", "itemAttemptId", "normalizerVersion",
+      "reviewAttemptId", "reviewGate", "reviewId", "reviewerIdentity", "reviewerPath", "timestamp",
     ]);
   });
 });
@@ -109,6 +111,9 @@ describe("excluded fields do not perturb the hash", () => {
     ["backendTurnId", { backendTurnId: "turn-1" }],
     ["normalizerVersion", { normalizerVersion: 1 }],
     ["artifactStatus", { artifactStatus: "written" as const }],
+    ["reviewGate", { reviewGate: { observed: [{ provider: "gemini", model: "Gemini 3.1 Pro (High)" }], disclosure: "gemini-under-owner-ruling" } }],
+    ["gateRefusalsBeforeAccept", { gateRefusalsBeforeAccept: 4 }],
+    ["gateFallback", { gateFallback: { reason: "codex-unavailable" as const, sessionRefusals: 5 } }],
     ["reviewerIdentity", { reviewerIdentity: { model: "m", source: "explicit-pin" as const, evidence: "configured" as const } }],
     ["implementer", { implementer: { model: "n", source: "explicit-pin" as const, evidence: "configured" as const } }],
   ])("%s", (_name, patch) => {

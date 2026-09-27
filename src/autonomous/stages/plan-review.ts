@@ -48,6 +48,7 @@ import {
 import { outstandingCeilingFindings } from "./code-review-ceiling.js";
 import { buildReviewContextPacket } from "../review-context-packet.js";
 import { evaluateProvenanceGate, roundBlockerPredicate } from "../review-identity.js";
+import { bridgeReviewRules, fallbackField, refusalsField, reviewGateField, runBridgeReceiptGate, type GateKey } from "./review-gate.js";
 
 /**
  * Plan review's packet budget. Smaller than code review's because the subject
@@ -607,7 +608,7 @@ export class PlanReviewStage implements WorkflowStage {
             // The handoff, stated rather than implied: this instruction goes to
             // the IMPLEMENTING agent, which then composes the backend request.
             // Saying "with the plan content" alone left the packet behind.
-            ? "Call `review_plan` MCP tool, passing BOTH the context above and the full plan content."
+            ? `Call \`review_plan\` MCP tool, passing BOTH the context above and the full plan content. ${bridgeReviewRules("plan")}`
             : "Launch a code review agent to review the plan, giving it the context above and the full plan content.",
           reviewDepthLine(effort, "plan", reviewer, ctx.state.config),
         ].filter(Boolean).join(" "),
@@ -748,6 +749,27 @@ export class PlanReviewStage implements WorkflowStage {
       round: provRoundOrdinal,
       trigger: "provenance" as const,
     } : null;
+
+    // ── ISS-1282: the bridge receipt gate ───────────────────────────────────
+    // Before the provenance gate and every sink, as in the code stage. The
+    // plan receipt is tied to the plan.md this session holds.
+    const gateKey: GateKey | null = repairTicketIdForProvenance
+      ? { workItemId: repairTicketIdForProvenance, kind: "ticket", stage: "plan", round: provRoundOrdinal }
+      : null;
+    const bridgeGate = await runBridgeReceiptGate(ctx, {
+      stage: "plan",
+      reviewerBackend,
+      report,
+      key: gateKey,
+      planText: readFileSafe(join(ctx.dir, "plan.md")),
+    });
+    if (bridgeGate.kind === "retry") return { action: "retry", instruction: bridgeGate.instruction };
+    const gatedReport = bridgeGate.kind === "pass" ? { ...report, ...bridgeGate.reportOverride } : report;
+    const gateFields = {
+      ...(bridgeGate.kind === "pass" ? { reviewGate: reviewGateField(bridgeGate.reviewGate) } : {}),
+      ...refusalsField(ctx.state, gateKey),
+      ...fallbackField(ctx.state, { reviewer: reviewerBackend, computedReviewer, backends }),
+    };
     // At or past the ceiling the gate asks for nothing and marks the round
     // unresolved instead, so it escalates rather than landing.
     const atPlanCeiling = provRoundOrdinal >= planReviewHardCeiling();
@@ -960,7 +982,7 @@ export class PlanReviewStage implements WorkflowStage {
       summary,
       findings: findings as unknown as readonly Record<string, unknown>[],
       arrayRound,
-      report,
+      report: gatedReport,
       effort: roundEffort,
       nowIso: new Date().toISOString(),
     });
@@ -997,6 +1019,7 @@ export class PlanReviewStage implements WorkflowStage {
       ...(provenanceGate.kind === "unresolved"
         ? { provenanceUnresolved: provenanceGate.reasons }
         : {}),
+      ...gateFields,
       ...identityFields(identityForRound),
     });
     const artifactResult = writeRoundArtifact(ctx, {
@@ -1024,6 +1047,7 @@ export class PlanReviewStage implements WorkflowStage {
       suggestionCount,
       codexSessionId: report.reviewerSessionId,
       effort: roundEffort,
+      ...gateFields,
       timestamp: new Date().toISOString(),
       ...identityFields(identity),
       artifactStatus: artifactResult.artifactStatus,

@@ -81,6 +81,15 @@ export interface ReviewVerdictArtifact {
    * in the record, and only one of them should be trusted.
    */
   readonly provenanceUnresolved?: readonly string[];
+  /**
+   * ISS-1282: a bridge round the receipt gate accepted, with the models the
+   * bridge observed and the Gemini disclosure when one applied.
+   */
+  readonly reviewGate?: { readonly observed: readonly { readonly provider: string; readonly model: string }[]; readonly disclosure?: string };
+  /** ISS-1282: bridge reports refused on this round's key before it landed. Absent when none. */
+  readonly gateRefusalsBeforeAccept?: number;
+  /** ISS-1282: why an agent round stood in for the bridge. Absent when it did not. */
+  readonly gateFallback?: { readonly reason: "codex-unavailable" | "bridge-refusals"; readonly sessionRefusals: number };
 
   // ── T-488 Run A: the identity and provenance spine ──────────────────────
   // All optional, all additive. An absent value means the record predates the
@@ -263,6 +272,12 @@ const ARTIFACT_HASH_DECISIONS = {
   // and a copy that lost the distinction is not the same artifact. Absent on
   // every artifact written before this field, so no existing hash moves.
   capReasons: "included",
+  // ISS-1282. EXCLUDED: which model the bridge observed and how many reports
+  // were refused first are how the round was produced, the same category as
+  // reviewerIdentity, not what the round found.
+  reviewGate: "excluded",
+  gateRefusalsBeforeAccept: "excluded",
+  gateFallback: "excluded",
   reviewAttemptId: "excluded",
   itemAttemptId: "excluded",
   backendRunId: "excluded",

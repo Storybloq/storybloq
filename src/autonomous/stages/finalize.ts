@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
 import { findGateAck } from "../../core/gate-ack-loader.js";
 import { PRECOMMIT_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
+import { agentFallbackLines } from "./review-gate.js";
 import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { pendingKnowledgeReview, routeAfterFinalize } from "./knowledge-routing.js";
 
@@ -343,6 +344,9 @@ export class FinalizeStage implements WorkflowStage {
           : "Code review passed. Time to commit.",
         ...landingCopy,
         ...effortCopy,
+        // ISS-1282 (pen decision 1): an agent round that satisfied a gate after
+        // bridge refusals stays an agent round, and the summary says so.
+        ...(() => { const l = agentFallbackLines(ctx.state); return l.length > 0 ? ["", ...l] : []; })(),
         "",
         "1. Run `git reset` to clear the staging area (ensures no stale files from prior operations)",
         ctx.state.ticket ? `2. Update ticket ${ticketLabel(ctx)} status to "complete" in .story/` : "",
@@ -943,6 +947,7 @@ async function nowCommitInstruction(ctx: StageContext, headline: string): Promis
     ctx.state.ticket
       ? `Commit with message: "feat: <description> (${ticketLabel(ctx)})"`
       : "Commit with a descriptive message.",
+    ...agentFallbackLines(ctx.state).map((l) => `Include in the commit body: "${l}"`),
     "",
     'Call me with completedAction: "commit_done" and include the commitHash.',
   ];

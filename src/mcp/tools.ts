@@ -2328,6 +2328,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           "'observed' only if the backend reported what ran; a pin you sent is 'configured'.",
         ),
         reviewerTurnId: z.string().optional(),
+        // ISS-1282: checked by the guide, so a wrong shape is a retry, not a -32602.
+        reviewReceipts: z.unknown().optional().describe("codex-bridge: code [{cwd,base,head,receipt,models,sessionId}] per call in chain order; plan {receipt,planSha256,models,sessionId}. Attested by the reporter, not authenticated by the bridge."),
         implementerModel: z.string().optional().describe("Model IMPLEMENT ran on; pass with implementation_done."),
         implementerTier: z.string().optional(),
         implementerSource: z.enum(["explicit-pin", "session-default"]).optional(),

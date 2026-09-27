@@ -428,9 +428,19 @@ describe("loadProject", () => {
       expect(result.state.config.schemaVersion).toBe(3);
     });
 
-    it("rejects schemaVersion 4 with version_mismatch (ISS-751 boundary)", async () => {
+    // T-537: `checkpoint enable` stamps 4, so 4 is supported and 5 is the
+    // next unknown version.
+    it("accepts schemaVersion 4 (owner checkpoints, T-537)", async () => {
       testRoot = await createTestProject({
         config: { ...minimalConfig, schemaVersion: 4 },
+      });
+      const result = await loadProject(testRoot);
+      expect(result.state.config.schemaVersion).toBe(4);
+    });
+
+    it("rejects schemaVersion 5 with version_mismatch (T-537 boundary)", async () => {
+      testRoot = await createTestProject({
+        config: { ...minimalConfig, schemaVersion: 5 },
       });
       try {
         await loadProject(testRoot);

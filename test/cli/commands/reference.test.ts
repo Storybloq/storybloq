@@ -115,6 +115,19 @@ describe("reference command", () => {
     expect(onDisk).toBe(generated);
   });
 
+  it("documents both merge-driver forms: a merge with its four positionals, and the capabilities probe (T-537)", async () => {
+    const entry = COMMANDS.find((c) => c.name === "merge-driver")!;
+    const merge = "storybloq merge-driver <ancestor> <ours> <theirs> <pathname> [--protocol <number>]";
+    const probe = "storybloq merge-driver --capabilities [--protocol <number>]";
+    expect(entry.usage).toContain(merge);
+    expect(entry.usage).toContain(probe);
+    expect(entry.flags).toEqual(["--protocol", "--capabilities"]);
+    const line = handleReference("md").split("\n").find((l) => l.startsWith("- **merge-driver"));
+    expect(line).toBe(
+      "- **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - " + entry.description,
+    );
+  });
+
   it("every command has a usage string", () => {
     for (const cmd of COMMANDS) {
       expect(cmd.usage).toBeTruthy();

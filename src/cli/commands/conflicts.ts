@@ -3,7 +3,7 @@ import { hasConflicts, CATALOG_CONFLICT_IDS, type CatalogConflictSource, type Ca
 import { CatalogLoadError } from "../../core/catalog.js";
 import { glossaryCatalog } from "../../core/glossary.js";
 import { capabilityCatalog } from "./capability.js";
-import { resolveConflicts, isEntityLevel, type ResolveOptions, type ResolveResult } from "../../core/resolve.js";
+import { resolveConflicts, isEntityLevel, fieldName, type ResolveOptions, type ResolveResult } from "../../core/resolve.js";
 import { resolveDocConflicts } from "../../core/resolve-doc.js";
 import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
 import { displayIdOf } from "../../core/resolver.js";
@@ -14,6 +14,7 @@ import type { Arrangement } from "../../models/arrangement.js";
 import type { Ruling } from "../../models/ruling.js";
 import { loadRulingsSafe, writeRulingUnlocked } from "../../core/ruling-loader.js";
 import type { CommandResult } from "../types.js";
+import { CliValidationError } from "../helpers.js";
 import { sanitizeDisplayText, MAX_PROSE_LENGTH } from "../../core/display-text.js";
 import { catalogOnlyFlags, handleCatalogResolve, type CatalogResolveInput } from "./resolve-catalog.js";
 
@@ -407,6 +408,77 @@ export async function handleConflictsShow(
   return { output: renderConflicts(label, conflicts) };
 }
 
+const CHECKPOINT_GROUP_FIELDS = new Set(["ownerCheckpoint", "status", "completedDate", "lifecycle"]);
+
+/**
+ * T-537: a resolved ticket write. A resolution that settles a checkpoint's
+ * status group (or the whole entity) goes through the checkpoint lifecycle,
+ * which checks consistency and advances the generation; a dependent's
+ * selected evidence is adopted as that side had it. Everything else is the
+ * ordinary write.
+ */
+async function writeResolvedTicket(
+  prior: Record<string, unknown>,
+  resolved: Record<string, unknown>,
+  conflicts: readonly ConflictEntry[],
+  result: ResolveResult,
+  options: ResolveOptions,
+  root: string,
+): Promise<void> {
+  const { writeTicketUnlocked } = await import("../../core/project-loader.js");
+  const { hasOwnerCheckpoint } = await import("../../core/owner-checkpoint.js");
+  const touched = new Set(result.resolved);
+  const named = (c: ConflictEntry): string => (isEntityLevel(c) ? "_entity" : fieldName(c));
+  const settled = conflicts.filter((c) => {
+    const name = named(c);
+    return touched.has(name) && (name === "_entity" || CHECKPOINT_GROUP_FIELDS.has(name) || name === "checkpointEvidence");
+  });
+  const sideHas = (c: ConflictEntry, v: unknown): boolean => {
+    if (named(c) === "ownerCheckpoint") return v !== undefined && v !== null;
+    return v !== null && typeof v === "object" && hasOwnerCheckpoint(v);
+  };
+  const sidesHadCheckpoint = settled.some((c) => sideHas(c, c.ours) || sideHas(c, c.theirs) || sideHas(c, c.base));
+  const checkpointSettled = settled.some((c) => named(c) !== "checkpointEvidence");
+  const evidenceOf = (v: unknown): unknown => (v !== null && typeof v === "object" ? (v as Record<string, unknown>).checkpointEvidence : undefined);
+  const evidenceChoices = settled.flatMap((c) =>
+    named(c) === "checkpointEvidence" ? [c.ours, c.theirs] : named(c) === "_entity" ? [evidenceOf(c.ours), evidenceOf(c.theirs)] : []);
+  if (checkpointSettled && (sidesHadCheckpoint || hasOwnerCheckpoint(prior) || hasOwnerCheckpoint(resolved))) {
+    // The discarded side is the one not selected; a --value resolution keeps both.
+    const discardedOf = (c: ConflictEntry): unknown =>
+      options.use === "ours" ? c.theirs : options.use === "theirs" ? c.ours : { ours: c.ours, theirs: c.theirs };
+    const entry = settled.find((c) => named(c) === "_entity")
+      ?? settled.find((c) => named(c) === "ownerCheckpoint")
+      ?? settled[0]!;
+    const { settleCheckpointConflict } = await import("../../core/checkpoint-lifecycle.js");
+    await settleCheckpointConflict(prior, resolved, {
+      discarded: discardedOf(entry),
+      snapshots: settled.flatMap((c) => [c.base, c.ours, c.theirs]),
+      evidenceChoices,
+      sidesHadCheckpoint,
+      actor: options.actor ?? "unknown",
+    }, root);
+    return;
+  }
+  if (settled.length > 0) {
+    // A dependent: the selected side's evidence (already applied) is adopted as
+    // that side had it. Only a side's: evidence a --value brings that neither
+    // side had never gets the conflict's authority.
+    const { sameValue } = await import("../../core/checkpoint-guard.js");
+    if (!sameValue(prior.checkpointEvidence, resolved.checkpointEvidence)
+      && !evidenceChoices.some((e) => sameValue(e, resolved.checkpointEvidence))) {
+      const label = typeof resolved.displayId === "string" ? resolved.displayId : String(resolved.id);
+      throw new CliValidationError(
+        "conflict",
+        `Cannot resolve ${label} this way: the selected checkpointEvidence is not either side's; evidence is adopted as a side had it, never edited.`,
+      );
+    }
+    const { adoptConflictEvidence } = await import("../../core/checkpoint-evidence.js");
+    await adoptConflictEvidence(resolved as never, resolved, root);
+    return;
+  }
+  await writeTicketUnlocked(resolved as never, root);
+}
+
 export async function handleResolve(
   id: string,
   root: string,
@@ -505,8 +577,9 @@ export async function handleResolve(
       label = target.entity.id;
     } else {
       const mutable = { ...target.entity };
+      const before = ((target.entity as Record<string, unknown>)._conflicts ?? []) as ConflictEntry[];
       result = resolveConflicts(mutable, resolveOptions);
-      if (target.kind === "ticket") await writeTicketUnlocked(mutable as never, root);
+      if (target.kind === "ticket") await writeResolvedTicket(target.entity as Record<string, unknown>, mutable as Record<string, unknown>, before, result, resolveOptions, root);
       else if (target.kind === "issue") await writeIssueUnlocked(mutable as never, root);
       else if (target.kind === "note") await writeNoteUnlocked(mutable as never, root);
       else await writeLessonUnlocked(mutable as never, root);

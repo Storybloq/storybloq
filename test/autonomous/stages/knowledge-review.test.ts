@@ -119,6 +119,9 @@ function setup(capOverrides: Record<string, Record<string, unknown>> = {}): { ro
   write(root, ".story/capabilities.json", doc({ version: 1, capabilities: [capability("cap-core", ["src/a.ts"], capOverrides["cap-core"]), capability("cap-old", ["src/old.ts"], capOverrides["cap-old"])] }));
   write(root, `.story/issues/${ISSUE_ID}.json`, doc(ISSUE_DOC));
   write(root, `.story/tickets/${TICKET_ID}.json`, doc(TICKET_DOC));
+  // T-537: FINALIZE loads the project to check owner checkpoints, so the ledger must load.
+  write(root, ".story/config.json", doc({ version: 1, schemaVersion: 1, project: "test", type: "npm", language: "typescript", features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true } }));
+  write(root, ".story/roadmap.json", doc({ title: "test", date: "2026-03-30", phases: [], blockers: [] }));
   const base = commit(root, "base");
   git(root, ["mv", "src/old.ts", "src/new.ts"]);
   write(root, "src/a.ts", "export const a = 2;\n");

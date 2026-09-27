@@ -69,6 +69,12 @@ export interface DashboardState {
   saidNoLedger: boolean;
   saidScanFailed: boolean;
   saidRootUnresolved: boolean;
+  /**
+   * T-537: the origins the setup hint has already been given for. Once per
+   * session and root, so unlike the said-once flags it is NOT cleared by a
+   * reload's session start: the same root stays quiet, a new one speaks once.
+   */
+  setupHintRoots: Set<string>;
   initialCwd: string | null;
   ledgerRoot: string | null;
 }
@@ -117,6 +123,7 @@ export function createDashboardState(): DashboardState {
     saidNoLedger: false,
     saidScanFailed: false,
     saidRootUnresolved: false,
+    setupHintRoots: new Set(),
     initialCwd: null,
     ledgerRoot: null,
   };

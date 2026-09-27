@@ -118,6 +118,8 @@ const HANDOVERS_DIR = ".story/handovers";
 const CONFIG_PATH = ".story/config.json";
 const ROADMAP_PATH = ".story/roadmap.json";
 const STATUS_PATH = ".story/status.json";
+/** T-537: the setup hint's action, in the Claude Code profile's command. */
+export const SETUP_HINT = "Run /story to set this project up; the pane opens when it finishes.";
 /** T-532: tool calls read the context fill at most this often. */
 const CONTEXT_REFRESH_MS = 5000;
 function forgetEverything(dashboard: DashboardState): void {
@@ -1109,12 +1111,16 @@ export function registerSidebar(on: On, _options: Options): void {
       // No `.story/` means no pane, by the owner's ruling. A project that
       // never ran `storybloq init` was getting four bordered "none" columns
       // and an all-zero issues line, which is a dashboard reporting on
-      // nothing; the Mod hides instead, and says so once in the log rather
-      // than every turn.
+      // nothing; the Mod hides instead. T-537: it says how to set the
+      // project up, once per session and root: a reload from the same root
+      // stays quiet, a different root is told once. The command is the
+      // Claude Code profile's, since this Mod runs only in Claude Code's
+      // hooks runtime. The pane attaches when init finishes, through
+      // `attachIfLedgerArrived`.
       dashboard.noLedger = true;
-      if (!dashboard.saidNoLedger) {
-        dashboard.saidNoLedger = true;
-        $.ui.log("storybloq sidebar: no .story directory here, so the pane stays closed until storybloq init runs");
+      if (!dashboard.setupHintRoots.has(dashboard.initialCwd)) {
+        dashboard.setupHintRoots.add(dashboard.initialCwd);
+        $.ui.log(`storybloq sidebar: no .story directory here, so the pane stays closed. ${SETUP_HINT}`);
       }
       return next(e);
     }

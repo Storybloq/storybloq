@@ -46,9 +46,13 @@ const TICKET_RULES: Record<string, MergeRule> = {
   claimedBySession: { kind: "coupled", group: "ticket-claim", members: ["claimedBySession", "claim"], latestWinsField: "claim.since", onAmbiguous: "release" },
   claim: { kind: "coupled", group: "ticket-claim", members: ["claimedBySession", "claim"], latestWinsField: "claim.since", onAmbiguous: "release" },
 
-  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle"] },
-  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle"] },
-  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle"] },
+  // T-537: a checkpoint's record and a dependent's evidence travel with the
+  // status they justify, so a divergence never merges one without the other.
+  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
+  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
+  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
+  ownerCheckpoint: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
+  checkpointEvidence: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
 
   // T-475: earmark is a single self-contained discriminated-union field, so
   // it is hard-conflict rather than "coupled" -- "coupled" groups in this

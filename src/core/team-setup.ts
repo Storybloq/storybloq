@@ -1,5 +1,7 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { join, dirname, basename, relative, resolve, sep } from "node:path";
+import { MAX_SUPPORTED_SCHEMA_VERSION } from "./errors.js";
+import { ConfigSchema } from "../models/config.js";
 import { ensureGitignoreEntries, STORY_GITIGNORE_ENTRIES } from "./init.js";
 import { withProjectLock, writeConfigUnlocked } from "./project-loader.js";
 import { execFile, execFileSync } from "node:child_process";
@@ -14,6 +16,19 @@ export const MERGE_DRIVER_CMD = "storybloq merge-driver %O %A %B %P";
 export const MERGE_DRIVER_DISPLAY_NAME = "Storybloq JSON three-way merge";
 
 /**
+ * T-537: the checkpoint-aware registration. Its command passes `--protocol 4`,
+ * which a CLI that predates owner checkpoints rejects, so an older binary on
+ * PATH exits nonzero and git records a conflict instead of merging a
+ * checkpoint it cannot honour. Selected per clone by the local override in
+ * `$GIT_DIR/info/attributes`, never by the tracked `.gitattributes`.
+ */
+export const MERGE_DRIVER_V4_NAME = "storybloq-json-v4";
+export const MERGE_DRIVER_V4_CMD = "storybloq merge-driver --protocol 4 %O %A %B %P";
+export const MERGE_DRIVER_V4_DISPLAY_NAME = "Storybloq JSON three-way merge (owner checkpoints)";
+/** Both registrations merge structurally; readiness checks accept either. */
+export const STRUCTURAL_MERGE_DRIVERS: ReadonlySet<string> = new Set([MERGE_DRIVER_NAME, MERGE_DRIVER_V4_NAME]);
+
+/**
  * ISS-734: inline collision guidance printed by `team init` and `team setup`
  * whenever the effective id allocator is local. Surfaced at the point the
  * choice is made because the failure mode (duplicate display ids after a
@@ -25,6 +40,13 @@ export const LOCAL_ALLOCATOR_NOTE =
 
 const BLOCK_BEGIN = "# storybloq-merge-begin";
 const BLOCK_END = "# storybloq-merge-end";
+
+/** T-537: the tracked block `checkpoint enable` writes after the managed one; later lines win. */
+export const CHECKPOINT_BLOCK_BEGIN = "# storybloq-checkpoint-begin";
+export const CHECKPOINT_BLOCK_END = "# storybloq-checkpoint-end";
+/** T-537: the per-clone block in `$GIT_DIR/info/attributes`, one per ledger, keyed by its root-relative path. */
+const localBlockBegin = (prefix: string) => `# storybloq-checkpoint-local-begin ${prefix}`;
+const localBlockEnd = (prefix: string) => `# storybloq-checkpoint-local-end ${prefix}`;
 
 const GITATTRIBUTES_PATTERNS = [
   "tickets/*.json merge=storybloq-json",
@@ -39,6 +61,109 @@ const GITATTRIBUTES_PATTERNS = [
   "capabilities.json merge=storybloq-json",
   "glossary.json merge=storybloq-json",
 ];
+
+/** The ledger paths the patterns cover, relative to `.story/`. */
+const LEDGER_PATTERNS = GITATTRIBUTES_PATTERNS.map((line) => line.slice(0, line.indexOf(" ")));
+
+const escapeRe = (m: string) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * `existing` with every `begin`..`end` block and every lone marker removed,
+ * then one block of `lines` appended at the END. Git lets the last matching
+ * line in a file win, so a block that must override other rules has to follow
+ * them; replacing it in place would leave a later rule in force.
+ */
+function withBlockLast(existing: string, begin: string, end: string, lines: readonly string[]): string {
+  const marker = (m: string) => `^[^\\S\\n]*${escapeRe(m)}[^\\S\\n]*(?:\\n|$)`;
+  let cleaned = existing
+    .replace(new RegExp(`${marker(begin)}[\\s\\S]*?${marker(end)}`, "gm"), "")
+    .replace(new RegExp(marker(begin), "gm"), "")
+    .replace(new RegExp(marker(end), "gm"), "");
+  if (cleaned.length > 0 && !cleaned.endsWith("\n")) cleaned += "\n";
+  return cleaned + [begin, ...lines, end].join("\n") + "\n";
+}
+
+/** Whether `text` ends with exactly the block `withBlockLast` writes, so no later line can override it. */
+function endsWithBlock(text: string, begin: string, end: string, lines: readonly string[]): boolean {
+  return text.trimEnd().endsWith([begin, ...lines, end].join("\n")) && text.split(begin).length === 2;
+}
+
+const CHECKPOINT_LINES = (): string[] => LEDGER_PATTERNS.map((p) => `${p} -merge`);
+
+/**
+ * T-537: marks every ledger pattern `-merge` in the tracked
+ * `.story/.gitattributes`, in its own block after the managed one. A clone
+ * without the v4 override then records a conflict on any two-sided change
+ * instead of merging a checkpoint with a driver that cannot honour it. An old
+ * `team setup` rewrites only its own block and keeps this one.
+ */
+export function writeCheckpointGitattributes(storyDir: string): void {
+  const filePath = join(storyDir, ".gitattributes");
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : "";
+  const next = withBlockLast(existing, CHECKPOINT_BLOCK_BEGIN, CHECKPOINT_BLOCK_END, CHECKPOINT_LINES());
+  if (next !== existing) writeFileSync(filePath, next, "utf-8");
+}
+
+/**
+ * Whether the tracked `.story/.gitattributes` carries the checkpoint block
+ * once, whole, and last: a marker alone, an edited line, or any rule after
+ * the block (which git would let win) reads as missing.
+ */
+export function hasCheckpointGitattributes(storyDir: string): boolean {
+  const filePath = join(storyDir, ".gitattributes");
+  if (!existsSync(filePath)) return false;
+  return endsWithBlock(readFileSync(filePath, "utf-8"), CHECKPOINT_BLOCK_BEGIN, CHECKPOINT_BLOCK_END, CHECKPOINT_LINES());
+}
+
+/** Whether the tracked `.story/.gitattributes` has any checkpoint marker, whole block or not. */
+function mentionsCheckpointBlock(storyDir: string): boolean {
+  const filePath = join(storyDir, ".gitattributes");
+  if (!existsSync(filePath)) return false;
+  const text = readFileSync(filePath, "utf-8");
+  return text.includes(CHECKPOINT_BLOCK_BEGIN) || text.includes(CHECKPOINT_BLOCK_END);
+}
+
+/** A path matched literally by git's wildmatch: its glob metacharacters escaped, and a leading `!` or `#`. */
+function escapeGlob(path: string): string {
+  return path.replace(/[\\*?[\]]/g, "\\$&").replace(/^[!#]/, "\\$&");
+}
+
+/**
+ * An attributes-file pattern: as is when it has nothing the line format
+ * splits or strips, else C-quoted (git unquotes a pattern that starts with
+ * `"` before matching it). Whitespace, quotes and control characters need it.
+ */
+function attributePattern(pattern: string): string {
+  if (!/[\s"\x00-\x1f\x7f]/.test(pattern)) return pattern;
+  const quoted = pattern.replace(/[\\"\x00-\x1f\x7f]/g, (c) => {
+    if (c === "\\" || c === '"') return `\\${c}`;
+    const named: Record<string, string> = { "\t": "\\t", "\n": "\\n", "\r": "\\r" };
+    return named[c] ?? `\\${c.charCodeAt(0).toString(8).padStart(3, "0")}`;
+  });
+  return `"${quoted}"`;
+}
+
+/**
+ * T-537: selects the v4 driver in THIS clone, in the file git names for
+ * `info/attributes` (correct in a linked worktree too), which outranks every
+ * `.gitattributes`. Patterns are qualified from the repository root, so a
+ * nested ledger (`app/.story/`) is matched where it is, and each ledger owns
+ * its own block, keyed by that path, so setting up one keeps another's.
+ */
+export async function writeLocalCheckpointAttributes(gitRoot: string, storyDir: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["rev-parse", "--git-path", "info/attributes"], { cwd: gitRoot, timeout: 5000 });
+  const filePath = resolve(gitRoot, stdout.trim());
+  const prefix = relative(realpathSync(gitRoot), realpathSync(storyDir)).split(sep).join("/");
+  const lines = LEDGER_PATTERNS.map((p) => `${attributePattern(`${escapeGlob(prefix)}/${p}`)} merge=${MERGE_DRIVER_V4_NAME}`);
+  const key = attributePattern(prefix);
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : "";
+  const next = withBlockLast(existing, localBlockBegin(key), localBlockEnd(key), lines);
+  if (next !== existing) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, next, "utf-8");
+  }
+  return filePath;
+}
 
 async function findGitRoot(cwd: string): Promise<string> {
   try {
@@ -56,6 +181,14 @@ export async function installMergeDriver(gitRoot: string): Promise<void> {
   );
   await execFileAsync(
     "git", ["config", "--local", `merge.${MERGE_DRIVER_NAME}.name`, MERGE_DRIVER_DISPLAY_NAME],
+    { cwd: gitRoot, timeout: 5000 },
+  );
+  await execFileAsync(
+    "git", ["config", "--local", `merge.${MERGE_DRIVER_V4_NAME}.driver`, MERGE_DRIVER_V4_CMD],
+    { cwd: gitRoot, timeout: 5000 },
+  );
+  await execFileAsync(
+    "git", ["config", "--local", `merge.${MERGE_DRIVER_V4_NAME}.name`, MERGE_DRIVER_V4_DISPLAY_NAME],
     { cwd: gitRoot, timeout: 5000 },
   );
 }
@@ -146,10 +279,33 @@ export async function teamSetup(root: string): Promise<SetupResult> {
     throw new Error("No .story/config.json found");
   }
 
+  // T-537: validate before any mutation, as the loader would. A config this
+  // build cannot read (unparseable, schema-invalid, or a schemaVersion above
+  // what it supports) is refused here, not after the driver and attributes
+  // were rewritten.
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(configPath, "utf-8"));
+  } catch (err) {
+    throw new Error(`Cannot read .story/config.json: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const parsed = ConfigSchema.passthrough().safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`.story/config.json is not a valid config: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}. Fix it before running team setup.`);
+  }
+  const schemaVersion = parsed.data.schemaVersion;
+  if (schemaVersion !== undefined && schemaVersion > MAX_SUPPORTED_SCHEMA_VERSION) {
+    throw new Error(`.story/config.json is schemaVersion ${schemaVersion}; this build supports up to ${MAX_SUPPORTED_SCHEMA_VERSION}. Update storybloq before running team setup.`);
+  }
+
   const gitRoot = await findGitRoot(root);
 
   await installMergeDriver(gitRoot);
   await writeGitattributes(storyDir);
+  // A rewritten managed block must not end up after the checkpoint block:
+  // a ledger that has one keeps it last.
+  if (mentionsCheckpointBlock(storyDir)) writeCheckpointGitattributes(storyDir);
+  await writeLocalCheckpointAttributes(gitRoot, storyDir);
   const rulingFence = await updateConfigVersion(root);
   // ISS-754: legacy projects upgraded to team mode predate init's gitignore
   // writing; without this, sessions/, snapshots/, status.json (absolute paths
@@ -200,7 +356,8 @@ export function rulingLifecycleReadiness(
 ): { fenceOk: boolean; attributeOk: boolean } {
   const fenceOk = meetsVersionMinimum(minCliVersion, RULING_LIFECYCLE_MIN_CLI_VERSION);
   const root = dirname(storyDir);
-  const attributeOk = effectiveMergeDriver(root, `${basename(storyDir)}/rulings/${rulingId}.json`) === MERGE_DRIVER_NAME;
+  const driver = effectiveMergeDriver(root, `${basename(storyDir)}/rulings/${rulingId}.json`);
+  const attributeOk = driver !== null && STRUCTURAL_MERGE_DRIVERS.has(driver);
   return { fenceOk, attributeOk };
 }
 
@@ -218,7 +375,10 @@ export const CATALOG_MERGE_FILES = ["capabilities.json", "glossary.json"] as con
 export function catalogsWithoutMergeDriver(storyDir: string): string[] {
   const root = dirname(storyDir);
   if (!insideGitWorkTree(root)) return [];
-  return CATALOG_MERGE_FILES.filter((file) => effectiveMergeDriver(root, `${basename(storyDir)}/${file}`) !== MERGE_DRIVER_NAME);
+  return CATALOG_MERGE_FILES.filter((file) => {
+    const driver = effectiveMergeDriver(root, `${basename(storyDir)}/${file}`);
+    return driver === null || !STRUCTURAL_MERGE_DRIVERS.has(driver);
+  });
 }
 
 function insideGitWorkTree(root: string): boolean {

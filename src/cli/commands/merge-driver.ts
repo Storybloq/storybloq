@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ZodTypeAny } from "zod";
 import {
   threeWayMerge, mergeConfig, mergeRoadmap, mergeCatalog,
@@ -19,6 +19,63 @@ import { ArrangementSchema } from "../../models/arrangement.js";
 import { RulingSchema } from "../../models/ruling.js";
 import { CapabilityCatalogSchema } from "../../models/capability.js";
 import { GlossaryCatalogSchema } from "../../models/glossary.js";
+import { MAX_SUPPORTED_SCHEMA_VERSION } from "../../core/errors.js";
+
+/**
+ * T-537: the merge-driver protocol a checkpoint-enabled ledger requires. Team
+ * setup registers `storybloq-json-v4` as `merge-driver --protocol 4 ...`; a
+ * CLI that predates it rejects the unknown flag, exits nonzero, and git
+ * records a conflict instead of a merge that could not honour checkpoints.
+ */
+export const MERGE_DRIVER_PROTOCOL = 4;
+
+/** What `merge-driver --protocol 4 --capabilities` reports, one JSON line. */
+export function mergeDriverCapabilities(): { protocol: number; maxSchemaVersion: number; checkpoints: boolean } {
+  return { protocol: MERGE_DRIVER_PROTOCOL, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true };
+}
+
+/**
+ * The ledger a merged path belongs to: `%P` is relative to the repository
+ * root, which is the driver's working directory, and names a file under a
+ * `.story/` directory (`app/.story/tickets/x.json` for a nested project).
+ * The nearest `.story` segment is the ledger; null when there is none.
+ */
+export function ledgerRootOf(pathname: string, cwd: string = process.cwd()): string | null {
+  // Git hands %P repository-relative with forward slashes on every platform;
+  // a backslash is part of a directory name, never a separator.
+  const parts = pathname.split("/");
+  const at = parts.lastIndexOf(".story");
+  if (at < 0) return null;
+  return resolve(cwd, ...parts.slice(0, at + 1));
+}
+
+/**
+ * A v4 run refuses a ledger it cannot honour: config.json unreadable, not an
+ * object, or a schemaVersion above what this build supports. Null when the
+ * merge may proceed, else the reason.
+ */
+export function protocolRefusal(protocol: number, pathname: string, cwd: string = process.cwd()): string | null {
+  if (!Number.isInteger(protocol) || protocol !== MERGE_DRIVER_PROTOCOL) {
+    return `merge-driver protocol ${protocol} is not supported by this build (supports ${MERGE_DRIVER_PROTOCOL}); update storybloq`;
+  }
+  const root = ledgerRootOf(pathname, cwd);
+  if (root === null) return `"${pathname}" is not under a .story directory`;
+  let version: unknown;
+  try {
+    const config = JSON.parse(readFileSync(join(root, "config.json"), "utf-8")) as unknown;
+    if (typeof config !== "object" || config === null || Array.isArray(config)) throw new Error("not a JSON object");
+    version = (config as Record<string, unknown>).schemaVersion ?? 1;
+  } catch (err) {
+    return `cannot read the ledger config at ${join(root, "config.json")}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+    return `the ledger config at ${join(root, "config.json")} has an unreadable schemaVersion`;
+  }
+  if (version > MAX_SUPPORTED_SCHEMA_VERSION) {
+    return `the ledger at ${root} is schemaVersion ${version}; this build supports up to ${MAX_SUPPORTED_SCHEMA_VERSION}: update storybloq`;
+  }
+  return null;
+}
 
 function entityTypeFromPath(pathname: string): EntityType | null {
   const dir = basename(dirname(pathname));
@@ -151,7 +208,15 @@ export function handleMergeDriver(
   oursPath: string,
   theirsPath: string,
   pathname: string,
+  protocol?: number,
 ): number {
+  if (protocol !== undefined) {
+    const refused = protocolRefusal(protocol, pathname);
+    if (refused !== null) {
+      diag(refused);
+      return 2;
+    }
+  }
   const strategy = strategyFromPath(pathname);
   if (!strategy) {
     diag(`unknown .story path "${pathname}" (no merge strategy)`);

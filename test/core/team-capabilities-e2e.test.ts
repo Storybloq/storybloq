@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { E2ECliFixture, CLI_PATH } from "../helpers/e2e-cli.js";
+import { MAX_SUPPORTED_SCHEMA_VERSION } from "../../src/core/errors.js";
 
 // ISS-748 regression suite. Runs against the BUILT bundle: `npm run build` must
 // have produced a current dist/cli.js before this file can pass (same dependency
@@ -143,21 +144,29 @@ describe("ISS-748: dist bundle resolves its own version for the team write gate"
 // on schemaVersion 3 for both reads and writes with "Config schemaVersion 3
 // exceeds max supported 2" and exit code 1. That manual verification is the
 // foundation this bump relies on.
+//
+// T-537 raised the maximum to 4 (owner checkpoints), so the fence this bundle
+// must refuse is no longer a literal 4: it is one past whatever this build
+// supports, and 3 through the maximum must still read and write.
 describe("ISS-751: schemaVersion-3 old-client fence on the dist bundle", () => {
-  it("reads AND writes a schemaVersion-3 team project when minCliVersion matches", () => {
-    const dir = createTeamProject(bakedVersion, 3);
+  it.each(Array.from({ length: MAX_SUPPORTED_SCHEMA_VERSION - 2 }, (_, i) => i + 3))(
+    "reads AND writes a schemaVersion-%i team project when minCliVersion matches",
+    (schemaVersion) => {
+      const dir = createTeamProject(bakedVersion, schemaVersion);
 
-    const read = runCli(cliPath, dir, "status");
-    expect(read.out).not.toContain("exceeds max supported");
-    expect(read.code).toBe(0);
+      const read = runCli(cliPath, dir, "status");
+      expect(read.out).not.toContain("exceeds max supported");
+      expect(read.code).toBe(0);
 
-    const write = runCli(cliPath, dir, "ticket", "create", "--title", "probe", "--type", "task");
-    expect(write.out).not.toContain("exceeds max supported");
-    expect(write.code).toBe(0);
-  });
+      const write = runCli(cliPath, dir, "ticket", "create", "--title", "probe", "--type", "task");
+      expect(write.out).not.toContain("exceeds max supported");
+      expect(write.code).toBe(0);
+    },
+  );
 
-  it("hard-fails on a schemaVersion-4 project with version_mismatch", () => {
-    const dir = createTeamProject(bakedVersion, 4);
+  it(`hard-fails on a schemaVersion-${MAX_SUPPORTED_SCHEMA_VERSION + 1} project (one past this build's maximum) with version_mismatch`, () => {
+    expect(MAX_SUPPORTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(4);
+    const dir = createTeamProject(bakedVersion, MAX_SUPPORTED_SCHEMA_VERSION + 1);
 
     const read = runCli(cliPath, dir, "status");
     expect(read.code).not.toBe(0);

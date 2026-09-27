@@ -187,6 +187,14 @@ import {
   handleGateAckContest,
 } from "../cli/commands/gate-ack.js";
 import {
+  handleCheckpointAttach,
+  handleCheckpointChange,
+  handleCheckpointCreate,
+  handleCheckpointReopen,
+  handleCheckpointResolve,
+  handleCheckpointRetire,
+} from "../cli/commands/checkpoint.js";
+import {
   handleEarmarkGet,
   handleEarmarkReserve,
   handleEarmarkAssign,
@@ -1709,6 +1717,70 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleGateAckContest(args.id, args.reason, format, root),
   ));
+
+  // --- Owner checkpoint tools (T-537) ---
+  // enable, resolve-conflict and list stay CLI-only: enable changes how git
+  // merges the ledger, and conflicts are settled by the person merging.
+
+  const checkpointContent = {
+    kind: z.enum(["decision", "acceptance"]),
+    question: z.string().max(4096).optional().describe("Required for a decision"),
+    criteria: z.string().max(4096).optional().describe("Required for an acceptance"),
+    evidenceRefs: z.array(z.string().max(1024)).max(64).optional(),
+  };
+  const checkpointExpected = {
+    id: TicketRefSchema,
+    generation: z.number().int().describe("As ticket get shows it; a stale one is refused"),
+    revision: z.number().int(),
+    digest: z.string().min(1).max(128),
+    actor: z.string().max(256).optional(),
+  };
+
+  server.registerTool("storybloq_checkpoint_create", {
+    description: "Create an owner checkpoint ticket. Needs `checkpoint enable` first.",
+    inputSchema: {
+      title: z.string().min(1).max(500),
+      owner: z.string().min(1).max(256),
+      ...checkpointContent,
+      phase: z.string().optional(),
+      description: z.string().max(65536).optional(),
+      blockedBy: z.array(TicketRefSchema).optional(),
+      parentTicket: TicketRefSchema.optional(),
+      actor: z.string().max(256).optional(),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointCreate(args, format, root)));
+
+  server.registerTool("storybloq_checkpoint_attach", {
+    description: "Make an open, unclaimed ticket a checkpoint",
+    inputSchema: { id: TicketRefSchema, owner: z.string().min(1).max(256), ...checkpointContent, actor: z.string().max(256).optional() },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointAttach(args.id, args, format, root)));
+
+  server.registerTool("storybloq_checkpoint_resolve", {
+    description: "Answer a checkpoint. An acceptance needs artifactRef.",
+    inputSchema: {
+      ...checkpointExpected,
+      response: z.string().min(1).max(65536),
+      artifactRef: z.string().max(1024).optional(),
+      rulingAttribution: z.enum(RULING_ATTRIBUTIONS).optional().describe("Also record the response as a ruling, in one transaction"),
+      rulingScopeTags: z.array(z.string()).optional(),
+      clientTaskId: z.string().max(128).optional(),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointResolve(args.id, args, format, root)));
+
+  server.registerTool("storybloq_checkpoint_change", {
+    description: "Change what a checkpoint asks; voids its answer",
+    inputSchema: { ...checkpointExpected, ...checkpointContent },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointChange(args.id, args, format, root)));
+
+  server.registerTool("storybloq_checkpoint_reopen", {
+    description: "Withdraw a checkpoint's answer",
+    inputSchema: { ...checkpointExpected, reason: z.string().max(4096).optional() },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointReopen(args.id, args, format, root)));
+
+  server.registerTool("storybloq_checkpoint_retire", {
+    description: "Retire a checkpoint, releasing dependents",
+    inputSchema: { ...checkpointExpected, reason: z.string().min(1).max(4096) },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointRetire(args.id, args, format, root)));
 
   // --- Earmark tools (T-475) ---
   // No storybloq_earmark_list -- earmarks are a field on tickets/issues, not

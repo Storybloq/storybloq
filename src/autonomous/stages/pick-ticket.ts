@@ -20,6 +20,7 @@ import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } f
 import { entityFingerprint } from "../pending-artifacts.js";
 import { resolveGateStatus } from "./gate-enforcement.js";
 import { tryAcquireEarmark, describeEarmarkHolder, isEarmarkVisible } from "../../core/earmarks.js";
+import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
@@ -253,6 +254,13 @@ export class PickTicketStage implements WorkflowStage {
     const targetReject = this.enforceTargetMembership(ctx, ticket.id, ticketLabel);
     if (targetReject) return targetReject;
 
+    // T-537: an owner checkpoint is never picked, and a ticket waiting on one
+    // is not picked until it releases. Checked before the generic block so
+    // the refusal names the checkpoint; re-checked under the lock below.
+    const eligibility = assertCheckpointEligible(projectState, ticket, "claim");
+    if (eligibility.kind !== "eligible") {
+      return { action: "retry", instruction: `${describeIneligible(projectState, ticket, "claim", eligibility)} Pick a different ticket.` };
+    }
     if (projectState.isBlocked(ticket)) {
       return { action: "retry", instruction: `Ticket ${ticketLabel} is blocked. Pick an unblocked ticket.` };
     }
@@ -327,6 +335,13 @@ export class PickTicketStage implements WorkflowStage {
         const freshTicket = freshState.ticketByID(ticket.id);
         if (!freshTicket) {
           refusal = `Ticket ${ticketLabel} no longer exists. Pick a different ticket.`;
+          return;
+        }
+        // T-537: the lock-held re-check; a checkpoint reopened since the
+        // unlocked check above refuses here, before anything is written.
+        const freshEligibility = assertCheckpointEligible(freshState, freshTicket, "claim");
+        if (freshEligibility.kind !== "eligible") {
+          refusal = `${describeIneligible(freshState, freshTicket, "claim", freshEligibility)} Pick a different ticket.`;
           return;
         }
         const decision = tryAcquireEarmark(freshTicket.earmark, ctx.state.sessionId, "worker");

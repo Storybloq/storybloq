@@ -5,8 +5,8 @@ import {
   writeRoadmapUnlocked,
   runTransactionUnlocked,
   serializeJSON,
+  prepareTicketWrite,
 } from "../../core/project-loader.js";
-import { TicketSchema } from "../../models/ticket.js";
 import { IssueSchema } from "../../models/issue.js";
 import { RoadmapSchema } from "../../models/roadmap.js";
 import type { Roadmap, Phase } from "../../models/roadmap.js";
@@ -291,10 +291,9 @@ export async function handlePhaseDelete(
       const sortedTickets = [...affectedTickets].sort((a, b) => a.order - b.order);
       for (const ticket of sortedTickets) {
         maxOrder += 10;
-        const updated = { ...ticket, phase: reassign, order: maxOrder };
-        const parsed = TicketSchema.parse(updated);
-        const content = serializeJSON(parsed);
-        const target = join(wrapDir, "tickets", `${parsed.id}.json`);
+        // T-537: through the ordinary choke point, so the checkpoint write
+        // guard sees this write too (a reassignment changes neither field).
+        const { target, content } = await prepareTicketWrite({ ...ticket, phase: reassign, order: maxOrder }, root);
         operations.push({ op: "write", target, content });
       }
 

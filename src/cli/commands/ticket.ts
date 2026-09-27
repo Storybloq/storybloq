@@ -15,6 +15,8 @@ import {
 import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
+import { assertCheckpointEligible, completeDependent, describeCheckpointBlock, describeIneligible, evidenceFor } from "../../core/checkpoint-evidence.js";
+import { pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
 import { ProjectState } from "../../core/project-state.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
@@ -23,6 +25,7 @@ import {
   withProjectLock,
   writeTicketUnlocked,
   deleteTicket,
+  sortKeysDeep,
 } from "../../core/project-loader.js";
 import {
   formatTicketList,
@@ -85,6 +88,9 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "deletedAt",
   "deletedBy",
   "citesRulings",
+  // T-537: protected; written only by the checkpoint lifecycle and evidence writers.
+  "ownerCheckpoint",
+  "checkpointEvidence",
 ]);
 
 // --- Read Handlers ---
@@ -266,7 +272,7 @@ function buildErrorMultiset(findings: readonly { level: string; code: string; en
 }
 
 /** ISS-065: Only block writes that make the project WORSE. Pre-existing errors pass through. */
-function validatePostWriteState(
+export function validatePostWriteState(
   candidate: Ticket,
   state: ProjectState,
   isCreate: boolean,
@@ -308,6 +314,66 @@ function validatePostWriteState(
   }
 }
 
+/**
+ * A new open ticket, its id allocated and its references resolved, NOT yet
+ * written. The caller holds the project lock. T-537: shared with checkpoint
+ * create, which adds the checkpoint record before the one create-only write.
+ */
+export async function prepareNewTicketUnlocked(
+  args: {
+    title: string;
+    type: string;
+    phase: string | null;
+    description: string;
+    blockedBy: string[];
+    parentTicket: string | null;
+    citesRulings?: string[];
+  },
+  state: ProjectState,
+  root: string,
+): Promise<Ticket> {
+  validatePhase(args.phase, { state });
+  const resolvedBlockedBy = args.blockedBy.length > 0
+    ? validateAndResolveBlockedBy(args.blockedBy, "", state)
+    : [];
+  const resolvedParent = args.parentTicket
+    ? validateAndResolveParentTicket(args.parentTicket, "", state)
+    : undefined;
+
+  const isTeam = state.config.team?.enabled === true;
+  let id: string;
+  let displayId: string | undefined;
+  if (isTeam) {
+    const alloc = allocateTeamTicketId(state.tickets);
+    id = alloc.id;
+    displayId = state.config.team?.idAllocator === "git-refs"
+      ? (await reserveDisplayId(root, "ticket", state, id)).displayId
+      : alloc.displayId;
+  } else {
+    id = nextTicketID(state.tickets);
+    displayId = undefined;
+  }
+  const order = nextOrder(args.phase, state);
+  const createdAt = new Date().toISOString();
+  return {
+    id,
+    ...(displayId != null && { displayId }),
+    title: args.title,
+    description: args.description,
+    type: args.type as TicketType,
+    status: "open",
+    phase: args.phase,
+    order,
+    createdDate: createdAt.slice(0, 10),
+    ...(isTeam && { createdAt }),
+    completedDate: null,
+    blockedBy: resolvedBlockedBy,
+    parentTicket: resolvedParent,
+    ...(args.citesRulings !== undefined && args.citesRulings.length > 0
+      && { citesRulings: args.citesRulings }),
+  };
+}
+
 export async function handleTicketCreate(
   args: {
     title: string;
@@ -337,47 +403,7 @@ export async function handleTicketCreate(
 
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     createdInState = state;
-    validatePhase(args.phase, { state });
-    const resolvedBlockedBy = args.blockedBy.length > 0
-      ? validateAndResolveBlockedBy(args.blockedBy, "", state)
-      : [];
-    const resolvedParent = args.parentTicket
-      ? validateAndResolveParentTicket(args.parentTicket, "", state)
-      : undefined;
-
-    const isTeam = state.config.team?.enabled === true;
-    let id: string;
-    let displayId: string | undefined;
-    if (isTeam) {
-      const alloc = allocateTeamTicketId(state.tickets);
-      id = alloc.id;
-      displayId = state.config.team?.idAllocator === "git-refs"
-        ? (await reserveDisplayId(root, "ticket", state, id)).displayId
-        : alloc.displayId;
-    } else {
-      id = nextTicketID(state.tickets);
-      displayId = undefined;
-    }
-    const order = nextOrder(args.phase, state);
-    const createdAt = new Date().toISOString();
-    const ticket: Ticket = {
-      id,
-      ...(displayId != null && { displayId }),
-      title: args.title,
-      description: args.description,
-      type: args.type as TicketType,
-      status: "open",
-      phase: args.phase,
-      order,
-      createdDate: createdAt.slice(0, 10),
-      ...(isTeam && { createdAt }),
-      completedDate: null,
-      blockedBy: resolvedBlockedBy,
-      parentTicket: resolvedParent,
-      ...(citesRulingsResolution.citesRulings !== undefined && citesRulingsResolution.citesRulings.length > 0
-        && { citesRulings: citesRulingsResolution.citesRulings }),
-    };
-
+    const ticket = await prepareNewTicketUnlocked({ ...args, citesRulings: citesRulingsResolution.citesRulings }, state, root);
     validatePostWriteState(ticket, state, true);
     await writeTicketUnlocked(ticket, root, { createOnly: true });
     createdTicket = ticket;
@@ -546,7 +572,19 @@ export async function handleTicketUpdate(
       ...statusChanges,
     };
 
-    const isNoOpUpdate = JSON.stringify(ticket) === JSON.stringify(existing);
+    // T-537: an explicit `status: complete` on a ticket already complete is a
+    // re-completion. It refreshes the checkpoint evidence (which is how a
+    // reassessment flag clears) when that evidence is stale or a checkpoint
+    // it waits on no longer releases; otherwise it is the no-op it always was.
+    // Edits that do not name the status never refresh.
+    const refreshesEvidence =
+      updates.status === "complete" &&
+      existing.status === "complete" &&
+      (pendingCheckpointBlockers(state, ticket).length > 0 ||
+        // Key-order-insensitive, array order kept: the file holds deep-sorted
+        // keys, evidenceFor builds them in declaration order.
+        JSON.stringify(sortKeysDeep(evidenceFor(state, ticket))) !== JSON.stringify(sortKeysDeep(ticket.checkpointEvidence ?? [])));
+    const isNoOpUpdate = !refreshesEvidence && JSON.stringify(ticket) === JSON.stringify(existing);
 
     // T-442 / ISS-784 / ISS-981: a completion must not clear a claim the caller
     // cannot prove is theirs, and neither may a REOPEN bypass that guard.
@@ -641,6 +679,21 @@ export async function handleTicketUpdate(
       finalTicket = completedWithEarmark;
     }
     validatePostWriteState(finalTicket, state, false);
+    // T-537: a completion, or a re-completion that refreshes evidence, goes
+    // through completeDependent, which refuses while an owner checkpoint the
+    // ticket waits on has not released and records the checkpoint state it
+    // relied on. Every other update writes as before.
+    if (!isNoOpUpdate && finalTicket.status === "complete" && (existing.status !== "complete" || refreshesEvidence)) {
+      const outcome = await completeDependent(state, finalTicket, root);
+      if (outcome.kind === "checkpoint-blocked") {
+        throw new CliValidationError("conflict", describeCheckpointBlock(displayIdOf(existing), outcome.checkpoints.map((c) => {
+          const t = state.ticketByID(c);
+          return t ? displayIdOf(t) : c;
+        })));
+      }
+      updatedTicket = outcome.ticket;
+      return;
+    }
     await writeTicketUnlocked(finalTicket, root);
     updatedTicket = finalTicket;
   });
@@ -797,6 +850,12 @@ export async function handleTicketStart(
     if (!existing) throw new CliValidationError("not_found", `Ticket ${id} not found`);
     if (existing.status === "complete") {
       throw new CliValidationError("invalid_input", `Ticket ${id} is already complete`);
+    }
+    // T-537: an owner checkpoint is never started, and neither is a ticket
+    // that waits on one that has not released.
+    const eligibility = assertCheckpointEligible(state, existing, "start");
+    if (eligibility.kind !== "eligible") {
+      throw new CliValidationError("conflict", describeIneligible(state, existing, "start", eligibility));
     }
 
     let email: string | undefined;

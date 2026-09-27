@@ -204,6 +204,13 @@ export const ConfigSchema = z
       protectedRef: z.string().min(1).refine((v) => !v.startsWith("-"), "Protected ref must not start with -").optional(),
       mergeDriverVersion: z.number().int().optional(),
     }).optional(),
+    // T-537: how far `checkpoint enable` got, so an interrupted enable is
+    // finished by running it again. Declared, like contractMeasurement below,
+    // so a future tightening cannot drop it.
+    checkpointEnable: z.object({
+      step: z.enum(["attributes", "complete"]),
+      at: z.string(),
+    }).passthrough().optional(),
     // T-495: the review-contract measurement window, written once by
     // `review-stats --open-window` and closed once by `--close-window`.
     //

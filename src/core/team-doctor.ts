@@ -4,7 +4,9 @@ import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
 import { isClaimStale } from "./claims.js";
 import { compareVersionStrings, RULING_LIFECYCLE_MIN_CLI_VERSION } from "./team-capabilities.js";
-import { rulingLifecycleReadiness, catalogsWithoutMergeDriver } from "./team-setup.js";
+import { rulingLifecycleReadiness, catalogsWithoutMergeDriver, hasCheckpointGitattributes, MERGE_DRIVER_V4_NAME } from "./team-setup.js";
+import { checkpointMergeDrivers } from "./checkpoint-enable.js";
+import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { ENABLE_GIT_REFS_REMEDY } from "./branch-allocation-warning.js";
@@ -587,6 +589,44 @@ export function checkCatalogMergeAttributes(state: ProjectState, ctx: DoctorCont
   }];
 }
 
+/**
+ * T-537: in a checkpoint-enabled team ledger, the driver git would run in
+ * THIS clone for a ticket, an issue and the config, asked of git itself
+ * (`git check-attr merge`). A clone that has not rerun `team setup` shows the
+ * tracked `-merge` (every two-sided change conflicts, safe but manual) or the
+ * pre-checkpoint driver; either way the fix is `team setup`. A missing tracked
+ * block is reported too: without it an unconfigured clone would merge
+ * checkpoints with a driver that cannot honour them.
+ */
+export function checkCheckpointMergeAttributes(state: ProjectState, ctx: DoctorContext): DoctorFinding[] {
+  if (state.config.team?.enabled !== true) return [];
+  const version = state.config.schemaVersion;
+  if (version === undefined || version < CHECKPOINT_SCHEMA_VERSION) return [];
+  const storyDir = join(ctx.root, ".story");
+  const findings: DoctorFinding[] = [];
+  const drivers = checkpointMergeDrivers(storyDir);
+  const wrong = drivers.filter((d) => d.driver !== MERGE_DRIVER_V4_NAME);
+  if (wrong.length > 0) {
+    findings.push({
+      severity: "error",
+      code: "checkpoint_merge_driver",
+      message: `This clone does not merge owner checkpoints with ${MERGE_DRIVER_V4_NAME}: ${wrong.map((d) => `${d.path} -> ${d.driver ?? "unset"}`).join(", ")}. Run storybloq team setup before merging branches here.`,
+      entity: null,
+      repair: { command: ["storybloq", "team", "setup"] },
+    });
+  }
+  if (!hasCheckpointGitattributes(storyDir)) {
+    findings.push({
+      severity: "error",
+      code: "checkpoint_gitattributes_missing",
+      message: ".story/.gitattributes has lost its storybloq-checkpoint block, so a clone without team setup would merge owner checkpoints with a driver that cannot honour them. Run storybloq checkpoint enable again to restore it.",
+      entity: null,
+      repair: { command: ["storybloq", "checkpoint", "enable"] },
+    });
+  }
+  return findings;
+}
+
 export function checkLocalIdAllocator(state: ProjectState, _ctx: DoctorContext): DoctorFinding[] {
   if (state.config.team?.idAllocator === "git-refs") return [];
   return [{
@@ -633,4 +673,5 @@ registerDoctorCheck(checkReservationHealth);
 registerDoctorCheck(checkLocalIdAllocator);
 registerDoctorCheck(checkRulingLifecycleReadiness);
 registerDoctorCheck(checkCatalogMergeAttributes);
+registerDoctorCheck(checkCheckpointMergeAttributes);
 registerDoctorCheck(checkHandoverFilenamePolicy);

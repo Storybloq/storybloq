@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import type { CommandContext, CommandResult } from "../run.js";
 import { validateProject } from "../../core/validation.js";
 import { INTEGRITY_WARNING_TYPES, type LoadWarning } from "../../core/errors.js";
 import type { ProjectState } from "../../core/project-state.js";
 import { serializeJSON, runTransactionUnlocked } from "../../core/project-loader.js";
+import { assertCheckpointWriteAllowed } from "../../core/checkpoint-guard.js";
 import { CANONICAL_ID_REGEX } from "../../core/canonical-id.js";
 import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../../models/types.js";
 
@@ -261,8 +262,12 @@ export async function applyRepairPatches(root: string, patches: RepairPatch[]): 
   const ops: Array<{ op: "write"; target: string; content: string }> = [];
   for (const group of groups.values()) {
     const raw = JSON.parse(await readFile(group.target, "utf-8")) as Record<string, unknown>;
+    const prior = { ...raw };
     for (const [key, value] of Object.entries(group.set)) raw[key] = value;
     for (const key of group.unset) delete raw[key];
+    // T-537: repair writes raw JSON, outside prepareTicketWrite, so it runs
+    // the checkpoint guard itself. No repair touches a protected field today.
+    if (group.target.includes(`${sep}tickets${sep}`)) assertCheckpointWriteAllowed(prior, raw);
     ops.push({ op: "write", target: group.target, content: serializeJSON(raw) });
   }
   await runTransactionUnlocked(root, ops);

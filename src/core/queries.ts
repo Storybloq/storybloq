@@ -2,6 +2,7 @@ import type { Ticket } from "../models/ticket.js";
 import type { Phase, Blocker } from "../models/roadmap.js";
 import type { ProjectState, PhaseStatus } from "./project-state.js";
 import { notHiddenByEarmark } from "./earmarks.js";
+import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 
 // --- Result Types ---
 
@@ -105,7 +106,8 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
 
     // Find first non-complete, unblocked leaf
     const incompleteLeaves = leaves.filter((t) => t.status !== "complete");
-    const candidate = incompleteLeaves.find((t) => !state.isBlocked(t) && notHiddenByEarmark(t));
+    // T-537: an owner checkpoint is answered by the owner, never picked as work.
+    const candidate = incompleteLeaves.find((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
 
     if (candidate) {
       const impact = ticketsUnblockedBy(candidate.id, state);
@@ -176,7 +178,7 @@ export function nextTickets(
     const incompleteLeaves = leaves
       .filter((t) => t.status !== "complete")
       .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)));
-    const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t));
+    const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
 
     if (unblocked.length === 0) {
       skippedBlockedPhases.push({
@@ -240,7 +242,8 @@ export function ticketsUnblockedBy(
       if (bid === ticketId) return true; // skip the ticket we're simulating as complete
       const blocker = state.ticketByID(bid);
       if (!blocker) return false; // unknown = still blocked
-      return blocker.status === "complete";
+      // T-537: an owner checkpoint releases by approval or retirement, not status.
+      return hasOwnerCheckpoint(blocker) ? checkpointReleases(blocker) : blocker.status === "complete";
     });
   });
 }

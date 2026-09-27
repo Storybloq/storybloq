@@ -122,6 +122,10 @@ function parseRecordPath(path: string): RecordPath {
     );
   }
   const [, family, file] = parts as [string, string, string];
+  // T-537 audit: owner checkpoints and checkpoint evidence live only on
+  // tickets, so refusing tickets here is what keeps a restore from replacing
+  // a checkpoint or its evidence. The lock's strict load refuses a schema
+  // this build cannot read.
   if (family === "tickets" || family === "lessons") {
     throw new RestoreInputError(`ledger restore does not restore ${family}: it covers rulings, notes and issues only`);
   }

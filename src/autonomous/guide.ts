@@ -487,6 +487,10 @@ async function claimPreflightBlock(
   // round-4 gate found and this ordering exists to close.
   if (result.reconciliation?.status === "completed-consistent") {
     const ticketId = state.ticket?.displayId ?? state.ticket?.id ?? result.epoch?.ticketId ?? "unknown";
+    // T-537: checked BEFORE the terminalization decision; a checkpoint the
+    // completed ticket waits on that no longer releases stops it here.
+    const waiting = await completedTicketCheckpointBlock(root, state.ticket?.id ?? result.epoch?.ticketId);
+    if (waiting) return isLoadFailure(waiting) ? loadFailedResult(dir, state, waiting) : checkpointBlockedResult(dir, state, waiting);
     return terminalizeCompletedSession(root, dir, state, ticketId);
   }
 
@@ -708,6 +712,124 @@ async function cancelClaimPosture(
 }
 
 /**
+ * T-537: what recovery produced. A pending completion whose ticket waits on
+ * an owner checkpoint that has not released is neither replayed nor
+ * confirmed: the marker stays, postMutation is not applied, and the caller
+ * decides (start, report and resume stop there; cancel abandons it). The
+ * blocked value is returned, never thrown, so no catch can reclassify it.
+ */
+type RecoveryResult =
+  | { readonly kind: "recovered"; readonly state: FullSessionState }
+  | { readonly kind: "checkpoint-blocked"; readonly ticketId: string; readonly checkpoints: readonly string[]; readonly state: FullSessionState }
+  | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState };
+
+const recovered = (state: FullSessionState): RecoveryResult => ({ kind: "recovered", state });
+
+type CheckpointBlock = { readonly ticketId: string; readonly checkpoints: readonly string[] };
+
+/**
+ * T-537: a completion that could not be confirmed, replayed or terminalized
+ * because the project did not load strictly. A file that does not decode may
+ * be a checkpoint the ticket waits on, so a partial load is never read as
+ * permission; the caller refuses and retries once the file is fixed.
+ */
+type LoadFailure = { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string };
+
+const isLoadFailure = (value: CheckpointBlock | LoadFailure): value is LoadFailure =>
+  (value as LoadFailure).kind === "load-failed";
+
+const failureReason = (err: unknown): string => err instanceof Error ? err.message : String(err);
+
+/**
+ * T-537: for the completed-consistent preflight, the checkpoints the session's
+ * completed ticket waits on that no longer release, or null. Terminalizing
+ * needs a strict load: a project that does not load is a LoadFailure, never
+ * permission.
+ */
+async function completedTicketCheckpointBlock(root: string, ticketId: string | undefined): Promise<CheckpointBlock | LoadFailure | null> {
+  if (!ticketId) return null;
+  let projectState: Awaited<ReturnType<typeof loadProject>>["state"];
+  try {
+    ({ state: projectState } = await loadProject(root, { strict: true }));
+  } catch (err) {
+    return { kind: "load-failed", ticketId, reason: failureReason(err) };
+  }
+  const ticket = projectState.ticketByID(ticketId);
+  if (!ticket) return null;
+  const { pendingCheckpointBlockers } = await import("../core/owner-checkpoint.js");
+  const checkpoints = pendingCheckpointBlockers(projectState, ticket);
+  return checkpoints.length > 0 ? { ticketId, checkpoints } : null;
+}
+
+/**
+ * T-537: start, report and resume stop here when a completion cannot
+ * be confirmed on a strict load. Nothing is written: the session keeps its
+ * state and its pending completion, and the same call succeeds once the
+ * project loads.
+ */
+function loadFailedResult(dir: string, state: FullSessionState, failure: { readonly ticketId: string; readonly reason: string }): McpToolResult {
+  appendEvent(dir, {
+    rev: state.revision,
+    type: "checkpoint_load_failed",
+    timestamp: new Date().toISOString(),
+    data: { ticketId: failure.ticketId, reason: failure.reason },
+  });
+  return guideError(new Error(
+    `Ticket ${failure.ticketId}'s completion cannot be confirmed: the project did not load cleanly (${failure.reason}). ` +
+    "An unreadable file may be an owner checkpoint this ticket waits on, so nothing was written and the session is unchanged, " +
+    "its pending completion kept. Fix or restore that file, then retry the same call.",
+  ));
+}
+
+/**
+ * T-537: start, report and resume stop here on a blocked completion. Nothing
+ * advances: the session keeps its state and its pending mutation, so the
+ * completion replays once the owner answers, or the session is cancelled.
+ */
+function checkpointBlockedResult(dir: string, state: FullSessionState, block: CheckpointBlock): McpToolResult {
+  appendEvent(dir, {
+    rev: state.revision,
+    type: "checkpoint_blocked",
+    timestamp: new Date().toISOString(),
+    data: { ticketId: block.ticketId, checkpoints: [...block.checkpoints] },
+  });
+  const plural = block.checkpoints.length === 1 ? "" : "s";
+  return guideError(new Error(
+    `Ticket ${block.ticketId} waits on owner checkpoint${plural} ${block.checkpoints.join(", ")}, not yet approved or retired, ` +
+    "so this session will not complete it or advance past it. The session is unchanged. " +
+    `Once the owner answers, resume with { "sessionId": "${state.sessionId}", "action": "resume" }; ` +
+    `or cancel with { "sessionId": "${state.sessionId}", "action": "cancel" }, which abandons the completion.`,
+  ));
+}
+
+/**
+ * T-537: cancel's handling of a blocked pending completion (see handleCancel),
+ * and of one it could not confirm because the project did not load: cancel
+ * never replays, so abandoning bypasses no checkpoint, and a corrupt file
+ * never makes a session uncancellable.
+ */
+function abandonBlockedCompletion(root: string, dir: string, state: FullSessionState, block: CheckpointBlock | LoadFailure): void {
+  const at = new Date().toISOString();
+  const checkpoints = isLoadFailure(block) ? [] : [...block.checkpoints];
+  const reason = isLoadFailure(block) ? { reason: `load-failed: ${block.reason}` } : {};
+  const entry = {
+    kind: "checkpoint-blocked-abandoned",
+    ticketId: block.ticketId,
+    checkpoints,
+    ...reason,
+    mutation: state.pendingProjectMutation,
+    at,
+  };
+  appendEvent(dir, { rev: state.revision, type: "checkpoint_blocked_abandoned", timestamp: at, data: { ticketId: block.ticketId, checkpoints, ...reason } });
+  const prior = (state as Record<string, unknown>).checkpointBlockedAbandoned;
+  writeSessionAndRefresh(root, dir, {
+    ...state,
+    pendingProjectMutation: null,
+    checkpointBlockedAbandoned: [...(Array.isArray(prior) ? prior : []), entry],
+  } as FullSessionState, "if-active");
+}
+
+/**
  * Recover from a pending project mutation (crash between project write and session clear).
  * Called at the top of all entry points: handleReport, handleResume, handleCancel, handleStart.
  * Idempotent: checks actual ticket state before applying.
@@ -716,9 +838,9 @@ async function recoverPendingMutation(
   dir: string,
   state: FullSessionState,
   root: string,
-): Promise<FullSessionState> {
+): Promise<RecoveryResult> {
   const mutation = state.pendingProjectMutation;
-  if (!mutation || typeof mutation !== "object") return state;
+  if (!mutation || typeof mutation !== "object") return recovered(state);
   const m = mutation as Record<string, unknown>;
   // ISS-090 + ISS-112 + ISS-1052: issue_update recovery. Read, classify, and
   // (if needed) write all happen inside ONE `withProjectLock` transaction --
@@ -792,13 +914,13 @@ async function recoverPendingMutation(
         return fail("malformed-marker");
       });
     } catch {
-      return state; // Lock/IO failure -- leave marker for next attempt, same as ticket_update branch
+      return recovered(state); // Lock/IO failure -- leave marker for next attempt, same as ticket_update branch
     }
     const cleared = { ...state, pendingProjectMutation: null };
-    return writeSessionAndRefresh(root, dir, cleared, "if-active");
+    return recovered(writeSessionAndRefresh(root, dir, cleared, "if-active"));
   }
 
-  if (m.type !== "ticket_update") return state;
+  if (m.type !== "ticket_update") return recovered(state);
 
   const targetId = m.target as string;
   const targetValue = m.value as string;
@@ -822,12 +944,27 @@ async function recoverPendingMutation(
   const epoch = epochPresent ? parseClaimEpoch(rawEpoch) : null;
   const epochMalformed = epochPresent && epoch === null;
 
+  // T-537: replaying or confirming a completion needs a strict load. A file
+  // that does not decode drops out of a lenient load, and a checkpoint that
+  // drops out would read as no blocker at all.
+  const completion = targetValue === "complete";
   let conflict = false;
+  let blocked: readonly string[] | null = null;
   try {
-    const { withProjectLock, writeTicketUnlocked } = await import("../core/project-loader.js");
-    await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
+    const { withProjectLock, writeTicketUnlocked, sortKeysDeep } = await import("../core/project-loader.js");
+    const { completeDependent, evidenceFor } = await import("../core/checkpoint-evidence.js");
+    const { pendingCheckpointBlockers } = await import("../core/owner-checkpoint.js");
+    await withProjectLock(root, { strict: completion }, async ({ state: projectState }) => {
       const ticket = projectState.ticketByID(targetId);
       if (!ticket) return;
+
+      // T-537: every completion this recovery writes goes through
+      // completeDependent; a checkpoint that has not released stops it, and
+      // nothing is written, cleared or advanced.
+      const complete = async (candidate: Ticket): Promise<void> => {
+        const outcome = await completeDependent(projectState, candidate, root);
+        if (outcome.kind === "checkpoint-blocked") blocked = outcome.checkpoints;
+      };
 
       const recordConflict = () => {
         conflict = true;
@@ -868,6 +1005,17 @@ async function recoverPendingMutation(
         // that check, and none of them depend on postMutation to make
         // progress the way report/resume do.
         if (!proven) { recordConflict(); return; }
+        // T-537: an already-applied completion is confirmed only if the
+        // checkpoints it waits on still release; stale evidence is refreshed
+        // through completeDependent, which re-checks under this lock.
+        if (targetValue === "complete") {
+          const waiting = pendingCheckpointBlockers(projectState, ticket);
+          if (waiting.length > 0) { blocked = waiting; return; }
+          if (JSON.stringify(sortKeysDeep(evidenceFor(projectState, ticket))) !== JSON.stringify(sortKeysDeep(ticket.checkpointEvidence ?? []))) {
+            await complete(ticket);
+            if (blocked) return;
+          }
+        }
         // Project write already succeeded -- clear marker
       } else if (expectedCurrent && ticket.status === expectedCurrent) {
         if (!proven) { recordConflict(); return; }
@@ -886,24 +1034,36 @@ async function recoverPendingMutation(
             recordConflict();
             return;
           }
-          await writeTicketUnlocked(completion.ticket, root);
+          await complete(completion.ticket);
+          if (blocked) return;
         } else {
           // Replay the write
           const updated = { ...ticket, status: targetValue as typeof ticket.status };
           if (m.claimedBySession) {
             (updated as Record<string, unknown>).claimedBySession = m.claimedBySession;
           }
-          await writeTicketUnlocked(updated, root);
+          if (updated.status === "complete") {
+            await complete(updated);
+            if (blocked) return;
+          } else {
+            await writeTicketUnlocked(updated, root);
+          }
         }
       } else {
         // Ticket in unexpected state -- conflict: clear marker, do NOT apply postMutation
         recordConflict();
       }
     });
-  } catch {
-    // Lock/IO failure -- leave marker for next attempt
-    return state;
+  } catch (err) {
+    // A completion is refused, marker kept (T-537); any other target keeps
+    // the lock/IO rule: leave the marker for the next attempt.
+    if (completion) return { kind: "load-failed", ticketId: targetId, reason: failureReason(err), state };
+    return recovered(state);
   }
+
+  // T-537: blocked on an owner checkpoint -- marker kept, no postMutation.
+  const blockedOn: readonly string[] | null = blocked;
+  if (blockedOn) return { kind: "checkpoint-blocked", ticketId: targetId, checkpoints: blockedOn, state };
 
   // Conflict detected -- marker cleared, no postMutation applied
   if (conflict) {
@@ -912,7 +1072,7 @@ async function recoverPendingMutation(
     // whose incident motivated this fix. Use resilient read so historical
     // lensReviewHistory disposition corruption does not wedge the handler.
     const { readSessionResilient } = await import("./session.js");
-    return readSessionResilient(dir) ?? state;
+    return recovered(readSessionResilient(dir) ?? state);
   }
 
   // Apply postMutation if present and session not already in target state
@@ -929,7 +1089,7 @@ async function recoverPendingMutation(
     }
   }
 
-  return writeSessionAndRefresh(root, dir, cleared as FullSessionState, "if-active");
+  return recovered(writeSessionAndRefresh(root, dir, cleared as FullSessionState, "if-active"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,10 +1529,14 @@ async function handleStartAfterNormalization(
     if (reconciled?.reconciliation?.status === "completed-consistent") {
       const ticketId = existing.state.ticket?.displayId ?? existing.state.ticket?.id
         ?? reconciled.epoch?.ticketId ?? "unknown";
+      const waiting = await completedTicketCheckpointBlock(root, existing.state.ticket?.id ?? reconciled.epoch?.ticketId);
+      if (waiting) return isLoadFailure(waiting) ? loadFailedResult(existing.dir, existing.state, waiting) : checkpointBlockedResult(existing.dir, existing.state, waiting);
       return terminalizeCompletedSession(root, existing.dir, existing.state, ticketId);
     }
 
-    await recoverPendingMutation(existing.dir, existing.state, root);
+    const startRecovery = await recoverPendingMutation(existing.dir, existing.state, root);
+    if (startRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(existing.dir, existing.state, startRecovery);
+    if (startRecovery.kind === "load-failed") return loadFailedResult(existing.dir, existing.state, startRecovery);
     // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);
   }
@@ -2627,7 +2791,10 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   if (reportBlock) return reportBlock;
 
   // ISS-024: recover any pending mutation before processing
-  state = await recoverPendingMutation(info.dir, state, root);
+  const reportRecovery = await recoverPendingMutation(info.dir, state, root);
+  if (reportRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, state, reportRecovery);
+  if (reportRecovery.kind === "load-failed") return loadFailedResult(info.dir, state, reportRecovery);
+  state = reportRecovery.state;
 
   // ISS-037: retry pending deferrals from previous calls
   state = await drainPendingDeferrals(root, info.dir, state);
@@ -3408,7 +3575,10 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   if (resumeBlock) return resumeBlock;
 
   // ISS-024: recover any pending mutation before processing
-  const recoveredState = await recoverPendingMutation(info.dir, info.state, root);
+  const resumeRecovery = await recoverPendingMutation(info.dir, info.state, root);
+  if (resumeRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, info.state, resumeRecovery);
+  if (resumeRecovery.kind === "load-failed") return loadFailedResult(info.dir, info.state, resumeRecovery);
+  const recoveredState = resumeRecovery.state;
   if (recoveredState !== info.state) {
     const reread = findSessionById(root, args.sessionId);
     if (reread) Object.assign(info, reread);
@@ -4437,7 +4607,21 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // `!resume`: the soft gate exists to stop a cancel from STARTING, and this
   // cancellation already started. Refusing here would strand a session that is
   // durably mid-transition, with no route to finish it.
-  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion) {
+  // T-537: a session whose ticket waits on an owner checkpoint that has not
+  // released cannot progress until the owner answers, so the soft gate stands
+  // down for it too: its pending completion (if any) is abandoned below, and a
+  // FINALIZE parked after its commit ends with the ticket left incomplete. The
+  // claim-ownership checks below are unchanged.
+  const pendingTarget = (() => {
+    const m = info.state.pendingProjectMutation as Record<string, unknown> | null | undefined;
+    return m && m.type === "ticket_update" && m.value === "complete" && typeof m.target === "string" ? m.target : null;
+  })();
+  const checkpointParkedTicket = pendingTarget ?? info.state.ticket?.id ?? null;
+  // A project that does not load stands the gate down too: the session cannot
+  // progress until the file is fixed, and it must stay cancellable.
+  const checkpointParked = !resume && checkpointParkedTicket !== null
+    && (await completedTicketCheckpointBlock(root, checkpointParkedTicket)) !== null;
+  if (!resume && isAutoMode && hasTicketsRemaining && isWorkingState && !isStuck && !claimLost && !consistentCompletion && !checkpointParked) {
     return {
       content: [{
         type: "text",
@@ -4458,7 +4642,14 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     // No ticket work is repeated. The first attempt already ran it, and its
     // result is what the transition record carries.
   } else if (mayWriteTicket) {
-    await recoverPendingMutation(info.dir, info.state, root);
+    const cancelRecovery = await recoverPendingMutation(info.dir, info.state, root);
+    // T-537: a blocked pending completion never makes a session
+    // uncancellable. The completion and its postMutation are suppressed, the
+    // abandonment is recorded, the marker is cleared, and the release and
+    // shutdown below run as usual. A crash before the record repeats this; a
+    // crash after it finds no marker and goes straight to release.
+    if (cancelRecovery.kind === "checkpoint-blocked") abandonBlockedCompletion(root, info.dir, info.state, cancelRecovery);
+    if (cancelRecovery.kind === "load-failed") abandonBlockedCompletion(root, info.dir, info.state, { kind: "load-failed", ticketId: cancelRecovery.ticketId, reason: cancelRecovery.reason });
   } else if (info.state.pendingProjectMutation) {
     writeSessionAndRefresh(
       root, info.dir,

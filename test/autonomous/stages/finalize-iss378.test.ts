@@ -12,7 +12,7 @@
  * expected ticket/issue artifact.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -109,6 +109,27 @@ function makeRecipe(): ResolvedRecipe {
   };
 }
 
+/**
+ * T-537: FINALIZE loads the project to check the ticket's owner checkpoints and
+ * refuses when it does not load, so the fixture carries a minimal loadable
+ * ledger: config, roadmap and the ticket the session names.
+ */
+function writeLoadableLedger(root: string): void {
+  const story = join(root, ".story");
+  mkdirSync(join(story, "tickets"), { recursive: true });
+  writeFileSync(join(story, "config.json"), JSON.stringify({
+    version: 1, schemaVersion: 1, project: "test", type: "npm", language: "typescript",
+    features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+  }));
+  writeFileSync(join(story, "roadmap.json"), JSON.stringify({
+    title: "test", date: "2026-03-30", phases: [{ id: "p1", label: "P1", name: "Phase 1", description: "Test" }], blockers: [],
+  }));
+  writeFileSync(join(story, "tickets", "T-001.json"), JSON.stringify({
+    id: "T-001", title: "Test ticket", type: "task", status: "inprogress", phase: "p1", order: 10,
+    description: "", createdDate: "2026-03-30", completedDate: null, blockedBy: [], parentTicket: null,
+  }));
+}
+
 describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
   let testRoot: string;
   let sessionDir: string;
@@ -118,6 +139,7 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     testRoot = mkdtempSync(join(tmpdir(), "test-iss378-"));
     sessionDir = join(testRoot, ".story", "sessions", "test-session");
     mkdirSync(sessionDir, { recursive: true });
+    writeLoadableLedger(testRoot);
     mockedGitHead.mockReset();
     mockedGitResolveCommit.mockReset();
     mockedGitRevListAncestryPath.mockReset();

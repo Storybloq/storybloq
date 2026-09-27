@@ -41,6 +41,8 @@ import {
 import { listHandovers } from "./handover-parser.js";
 import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabilities.js";
 import { validateProject } from "./validation.js";
+import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import type { ZodType } from "zod";
 
 // --- Public Types ---
@@ -295,10 +297,16 @@ export async function loadProject(
  * is permanently mixed, so a legacy item's `id` IS `T-001` while a
  * post-migration item's `id` is the hash and its display id lives in a separate
  * field. Re-deriving a filename from a display id writes a second, dark file.
+ *
+ * T-537: this is also the owner-checkpoint write guard. It reads the file
+ * being replaced and refuses a checkpoint or evidence change the caller holds
+ * no authority for (core/checkpoint-guard.ts). The caller holds the project
+ * lock, so what it reads is what the write replaces.
  */
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
+  options?: { authority?: CheckpointWriteAuthority },
 ): Promise<{ target: string; content: string }> {
   const parsed = TicketSchema.parse(ticket);
   if (!TICKET_ID_REGEX.test(parsed.id) && !TICKET_CANONICAL_ID_REGEX.test(parsed.id)) {
@@ -310,15 +318,26 @@ export async function prepareTicketWrite(
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "tickets", `${parsed.id}.json`);
   await guardPath(target, wrapDir);
+  const prior = priorForGuard(await readIfExists(target), `tickets/${parsed.id}.json`);
+  assertCheckpointWriteAllowed(prior, parsed, options?.authority);
   return { target, content: serializeJSON(parsed) };
+}
+
+async function readIfExists(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new ProjectLoaderError("io_error", `Cannot read ${path} to check the write`, err);
+  }
 }
 
 export async function writeTicketUnlocked(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority },
 ): Promise<void> {
-  const { target, content } = await prepareTicketWrite(ticket, root);
+  const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -502,6 +521,16 @@ export async function deleteTicket(
 
   return withLock(wrapDir, async () => {
     await assertNoConflictsFromDisk(root);
+
+    // T-537: retirement is the only way out of an owner checkpoint. Soft,
+    // hard and forced deletion are all refused, whatever the mode.
+    const onDisk = priorForGuard(await readIfExists(targetPath), `tickets/${id}.json`);
+    if (onDisk !== null && hasOwnerCheckpoint(onDisk)) {
+      throw new ProjectLoaderError(
+        "conflict",
+        `Cannot delete ${id}: it is an owner checkpoint. A checkpoint is never deleted; retire it instead, which releases its dependents.`,
+      );
+    }
 
     const teamModeResult = options?.hard ? false : await isTeamMode(root);
     if (teamModeResult === "error" && !options?.hard) {

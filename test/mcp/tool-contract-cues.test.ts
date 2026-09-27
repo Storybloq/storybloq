@@ -271,6 +271,9 @@ const CONTRACT_CUES: readonly ContractCue[] = [
   { tool: "storybloq_unregister_subprocess", kind: "precedence", cue: "works even on expired/terminal sessions" },
   { tool: "storybloq_validate", kind: "enum-semantic", cue: "Scan all .story JSON without loading project state" },
   { tool: "storybloq_validate", kind: "selection", cue: "Works even when corrupt JSON blocks project loading" },
+  { tool: "storybloq_checkpoint_* (expected state, 4 tools)", kind: "constraint", cue: "a stale one is refused" },
+  { tool: "storybloq_checkpoint_create", kind: "constraint", cue: "Needs `checkpoint enable` first" },
+  { tool: "storybloq_checkpoint_resolve", kind: "constraint", cue: "An acceptance needs artifactRef" },
 ];
 
 async function emittedPayload(): Promise<string> {
@@ -437,7 +440,17 @@ describe("tool description contract (T-460)", () => {
     // `branch` on supersede and four narrative fields on create/supersede/
     // propose, measured at 77,269 bytes; ceiling sized to headroom by T-523's
     // rule (feature cost 4,566 bytes; headroom 2,731).
-    expect(bytes).toBeLessThan(80_000);
+    // T-537 S5 adds the six owner checkpoint write tools. Measured: 78,477
+    // bytes without them, 82,915 as first written, 82,718 after trimming each
+    // description to its reference.md one-liner (197 bytes). What remains,
+    // 4,241 bytes, is schema: the expected-state triple and the content
+    // fields with their bounds, which are contract, as are the three cues
+    // above. Then 83,019 once resolve gained its ruling provenance
+    // (rulingAttribution, rulingScopeTags, clientTaskId: 301 bytes), so the
+    // feature costs 4,542. The old ceiling left 1,523 bytes, under one
+    // feature's worth, so it is raised to 87,600: the 83,019 floor plus this
+    // feature's own cost, rounded up to the hundred, per T-523's rule.
+    expect(bytes).toBeLessThan(87_600);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {
@@ -489,6 +502,10 @@ describe("tool description contract (T-460)", () => {
     // stays CLI-only.
     // T-528 adds storybloq_projection_write (94 -> 95): the Mac app's reader
     // needs a full-freshness projection an agent can regenerate on request.
-    expect(result.tools.length).toBe(95);
+    // T-537 S5 adds six checkpoint tools (95 -> 101): create, attach,
+    // resolve, change, reopen, retire. enable, resolve-conflict and list stay
+    // CLI-only: enable changes how git merges the ledger, a conflict is the
+    // merging person's to settle, and ticket get/list already show checkpoints.
+    expect(result.tools.length).toBe(101);
   });
 });

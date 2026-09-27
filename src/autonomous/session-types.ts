@@ -1391,6 +1391,12 @@ export const SessionStateSchema = z.object({
   // (the ISS-902 escalation class). Shape is asserted at the write site.
   quarantinedMutations: z.array(z.any()).default([]),
 
+  // T-537: pending completions a cancel suppressed because the ticket waits
+  // on an owner checkpoint that has not released. Audit trail, `z.any()` for
+  // the same reason as quarantinedMutations; shape asserted at the write site
+  // ({ kind: "checkpoint-blocked-abandoned", ticketId, checkpoints, mutation, at }).
+  checkpointBlockedAbandoned: z.array(z.any()).default([]),
+
   // COMPACT resume
   resumeFromRevision: z.number().nullable().default(null),
   preCompactState: z.string().nullable().default(null),

@@ -13,6 +13,8 @@ import { agentFallbackLines } from "./review-gate.js";
 import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { pendingKnowledgeReview, routeAfterFinalize } from "./knowledge-routing.js";
 import { finalizeEnterRoute, inspectLandedCommit, itemBaseline } from "../landed-commit.js";
+import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
+import type { ProjectState } from "../../core/project-state.js";
 
 // itemBaseline (ISS-922) lives in landed-commit.ts (T-534), shared with the retirement.
 
@@ -217,6 +219,34 @@ function itemArtifactPath(state: FullSessionState): string | null {
 }
 
 /**
+ * T-537: the ticket being finalized must still be eligible to complete: it is
+ * not itself an owner checkpoint and every checkpoint it waits on has
+ * released. Returns the refusal instruction, or null when it may proceed. The
+ * completion write itself goes through `completeDependent`
+ * (ticket update), which re-checks under the project lock.
+ */
+async function checkpointFinalizeBlock(ctx: StageContext, at: "enter" | "commit"): Promise<string | null> {
+  const ticketId = ctx.state.ticket?.id;
+  if (!ticketId) return null;
+  let state: ProjectState;
+  try {
+    ({ state } = await ctx.loadProject());
+  } catch (err) {
+    return `Cannot verify owner checkpoints for this ticket: the project did not load (${err instanceof Error ? err.message : String(err)}). Fix the .story/ files, then call me again.`;
+  }
+  const ticket = state.ticketByID(ticketId);
+  if (!ticket) return null;
+  const eligibility = assertCheckpointEligible(state, ticket, "complete");
+  if (eligibility.kind === "eligible") return null;
+  const next = at === "enter"
+    ? "Do not commit and do not mark the ticket complete. The owner answers the checkpoint; once it is approved or retired, call me again."
+    : "The commit you reported has already landed and stays in git; nothing replays or completes the ticket for it. " +
+      "This session does not advance until the owner answers: once the checkpoint is approved or retired, report the commit again. " +
+      "Cancelling instead abandons the completion: the ticket is left incomplete and the claim is released.";
+  return [describeIneligible(state, ticket, "complete", eligibility), "", next].join("\n");
+}
+
+/**
  * FINALIZE stage -- 3-checkpoint sub-machine for staging, pre-commit, and commit.
  *
  * Checkpoints (tracked via state.finalizeCheckpoint):
@@ -241,6 +271,9 @@ export class FinalizeStage implements WorkflowStage {
     if (ctx.state.finalizeCheckpoint === "committed") {
       return routeAfterFinalize(ctx, { action: "advance" });
     }
+
+    const blockedAtEnter = await checkpointFinalizeBlock(ctx, "enter");
+    if (blockedAtEnter) return { instruction: blockedAtEnter };
 
     const busBlockers = await busShipBlockers(ctx);
     if (busBlockers.length > 0) {
@@ -568,6 +601,11 @@ export class FinalizeStage implements WorkflowStage {
 
   private async handleCommit(ctx: StageContext, report: GuideReportInput): Promise<StageAdvance> {
     const checkpoint = ctx.state.finalizeCheckpoint;
+
+    // T-537: re-checked before the commit is accepted, so a checkpoint
+    // reopened or changed after FINALIZE began stops the completion here.
+    const blockedAtCommit = await checkpointFinalizeBlock(ctx, "commit");
+    if (blockedAtCommit) return { action: "retry", instruction: blockedAtCommit };
 
     if (!checkpoint || checkpoint === null) {
       return { action: "retry", instruction: 'You must stage files first. Call me with completedAction: "files_staged" after staging.' };

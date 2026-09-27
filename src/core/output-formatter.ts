@@ -33,6 +33,7 @@ import type { Earmark } from "../models/types.js";
 import type { StorybloqClient } from "../autonomous/client-profile.js";
 import { sanitizeDisplayText, sanitizeDisplayPath, MAX_PROSE_LENGTH } from "./display-text.js";
 import { boundedLines } from "./bounded-list.js";
+import { checkpointCounts, checkpointSummary, type CheckpointCounts, type CheckpointSummary } from "./checkpoint-display.js";
 import type { CitationResolution } from "./ruling.js";
 import { renderCitation, rulingAttributionCaveat } from "./ruling.js";
 import type { Ruling } from "../models/ruling.js";
@@ -950,6 +951,9 @@ export function formatStatus(
     // T-507: present only when the caller read the roster (handleStatus
     // always does); an absent key means "not read", never "no seats".
     ...(roster ? { roster } : {}),
+    // T-537 S5: always present, zeros when there are none. Not in the compact
+    // payload, whose schema T-320 pinned.
+    checkpoints: checkpointCounts(state.tickets),
   };
 
   if (format === "json") {
@@ -960,6 +964,7 @@ export function formatStatus(
     `# ${escapeMarkdownInline(state.config.project)}`,
     "",
     `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
+    ...checkpointStatusLines(data.checkpoints),
     issueLine(state),
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
     `Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`,
@@ -1262,7 +1267,7 @@ export function formatPhaseTickets(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        tickets.map((t) => ({ ...t, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+        tickets.map((t) => ({ ...t, ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
       ),
       null,
       2,
@@ -1278,6 +1283,44 @@ export function formatPhaseTickets(
   return lines.join("\n");
 }
 
+/** The derived checkpoint view a ticket's JSON carries beside its raw `ownerCheckpoint`; absent when it has none. */
+function checkpointJson(ticket: Ticket): { checkpoint?: CheckpointSummary } {
+  const summary = checkpointSummary(ticket);
+  return summary ? { checkpoint: summary } : {};
+}
+
+const checkpointText = (s: string) => escapeMarkdownInline(sanitizeDisplayText(s));
+
+/** One line for a checkpoint, as `checkpoint list` prints it. */
+export function formatCheckpointLine(s: CheckpointSummary): string {
+  const what = s.kind === "acceptance" ? s.criteria : s.question;
+  const parts = [`${checkpointText(s.id)} [checkpoint ${s.state}]`, checkpointText(s.title)];
+  if (s.owner) parts.push(`owner ${checkpointText(s.owner)}`);
+  if (what) parts.push(`${s.kind === "acceptance" ? "criteria" : "question"}: ${checkpointText(what)}`);
+  if (s.expected) parts.push(`expected ${expectedFlags(s)}`);
+  if (s.reason) parts.push(`unrecognized: ${checkpointText(s.reason)}`);
+  return `- ${parts.join(" | ")}`;
+}
+
+function expectedFlags(s: CheckpointSummary): string {
+  return s.expected ? `--generation ${s.expected.generation} --revision ${s.expected.revision} --digest ${s.expected.digest}` : "";
+}
+
+function checkpointDetailLines(s: CheckpointSummary): string[] {
+  const lines = ["", "## Owner checkpoint", "", `State: ${s.state}${s.kind ? ` | Kind: ${s.kind}` : ""}${s.owner ? ` | Owner: ${checkpointText(s.owner)}` : ""}`];
+  if (s.question !== undefined) lines.push(`Question: ${checkpointText(s.question)}`);
+  if (s.criteria !== undefined) lines.push(`Criteria: ${checkpointText(s.criteria)}`);
+  if (s.expected) lines.push(`Expected state: ${expectedFlags(s)}`);
+  if (s.reason) lines.push(`Unrecognized: ${checkpointText(s.reason)}`);
+  return lines;
+}
+
+function checkpointStatusLines(c: CheckpointCounts): string[] {
+  if (c.pending + c.approved + c.retired + c.unrecognized === 0) return [];
+  const unrecognized = c.unrecognized > 0 ? `, ${c.unrecognized} unrecognized` : "";
+  return [`Checkpoints: ${c.pending} pending, ${c.approved} approved, ${c.retired} retired${unrecognized}`];
+}
+
 export function formatTicket(
   ticket: Ticket,
   state: ProjectState,
@@ -1288,7 +1331,7 @@ export function formatTicket(
 ): string {
   if (format === "json") {
     return JSON.stringify(
-      successEnvelope({ ...ticket, citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields }),
+      successEnvelope({ ...ticket, ...checkpointJson(ticket), citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields }),
       null,
       2,
     );
@@ -1310,6 +1353,8 @@ export function formatTicket(
   if (ticket.parentTicket) {
     lines.push(`Parent: ${resolveTicketRefDisplay(ticket.parentTicket, state)}`);
   }
+  const checkpoint = checkpointSummary(ticket);
+  if (checkpoint) lines.push(...checkpointDetailLines(checkpoint));
   if (ticket.description) {
     lines.push("", "## Description", "", fencedBlock(ticket.description));
   }
@@ -1458,7 +1503,7 @@ export function formatTicketList(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        tickets.map((t) => ({ ...t, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+        tickets.map((t) => ({ ...t, ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
       ),
       null,
       2,
@@ -1468,7 +1513,9 @@ export function formatTicketList(
   const lines: string[] = [];
   for (const t of tickets) {
     const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
-    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} (${t.phase ?? "none"})`);
+    const checkpoint = checkpointSummary(t);
+    const mark = checkpoint ? ` [checkpoint ${checkpoint.state}]` : "";
+    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${mark} (${t.phase ?? "none"})`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
     if (rulingsSection) lines.push(rulingsSection);
   }
@@ -3304,7 +3351,10 @@ function truncate(text: string, maxLen: number): string {
 function formatTicketOneLiner(t: Ticket, state: ProjectState): string {
   const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
   const blocked = state.isBlocked(t) ? " [BLOCKED]" : "";
-  return `${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${blocked}`;
+  // T-537: a checkpoint's stored status says nothing about its answer.
+  const checkpoint = checkpointSummary(t);
+  const mark = checkpoint ? ` [checkpoint ${checkpoint.state}]` : "";
+  return `${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${mark}${blocked}`;
 }
 
 // --- Reference ---
@@ -3343,11 +3393,18 @@ export function formatReference(
   lines.push("Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.");
   lines.push("");
   for (const cmd of commands) {
-    const suffix = cmd.usage.slice(`storybloq ${cmd.name}`.length);
-    const positionals = suffix.split(/\s+\[?--/)[0]!.trim();
-    const flags = (cmd.flags ?? []).map(flag => flag + (cmd.usage.includes(`[${flag}`) ? "?" : ""));
-    const argumentsList = flags.length ? ` (${flags.join(", ")})` : "";
-    lines.push(`- **${cmd.name}${positionals ? ` ${positionals}` : ""}**${argumentsList} - ${cmd.description}`);
+    // A usage with alternatives ("storybloq x <a> | storybloq x --b") renders each form with its own flags.
+    const forms = cmd.usage.split(" | storybloq ").map((u, i) => (i === 0 ? u : `storybloq ${u}`));
+    const rendered = forms.map((form) => {
+      const suffix = form.slice(`storybloq ${cmd.name}`.length);
+      const positionals = suffix.split(/\s+\[?--/)[0]!.trim();
+      const flags = (cmd.flags ?? [])
+        .filter((flag) => forms.length === 1 || form.includes(flag))
+        .map((flag) => flag + (form.includes(`[${flag}`) ? "?" : ""));
+      const argumentsList = flags.length ? ` (${flags.join(", ")})` : "";
+      return `**${cmd.name}${positionals ? ` ${positionals}` : ""}**${argumentsList}`;
+    });
+    lines.push(`- ${rendered.join(" | ")} - ${cmd.description}`);
   }
   lines.push("");
 

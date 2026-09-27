@@ -16,7 +16,7 @@
  * pinned its root does not notice the move at all.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { registerSidebar, IDLE_POLL_TICKS, MOD_VERSION, contextLabel } from "../../plugins/storybloq/hooks/sidebar.js";
+import { registerSidebar, IDLE_POLL_TICKS, SETUP_HINT, MOD_VERSION, contextLabel } from "../../plugins/storybloq/hooks/sidebar.js";
 import { cellWidth } from "../../plugins/storybloq/hooks/terminal-text.js";
 
 const PANE_ID = "storybloq";
@@ -384,17 +384,42 @@ describe("ISS-1239: the ledger root is pinned at session.start", () => {
     expect(h.render()).toContain("T-001");
   });
 
-  it("5c. a reload re-pins, re-arms the purge and can speak again", async () => {
+  it("5c. the setup hint is once per session and root (T-537), and a reload re-pins and re-arms the purge", async () => {
+    // T-537's owner spec: "one actionable setup hint per session/root, quiet
+    // during repeated renders, attach when initialization finishes".
+    const hints = () => h.logs.filter((line) => line.includes("no .story directory here"));
     h.fs.addDir("/repo");
+    h.fs.addDir("/other");
     await h.start("/repo");
     await h.settle();
-    expect(h.logs.filter((line) => line.includes("no .story directory here"))).toHaveLength(1);
+    expect(hints()).toHaveLength(1);
+    expect(hints()[0]).toContain(SETUP_HINT);
+    expect(SETUP_HINT).toContain("/story");
 
-    // Same session, reload, still no ledger: the said-once flags are per
-    // session start, so the diagnostic is not swallowed the second time.
+    // Repeated renders and turns stay quiet.
+    h.render();
+    await h.fire("turn.complete", {});
+    await h.settle();
+    expect(hints()).toHaveLength(1);
+
+    // Same session, reload, same root, still no ledger: quiet.
     await h.start("/repo");
     await h.settle();
-    expect(h.logs.filter((line) => line.includes("no .story directory here"))).toHaveLength(2);
+    expect(hints()).toHaveLength(1);
+
+    // A different root is told once.
+    await h.start("/other");
+    await h.settle();
+    await h.start("/other");
+    await h.settle();
+    expect(hints()).toHaveLength(2);
+
+    // Initialization finishes: the pane attaches on the next refresh,
+    // without a new session start.
+    seedLedger(h.fs, "/other");
+    await h.fire("turn.complete", {});
+    await h.settle();
+    expect(h.render()).toContain("T-001");
 
     // Now a real ledger and a real reload: it pins, and the purge is armed,
     // so a genuine deletion still clears the board.

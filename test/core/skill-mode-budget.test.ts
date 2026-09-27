@@ -157,7 +157,11 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // ISS-1303 / ISS-1305: the duet spawn entry documents the --model default
   // and the no-ledger --dir launch; 47,992 at HEAD before the regeneration,
   // 48,120 measured after. Generated file; 49,000 by the same one-step rule.
-  "reference.md": 49000,
+  // T-537 S5: nine `checkpoint` CLI leaves and six storybloq_checkpoint_*
+  // tools, with resolve's ruling provenance flags; 48,470 at HEAD before the
+  // regeneration, 51,057 measured after. Generated file; 52,000 by the same
+  // one-step rule.
+  "reference.md": 52000,
   "federation-setup.md": 14000,
   // Was 47000 (measured 46,936 before this issue). ISS-1240 adds the roster
   // pointer to the pen priming order: live seats come from

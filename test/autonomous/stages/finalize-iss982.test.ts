@@ -11,7 +11,7 @@
  * related).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -151,6 +151,27 @@ function readEvents(sessionDir: string): Array<{ type: string; data: Record<stri
     .map((l) => JSON.parse(l));
 }
 
+/**
+ * T-537: FINALIZE loads the project to check the ticket's owner checkpoints and
+ * refuses when it does not load, so the fixture carries a minimal loadable
+ * ledger: config, roadmap and the ticket the session names.
+ */
+function writeLoadableLedger(root: string): void {
+  const story = join(root, ".story");
+  mkdirSync(join(story, "tickets"), { recursive: true });
+  writeFileSync(join(story, "config.json"), JSON.stringify({
+    version: 1, schemaVersion: 1, project: "test", type: "npm", language: "typescript",
+    features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+  }));
+  writeFileSync(join(story, "roadmap.json"), JSON.stringify({
+    title: "test", date: "2026-03-30", phases: [{ id: "p1", label: "P1", name: "Phase 1", description: "Test" }], blockers: [],
+  }));
+  writeFileSync(join(story, "tickets", "T-001.json"), JSON.stringify({
+    id: "T-001", title: "Test ticket", type: "task", status: "inprogress", phase: "p1", order: 10,
+    description: "", createdDate: "2026-03-30", completedDate: null, blockedBy: [], parentTicket: null,
+  }));
+}
+
 describe("ISS-982: FINALIZE commit-attribution check", () => {
   let testRoot: string;
   let sessionDir: string;
@@ -160,6 +181,7 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     testRoot = mkdtempSync(join(tmpdir(), "test-iss982-"));
     sessionDir = join(testRoot, ".story", "sessions", "test-session");
     mkdirSync(sessionDir, { recursive: true });
+    writeLoadableLedger(testRoot);
     mockedGitHead.mockReset();
     mockedGitDiffTreeNames.mockReset();
     mockedGitDiffCachedNames.mockReset();

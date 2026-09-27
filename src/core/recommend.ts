@@ -25,6 +25,8 @@ import { validateProject } from "./validation.js";
 import { notHiddenByEarmark } from "./earmarks.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { applyClaimAnnotations } from "./claims.js";
+import { checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers, reassessCheckpoints } from "./owner-checkpoint.js";
+import { displayIdOf } from "./resolver.js";
 import type { Claim } from "../models/types.js";
 
 // --- Types ---
@@ -44,7 +46,8 @@ export type RecommendCategory =
   | "quick_win"
   | "open_issue"
   | "handover_context"
-  | "debt_trend";
+  | "debt_trend"
+  | "checkpoint_reassess";
 
 export interface RecommendOptions {
   /** Successfully-read handovers, last 10 intended, newest first. Replaces `latestHandoverContent`. */
@@ -153,6 +156,21 @@ export function computeActionability(
   }
   if (kind === "ticket") {
     const ticket = item as Ticket;
+    // T-537: an owner checkpoint is the owner's to answer, never agent work;
+    // its status alone does not say whether it released.
+    if (hasOwnerCheckpoint(ticket)) {
+      const cpState = checkpointState(ticket);
+      if (cpState === "approved" || cpState === "retired") {
+        return { status: "complete", reason: `owner checkpoint ${cpState}`, source: "ledger" };
+      }
+      return {
+        status: "owner_gated",
+        reason: cpState === "unrecognized"
+          ? "owner checkpoint this CLI cannot read; it blocks until the file is fixed by hand"
+          : "owner checkpoint awaiting the owner's answer",
+        source: "ledger",
+      };
+    }
     // Umbrella stored status is ignored project-wide (see phaseStatus/umbrellaStatus);
     // an umbrella's completion is derived from its descendant leaves instead.
     const ticketStatus = ctx.state.isUmbrella(ticket)
@@ -160,6 +178,14 @@ export function computeActionability(
       : ticket.status;
     if (ticketStatus === "complete") {
       return { status: "complete", reason: "ticket is complete", source: "ledger" };
+    }
+    const waitingOn = pendingCheckpointBlockers(ctx.state, ticket);
+    if (waitingOn.length > 0) {
+      const labels = waitingOn.map((c) => {
+        const t = ctx.state.ticketByID(c);
+        return t ? displayIdOf(t) : c;
+      });
+      return { status: "owner_gated", reason: `waits on owner checkpoint ${labels.join(", ")}`, source: "ledger" };
     }
     if (ctx.state.isBlocked(ticket) || isCrossNodeBlocked(ticket, ctx.crossNodeRefStatuses)) {
       return { status: "blocked", reason: "blocked by an incomplete dependency", source: "ledger" };
@@ -266,6 +292,7 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
   debt_trend: 13,
   quick_win: 14,
   open_issue: 15,
+  checkpoint_reassess: 16,
 };
 
 /**
@@ -310,6 +337,7 @@ export function recommend(
   const crossNodeStatuses = options?.crossNodeRefStatuses;
   const generators = [
     () => generateValidationSuggestions(state),
+    () => generateCheckpointReassessments(state),
     () => generateCriticalIssues(state),
     () => generateInProgressTickets(state, phaseIndex, crossNodeStatuses),
     () => generateHighImpactUnblocks(state, crossNodeStatuses),
@@ -525,6 +553,41 @@ function generateValidationSuggestions(
       score: 1000,
     },
   ];
+}
+
+/**
+ * T-537: a completed ticket whose owner checkpoint changed, reopened or
+ * stopped releasing since the completion (a reassessment flag). The flag
+ * clears only by re-completing the ticket, which records fresh evidence.
+ *
+ * Scores occupy their own band, 801-850 (850 for the first row, one less per
+ * row, floored at 801): above ticket work (in-progress tickets start at 800),
+ * since shipped work may no longer match what the owner decided, and inside
+ * the lower half of the critical-issue range (801-900), so the first critical
+ * issues still lead.
+ */
+function generateCheckpointReassessments(state: ProjectState): Recommendation[] {
+  const out: Recommendation[] = [];
+  let index = 0;
+  for (const ticket of state.leafTickets) {
+    if (ticket.status !== "complete" || !isActiveLifecycle(ticket)) continue;
+    const flagged = reassessCheckpoints(state, ticket).filter((v) => v.flag);
+    if (flagged.length === 0) continue;
+    const labels = flagged.map((v) => {
+      const t = state.ticketByID(v.checkpoint);
+      return t ? displayIdOf(t) : v.checkpoint;
+    });
+    out.push({
+      id: `checkpoint-reassess:${ticket.id}`,
+      displayId: ticket.displayId ?? undefined,
+      kind: "action",
+      title: `Re-verify ${displayIdOf(ticket)} against owner checkpoint${labels.length === 1 ? "" : "s"} ${labels.join(", ")}`,
+      category: "checkpoint_reassess",
+      reason: "completed against an owner answer that has since changed; re-verify, then complete it again to record the current answer",
+      score: 850 - Math.min(index++, 49),
+    });
+  }
+  return out;
 }
 
 function generateCriticalIssues(state: ProjectState): Recommendation[] {

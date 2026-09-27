@@ -1,0 +1,3005 @@
+{
+  "schemaVersion": 1,
+  "digests": [
+    {
+      "name": "decision",
+      "content": {
+        "kind": "decision",
+        "question": "Ship with dark mode?",
+        "evidenceRefs": []
+      },
+      "projection": "{\"evidenceRefs\":[],\"kind\":\"decision\",\"question\":\"Ship with dark mode?\"}",
+      "digest": "2615071fab6bd626f7e763b80bf442ed190633c7ea7b3bfb7dd6469648e2f64e"
+    },
+    {
+      "name": "acceptance",
+      "content": {
+        "kind": "acceptance",
+        "criteria": "Signup works end to end",
+        "evidenceRefs": [
+          "docs/demo.md",
+          "T-001"
+        ]
+      },
+      "projection": "{\"criteria\":\"Signup works end to end\",\"evidenceRefs\":[\"docs/demo.md\",\"T-001\"],\"kind\":\"acceptance\"}",
+      "digest": "e7ba539eb4ebc7e27bed681be0023ff9f86a7ed837a12ee8961194028d6863c9"
+    },
+    {
+      "name": "evidence-order-kept",
+      "content": {
+        "kind": "acceptance",
+        "criteria": "Signup works end to end",
+        "evidenceRefs": [
+          "T-001",
+          "docs/demo.md"
+        ]
+      },
+      "projection": "{\"criteria\":\"Signup works end to end\",\"evidenceRefs\":[\"T-001\",\"docs/demo.md\"],\"kind\":\"acceptance\"}",
+      "digest": "dc0142dde0cc2657e27951bfa93b465322f63b2f60dd6bfe9e043f1c60db1026"
+    },
+    {
+      "name": "null-question-omitted",
+      "content": {
+        "kind": "acceptance",
+        "question": null,
+        "criteria": "c",
+        "evidenceRefs": []
+      },
+      "projection": "{\"criteria\":\"c\",\"evidenceRefs\":[],\"kind\":\"acceptance\"}",
+      "digest": "142606d712b3fdf738755ba61d74cecdbd52f2e2e899417cdac745ce6a1a925b"
+    },
+    {
+      "name": "nfd-normalised",
+      "content": {
+        "kind": "decision",
+        "question": "Café or té?",
+        "evidenceRefs": [
+          "résumé.md"
+        ]
+      },
+      "projection": "{\"evidenceRefs\":[\"résumé.md\"],\"kind\":\"decision\",\"question\":\"Café or té?\"}",
+      "digest": "c72ccf7a43340bdd1c68c13b0825fc6b9db5ed7adfa33a960ec10345a46c86f7"
+    },
+    {
+      "name": "nfc-equivalent",
+      "content": {
+        "kind": "decision",
+        "question": "Café or té?",
+        "evidenceRefs": [
+          "résumé.md"
+        ]
+      },
+      "projection": "{\"evidenceRefs\":[\"résumé.md\"],\"kind\":\"decision\",\"question\":\"Café or té?\"}",
+      "digest": "c72ccf7a43340bdd1c68c13b0825fc6b9db5ed7adfa33a960ec10345a46c86f7"
+    },
+    {
+      "name": "escapes",
+      "content": {
+        "kind": "decision",
+        "question": "quote \" backslash \\ newline \n tab \t bell \u0007 del  sep   emoji 😀",
+        "evidenceRefs": [
+          "a/\"b\"",
+          "\u0000"
+        ]
+      },
+      "projection": "{\"evidenceRefs\":[\"a/\\\"b\\\"\",\"\\u0000\"],\"kind\":\"decision\",\"question\":\"quote \\\" backslash \\\\ newline \\n tab \\t bell \\u0007 del  sep   emoji 😀\"}",
+      "digest": "ba9fcadaf3aba95e5018915f0d2314f9cd773088ea742b218876468c730e393f"
+    },
+    {
+      "name": "both-texts",
+      "content": {
+        "kind": "decision",
+        "question": "q",
+        "criteria": "c",
+        "evidenceRefs": [
+          "x"
+        ]
+      },
+      "projection": "{\"criteria\":\"c\",\"evidenceRefs\":[\"x\"],\"kind\":\"decision\",\"question\":\"q\"}",
+      "digest": "fc2cd03d0135e678251779fc9b372660c4f09bc676de4dea9330a8438b97d1a4"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "pending",
+      "description": "an open checkpoint with no resolution blocks its dependent",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "approved",
+      "description": "a complete checkpoint with a current resolution releases; evidence at the current values is clear (2a)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2a",
+              "flag": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "approved-status-open",
+      "description": "a resolution alone does not approve: the checkpoint ticket must be complete",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "stale-stored-digest",
+      "description": "the content changed while the stored digest did not: recomputation refuses the approval (2c for the dependent)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed differently?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "resolution-generation-mismatch",
+      "description": "a resolution from an earlier generation does not approve",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 3,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "acceptance-without-artifact",
+      "description": "an acceptance needs the reviewed artifact",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "acceptance",
+            "criteria": "Works",
+            "evidenceRefs": [
+              "demo.md"
+            ],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "acceptance",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+                "evidenceRefs": [
+                  "demo.md"
+                ]
+              },
+              {
+                "event": "resolved",
+                "kind": "acceptance",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+                "evidenceRefs": [
+                  "demo.md"
+                ]
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "acceptance-with-artifact",
+      "description": "an acceptance with its artifact approves",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "acceptance",
+            "criteria": "Works",
+            "evidenceRefs": [
+              "demo.md"
+            ],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "acceptance",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+                "evidenceRefs": [
+                  "demo.md"
+                ]
+              },
+              {
+                "event": "resolved",
+                "kind": "acceptance",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+                "evidenceRefs": [
+                  "demo.md"
+                ]
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "a638c10f8cfb218776d0dd29abf07eaf537d694810c94246219b35452a540753",
+              "generation": 2,
+              "artifactRef": "demo.md@abc"
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "retired",
+      "description": "a retired checkpoint releases with its status open; completion after retirement is clear (2b)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "retired"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "retired",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2b",
+              "flag": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "approved-evidence-on-retired",
+      "description": "evidence state approved against a retired checkpoint flags (2c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "retired",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "retired-evidence-on-approved",
+      "description": "evidence state retired against an approved checkpoint flags (2c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "retired"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "approved-generation-mismatch",
+      "description": "a reopen and reapproval with unchanged content moves the generation: old approved evidence flags (2c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 5,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "reopened",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 4,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 5
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-approved",
+      "description": "legacy completion, no evidence, history only created and resolved, checkpoint approved: clear (3b)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3b",
+              "flag": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-reopened",
+      "description": "legacy completion whose checkpoint was reopened and reapproved: flags (3a)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 5,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "reopened",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 4,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 5
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3a",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-retirement",
+      "description": "legacy completion, checkpoint retired: retirement is a release, clear (3b)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "retired",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3b",
+              "flag": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-pending",
+      "description": "legacy completion, checkpoint still pending: flags (3c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-approved-side-conflict",
+      "description": "an approved-side conflict leaves the checkpoint pending: legacy dependents flag (3c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 3,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "conflict-resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "legacy-retired-side-conflict",
+      "description": "retirement adopted by a conflict: every event is release-preserving, clear (3b)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 4,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "conflict-resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retirement-adopted",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 4,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "retired",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "3b",
+              "flag": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "retirement-adopted",
+      "description": "retire at 4, conflict to 5: evidence at 5 is clear (2b); evidence at 4, completed before the conflict, flags (2c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 5,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "changed",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 4,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retirement-adopted",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 5,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 5,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "retired"
+            }
+          ]
+        },
+        {
+          "id": "T-003",
+          "title": "T-003",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 4,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "retired"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "retired",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2b",
+              "flag": false
+            }
+          ]
+        },
+        {
+          "id": "T-003",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unknown-kind",
+      "description": "an unrecognized checkpoint blocks and never releases (1)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "vote",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "1",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "null-checkpoint",
+      "description": "JSON null is present, not absent: unrecognized, blocks (1)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": null
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "1",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "soft-deleted-checkpoint",
+      "description": "a soft-deleted checkpoint never releases (1)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "lifecycle": "deleted",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-001",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "1",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "missing-checkpoint",
+      "description": "evidence naming a checkpoint that no longer exists flags (1)",
+      "tickets": [
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "checkpointEvidence": [
+            {
+              "checkpoint": "T-009",
+              "generation": 2,
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "state": "approved"
+            }
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-009",
+              "row": "1",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "malformed-evidence",
+      "description": "malformed evidence flags every checkpoint blocker (2c)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ],
+          "checkpointEvidence": "approved"
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": [
+            {
+              "checkpoint": "T-001",
+              "row": "2c",
+              "flag": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "open-dependent",
+      "description": "a dependent that is not complete is never reassessed",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 5,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "reopened",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 3,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 4,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 5
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "ordinary-blocker",
+      "description": "a blocker without a checkpoint is not a checkpoint blocker",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": []
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "resolution-revision-mismatch",
+      "description": "a resolution for another revision does not approve",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 2,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 2,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 2,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "resolution-digest-mismatch",
+      "description": "a resolution for another digest does not approve",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "pending",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "counter-at-limit",
+      "description": "generation and revision at 9007199254740991 (MAX_SAFE_INTEGER) are valid",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 9007199254740991,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 9007199254740991,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 9007199254740991,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 9007199254740991,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 9007199254740991,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 9007199254740991
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "approved",
+          "releases": true,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "generation-above-limit",
+      "description": "a generation above MAX_SAFE_INTEGER is unrecognized",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 9007199254740992,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 9007199254740992
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "replacement-character",
+      "description": "U+FFFD in reviewed text is unrecognized in both languages (the app's decoder substitutes it for a lone surrogate)",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "x�",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "3d92638d2a550e5c2682f64904e9a11d41d91ea4a7bfa4e4156dc323da789dbb",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "3d92638d2a550e5c2682f64904e9a11d41d91ea4a7bfa4e4156dc323da789dbb",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "3d92638d2a550e5c2682f64904e9a11d41d91ea4a7bfa4e4156dc323da789dbb",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "3d92638d2a550e5c2682f64904e9a11d41d91ea4a7bfa4e4156dc323da789dbb",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    },
+    {
+      "name": "revision-above-limit",
+      "description": "a revision above MAX_SAFE_INTEGER is unrecognized",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": "2026-09-27",
+          "blockedBy": [],
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 9007199254740992,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 9007199254740992,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 9007199254740992,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 9007199254740992,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": null,
+          "order": 10,
+          "createdDate": "2026-09-27",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ]
+        }
+      ],
+      "expect": [
+        {
+          "id": "T-001",
+          "checkpointState": "unrecognized",
+          "releases": false,
+          "pendingCheckpointBlockers": [],
+          "reassessment": []
+        },
+        {
+          "id": "T-002",
+          "checkpointState": null,
+          "releases": null,
+          "pendingCheckpointBlockers": [
+            "T-001"
+          ],
+          "reassessment": []
+        }
+      ]
+    }
+  ]
+}

@@ -18,6 +18,15 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --format?) - Update a ticket
 - **ticket meta <operation> <id> [path] [value]** (--format?) - Get, set, or unset custom passthrough metadata on a ticket
 - **ticket delete <id>** (--force?, --hard?, --format?) - Delete a ticket
+- **checkpoint enable** (--format?) - Turn owner checkpoints on (config schemaVersion 4; a team ledger must merge them first)
+- **checkpoint create** (--title, --owner, --kind, --question?, --criteria?, --evidence-ref?, --phase?, --description?, --blocked-by?, --parent-ticket?, --actor?, --format?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
+- **checkpoint attach <id>** (--owner, --kind, --question?, --criteria?, --evidence-ref?, --actor?, --format?) - Make an open, unclaimed ticket a checkpoint
+- **checkpoint resolve <id>** (--generation, --revision, --digest, --actor?, --response, --artifact-ref?, --ruling?, --ruling-scope-tag?, --client-task-id?, --format?) - Answer a checkpoint. An acceptance needs artifactRef. Names the reviewed state; a stale one is refused
+- **checkpoint change <id>** (--generation, --revision, --digest, --actor?, --kind, --question?, --criteria?, --evidence-ref?, --format?) - Change what a checkpoint asks; voids its answer
+- **checkpoint reopen <id>** (--generation, --revision, --digest, --actor?, --reason?, --format?) - Withdraw a checkpoint's answer; kept in history
+- **checkpoint retire <id>** (--generation, --revision, --digest, --actor?, --reason, --format?) - Retire a checkpoint, releasing dependents; needs a reason
+- **checkpoint resolve-conflict <id>** (--use?, --field?, --value?, --actor?, --format?) - Settle a merge conflict on a checkpoint; a selected approval returns to pending (CLI-only)
+- **checkpoint list** (--state?, --format?) - Owner checkpoints with the state a change must name (CLI-only)
 - **issue list** (--status?, --severity?, --component?, --phase?, --format?) - List issues with optional filters
 - **issue get <id>** (--format?) - Get issue details by ID
 - **issue create** (--title, --severity, --impact?, --stdin?, --phase?, --dedupe-key?, --created-by?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?) - Create a new issue
@@ -100,7 +109,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **conflicts list** (--format?) - List all items with unresolved merge conflicts
 - **conflicts show <id>** (--format?) - Show field-level conflict detail for an item
 - **resolve <target>** (--field?, --use?, --value?, --id?, --group?, --invariant?, --rename?, --drop-alias?, --keep?, --format?) - Resolve merge conflicts on a .story/ item
-- **merge-driver <ancestor> <ours> <theirs> <pathname>** - Git merge driver for .story/ JSON files (registered via team setup)
+- **merge-driver <ancestor> <ours> <theirs> <pathname>** (--protocol?) | **merge-driver** (--protocol?, --capabilities) - Git merge driver for .story/ JSON files (registered via team setup)
 - **team init** (--claim-staleness-hours?, --id-allocator?, --format?) - Enable team mode on this project
 - **team setup** (--format?) - Install the git merge driver and .gitattributes for team mode
 - **team doctor** (--ci?, --format?) - Run team health checks on the project
@@ -271,6 +280,12 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_gate_ack_get** (id) - Get a duet-mode gate-ack record by ID
 - **storybloq_gate_ack_create** (arrangement, gate, ticket, planFile?, fromStaged?, codexSessionId?, verdict?, rounds?, deltas?) - Pin acceptance of a declared plan-ack or pre-commit-ack gate. Exactly one of planFile/fromStaged is required; ackRole derives from the arrangement gate.
 - **storybloq_gate_ack_contest** (id, reason) - Record a contested acknowledgment and its reason; does not reopen the workflow.
+- **storybloq_checkpoint_create** (title, owner, kind, question?, criteria?, evidenceRefs?, phase?, description?, blockedBy?, parentTicket?, actor?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
+- **storybloq_checkpoint_attach** (id, owner, kind, question?, criteria?, evidenceRefs?, actor?) - Make an open, unclaimed ticket a checkpoint
+- **storybloq_checkpoint_resolve** (id, generation, revision, digest, actor?, response, artifactRef?, rulingAttribution?, rulingScopeTags?, clientTaskId?) - Answer a checkpoint. An acceptance needs artifactRef.
+- **storybloq_checkpoint_change** (id, generation, revision, digest, actor?, kind, question?, criteria?, evidenceRefs?) - Change what a checkpoint asks; voids its answer
+- **storybloq_checkpoint_reopen** (id, generation, revision, digest, actor?, reason?) - Withdraw a checkpoint's answer
+- **storybloq_checkpoint_retire** (id, generation, revision, digest, actor?, reason) - Retire a checkpoint, releasing dependents
 - **storybloq_earmark_get** (ref, node?) - Get the pick-exclusion earmark (if any) on a ticket or issue
 - **storybloq_earmark_reserve** (ref, role, arrangement?, clientTaskId?, node?) - Reserve an item for a duet role pending pickup. Conflicts with another earmark; arrangement is required only if several active arrangements cover the item.
 - **storybloq_earmark_assign** (ref, to, role, arrangement?, clientTaskId?, node?) - Place or convert an earmark to a live session matching the arrangement role. Reserved-to-assigned conversion requires the reserver or the arrangement pen.

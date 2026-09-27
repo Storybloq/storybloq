@@ -8,6 +8,7 @@ import type { IssueSeverity } from "../models/types.js";
 import { resolveRef, buildPrevDisplayIndex, type ResolveResult } from "./resolver.js";
 import { compareByRank } from "./fractional-index.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
+import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 
 export type PhaseStatus = "notstarted" | "inprogress" | "complete";
 
@@ -149,9 +150,7 @@ export class ProjectState {
     // Step 2: Leaf tickets -- active tickets that are not umbrellas
     this.leafTickets = this.activeTickets.filter((t) => !parentIDs.has(t.id));
     this.leafTicketCount = this.leafTickets.length;
-    this.completeLeafTicketCount = this.leafTickets.filter(
-      (t) => t.status === "complete",
-    ).length;
+    this.completeLeafTicketCount = this.leafTickets.filter(derivesComplete).length;
 
     // Step 3: Leaf tickets by phase, sorted by order
     const byPhase = new Map<string | null, Ticket[]>();
@@ -280,12 +279,9 @@ export class ProjectState {
 
     // Step 7: Counts
     this.totalTicketCount = this.leafTickets.length;
-    this.openTicketCount = this.leafTickets.filter(
-      (t) => t.status !== "complete",
-    ).length;
-    this.completeTicketCount = this.leafTickets.filter(
-      (t) => t.status === "complete",
-    ).length;
+    // T-537: counted by the same rule as phase status, so the two never disagree.
+    this.openTicketCount = this.leafTickets.filter((t) => !derivesComplete(t)).length;
+    this.completeTicketCount = this.leafTickets.filter(derivesComplete).length;
     this.activeIssueCount = this.activeIssues.filter(
       (i) => i.status !== "resolved",
     ).length;
@@ -354,13 +350,23 @@ export class ProjectState {
   /**
    * A ticket is blocked if any blockedBy reference points to a non-complete, non-deleted ticket.
    * Unknown blocker IDs treated as blocked (conservative). Deleted blockers treated as resolved.
+   *
+   * T-537: an owner checkpoint blocker blocks until it releases (approved or
+   * retired), whatever its status says: a retired checkpoint stays open and
+   * releases, and a complete one whose approval no longer matches its content
+   * blocks. An unrecognized, archived or deleted checkpoint never releases.
    */
   isBlocked(ticket: Ticket): boolean {
     if (ticket.blockedBy.length === 0) return false;
     for (const ref of ticket.blockedBy) {
       const resolved = this.resolveTicketRef(ref);
       if (resolved.kind === "missing" || resolved.kind === "ambiguous") return true;
-      if (resolved.kind === "found" && !isDeleted(resolved.item) && resolved.item.status !== "complete") return true;
+      if (resolved.kind !== "found") continue;
+      if (hasOwnerCheckpoint(resolved.item)) {
+        if (!checkpointReleases(resolved.item)) return true;
+        continue;
+      }
+      if (!isDeleted(resolved.item) && resolved.item.status !== "complete") return true;
     }
     return false;
   }
@@ -499,13 +505,25 @@ export class ProjectState {
     tickets: readonly Ticket[],
   ): PhaseStatus {
     if (tickets.length === 0) return "notstarted";
-    const allComplete = tickets.every((t) => t.status === "complete");
+    const allComplete = tickets.every(derivesComplete);
     if (allComplete) return "complete";
     const anyProgress = tickets.some((t) => t.status === "inprogress");
-    const anyComplete = tickets.some((t) => t.status === "complete");
+    const anyComplete = tickets.some(derivesComplete);
     if (anyProgress || anyComplete) return "inprogress";
     return "notstarted";
   }
+}
+
+/**
+ * T-537: what phase and umbrella derivation count as complete. An owner
+ * checkpoint counts when it releases (approved or retired), whatever its
+ * stored status: a retired checkpoint keeps status open yet never holds its
+ * phase open, and a stored complete whose approval no longer matches counts
+ * as not complete. Phase and umbrella status and the leaf counts all use it.
+ * Derived only; the stored status is untouched.
+ */
+function derivesComplete(t: Ticket): boolean {
+  return hasOwnerCheckpoint(t) ? checkpointReleases(t) : t.status === "complete";
 }
 
 export function isActiveLifecycle(item: { lifecycle?: unknown }): boolean {

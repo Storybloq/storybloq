@@ -56,6 +56,13 @@ export const TicketSchema = z
     // its CURRENT state at render time (src/core/ruling.ts) -- this array
     // never stores the ruling's text or a superseded/stale flag itself.
     citesRulings: z.array(RulingIdSchema).optional(),
+    // T-537: owner checkpoint (this ticket IS one) and the checkpoint evidence
+    // recorded when a dependent completed. Read leniently by
+    // src/core/owner-checkpoint.ts: a value that does not parse is
+    // unrecognized (it keeps the ticket loadable and never releases), and
+    // JSON null counts as present, not absent.
+    ownerCheckpoint: z.unknown().optional(),
+    checkpointEvidence: z.unknown().optional(),
   })
   .passthrough();
 

@@ -589,23 +589,36 @@ export function registerGcCommand(yargs: Argv): Argv {
 
 export function registerMergeDriverCommand(yargs: Argv): Argv {
   return yargs.command(
-    "merge-driver <ancestor> <ours> <theirs> <pathname>",
+    "merge-driver [ancestor] [ours] [theirs] [pathname]",
     "Git merge driver for .story/ JSON files",
     (y) =>
       y
-        .positional("ancestor", { type: "string", demandOption: true, describe: "Base (common ancestor) file path" })
-        .positional("ours", { type: "string", demandOption: true, describe: "Our (HEAD) file path" })
-        .positional("theirs", { type: "string", demandOption: true, describe: "Their (incoming) file path" })
-        .positional("pathname", { type: "string", demandOption: true, describe: "Logical file path (%P)" }),
+        .positional("ancestor", { type: "string", describe: "Base (common ancestor) file path" })
+        .positional("ours", { type: "string", describe: "Our (HEAD) file path" })
+        .positional("theirs", { type: "string", describe: "Their (incoming) file path" })
+        .positional("pathname", { type: "string", describe: "Logical file path (%P)" })
+        .option("protocol", { type: "number", describe: "Driver protocol the registration requires (T-537: 4)" })
+        .option("capabilities", { type: "boolean", default: false, describe: "Print the driver's capabilities as JSON and exit" }),
     async (argv) => {
-      const { handleMergeDriver } = await import("./commands/merge-driver.js");
-      const exitCode = await handleMergeDriver(
-        argv.ancestor as string,
-        argv.ours as string,
-        argv.theirs as string,
-        argv.pathname as string,
-      );
-      process.exitCode = exitCode;
+      const { handleMergeDriver, mergeDriverCapabilities, MERGE_DRIVER_PROTOCOL } = await import("./commands/merge-driver.js");
+      const protocol = argv.protocol as number | undefined;
+      if (argv.capabilities) {
+        if (protocol !== undefined && protocol !== MERGE_DRIVER_PROTOCOL) {
+          process.stderr.write(`storybloq merge-driver: protocol ${protocol} is not supported by this build (supports ${MERGE_DRIVER_PROTOCOL})\n`);
+          process.exitCode = 2;
+          return;
+        }
+        process.stdout.write(JSON.stringify(mergeDriverCapabilities()) + "\n");
+        process.exitCode = 0;
+        return;
+      }
+      const [ancestor, ours, theirs, pathname] = [argv.ancestor, argv.ours, argv.theirs, argv.pathname] as (string | undefined)[];
+      if (ancestor === undefined || ours === undefined || theirs === undefined || pathname === undefined) {
+        process.stderr.write("storybloq merge-driver: expected <ancestor> <ours> <theirs> <pathname>\n");
+        process.exitCode = 2;
+        return;
+      }
+      process.exitCode = await handleMergeDriver(ancestor, ours, theirs, pathname, protocol);
     },
   );
 }
@@ -6731,5 +6744,243 @@ export function registerBriefCommand(yargs: Argv): Argv {
       }
       await runReadCommand(format, (ctx) => handleBrief(argv.id as string, { budget: argv.budget }, ctx));
     },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// checkpoint (T-537)
+// ---------------------------------------------------------------------------
+
+async function runCheckpointCommand(format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
+  const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+  if (!root) {
+    writeOutput(formatError("not_found", "No .story/ project found.", format));
+    process.exitCode = ExitCode.USER_ERROR;
+    return;
+  }
+  try {
+    const result = await fn(root);
+    writeOutput(result.output);
+    process.exitCode = result.exitCode ?? ExitCode.OK;
+  } catch (err: unknown) {
+    const { ProjectLoaderError } = await import("../core/errors.js");
+    if (err instanceof CliValidationError || err instanceof ProjectLoaderError) {
+      writeOutput(formatError(err.code, err.message, format));
+    } else {
+      writeOutput(formatError("io_error", err instanceof Error ? err.message : String(err), format));
+    }
+    process.exitCode = ExitCode.USER_ERROR;
+  }
+}
+
+/** The state a lifecycle change names, as `checkpoint list` prints it. */
+function expectedOptions<T>(y: Argv<T>) {
+  return y
+    .option("generation", { type: "number", demandOption: true, describe: "The checkpoint generation you last saw" })
+    .option("revision", { type: "number", demandOption: true, describe: "The checkpoint revision you last saw" })
+    .option("digest", { type: "string", demandOption: true, describe: "The checkpoint digest you last saw" })
+    .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" });
+}
+
+function contentOptions<T>(y: Argv<T>, required: boolean) {
+  return arrayOptions(
+    y
+      .option("kind", { type: "string", choices: ["decision", "acceptance"], demandOption: required, describe: "decision (a question) or acceptance (criteria)" })
+      .option("question", { type: "string", describe: "The question a decision asks the owner" })
+      .option("criteria", { type: "string", describe: "What an acceptance checks" }),
+    { "evidence-ref": { ...SPLIT_LIST, describe: "References the owner reviews (paths, URLs, ids)" } },
+  );
+}
+
+const contentOf = (argv: Record<string, unknown>) => ({
+  kind: argv.kind as string | undefined,
+  question: argv.question as string | undefined,
+  criteria: argv.criteria as string | undefined,
+  evidenceRefs: (argv["evidence-ref"] as string[] | undefined) ?? [],
+});
+
+const expectedOf = (argv: Record<string, unknown>) => ({
+  generation: argv.generation as number,
+  revision: argv.revision as number,
+  digest: argv.digest as string,
+  actor: argv.actor as string | undefined,
+});
+
+export function registerCheckpointCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "checkpoint",
+    "Owner checkpoints: decisions and acceptances only the owner answers",
+    (y) =>
+      y
+        .command("enable", "Turn owner checkpoints on for this project (stamps schemaVersion 4)", (y2) => addFormatOption(y2), async (argv) => {
+          const format = parseOutputFormat(argv.format);
+          const { handleCheckpointEnable } = await import("./commands/checkpoint.js");
+          await runCheckpointCommand(format, (root) => handleCheckpointEnable(format, root));
+        })
+        .command(
+          "create",
+          "Create a ticket that is an owner checkpoint",
+          (y2) =>
+            addFormatOption(arrayOptions(
+              contentOptions(y2, true)
+                .option("title", { type: "string", demandOption: true, describe: "Ticket title" })
+                .option("owner", { type: "string", demandOption: true, describe: "Who answers the checkpoint" })
+                .option("phase", { type: "string", describe: "Phase ID" })
+                .option("description", { type: "string", describe: "Ticket description" })
+                .option("parent-ticket", { type: "string", describe: "Parent ticket ID" })
+                .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
+              { "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
+            )),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointCreate } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) => handleCheckpointCreate({
+              ...contentOf(argv),
+              title: argv.title as string,
+              owner: argv.owner as string,
+              phase: (argv.phase as string | undefined) ?? null,
+              description: argv.description as string | undefined,
+              parentTicket: argv["parent-ticket"] as string | undefined,
+              blockedBy: argv["blocked-by"] as string[] | undefined,
+              actor: argv.actor as string | undefined,
+            }, format, root));
+          },
+        )
+        .command(
+          "attach <id>",
+          "Make an open, unclaimed ticket an owner checkpoint",
+          (y2) =>
+            addFormatOption(
+              contentOptions(y2, true)
+                .positional("id", { type: "string", demandOption: true, describe: "Ticket ID" })
+                .option("owner", { type: "string", demandOption: true, describe: "Who answers the checkpoint" })
+                .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointAttach } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) =>
+              handleCheckpointAttach(argv.id as string, { ...contentOf(argv), owner: argv.owner as string, actor: argv.actor as string | undefined }, format, root));
+          },
+        )
+        .command(
+          "resolve <id>",
+          "Answer a checkpoint at the state you reviewed",
+          (y2) =>
+            addFormatOption(
+              expectedOptions(y2)
+                .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
+                .option("response", { type: "string", demandOption: true, describe: "The owner's answer" })
+                .option("artifact-ref", { type: "string", describe: "The reviewed artifact (required for an acceptance)" })
+                .option("ruling", { type: "string", choices: ["owner-direct", "owner-via-manager-with-owner-veto", "manager-delegated"], describe: "Also record the response as an accepted ruling with this attribution, in one transaction" })
+                .option("ruling-scope-tag", { type: "string", array: true, describe: "Scope tags for that ruling" })
+                .option("client-task-id", { type: "string", describe: "Caller identity for the ruling, if not inferable from the environment" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointResolve } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) => handleCheckpointResolve(argv.id as string, {
+              ...expectedOf(argv),
+              response: argv.response as string,
+              artifactRef: argv["artifact-ref"] as string | undefined,
+              rulingAttribution: argv.ruling as string | undefined,
+              rulingScopeTags: argv["ruling-scope-tag"] as string[] | undefined,
+              clientTaskId: argv["client-task-id"] as string | undefined,
+            }, format, root));
+          },
+        )
+        .command(
+          "change <id>",
+          "Change what a checkpoint asks; an earlier answer no longer counts",
+          (y2) => addFormatOption(contentOptions(expectedOptions(y2), true).positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointChange } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) => handleCheckpointChange(argv.id as string, { ...expectedOf(argv), ...contentOf(argv) }, format, root));
+          },
+        )
+        .command(
+          "reopen <id>",
+          "Withdraw a checkpoint's answer; it is kept in history",
+          (y2) =>
+            addFormatOption(
+              expectedOptions(y2)
+                .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
+                .option("reason", { type: "string", describe: "Why it is reopened" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointReopen } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) =>
+              handleCheckpointReopen(argv.id as string, { ...expectedOf(argv), reason: argv.reason as string | undefined }, format, root));
+          },
+        )
+        .command(
+          "retire <id>",
+          "Retire a checkpoint that is no longer needed; its dependents are released",
+          (y2) =>
+            addFormatOption(
+              expectedOptions(y2)
+                .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
+                .option("reason", { type: "string", demandOption: true, describe: "Why it is retired" }),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointRetire } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, (root) =>
+              handleCheckpointRetire(argv.id as string, { ...expectedOf(argv), reason: argv.reason as string | undefined }, format, root));
+          },
+        )
+        .command(
+          "resolve-conflict <id>",
+          "Settle a merge conflict on a checkpoint (the selected approval is displaced; the other side is kept in history)",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
+                .option("use", { type: "string", choices: ["ours", "theirs"], describe: "Take one side" })
+                .option("field", { type: "string", describe: "One conflicted field (or _entity)" })
+                .option("value", { type: "string", describe: "A JSON value to use instead of either side" })
+                .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" })
+                .conflicts("use", "value"),
+            ),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointResolveConflict } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(format, async (root) => {
+              let value: unknown;
+              if (argv.value !== undefined) {
+                try {
+                  value = JSON.parse(argv.value as string);
+                } catch {
+                  throw new CliValidationError("invalid_input", "--value must be JSON");
+                }
+              }
+              return handleCheckpointResolveConflict(argv.id as string, {
+                use: argv.use as "ours" | "theirs" | undefined,
+                field: argv.field as string | undefined,
+                ...(argv.value !== undefined ? { value } : {}),
+                actor: argv.actor as string | undefined,
+              }, format, root);
+            });
+          },
+        )
+        .command(
+          "list",
+          "List owner checkpoints with the state each change must name",
+          (y2) => addFormatOption(y2.option("state", { type: "string", choices: ["pending", "approved", "retired", "unrecognized"], describe: "Only this state" })),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointList } = await import("./commands/checkpoint.js");
+            await runReadCommand(format, async () => {
+              const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+              if (!root) throw new CliValidationError("not_found", "No .story/ project found.");
+              return handleCheckpointList(format, root, { state: argv.state as string | undefined });
+            });
+          },
+        )
+        .demandCommand(1, "Specify a checkpoint subcommand: enable, create, attach, resolve, change, reopen, retire, resolve-conflict, list")
+        .strict(),
+    () => {},
   );
 }

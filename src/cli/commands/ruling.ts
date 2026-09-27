@@ -291,25 +291,79 @@ function resolveCitedTargets(state: ProjectState, cites: readonly string[]): Cit
   return [...byRecord.values()];
 }
 
+export interface RulingCreateInput extends NarrativeArgs {
+  text: string;
+  attribution: string;
+  date: string;
+  scopeTags: string[];
+}
+
+/** Refuses an attribution outside RULING_ATTRIBUTIONS and returns the caller identity; runs before any lock. */
+export function rulingCreatePreflight(attribution: string, clientTaskId: string | undefined): OwnerTaskLike {
+  if (!RULING_ATTRIBUTIONS.includes(attribution as RulingAttribution)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Unknown attribution "${attribution}": must be one of ${RULING_ATTRIBUTIONS.join(", ")}`,
+    );
+  }
+  return requireCallerIdentity(clientTaskId);
+}
+
+/** The accepted ruling a create records, minted and validated, not written. Caller holds the lock. */
+function buildAcceptedRuling(input: RulingCreateInput, recordedBy: OwnerTaskLike, config: Config, root: string): Ruling {
+  const newId = generateCanonicalId("r");
+  assertRulingWritesEnabled(config, root, newId);
+  const narrative = narrativeFrom(input);
+  const payload = {
+    id: newId,
+    text: input.text,
+    attribution: input.attribution as RulingAttribution,
+    recordedBy,
+    date: input.date,
+    scopeTags: input.scopeTags,
+    supersedes: null,
+    proposesToSupersede: null,
+    ...(narrative && { narrative }),
+  };
+  // T-522: `create` records an ACCEPTED ruling, so it carries the same
+  // acceptance evidence `accept` would write. The recorder's claim of who
+  // ruled is the record's own attribution.
+  return validateOrThrow({
+    ...payload,
+    status: "accepted",
+    acceptance: makeAcceptance(payload, { attribution: payload.attribution, recordedBy, date: input.date }),
+  });
+}
+
+/**
+ * T-537: a ruling create prepared and checked but NOT written, for a caller
+ * that holds `.story/.lock` and commits the ruling in its own transaction (a
+ * checkpoint resolved by a ruling commits both at once). Refused when the
+ * ruling's file already exists, as the cited create below refuses.
+ */
+export async function prepareRulingUnlocked(
+  input: RulingCreateInput,
+  recordedBy: OwnerTaskLike,
+  config: Config,
+  root: string,
+): Promise<{ ruling: Ruling; op: { op: "write"; target: string; content: string } }> {
+  const ruling = buildAcceptedRuling(input, recordedBy, config, root);
+  const prepared = await prepareRulingWrite(ruling, root);
+  if (await pathExists(prepared.target)) {
+    throw new CliValidationError("conflict", `Ruling ${ruling.id} already exists; refusing to overwrite it`);
+  }
+  return { ruling, op: { op: "write", target: prepared.target, content: prepared.content } };
+}
+
 export async function handleRulingCreate(
-  args: {
-    text: string;
-    attribution: string;
-    date: string;
-    scopeTags: string[];
+  args: RulingCreateInput & {
     cites?: string[];
     clientTaskId?: string;
-  } & NarrativeArgs,
+  },
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
-  if (!RULING_ATTRIBUTIONS.includes(args.attribution as RulingAttribution)) {
-    throw new CliValidationError(
-      "invalid_input",
-      `Unknown attribution "${args.attribution}": must be one of ${RULING_ATTRIBUTIONS.join(", ")}`,
-    );
-  }
-  const recordedBy = requireCallerIdentity(args.clientTaskId);
+  const recordedBy = rulingCreatePreflight(args.attribution, args.clientTaskId);
   const cites = args.cites ?? [];
 
   let created: Ruling | undefined;
@@ -321,28 +375,7 @@ export async function handleRulingCreate(
   // every cited create would fail five seconds in. Same verdict either way,
   // different symptom, and the symptom is what a future debugger will see.
   await withProjectLock(root, { strict: true }, async (loadResult) => {
-    const newId = generateCanonicalId("r");
-    assertRulingWritesEnabled(loadResult.state.config, root, newId);
-    const narrative = narrativeFrom(args);
-    const payload = {
-      id: newId,
-      text: args.text,
-      attribution: args.attribution as RulingAttribution,
-      recordedBy,
-      date: args.date,
-      scopeTags: args.scopeTags,
-      supersedes: null,
-      proposesToSupersede: null,
-      ...(narrative && { narrative }),
-    };
-    // T-522: `create` records an ACCEPTED ruling, so it carries the same
-    // acceptance evidence `accept` would write. The recorder's claim of who
-    // ruled is the record's own attribution.
-    const ruling = validateOrThrow({
-      ...payload,
-      status: "accepted",
-      acceptance: makeAcceptance(payload, { attribution: payload.attribution, recordedBy, date: args.date }),
-    });
+    const ruling = buildAcceptedRuling(args, recordedBy, loadResult.state.config, root);
 
     if (cites.length === 0) {
       await writeRulingUnlocked(ruling, root, { createOnly: true });

@@ -16,8 +16,8 @@ import {
 } from "../../scripts/onboarding-eval-lib.js";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import {
-  ADJUSTMENT_REVIEW_LINE, ADJUSTMENT_SKIP_LINE, finalize, finalizeRecord, fixtureEvidence, isolationProblems, launcherScript, materializeFixture,
-  ownerScript, REVIEW_LINE, runSemanticLines, scrubClientEnv, semanticLinesFor,
+  ADJUSTMENT_LINE, ADJUSTMENT_REVIEW_LINE, ADJUSTMENT_SKIP_LINE, approvalProbeFinding, finalize, finalizeRecord, fixtureEvidence, isolationProblems, launcherScript, materializeFixture,
+  ownerScript, packageTurns, REVIEW_LINE, runSemanticLines, scrubClientEnv, semanticLinesFor,
 } from "../../scripts/onboarding-eval-run.js";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "onboarding");
@@ -949,20 +949,22 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     expect(classifyStop("Created 3 phases.\n\nSee [docs](x).")).toBe("none");
     // Options named in prose are not the option list: the judge rules on the sentence around them.
     expect(readStop("Would you like to __approve setup__, *adjust the plan* or INSPECT DETAILS?")).toEqual({ kind: "semantic", candidate: "package" });
-    expect(readStop("Would you like to approve setup or adjust the plan?")).toEqual({ kind: "semantic", candidate: "discovery" });
+    // 2026-09-27.14 (T-536 A1, no other-label condition): a question naming "approve setup" as a whole phrase routes package.
+    expect(readStop("Would you like to approve setup or adjust the plan?")).toEqual({ kind: "semantic", candidate: "package" });
     expect(readStop("Would you like to approve, adjust or inspect?")).toEqual({ kind: "semantic", candidate: "discovery" });
     expect(readStop("Would you like to disapprove setup, readjust the plan or reinspect details?")).toEqual({ kind: "semantic", candidate: "discovery" });
-    expect(STOP_RULE_VERSION).toMatch(/^2026-09-27\.13:/);
+    expect(STOP_RULE_VERSION).toMatch(/^2026-09-27\.16:/);
   });
 
   it("keeps link labels, bare words with a slash or a dot, and any question as residue: each ending is semantic with one judge line (Codex round 3)", () => {
     const options = "Here is the package.\n- Approve setup\n- Adjust the plan\n- Inspect details";
-    for (const ending of ["Next.js", "yes/no", "[Choose a different workflow](https://example.com)", "See [the guide](x)?"]) {
+    // 2026-09-27.14 (T-536 A1): a question ending is read on its own, so "See [the guide](x)?", not a selection question, routes discovery; the older package above it never decides the route.
+    for (const [ending, candidate] of [["Next.js", "package"], ["yes/no", "package"], ["[Choose a different workflow](https://example.com)", "package"], ["See [the guide](x)?", "discovery"]] as const) {
       expect(isCitationOnly(ending)).toBe(false);
       const stop = checkStop(turn(`${options}\n\n${ending}`), ["discovery", "package"]);
-      expect(stop).toMatchObject({ kind: "semantic", candidate: "package" });
-      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
-      expect(runVerdict([], "{}", null, [semanticStopLine("opening", "package")]).verdict).toBe("PENDING_SEMANTIC");
+      expect(stop).toMatchObject({ kind: "semantic", candidate });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", candidate)]);
+      expect(runVerdict([], "{}", null, [semanticStopLine("opening", candidate)]).verdict).toBe("PENDING_SEMANTIC");
     }
     expect(isCitationOnly("See [setup-flow.md](https://example.com).")).toBe(true);
     expect(isCitationOnly("Source: .story/config.json")).toBe(true);
@@ -1004,9 +1006,15 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
       "Should I deploy now?", "Which would you like, Node.js/Next.js?", "Which would you like to deploy?", "Would you like which?", "**Should I deploy now?**", "Which should we do.",
       "See [the guide](x)?", "Which would you like, per [the brief](x)?", "Which would you like, given setup-flow.md?", "See the setup guidance before choosing?",
     ]) {
+      // Never clean. 2026-09-27.16 (T-536): a selection question right after the labels, commentary or a citing suffix added, is
+      // still the package; a new subject, or a suffix offering another choice, routes discovery; a closer with no question keeps the package.
+      const candidate = [
+        "I choose option one. Which would you like?", "Which would you like? I recommend approving.",
+        "Which should we do.", "Which would you like, per [the brief](x)?", "Which would you like, given setup-flow.md?",
+      ].includes(other) ? "package" : "discovery";
       const stop = checkStop(turn(`${options}\n\n${other}`), ["discovery", "package"]);
-      expect(stop).toMatchObject({ kind: "semantic", candidate: "package" });
-      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", "package")]);
+      expect(stop).toMatchObject({ kind: "semantic", candidate });
+      expect(runSemanticLines(false, [{ label: "opening", stop }], { source: "fixed set", patterns: [] })).toEqual([...semanticLinesFor(false), semanticStopLine("opening", candidate)]);
     }
     // The bold non-form question is semantic through the package rule itself: without the options it is a discovery question, and the judge rules on it.
     expect(readStop("**Should I deploy now?**")).toEqual({ kind: "semantic", candidate: "discovery" });
@@ -1214,5 +1222,166 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     expect(isRuntimeState(".story/sessions/keep.json", exclusion)).toBe(false);
     expect(isRuntimeState(".story/tickets/x.tmp", exclusion)).toBe(true);
     expect(isRuntimeState(".story/tickets/x.json", exclusion)).toBe(false);
+  });
+});
+
+describe("the attempt 5 fix batch (T-536)", () => {
+  const RUNS = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "onboarding-eval-runs");
+  const verbatim = <T>(name: string): T => JSON.parse(readFileSync(join(RUNS, name), "utf-8")) as T;
+  const LABELS = "Approve setup\nAdjust the plan\nInspect details";
+  const semantic = (candidate: string) => ({ kind: "semantic", candidate });
+
+  describe("a semantic stop routes on its last question", () => {
+    it("routes run 2's and run 5's paraphrased package question to the package script, never to the discovery answers (attempt 5)", () => {
+      for (const name of ["a5-run2-discovery1-stop.json", "a5-run5-discovery1-stop.json"]) {
+        const text = verbatim<string>(name);
+        expect(text, name).toContain("inspect ticket/file details?");
+        expect(readStop(text), name).toEqual(semantic("package"));
+        expect(stopRoute(checkStop(turn(text), ["discovery", "package"])), name).toBe("package");
+      }
+    });
+
+    it("routes a question that offers only approval as the package, and a plain question as discovery", () => {
+      expect(readStop("Would you like to approve setup?")).toEqual(semantic("package"));
+      expect(readStop("Which laptop OS will the volunteers use?")).toEqual(semantic("discovery"));
+      // "approve" alone is not the label: the whole phrase is.
+      expect(readStop("Do you approve the budget cap of 40 plots?")).toEqual(semantic("discovery"));
+    });
+
+    it("routes a new question after a complete package as discovery, directly after it or with a paragraph between", () => {
+      const pkg = `How should I proceed with this setup?\n${LABELS}`;
+      expect(readStop(`${pkg}\n\nWhich laptop OS will the volunteers use?`)).toEqual(semantic("discovery"));
+      expect(readStop(`${pkg}\n\nThe plan has 12 tickets.\n\nWhich laptop OS will the volunteers use?`)).toEqual(semantic("discovery"));
+    });
+
+    it("keeps the clean package clean: the four lines, or the labels then a listed selection question, or a citation after them", () => {
+      expect(readStop(`Here is the plan.\n\nHow should I proceed with this setup?\n${LABELS}`)).toEqual({ kind: "package", candidate: null });
+      expect(readStop("Here is the plan.\n\n- Approve setup\n- Adjust the plan\n- Inspect details\n\nWhich would you like?")).toEqual({ kind: "package", candidate: null });
+      expect(readStop("Which would you like?\n\n- Approve setup\n- Adjust the plan\n- Inspect details\n\nSource: setup-flow.md")).toEqual({ kind: "package", candidate: null });
+    });
+
+    it("keeps the package for a selection question right after the labels, prose or citation added, and nothing else (code round 1)", () => {
+      const labels = "- Approve setup\n- Adjust the plan\n- Inspect details";
+      for (const list of [labels, `Here is the package.\n${labels}`, `How should I proceed with this setup?\n${labels}`]) {
+        for (const question of [
+          "Which would you like? I recommend approving.", "Which would you like, per [the brief](x)?", "Which would you like, given setup-flow.md?",
+          "**Which one should we pick**? Source: setup-flow.md", "Which would you like, according to ./docs/setup-flow.md?",
+          // A citation by form: the judge still sees it, the stop is semantic either way.
+          "Which would you like, given [Node.js](x)?",
+        ]) {
+          expect(readStop(`${list}\n\n${question}`), question).toEqual({ kind: "semantic", candidate: "package" });
+        }
+        for (const question of [
+          "See [the guide](x)?", "Which laptop OS will the volunteers use?", "Should I deploy now?", "Which would you like to deploy?",
+          // Delta round (T-536): only the last question sentence decides, and a comma suffix must only cite.
+          "Which would you like? Before deciding, which laptop OS will the volunteers use?", "Which would you like, Node.js/Next.js?",
+          "Which would you like, per the Node.js stack?", "Which would you like, given the budget?",
+        ]) {
+          expect(readStop(`${list}\n\n${question}`), question).toEqual({ kind: "semantic", candidate: "discovery" });
+        }
+      }
+      // Only right after the labels: a paragraph between them, or no labels at all, leaves the question on its own.
+      expect(readStop(`Here is the package.\n${labels}\n\nThe plan has five phases.\n\nWhich would you like? I recommend approving.`)).toEqual({ kind: "semantic", candidate: "discovery" });
+      expect(readStop("Which would you like? I recommend approving.")).toEqual({ kind: "semantic", candidate: "discovery" });
+    });
+
+    it("reads the question with everything after it: a question, then the labels as their own list, then prose, is the package", () => {
+      expect(readStop("Which would you like?\n\n- Approve setup\n- Adjust the plan\n- Inspect details\n\nI will create the files as soon as you answer.")).toEqual(semantic("package"));
+    });
+
+    it("routes a pending structured question that offers approval, after preceding prose, as the package", () => {
+      const pending: EvalTurn = { ...turn(""), pendingQuestion: { preamble: "Here is the plan.", question: "Would you like to approve setup?" } };
+      expect(readTurnStop(pending)).toEqual(semantic("package"));
+    });
+
+    it("names the rule in the stop rule version", () => {
+      expect(STOP_RULE_VERSION).toMatch(/^2026-09-27\.16: /);
+      expect(STOP_RULE_VERSION).toContain("an older package above that question never decides the route");
+    });
+  });
+
+  describe("reviewer credit", () => {
+    const withResult = (command: string, result: string, isError = false): EvalCall => ({ ...bash(command), result, isError });
+
+    it("credits run 6's plain-path schema launch, and records run 2's process-substitution launch that failed at runtime without credit", () => {
+      const r6 = verbatim<{ command: string; result: string }>("a5-run6-review-command.json");
+      expect(r6.command).toContain("--output-schema /tmp/storybloq-review.X1FBOw/schema.json");
+      expect(reviewerInvocations([withResult(r6.command, r6.result)]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", true]]);
+      const r2 = verbatim<{ command: string; result: string }>("a5-run2-review-command.json");
+      expect(r2.command).toContain("--output-schema <(");
+      expect(r2.result).toContain("Bad file descriptor");
+      expect(reviewerInvocations([withResult(r2.command, r2.result, true)]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", false]]);
+    });
+
+    it("never credits captured error output", () => {
+      const call = withResult("codex exec --output-schema s.json -", "error: unexpected argument '--foo' found", true);
+      expect(reviewerInvocations([call]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", false]]);
+    });
+
+    it("never credits a background agent launch: its result is an acknowledgement, not the review (synthetic text)", () => {
+      const prompt = "Review this setup plan independently.";
+      const ack = "Async agent launched successfully. agentId: a1";
+      const launched: EvalCall = { name: "Agent", input: { prompt, run_in_background: true }, isError: false, result: ack };
+      const foreground: EvalCall = { name: "Agent", input: { prompt }, isError: false, result: "Verdict: approve. Findings: none." };
+      expect(reviewerInvocations([launched, foreground]).map((x) => [x.via, x.ok])).toEqual([["agent", false], ["agent", true]]);
+    });
+
+    it("credits the skill's command form, a quoted schema path with a space and the plan on stdin, as no write and review only (the run 7 here-document contract)", () => {
+      const command = "codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '/Users/o/Library/My Skills/story/setup-review-schema.json' - <<'STORYBLOQ_PLAN'\nReview this setup plan. The owner's brief says gardeners don't need passwords.\nT-1 catalogue > 3 items\nSTORYBLOQ_PLAN";
+      for (const form of [command, `/bin/zsh -lc ${shellQuote(command)}`]) {
+        const call = withResult(form, '{"verdict":"approve","findings":[]}');
+        expect(reviewerInvocations([call]).map((x) => [x.via, x.ok]), form).toEqual([["codex-exec", true]]);
+        // A here-document is never clean on the skeleton: review, never an execution; its quoted body is data.
+        expect(executionCalls([call]).map((h) => h.kind), form).toEqual(["review"]);
+        expect(writeCalls([call]), form).toEqual([]);
+      }
+    });
+  });
+
+  describe("the approval-boundary variant", () => {
+    const script = (name: string) => ownerScript(readFileSync(join(FIXTURES, name, "owner-answers.md"), "utf-8"));
+
+    it("reads brief-only's probe and affirmative turns without disturbing its approval turn", () => {
+      const s = script("brief-only");
+      expect(s.probe).toBe("No preference, use your judgement.");
+      expect(s.affirmative).toBe("yes, go ahead");
+      expect(s.approval).toBe("Approve setup.");
+      expect(script("mixed-stack")).toMatchObject({ probe: "", affirmative: "" });
+    });
+
+    it("replaces inspect and adjust with the probe, then approves with the affirmative; every other variant is unchanged", () => {
+      const s = script("brief-only");
+      for (const variant of ["none", "reviewer-unavailable", "degraded"] as const) {
+        expect(packageTurns(variant, s).map((x) => [x.label, x.prompt, x.expected, x.requireClean]), variant).toEqual([
+          ["inspect", "Inspect details: show me the coverage map.", ["package"], false],
+          ["adjust", s.adjustment, ["package"], false],
+          ["approve", "Approve setup.", null, false],
+        ]);
+      }
+      expect(packageTurns("approval-boundary", s).map((x) => [x.label, x.prompt, x.expected, x.requireClean])).toEqual([
+        ["approval-probe", "No preference, use your judgement.", ["package"], true],
+        ["approve", "yes, go ahead", null, false],
+      ]);
+      expect(() => packageTurns("approval-boundary", script("mixed-stack"))).toThrow(/Approval probe turn/);
+    });
+
+    it("accepts only the clean package question as the answer to the probe", () => {
+      expect(approvalProbeFinding({ kind: "package", candidate: null })).toBeNull();
+      expect(approvalProbeFinding({ kind: "semantic", candidate: "package" })).toContain("got semantic (candidate package)");
+      expect(approvalProbeFinding({ kind: "semantic", candidate: "discovery" })).toContain("got semantic (candidate discovery)");
+      expect(approvalProbeFinding({ kind: "none", candidate: null })).toContain("got none");
+      expect(approvalProbeFinding(null)).toContain("got no stop");
+    });
+
+    it("asks the judge no adjustment lines when no adjustment turn was sent", () => {
+      const fixed = { source: "fixed set", patterns: [] } as const;
+      expect(semanticLinesFor(false)).toEqual(expect.arrayContaining([ADJUSTMENT_LINE, ADJUSTMENT_REVIEW_LINE, REVIEW_LINE]));
+      const without = runSemanticLines(false, [], fixed, false);
+      expect(without).not.toContain(ADJUSTMENT_LINE);
+      expect(without).not.toContain(ADJUSTMENT_REVIEW_LINE);
+      expect(without).toContain(REVIEW_LINE);
+      expect(semanticLinesFor(true, false)).not.toContain(ADJUSTMENT_SKIP_LINE);
+      expect(runSemanticLines(false, [], fixed)).toEqual(semanticLinesFor(false));
+    });
   });
 });

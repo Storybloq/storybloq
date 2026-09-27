@@ -188,6 +188,9 @@ const CEILINGS: Readonly<Record<string, number>> = {
   "bus-mode.md": 31000,
   "session-guard-fallback.md": 117000,
   "review-contract-template.md": 5000,
+  // T-536: the setup review's --output-schema file (178 bytes measured), a
+  // new row rather than a raise: every supportFiles entry needs one.
+  "setup-review-schema.json": 1000,
 };
 
 describe("skill mode-budget ceilings (T-496)", () => {

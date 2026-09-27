@@ -922,7 +922,7 @@ const CITATION_WORDS: ReadonlySet<string> = new Set(["the", "a", "this", "story"
  * The stop rule this build applies, recorded in every packet so a later
  * change to what counts as a clean ending is visible in the record.
  */
-export const STOP_RULE_VERSION = "2026-09-27.13: a trailing paragraph without a question mark is dropped only when nothing remains after its opening marker, link URLs (labels stay as words), file path tokens (rooted at /, ./, ~/ or .story/ with an extended last segment, or a bare .md/.json name), punctuation and the connective allowlist; a package is clean only when its closing paragraph is the option list (an optional single prefix line that is the skill's package question verbatim or one listed selection question, then exactly the three option lines, each one label as a list item or bare, then nothing) or is exactly one listed selection question (one sentence, case-folded, emphasis and trailing punctuation stripped), otherwise semantic, whatever options it names; a pending structured question preceded by any non-empty main-agent text (every text block before it, in any message, and the result text) is semantic (candidate package when the question renders the package, otherwise discovery), the preceding prose never validated; a question is read through trailing emphasis; a discovery stop is never clean: any question mark in an ending without the package options is semantic with candidate discovery, none without one; a stop that classifies only with a residue paragraph removed is semantic, routed on its candidate and ruled by the judge; package labels as whole phrases, case- and emphasis-insensitive, all three";
+export const STOP_RULE_VERSION = "2026-09-27.16: a trailing paragraph without a question mark is dropped only when nothing remains after its opening marker, link URLs (labels stay as words), file path tokens (rooted at /, ./, ~/ or .story/ with an extended last segment, or a bare .md/.json name), punctuation and the connective allowlist; a package is clean only when its closing paragraph is the option list (an optional single prefix line that is the skill's package question verbatim or one listed selection question, then exactly the three option lines, each one label as a list item or bare, then nothing) or is exactly one listed selection question (one sentence, case-folded, emphasis and trailing punctuation stripped), otherwise semantic, whatever options it names; a pending structured question preceded by any non-empty main-agent text (every text block before it, in any message, and the result text) is semantic (candidate package when the question renders the package, otherwise discovery), the preceding prose never validated; a question is read through trailing emphasis; a discovery stop is never clean: any question mark in an ending without the package options is semantic with candidate discovery, none without one; a stop that classifies only with a residue paragraph removed is semantic, routed on its candidate and ruled by the judge; package labels as whole phrases, case- and emphasis-insensitive, all three; a semantic stop's candidate is read from its last question-bearing paragraph (a ? ending a sentence, through closing emphasis, quotes or brackets) to the end: package when that text names \"approve setup\" as a whole phrase, review-unavailable when it offers retry and continuing without independent review, otherwise discovery; an older package above that question never decides the route, except that a question paragraph immediately after a paragraph carrying the three option labels as lines routes package when its last question sentence, stripped of closing punctuation, is a listed selection form, alone or followed by a comma suffix that only cites (citation-only, or one leading per, given, according to or see, then at least one link or path and only punctuation and the connective allowlist, a link's label dropped), commentary after that sentence allowed";
 
 /**
  * A paragraph that only cites where the question came from: it asks nothing,
@@ -1015,6 +1015,61 @@ function endingKind(paragraphs: readonly string[]): StopKind {
   return "none";
 }
 
+/** Whether a paragraph asks: a `?` ending a sentence, through closing emphasis, quotes or brackets (a URL query is not a question). */
+const hasQuestion = (paragraph: string): boolean => /\?[*_"'”’)\]]*(?=\s|$)/.test(paragraph);
+
+/** Whether a paragraph carries the three option labels as lines of their own (list items or bare), in any order, other lines allowed. */
+function hasOptionLines(paragraph: string): boolean {
+  const named = new Set(paragraph.split("\n").map(optionOfLine).filter((o) => o !== null));
+  return named.size === PACKAGE_OPTIONS.length;
+}
+
+/**
+ * Whether a comma suffix on a selection question only cites: citation-only as a paragraph, or one leading citation
+ * word (per, given, according to, see) followed by at least one link or path and nothing else but punctuation and
+ * the connective allowlist, a link's label dropped with its URL. "Node.js/Next.js" offers a different choice: residue.
+ */
+function citesOnly(suffix: string): boolean {
+  const text = suffix.trim().replace(/[\s.?!]+$/, "");
+  if (isCitationOnly(text)) return true;
+  const lead = /^(?:per|given|according to|see)\s+/i.exec(text);
+  if (lead === null) return false;
+  let cited = false;
+  const rest = text.slice(lead[0].length).replace(MARKDOWN_LINK, () => { cited = true; return " "; }).split(/\s+/).map((token) => {
+    if (!isPathToken(token.replace(TOKEN_WRAP, ""))) return token;
+    cited = true;
+    return " ";
+  }).join(" ");
+  const words = rest.replace(/’/g, "'").replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).map((w) => w.replace(/^'+|'+$/g, "").toLowerCase()).filter(Boolean);
+  return cited && words.every((w) => CITATION_WORDS.has(w));
+}
+
+/**
+ * Whether a question paragraph asks the owner to choose among options just shown: its LAST question sentence,
+ * stripped of closing punctuation, is a listed selection form, or one followed by a comma suffix that only cites
+ * (see `citesOnly`). Commentary after that question is allowed ("Which would you like? I recommend approving.");
+ * an earlier selection sentence never decides it ("Which would you like? Before deciding, which laptop OS will the
+ * volunteers use?"), and a question on a new subject ("Should I deploy now?") is not one.
+ */
+function asksSelection(paragraph: string): boolean {
+  const questions = sentencesOf(paragraph).map((sentence) => sentence.replace(/[*_"'”’)\]\s]+$/, "")).filter((sentence) => sentence.endsWith("?"));
+  const selects = (question: string): boolean => {
+    const text = question.replace(/[\s?!.]+$/, "");
+    const comma = text.indexOf(",");
+    const head = (comma < 0 ? text : text.slice(0, comma)).replace(/[\s.?!]+$/, "");
+    return SELECTION_FORMS.has(head) && (comma < 0 || citesOnly(text.slice(comma + 1)));
+  };
+  const last = questions[questions.length - 1];
+  return last !== undefined && selects(last);
+}
+
+/** A semantic stop's candidate, read from its last question and everything after it. */
+function questionCandidate(text: string): StopKind {
+  if (namesOption(text, "Approve setup")) return "package";
+  if (/continue without (an )?independent review/i.test(text) && /retry/i.test(text)) return "review-unavailable";
+  return "discovery";
+}
+
 /** A stop as read: its kind and, for a semantic stop, the kind it would be without the trailing paragraphs the judge must rule on. */
 export interface StopReading {
   readonly kind: StopKind;
@@ -1040,8 +1095,20 @@ export function readStop(stopText: string): StopReading {
   // selection question. Any other closing paragraph, option-bearing or not (a citation, a deploy, a stack choice, a choice
   // made for the owner, a line above the list), may do something else: only the judge can say.
   const last = paragraphs[paragraphs.length - 1] ?? "";
-  if (kind === "package" && !isOptionList(last) && !isSelectionQuestion(last)) return { kind: "semantic", candidate: "package" };
-  if (kind !== "none") return { kind, candidate: null };
+  if (kind === "package" && (isOptionList(last) || isSelectionQuestion(last))) return { kind, candidate: null };
+  if (kind === "review-unavailable") return { kind, candidate: null };
+  // Semantic from here. The owner answers the LAST question, so an older package above it never decides the route:
+  // a question offering "approve setup" is the package question however its other labels are worded (attempt 5 runs 2
+  // and 5), and a new question after a package is not the package.
+  const asked = paragraphs.map(hasQuestion).lastIndexOf(true);
+  if (asked >= 0) {
+    // A selection question right after the option list still refers to those options, whatever prose or citation it
+    // adds ("Which would you like? I recommend approving."): the package, never a discovery question.
+    const previous = asked > 0 ? paragraphs[asked - 1]! : "";
+    if ((isOptionList(previous) || hasOptionLines(previous)) && asksSelection(paragraphs[asked]!)) return { kind: "semantic", candidate: "package" };
+    return { kind: "semantic", candidate: questionCandidate(paragraphs.slice(asked).join("\n\n")) };
+  }
+  if (kind === "package") return { kind: "semantic", candidate: "package" };
   for (let end = paragraphs.length - 1; end >= 1; end--) {
     const candidate = endingKind(paragraphs.slice(0, end));
     if (candidate !== "none") return { kind: "semantic", candidate };
@@ -1510,7 +1577,9 @@ function isCodexProbe(execArgs: readonly string[]): boolean {
  * Every candidate reviewer invocation, in call order: a `codex exec` command
  * (help and version probes excluded), the `review_plan` MCP tool, or a
  * main-agent Agent/Task call. `ok` means it succeeded AND returned something;
- * a failed or empty call is not a review. Nothing here decides that a
+ * a failed or empty call is not a review, and neither is a background agent
+ * launch: its result is an acknowledgement, and the agent's final response
+ * never arrives as this tool result, so nothing here can capture it. Nothing here decides that a
  * candidate reviewed the proposal: an unrelated agent task passes this filter.
  */
 export function reviewerInvocations(calls: readonly EvalCall[]): ReviewerInvocation[] {
@@ -1520,7 +1589,11 @@ export function reviewerInvocations(calls: readonly EvalCall[]): ReviewerInvocat
     const ok = !call.isError && result.trim().length > 0;
     const input = typeof call.input === "string" ? call.input : JSON.stringify(call.input ?? null);
     if (call.name === "review_plan") { out.push({ via: "review_plan", ok, index, input, result }); return; }
-    if ((call.name === "Agent" || call.name === "Task") && !call.nested) { out.push({ via: "agent", ok, index, input, result }); return; }
+    if ((call.name === "Agent" || call.name === "Task") && !call.nested) {
+      const launched = (call.input as { run_in_background?: unknown } | null)?.run_in_background === true;
+      out.push({ via: "agent", ok: ok && !launched, index, input, result });
+      return;
+    }
     const cmd = commandOf(call);
     if (cmd === null) return;
     const runsCodexExec = (text: string, depth: number): boolean => shellCommands(text).some((words) => {

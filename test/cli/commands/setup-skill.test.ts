@@ -785,7 +785,7 @@ describe("setup-skill", () => {
     const pkg = flowSection(content, "1d");
     const execute = flowSection(content, "1e");
     if (!pkg.includes('nothing in 1e runs until the user explicitly chooses "Approve setup"')) problems.push("no wait for an explicit approval");
-    if (!execute.includes('Everything below runs only after "Approve setup".')) problems.push("execution not gated on approval");
+    if (!execute.includes('Everything below runs only after approval as defined in 1d.')) problems.push("execution not gated on approval");
     if (!/\*\*Pass 1:\*\* Call `storybloq_ticket_create` for each ticket WITHOUT `blockedBy`/.test(execute)) problems.push("pass 1 does not create without blockedBy");
     if (!execute.includes("Keep the id each call returns")) problems.push("pass 1 does not keep the returned ids");
     if (!/\*\*Pass 2:\*\* Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned/.test(execute)) problems.push("pass 2 does not wire dependencies from the returned ids");
@@ -880,7 +880,7 @@ describe("setup-skill", () => {
     const plan = flowSection(await readSetupFlow(), "1c2");
     expect(plan).toContain("**Independent review, by default.**");
     expect(plan).toContain("This runs before anything is shown for approval, every time.");
-    const codex = plan.indexOf("`codex exec --output-schema`");
+    const codex = plan.indexOf("a native Codex CLI, as a read-only review");
     const mcp = plan.indexOf("`review_plan`");
     const agent = plan.indexOf("an independent agent");
     expect(codex).toBeGreaterThanOrEqual(0);
@@ -934,7 +934,7 @@ describe("setup-skill", () => {
       ["pass 2 removed", "**Pass 2:** Call `storybloq_ticket_update` for each ticket that has `blockedBy` dependencies, using the ids the creation calls returned.", /pass 2 does not wire/],
       ["cycle check removed", "Validate: no cycles, no self-references.", /no dependency validation/],
       ["wait removed", ' Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup".', /no wait for an explicit approval/],
-      ["gate removed", 'Everything below runs only after "Approve setup".', /execution not gated/],
+      ["gate removed", 'Everything below runs only after approval as defined in 1d.', /execution not gated/],
     ];
     for (const [name, text, expected] of mutants) {
       expect(content, `${name}: the mutated text must exist`).toContain(text);
@@ -1220,6 +1220,10 @@ describe("setup-skill", () => {
     // the allow-list it would simply not be installed, and the setup flow would
     // report a missing file instead of writing a review contract.
     expect(tsContent).toContain('"review-contract-template.md"');
+    // T-536: setup-flow.md's native Codex review passes this file as
+    // --output-schema. Left out of the allow-list it would not be installed
+    // for Claude Code, and the reviewer command would point at a missing file.
+    expect(tsContent).toContain('"setup-review-schema.json"');
     // T-496 (ISS-1144 guard pattern): session-guard.md is the on-demand
     // reference the Step 0.5 stub points to. Left out of the allow-list it
     // would simply not be installed, and every exceptional-verdict pointer

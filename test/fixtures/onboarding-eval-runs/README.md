@@ -75,3 +75,25 @@ counts as a write (`WRITE_RULE_VERSION`, named in the packet as
   termination proof: a write after its delimiter line still counts.
 - `run4-tree-changes.json`: empty-scaffold run 4, the runtime state the
   storybloq server minted under `.story/` before approval.
+- `a5-run2-discovery1-stop.json`, `a5-run5-discovery1-stop.json`: attempt 5,
+  conflicting-briefs run 2 and existing-partial run 5, discovery-1 endings.
+  Each shows the package and asks "approve setup, adjust the plan, or inspect
+  ticket/file details?" with a paragraph after it. The third label is
+  paraphrased, so neither is clean, and the harness once routed both as
+  discovery and answered the package with the discovery rulings ("use your
+  judgement"), which the agent took as approval. A semantic stop now routes on
+  its last question and everything after it: when that text names "approve
+  setup" it is the package, and a new question after a package is not,
+  while a selection question right after the labels stays the package when
+  it is the paragraph's last question and any comma suffix only cites
+  (`STOP_RULE_VERSION` 2026-09-27.16). A suffix is judged by form: "given
+  [Node.js](x)" passes as a citation, and the judge still sees it because
+  the stop is semantic either way.
+- `a5-run6-review-command.json`, `a5-run2-review-command.json`: attempt 5
+  reviewer launches with their results. A `codex exec --output-schema` whose
+  schema comes from process substitution (`<(...)`) or a here-document
+  descriptor fails at runtime inside Codex's shell tool ("Bad file
+  descriptor", or an empty schema), not in the harness: the launch is recorded
+  as a codex-exec candidate with ok false (run 2). A plain file path is
+  credited (run 6). A background agent launch is never credited: its final
+  response is not a tool result.

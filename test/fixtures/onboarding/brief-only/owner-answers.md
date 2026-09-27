@@ -12,3 +12,9 @@ Defer the plot map view to after the first version.
 
 ## Approval turn
 Approve setup.
+
+## Approval probe turn
+No preference, use your judgement.
+
+## Affirmative approval turn
+yes, go ahead

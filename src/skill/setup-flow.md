@@ -107,13 +107,13 @@ Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner review
 
 **Independent review, by default.** Review the full plan with an available supported reviewer, trying them in this capability order:
 
-1. a native Codex CLI, as a read-only `codex exec --output-schema` review;
+1. a native Codex CLI, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
 2. the `review_plan` MCP tool;
 3. an independent agent, if the client can start one.
 
 The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Maximum 2 review rounds; incorporate the findings. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
 
-**When no reviewer is available**, or every call fails, say so plainly and use `AskUserQuestion`: "Retry the review" or "Continue without independent review". Stop there until the user answers. A retry runs the order again; continuing records the skip, which appears in the package, the setup summary and the initial handover.
+**When no reviewer is available**, or every call fails, say so plainly and use `AskUserQuestion`: "Retry the review" or "Continue without independent review". Stop there until the user answers. A retry runs the order again; continuing records the skip, which appears in the package, the setup summary and the initial handover. A review counts only when a supported reviewer returned a completed response with a verdict and findings about the plan you supplied, captured in this session and quoted in the package. Error output, a launch acknowledgement, a refusal or incomplete output is not a review, and neither is a collaboration agent whose response you did not capture; wait for an asynchronous reviewer to finish. When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.
 
 #### 1d. Present Proposal
 
@@ -144,11 +144,20 @@ Then ONE `AskUserQuestion`:
   - "Adjust the plan" -- change scope, milestones, tickets, files, quality level or git
   - "Inspect details" -- expand a ticket, a file preview or the coverage map
 
-"Inspect details" shows what the user asks for and re-asks the same question. "Adjust the plan" iterates, reruns the review only when the change is material, re-shows the package and re-asks. One approval covers everything listed. Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup".
+**Without a structured question tool**, end the package with exactly these four lines, one per line, no blank line between them and nothing after them:
+
+How should I proceed with this setup?
+Approve setup
+Adjust the plan
+Inspect details
+
+Do not paraphrase a label or add a citation or closing paragraph: the owner, a reviewer or an evaluation harness reads these exact labels.
+
+"Inspect details" shows what the user asks for and re-asks the same question. "Adjust the plan" iterates, reruns the review only when the change is material, re-shows the package and re-asks. One approval covers everything listed. Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup". An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again with the four lines.
 
 #### 1e. Execute on Approval
 
-Everything below runs only after "Approve setup".
+Everything below runs only after approval as defined in 1d.
 
 1. **Initialise only when `.story/` is absent.** Call `storybloq_init` with name, type and language. For an `interrupted` scaffold, skip init: its config and phases are reused as they are, and init is never forced over them. A default `p0` "Setup" phase (which a fresh init also writes) stays first, and setup phases go after it. If the scaffold is no longer empty (tickets, issues, handovers or non-default phases appeared), stop and name what you found.
 
@@ -245,7 +254,7 @@ Same sanitization and read-back rules as CLAUDE.md -- a REVIEW.md reported as cr
 **Summary.** Confirm what was created with concrete, verified counts: do not say "CLAUDE.md created" unless the read-back confirmed it, and do not give a ticket count unless every create call returned success; the counts must equal what is on disk. Example: "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md (2,814 chars), RULES.md (1,206 chars). Git repo initialized." Then:
 
 - the review outcome, or "Independent review skipped at the user's request";
-- one line per pending item: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)".
+- one line per pending stage, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)".
 
 **Initial handover and setup note.** Write an initial handover that records the product brief and its acceptance conditions, the coverage map, the answers from 1c, the conflicts and how they were ruled, the approved quality level with its established and pending commands, the review outcome or the recorded skip, and the checkpoint tickets with the stage-1 limitation. Also create a setup note (`storybloq_note_create`, tag `setup`) holding the coverage map and the pending verification tooling. The handover is the source of truth for setup decisions; CLAUDE.md is the project description.
 

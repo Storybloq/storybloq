@@ -97,3 +97,21 @@ counts as a write (`WRITE_RULE_VERSION`, named in the packet as
   as a codex-exec candidate with ok false (run 2). A plain file path is
   credited (run 6). A background agent launch is never credited: its final
   response is not a tool result.
+- `a6-run1-review-command.json`: attempt 6, brief-only run 1, the skill's own
+  review command with its result: `codex exec ... --output-schema '<schema>'
+  - <<'STORYBLOQ_PLAN'`, the plan on stdin. Every `<<` once marked a command
+  needs review, so the skill's mandated review failed its own package stop.
+  `executionCalls` now exempts exactly this shape: a direct `codex exec` (its
+  first word is `codex` by basename: no wrapper, no leading assignment) whose
+  sole positional operand, after its options and their values are parsed and
+  `--` ends them, is `-`, any unknown option refusing, and every here-document delimiter
+  simple and quoted (the body is data), with no other unparsed construct in
+  the command. Only the skill's own options count as known: `--output-schema`,
+  `-m`/`--model`, `-C`/`--cd`, `-i`/`--image`, `--color`, `-s`/`--sandbox`
+  with the value `read-only` only, and the flags `--ephemeral`,
+  `--skip-git-repo-check`, `--json`. `-o`/`--output-last-message` (a file
+  write), `-c`/`--config` and `-p`/`--profile` (an MCP server subprocess) and
+  `--full-auto` (a wider sandbox) are unknown and refuse. An unquoted or complex delimiter, an interpreter or any other
+  consumer, a `$(`, `<(` or backtick in the same command keeps the mark, and
+  a loop beside it keeps its own. The exemption is this README's record: no
+  rule version string changed (fixup 5, checkout head identifies it).

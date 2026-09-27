@@ -709,7 +709,9 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     expect(run7).toContain("count > minimum count+1");
     expect(run7.startsWith("/bin/zsh -lc \"")).toBe(true);
     expect(writeCalls([bash(run7)])).toEqual([]);
-    expect(executionCalls([bash(run7)]).map((h) => h.kind)).toEqual(["review"]);
+    // Fixup 5: a direct `codex exec` whose sole positional is `-`, every here-document delimiter quoted (the fd-3 schema
+    // one included), is clean for the stop; its runtime failure is the reviewer-credit check's business, not this one's.
+    expect(executionCalls([bash(run7)])).toEqual([]);
     // The same launch outside its nested shell.
     const inner = shellSequence(run7).commands[0]!.words[2]!;
     expect(inner.startsWith("codex exec ")).toBe(true);
@@ -1326,15 +1328,72 @@ describe("the attempt 5 fix batch (T-536)", () => {
       expect(reviewerInvocations([launched, foreground]).map((x) => [x.via, x.ok])).toEqual([["agent", false], ["agent", true]]);
     });
 
-    it("credits the skill's command form, a quoted schema path with a space and the plan on stdin, as no write and review only (the run 7 here-document contract)", () => {
+    it("credits the skill's command form, a quoted schema path with a space and the plan on stdin, as no write and clean (fixup 5)", () => {
       const command = "codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '/Users/o/Library/My Skills/story/setup-review-schema.json' - <<'STORYBLOQ_PLAN'\nReview this setup plan. The owner's brief says gardeners don't need passwords.\nT-1 catalogue > 3 items\nSTORYBLOQ_PLAN";
       for (const form of [command, `/bin/zsh -lc ${shellQuote(command)}`]) {
         const call = withResult(form, '{"verdict":"approve","findings":[]}');
         expect(reviewerInvocations([call]).map((x) => [x.via, x.ok]), form).toEqual([["codex-exec", true]]);
-        // A here-document is never clean on the skeleton: review, never an execution; its quoted body is data.
-        expect(executionCalls([call]).map((h) => h.kind), form).toEqual(["review"]);
+        // `codex exec ... -` fed by a simple quoted here-document: the body is data, so the command is clean.
+        expect(executionCalls([call]), form).toEqual([]);
         expect(writeCalls([call]), form).toEqual([]);
       }
+    });
+
+    it("reads attempt 6 run 1's review command, verbatim, as a credited reviewer and clean for the stop (fixup 5)", () => {
+      const r1 = verbatim<{ command: string; result: string }>("a6-run1-review-command.json");
+      expect(r1.command).toMatch(/^\/bin\/zsh -lc "codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '[^']+setup-review-schema\.json' - <<'STORYBLOQ_PLAN'\n/);
+      const call = withResult(r1.command, r1.result);
+      expect(reviewerInvocations([call]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", true]]);
+      expect(executionCalls([call])).toEqual([]);
+      expect(writeCalls([call])).toEqual([]);
+      // The same command with an unquoted delimiter expands its body: review, still credited.
+      const unquoted = withResult(r1.command.replace("<<'STORYBLOQ_PLAN'", "<<STORYBLOQ_PLAN"), r1.result);
+      expect(executionCalls([unquoted]).map((h) => h.kind)).toEqual(["review"]);
+      expect(reviewerInvocations([unquoted]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", true]]);
+    });
+
+    it("keeps the review mark on every other here-document shape (fixup 5)", () => {
+      const plan = "\nReview this plan.\nP";
+      for (const command of [
+        `python3 - <<'PY'\nprint(1)\nPY`, // an interpreter reads it: a script
+        `cat <<'P'${plan}`, // not codex
+        `codex exec <<'P'${plan}`, // no stdin prompt operand
+        `codex review - <<'P'${plan}`, // not exec
+        `codex exec --output-schema "$(mktemp)" - <<'P'${plan}`, // a live substitution in the same command
+        `codex exec --output-schema <(echo '{}') - <<'P'${plan}`, // a process substitution in the same command
+        `codex exec - <<'P' <<\x60Q\x60\nReview this plan.\nP\nq\nQ`, // a complex delimiter beside a quoted one
+        // Static round (fixup 5): `-` must be the sole positional after option parsing, and the invocation direct.
+        `codex exec --output-schema - "Review inline" <<'PLAN'\nx\nPLAN`, // "-" is the schema value, the prompt inline
+        `codex exec - extra <<'P'${plan}`, `codex exec --unknown-flag - <<'P'${plan}`, `codex exec - --model <<'P'${plan}`,
+        `/usr/bin/time -o timing.txt codex exec - <<'P'${plan}`, `env FOO=1 codex exec - <<'P'${plan}`,
+        `FOO=1 codex exec - <<'P'${plan}`, `nice codex exec - <<'P'${plan}`, `command codex exec - <<'P'${plan}`,
+        // Delta round (fixup 5): the output-file options write the response to a file, in every spelling.
+        `codex exec --sandbox read-only --output-last-message /tmp/review.txt - <<'P'${plan}`,
+        `codex exec --output-last-message=/tmp/review.txt - <<'P'${plan}`, `codex exec -o /tmp/review.txt - <<'P'${plan}`,
+        `codex exec -o/tmp/review.txt - <<'P'${plan}`,
+        // Delta round 2 (fixup 5): nothing that can configure an MCP subprocess or widen the sandbox.
+        `codex exec -c 'mcp_servers.probe.command="sh"' -c 'mcp_servers.probe.args=["-c","touch x"]' - <<'P'${plan}`,
+        `codex exec --config='mcp_servers.probe.command="sh"' --config='mcp_servers.probe.args=["-c","touch x"]' - <<'P'${plan}`,
+        `codex exec -p reviewer - <<'P'${plan}`, `codex exec --profile=reviewer - <<'P'${plan}`, `codex exec --full-auto - <<'P'${plan}`,
+        `codex exec --sandbox workspace-write - <<'P'${plan}`, `codex exec --sandbox=danger-full-access - <<'P'${plan}`, `codex exec -s workspace-write - <<'P'${plan}`,
+      ]) {
+        expect(executionCalls([bash(command)]).map((h) => h.kind), command).toContain("review");
+      }
+      // Attempt 5 run 2's process-substitution launch: review, and not credited.
+      const r2 = verbatim<{ command: string; result: string }>("a5-run2-review-command.json");
+      expect(executionCalls([bash(r2.command)]).map((h) => h.kind)).toContain("review");
+      expect(reviewerInvocations([withResult(r2.command, r2.result, true)]).map((x) => [x.via, x.ok])).toEqual([["codex-exec", false]]);
+      for (const command of [
+        `/opt/homebrew/bin/codex exec - <<'P'${plan}`, `codex exec --output-schema=/tmp/s.json -m gpt --cd /tmp - <<'P'${plan}`,
+        `codex exec -s read-only - <<'P'${plan}`, `codex exec --sandbox=read-only --image a.png --color never - <<'P'${plan}`,
+        `codex exec --json -- - <<'P'${plan}`, `codex exec - 2>/dev/null <<'P'${plan}`,
+      ]) {
+        expect(executionCalls([bash(command)]), command).toEqual([]);
+      }
+      // A loop in the same call keeps its own mark; the review command beside it is clean.
+      const loop = `for p in a b; do cat $p; done; codex exec - <<'P'${plan}`;
+      expect(executionCalls([bash(loop)]).every((h) => !h.segment.startsWith("codex"))).toBe(true);
+      expect(executionCalls([bash(loop)]).map((h) => h.kind)).toContain("review");
     });
   });
 

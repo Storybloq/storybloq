@@ -485,6 +485,8 @@ export interface ShellCommand {
   readonly heredoc: boolean;
   /** One of its here-documents has a delimiter word outside the simple forms, so its end is not known. */
   readonly heredocComplex: boolean;
+  /** One of its here-documents has a simple unquoted delimiter, so its body is expanded and read unblanked. */
+  readonly heredocUnquoted: boolean;
 }
 
 /**
@@ -548,12 +550,13 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
   let live: string[] = [];
   let heredoc = false;
   let heredocComplex = false;
+  let heredocUnquoted = false;
   let pending: Heredoc[] = [];
   const endWord = (): void => { if (inWord) { words.push(word); word = ""; inWord = false; } };
   const endCommand = (sep: string): void => {
     endWord();
-    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim(), live, heredoc, heredocComplex });
-    words = []; bare = ""; live = []; heredoc = false; heredocComplex = false;
+    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim(), live, heredoc, heredocComplex, heredocUnquoted });
+    words = []; bare = ""; live = []; heredoc = false; heredocComplex = false; heredocUnquoted = false;
     if (sep) operators.push(sep);
   };
   /** Consume the pending bodies from `from`, in order; returns the index after the last one. */
@@ -583,6 +586,7 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
       pending.push(h);
       heredoc = true;
       if (h.form === "complex") heredocComplex = true;
+      if (h.form === "unquoted") heredocUnquoted = true;
     }
     if (ch === "'") {
       const close = command.indexOf("'", i + 1);
@@ -835,6 +839,50 @@ export interface ExecutionHit {
   readonly kind: "execution" | "review";
 }
 
+/**
+ * The skill's own `codex exec` options that take a value, as a separate word or after `=` (long forms), and nothing that
+ * can widen execution. Deliberately absent, so unknown and refusing in any spelling: `-o`/`--output-last-message` (they
+ * write a file), `-c`/`--config` and `-p`/`--profile` (they can configure an MCP server subprocess). `--sandbox`/`-s`
+ * is allowed only with the value `read-only`.
+ */
+const CODEX_EXEC_VALUE_OPTIONS: ReadonlySet<string> = new Set(["--output-schema", "-m", "--model", "-C", "--cd", "-s", "--sandbox", "-i", "--image", "--color"]);
+/** `codex exec` flags that take no value. Any other option (`--full-auto` raises the sandbox) is unknown and refuses. */
+const CODEX_EXEC_FLAGS: ReadonlySet<string> = new Set(["--ephemeral", "--skip-git-repo-check", "--json"]);
+/** The only sandbox value the exemption accepts. */
+const sandboxOption = (option: string): boolean => option === "-s" || option === "--sandbox";
+/** A redirection word as the tokenizer keeps it (`<<PLAN`, `2>/dev/null`, `&>log`). */
+const REDIRECTION_WORD = /^(?:\d*[<>]|&>)/;
+
+/**
+ * Whether a simple command is a DIRECT `codex exec` (its first word is `codex` by basename: no wrapper, no leading
+ * assignment) whose only positional operand, once its options and their values are parsed and `--` ends them, is
+ * exactly `-`: the prompt is read from stdin. An unknown option, a missing value or any other positional is not.
+ */
+function codexExecReadsStdin(words: readonly string[]): boolean {
+  if (baseName(words[0] ?? "") !== "codex" || words[1] !== "exec") return false;
+  const positional: string[] = [];
+  for (let i = 2; i < words.length; i++) {
+    const word = words[i]!;
+    if (REDIRECTION_WORD.test(word)) continue;
+    if (word === "--") { positional.push(...words.slice(i + 1).filter((w) => !REDIRECTION_WORD.test(w))); break; }
+    if (word === "-" || !word.startsWith("-")) { positional.push(word); continue; }
+    const eq = word.indexOf("=");
+    if (word.startsWith("--") && eq > 0 && CODEX_EXEC_VALUE_OPTIONS.has(word.slice(0, eq))) {
+      if (sandboxOption(word.slice(0, eq)) && word.slice(eq + 1) !== "read-only") return false;
+      continue;
+    }
+    if (CODEX_EXEC_VALUE_OPTIONS.has(word)) {
+      const value = words[i + 1];
+      if (value === undefined || REDIRECTION_WORD.test(value)) return false;
+      if (sandboxOption(word) && value !== "read-only") return false;
+      i++;
+      continue;
+    }
+    if (!CODEX_EXEC_FLAGS.has(word)) return false;
+  }
+  return positional.length === 1 && positional[0] === "-";
+}
+
 /** Shell commands that run a build, test, install or dev server, from every call including nested agents'. Reading a manifest never matches. */
 export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   const hits: ExecutionHit[] = [];
@@ -843,9 +891,15 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   // A nested shell's string is judged once, inside; outside, only the
   // wrapper's own words (everything but that string) are.
   const scan = (call: EvalCall, cmd: string, depth: number): void => {
-    for (const { words, bare, heredoc, heredocComplex } of shellSequence(cmd).commands) {
+    for (const { words, bare, heredoc, heredocComplex, heredocUnquoted } of shellSequence(cmd).commands) {
       const { argv, inner, ambiguous } = unwrap(words);
       const residue = inner === null ? bare : words.filter((w) => w !== inner).join(" ");
+      // The skill's own review command (setup-flow.md): a direct `codex exec ... -` with its prompt on stdin from a
+      // here-document whose every delimiter is simple and quoted. That body is data, so the `<<` alone is no unparsed
+      // construct; a wrapper, any other operand layout, or any other construct in the command (`$(`, `<(`, a backtick,
+      // an unquoted or complex delimiter) keeps the review mark.
+      const quotedCodexPrompt = inner === null && heredoc && !heredocComplex && !heredocUnquoted && codexExecReadsStdin(words);
+      const skeleton = quotedCodexPrompt ? residue.replace(/(?<!<)<<(?!<)/g, "") : residue;
       const executable = inner === null ? unsupportedArgv(argv) : null;
       // A here-document an interpreter reads is a script the checks cannot read, quoted delimiter or not.
       const interpreter = heredoc && inner === null && HEREDOC_INTERPRETERS.test(baseName(argv[0] ?? "")) ? baseName(argv[0]!) : null;
@@ -853,7 +907,7 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
       const redirect = fileRedirect(bare) || (inner === null && baseName(argv[0] ?? "") === "tee");
       const reasons = [...(interpreter !== null ? [`heredoc into ${interpreter}`] : []), ...(heredocComplex ? ["complex here-document delimiter"] : []), ...(redirect ? ["file redirect, target not resolved"] : [])];
       if (reasons.length > 0) hits.push({ call, segment: `${residue} [${reasons.join("; ")}]`, kind: "review" });
-      else if (UNSUPPORTED_SYNTAX.test(residue)) hits.push({ call, segment: residue, kind: "review" });
+      else if (UNSUPPORTED_SYNTAX.test(skeleton)) hits.push({ call, segment: residue, kind: "review" });
       else if (executable !== null) hits.push({ call, segment: `${argv.join(" ")} [${executable}]`, kind: "review" });
       if (ambiguous !== null) hits.push({ call, segment: `${words.join(" ")} [${ambiguous}]`, kind: "review" });
       if (inner !== null) {

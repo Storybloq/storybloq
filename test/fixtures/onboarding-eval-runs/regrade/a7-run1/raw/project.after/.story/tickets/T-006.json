@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-004",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Apply for the coming season; source: brief.md First version 1 and Rules.\nScope: Choose zero to three distinct preferred plots; coordinator application list and application window controls independent of occupancy; configure window including pre-February-1 opportunity.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: One application per household/season; server timestamp plus deterministic sequence; duplicate retry preserves queue position; reject outside application window. L2 integrates post-initial-allocation applicants into FIFO while window remains open.\nBehaviour: Clear confirmation and loading/empty/error states, preserve values on failed submission. Coordinator records withdrawal; household cannot reapply that season, a provisional simplifying assumption.\nVerification: Phone flow; 0/3/4 and repeated preferences, duplicate retry, window boundaries and separate priority cutoff.\nPrerequisites: T-005, T-004, T-003.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "applications",
+  "status": "open",
+  "title": "Apply for the coming season",
+  "type": "task"
+}

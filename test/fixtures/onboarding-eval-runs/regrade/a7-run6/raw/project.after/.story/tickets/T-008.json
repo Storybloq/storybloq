@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Criteria: Owner verifies the working add/take/finish journey for volunteers and repairers, including empty queues, validation and failure recovery.\nArtifact: Runnable staff workflow and its integration evidence.\nSource: BRIEF.md staff roles and first-version actions.\nPrerequisites: T-005, T-006 and T-007. Stage-1 limitation: ordinary checkpoint ticket, owner approval is not technically enforced. Unrelated board work remains unblocked.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 40,
+  "phase": "p2",
+  "status": "open",
+  "title": "Checkpoint: demonstrate the staff journey",
+  "type": "task"
+}

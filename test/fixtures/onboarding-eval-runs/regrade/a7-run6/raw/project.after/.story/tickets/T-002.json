@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Question: Review a workflow/API sketch together and decide queue ordering (FIFO is only a proposal), completed-entry visibility, storage and restart durability, retention, who may view visitor first names/items, who may mutate the queue, and deployment/network boundaries.\nArtifact: Workflow/API sketch developed in this owner discussion, with example visitor journeys and recorded decisions.\nCriteria: Each choice is explicit enough to guide lifecycle, access, display and verification work.\nSource: BRIEF.md describes roles and outcomes but leaves these choices open.\nPrerequisites: none. Stage-1 limitation: this is an ordinary checkpoint ticket; owner approval is not technically enforced.",
+  "id": "T-002",
+  "order": 10,
+  "phase": "p1",
+  "status": "open",
+  "title": "Checkpoint: confirm workflow and deployment",
+  "type": "task"
+}

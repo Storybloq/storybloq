@@ -1,0 +1,14 @@
+# Storybloq runtime state
+.story/snapshots/
+.story/sessions/
+.story/status.json
+
+# JavaScript dependencies and build output
+node_modules/
+dist/
+
+# Python environments and caches
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]

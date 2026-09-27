@@ -1,0 +1,49 @@
+{
+  "blockers": [],
+  "date": "2026-09-27",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate established tooling, household/season data and owner-reviewed phone journeys.",
+      "id": "foundation",
+      "label": "PHASE 1",
+      "name": "Foundation"
+    },
+    {
+      "description": "Demonstrate passwordless sign-in, application and coordinator review.",
+      "id": "applications",
+      "label": "PHASE 2",
+      "name": "Applications"
+    },
+    {
+      "description": "Demonstrate returning priority, FIFO vacancies, gardener allocation and coordinator allocation list.",
+      "id": "allocation",
+      "label": "PHASE 3",
+      "name": "Allocation"
+    },
+    {
+      "description": "Demonstrate phone reporting, coordinator resolution and daily email.",
+      "id": "problems",
+      "label": "PHASE 4",
+      "name": "Problems"
+    },
+    {
+      "description": "Verify operation and obtain owner first-version acceptance without a plot map.",
+      "id": "release",
+      "label": "PHASE 5",
+      "name": "Release"
+    },
+    {
+      "description": "Deliver the accessible 40-plot map only after first-version acceptance.",
+      "id": "post-first-version",
+      "label": "PHASE 6",
+      "name": "After first version"
+    }
+  ],
+  "title": "Plotbook"
+}

@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-011",
+    "T-015"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Verify first-version operation; source: brief.md First version 1-4, Rules, Constraints; conversation scope/sign-in/digest.\nScope: End-to-end regression, phone/accessibility/privacy, deployment, backup/restore demonstration and coordinator runbook.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: All mandatory first-version outcomes pass; email/scheduler configured; recovery proven; remaining defects disclosed; synthetic fixtures only.\nBehaviour: Exercise outages and recovery; document manual fallback and support; no map required for release.\nVerification: Priority and early-cutoff cases; late applications/vacancies; merge conflicts; rollover; coordinator bootstrap/recovery; reassigned-plot report privacy; digest concurrency/crash; phone/keyboard, deployment smoke and restore drill.\nPrerequisites: T-007, T-011, T-015.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-016",
+  "id": "T-016",
+  "order": 10,
+  "phase": "release",
+  "status": "open",
+  "title": "Verify first-version operation",
+  "type": "task"
+}

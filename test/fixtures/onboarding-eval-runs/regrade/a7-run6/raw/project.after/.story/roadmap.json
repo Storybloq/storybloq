@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "date": "2026-09-27",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate a runnable mixed-stack project and an agreed, tested queue lifecycle.",
+      "id": "p1",
+      "label": "PHASE 1",
+      "name": "Agreed workflow and runnable foundation"
+    },
+    {
+      "description": "Demonstrate adding a visitor, taking the next visitor and finishing a repair.",
+      "id": "p2",
+      "label": "PHASE 2",
+      "name": "Working staff journey"
+    },
+    {
+      "description": "Demonstrate the board page, automatic refresh and the accepted complete first version.",
+      "id": "p3",
+      "label": "PHASE 3",
+      "name": "Live board and first-version acceptance"
+    }
+  ],
+  "title": "Queue board"
+}

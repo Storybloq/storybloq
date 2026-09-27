@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-008",
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Show gardener allocation and season dates; source: brief.md First version 3 and Constraints.\nScope: Gardener sees own assigned plot and March-October season dates or waiting/unallocated state.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Accurate persisted states across allocation/waiting/release; household isolation and no foreign contacts/details.\nBehaviour: Accessible loading, empty, error and retry states.\nVerification: Phone walkthrough plus household isolation and all queue/allocation transition tests.\nPrerequisites: T-005, T-008, T-009.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Show gardener allocation and season dates",
+  "type": "task"
+}

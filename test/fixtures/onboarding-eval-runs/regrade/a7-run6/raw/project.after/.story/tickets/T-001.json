@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-09-27",
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Record existing behaviour evidenced by frontend/src/main.js, backend/app/main.py and backend/tests/test_health.py.\nScope: Placeholder Queue board page, GET /health and health test source. Excludes: queue product features and any claim of passing tests.\nAcceptance: These source files exist and implement only the documented scaffold.\nBehaviour: Health handler returns status ok; frontend displays its title.\nVerification: Source inspection completed during setup; tests/builds were not run. Prerequisites: none. Assumptions: none.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "p0",
+  "status": "complete",
+  "title": "Record existing frontend and backend scaffold",
+  "type": "chore"
+}

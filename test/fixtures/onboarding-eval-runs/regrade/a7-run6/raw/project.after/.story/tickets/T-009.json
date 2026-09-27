@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Viewers see waiting and helped visitors when opening or reloading the board, from BRIEF.md.\nScope: Read API, accessible groups/headings, agreed ordering/privacy, initial fetch and manual retry. Excludes: periodic refresh, background synchronization and SMS; automatic refresh is a separate ticket at the owner's request.\nAcceptance: Opening/reloading displays current server state in the correct groups with only permitted fields.\nBehaviour: Clear loading, empty and error states, with manual retry after a failed initial load.\nVerification: API and UI tests using fixed queue fixtures, including privacy and grouping assertions. Prerequisites: T-004. Assumptions: no automatic freshness promise until T-010.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 10,
+  "phase": "p3",
+  "status": "open",
+  "title": "Build the board page",
+  "type": "feature"
+}

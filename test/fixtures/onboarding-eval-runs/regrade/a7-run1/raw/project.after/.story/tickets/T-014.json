@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-012",
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Daily email digest; source: conversation daily notification decision; brief.md First version 4 and Constraints.\nScope: Daily coordinator email for reports created since durable last successful coverage, including already resolved reports; minimal personal data with secure detail links.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: One durable daily batch, fixed upper watermark and stable provider idempotency key; concurrent jobs share batch and arrivals during send wait for next batch. Skip empty days; catch up downtime; retain failed reports. Guarantee one provider acceptance within documented retry window, not exactly-once mailbox delivery.\nBehaviour: Visible delivery failures and documented retry; ambiguous sends beyond provider dedupe window require explicit reconciliation rather than blind resend/drop.\nVerification: Fake-clock day boundaries, delays, concurrent jobs, arriving-during-send, resolved reports, provider failure/crash/retry tests and sandbox email.\nPrerequisites: T-012, T-001.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 30,
+  "phase": "problems",
+  "status": "open",
+  "title": "Daily email digest",
+  "type": "task"
+}

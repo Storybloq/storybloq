@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Repairer takes the next eligible visitor, from BRIEF.md.\nScope: Claim API/action, being-helped display and agreed access rules. Excludes: reassignment.\nAcceptance: Ordering follows T-002; simultaneous repairers receive distinct visitors; retry after a lost successful response returns the original assignment without claiming another visitor.\nBehaviour: Accessible empty, pending, conflict, error and recovery feedback.\nVerification: API/UI integration and concurrent/lost-response tests using queue fixtures. Prerequisites: T-004; T-005 is not needed because fixtures supply entries. Assumptions: apply T-002 decisions.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "p2",
+  "status": "open",
+  "title": "Take the next visitor end to end",
+  "type": "feature"
+}

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Door volunteer adds a first name and repair item, from BRIEF.md.\nScope: API, accessible form, confirmation and agreed access controls. Excludes: edit/delete and SMS.\nAcceptance: Valid input creates exactly one waiting entry; invalid input is rejected; repeated submission or retry after an uncertain response does not silently duplicate the visitor.\nBehaviour: Accessible field errors, pending state and success feedback; safe recovery from network failure.\nVerification: API/UI integration tests for valid, invalid and duplicate/retry submissions. Prerequisites: T-004. Assumptions: apply owner decisions from T-002.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "p2",
+  "status": "open",
+  "title": "Add a visitor end to end",
+  "type": "feature"
+}

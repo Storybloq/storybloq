@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Establish the technical foundation for phone application, allocation and problem workflows; source: brief.md First version and Constraints, conversation technology delegation. Scope: Choose and document stack, database, hosting, email delivery and scheduler; scaffold application; establish manifest test, build and server commands; configure Storybloq overrides to enable applicable Full pipeline WRITE_TESTS, TEST, BUILD and VERIFY before completion. Excludes: implementing product features, payments, tool lending and plot map. Acceptance: Clean checkout supports documented commands without committed secrets; applicable recipe stages enabled with real commands, genuinely inapplicable stages justified; email provider supports idempotent submission with documented retry window; secure coordinator bootstrap/recovery procedure documented. Behaviour: Missing configuration fails clearly; no secrets in logs; guarantee concerns provider acceptance within retry window, not exactly-once mailbox delivery. Verification: Tooling smoke checks and documented provider guarantees after implementation; no commands assumed from absent manifests. Prerequisites: none. Assumptions: technology delegated; no existing code; all commands pending until established here.",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Establish application and verification tooling",
+  "type": "task"
+}

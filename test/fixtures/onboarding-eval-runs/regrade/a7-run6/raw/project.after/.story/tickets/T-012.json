@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-011"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Criteria: Owner accepts adding visitors, taking next visitors, finishing repairs and the automatically refreshed waiting/helped board against BRIEF.md and decisions in T-002.\nArtifact: Working demonstration and complete verification evidence from T-011, including T-008 staff feedback.\nPrerequisites: T-008 and T-011. Stage-1 limitation: ordinary checkpoint ticket, owner approval is not technically enforced. SMS remains deferred and no later work is automatically started.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 40,
+  "phase": "p3",
+  "status": "open",
+  "title": "Checkpoint: accept the first version",
+  "type": "task"
+}

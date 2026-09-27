@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Run and meaningfully test both existing components, from frontend/package.json and backend/pyproject.toml.\nScope: Document clean-environment install/test/start commands, establish missing test/runtime dependencies, a real frontend smoke test, backend runner and local frontend/API integration. Excludes: product features and new frameworks/providers.\nAcceptance: Both components start using documented commands; meaningful frontend and backend smoke tests run; combined startup/readiness commands are established before enabling VERIFY. Investigate TestClient dependency requirements such as httpx.\nBehaviour: Startup failures give actionable errors.\nVerification: Execute documented smoke checks during implementation, not setup. Prerequisites: none. Assumptions: backend runner, ports and combined verification command remain TBD.",
+  "id": "T-003",
+  "order": 20,
+  "phase": "p1",
+  "status": "open",
+  "title": "Establish development and verification commands",
+  "type": "task"
+}

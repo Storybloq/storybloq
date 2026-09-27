@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: FIFO waiting list and vacancy assignment; source: brief.md First version 2 and Rules.\nScope: Own atomic initial-finalization transition of all active unallocated applications to FIFO; append later applicants while window open; coordinator records withdrawal/release and assigns next active waiting household.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Server timestamp plus sequence orders queue; returning priority never reorders it; no silent skipping active head; active holdings unique, ended holdings remain historical; released/withdrawn households cannot reapply same season.\nBehaviour: Clear empty queue and stale-request recovery; idempotent retries; history retained.\nVerification: Tests for late application to vacancy, tie order, release/reassignment/history, withdrawal, concurrent assignment and initial-finalization race.\nPrerequisites: T-008.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "FIFO waiting list and vacancy assignment",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Email sign-in, permissions and coordinator recovery; source: conversation sign-in decision; brief.md Constraints.\nScope: Passwordless emailed one-time links, sessions/sign-out, household accounts, coordinator-only actions and secure out-of-band first coordinator bootstrap/mailbox recovery.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Links expire, single-use, safe redirect validation and server permissions; no public role assignment. Gardener sees own account as needed and own allocation; stored contact listings, report lists/details/history and reconciliation are coordinator-only.\nBehaviour: Generic sign-in response, rate limiting, resend/expired-link recovery and accessible feedback; administrator recovery action recorded.\nVerification: Expiry/reuse, enumeration, cross-household/direct-ID and role escalation tests; bootstrap/recovery demonstration; privacy after household merge and plot reassignment.\nPrerequisites: T-001, T-004.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "applications",
+  "status": "open",
+  "title": "Email sign-in, permissions and coordinator recovery",
+  "type": "task"
+}

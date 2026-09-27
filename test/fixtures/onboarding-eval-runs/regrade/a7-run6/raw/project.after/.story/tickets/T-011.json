@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-006",
+    "T-007",
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Reproduce all first-version outcomes on the agreed deployment, from BRIEF.md.\nScope: Separate-client add/take/finish and automatic board updates, concurrency, lost-response retries, restart/retention per T-002, access/privacy boundaries, failure recovery and startup documentation. Excludes: SMS.\nAcceptance: All brief outcomes and T-002 decisions are demonstrated, including automatic refresh, safe concurrent claims and persistence behaviour as agreed.\nBehaviour: Exercise empty/invalid states, simultaneous actions, disconnect/reconnect and delayed board responses.\nVerification: Automated end-to-end evidence plus documented manual demonstration against acceptance criteria. Prerequisites: T-005, T-006, T-007 and T-010 (which includes T-009 transitively). Assumptions: follow T-002; no invented performance targets.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 30,
+  "phase": "p3",
+  "status": "open",
+  "title": "Verify the complete first version and deployment readiness",
+  "type": "task"
+}

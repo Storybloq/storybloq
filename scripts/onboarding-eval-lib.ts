@@ -1447,6 +1447,16 @@ export function isTestInvocation(argv: readonly string[], depth = 0): boolean {
  * the resolved directory or a directory option), and every component must
  * have one. Installs and builds are allowed but cover nothing.
  */
+/**
+ * True when the only thing `componentCommandFindings` refuses in `command` is a subshell: its non-sequence
+ * operators are exactly `(` and `)`, and no line uses another unsupported construct. Such a command is
+ * correct shell the harness cannot place, so a regrade may put it to the judge; anything else stays a failure.
+ */
+export function subshellOnly(command: string): boolean {
+  const odd = new Set(shellSequence(command).operators.filter((op) => !SEQUENCE_OPERATORS.has(op)));
+  return odd.size === 2 && odd.has("(") && odd.has(")") && !command.split("\n").some((l) => UNSUPPORTED.test(l.trim()));
+}
+
 export function componentCommandFindings(command: string, components: readonly string[]): string[] {
   const parts = new Set(components.map((c) => resolveDir("", c) ?? c));
   const findings: string[] = [];

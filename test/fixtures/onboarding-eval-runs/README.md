@@ -115,3 +115,12 @@ counts as a write (`WRITE_RULE_VERSION`, named in the packet as
   consumer, a `$(`, `<(` or backtick in the same command keeps the mark, and
   a loop beside it keeps its own. The exemption is this README's record: no
   rule version string changed (fixup 5, checkout head identifies it).
+
+`regrade/a7-run1` and `regrade/a7-run6`: attempt 7 runs 1 (brief-only) and 6
+(mixed-stack) as the runner stored them: `record/` holds record.json and
+grading-packet.json, `raw/` the turn transcripts, stderr and project.after.
+The regrade replays them through the runner's own flow and must rebuild the
+packet byte for byte. Two things the run left are not kept, because git cannot
+carry them and the regrade never reads them: project.after/.git (the client's
+`git init`) and project.after/.story/snapshots/ (ignored by the fixture's own
+.gitignore).

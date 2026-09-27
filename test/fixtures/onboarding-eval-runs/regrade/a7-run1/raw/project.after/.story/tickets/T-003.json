@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Checkpoint: phone journeys and allocation assumptions; source: brief.md Rules and Constraints; conversation delegated choices.\nScope: Question: Are phone journeys and provisional rules suitable? Artifact: prototype and rule examples.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Owner reviews cutoff/timezone, season dates, returning/FIFO distinction, household accounts, release/reapplication and initial tie order.\nBehaviour: Record requested changes; silence is not approval. Ordinary ticket has no technical owner-approval enforcement.\nVerification: Record explicit owner review before dependent implementation.\nPrerequisites: T-002.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: phone journeys and allocation assumptions",
+  "type": "chore"
+}

@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Prototype phone journeys; source: brief.md First version 1-4 and Constraints; conversation map deferral.\nScope: Gardener sign-in/application/allocation/report screens and coordinator application/allocation list/problem inbox; synthetic data only.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in L4.\nAcceptance: Large text, plain language, labelled controls, visible focus, keyboard access and usable phone layouts.\nBehaviour: Prototype loading, empty, error and retry states; preserve form values.\nVerification: Owner phone and keyboard walkthrough.\nPrerequisites: none (proposal references; wired to actual IDs after creation).\nAssumptions: Approved setup assumptions: one household account; coordinator chooses local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, preferences advisory and application order within groups; FIFO after initial allocation; no same-season reapplication after withdrawal/release; active holdings unique with history preserved; reports own active plot only and coordinator-readable; daily digest defaults to 08:00 local, skips empty days. No existing implementation. C1 reviews provisional domain rules.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Prototype phone journeys",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-013",
+    "T-014"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Checkpoint: reporting and email demonstration; source: brief.md First version 4; conversation daily digest.\nScope: Criteria: report by phone, resolve as coordinator and receive daily digest. Artifact: running app and sandbox email.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Owner verifies workflow, email content and timing.\nBehaviour: Record delivery/usability defects; ordinary ticket does not enforce owner approval.\nVerification: Demonstrate failed send and catch-up as well as successful flow.\nPrerequisites: T-013, T-014.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 40,
+  "phase": "problems",
+  "status": "open",
+  "title": "Checkpoint: reporting and email demonstration",
+  "type": "chore"
+}

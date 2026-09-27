@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-016"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Checkpoint: first-version acceptance; source: brief.md First version 1-4; conversation latest map deferral.\nScope: Criteria: accept brief features 1-4 plus passwordless sign-in and daily email. Artifact: release candidate and coverage evidence.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Explicit owner acceptance or requested changes; map, payments and tool lending outside first-version acceptance.\nBehaviour: Passing automated tests do not imply owner acceptance; ordinary ticket has no technical approval gate.\nVerification: Owner walkthrough of first-version acceptance checklist.\nPrerequisites: T-016.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-017",
+  "id": "T-017",
+  "order": 20,
+  "phase": "release",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "chore"
+}

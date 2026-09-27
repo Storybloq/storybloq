@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Repairer finishes an active repair, from BRIEF.md.\nScope: API/UI state transition and completed visibility per T-002. Excludes: repair notes, payments and SMS.\nAcceptance: Only an active repair transitions to finished; repeated requests preserve correct state; agreed display policy is applied.\nBehaviour: Accessible pending state, confirmation and safe error/retry recovery.\nVerification: API/UI integration tests with active-entry fixtures and invalid/repeated requests. Prerequisites: T-004; T-006 implementation is not required for fixtures. Assumptions: apply T-002 decisions.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "p2",
+  "status": "open",
+  "title": "Mark a repair finished end to end",
+  "type": "feature"
+}

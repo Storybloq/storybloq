@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Model households, seasons, plots and history; source: brief.md Background and Rules.\nScope: Model 40 plot IDs, household identity, occupancy dates, distinct application windows, applications and prior allocations; seed/import previous season and prepare coordinator setup/reconciliation operations, authenticated in A1/A2.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: One active holding per household and one active holder per plot per season; ended holdings retained; duplicate household reconciliation preserves earliest valid application and requires explicit conflict resolution for competing holdings; invalid dates rejected.\nBehaviour: Invalid import rows reported without partial corruption; no silent history loss; retries supported.\nVerification: Fixtures for duplicates, absent prior history, 40 plots, date validation, release/reassignment, conflicting holdings and season rollover.\nPrerequisites: T-001, T-003.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Model households, seasons, plots and history",
+  "type": "task"
+}

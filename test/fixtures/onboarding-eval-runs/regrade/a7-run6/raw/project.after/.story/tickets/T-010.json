@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: An already-open board reflects queue changes without manual reload, from BRIEF.md and the owner's request to split automatic refresh from the page.\nScope: Refresh mechanism integrated into the board, stale/offline indication, reconnect recovery, response ordering and background-task cleanup. Excludes: SMS and an invented refresh SLA.\nAcceptance: Added, claimed and finished visitors update automatically; loss of connectivity is signaled; reconnect loads current state; an older response never overwrites newer state; navigation does not leave duplicate background tasks.\nBehaviour: Preserve last known board with a stale indicator on failure; recover without resetting the queue.\nVerification: Controlled fixture changes, delayed/out-of-order responses, disconnect/reconnect and cleanup tests. Integrated staff actions are verified in T-011. Prerequisites: T-009 only; fixtures permit independent progress from T-005/T-006/T-007. Assumptions: choose the refresh mechanism during implementation; no provider is preselected.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 20,
+  "phase": "p3",
+  "status": "open",
+  "title": "Automatically refresh the board",
+  "type": "feature"
+}

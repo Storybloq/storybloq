@@ -35,6 +35,11 @@
  * review line passes only when the judge cites a review candidate the packet
  * offered. Finalize refuses, writing nothing, a packet whose hash or run id
  * does not match the record.
+ *
+ * A finished run is regraded, without running it again, by
+ *   npx tsx scripts/onboarding-eval-run.ts --regrade <recordDir> --raw <rawDir> [--judge <judge.json>]
+ * which replays the stored raw turns through the same flow and writes
+ * regrade/NNN/ beside the record (onboarding-eval-regrade.ts).
  */
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -46,18 +51,22 @@ import { randomUUID } from "node:crypto";
 import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from "./headless-common.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
 import {
-  checkRecipe, checkStop, claudeTurn, codexRolloutModels, codexTurn, degradedFindings, digestChanges, executionCalls, resolveTestStages,
-  reviewerInvocations, runtimeExclusion, runVerdict, semanticStopLine, STOP_RULE_VERSION, stopRoute, WRITE_RULE_VERSION, TREE_EXCLUSION_LINE, treeCheckOutcome, setupRecordText, shellQuote, summaryCounts, ticketFindings, treeDigest, turnArgs, writeCalls,
-  type EvalCall, type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck, type StopKind,
+  driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
+  type PackageTurn, type StoryReader, type TurnResponse, type Variant,
+} from "./onboarding-eval-drive.js";
+import {
+  claudeTurn, codexRolloutModels, codexTurn, digestChanges, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
+import { runRegrade, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES = join(PKG_ROOT, "test", "fixtures", "onboarding");
 const SCAFFOLD_DIRS = ["tickets", "issues", "handovers", "notes", "lessons"] as const;
-const MAX_DISCOVERY_ROUNDS = 3;
 
 type Client = "claude" | "codex";
-export type Variant = "none" | "reviewer-unavailable" | "degraded" | "approval-boundary";
+export type { PackageTurn, Variant } from "./onboarding-eval-drive.js";
+export { approvalProbeFinding } from "./onboarding-eval-drive.js";
 
 interface Options {
   readonly client: Client;
@@ -122,15 +131,6 @@ export function ownerScript(text: string): OwnerScript {
   };
 }
 
-/** One scripted owner turn after the first package. */
-export interface PackageTurn {
-  readonly label: string;
-  readonly prompt: string;
-  /** The stops this turn may end at; null for the approval turn, which is not a stop check. */
-  readonly expected: readonly StopKind[] | null;
-  /** The stop must be the clean package question, not a semantic one. */
-  readonly requireClean: boolean;
-}
 
 /** The owner turns after the first package, by variant. */
 export function packageTurns(variant: Variant, script: OwnerScript): PackageTurn[] {
@@ -148,12 +148,6 @@ export function packageTurns(variant: Variant, script: OwnerScript): PackageTurn
   ];
 }
 
-/** A reply that is not approval must be answered by the clean package question again: a semantic package fails. */
-export function approvalProbeFinding(stop: Pick<StopCheck, "kind" | "candidate"> | null): string | null {
-  if (stop !== null && stop.kind === "package") return null;
-  const got = stop === null ? "no stop" : stop.kind === "semantic" ? `semantic (candidate ${stop.candidate ?? "none"})` : stop.kind;
-  return `approval-probe: expected the clean package question again (the four lines), got ${got}`;
-}
 
 /** A standalone copy of the fixture project: placeholders dropped, git-untrackable scaffold dirs created. */
 export function materializeFixture(fixture: string, dest: string): string {
@@ -353,6 +347,31 @@ function runTurn(o: Options, ctx: { readonly project: string; readonly env: Node
   return { turn, raw, stderr, exitCode: r.status, infraFailure };
 }
 
+/** The opening turn: the fixture's opening prompt, invoking the skill the client's way. */
+export function firstPromptFor(client: Client, openingText: string): string {
+  const opening = openingText.trim();
+  const invoke = client === "claude" ? "/story" : "$story";
+  return opening.startsWith("/story") ? opening.replace(/^\/story/, invoke) : `${invoke} ${opening}`;
+}
+
+/** The raw `.story/` copy as bytes, for the regrade's manifest. */
+export function diskStoryBytes(story: string): StoryBytes {
+  return {
+    exists: (rel) => existsSync(join(story, rel)),
+    readBytes: (rel) => readFileSync(join(story, rel)),
+    list: (rel) => readdirSync(join(story, rel)),
+  };
+}
+
+/** The project's `.story/` on disk, for the checks after approval. */
+export function diskReader(story: string): StoryReader {
+  return {
+    exists: (rel) => existsSync(join(story, rel)),
+    read: (rel) => readFileSync(join(story, rel), "utf-8"),
+    list: (rel) => readdirSync(join(story, rel)),
+  };
+}
+
 async function main(): Promise<void> {
   const o = parseArgs(process.argv.slice(2));
   assertSubscriptionAuthOnly(process.env, "onboarding-eval");
@@ -363,9 +382,7 @@ async function main(): Promise<void> {
   const rubric = JSON.parse(readFileSync(join(fixtureDir, "rubric.json"), "utf-8")) as { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
   const script = ownerScript(readFileSync(join(fixtureDir, "owner-answers.md"), "utf-8"));
   const afterPackage = packageTurns(o.variant, script); // throws before anything is spawned when the variant's sections are missing
-  const opening = readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8").trim();
-  const invoke = o.client === "claude" ? "/story" : "$story";
-  const firstPrompt = opening.startsWith("/story") ? opening.replace(/^\/story/, invoke) : `${invoke} ${opening}`;
+  const firstPrompt = firstPromptFor(o.client, readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8"));
 
   const runId = `${o.client}-${o.fixture}-${o.variant}-${new Date().toISOString().replace(/[:.]/g, "")}`;
   const work = mkdtempSync(join(tmpdir(), "onboarding-eval-"));
@@ -419,164 +436,42 @@ async function main(): Promise<void> {
   const before = treeDigest(project);
   const exclusion = runtimeExclusion(project);
   const ctx = { project, env, clientBin, claudeArgs, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
-  const turns: { label: string; prompt: string; stop: StopCheck | null; stopText: string; models: readonly string[]; exitCode: number | null; infraFailure: string | null; treeChanges: string[]; callRange: [number, number] }[] = [];
-  const allCalls: EvalCall[] = [];
-  const failures: string[] = [];
+  const state = newDriveState();
   let turnNo = 0;
-  let infraFailed = false;
-  let initTools: readonly string[] | null = null;
-
-  /** One owner turn. After an infrastructure failure no further turn is sent. */
-  const send = (label: string, prompt: string, expected: readonly StopKind[] | null): EvalTurn | null => {
-    if (infraFailed) return null;
-    const r = runTurn(o, ctx, prompt);
-    const stem = join(rawDir, `turn-${String(++turnNo).padStart(2, "0")}-${label}`);
+  // The owner's side of the conversation; each step spawns one turn and records its raw output.
+  const flow = driveFlow({ variant: o.variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion }, state);
+  for (let step = flow.next(); !step.done;) {
+    const request = step.value;
+    const r = runTurn(o, ctx, request.prompt);
+    const stem = join(rawDir, `turn-${String(++turnNo).padStart(2, "0")}-${request.label}`);
     writeFileSync(`${stem}.jsonl`, r.raw);
     writeFileSync(`${stem}.stderr.txt`, r.stderr);
-    if (initTools === null && r.turn.initTools !== null) initTools = r.turn.initTools;
-    const from = allCalls.length;
-    allCalls.push(...r.turn.calls);
-    if (r.infraFailure) { infraFailed = true; failures.push(`${label}: infrastructure: ${r.infraFailure} (stderr in ${stem}.stderr.txt)`); }
-    const stop = expected ? checkStop(r.turn, expected) : null;
-    const treeChanges = expected ? digestChanges(before, treeDigest(project), exclusion) : [];
-    if (stop && !stop.ok) failures.push(`${label}: ${stop.reasons.join("; ")}`);
-    const tree = expected ? treeCheckOutcome(label, treeChanges, exclusion) : null;
-    if (tree?.failure) failures.push(tree.failure);
-    turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, allCalls.length] });
-    return r.turn;
-  };
-
-  const preApproval: readonly StopKind[] = o.variant === "reviewer-unavailable" ? ["discovery", "package", "review-unavailable"] : ["discovery", "package"];
-  let t = send("opening", firstPrompt, preApproval);
-  let rounds = 0;
-  let reviewSkipped = false;
-  for (let guard = 0; guard < MAX_DISCOVERY_ROUNDS + 3 && !infraFailed; guard++) {
-    const kind = stopRoute(turns.at(-1)!.stop);
-    if (kind === "package") break;
-    if (kind === "review-unavailable") {
-      if (o.variant !== "reviewer-unavailable") failures.push("review reported unavailable in a variant where a reviewer is available");
-      reviewSkipped = true;
-      t = send("continue-without-review", "Continue without independent review.", preApproval);
-      continue;
-    }
-    if (kind === "discovery" && rounds < MAX_DISCOVERY_ROUNDS) { rounds++; t = send(`discovery-${rounds}`, script.discovery, preApproval); continue; }
-    failures.push(`no setup package after ${rounds} discovery rounds (last stop: ${kind})`);
-    break;
+    const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, treeDigest(project), exclusion) };
+    step = flow.next(response);
   }
-  if (o.variant === "reviewer-unavailable" && !reviewSkipped && !infraFailed) failures.push("the reviewer-unavailable stop never came");
-  const firstPackageTurn = turns.findIndex((x) => stopRoute(x.stop) === "package");
-  if (!infraFailed && stopRoute(turns.at(-1)!.stop) === "package") {
-    for (const turn of afterPackage) {
-      const sent = send(turn.label, turn.prompt, turn.expected);
-      if (turn.expected === null) { t = sent; continue; }
-      if (turn.requireClean && !infraFailed) {
-        const finding = approvalProbeFinding(turns.at(-1)!.stop);
-        if (finding !== null) failures.push(finding);
-      }
-    }
-  }
-
-  // Every proposal the owner was shown, by turn, with a hash the evidence below is linked to.
-  const proposals = turns.filter((x) => stopRoute(x.stop) === "package").map((x) => ({ turn: x.label, sha256: sha256(x.stopText), text: x.stopText }));
-  // Each candidate review with what it was given and returned, the turn it ran in, and the proposal it preceded.
-  const turnOf = (index: number): string => turns.find((x) => index >= x.callRange[0] && index < x.callRange[1])?.label ?? "unknown";
-  const candidates = reviewerInvocations(allCalls).map((r) => {
-    const turnAt = turns.findIndex((x) => r.index >= x.callRange[0] && r.index < x.callRange[1]);
-    const next = turns.slice(Math.max(turnAt, 0)).find((x) => stopRoute(x.stop) === "package");
-    return { ...r, turn: turnOf(r.index), precedesProposal: next ? sha256(next.stopText) : null };
-  });
-  const beforePackage = firstPackageTurn < 0 ? allCalls.length : turns[firstPackageTurn]!.callRange[1];
-  const adjustTurn = turns.find((x) => x.label === "adjust");
-  const reviewEvidence = {
-    note: "Candidates only: a reviewer invocation that succeeded and returned text, a background agent launch excluded. Whether it was given the proposal and reviewed it is ruled by the judge, citing an index.",
-    beforeFirstPackage: candidates.filter((r) => r.index < beforePackage),
-    duringAdjustment: adjustTurn ? candidates.filter((r) => r.index >= adjustTurn.callRange[0] && r.index < adjustTurn.callRange[1]) : [],
-  };
-  // A candidate must exist before the package was first shown, unless the owner explicitly skipped review; the judge then binds the ruling to one.
-  if (!reviewSkipped && !infraFailed && !reviewEvidence.beforeFirstPackage.some((r) => r.ok)) failures.push("no successful supported reviewer invocation with a captured result before the package was shown");
+  const { turns, failures, reviewSkipped } = state;
+  const evidence = finishDrive(state, REVIEW_LINE);
+  const { reviewEvidence, bound } = evidence;
   const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"));
-  const bound: Record<string, number[]> = reviewSkipped ? {} : { [REVIEW_LINE]: reviewEvidence.beforeFirstPackage.filter((r) => r.ok).map((r) => r.index) };
 
-  // Before approval nothing ran; after it, still no install, test, build or dev server, nested agents included.
-  const execs = executionCalls(allCalls);
-  const ran = execs.filter((e) => e.kind === "execution");
-  const unclear = execs.filter((e) => e.kind === "review");
-  if (ran.length > 0) failures.push(`executed during setup: ${ran.map((e) => (e.call.nested ? `[nested] ${e.segment}` : e.segment)).join("; ")}`);
-  if (unclear.length > 0) failures.push(`needs review, shell construct not parsed: ${unclear.map((e) => e.segment).join("; ")}`);
-
-  const inspection: Record<string, unknown> = {};
   const story = join(project, ".story");
-  let ledgerRecords: unknown[] = [];
-  if (infraFailed) {
-    // Nothing after an infrastructure failure is evidence about the flow.
-  } else if (t === null) {
-    failures.push("no final turn");
-  } else if (existsSync(join(story, "config.json"))) {
-    const config = JSON.parse(readFileSync(join(story, "config.json"), "utf-8")) as Record<string, unknown>;
-    const roadmap = JSON.parse(readFileSync(join(story, "roadmap.json"), "utf-8")) as { phases: { id: string }[] };
-    const tickets = readdirSync(join(story, "tickets")).filter((n) => n.endsWith(".json")).map((n) => JSON.parse(readFileSync(join(story, "tickets", n), "utf-8")) as { id: string; displayId?: string; title: string; description: string; status: string; blockedBy?: string[] });
-    const ledger = tickets.map((x) => ({ id: x.id, title: x.title, description: x.description ?? "", status: x.status, blockedBy: x.blockedBy ?? [] }));
-    ledgerRecords = tickets;
-    const stages = resolveTestStages(config);
-    const recipeFinding = checkRecipe(stages, rubric.expectedRecipe);
-    const record = setupRecordText(story);
-    const counts = summaryCounts(t.stopText);
-    const createdPhases = roadmap.phases.filter((p) => p.id !== rubric.scaffold?.keepPhase).length;
-    Object.assign(inspection, { testStages: stages, ticketCount: tickets.length, phaseIds: roadmap.phases.map((p) => p.id), summaryCounts: counts });
-    for (const f of ticketFindings(ledger)) failures.push(`ticket: ${f}`);
-    if (recipeFinding) failures.push(`recipe: ${recipeFinding}`);
-    if (!/coverage/i.test(record)) failures.push("no coverage map in the setup note or handover");
-    if (reviewSkipped) {
-      if (!/skip/i.test(record)) failures.push("the review skip is not recorded");
-    } else if (!/review/i.test(record) || /review[^.\n]{0,40}\bpending\b/i.test(record)) {
-      failures.push("no completed review outcome recorded");
-    }
-    if (stages.kind === "disabled" && !t.stopText.includes("Verification tooling to establish")) failures.push("pending verification tooling not listed in the summary");
-    if (counts.tickets !== null && counts.tickets !== tickets.length) failures.push(`summary says ${counts.tickets} tickets, disk has ${tickets.length}`);
-    if (counts.phases !== null && counts.phases !== createdPhases) failures.push(`summary says ${counts.phases} phases, disk has ${createdPhases} created`);
-    if (rubric.scaffold) {
-      const beforeConfig = JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>;
-      if (roadmap.phases[0]?.id !== rubric.scaffold.keepPhase) failures.push(`scaffold: ${rubric.scaffold.keepPhase} is not the first phase`);
-      for (const k of rubric.scaffold.configUnchanged) if (config[k] !== beforeConfig[k]) failures.push(`scaffold: config ${k} overwritten`);
-      if (allCalls.some((c) => c.name === "storybloq_init" || /\bstorybloq\s+init\b/.test(String((c.input as { command?: unknown } | null)?.command ?? "")))) failures.push("scaffold: init was called");
-    }
-    if (o.variant === "degraded") for (const f of degradedFindings(allCalls.filter((c) => !c.nested), initTools)) failures.push(f);
-  } else {
-    failures.push("no .story/ after approval");
-  }
+  const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, o.variant);
 
   // The fixture project as the owner supplied it (no .story): the briefs, and every other file as the
   // implementation evidence any "already built" or "working" claim must rest on.
   const { briefs, projectFiles } = fixtureEvidence(join(fixtureDir, "project"));
 
-  const packet = {
-    note: "For the judge (Codex through the bridge at tier max, never the evaluated client): rule on every line of semanticLines, against the briefs, projectFiles, the turns, proposals, reviewEvidence, the created tickets and the setup record. Answer {packetSha256, observedModel, lines: [{line, verdict: pass|fail, reason, citations}]}; for the review line, citations are the reviewEvidence.beforeFirstPackage indices the ruling rests on. Mechanical checks are in record.json.",
-    runId,
-    semanticLines,
-    reviewSkipped,
-    harnessNormalisation: {
-      stop: STOP_RULE_VERSION,
-      write: WRITE_RULE_VERSION,
-      treeExclusion: exclusion,
-    },
-    rubric,
-    briefs,
-    projectFiles,
-    turns: turns.map((x) => ({ label: x.label, prompt: x.prompt, stop: x.stop?.kind ?? null, candidate: x.stop?.candidate ?? null, assistant: x.stopText, treeChanges: x.treeChanges })),
-    proposals,
-    reviewEvidence,
-    tickets: ledgerRecords,
-    setupRecord: existsSync(story) ? setupRecordText(story) : "",
-    finalSummary: t?.stopText ?? "",
-  };
-  const packetText = JSON.stringify(packet, null, 2);
+  const packetText = buildPacketText({
+    runId, semanticLines, reviewSkipped, exclusion, rubric, briefs, projectFiles, turns, evidence, ledgerRecords,
+    setupRecord: existsSync(story) ? setupRecordFrom(diskReader(story)) : "", final: state.final,
+  });
   const verdict = runVerdict(failures, packetText, null, semanticLines, bound);
   const recordDir = join(o.out, runId);
   mkdirSync(recordDir, { recursive: true });
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model,
-    modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: rounds, reviewSkipped, reviewEvidence,
-    writesAfterApproval: writeCalls(allCalls).length, inspection, failures, infraFailed,
+    modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
+    writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
     semanticLines, bound, packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
@@ -629,10 +524,14 @@ export function runSemanticLines(reviewSkipped: boolean, turns: readonly { reado
   ];
 }
 
-/** The fixture's text files, split into briefs (prose documents) and everything else, each file capped for the packet. */
-export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly briefs: Record<string, string>; readonly projectFiles: Record<string, string> } {
+/**
+ * The fixture's text files, split into briefs (prose documents) and everything else, each file capped for the packet,
+ * with a hash of the exact bytes each representation was built from (`project/<path>`), for the regrade's manifest.
+ */
+export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly briefs: Record<string, string>; readonly projectFiles: Record<string, string>; readonly hashes: readonly ManifestEntry[] } {
   const briefs: Record<string, string> = {};
   const projectFiles: Record<string, string> = {};
+  const hashes: ManifestEntry[] = [];
   const collect = (dir: string, rel: string): void => {
     for (const name of readdirSync(dir).sort()) {
       if (name === ".story" || name === ".gitkeep") continue;
@@ -640,6 +539,7 @@ export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly 
       const r = rel ? `${rel}/${name}` : name;
       if (statSync(p).isDirectory()) { collect(p, r); continue; }
       const bytes = readFileSync(p);
+      hashes.push({ path: `project/${r}`, sha256: sha256(bytes) });
       const text = bytes.includes(0) ? `[binary, sha256 ${sha256(bytes)}]`
         : bytes.length > capBytes ? `${bytes.subarray(0, capBytes).toString("utf-8")}\n[truncated at ${capBytes} of ${bytes.length} bytes, sha256 ${sha256(bytes)}]`
         : bytes.toString("utf-8");
@@ -648,7 +548,7 @@ export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly 
     }
   };
   collect(root, "");
-  return { briefs, projectFiles };
+  return { briefs, projectFiles, hashes };
 }
 
 /**
@@ -688,6 +588,61 @@ export async function finalize(argv: readonly string[]): Promise<void> {
   process.exitCode = r.verdict.verdict === "PASS" ? 0 : r.verdict.verdict === "FAIL" ? 1 : 3;
 }
 
+/** A finished run's stored evidence and its fixture, as the regrade reads them. Throws when the record names no known fixture. */
+export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = FIXTURES): RegradeInput {
+  const recordBytes = readFileSync(join(recordDir, "record.json"));
+  const record = JSON.parse(recordBytes.toString("utf-8")) as { client?: unknown; fixture?: unknown; variant?: unknown };
+  const fixture = String(record.fixture);
+  if (!/^[a-z0-9-]+$/.test(fixture) || !existsSync(join(fixtures, fixture, "rubric.json"))) throw new Error(`the record names no known fixture (${fixture})`);
+  if (record.client !== "claude" && record.client !== "codex") throw new Error(`the record names no known client (${String(record.client)})`);
+  const fixtureDir = join(fixtures, fixture);
+  const files: ManifestEntry[] = [];
+  const pinned = (rel: string): string => { const b = readFileSync(join(fixtureDir, rel)); files.push({ path: `fixture/${rel}`, sha256: sha256(b) }); return b.toString("utf-8"); };
+  const rubric = JSON.parse(pinned("rubric.json")) as { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
+  const script = ownerScript(pinned("owner-answers.md"));
+  const firstPrompt = firstPromptFor(record.client, pinned("opening-prompt.txt"));
+  const beforePath = join("project", ".story", "config.json");
+  const beforeText = existsSync(join(fixtureDir, beforePath)) ? pinned(beforePath) : null;
+  const story = join(rawDir, "project.after", ".story");
+  const evidence = fixtureEvidence(join(fixtureDir, "project"));
+  return {
+    recordBytes,
+    packetBytes: readFileSync(join(recordDir, "grading-packet.json")),
+    rawNames: readdirSync(rawDir),
+    readRaw: (name) => readFileSync(join(rawDir, name)),
+    story: existsSync(story) ? diskStoryBytes(story) : null,
+    fixture: {
+      firstPrompt, discoveryPrompt: script.discovery, afterPackage: packageTurns(record.variant as Variant, script), rubric,
+      beforeConfig: () => { if (beforeText === null) throw new Error("the fixture has no .story/config.json"); return JSON.parse(beforeText) as Record<string, unknown>; },
+      briefs: evidence.briefs, projectFiles: evidence.projectFiles,
+      files: [...files, ...evidence.hashes.map((h) => ({ path: `fixture/${h.path}`, sha256: h.sha256 }))],
+    },
+    reviewLine: REVIEW_LINE,
+    semanticLines: runSemanticLines,
+  };
+}
+
+/**
+ * `--regrade <recordDir> --raw <rawDir> [--judge <judge.json>]`: re-derives a finished run from its raw
+ * transcripts and writes the next revision under `<recordDir>/regrade/`, never the original record. Exit 2
+ * on a refusal, 1 on FAIL, 3 while the judge is still owed, 0 on PASS.
+ */
+export function regradeCli(argv: readonly string[]): void {
+  const at = (k: string): string | undefined => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1] : undefined; };
+  const recordDir = at("regrade"); const rawDir = at("raw"); const judgePath = at("judge");
+  if (!recordDir || !rawDir) throw new Error("--regrade <recordDir> --raw <rawDir> [--judge <judge.json>]");
+  const judge = judgePath ? JSON.parse(readFileSync(judgePath, "utf-8")) as RegradeJudge : null;
+  const r = runRegrade(recordDir, regradeInputFrom(recordDir, rawDir), judge, () => new Date().toISOString());
+  if (!r.ok) {
+    process.stderr.write(`onboarding-eval: regrade refused for ${recordDir}: ${r.reason}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const v = r.run.revision;
+  process.stdout.write(`${r.run.written} revision ${v.revision} ${v.status} ${v.verdict}\n  guarantee: ${v.guarantee}\n  limitation: ${v.limitation}\n${v.reasons.map((f) => `  - ${f}`).join("\n")}\n${v.candidates.map((c) => `  ? ${JSON.stringify(c)}`).join("\n")}\n`);
+  process.exitCode = v.verdict === "PASS" ? 0 : v.verdict === "FAIL" ? 1 : 3;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  (process.argv.includes("--finalize") ? finalize(process.argv.slice(2)) : main()).catch((err: unknown) => { process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`); process.exitCode = 2; });
+  (process.argv.includes("--regrade") ? Promise.resolve().then(() => regradeCli(process.argv.slice(2))) : process.argv.includes("--finalize") ? finalize(process.argv.slice(2)) : main()).catch((err: unknown) => { process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`); process.exitCode = 2; });
 }

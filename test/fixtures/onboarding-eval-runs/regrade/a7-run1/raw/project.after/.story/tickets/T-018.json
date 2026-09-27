@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-008",
+    "T-017"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Coordinator 40-plot map; source: brief.md First version 5 superseded by conversation: Defer the plot map view to after the first version..\nScope: After first-version acceptance, extend coordinator allocation list with 40-plot grid and accessible list equivalent.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Each plot once with correct seasonal holder/vacancy; phone and keyboard usable; contacts coordinator-only; T-017 complete before work begins.\nBehaviour: Text labels independent of color; explicit empty/loading/error/retry states.\nVerification: Grid/list consistency, access-control, phone/keyboard/accessibility review.\nPrerequisites: T-005, T-008, T-017.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-018",
+  "id": "T-018",
+  "order": 10,
+  "phase": "post-first-version",
+  "status": "open",
+  "title": "Coordinator 40-plot map",
+  "type": "task"
+}

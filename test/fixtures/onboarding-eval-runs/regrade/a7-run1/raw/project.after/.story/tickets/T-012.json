@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-008",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Report a problem on an allocated plot; source: brief.md First version 4 and Constraints.\nScope: Plain-text report against own active plot; submitted confirmation only; no gardener report-history feed or attachments.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Persist original plot, reporter, timestamp and open state; reject unallocated/foreign-plot submission; retries avoid duplicates. Stored reports coordinator-only; new plot holder cannot read former reports.\nBehaviour: Preserve text after errors; clear accessible submitted/loading/error and unallocated guidance.\nVerification: Phone reporting, ownership, direct-ID privacy, duplicate retry and no-allocation tests.\nPrerequisites: T-005, T-008, T-003.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Report a problem on an allocated plot",
+  "type": "task"
+}

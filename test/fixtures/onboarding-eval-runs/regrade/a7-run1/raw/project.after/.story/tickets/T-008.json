@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Review and allocate plots fairly; source: brief.md First version 2 and Rules; conversation map deferral.\nScope: Coordinator application/preferences review, draft and final assignments via simple allocation list; decisions/history retained.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: No final initial allocations before February 1 at 00:00 garden local time. Prior-season holders applying before cutoff precede new/nonpriority applicants. Before nonpriority allocation all eligible active priority applicants must hold plots or capacity be exhausted; no arbitrary rejection. Only recorded household withdrawal or evidenced duplicate/ineligibility correction removes eligibility. Application order within groups; preferences advisory, mismatch not disqualification. Transactional active-holding uniqueness.\nBehaviour: Stale/concurrent conflicts rejected without overwriting; clear recovery steps.\nVerification: Rule-first tests for cutoff, early finalization, priority bypass, preferences, duplicate and concurrent assignments. T-009 owns atomic initial-finalization/queue transition.\nPrerequisites: T-006.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Review and allocate plots fairly",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Checkpoint: allocation rules and list views; source: brief.md First version 2-3 and Rules; conversation map deferral.\nScope: Criteria: demonstrate returning priority, FIFO vacancy handling, own allocation and coordinator allocation list. Artifact: running seasonal scenario.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Owner verifies first-version allocation without requiring map.\nBehaviour: Failed scenarios remain open; ordinary ticket does not enforce owner approval.\nVerification: Demonstrate cutoff, conflict, unallocated and vacancy cases.\nPrerequisites: T-009, T-010.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: allocation rules and list views",
+  "type": "chore"
+}

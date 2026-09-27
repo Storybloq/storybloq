@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Support the shared waiting -> being helped -> finished queue required by BRIEF.md.\nScope: Validate first name/item, apply agreed ordering, atomically select next visitor, finish active repairs, implement agreed durability/retention and retry identities. Excludes: UI and SMS.\nAcceptance: Concurrent claims never assign the same visitor; retrying a successful claim after a lost response recovers the original assignment rather than taking another visitor; invalid transitions do not mutate state; empty queue has a defined result; restart and retention follow checkpoint decisions.\nBehaviour: Explicit validation, empty and conflict results; recoverable retry behaviour.\nVerification: Domain/storage tests for transitions, concurrency, lost responses, restart and retention. Prerequisites: T-002 and T-003. Assumptions: storage technology and domain choices are unresolved until the owner checkpoint and implementation planning.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 30,
+  "phase": "p1",
+  "status": "open",
+  "title": "Implement queue lifecycle and storage",
+  "type": "task"
+}

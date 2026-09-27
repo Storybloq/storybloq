@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-27",
+  "description": "Outcome: Checkpoint: application demonstration; source: brief.md First version 1 and Constraints.\nScope: Criteria: gardener signs in, applies by phone and coordinator reviews application. Artifact: running application.\nExcludes: online payments and tool lending; plot map excluded from first version and retained only in T-018.\nAcceptance: Owner verifies complete journey and no contact exposure between households.\nBehaviour: Defects remain open; ordinary ticket does not enforce owner approval.\nVerification: Demonstrate with synthetic households and recorded permission evidence.\nPrerequisites: T-006.\nAssumptions: Approved setup assumptions: one household account; coordinator configures local timezone/application window; default occupancy March 1-October 31; returning means immediately prior season; initial final allocation after February 1 cutoff, advisory preferences and application order within groups; FIFO waiting list; no same-season reapplication after withdrawal/release; active holdings unique, history preserved; own active-plot reporting with coordinator-only report access; daily digest defaults to 08:00 local and skips empty days. No existing implementation. T-003 reviews provisional domain rules.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "applications",
+  "status": "open",
+  "title": "Checkpoint: application demonstration",
+  "type": "chore"
+}

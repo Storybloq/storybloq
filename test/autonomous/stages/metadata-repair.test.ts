@@ -15,7 +15,7 @@
  * degradation.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
@@ -25,6 +25,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { roundBlockerPredicate } from "../../../src/autonomous/review-identity.js";
 import { outstandingCeilingFindings } from "../../../src/autonomous/stages/code-review-ceiling.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+import { bridgeCodeItem, planReceipt, type BridgeCodeItem } from "../helpers/bridge-receipts.js";
 import { verdictFilename, computeContentHash, type ReviewVerdictArtifact } from "../../../src/autonomous/review-verdict.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
@@ -113,10 +114,33 @@ const UNLABELLED = {
 };
 const LABELLED = { ...UNLABELLED, originClass: "unchanged", sinceRound: 1 };
 
-const round = (verdict: string, findings: readonly unknown[]) =>
-  ({ completedAction: "code_review_round", verdict, findings }) as never;
-const planRound = (verdict: string, findings: readonly unknown[]) =>
-  ({ completedAction: "plan_review_round", verdict, findings }) as never;
+// ISS-1332: a codex round lands only through the bridge receipt gate, so each
+// caller passes the receipt its report carries (undefined for a lens round,
+// which the gate does not apply to).
+const round = (verdict: string, findings: readonly unknown[], reviewReceipts: unknown) =>
+  ({ completedAction: "code_review_round", verdict, findings, reviewReceipts }) as never;
+const planRound = (verdict: string, findings: readonly unknown[], reviewReceipts: unknown) =>
+  ({ completedAction: "plan_review_round", verdict, findings, reviewReceipts }) as never;
+
+/**
+ * The plan receipt for the plan.md the session holds when the report is sent;
+ * the gate reads a missing plan.md as "". Each distinct review round names its
+ * own bridge session; a metadata-only re-report of a round reuses that
+ * round's id, because it is the same review.
+ */
+function receiptFor(sessionDir: string, sessionId = "bridge-plan-1") {
+  const path = join(sessionDir, "plan.md");
+  return planReceipt(existsSync(path) ? readFileSync(path, "utf8") : "", sessionId);
+}
+
+// The code item, built once per test on first use in that test's root. Every
+// code-stage test here reports codex rounds, so each one needs it; plan-stage
+// tests never build it.
+let item: BridgeCodeItem | null = null;
+const itemIn = (root: string): BridgeCodeItem => (item ??= bridgeCodeItem(root));
+afterEach(() => { item?.cleanup(); item = null; });
+const itemState = (root: string, overrides: Partial<FullSessionState> = {}): FullSessionState =>
+  makeState({ ...overrides, git: { branch: "main", mergeBase: itemIn(root).baseline, expectedHead: "abc123" } } as Partial<FullSessionState>);
 
 function artifacts(sessionDir: string): Record<string, unknown>[] {
   const dir = join(sessionDir, "telemetry", "reviews");
@@ -138,17 +162,17 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
   it("ROUND 1 does not ask for a label", async () => {
     // The control for the round condition. If this ever fails the gate has
     // become a blanket requirement, which the item does not ask for.
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    const advance = await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    const advance = await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(advance.action).not.toBe("retry");
     expect(ctx.state.reviews.code).toHaveLength(1);
   });
 
   it("ROUND 2 unlabelled asks for a repair, and does NOT record the round", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, round("revise", [LABELLED]));
-    const advance = await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    const advance = await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") {
@@ -163,9 +187,9 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
   });
 
   it("PERSISTS THE ATTEMPT BEFORE RETRYING, so a crash cannot refund the bound", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, round("revise", [LABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     // Written with `writeState`, so it is durable at the moment the retry is
     // issued rather than staged behind a downstream write that may not happen.
@@ -174,9 +198,9 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
   });
 
   it("SURVIVES A RELOAD: the attempt is still spent after the state round-trips", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, round("revise", [LABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     // Rebuild the context from the persisted state, the way a resumed session
     // does. If `trigger` were stripped by the schema the bound would silently
@@ -184,7 +208,7 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
     // whole gate depends on.
     const reloaded = new StageContext(testRoot, sessionDir, ctx.state, makeRecipe());
     const advance = await reloaded.state.reviewRepairAttempts
-      ? await stage.report(reloaded, round("revise", [UNLABELLED]))
+      ? await stage.report(reloaded, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]))
       : null;
 
     expect(advance!.action).not.toBe("retry");
@@ -197,10 +221,10 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
     // which is worse than the missing label. Asserted on the specific outcome,
     // because "did not retry" is also what a broken check produces -- so the
     // round has to actually be RECORDED.
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, round("revise", [LABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
-    const second = await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
+    const second = await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(second.action).not.toBe("retry");
     expect(ctx.state.reviews.code).toHaveLength(2);
@@ -209,10 +233,10 @@ describe("ISS-1115 3.3a: the repair is a transition, not a value", () => {
   it("NEVER DISCARDS THE FINDING, at either end of the bound", async () => {
     // An unlabelled finding is still an evidenced defect. Dropping one over a
     // metadata problem is precisely the quiet failure this item exists to stop.
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, round("revise", [LABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     const last = artifacts(sessionDir).find((a) => a.round === 2)!;
     expect(JSON.stringify(last.findings)).toContain("a real defect that must not be lost");
@@ -251,16 +275,16 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
   };
 
   async function spendTheBound(ctx: StageContext, stage: CodeReviewStage) {
-    await stage.report(ctx, round("revise", [LABELLED]));
-    await stage.report(ctx, round("revise", [UNLABELLED]));
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
   }
 
   it("CODE: once the bound is spent, an addressed-but-unlabelled major no longer lands", async () => {
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
     await spendTheBound(ctx, stage);
 
-    const advance = await stage.report(ctx, round("approve", [ADDRESSED_UNLABELLED]));
+    const advance = await stage.report(ctx, round("approve", [ADDRESSED_UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") {
@@ -275,12 +299,12 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
     // The control. Without it, the assertion above is equally satisfied by a
     // stage that stopped landing anything at all after a spent repair.
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
     await spendTheBound(ctx, stage);
 
     const advance = await stage.report(ctx, round("approve", [
       { ...ADDRESSED_UNLABELLED, originClass: "unchanged", sinceRound: 1 },
-    ]));
+    ], [itemIn(testRoot).receipt]));
 
     expect(advance.action).not.toBe("retry");
   });
@@ -294,14 +318,14 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
     // Widening the override to the whole round would quietly convert every
     // finding in it into a blocker.
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
     await spendTheBound(ctx, stage);
 
     await stage.report(ctx, round("revise", [
       { id: "C1", severity: "critical", category: "security", description: "settled, and it says so",
         disposition: "addressed", originClass: "unchanged", sinceRound: 1 },
       ADDRESSED_UNLABELLED,
-    ]));
+    ], [itemIn(testRoot).receipt]));
 
     const written = artifacts(sessionDir).find((a) => a.provenanceUnresolved != null)!;
     expect(written.unresolvedCriticalCount).toBe(0);
@@ -309,9 +333,9 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
 
   it("CODE: the round RECORDS that its provenance was never resolved", async () => {
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
     await spendTheBound(ctx, stage);
-    await stage.report(ctx, round("revise", [ADDRESSED_UNLABELLED]));
+    await stage.report(ctx, round("revise", [ADDRESSED_UNLABELLED], [itemIn(testRoot).receipt]));
 
     // A round that was checked and a round that was asked and never answered
     // are otherwise indistinguishable in the record, and only one is trustworthy.
@@ -326,9 +350,9 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     writeFileSync(join(sessionDir, "plan.md"), "# Plan\n", "utf-8");
 
-    await stage.report(ctx, planRound("revise", [LABELLED]));
-    await stage.report(ctx, planRound("revise", [UNLABELLED]));
-    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_UNLABELLED]));
+    await stage.report(ctx, planRound("revise", [LABELLED], receiptFor(sessionDir, "bridge-plan-1")));
+    await stage.report(ctx, planRound("revise", [UNLABELLED], receiptFor(sessionDir, "bridge-plan-2")));
+    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_UNLABELLED], receiptFor(sessionDir, "bridge-plan-2")));
 
     // An all-addressed revise is the plan stage's clean landing. Here it must
     // not be one, because nothing established that the finding is settled.
@@ -341,11 +365,11 @@ describe("ISS-1115: a gate that GAVE UP still blocks the round", () => {
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
     writeFileSync(join(sessionDir, "plan.md"), "# Plan\n", "utf-8");
 
-    await stage.report(ctx, planRound("revise", [LABELLED]));
-    await stage.report(ctx, planRound("revise", [UNLABELLED]));
+    await stage.report(ctx, planRound("revise", [LABELLED], receiptFor(sessionDir, "bridge-plan-1")));
+    await stage.report(ctx, planRound("revise", [UNLABELLED], receiptFor(sessionDir, "bridge-plan-2")));
     const advance = await stage.report(ctx, planRound("revise", [
       { ...ADDRESSED_UNLABELLED, originClass: "unchanged", sinceRound: 1 },
-    ]));
+    ], receiptFor(sessionDir, "bridge-plan-2")));
 
     expect(advance.action).toBe("advance");
   });
@@ -393,7 +417,7 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
     const advance = await new PlanReviewStage().report(
-      ctx, planRound("approve", [ADDRESSED_UNLABELLED_CRITICAL]));
+      ctx, planRound("approve", [ADDRESSED_UNLABELLED_CRITICAL], receiptFor(sessionDir)));
 
     // Landing here is the bug: IMPLEMENT is exempt from the ceiling park, so a
     // round that lands at the ceiling escapes escalation entirely.
@@ -414,7 +438,7 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     } as unknown as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await new PlanReviewStage().report(ctx, planRound("approve", [ADDRESSED_UNLABELLED_CRITICAL]));
+    await new PlanReviewStage().report(ctx, planRound("approve", [ADDRESSED_UNLABELLED_CRITICAL], receiptFor(sessionDir)));
 
     // The durable counter moved, so the round cannot be replayed for free.
     expect(ctx.state.planReviewRoundCounter?.completedRounds).toBe(PLAN_CEILING);
@@ -431,13 +455,13 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
   });
 
   it("CODE: the same ceiling approve is consumed and parked, not bounced", async () => {
-    const state = makeState({
+    const state = itemState(testRoot, {
       codeReviewRoundCounter: { workItemId: "T-001", kind: "ticket", completedRounds: 7 },
     } as unknown as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
     const advance = await new CodeReviewStage().report(
-      ctx, round("approve", [ADDRESSED_UNLABELLED_CRITICAL]));
+      ctx, round("approve", [ADDRESSED_UNLABELLED_CRITICAL], [itemIn(testRoot).receipt]));
 
     expect(advance.action).not.toBe("retry");
     expect(ctx.state.pendingCeilingEscalation).toBeTruthy();
@@ -456,7 +480,7 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
     const advance = await new PlanReviewStage().report(
-      ctx, planRound("revise", [ADDRESSED_UNLABELLED_CRITICAL]));
+      ctx, planRound("revise", [ADDRESSED_UNLABELLED_CRITICAL], receiptFor(sessionDir)));
 
     if (advance.action === "retry") expect(advance.instruction).not.toContain("originClass");
     expect((ctx.state.reviewRepairAttempts ?? []).filter(
@@ -469,14 +493,14 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     // code stage has TWO contradictory-approve guards, and exempting only the
     // first left this one bouncing the round before the routing branch was
     // reached. There is no plan-stage twin; that stage has one guard.
-    const state = makeState({
+    const state = itemState(testRoot, {
       codeReviewRoundCounter: { workItemId: "T-001", kind: "ticket", completedRounds: 7 },
     } as unknown as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
     const advance = await new CodeReviewStage().report(ctx, round("approve", [
       { ...ADDRESSED_UNLABELLED_CRITICAL, recommendedNextState: "PLAN" },
-    ]));
+    ], [itemIn(testRoot).receipt]));
 
     expect(advance.action).not.toBe("retry");
     expect(ctx.state.codeReviewRoundCounter?.completedRounds).toBe(8);
@@ -507,10 +531,10 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     // it because the ceiling is 0. That is the fleet halt, on precisely the
     // configuration that opted out of ceilings.
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), recipeWithCap(0));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), recipeWithCap(0));
 
-    await stage.report(ctx, round("revise", [LABELLED]));
-    const advance = await stage.report(ctx, round("revise", [UNLABELLED]));
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
+    const advance = await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") expect(advance.instruction).toContain("originClass");
@@ -526,12 +550,12 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     // window, and skipping the repair there just force-defers unlabelled
     // findings. Not asking is only justified where the park actually fires.
     const stage = new CodeReviewStage();
-    const state = makeState({
+    const state = itemState(testRoot, {
       codeReviewRoundCounter: { workItemId: "T-001", kind: "ticket", completedRounds: 4 },
     } as unknown as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, recipeWithCap(5));
 
-    const advance = await stage.report(ctx, round("revise", [UNLABELLED]));
+    const advance = await stage.report(ctx, round("revise", [UNLABELLED], [itemIn(testRoot).receipt]));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") expect(advance.instruction).toContain("originClass");
@@ -544,7 +568,7 @@ describe("ISS-1115: at the ceiling the gate asks nothing and settles nothing", (
     } as unknown as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await new PlanReviewStage().report(ctx, planRound("revise", [ADDRESSED_UNLABELLED_CRITICAL]));
+    await new PlanReviewStage().report(ctx, planRound("revise", [ADDRESSED_UNLABELLED_CRITICAL], receiptFor(sessionDir)));
 
     const written = artifacts(sessionDir).find((a) => a.provenanceUnresolved != null)!;
     expect(JSON.stringify(written.provenanceUnresolved)).toContain("round ceiling");
@@ -647,8 +671,8 @@ describe("ISS-1115 3.3b: lenses are exempt, and the exemption is recorded", () =
     } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await stage.report(ctx, { ...planRound("revise", [LENS_FINDING]), reviewer: "lenses" } as never);
-    const advance = await stage.report(ctx, { ...planRound("revise", [LENS_FINDING]), reviewer: "lenses" } as never);
+    await stage.report(ctx, { ...planRound("revise", [LENS_FINDING], undefined), reviewer: "lenses" } as never);
+    const advance = await stage.report(ctx, { ...planRound("revise", [LENS_FINDING], undefined), reviewer: "lenses" } as never);
 
     // NOT asserted as "action is not retry", which is what the first draft
     // wrote by copying the code-stage test. Plan review answers a revise
@@ -669,8 +693,8 @@ describe("ISS-1115 3.3b: lenses are exempt, and the exemption is recorded", () =
     const state = makeState({ state: "PLAN_REVIEW" } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    await stage.report(ctx, planRound("revise", [LABELLED]));
-    const advance = await stage.report(ctx, planRound("revise", [UNLABELLED]));
+    await stage.report(ctx, planRound("revise", [LABELLED], receiptFor(sessionDir, "bridge-plan-1")));
+    const advance = await stage.report(ctx, planRound("revise", [UNLABELLED], receiptFor(sessionDir, "bridge-plan-2")));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") expect(advance.instruction).toContain("originClass");
@@ -704,9 +728,9 @@ describe("ISS-1115 3.3b: lenses are exempt, and the exemption is recorded", () =
     // The control. An exemption field present everywhere would be noise, and
     // one present nowhere would be the silent case this exists to prevent.
     const stage = new CodeReviewStage();
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, itemState(testRoot), makeRecipe());
 
-    await stage.report(ctx, round("revise", [LABELLED]));
+    await stage.report(ctx, round("revise", [LABELLED], [itemIn(testRoot).receipt]));
 
     expect(artifacts(sessionDir)[0]!.provenanceExemption).toBeUndefined();
   });

@@ -21,6 +21,7 @@ import { CodeReviewStage } from "../../../src/autonomous/stages/code-review.js";
 import { PlanReviewStage } from "../../../src/autonomous/stages/plan-review.js";
 import { readFileSync, readdirSync } from "node:fs";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+import { bridgeCodeItem, planReceipt, type BridgeCodeItem } from "../helpers/bridge-receipts.js";
 import { verdictFilename, computeContentHash, type ReviewVerdictArtifact } from "../../../src/autonomous/review-verdict.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
@@ -124,10 +125,15 @@ const ADDRESSED_REINTRODUCED = { ...ADDRESSED_CLEAN, originClass: "reintroduced"
 const CRITICAL_CLEAN = { ...ADDRESSED_CLEAN, id: "F2", severity: "critical" };
 const CRITICAL_REINTRODUCED = { ...CRITICAL_CLEAN, originClass: "reintroduced" };
 
-const round = (verdict: string, findings: readonly unknown[]) =>
-  ({ completedAction: "code_review_round", verdict, reviewer: "codex", findings }) as never;
-const planRound = (verdict: string, findings: readonly unknown[]) =>
-  ({ completedAction: "plan_review_round", verdict, reviewer: "codex", findings }) as never;
+// ISS-1332: a codex round lands only through the bridge receipt gate, so each
+// caller passes the receipt its report carries.
+const round = (verdict: string, findings: readonly unknown[], reviewReceipts: unknown) =>
+  ({ completedAction: "code_review_round", verdict, reviewer: "codex", findings, reviewReceipts }) as never;
+const planRound = (verdict: string, findings: readonly unknown[], reviewReceipts: unknown) =>
+  ({ completedAction: "plan_review_round", verdict, reviewer: "codex", findings, reviewReceipts }) as never;
+
+/** The plan every SITE 3 test holds. */
+const PLAN = "# Plan\n\nDo the thing.\n";
 
 function latestArtifact(sessionDir: string): Record<string, unknown> {
   const dir = join(sessionDir, "telemetry", "reviews");
@@ -162,7 +168,7 @@ describe("the predicate itself", () => {
 });
 
 describe("SITE 1+2: the approve guard and the counts, on the CODE stage", () => {
-  let testRoot: string; let sessionDir: string;
+  let testRoot: string; let sessionDir: string; let item: BridgeCodeItem;
   const stage = new CodeReviewStage();
 
   beforeEach(() => {
@@ -170,20 +176,23 @@ describe("SITE 1+2: the approve guard and the counts, on the CODE stage", () => 
     sessionDir = join(testRoot, ".story", "sessions", "s1");
     mkdirSync(sessionDir, { recursive: true });
     setupProject(testRoot);
+    // Every report in this block is a codex round, so every test needs the item.
+    item = bridgeCodeItem(testRoot);
   });
-  afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
+  afterEach(() => { item.cleanup(); rmSync(testRoot, { recursive: true, force: true }); });
+  const itemState = () => makeState({ git: { branch: "main", mergeBase: item.baseline, expectedHead: "abc123" } } as Partial<FullSessionState>);
 
   it("BLOCKS an approve carrying a reintroduced finding", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    const advance = await stage.report(ctx, round("approve", [ADDRESSED_REINTRODUCED]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(), makeRecipe());
+    const advance = await stage.report(ctx, round("approve", [ADDRESSED_REINTRODUCED], [item.receipt]));
 
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") expect(advance.instruction).toContain("Contradictory review payload");
   });
 
   it("LANDS the identical approve when the finding is clean", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    const advance = await stage.report(ctx, round("approve", [ADDRESSED_CLEAN]));
+    const ctx = new StageContext(testRoot, sessionDir, itemState(), makeRecipe());
+    const advance = await stage.report(ctx, round("approve", [ADDRESSED_CLEAN], [item.receipt]));
 
     expect(advance.action).not.toBe("retry");
   });
@@ -192,14 +201,14 @@ describe("SITE 1+2: the approve guard and the counts, on the CODE stage", () => 
     // `unresolvedCriticalCount` is what `forcedLanding` reads through
     // `hasUnresolvedCritical`, and it is written durably onto the artifact, so
     // this pins the forced-landing input at the point it is recorded.
-    const ctxA = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const ctxA = new StageContext(testRoot, sessionDir, itemState(), makeRecipe());
     await ctxA.writeState({});
-    await new CodeReviewStage().report(ctxA, round("revise", [CRITICAL_REINTRODUCED]));
+    await new CodeReviewStage().report(ctxA, round("revise", [CRITICAL_REINTRODUCED], [item.receipt]));
     expect(latestArtifact(sessionDir).unresolvedCriticalCount).toBe(1);
 
     rmSync(join(sessionDir, "telemetry"), { recursive: true, force: true });
-    const ctxB = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await new CodeReviewStage().report(ctxB, round("revise", [CRITICAL_CLEAN]));
+    const ctxB = new StageContext(testRoot, sessionDir, itemState(), makeRecipe());
+    await new CodeReviewStage().report(ctxB, round("revise", [CRITICAL_CLEAN], [item.receipt]));
     expect(latestArtifact(sessionDir).unresolvedCriticalCount).toBe(0);
   });
 });
@@ -215,7 +224,7 @@ describe("SITE 3: the clean-landing ladder, on the PLAN stage", () => {
     setupProject(testRoot);
     // The landing path snapshots the approved plan, so the file has to be
     // there or the stage retries before the ladder's decision is observable.
-    writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nDo the thing.\n", "utf-8");
+    writeFileSync(join(sessionDir, "plan.md"), PLAN, "utf-8");
   });
   afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
 
@@ -226,7 +235,7 @@ describe("SITE 3: the clean-landing ladder, on the PLAN stage", () => {
     const state = makeState({ state: "PLAN_REVIEW" } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_CLEAN]));
+    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_CLEAN], planReceipt(PLAN)));
 
     // `advance` IS the landing: the stage leaves PLAN_REVIEW for the next
     // pipeline stage. Asserted on the action rather than on the string
@@ -240,7 +249,7 @@ describe("SITE 3: the clean-landing ladder, on the PLAN stage", () => {
     const state = makeState({ state: "PLAN_REVIEW" } as Partial<FullSessionState>);
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
-    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_REINTRODUCED]));
+    const advance = await stage.report(ctx, planRound("revise", [ADDRESSED_REINTRODUCED], planReceipt(PLAN)));
 
     // Another plan-review round, not a landing: the plan is not approved on the
     // strength of a finding whose own history says it was not fixed last time.

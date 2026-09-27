@@ -19,13 +19,14 @@ import { FinalizeStage } from "../../../src/autonomous/stages/finalize.js";
 import { agentFallbackLines, GATE_ESCAPE_AT, GATE_UNAVAILABLE_AT } from "../../../src/autonomous/stages/review-gate.js";
 import { RECEIPT_ATTESTATION } from "../../../src/autonomous/review-gate-receipt.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+import { BRIDGE_REVIEW_MODEL } from "../helpers/bridge-receipts.js";
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
 
 const sha256 = (t: string): string => createHash("sha256").update(t, "utf8").digest("hex");
 const TEN = Array.from({ length: 10 }, (_, i) => `line ${i}`).join("\n") + "\n";
-const ASTRA = { provider: "codex", role: "review", requested: "max", resolved: "gpt-6-astra", observed: "gpt-6-astra", evidence: "runtime_session_record", selection: "requested" };
+const ASTRA = BRIDGE_REVIEW_MODEL;
 const GEMINI = { ...ASTRA, provider: "gemini", resolved: "Gemini 3.1 Pro (High)", observed: "Gemini 3.1 Pro (High)" };
 
 function makeState(root: string, mergeBase: string, overrides: Partial<FullSessionState> = {}): FullSessionState {

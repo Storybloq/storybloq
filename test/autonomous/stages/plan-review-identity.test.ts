@@ -21,6 +21,10 @@ import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { PlanReviewStage } from "../../../src/autonomous/stages/plan-review.js";
 import type { FullSessionState, ReviewRecord } from "../../../src/autonomous/session-types.js";
+import { planReceipt } from "../helpers/bridge-receipts.js";
+
+/** The plan every test here holds; each codex report carries the receipt for it (ISS-1332). */
+const PLAN = "# Plan\n\nA plan the landing path can snapshot.\n";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();
@@ -69,7 +73,7 @@ function setupProject(root: string, sessionDir: string): void {
     id: "T-001", title: "Test ticket", type: "task", status: "open", phase: "p1", order: 10,
     description: "Test", blockedBy: [], parentTicket: null,
   }));
-  writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nA plan the landing path can snapshot.\n");
+  writeFileSync(join(sessionDir, "plan.md"), PLAN);
 }
 
 function artifactNames(sessionDir: string): string[] {
@@ -118,7 +122,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
 
   it("record, artifact and event agree on all four ids", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR] } as never);
+    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], reviewReceipts: planReceipt(PLAN) } as never);
 
     const record = ctx.state.reviews.plan[0] as ReviewRecord;
     const artifact = artifactAt(sessionDir, "T-001-plan-r1.json");
@@ -137,6 +141,13 @@ describe("PlanReviewStage identity spine (T-488)", () => {
       expect(sink.reviewAttemptId).toBe(record.reviewAttemptId);
       expect(sink.itemAttemptId).toBe(record.itemAttemptId);
     }
+
+    // ISS-1332: the round landed through the bridge receipt gate, so the record
+    // carries the gate's evidence and the reviewer provenance built from the
+    // receipt, not from the report's free text.
+    expect(record.reviewGate).toEqual({ observed: [{ provider: "codex", model: "gpt-6-astra" }] });
+    expect(record.reviewerIdentity).toMatchObject({ model: "gpt-6-astra", tier: "max", evidence: "observed" });
+    expect(artifact.reviewerIdentity).toMatchObject({ model: "gpt-6-astra", tier: "max", evidence: "observed" });
   });
 
   it("records the spine fields a reader needs, and no ticketId", async () => {
@@ -144,6 +155,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "revise", findings: [MINOR],
       reviewer: "codex", reviewerSessionId: "sess-plan",
+      reviewReceipts: planReceipt(PLAN),
     } as never);
 
     const record = ctx.state.reviews.plan[0] as ReviewRecord & { ticketId?: unknown };
@@ -161,7 +173,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     // A placeholder here would either fail validation or collide across items,
     // and an id-shaped "unknown" is a value that reads like an address.
     const ctx = new StageContext(testRoot, sessionDir, makeState({ ticket: null } as Partial<FullSessionState>), makeRecipe());
-    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR] } as never);
+    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], reviewReceipts: planReceipt(PLAN) } as never);
 
     const record = ctx.state.reviews.plan[0] as ReviewRecord;
     expect(record.workItemId).toBeUndefined();
@@ -176,6 +188,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "revise",
       findings: [{ ...MINOR, severity: "important" }],
+      reviewReceipts: planReceipt(PLAN),
     } as never);
 
     const findings = artifactAt(sessionDir, "T-001-plan-r1.json").findings as Record<string, unknown>[];
@@ -186,7 +199,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
 
   it("clears the pending envelope once the round has landed", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR] } as never);
+    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], reviewReceipts: planReceipt(PLAN) } as never);
     expect(ctx.state.pendingReviewAttempt ?? null).toBeNull();
   });
 
@@ -197,12 +210,14 @@ describe("PlanReviewStage identity spine (T-488)", () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "reject", findings: [MINOR],
+      reviewReceipts: planReceipt(PLAN),
     } as never);
     expect(artifactNames(sessionDir)).toEqual(["T-001-plan-r1.json"]);
     expect(ctx.state.reviews.plan).toHaveLength(0);
 
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "after the rewrite",
+      reviewReceipts: planReceipt(PLAN, "bridge-plan-2"),
     } as never);
 
     // Both survive, and the second says which generation it belongs to.
@@ -215,12 +230,14 @@ describe("PlanReviewStage identity spine (T-488)", () => {
 
   it("keeps the whole post-reject epoch on one generation, not just the round that collided", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "reject", findings: [MINOR] } as never);
+    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "reject", findings: [MINOR], reviewReceipts: planReceipt(PLAN) } as never);
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "g1 r1",
+      reviewReceipts: planReceipt(PLAN, "bridge-plan-2"),
     } as never);
     await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "revise", findings: [MINOR_LABELLED], notes: "g1 r2",
+      reviewReceipts: planReceipt(PLAN, "bridge-plan-3"),
     } as never);
 
     expect(artifactNames(sessionDir)).toEqual([

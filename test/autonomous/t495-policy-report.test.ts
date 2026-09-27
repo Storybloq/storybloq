@@ -23,6 +23,7 @@ import { join } from "node:path";
 
 import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
+import { bridgeCodeItem, planReceipt, type BridgeCodeItem } from "./helpers/bridge-receipts.js";
 import {
   appendContractDelivery,
   readPolicyRecords,
@@ -144,9 +145,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  item?.cleanup();
+  item = null;
   rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
+
+// ISS-1332: every code round here is a codex round, which lands only through
+// the bridge receipt gate. The item is built once per test, on first use, so a
+// test that reports twice reviews one item twice rather than re-baselining.
+let item: BridgeCodeItem | null = null;
+const itemIn = (): BridgeCodeItem => (item ??= bridgeCodeItem(root));
+const itemGit = (): Partial<FullSessionState> => ({ git: { branch: "main", mergeBase: itemIn().baseline, expectedHead: "abc123" } } as Partial<FullSessionState>);
 
 async function runCodeRound(
   findings: unknown[],
@@ -154,9 +164,9 @@ async function runCodeRound(
   over: Partial<FullSessionState> = {},
 ): Promise<{ advance: unknown; ctx: StageContext }> {
   const { CodeReviewStage } = await import("../../src/autonomous/stages/code-review.js");
-  const ctx = new StageContext(root, sDir, makeState(over), makeRecipe());
+  const ctx = new StageContext(root, sDir, makeState({ ...itemGit(), ...over }), makeRecipe());
   const advance = await new CodeReviewStage().report(ctx, {
-    completedAction: "code_review_round", verdict, findings,
+    completedAction: "code_review_round", verdict, findings, reviewReceipts: [itemIn().receipt],
   } as never);
   return { advance, ctx };
 }
@@ -587,8 +597,9 @@ describe("T-495 D4: the baseline is the STAGE's own decision", () => {
   it("T24: PLAN_REVIEW records a REAL baselineHasUnresolvedCritical, not false", async () => {
     const { PlanReviewStage } = await import("../../src/autonomous/stages/plan-review.js");
     const ctx = new StageContext(root, sDir, makeState({ state: "PLAN_REVIEW" }), makeRecipe());
+    // No plan.md is written, and the gate reads a missing plan.md as "".
     await new PlanReviewStage().report(ctx, {
-      completedAction: "plan_review_round", verdict: "revise", findings: [CRITICAL_DECLARED],
+      completedAction: "plan_review_round", verdict: "revise", findings: [CRITICAL_DECLARED], reviewReceipts: planReceipt(""),
     } as never);
     const rec = records()[0]!;
     expect(rec.gate.baselineHasUnresolvedCritical).toBe(true);
@@ -599,7 +610,7 @@ describe("T-495 D4: the baseline is the STAGE's own decision", () => {
     const { PlanReviewStage } = await import("../../src/autonomous/stages/plan-review.js");
     const ctx = new StageContext(root, sDir, makeState({ state: "PLAN_REVIEW" }), makeRecipe());
     await new PlanReviewStage().report(ctx, {
-      completedAction: "plan_review_round", verdict: "revise", findings: [MAJOR_UNNAMED],
+      completedAction: "plan_review_round", verdict: "revise", findings: [MAJOR_UNNAMED], reviewReceipts: planReceipt(""),
     } as never);
     expect(records()[0]!.stageNextAction).toBeNull();
   });
@@ -702,7 +713,7 @@ describe("T-495 D3: the record is written BEFORE writeState", () => {
     // written after writeState is lost on exactly the interruption the
     // reconciliation path exists to survive.
     const { CodeReviewStage } = await import("../../src/autonomous/stages/code-review.js");
-    const ctx = new StageContext(root, sDir, makeState(), makeRecipe());
+    const ctx = new StageContext(root, sDir, makeState(itemGit()), makeRecipe());
     // Armed on the state write that RECORDS THE ROUND, not on the first one:
     // `prepareReviewRound` writes the pending envelope before the artifact
     // exists, so crashing there ends the round before the reporter is reached
@@ -717,7 +728,7 @@ describe("T-495 D3: the record is written BEFORE writeState", () => {
       return original(patch);
     });
     await expect(new CodeReviewStage().report(ctx, {
-      completedAction: "code_review_round", verdict: "request_changes", findings: [MAJOR_UNNAMED],
+      completedAction: "code_review_round", verdict: "request_changes", findings: [MAJOR_UNNAMED], reviewReceipts: [itemIn().receipt],
     } as never)).rejects.toThrow("crash at writeState");
     // The crash really happened at the point this test claims.
     expect(armedOn).toBe(1);

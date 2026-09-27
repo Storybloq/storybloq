@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { CodeReviewStage } from "../../../src/autonomous/stages/code-review.js";
 import type { FullSessionState, ReviewRecord } from "../../../src/autonomous/session-types.js";
+import { bridgeCodeItem } from "../helpers/bridge-receipts.js";
 
 const ISSUE_ID = "i-abc1230000000500";
 
@@ -173,10 +174,19 @@ describe("CodeReviewStage identity spine (T-488)", () => {
   });
 
   it("carries the codex thread id as the backend run id, with its kind", async () => {
-    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, { ...APPROVE, reviewer: "codex", reviewerSessionId: "sess-abc" });
+    // ISS-1332: a codex round lands only through the bridge receipt gate, so
+    // the root is a real item and the report carries the receipt for it.
+    const item = bridgeCodeItem(testRoot);
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ git: { branch: "main", mergeBase: item.baseline, expectedHead: "abc123" } } as Partial<FullSessionState>), makeRecipe());
+    await stage.report(ctx, { ...APPROVE, reviewer: "codex", reviewerSessionId: "sess-abc", reviewReceipts: [item.receipt] });
+    item.cleanup();
 
     const record = ctx.state.reviews.code[0] as ReviewRecord;
+    // The gate's evidence, and the reviewer provenance built from the receipt
+    // rather than from the report's free text, are what the round records.
+    expect(record.reviewGate).toEqual({ observed: [{ provider: "codex", model: "gpt-6-astra" }] });
+    expect(record.reviewerIdentity).toMatchObject({ model: "gpt-6-astra", tier: "max", evidence: "observed" });
+    expect(artifacts(sessionDir)[0]!.reviewerIdentity).toMatchObject({ model: "gpt-6-astra", tier: "max", evidence: "observed" });
     // The existing join key is untouched -- 644 of 667 fleet values match the
     // external thread DB, so re-pointing it would destroy the one join that
     // partly works.
@@ -184,6 +194,32 @@ describe("CodeReviewStage identity spine (T-488)", () => {
     expect(record.backendRunId).toBe("sess-abc");
     expect(record.backendRunIdKind).toBe("codex-session");
     expect(record.backendTurnId).toBeUndefined();
+  });
+
+  // ISS-1332: permanent negative controls. A codex report the gate cannot tie
+  // to the item's diff is refused before anything is recorded.
+  it("refuses a codex report with no reviewReceipts, and records no round", async () => {
+    const item = bridgeCodeItem(testRoot);
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ git: { branch: "main", mergeBase: item.baseline, expectedHead: "abc123" } } as Partial<FullSessionState>), makeRecipe());
+    const advance = await stage.report(ctx, { ...APPROVE, reviewer: "codex", reviewerSessionId: "sess-abc" });
+    item.cleanup();
+
+    expect(advance.action).toBe("retry");
+    expect((advance as { instruction: string }).instruction).toContain("Bridge review not accepted as a gate result: no reviewReceipts: pass one { cwd, base, head, receipt, models, sessionId } per bridge call");
+    expect(ctx.state.reviews.code).toHaveLength(0);
+  });
+
+  it("refuses a receipt whose review does not end at the working tree, and records no round", async () => {
+    const item = bridgeCodeItem(testRoot);
+    // The item changes after its review: the reviewed head is stale.
+    writeFileSync(join(testRoot, "src", "item.ts"), "export const item = 2;\n");
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ git: { branch: "main", mergeBase: item.baseline, expectedHead: "abc123" } } as Partial<FullSessionState>), makeRecipe());
+    const advance = await stage.report(ctx, { ...APPROVE, reviewer: "codex", reviewerSessionId: "sess-abc", reviewReceipts: [item.receipt] });
+    item.cleanup();
+
+    expect(advance.action).toBe("retry");
+    expect((advance as { instruction: string }).instruction).toContain("Bridge review not accepted as a gate result: stale review: the last review of src/item.ts does not end where the working tree is");
+    expect(ctx.state.reviews.code).toHaveLength(0);
   });
 
   it("preserves the raw severity a reviewer reported", async () => {

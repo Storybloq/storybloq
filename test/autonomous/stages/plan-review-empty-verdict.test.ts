@@ -33,6 +33,7 @@ import { PlanReviewStage } from "../../../src/autonomous/stages/plan-review.js";
 import { readSession } from "../../../src/autonomous/session.js";
 import { SessionStateSchema } from "../../../src/autonomous/session-types.js";
 import type { FullSessionState, ReviewRecord } from "../../../src/autonomous/session-types.js";
+import { planReceipt } from "../helpers/bridge-receipts.js";
 
 function planRound(round: number): ReviewRecord {
   return {
@@ -85,6 +86,9 @@ function makeRecipe(): ResolvedRecipe {
  * so a test lacking this setup would see a `retry` that has nothing to do with
  * the guard under test.
  */
+/** The plan every test here holds; each codex report carries the receipt for it (ISS-1332). */
+const PLAN = "# Plan\n\nA plan the landing path can snapshot.\n";
+
 function setupProject(root: string, sessionDir: string): void {
   const storyDir = join(root, ".story");
   for (const d of ["tickets", "issues", "notes", "lessons", "handovers"]) {
@@ -104,7 +108,7 @@ function setupProject(root: string, sessionDir: string): void {
     status: "inprogress", phase: "p1", order: 10, createdDate: "2026-08-01",
     completedDate: null, blockedBy: [],
   }));
-  writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nA plan the landing path can snapshot.\n");
+  writeFileSync(join(sessionDir, "plan.md"), PLAN);
 }
 
 const EMPTY_REPORT = { completedAction: "plan_review_round", verdict: "revise", findings: [] } as const;
@@ -138,7 +142,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
     // requested changes and supplied nothing.
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).toMatchObject({ action: "retry" });
     expect(advance).not.toMatchObject({ action: "advance" });
@@ -155,7 +159,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       planReviewRoundCounter: { ticketId: "T-001", completedRounds: 2 },
     } as Partial<FullSessionState>), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).toMatchObject({ action: "retry" });
     expect(ctx.state.reviews.plan).toHaveLength(2);
@@ -167,6 +171,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
 
     const advance = await stage.report(ctx, {
       completedAction: "plan_review_round", verdict: "request_changes", findings: [],
+      reviewReceipts: planReceipt(PLAN),
     });
 
     expect(advance).toMatchObject({ action: "retry" });
@@ -176,8 +181,8 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
   it("records a second attempt for the same round", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
 
-    await stage.report(ctx, EMPTY_REPORT);
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).toMatchObject({ action: "retry" });
     expect(ctx.state.reviewRepairAttempts).toHaveLength(2);
@@ -187,9 +192,9 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
   it("parks on the third empty payload with a schema-valid empty-verdict record", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
 
-    await stage.report(ctx, EMPTY_REPORT);
-    await stage.report(ctx, EMPTY_REPORT);
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance.action).not.toBe("retry");
     expect(ctx.state.pendingPlanCeilingEscalation).toMatchObject({
@@ -219,6 +224,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       completedAction: "plan_review_round",
       verdict: "revise",
       findings: [{ id: "f1", severity: "minor", category: "style", description: "Naming nit", disposition: "open" }],
+      reviewReceipts: planReceipt(PLAN),
     });
 
     expect(advance).toMatchObject({ action: "advance" });
@@ -233,6 +239,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       completedAction: "plan_review_round",
       verdict: "approve",
       findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
+      reviewReceipts: planReceipt(PLAN),
     });
 
     expect(advance).toMatchObject({ action: "retry" });
@@ -249,7 +256,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       ],
     } as Partial<FullSessionState>), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).toMatchObject({ action: "retry" });
     expect(ctx.state.pendingPlanCeilingEscalation ?? null).toBeNull();
@@ -264,7 +271,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       ],
     } as Partial<FullSessionState>), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).toMatchObject({ action: "retry" });
     expect(ctx.state.pendingPlanCeilingEscalation ?? null).toBeNull();
@@ -284,7 +291,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       ],
     } as Partial<FullSessionState>), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     // Pending round is 5 from the counter, not 1 from the cleared array, so the
     // two banked attempts are not this round's and this payload is repaired.
@@ -299,7 +306,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       planReviewRoundCounter: null,
     } as Partial<FullSessionState>), makeRecipe());
 
-    await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(ctx.state.reviewRepairAttempts?.[0]).toMatchObject({ round: 1, attempt: 1 });
   });
@@ -309,7 +316,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
       ticket: null,
     } as Partial<FullSessionState>), makeRecipe());
 
-    const advance = await stage.report(ctx, EMPTY_REPORT);
+    const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(advance).not.toMatchObject({ action: "retry", instruction: expect.stringContaining("supplies no actionable changes") });
     expect(ctx.state.reviewRepairAttempts ?? []).toHaveLength(0);
@@ -318,19 +325,19 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
 
   it("keeps attempts across a state reload from disk", async () => {
     const ctx1 = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx1, EMPTY_REPORT);
+    await stage.report(ctx1, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     const reloaded1 = readSession(sessionDir);
     expect(reloaded1?.reviewRepairAttempts).toHaveLength(1);
 
     const ctx2 = new StageContext(testRoot, sessionDir, reloaded1!, makeRecipe());
-    await stage.report(ctx2, EMPTY_REPORT);
+    await stage.report(ctx2, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     const reloaded2 = readSession(sessionDir);
     expect(reloaded2?.reviewRepairAttempts).toHaveLength(2);
 
     const ctx3 = new StageContext(testRoot, sessionDir, reloaded2!, makeRecipe());
-    await stage.report(ctx3, EMPTY_REPORT);
+    await stage.report(ctx3, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     expect(readSession(sessionDir)?.pendingPlanCeilingEscalation)
       .toMatchObject({ trigger: "empty-verdict", repairAttempts: 2 });
@@ -338,11 +345,11 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
 
   it("resumes a park interrupted after the escalation write without double-counting", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
-    await stage.report(ctx, EMPTY_REPORT);
-    await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     const boom = vi.spyOn(ctx, "drainDeferrals").mockRejectedValueOnce(new Error("interrupted"));
-    await expect(stage.report(ctx, EMPTY_REPORT)).rejects.toThrow("interrupted");
+    await expect(stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) })).rejects.toThrow("interrupted");
     boom.mockRestore();
 
     const afterCrash = readSession(sessionDir);
@@ -350,7 +357,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
     const attemptsAtCrash = afterCrash?.reviewRepairAttempts?.length ?? 0;
 
     const resumeCtx = new StageContext(testRoot, sessionDir, afterCrash!, makeRecipe());
-    const resumed = await stage.report(resumeCtx, EMPTY_REPORT);
+    const resumed = await stage.report(resumeCtx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     // The resume has to FINISH the park. Asserting only "nothing extra
     // happened" is satisfied by a resume that returns retry forever, which
@@ -372,9 +379,9 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
     }), makeRecipe());
 
     vi.setSystemTime(new Date(t0.getTime() + 8_000));
-    await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
     vi.setSystemTime(new Date(t0.getTime() + 30_000));
-    await stage.report(ctx, EMPTY_REPORT);
+    await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
     const attempts = ctx.state.reviewRepairAttempts ?? [];
     expect(attempts[0]?.attemptDurationMs).toBe(8_000);
@@ -391,7 +398,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
         currentReviewStartedAt: startedAt,
       } as Partial<FullSessionState>), makeRecipe());
 
-      const advance = await stage.report(ctx, EMPTY_REPORT);
+      const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });
 
       expect(advance).toMatchObject({ action: "retry" });
       const d = ctx.state.reviewRepairAttempts?.[0]?.attemptDurationMs;

@@ -209,14 +209,30 @@ describe("ISS-1115 F2: the floor survives instruction assembly", () => {
   });
   afterEach(() => { rmSync(testRoot, { recursive: true, force: true }); });
 
-  it("every instruction still tells the reviewer to capture the FULL diff", async () => {
+  it("every instruction still tells the reviewer how to capture the whole diff", async () => {
     // Round 1, round 2 with residuals, and a round with a huge rules file that
     // pushes hard against the budget: the capture directive is in all of them.
+    // ISS-1332: a bridge codex round is told to review by range under the
+    // receipt rules instead of pasting the diff; an agent round keeps the
+    // FULL-diff directive. The bridge text is typed out here, not rebuilt from
+    // bridgeReviewRules, so any change to the production wording fails this.
     writeFileSync(join(testRoot, "RULES.md"), "R".repeat(50_000), "utf-8");
     seedArtifact(sessionDir, { round: 1, findings: [DEFERRED] });
 
-    for (const codeRounds of [0, 1]) {
+    const BRIDGE_CODE_RULES =
+      "**IMPORTANT:** Call `review_code` by range in a standalone clone: `cwd`, `base`, `head`, never an inline diff. " +
+      "Use `tier: \"max\"`, never `model`. Keep each range at most 300 changed lines; split with synthetic commits that partition the diff. " +
+      "Chain the ranges from the item baseline `abc123` to a head holding the working tree: each file's first range starts at the baseline, " +
+      "each later range starts where that file's previous range ended; no gaps, no repeats. " +
+      "The reviewer must open each summary with `REVIEWED: <path> (~N changed lines)`, where <path> is the range's only changed file, " +
+      "or `[range]` when it changes several. " +
+      "Report `reviewReceipts` as `[{ \"cwd\", \"base\", \"head\", \"receipt\", \"models\", \"sessionId\" }]`, one per call in chain order, " +
+      "each with `models` (that call's result `models[]` verbatim) and `sessionId` (the session id it returned). " +
+      "A receipt is ATTESTED, not authenticated: its models, sessionId and planSha256 are a CLAIM asserted by the reporting agent, not a record the bridge issued.";
+
+    for (const [backend, codeRounds] of [["codex", 0], ["codex", 1], ["agent", 0], ["agent", 1]] as const) {
       const state = makeState({
+        config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: [backend] },
         reviews: {
           plan: [],
           code: Array.from({ length: codeRounds }, (_, i) => ({
@@ -231,9 +247,14 @@ describe("ISS-1115 F2: the floor survives instruction assembly", () => {
       const result = await stage.enter(ctx);
 
       expect(result.instruction).toContain("Capture the diff with");
-      expect(result.instruction).toContain("Pass the FULL unified diff");
-      // ISS-937's rider is untouched and still reaches the reviewer.
-      expect(result.instruction).toContain("file-scoped chunks");
+      if (backend === "codex") {
+        expect(result.instruction).toContain(BRIDGE_CODE_RULES);
+        expect(result.instruction).not.toContain("Pass the FULL unified diff");
+      } else {
+        expect(result.instruction).toContain("Pass the FULL unified diff");
+        // ISS-937's rider is untouched and still reaches the reviewer.
+        expect(result.instruction).toContain("file-scoped chunks");
+      }
     }
   });
 });

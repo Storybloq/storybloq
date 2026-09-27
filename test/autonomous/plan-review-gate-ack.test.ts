@@ -4,7 +4,7 @@
  * path.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,7 +21,14 @@ import { sha256Bytes } from "../../src/core/pin-utils.js";
 import { SessionStateSchema } from "../../src/autonomous/session-types.js";
 import * as planSnapshotModule from "../../src/core/plan-snapshot.js";
 import * as planPinGuardModule from "../../src/autonomous/plan-pin-guard.js";
+import { planReceipt } from "./helpers/bridge-receipts.js";
 const { readPlanSnapshot } = planSnapshotModule;
+
+/** The codex receipt for the plan.md the session holds when the report is sent; the gate reads a missing plan.md as "" (ISS-1332). */
+function receiptFor(sessionDir: string) {
+  const path = join(sessionDir, "plan.md");
+  return planReceipt(existsSync(path) ? readFileSync(path, "utf8") : "");
+}
 
 const PARTIES = [
   { role: "pen" as const, client: "claude" as const, identityAnchor: "pen-session" },
@@ -99,7 +106,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     writeFileSync(join(sessionDir, "plan.md"), "# The plan\n\nDo the thing.\n");
 
     const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-    const first = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    const first = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
     expect(first.action).toBe("retry"); // held: no gate-ack recorded yet
     expect(ctx.state.reviews.plan.length).toBe(1);
     expect(ctx.state.planReviewRoundCounter?.completedRounds).toBe(1);
@@ -172,7 +179,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     writeFileSync(join(root, ".story", "arrangements", "a-brokenbrokenbrok.json"), "{not json");
 
     const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
     expect(result.action).toBe("retry");
     if (result.action === "retry") {
       expect(result.instruction).toContain("could not be resolved");
@@ -188,7 +195,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     writeFileSync(join(sessionDir, "plan.md"), "# Plan v1\n");
 
     const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
     expect(ctx.state.pendingPlanAck).not.toBeNull();
     expect(ctx.state.reviews.plan.length).toBe(1);
 
@@ -265,7 +272,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     await writeGateAckUnlocked(ack, root);
 
     const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
     expect(result.action).toBe("advance");
     expect(ctx.state.approvedPlanAckDeltas).toBe("Ship it, but file a follow-up for the caching layer.");
     expect(ctx.state.planReviewRoundCounter?.completedRounds).toBe(1);
@@ -304,7 +311,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       return originalFileDeferredFindings(...args);
     }) as typeof ctx.fileDeferredFindings;
 
-    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
 
     expect(result.action).toBe("retry");
     if (result.action === "retry") {
@@ -337,7 +344,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
     writeFileSync(join(sessionDir, "plan.md"), "# Plan\n");
 
     const ctx = new StageContext(root, sessionDir, makeState(root, "T-001"), makeRecipe());
-    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+    const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
     expect(result.action).toBe("advance");
     expect(ctx.state.frozenGate).toEqual({ status: "ungated" });
   });
@@ -351,7 +358,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       writeFileSync(join(sessionDir, "plan.md"), "# The plan\n\nDo the thing.\n");
 
       const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
       expect(result.action).toBe("retry");
       if (result.action === "retry") {
         expect(result.instruction).toContain("plan-ack");
@@ -389,7 +396,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       writeFileSync(join(sessionDir, "plan.md"), "# The plan\n");
 
       const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
       expect(result.action).toBe("retry");
       if (result.action === "retry") {
         expect(result.instruction).not.toContain("ISS-1050");
@@ -403,7 +410,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       writeFileSync(join(sessionDir, "plan.md"), "# The plan\n");
 
       const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-      await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
 
       const frozenGate = ctx.state.frozenGate;
       expect(frozenGate).toEqual({ status: "gated", arrangementId, gates: [{ name: PLAN_ACK_GATE_NAME, ackRole: "pen" }] });
@@ -433,7 +440,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       const expectedBytes = readFileSync(planPath);
 
       const ctx = new StageContext(root, sessionDir, makeState(root, "T-001"), makeRecipe());
-      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
 
       expect(result.action).toBe("advance");
       const ref = ctx.state.approvedPlanSnapshot;
@@ -465,7 +472,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
       await writeGateAckUnlocked(ack, root);
 
       const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+      const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
 
       expect(result.action).toBe("advance");
       const ref = ctx.state.approvedPlanSnapshot;
@@ -547,7 +554,7 @@ describe("PLAN_REVIEW plan-ack gate (T-474)", () => {
         .mockResolvedValueOnce({ status: "unreadable", reason: "simulated write failure" });
       try {
         const ctx = new StageContext(root, sessionDir, makeState(root, ticketId), makeRecipe());
-        const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [] });
+        const result = await stage.report(ctx, { completedAction: "plan_review_round", verdict: "approve", findings: [], reviewReceipts: receiptFor(sessionDir) });
 
         expect(result.action).toBe("retry");
         expect(ctx.state.approvedPlanSnapshot).toBeFalsy();

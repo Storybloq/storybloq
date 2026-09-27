@@ -120,7 +120,18 @@ describe("PlanReviewStage.enter", () => {
     // the implementing agent, which composes the backend request, so "with the
     // plan content" left the context packet behind at exactly that step. The
     // depth rider is unchanged and is still asserted on the same line.
-    expect(thorough).toContain("Call `review_plan` MCP tool, passing BOTH the context above and the full plan content. Request a thorough review -- design soundness, edge cases, and failure modes. Pass deliberate: true.");
+    // ISS-1332: a bridge codex round now carries the complete receipt rules
+    // between the handoff and the depth ask. Typed out here, not rebuilt from
+    // bridgeReviewRules, so any change to the production wording fails this.
+    expect(thorough).toContain(
+      "Call `review_plan` MCP tool, passing BOTH the context above and the full plan content. " +
+      "Call `review_plan` with `tier: \"max\"`, never `model`. " +
+      "The reviewer must open its summary with `REVIEWED: plan.md (~N lines)`. " +
+      "Report `reviewReceipts` as `{ \"receipt\": \"<that line>\", \"planSha256\": \"<sha256 of the exact plan text you sent>\", \"models\", \"sessionId\" }` " +
+      "with `models` (that call's result `models[]` verbatim) and `sessionId` (the session id it returned). " +
+      "A receipt is ATTESTED, not authenticated: its models, sessionId and planSha256 are a CLAIM asserted by the reporting agent, not a record the bridge issued. " +
+      "Request a thorough review -- design soundness, edge cases, and failure modes. Pass deliberate: true.",
+    );
 
     const lenses = (await stage.enter(ctxWith({
       currentReviewEffort: "thorough",

@@ -25,6 +25,7 @@ import { guardPlanNamesCitedRulings } from "../../src/autonomous/plan-pin-guard.
 import * as planPinGuardModule from "../../src/autonomous/plan-pin-guard.js";
 import { writeRulingUnlocked } from "../../src/core/ruling-loader.js";
 import { makeRuling } from "../core/test-factories.js";
+import { planReceipt } from "./helpers/bridge-receipts.js";
 
 const CALLER = "test-task";
 const stage = new PlanReviewStage();
@@ -94,6 +95,9 @@ function makeRecipe(): ResolvedRecipe {
 
 /** A clean approve, the report shape that reaches the landing branch. */
 const APPROVE = { completedAction: "plan_review_round", verdict: "approve", findings: [] } as const;
+
+/** The codex receipt for the plan.md the session holds when the report is sent (ISS-1332). */
+const receiptFor = (sessionDir: string) => planReceipt(readFileSync(join(sessionDir, "plan.md"), "utf8"));
 
 /** Approved-plan snapshots land beside plan.md as `plan-approved-<sha>.md`. */
 function snapshotCount(sessionDir: string): number {
@@ -252,7 +256,7 @@ describe("site C: the landing that pins a plan into IMPLEMENT", () => {
     const dir = sessionDirIn(root, "# Plan\n\nDo the thing.\n");
     const ctx = new StageContext(root, dir, makeState(), makeRecipe());
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     expect(advance.action).toBe("retry");
     expect((advance as { instruction: string }).instruction).toContain(id);
     // Nothing is written on a refusal: no pin exists for a plan that was
@@ -266,7 +270,7 @@ describe("site C: the landing that pins a plan into IMPLEMENT", () => {
     const dir = sessionDirIn(root, `# Plan\n\nPer ${id}, do the thing.\n`);
     const ctx = new StageContext(root, dir, makeState(), makeRecipe());
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     expect(advance.action).toBe("advance");
     expect(snapshotCount(dir)).toBeGreaterThan(0);
   });
@@ -283,7 +287,7 @@ describe("site B: the plan-only completion, which writes no snapshot at all", ()
     const dir = sessionDirIn(root, "# Plan\n\nDo the thing.\n");
     const ctx = new StageContext(root, dir, makeState({ mode: "plan" }), makeRecipe());
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     expect(advance.action).toBe("retry");
     expect((advance as { instruction: string }).instruction).toContain(id);
     // The session did NOT end, which is the whole point: an unjudged plan
@@ -298,7 +302,7 @@ describe("site B: the plan-only completion, which writes no snapshot at all", ()
     const dir = sessionDirIn(root, `# Plan\n\nPer ${id}.\n`);
     const ctx = new StageContext(root, dir, makeState({ mode: "plan" }), makeRecipe());
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     expect(advance.action).toBe("goto");
     expect((advance as { target: string }).target).toBe("SESSION_END");
   });
@@ -331,7 +335,7 @@ describe("a plan edited while its citations were being checked is refused, not a
     const ctx = new StageContext(root, dir, makeState(), makeRecipe());
     const spy = editDuringGuard(join(dir, "plan.md"));
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     spy.mockRestore();
 
     expect(advance.action).toBe("retry");
@@ -350,7 +354,7 @@ describe("a plan edited while its citations were being checked is refused, not a
     const ctx = new StageContext(root, dir, makeState({ mode: "plan" }), makeRecipe());
     const spy = editDuringGuard(join(dir, "plan.md"));
 
-    const advance = await stage.report(ctx, APPROVE);
+    const advance = await stage.report(ctx, { ...APPROVE, reviewReceipts: receiptFor(dir) });
     spy.mockRestore();
 
     expect(advance.action).toBe("retry");

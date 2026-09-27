@@ -139,6 +139,7 @@ import { gitHead } from "../../src/autonomous/git-inspector.js";
 import { CODE_REVIEW_HARD_CEILING_GRACE } from "../../src/autonomous/stages/code-review-ceiling.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
+import { bridgeCodeItem, type BridgeCodeItem } from "./helpers/bridge-receipts.js";
 
 const NOW = new Date().toISOString();
 const MINE = "me@example.com";
@@ -194,7 +195,7 @@ function textOf(result: { content: unknown[] }): string {
 }
 
 /** A session at CODE_REVIEW, holding a provable claim, one round below the ceiling. */
-function seedSession(root: string, completedRounds: number) {
+function seedSession(root: string, completedRounds: number, baseline: string) {
   const session = createSession(root, "coding", "test-workspace");
   const sessDir = join(root, ".story", "sessions", session.sessionId);
   const claim = { user: MINE, branch: "main", since: NOW };
@@ -221,7 +222,10 @@ function seedSession(root: string, completedRounds: number) {
     // fixture matches the shape a real session carries.
     resolvedStages: { CODE_REVIEW: { maxReviewRounds: CAP } },
     codeReviewRoundCounter: { workItemId: CANON, kind: "ticket", completedRounds },
-    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+    // ISS-1332: the item's baseline is a real commit, because the bridge
+    // receipt gate reads the item diff from git. expectedHead stays the mocked
+    // gitHead.
+    git: { branch: "main", mergeBase: baseline, expectedHead: "abc123", initHead: baseline },
     reviews: { plan: [], code: [] },
   } as unknown as FullSessionState);
 
@@ -236,6 +240,19 @@ const BLOCKING = [
 
 let root: string;
 
+/**
+ * ISS-1332: every report here is a codex round, which lands only through the
+ * bridge receipt gate. The item is the fixture's own tracked src/changed.ts:
+ * the baseline commits its original bytes, and the working tree and the review
+ * head both carry one appended line.
+ */
+let item: BridgeCodeItem | null = null;
+const CHANGED_AFTER = "export const halfDone = true;\nexport const reviewed = true;\n";
+function trackedItem(reviewBase: "matching" | "lacking-path" = "matching"): BridgeCodeItem {
+  item = bridgeCodeItem(root, { path: "src/changed.ts", after: CHANGED_AFTER, reviewBase });
+  return item;
+}
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ceiling-e2e-"));
   setupProject(root);
@@ -249,18 +266,20 @@ afterEach(() => {
   hoisted.armed = false;
   hoisted.failAfterWriteIf = null;
   killSidecarsInRoot(root);
+  item?.cleanup();
+  item = null;
   rmSync(root, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
 describe("the round ceiling through the real guide path (T-470)", () => {
   it("parks to HANDOVER, files the findings, and records the reason on the item", async () => {
-    const { session } = seedSession(root, CEILING - 1);
+    const { session } = seedSession(root, CEILING - 1, trackedItem().baseline);
 
     const result = await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
 
     expect(result.isError).toBeFalsy();
@@ -325,12 +344,12 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * would make the ceiling worse than the loop it replaces.
    */
   it("leaves the item repickable once the handover is written", async () => {
-    const { session } = seedSession(root, CEILING - 1);
+    const { session } = seedSession(root, CEILING - 1, trackedItem().baseline);
 
     await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
     await handleAutonomousGuide(root, {
       action: "report",
@@ -352,7 +371,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * item that is not theirs.
    */
   it("does not tell the handover writer a dropped item is back in the queue", async () => {
-    const { session } = seedSession(root, CEILING - 1);
+    const { session } = seedSession(root, CEILING - 1, trackedItem().baseline);
     hoisted.stealClaimOnLock = () => {
       const t = readTicket(root, CANON);
       writeFileSync(
@@ -364,7 +383,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     const result = await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
 
     const text = textOf(result);
@@ -388,7 +407,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * them go through this function.
    */
   it("reuses the existing issues when a resumed drain re-files them", async () => {
-    const { session } = seedSession(root, CEILING - 1);
+    const { session } = seedSession(root, CEILING - 1, trackedItem().baseline);
 
     // Stop the run at the moment both issues exist and nothing records it.
     hoisted.failStateWriteIf = (next) =>
@@ -397,7 +416,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     const crashed = await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
     expect(crashed.isError).toBe(true);
 
@@ -420,7 +439,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     const resumed = await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
 
     // The resume has to SUCCEED. Asserting only that the issue ids are
@@ -454,7 +473,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * from. The report is not replayed; the queue is the only record.
    */
   it("does not lose a deferred finding to a crash right after the decision write", async () => {
-    const { session } = seedSession(root, CEILING - 1);
+    const { session } = seedSession(root, CEILING - 1, trackedItem().baseline);
     const MIXED = [
       { severity: "critical", category: "correctness", description: "Off-by-one in the retry bound", disposition: "open" },
       { severity: "major", category: "api", description: "Valid, out of scope", disposition: "deferred" },
@@ -466,7 +485,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     const crashed = await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: MIXED },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: MIXED, reviewReceipts: [item!.receipt] },
     });
     expect(crashed.isError).toBe(true);
 
@@ -488,7 +507,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
       sessionId: session.sessionId,
       // The resume carries NO findings, exactly as a real one does. If the
       // deferred entry were not already durable, this is where it vanishes.
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: [] },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: [], reviewReceipts: [item!.receipt] },
     });
     expect(resumed.isError).toBeFalsy();
     expect(readState(root, session.sessionId).state).toBe("HANDOVER");
@@ -502,18 +521,47 @@ describe("the round ceiling through the real guide path (T-470)", () => {
   });
 
   it("does not park a round below the ceiling", async () => {
-    const { session } = seedSession(root, CEILING - 2);
+    const { session } = seedSession(root, CEILING - 2, trackedItem().baseline);
 
     await handleAutonomousGuide(root, {
       action: "report",
       sessionId: session.sessionId,
-      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING },
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
     });
 
     const after = readState(root, session.sessionId);
     expect(after.state).not.toBe("HANDOVER");
     expect(readTicket(root, CANON).status).toBe("inprogress");
     expect(issues(root).length).toBe(0);
+  });
+
+  it("[ISS-1332] accepts a review of the tracked item, which the fixture created before its baseline", async () => {
+    // Round 1, so the findings need no originClass and the round records.
+    const { session } = seedSession(root, 0, trackedItem().baseline);
+
+    const result = await handleAutonomousGuide(root, {
+      action: "report",
+      sessionId: session.sessionId,
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
+    });
+
+    expect(textOf(result)).not.toContain("Bridge review not accepted");
+    const after = readState(root, session.sessionId);
+    expect(after.reviews.code).toHaveLength(1);
+    expect(after.reviews.code[0]!.reviewGate).toEqual({ observed: [{ provider: "codex", model: "gpt-6-astra" }] });
+  });
+
+  it("[ISS-1332] refuses the same review when its base does not hold the tracked file", async () => {
+    const { session } = seedSession(root, CEILING - 2, trackedItem("lacking-path").baseline);
+
+    const result = await handleAutonomousGuide(root, {
+      action: "report",
+      sessionId: session.sessionId,
+      report: { completedAction: "code_review_round", verdict: "request_changes", findings: BLOCKING, reviewReceipts: [item!.receipt] },
+    });
+
+    expect(textOf(result)).toContain("Bridge review not accepted as a gate result: unrelated base: reviewReceipts[0] reviews src/changed.ts from");
+    expect(readState(root, session.sessionId).reviews.code).toHaveLength(0);
   });
 
   /**
@@ -535,11 +583,11 @@ describe("the round ceiling through the real guide path (T-470)", () => {
 
   it("[ISS-1114] repairs twice, then parks to HANDOVER with the reason on the item", async () => {
     // Deliberately far below the ceiling: this park is not the ceiling's.
-    const { session } = seedSession(root, 1);
+    const { session } = seedSession(root, 1, trackedItem().baseline);
 
     for (const attempt of [1, 2]) {
       const retry = await handleAutonomousGuide(root, {
-        action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+        action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
       });
       expect(retry.isError).toBeFalsy();
       expect(textOf(retry)).toContain("supplies no actionable changes");
@@ -553,7 +601,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     }
 
     const parked = await handleAutonomousGuide(root, {
-      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
     });
 
     // The park has to SUCCEED, not merely be requested. A transition the
@@ -608,10 +656,10 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * `code-review-empty-verdict.test.ts`, where it can be injected directly.
    */
   it("[ISS-1114] leaves a crashed empty-verdict park durable and refuses to advance on resume", async () => {
-    const { session } = seedSession(root, 1);
+    const { session } = seedSession(root, 1, trackedItem().baseline);
 
-    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
-    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] } });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] } });
 
     // Fire on the write AFTER the escalation record lands, so the record itself
     // survives: it is the whole reason a resume can pick the park back up.
@@ -619,7 +667,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
       (next.pendingCeilingEscalation as { trigger?: string } | undefined)?.trigger === "empty-verdict";
 
     const crashed = await handleAutonomousGuide(root, {
-      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
     });
     expect(crashed.isError).toBe(true);
 
@@ -636,7 +684,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     expect(issues(root).length).toBe(0);
 
     const resumed = await handleAutonomousGuide(root, {
-      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
     });
 
     // Explicit refusal, not a silent no-op and not a second park.
@@ -668,10 +716,10 @@ describe("the round ceiling through the real guide path (T-470)", () => {
    * the resume helper at all.
    */
   it("[ISS-1114] finishes the park on resume when the crash lands before it runs", async () => {
-    const { session } = seedSession(root, 1);
+    const { session } = seedSession(root, 1, trackedItem().baseline);
 
-    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
-    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: EMPTY_ROUND });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] } });
+    await handleAutonomousGuide(root, { action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] } });
 
     // Let the escalation write SUCCEED, then stop. The record is durable and
     // nothing after it ran.
@@ -680,7 +728,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
         === "empty-verdict";
 
     const crashed = await handleAutonomousGuide(root, {
-      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
     });
     expect(crashed.isError).toBe(true);
 
@@ -694,7 +742,7 @@ describe("the round ceiling through the real guide path (T-470)", () => {
     expect(midTicket.claimedBySession).toBe(session.sessionId);
 
     const resumed = await handleAutonomousGuide(root, {
-      action: "report", sessionId: session.sessionId, report: EMPTY_ROUND,
+      action: "report", sessionId: session.sessionId, report: { ...EMPTY_ROUND, reviewReceipts: [item!.receipt] },
     });
 
     // FINISHED, not merely declined. A resume that returned retry forever would

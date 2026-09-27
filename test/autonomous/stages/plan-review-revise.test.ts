@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { PlanReviewStage } from "../../../src/autonomous/stages/plan-review.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
+import { planReceipt } from "../helpers/bridge-receipts.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();
@@ -58,6 +59,7 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
       completedAction: "plan_review_round",
       verdict: "revise",
       findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
+      reviewReceipts: planReceipt(""),
     });
     expect(advance.action).toBe("retry");
   });
@@ -68,6 +70,7 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
       completedAction: "plan_review_round",
       verdict: "request_changes",
       findings: [{ id: "f1", severity: "critical", category: "correctness", description: "SQL injection risk", disposition: "open" }],
+      reviewReceipts: planReceipt(""),
     });
     expect(advance.action).toBe("retry");
     if (advance.action === "retry") {
@@ -89,6 +92,7 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
         completedAction: "plan_review_round",
         verdict: "request_changes",
         findings: [{ id: "f1", severity: "major", category: "correctness", description: "x", disposition: "open" }],
+        reviewReceipts: planReceipt(""),
       });
       return advance.action === "retry" ? advance.instruction : "";
     };
@@ -113,6 +117,7 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
       completedAction: "plan_review_round",
       verdict: "reject",
       findings: [],
+      reviewReceipts: planReceipt(""),
     });
     expect(advance.action).toBe("back");
     if (advance.action === "back") {
@@ -131,6 +136,7 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
       completedAction: "plan_review_round",
       verdict: "revise",
       findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
+      reviewReceipts: planReceipt(""),
     });
     expect(ctx.state.reviews.plan.length).toBe(1);
   });
@@ -142,7 +148,42 @@ describe("PlanReviewStage -- ISS-048 revise routing", () => {
       completedAction: "plan_review_round",
       verdict: "reject",
       findings: [],
+      reviewReceipts: planReceipt(""),
     });
+    expect(ctx.state.reviews.plan.length).toBe(0);
+  });
+
+  // ISS-1332: permanent negative controls. A codex report the bridge gate
+  // cannot tie to the plan this session holds is refused before anything is
+  // recorded, so the receipts above are what make those rounds count.
+  it("refuses a codex report with no plan receipt, and records no round", async () => {
+    writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nStep one.\n");
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const advance = await stage.report(ctx, {
+      completedAction: "plan_review_round",
+      verdict: "revise",
+      findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
+    });
+    expect(advance.action).toBe("retry");
+    if (advance.action === "retry") {
+      expect(advance.instruction).toContain("Bridge review not accepted as a gate result: no plan receipt: pass reviewReceipts { receipt, planSha256, models, sessionId }");
+    }
+    expect(ctx.state.reviews.plan.length).toBe(0);
+  });
+
+  it("refuses a plan receipt for different text than plan.md, and records no round", async () => {
+    writeFileSync(join(sessionDir, "plan.md"), "# Plan\n\nStep one.\n");
+    const ctx = new StageContext(testRoot, sessionDir, makeState(), makeRecipe());
+    const advance = await stage.report(ctx, {
+      completedAction: "plan_review_round",
+      verdict: "revise",
+      findings: [{ id: "f1", severity: "major", category: "logic", description: "Missing error handling", disposition: "open" }],
+      reviewReceipts: planReceipt("# Plan\n\nStep two.\n"),
+    });
+    expect(advance.action).toBe("retry");
+    if (advance.action === "retry") {
+      expect(advance.instruction).toContain("Bridge review not accepted as a gate result: plan receipt digest does not match plan.md: the reviewer did not see this plan");
+    }
     expect(ctx.state.reviews.plan.length).toBe(0);
   });
 

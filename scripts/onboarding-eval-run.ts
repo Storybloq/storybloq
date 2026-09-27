@@ -44,7 +44,7 @@ import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from
 import { parseStream, sha256 } from "./continuity-lib.js";
 import {
   checkRecipe, checkStop, claudeTurn, codexRolloutModels, codexTurn, degradedFindings, digestChanges, executionCalls, resolveTestStages,
-  reviewerInvocations, runtimeExclusion, runVerdict, semanticStopLine, STOP_RULE_VERSION, stopRoute, TREE_EXCLUSION_LINE, treeCheckOutcome, setupRecordText, shellQuote, summaryCounts, ticketFindings, treeDigest, turnArgs, writeCalls,
+  reviewerInvocations, runtimeExclusion, runVerdict, semanticStopLine, STOP_RULE_VERSION, stopRoute, WRITE_RULE_VERSION, TREE_EXCLUSION_LINE, treeCheckOutcome, setupRecordText, shellQuote, summaryCounts, ticketFindings, treeDigest, turnArgs, writeCalls,
   type EvalCall, type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
 
@@ -502,6 +502,7 @@ async function main(): Promise<void> {
     reviewSkipped,
     harnessNormalisation: {
       stop: STOP_RULE_VERSION,
+      write: WRITE_RULE_VERSION,
       treeExclusion: exclusion,
     },
     rubric,

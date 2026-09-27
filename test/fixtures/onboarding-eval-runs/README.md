@@ -22,5 +22,19 @@ else), or it is exactly one of the listed selection questions. A closing
 paragraph that names an option in prose is semantic.
 A pending structured question with any result text before it is semantic
 too: that prose is never validated, so the judge rules on it.
+- `run3-review-command.json`: empty-idea run 3 (second batch), the agent's
+  reviewer launch: `codex exec` with the schema on `/dev/stdin` from a
+  heredoc and the plan as a quoted prompt. The heredoc makes the command
+  unparsed, and the textual fallback once read the quoted prompt; it must
+  read as no write and as review only.
+- `run5-probe-command.json`: existing-partial run 5 (second batch), three
+  storybloq `--help`/`--version` probes. It must read as no write.
+
+The write classifier reads quoted text the shell runs as code (a nested
+shell's `-c` string, eval's operands, a `$(...)` or backtick span inside
+double quotes) and every other quoted operand as data. Past nesting depth 3
+it reads the text unblanked, which fails closed: a quoted prompt that deep
+counts as a write (`WRITE_RULE_VERSION`, named in the packet as
+`harnessNormalisation.write`).
 - `run4-tree-changes.json`: empty-scaffold run 4, the runtime state the
   storybloq server minted under `.story/` before approval.

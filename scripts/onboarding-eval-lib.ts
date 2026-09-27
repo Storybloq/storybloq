@@ -12,6 +12,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "
 import { join, posix, relative } from "node:path";
 
 import { resolveRecipe } from "../src/autonomous/recipes/loader.js";
+import { COMMANDS } from "../src/cli/commands/reference.js";
 import { sha256, type StreamEvent, summarizeStream } from "./continuity-lib.js";
 
 // --- normalised calls -----------------------------------------------------------
@@ -210,13 +211,100 @@ function gitSubcommand(args: readonly string[]): string {
   return "";
 }
 
+/** Help and version flags: a call that parses one where its CLI accepts it prints and exits, so it is a probe, never a write. */
+const PROBE_FLAGS = new Set(["-h", "--help", "-V", "--version"]);
+/** A help or version option in a negated or valued spelling (`--no-help`, `--help=false`, `-hx`): it can switch the probe off. */
+const PROBE_VARIANT = /^--(no-)?(help|version)(=|$)|^-[hV]./;
+
+/**
+ * Whether the words before `--` could switch a probe off: a help or version
+ * option given more than once in any spelling, or once negated or valued
+ * (`--help --no-help` and `--help --help=false` run the command). A CLI is
+ * not re-implemented here; any such word declines the probe, so the call
+ * reads as a write.
+ */
+function probeDoubtful(args: readonly string[]): boolean {
+  const end = args.indexOf("--");
+  const words = end < 0 ? args : args.slice(0, end);
+  let seen = 0;
+  for (const w of words) {
+    if (PROBE_FLAGS.has(w)) seen++;
+    else if (PROBE_VARIANT.test(w)) return true;
+  }
+  return seen > 1;
+}
+
+/**
+ * Whether git parses a help or version flag and does nothing else: the last
+ * word, among git's global options or directly after the subcommand. The one
+ * exception is git(1)'s own rule that `--help <command>` brings up that
+ * command's manual page. Parsing stops at `--`, and a value option's value
+ * (`-C --help`) is never read as a flag.
+ */
+function gitProbe(args: readonly string[]): boolean {
+  if (probeDoubtful(args)) return false;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (a === "--") return false;
+    if (PROBE_FLAGS.has(a)) {
+      const rest = args.slice(k + 1);
+      return rest.length === 0 || (a === "--help" && rest.length === 1 && !rest[0]!.startsWith("-"));
+    }
+    if (GIT_VALUE_OPTIONS.has(a)) { k++; continue; }
+    if (!a.startsWith("-")) return PROBE_FLAGS.has(args[k + 1] ?? "") && k + 2 === args.length;
+  }
+  return false;
+}
+
+/**
+ * The storybloq CLI's value-taking options, per command, read from the CLI
+ * reference table (`--flag <value>` in a command's usage). A drift test keeps
+ * that table equal to the real registrations, so this is the CLI's own list.
+ */
+const STORYBLOQ_VALUE_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  COMMANDS.map((c) => [c.name, new Set([...c.usage.matchAll(/(--[\w-]+) </g)].map((m) => m[1]!))]),
+);
+const STORYBLOQ_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map(COMMANDS.map((c) => [c.name, new Set(c.flags)]));
+
+/**
+ * Whether the storybloq CLI parses a help or version flag and does nothing
+ * else: the flag is the invocation's last word. yargs reads a word after it as
+ * its value (`--help false` runs the command), so any word after it, `--`
+ * included, declines the probe. A value option's value is skipped (`--title --help`
+ * sets the title), and so is the word after an option the command does not
+ * list, because it may take a value: any doubt reads as no probe, so as a write.
+ */
+function storybloqProbe(args: readonly string[]): boolean {
+  if (probeDoubtful(args)) return false;
+  const words: string[] = [];
+  let command: string | null = null;
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (a === "--") return false;
+    if (PROBE_FLAGS.has(a)) return k === args.length - 1;
+    if (a.startsWith("-")) {
+      if (a.includes("=")) continue;
+      const known = command !== null && STORYBLOQ_FLAGS.get(command)!.has(a);
+      if (!known || STORYBLOQ_VALUE_FLAGS.get(command!)!.has(a)) k++;
+      continue;
+    }
+    words.push(a);
+    for (let n = words.length; n > 0; n--) {
+      const name = words.slice(0, n).join(" ");
+      if (STORYBLOQ_FLAGS.has(name)) { command = name; break; }
+    }
+  }
+  return false;
+}
+
 /** Whether one unwrapped simple command (its argv) writes setup state: `git init`, a storybloq CLI write, or tee. */
 function argvWrites(argv: readonly string[]): boolean {
   const bin = baseName(argv[0] ?? "");
-  if (bin === "git") return gitSubcommand(argv.slice(1)) === "init";
+  if (bin === "git") return !gitProbe(argv.slice(1)) && gitSubcommand(argv.slice(1)) === "init";
   if (bin === "tee") return true;
   const at = STORYBLOQ_LAUNCHERS.has(bin) ? argv.findIndex((w, k) => k > 0 && !w.startsWith("-")) : 0;
   if (at < 0 || !/^storybloq(@\S*)?$/.test(baseName(argv[at] ?? ""))) return false;
+  if (storybloqProbe(argv.slice(at + 1))) return false;
   return STORYBLOQ_CLI_WRITE.test(["storybloq", ...argv.slice(at + 1)].join(" "));
 }
 
@@ -226,20 +314,28 @@ function argvWrites(argv: readonly string[]): boolean {
  * nested shell's command string (`zsh -lc "..."`) is walked the same way,
  * because it executes. Words passed as arguments (a prompt that mentions
  * `git init`) are data. Redirects are read from each command's unquoted
- * skeleton. Where the parser cannot see through a construct (`eval`, `$(`,
- * an unknown wrapper option, nesting past depth 3), that command's own words
- * fall back to the textual patterns, so an unreadable write still counts.
+ * skeleton. Quoted text the shell runs is code and is walked the same way:
+ * eval's operands, and a `$(...)` or backtick span inside double quotes.
+ * Where the parser cannot see through a construct (a heredoc, a process
+ * substitution, an unknown wrapper option), that command's unquoted skeleton
+ * falls back to the textual patterns, so an unreadable write still counts and
+ * a quoted operand (a review prompt) still does not. Past nesting depth 3 the
+ * text is read unblanked: fail-closed, so a prompt that deep counts as a write.
  */
 function shellWrites(cmd: string, depth = 0): boolean {
+  const nested = (code: string): boolean => (depth >= 3 ? textualWrite(code) : shellWrites(code, depth + 1));
   for (const c of shellSequence(cmd).commands) {
     if (SHELL_FILE_WRITE.test(c.bare)) return true;
+    if (c.live.some(nested)) return true;
     const { argv, inner, ambiguous } = unwrap(c.words);
     if (inner !== null) {
-      if (depth >= 3 ? textualWrite(inner) : shellWrites(inner, depth + 1)) return true;
+      if (nested(inner)) return true;
       continue;
     }
     if (argvWrites(argv)) return true;
-    if ((ambiguous !== null || UNSUPPORTED_SYNTAX.test(c.bare) || unsupportedArgv(argv) !== null) && textualWrite(c.words.join(" "))) return true;
+    // eval runs its operands as one command string; `source` and `.` read a file, so theirs stay data.
+    if (baseName(argv[0] ?? "") === "eval" && nested(argv.slice(1).join(" "))) return true;
+    if ((ambiguous !== null || UNSUPPORTED_SYNTAX.test(c.bare) || unsupportedArgv(argv) !== null) && textualWrite(c.bare)) return true;
   }
   return false;
 }
@@ -255,6 +351,12 @@ function commandOf(call: EvalCall): string | null {
   if (Array.isArray(c)) return c.map(String).join(" ");
   return null;
 }
+
+/**
+ * The write rule the packet names beside the stop rule, so a reader of a
+ * record knows which classifier produced its writes.
+ */
+export const WRITE_RULE_VERSION = "2026-09-27.5: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init`, a storybloq CLI write or tee, or whose unquoted skeleton redirects into a file; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write";
 
 /** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, shell redirects, `git init`. */
 export function writeCalls(calls: readonly EvalCall[]): EvalCall[] {
@@ -360,6 +462,11 @@ export interface ShellCommand {
    * Constructs are matched here, never inside a quoted payload.
    */
   readonly bare: string;
+  /**
+   * The bodies of the substitutions inside double quotes (`"$(git init)"`,
+   * a backtick span): quoted text the shell runs, so it is code, not data.
+   */
+  readonly live: readonly string[];
 }
 
 /**
@@ -375,11 +482,12 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
   let word = "";
   let inWord = false;
   let bare = "";
+  let live: string[] = [];
   const endWord = (): void => { if (inWord) { words.push(word); word = ""; inWord = false; } };
   const endCommand = (sep: string): void => {
     endWord();
-    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim() });
-    words = []; bare = "";
+    if (words.length > 0) commands.push({ words, sep, bare: (bare + sep).trim(), live });
+    words = []; bare = ""; live = [];
     if (sep) operators.push(sep);
   };
   for (let i = 0; i < command.length; i++) {
@@ -391,14 +499,25 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
     }
     if (ch === '"') {
       let j = i + 1;
-      let live = "";
+      let marks = "";
       while (j < command.length && command[j] !== '"') {
         if (command[j] === "\\" && j + 1 < command.length) { word += command[j + 1]; j += 2; continue; }
-        if (command[j] === "`") live += "`";
-        if (command[j] === "$" && command[j + 1] === "(") live += "$(";
+        if (command[j] === "`") {
+          marks += "`";
+          const close = command.indexOf("`", j + 1);
+          const stop = close < 0 ? command.length : close;
+          live.push(command.slice(j + 1, stop));
+          word += command.slice(j, Math.min(stop + 1, command.length)); j = stop + 1; continue;
+        }
+        if (command[j] === "$" && command[j + 1] === "(") {
+          marks += "$(";
+          const stop = substitutionEnd(command, j + 2);
+          live.push(command.slice(j + 2, stop));
+          word += command.slice(j, Math.min(stop + 1, command.length)); j = stop + 1; continue;
+        }
         word += command[j]; j++;
       }
-      inWord = true; i = j; bare += `"${live}"`; continue;
+      inWord = true; i = j; bare += `"${marks}"`; continue;
     }
     if (ch === "\\" && i + 1 < command.length) {
       if (command[i + 1] === "\n") { i++; continue; }
@@ -418,6 +537,27 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
   }
   endCommand("");
   return { commands, operators };
+}
+
+/**
+ * The index of the `)` that closes a `$(` whose body starts at `from`,
+ * counting nested parentheses outside quotes, or the end of the text.
+ */
+function substitutionEnd(text: string, from: number): number {
+  let depth = 1;
+  for (let k = from; k < text.length; k++) {
+    const ch = text[k]!;
+    if (ch === "\\") { k++; continue; }
+    if (ch === "'") { const close = text.indexOf("'", k + 1); if (close < 0) return text.length; k = close; continue; }
+    if (ch === '"') {
+      let m = k + 1;
+      while (m < text.length && text[m] !== '"') m += text[m] === "\\" ? 2 : 1;
+      k = m; continue;
+    }
+    if (ch === "(") depth++;
+    if (ch === ")" && --depth === 0) return k;
+  }
+  return text.length;
 }
 
 /** Split one shell command into simple-command word lists, honouring quotes. Operators and newlines separate commands. */

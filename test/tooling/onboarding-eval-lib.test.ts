@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import {
   bareToolName, checkRecipe, checkStop, classifyStop, claudeTurn, codexRolloutModels, codexTurn, componentCommandFindings, degradedFindings,
   dependencyCycles, digestChanges, executionCalls, isCheckpointTicket, isCitationOnly, isRuntimeState, isTestInvocation, readStop, resolveTestStages, reviewerInvocations, runtimeExclusion,
-  runVerdict, readTurnStop, semanticStopLine, shellCommands, shellQuote, shellSequence, stopRoute, STOP_RULE_VERSION, summaryCounts, ticketFindings, TREE_EXCLUSION_LINE, treeCheckOutcome, treeDigest, turnArgs, writeCalls, type EvalCall, type EvalTurn, type JudgeResult,
+  runVerdict, readTurnStop, semanticStopLine, shellCommands, shellQuote, shellSequence, stopRoute, STOP_RULE_VERSION, summaryCounts, WRITE_RULE_VERSION, ticketFindings, TREE_EXCLUSION_LINE, treeCheckOutcome, treeDigest, turnArgs, writeCalls, type EvalCall, type EvalTurn, type JudgeResult,
 } from "../../scripts/onboarding-eval-lib.js";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import {
@@ -655,6 +655,70 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
   it("reads run 1's reviewer launch as no write: `git init` in a prompt argument is data (run 1)", () => {
     expect(run1Command).toContain("git init");
     expect(writeCalls([bash(run1Command)])).toEqual([]);
+  });
+
+  it("reads the second batch's run 5 help and version probes as no write, and a real CLI write still as one (run 5)", () => {
+    const run5 = verbatim<string>("run5-probe-command.json");
+    expect(run5).toContain("storybloq phase create --help");
+    expect(writeCalls([bash(run5)])).toEqual([]);
+    for (const cmd of ["storybloq phase create --title x", "npx storybloq config set-overrides x", "git init"]) expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    for (const cmd of [
+      "storybloq init -h", "npx -y @storybloq/storybloq@latest ticket create --help", "storybloq -V", "git init --help", "git --version",
+      "bunx storybloq snapshot --version", "storybloq phase create --help", "storybloq ticket create --title x --help", "storybloq ticket create --title=x --help",
+      "git -c a=b --help init", "storybloq init --help", "storybloq phase create --title x --help", "git --help init",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+    }
+  });
+
+  it("recognises a probe only where the CLI parses one: never past `--`, never as an option's value, never after the subcommand's first word in git", () => {
+    for (const cmd of [
+      "git init -- --help", "git -C --help init", "git init x --help",
+      "storybloq ticket create --title --help", "storybloq ticket create -- --help", "storybloq phase create --name x --unknown --help",
+      // A repeated, negated or valued help or version option can switch the probe off, so it declines it.
+      "storybloq init --help --help=false", "storybloq init --help --no-help", "storybloq init --help=true", "storybloq init --help --help",
+      "storybloq init -h --version", "storybloq init --no-version -V", "storybloq init -hx",
+      "storybloq init --help=false --help", "git --no-help --help init", "git init --help --no-help", "git --version --version init",
+      // A probe is the last word: yargs reads a word after it as its value, and git runs a subcommand after --version.
+      "storybloq init --help false", "storybloq init --version false", "storybloq init --help x", "storybloq init --help -- --no-help",
+      "git --version init", "git init --help x", "git --help init x",
+      // Only the delimiter decides these: past `--` every word is an operand.
+      "storybloq ticket create -- x --help", "git -- --help init",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    }
+  });
+
+  it("reads the second batch's run 3 reviewer launch as no write and review only: the unparsed fallback reads the unquoted skeleton, not the prompt (run 3)", () => {
+    const run3 = verbatim<string>("run3-review-command.json");
+    expect(run3).toContain("git init");
+    expect(run3).toContain("<<'STORY_REVIEW_SCHEMA'");
+    expect(writeCalls([bash(run3)])).toEqual([]);
+    expect(executionCalls([bash(run3)]).map((h) => h.kind)).toEqual(["review"]);
+    // An unquoted write inside an unparsed construct still counts.
+    for (const cmd of [
+      "for d in x; do git init; done", "cat <(git init)", "codex exec - <<'X'\n{}\nX\ngit init",
+      "codex exec --output-schema /dev/stdin \"$(git init)\" <<'S'\n{}\nS",
+    ]) expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    expect(writeCalls([bash("codex exec 'plan: git init, then storybloq init > log' <<'X'\n{}\nX")])).toEqual([]);
+  });
+
+  it("walks the quoted text the shell runs as code: eval operands and double-quoted substitutions, never source operands", () => {
+    for (const cmd of ["eval 'git init'", "\"eval\" \"git init\"", "echo \"$(git init)\"", "echo \"`git init`\"", "zsh -lc 'eval \"storybloq init\"'", "echo \"$(cd x && (git init))\""]) {
+      expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    }
+    for (const cmd of ["source 'git init'", ". \"git init\"", "echo 'eval git init'", "echo '$(git init)'", "echo \"eval git init\""]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+    }
+  });
+
+  it("names the write rule, and its fail-closed depth, beside the stop rule", () => {
+    expect(WRITE_RULE_VERSION).toMatch(/^2026-09-27\.5:/);
+    expect(WRITE_RULE_VERSION).toContain("past nesting depth 3 the text is read unblanked, fail-closed");
+    const prompt = "codex exec 'the plan runs git init'";
+    const nest = (cmd: string, n: number): string => (n === 0 ? cmd : nest(`zsh -c ${shellQuote(cmd)}`, n - 1));
+    expect(writeCalls([bash(nest(prompt, 3))])).toEqual([]);
+    expect(writeCalls([bash(nest(prompt, 4))])).toHaveLength(1);
   });
 
   it("detects writes structurally, through lists, pipelines and nested shells", () => {

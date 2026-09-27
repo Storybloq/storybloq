@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultHealthDeps, readFileThreeValued, runBounded } from "../../../src/core/health/deps.js";
+import { storybloqGlobalDir } from "../../../src/core/global-config.js";
 import { probeRead } from "./subprocess-probe.js";
 import { initProject } from "../../../src/core/init.js";
 import { ensureCapture } from "../../../src/core/session-intel/capture.js";
@@ -39,17 +40,29 @@ describe("T-502 default health adapters", () => {
   let home: string;
   let projectDir: string;
   let originalHome: string | undefined;
+  let originalGlobalDir: string | undefined;
+  let originalCodexHome: string | undefined;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "storybloq-health-home-"));
     projectDir = mkdtempSync(join(tmpdir(), "storybloq-health-proj-"));
     originalHome = process.env.HOME;
     process.env.HOME = home;
+    // ISS-1331: the global dir resolves from STORYBLOQ_GLOBAL_DIR before HOME, and a gate env sets it, so the
+    // fixture pins it to the HOME stub's own dir; CODEX_HOME is cleared for the same reason.
+    originalGlobalDir = process.env.STORYBLOQ_GLOBAL_DIR;
+    originalCodexHome = process.env.CODEX_HOME;
+    process.env.STORYBLOQ_GLOBAL_DIR = join(home, ".claude", "storybloq");
+    delete process.env.CODEX_HOME;
   });
 
   afterEach(() => {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalGlobalDir === undefined) delete process.env.STORYBLOQ_GLOBAL_DIR;
+    else process.env.STORYBLOQ_GLOBAL_DIR = originalGlobalDir;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     rmSync(home, { recursive: true, force: true });
     rmSync(projectDir, { recursive: true, force: true });
   });
@@ -165,6 +178,7 @@ describe("T-502 default health adapters", () => {
 
   describe("the assembled deps", () => {
     it("reads the machine-wide kill switch", () => {
+      expect(storybloqGlobalDir()).toBe(join(home, ".claude", "storybloq"));
       const deps = defaultHealthDeps({ ledgerRoot: null });
       expect(deps.globalConfig()).toBeNull();
       mkdirSync(join(home, ".claude", "storybloq"), { recursive: true });

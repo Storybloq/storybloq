@@ -135,10 +135,12 @@ export interface SessionIntelPresence {
    * ISS-1263: how the handover stamp was bound. "unbound-era" is a stamp the
    * MCP server wrote without proving its process era (unknown, or unverifiable
    * under load) on a live record for the same session id; it holds the
-   * imperative exactly like a bound one. Null is a stamp written before the
+   * imperative exactly like a bound one. ISS-1316: "derived" is a stamp the
+   * prompt hook wrote from a handover file on disk, because a server that
+   * predates the build could not stamp. Null is a stamp written before the
    * field existed, or none.
    */
-  readonly handoverStampBinding: "bound" | "unbound-era" | null;
+  readonly handoverStampBinding: "bound" | "unbound-era" | "derived" | null;
   /**
    * ISS-1263: when a surface last DELIVERED the imperative line to the model,
    * claimed under the record lock by `claimImperativeEmission`. The hard rate
@@ -223,7 +225,7 @@ export function parseSessionIntel(value: unknown): SessionIntelPresence | null {
     handoverBoundaryAt: isoOrNull(v.handoverBoundaryAt),
     promptsSinceHandover: safeInt(v.promptsSinceHandover, 0),
     lastImperativeAt: isoOrNull(v.lastImperativeAt),
-    handoverStampBinding: v.handoverStampBinding === "bound" || v.handoverStampBinding === "unbound-era" ? v.handoverStampBinding : null,
+    handoverStampBinding: v.handoverStampBinding === "bound" || v.handoverStampBinding === "unbound-era" || v.handoverStampBinding === "derived" ? v.handoverStampBinding : null,
     lastImperativeEmittedAt: isoOrNull(v.lastImperativeEmittedAt),
     usageAdvisoryShownAt: isoOrNull(v.usageAdvisoryShownAt),
   };

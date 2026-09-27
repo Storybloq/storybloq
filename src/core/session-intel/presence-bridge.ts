@@ -902,6 +902,89 @@ export function stampHandover(root: string, sessionId: string, expectedEra: stri
 }
 
 // ---------------------------------------------------------------------------
+// Derived handover stamp (ISS-1316)
+// ---------------------------------------------------------------------------
+
+/** What the prompt hook saw on the record when it went looking for a handover file. */
+export interface DerivedStampSeen extends ImperativeSeen {
+  readonly lastImperativeEmittedAt: string;
+}
+
+/**
+ * The newest regular `.md` in `.story/handovers/` written after `afterMs` and
+ * no later than `nowMs`, or null. Handover files carry no session id, so the
+ * only attribution is time: written after this session was shown the
+ * imperative. A peer's handover in that window counts too; its cost is one
+ * re-arm cycle of quiet, where the missing stamp cost a drip for the session.
+ */
+export function newestHandoverAfter(root: string, afterMs: number, nowMs: number): { readonly file: string; readonly mtimeMs: number } | null {
+  const dir = join(root, ".story", "handovers");
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+  let best: { file: string; mtimeMs: number } | null = null;
+  for (const name of names) {
+    if (!name.endsWith(".md") || name.startsWith(".")) continue;
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(join(dir, name));
+    } catch {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    if (st.mtimeMs <= afterMs || st.mtimeMs > nowMs) continue;
+    if (!best || st.mtimeMs > best.mtimeMs) best = { file: name, mtimeMs: st.mtimeMs };
+  }
+  return best;
+}
+
+/**
+ * ISS-1316: stamps the caller's record from a handover file on disk, for a
+ * handover a stale MCP server wrote but could not stamp. Written under the
+ * lock only when the record is still exactly what the hook saw: same
+ * revision, boundary and (absent) stamp, the same last delivery of the
+ * imperative, not ended, and no pending compaction. The stamp is the file's
+ * mtime and the sample's token count, and the stored imperative drops to
+ * advisory in the same write, as `stampHandover` does. True only when the
+ * write landed.
+ */
+export function stampDerivedHandover(root: string, sessionId: string, seen: DerivedStampSeen, writtenAtMs: number, now: number): boolean {
+  let granted = false;
+  const outcome = applyPresenceEnrichment(root, sessionId, TRY_LOCK_BUDGET_MS, "session-intel", (base) => {
+    const intel = base.sessionIntel;
+    if (!intel || base.endedAt !== null) return ABORT_ENRICHMENT;
+    if (intel.revision !== seen.revision || intel.lastBoundaryAt !== seen.lastBoundaryAt) return ABORT_ENRICHMENT;
+    if (intel.handoverWrittenAt !== seen.handoverWrittenAt) return ABORT_ENRICHMENT;
+    if (intel.lastImperativeEmittedAt !== seen.lastImperativeEmittedAt) return ABORT_ENRICHMENT;
+    const pending = peekPending(root, sessionId, now);
+    if (!pending.complete || pending.files.length > 0) return ABORT_ENRICHMENT;
+    const last = intel.lastSample;
+    const tokensAtHandover = last?.contextTokens ?? null;
+    const lastSample = last && last.state === "imperative" && last.ceiling !== null
+      ? { ...last, state: "advisory" as const, suppressedBy: "handover" as const }
+      : last;
+    granted = true;
+    return {
+      ...base,
+      sessionIntel: {
+        ...intel,
+        lastSample,
+        handoverWrittenAt: new Date(writtenAtMs).toISOString(),
+        tokensAtHandover,
+        handoverBoundaryAt: intel.lastBoundaryAt,
+        promptsSinceHandover: 0,
+        lastImperativeAt: null,
+        handoverStampBinding: "derived" as const,
+      },
+    };
+  }, () => new Date(now));
+  return granted && outcome.status === "written";
+}
+
+// ---------------------------------------------------------------------------
 // Imperative emission claim (ISS-1263)
 // ---------------------------------------------------------------------------
 

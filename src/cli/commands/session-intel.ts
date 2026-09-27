@@ -12,7 +12,7 @@ import { LIFECYCLE_LOCK_BUDGET_MS } from "../../core/presence-enrichment.js";
 import { isPresenceEnabled } from "../../presence/handler.js";
 import { ensureCapture, type CaptureOutcome, type CaptureSource } from "../../core/session-intel/capture.js";
 import { readSessionIntelConfig } from "../../core/session-intel/config.js";
-import { claimImperativeEmission, findPresenceRecordAcrossWorktrees, readPresenceRecord, reconcileUnderLock, type ReconcileOutcome } from "../../core/session-intel/presence-bridge.js";
+import { claimImperativeEmission, findPresenceRecordAcrossWorktrees, newestHandoverAfter, readPresenceRecord, reconcileUnderLock, stampDerivedHandover, type ReconcileOutcome } from "../../core/session-intel/presence-bridge.js";
 import { COMPACT_NEEDED_ADVICE, basisText, renderUsageAdvisory } from "../../core/session-intel/push.js";
 import { sampleSession, type SessionIntelResult } from "../../core/session-intel/query.js";
 import { authorizeTranscriptPath, locateTranscript } from "../../core/session-intel/transcript-locate.js";
@@ -335,6 +335,15 @@ export function renderPromptDirective(p: NonNullable<SessionIntelResult["pressur
 }
 
 /**
+ * ISS-1316: the one line the prompt hook shows in place of the imperative when
+ * it stamps a handover the MCP server could not. After it the record is
+ * stamped, so the ordinary re-arm gates keep the hook quiet.
+ */
+export function renderStampNotLanded(file: string): string {
+  return `[storybloq] A handover was written (${file}) but its stamp did not land, most likely because the MCP server predates the build on disk: restart the client. Pressure is held at advisory; do not write another handover.`;
+}
+
+/**
  * The synchronous UserPromptSubmit sample: one bounded, lifecycle-bound tail
  * sample for the caller's own session (no glob, 500 ms soft budget), persisted
  * under the ordering rule. Emits `additionalContext` ONLY when the sample is
@@ -391,6 +400,24 @@ export function handleSessionIntelPrompt(options: SessionIntelPromptOptions = {}
     if (pressure.state === "imperative") {
       const intel = readPresenceRecord(root, sessionId)?.sessionIntel ?? null;
       const ours = intel !== null && intel.lastSample?.sampledAt === pressure.sampledAt && intel.lastSample?.state === "imperative";
+      // ISS-1316: a handover written after this session was last shown the
+      // imperative, with no stamp on the record for this compaction, is a
+      // stamp that did not land: an MCP server older than the build on disk
+      // cannot stamp. Stamp it from the file and say so once, instead of
+      // asking for another handover every re-arm interval.
+      if (ours && intel.lastImperativeEmittedAt !== null && (intel.handoverWrittenAt === null || intel.handoverBoundaryAt !== intel.lastBoundaryAt)) {
+        const emittedMs = Date.parse(intel.lastImperativeEmittedAt);
+        const boundaryMs = intel.lastBoundaryAt === null ? -Infinity : Date.parse(intel.lastBoundaryAt);
+        const found = Number.isFinite(emittedMs) ? newestHandoverAfter(root, Math.max(emittedMs, boundaryMs), now) : null;
+        if (found) {
+          const seen = { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt, lastImperativeEmittedAt: intel.lastImperativeEmittedAt };
+          if (!stampDerivedHandover(root, sessionId, seen, found.mtimeMs, now)) {
+            return { status: "silent", reason: "derived handover stamp not written", capture, result, output: null };
+          }
+          const output = JSON.stringify({ hookSpecificOutput: { hookEventName: PROMPT_HOOK_EVENT_NAME, additionalContext: renderStampNotLanded(found.file) } });
+          return { status: "emitted", reason: "derived handover stamp", capture, result, output };
+        }
+      }
       if (!ours || !claimImperativeEmission(root, sessionId, { revision: intel.revision, lastBoundaryAt: intel.lastBoundaryAt, handoverWrittenAt: intel.handoverWrittenAt }, now, cfg.handoverRearmIntervalMs)) {
         return { status: "silent", reason: "imperative not claimed (rate-limited or superseded)", capture, result, output: null };
       }

@@ -28,11 +28,11 @@ const segments = (...cmds: string[]): string[] => executionCalls(cmds.map(bash))
 const reviews = (...cmds: string[]): string[] => executionCalls(cmds.map(bash)).filter((h) => h.kind === "review").map((h) => h.segment);
 
 describe("writeCalls", () => {
-  it("counts storybloq writes, file edits, git init and shell redirects", () => {
+  it("counts storybloq writes, file edits and git init", () => {
     const writes = [
       tool("storybloq_init"), tool("storybloq_ticket_create"), tool("storybloq_ticket_update"), tool("storybloq_snapshot"),
       tool("Write"), tool("Edit"), bash("git init"), bash("cd x && storybloq phase create --id a"),
-      bash("storybloq config set-overrides --json '{}'"), bash("echo hi > CLAUDE.md"), bash("printf x | tee notes.md"),
+      bash("storybloq config set-overrides --json '{}'"),
     ];
     expect(writeCalls(writes)).toHaveLength(writes.length);
   });
@@ -725,8 +725,8 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     // Only a simple delimiter word is modelled. Any other word needs the shell's quote removal, so its end is not known:
     // everything after it is read, fail-closed, and the command is review with that reason.
     for (const cmd of [
-      "cat <<\"E\\\\OF\"\ntext\nE\\OF\ngit init", "cat <<EO\\\nF\n$(git init)\nEOF", "cat <<'E'\"OF\"\ncount > minimum\nEOF",
-      "cat <<'EOF'\r\ncount > minimum\r\nEOF\r\n", "cat <<\\\\EOF\nx > y\n\\EOF", "cat <<'E OF'\nx > y\nE OF", "cat <<$X\nx > y\n$X", "cat <<'E-F'\nx > y\nE-F",
+      "cat <<\"E\\\\OF\"\ntext\nE\\OF\ngit init", "cat <<EO\\\nF\n$(git init)\nEOF", "cat <<'E'\"OF\"\ngit init\nEOF",
+      "cat <<'EOF'\r\ngit init\r\nEOF\r\n", "cat <<\\\\EOF\ngit init\n\\EOF", "cat <<'E OF'\ngit init\nE OF", "cat <<$X\ngit init\n$X", "cat <<'E-F'\ngit init\nE-F",
       // The end of a complex body is not guessed: a blank line, then a quoted here-document the real terminator sits inside.
       "cat <<\"E\\\\OF\"\n\ncat <<'X'\nE\\OF\ngit init\nX",
     ]) {
@@ -738,9 +738,9 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     }
     // An unquoted delimiter leaves the body read, fail-closed, and a command after the delimiter line is a command.
     for (const cmd of [
-      "cat <<EOF\ncount > minimum\nEOF", "cat <<-EOF\n\tcount > minimum\n\tEOF", "cat 3<<EOF\ncount > minimum\nEOF", "cat <<EOF\n$(git init)\nEOF",
-      "cat <<'EOF'\nx\nEOF\necho hi > notes.md", "codex exec - 3<<'S' <<'P'\n{}\nS\ncount > minimum\nP\ngit init", "cat <<'A' <<B\nsafe > a\nA\nunsafe > b\nB",
-      "zsh -lc \"cat <<EOF\ncount > minimum\nEOF\"",
+      "cat <<EOF\ngit init\nEOF", "cat <<-EOF\n\tgit init\n\tEOF", "cat 3<<EOF\ngit init\nEOF", "cat <<EOF\n$(git init)\nEOF",
+      "cat <<'EOF'\nx\nEOF\nstorybloq init", "codex exec - 3<<'S' <<'P'\n{}\nS\ncount > minimum\nP\ngit init", "cat <<'A' <<B\ngit init\nA\ngit init\nB",
+      "zsh -lc \"cat <<EOF\ngit init\nEOF\"",
       // Every simple quoted spelling ends at its delimiter line, and a complex one reads everything after it: the command after it is read.
       "cat <<\"EOF\"\ncount > minimum\nEOF\ngit init", "cat <<\\EOF\ncount > minimum\nEOF\ngit init", "cat 3<<'EOF'\ncount > minimum\nEOF\ngit init",
       "cat <<-'EOF'\n\tcount > minimum\n\tEOF\ngit init", "cat <<'E'\"OF\"\ncount > minimum\nEOF\ngit init", "cat <<'EOF'\r\ncount > minimum\r\nEOF\r\ngit init",
@@ -777,7 +777,10 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
   });
 
   it("names the write rule, and its fail-closed depth, beside the stop rule", () => {
-    expect(WRITE_RULE_VERSION).toMatch(/^2026-09-27\.7:/);
+    expect(WRITE_RULE_VERSION).toMatch(/^2026-09-27\.8:/);
+    expect(WRITE_RULE_VERSION).toContain("a shell redirect or tee is never a counted write: its target is not resolved, so it is needs-review (file redirect, target not resolved)");
+    expect(WRITE_RULE_VERSION).toContain("a redirect into the project before approval is caught as a project change before approval, not by the counter, and writesAfterApproval stays a lower bound");
+    expect(WRITE_RULE_VERSION).toContain("any unrecognised redirection reads as a file redirect, review");
     expect(WRITE_RULE_VERSION).toContain("is complex: its end is not known, so everything after it is read unblanked, fail-closed");
     expect(WRITE_RULE_VERSION).toContain("writesAfterApproval is a lower bound whenever a needs-review construct carries the writes");
     expect(WRITE_RULE_VERSION).toContain("past nesting depth 3 the text is read unblanked, fail-closed");
@@ -791,7 +794,6 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
     const writes = [
       "cd x && git init", "git -C web init", "true; git init", "/bin/zsh -lc \"cd x && git init\"", "bash -c 'sh -c \"git init\"'",
       "npx storybloq init", "npx -y @storybloq/storybloq@latest ticket create --title t", "eval 'git init'", "echo \"$(git init)\"",
-      "echo hi > CLAUDE.md", "zsh -lc 'echo hi >> notes.md'", "cat a | tee b",
     ];
     for (const cmd of writes) expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
     const reads = [
@@ -799,6 +801,88 @@ describe("regressions from the 2026-09-27 Codex batch", () => {
       "zsh -lc \"codex exec 'then echo x > y'\"", "git status", "storybloq status",
     ];
     for (const cmd of reads) expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+  });
+
+  it("reads the fourth batch's run 7 redirect into a temporary file as no write and review: a redirect target is not resolved (run 7)", () => {
+    const run7b = verbatim<string>("run7b-redirect-command.json");
+    expect(run7b).toContain("review_schema=$(mktemp /tmp/rota-review-schema.XXXXXX)");
+    expect(run7b.startsWith("/bin/zsh -lc '")).toBe(true);
+    expect(writeCalls([bash(run7b)])).toEqual([]);
+    expect(reviews(run7b)).toContainEqual(expect.stringContaining("file redirect, target not resolved"));
+  });
+
+  it("reads a redirect or tee as review, never a counted write, while structural writes stay counted", () => {
+    for (const cmd of [
+      "echo x > .story/config.json", "tee notes.md", "echo hi > CLAUDE.md", "printf x | tee notes.md", "zsh -lc 'echo hi >> notes.md'", "cat a | tee b",
+      "cat <<EOF\ncount > minimum\nEOF",
+    ]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).join(" "), cmd).toContain("file redirect, target not resolved");
+    }
+    // A quoted executable name is still tee: the unwrapped argv is read, through pipelines, lists and wrappers.
+    for (const cmd of ["\"tee\" notes.md", "'te'e notes.md", "printf x | \"tee\" notes.md", "zsh -lc '\"tee\" notes.md'", "true && env \"tee\" notes.md"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    for (const cmd of ["storybloq init", "git init", "echo x > log && git init", "storybloq init | tee log"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toHaveLength(1);
+    }
+    // A numeric descriptor or the &> form is still a file redirect.
+    for (const cmd of ["echo x 1>notes.md", "cmd 2>errors.log", "cmd 2>>errors.log", "echo x &>notes.md", "echo x &>>notes.md", "echo x 10> notes.md"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    // The clobber and read-write operators, a named descriptor, and a quoted target with no space are file redirects too.
+    for (const cmd of ["echo x >|notes.md", "echo x 2>|\"errors.log\"", "exec 3<>state.txt", "exec {fd}>log.txt", "exec {fd}>>log.txt", "echo x >\"notes.md\"", "echo x >>'log.txt'"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    // After `>&` only a proven descriptor operand is duplication; any other operand is a file.
+    for (const cmd of ["echo x >&notes.md", "echo x >&\"notes.md\"", "cmd 2>&errors.log", "echo x >& notes.md", "echo x >>&2", "echo x >>&2-", "echo x >>&notes.md"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    // The rule is inverted: any `>` outside a proven-safe form is a file redirect, so no spelling needs listing.
+    for (const cmd of ["echo x >&|notes.md", "echo x >>&|notes.md", "echo x >!notes.md", "echo x >>!notes.md", "echo x >&|2"]) {
+      expect(shellSequence(cmd).commands, cmd).toHaveLength(1);
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    expect(shellSequence("a |& b").commands).toHaveLength(2);
+    // No construct hides a `>`: a comparison inside [[ ]] reads as a redirect too, fail-closed, and `[[` as a word never blanks one.
+    for (const cmd of ["echo [[ > notes.md ]]", "[[ a > b ]] > out.txt", "[[ a > b ]] && echo y"]) {
+      expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+      expect(reviews(cmd).filter((s) => s.includes("file redirect, target not resolved")), cmd).toHaveLength(1);
+    }
+    // `>|` is one redirection, never a pipeline into its target; `{fd}>` does not open a group.
+    for (const cmd of ["a >| b", "echo x 2>|b", "exec {fd}>log.txt"]) expect(shellSequence(cmd).commands, cmd).toHaveLength(1);
+    expect(shellSequence("a >| b").commands[0]!.words).toEqual(["a", ">|", "b"]);
+    expect(shellSequence("a || b").commands).toHaveLength(2);
+    expect(shellSequence("a | b").commands).toHaveLength(2);
+    for (const cmd of ["ls 2>/dev/null", "git log 2>&1", "grep x y > /dev/null", "echo x >&2", "exec 1>&-", "cmd &>/dev/null", "cmd 2>>/dev/null", "cmd >>/dev/null", "cmd >|/dev/null", "exec {fd}>&-", "exec 3<>/dev/null", "cmd 2>&1-", "echo x >&2-", "echo x >>&/dev/null", "exec >&-", "echo x >&/dev/null", "cmd 2>&1 | cat"]) {
+      expect(reviews(cmd).join(" "), cmd).not.toContain("file redirect");
+    }
+  });
+
+  it("reports the project file a redirect changes before approval through the tree check, the ground truth the counter is not", () => {
+    const work = mkdtempSync(join(tmpdir(), "eval-redirect-"));
+    try {
+      const project = materializeFixture("brief-only", work);
+      const exclusion = runtimeExclusion(project);
+      mkdirSync(join(project, ".story"), { recursive: true });
+      const before = treeDigest(project);
+      for (const cmd of ["echo x > .story/config.json", "printf y | tee notes.md > /dev/null"]) {
+        expect(writeCalls([bash(cmd)]), cmd).toEqual([]);
+        expect(spawnSync("/bin/sh", ["-c", cmd], { cwd: project }).status, cmd).toBe(0);
+      }
+      const changes = digestChanges(before, treeDigest(project), exclusion);
+      expect(changes).toContain(".story/config.json");
+      expect(changes).toContain("notes.md");
+      const outcome = treeCheckOutcome("opening", changes, exclusion);
+      expect(outcome.clean).toBe(false);
+      expect(outcome.failure).toMatch(/^opening: project changed before approval: .*\.story\/config\.json/);
+      expect(outcome.failure).toContain("notes.md");
+    } finally { rmSync(work, { recursive: true, force: true }); }
   });
 
   it("classifies run 1's multi-line nested command once: the process substitution inside, not the wrapper outside (run 1)", () => {

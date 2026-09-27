@@ -194,8 +194,22 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "appl
 const STORYBLOQ_WRITE = /^storybloq_(init|snapshot|handover_create|.*_create|.*_update|.*_set|.*_unset|.*_add|.*_reinforce)$/;
 const STORYBLOQ_CLI_WRITE = /\bstorybloq\s+(init|snapshot|config\s+set-overrides|(phase|ticket|issue|note|lesson|handover)\s+(create|update))\b/;
 const GIT_INIT = /\bgit\s+init\b/;
-/** A shell redirect into a file (not a descriptor, not /dev/null), or tee. */
-const SHELL_FILE_WRITE = /(?:^|[^0-9&>])>>?\s*(?!&|\/dev\/null)[^\s|&;]+|\btee\s/;
+/**
+ * The redirections proven safe on a command's unquoted skeleton: a descriptor duplication or close (`>&N`, `N>&M`,
+ * `>&N-`, `N>&M-`, `>&-`, `N>&-`, `{name}>&-`), any redirection into /dev/null, and a process substitution `>(`,
+ * which is a construct under review of its own.
+ */
+const SAFE_REDIRECT = /\{[A-Za-z_][A-Za-z0-9_]*\}>&-(?=$|[\s|&;<>)])|[0-9]*>&(?:[0-9]+-?|-)(?=$|[\s|&;<>)])|(?:[0-9]*|\{[A-Za-z_][A-Za-z0-9_]*\})[&<]?>[>&|!]*\s*\/dev\/null(?=$|[\s|&;<>)])|(?<![>&])>\(/g;
+/**
+ * A shell redirect into a file, or tee. The rule is inverted, not enumerated: any `>` on the skeleton outside a
+ * proven-safe form (SAFE_REDIRECT) is a file redirect, so `>|`, `>!`, `>>!`, `>&|`, `>>&|`, `>&file`, `>>&2`,
+ * `{name}>file`, `N>file` and `<>` all are, and any unrecognised redirection reads as one. A comparison inside
+ * `[[ ]]` or `$(( ))` reads as one too: the command is review already, so the second reason fails closed.
+ * Its target is not resolved, so it is review, never a counted write.
+ */
+function fileRedirect(bare: string): boolean {
+  return /\btee\s/.test(bare) || bare.replace(SAFE_REDIRECT, " ").includes(">");
+}
 /** Launchers that run the storybloq CLI named as their first operand. */
 const STORYBLOQ_LAUNCHERS = new Set(["npx", "bunx", "pnpx"]);
 /** Git's global options that consume the next word. */
@@ -297,11 +311,10 @@ function storybloqProbe(args: readonly string[]): boolean {
   return false;
 }
 
-/** Whether one unwrapped simple command (its argv) writes setup state: `git init`, a storybloq CLI write, or tee. */
+/** Whether one unwrapped simple command (its argv) writes setup state: `git init` or a storybloq CLI write. */
 function argvWrites(argv: readonly string[]): boolean {
   const bin = baseName(argv[0] ?? "");
   if (bin === "git") return !gitProbe(argv.slice(1)) && gitSubcommand(argv.slice(1)) === "init";
-  if (bin === "tee") return true;
   const at = STORYBLOQ_LAUNCHERS.has(bin) ? argv.findIndex((w, k) => k > 0 && !w.startsWith("-")) : 0;
   if (at < 0 || !/^storybloq(@\S*)?$/.test(baseName(argv[at] ?? ""))) return false;
   if (storybloqProbe(argv.slice(at + 1))) return false;
@@ -325,7 +338,6 @@ function argvWrites(argv: readonly string[]): boolean {
 function shellWrites(cmd: string, depth = 0): boolean {
   const nested = (code: string): boolean => (depth >= 3 ? textualWrite(code) : shellWrites(code, depth + 1));
   for (const c of shellSequence(cmd).commands) {
-    if (SHELL_FILE_WRITE.test(c.bare)) return true;
     if (c.live.some(nested)) return true;
     const { argv, inner, ambiguous } = unwrap(c.words);
     if (inner !== null) {
@@ -341,7 +353,7 @@ function shellWrites(cmd: string, depth = 0): boolean {
 }
 
 function textualWrite(text: string): boolean {
-  return STORYBLOQ_CLI_WRITE.test(text) || GIT_INIT.test(text) || SHELL_FILE_WRITE.test(text);
+  return STORYBLOQ_CLI_WRITE.test(text) || GIT_INIT.test(text);
 }
 
 function commandOf(call: EvalCall): string | null {
@@ -356,9 +368,9 @@ function commandOf(call: EvalCall): string | null {
  * The write rule the packet names beside the stop rule, so a reader of a
  * record knows which classifier produced its writes.
  */
-export const WRITE_RULE_VERSION = "2026-09-27.7: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init`, a storybloq CLI write or tee, or whose unquoted skeleton redirects into a file; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write; a here-document's body is never read as commands, and only a simple delimiter word is modelled ([A-Za-z0-9_]+ bare, or wrapped whole in one pair of single quotes or of double quotes, or behind one backslash, any fd prefix, <<- included): under a simple quoted one the shell never expands the body, so it is data, and under a simple unquoted one it is read unblanked, fail-closed; any other delimiter word (a backslash or quote inside it, mixed quoting, a continuation, $, a backtick, a carriage return, any non-word character) is complex: its end is not known, so everything after it is read unblanked, fail-closed, and the command is needs-review (complex here-document delimiter); a here-document an interpreter reads (python, node, sh, bash, zsh, dash, ksh, perl, ruby), quoted delimiter or not, is a script the harness cannot read, so it is needs-review, never clean, and its writes are not counted: writesAfterApproval is a lower bound whenever a needs-review construct carries the writes";
+export const WRITE_RULE_VERSION = "2026-09-27.8: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init` or a storybloq CLI write; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write; a here-document's body is never read as commands, and only a simple delimiter word is modelled ([A-Za-z0-9_]+ bare, or wrapped whole in one pair of single quotes or of double quotes, or behind one backslash, any fd prefix, <<- included): under a simple quoted one the shell never expands the body, so it is data, and under a simple unquoted one it is read unblanked, fail-closed; any other delimiter word (a backslash or quote inside it, mixed quoting, a continuation, $, a backtick, a carriage return, any non-word character) is complex: its end is not known, so everything after it is read unblanked, fail-closed, and the command is needs-review (complex here-document delimiter); a here-document an interpreter reads (python, node, sh, bash, zsh, dash, ksh, perl, ruby), quoted delimiter or not, is a script the harness cannot read, so it is needs-review, never clean, and its writes are not counted: writesAfterApproval is a lower bound whenever a needs-review construct carries the writes; a shell redirect or tee is never a counted write: its target is not resolved, so it is needs-review (file redirect, target not resolved), and the tree check is the truth for project files, so a redirect into the project before approval is caught as a project change before approval, not by the counter, and writesAfterApproval stays a lower bound; any unrecognised redirection reads as a file redirect, review: only a descriptor duplication or close (>&N, N>&M, >&N-, N>&M-, >&-, N>&-, {name}>&-), a redirection into /dev/null and a process substitution are exempt; a comparison inside [[ ]] or $(( )) reads as a redirect too, fail-closed";
 
-/** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, shell redirects, `git init`. */
+/** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, `git init`. A shell redirect is review; the tree check reports the files it changes. */
 export function writeCalls(calls: readonly EvalCall[]): EvalCall[] {
   return calls.filter((call) => {
     if (WRITE_TOOLS.has(call.name)) return true;
@@ -604,6 +616,10 @@ export function shellSequence(command: string): { readonly commands: readonly Sh
       word += command[i + 1]; inWord = true; i++; bare += "_"; continue;
     }
     if (ch === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) { word += ch; inWord = true; bare += ch; continue; }
+    // A `|` right after `>`, `>&` or `>>&` belongs to the redirection (`>|`, `>&|`, `>>&|`), never a pipe; `|&` stays a pipe.
+    if (ch === "|" && (bare.endsWith(">") || bare.endsWith(">&"))) { word += ch; inWord = true; bare += ch; continue; }
+    // `{name}>` opens a named descriptor: the brace starts a word, not a group.
+    if (ch === "{" && !inWord && /^\{[A-Za-z_][A-Za-z0-9_]*\}[<>]/.test(command.slice(i, i + 64))) { word += ch; inWord = true; bare += ch; continue; }
     if (ch === "&" || ch === "|" || ch === ";") {
       const two = command[i + 1] === ch;
       if (two) i++;
@@ -833,7 +849,9 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
       const executable = inner === null ? unsupportedArgv(argv) : null;
       // A here-document an interpreter reads is a script the checks cannot read, quoted delimiter or not.
       const interpreter = heredoc && inner === null && HEREDOC_INTERPRETERS.test(baseName(argv[0] ?? "")) ? baseName(argv[0]!) : null;
-      const reasons = [...(interpreter !== null ? [`heredoc into ${interpreter}`] : []), ...(heredocComplex ? ["complex here-document delimiter"] : [])];
+      // tee is read on the unwrapped argv too, so a quoted executable name cannot hide it from the skeleton.
+      const redirect = fileRedirect(bare) || (inner === null && baseName(argv[0] ?? "") === "tee");
+      const reasons = [...(interpreter !== null ? [`heredoc into ${interpreter}`] : []), ...(heredocComplex ? ["complex here-document delimiter"] : []), ...(redirect ? ["file redirect, target not resolved"] : [])];
       if (reasons.length > 0) hits.push({ call, segment: `${residue} [${reasons.join("; ")}]`, kind: "review" });
       else if (UNSUPPORTED_SYNTAX.test(residue)) hits.push({ call, segment: residue, kind: "review" });
       else if (executable !== null) hits.push({ call, segment: `${argv.join(" ")} [${executable}]`, kind: "review" });

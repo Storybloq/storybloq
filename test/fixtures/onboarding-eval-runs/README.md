@@ -47,6 +47,20 @@ counts as a write (`WRITE_RULE_VERSION`, named in the packet as
   `subprocess`. The harness cannot read that script, so it is review, never
   clean, and its writes are not counted: `writesAfterApproval` is a lower
   bound whenever a construct under review carries the writes.
+- `run7b-redirect-command.json`: non-npm-tests run 7 (fourth batch), the
+  agent's reviewer launch: it writes its schema with `printf ... >` into a
+  file from `mktemp /tmp/...`. The counter once read that redirect as a
+  project write while the tree check saw nothing. A redirect or `tee` target
+  is not resolved, so it is never a counted write: it is review ("file
+  redirect, target not resolved"), and the tree check is the truth for
+  project files. A redirect into the project before approval fails as
+  "project changed before approval", not through the counter, so
+  `writesAfterApproval` stays a lower bound. Structural writes (storybloq MCP
+  and CLI writes, `git init`) still count. The redirect rule is inverted, not
+  enumerated: any `>` on the unquoted skeleton outside a proven-safe form (a
+  descriptor duplication or close such as `2>&1`, `>&2-` or `{fd}>&-`, a
+  redirection into /dev/null, a process substitution) is a file redirect, so
+  any unrecognised redirection reads as one.
 - Here-document delimiters (a regression class, not a fixture). Only a
   simple delimiter word is modelled: `[A-Za-z0-9_]+` bare, or wrapped whole
   in one pair of single or double quotes, or behind one backslash. Any other

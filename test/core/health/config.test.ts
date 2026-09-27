@@ -48,7 +48,6 @@ describe("T-502 healthCheck config", () => {
       type: "npm",
       language: "typescript",
       features: { tickets: true, issues: true, notes: true, lessons: true, handovers: true, roadmap: true, reviews: true },
-      limitResume: {},
     };
     const parsed = ConfigSchema.parse({
       ...base,
@@ -87,7 +86,6 @@ describe("T-502 healthCheck config", () => {
       type: "npm",
       language: "typescript",
       features: { tickets: true, issues: true, notes: true, lessons: true, handovers: true, roadmap: true, reviews: true },
-      limitResume: {},
     };
     expect(() => ConfigSchema.parse(base)).not.toThrow();
     const withBlock = ConfigSchema.parse({ ...base, healthCheck: { checks: { crossSessionInbound: false } } });

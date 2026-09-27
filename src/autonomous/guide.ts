@@ -3385,36 +3385,6 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     info = { ...info, state: retired.state };
   }
 
-  // T-534: backstop only (C2); a normalised park never reaches it. Removed in C3.
-  // T-424: a usage-limit stop during FINALIZE must never replay finalization
-  // through the generic resume path without the user first verifying what
-  // landed (finalization is not proven idempotent; a blind replay risks
-  // duplicate commits/pushes). Enforced BEFORE pending-mutation recovery
-  // and deferral draining -- an ordinary FINALIZE limit resume must perform NO
-  // resume-side mutation before rejecting -- and here in the guide (not just
-  // at waker dispatch) so an interactive reopen cannot trip it either.
-  // Keyed on interruptionKind === "limit": clearing that field is the explicit
-  // "I verified git state" acknowledgment (clear-compact --force clears it but
-  // deliberately keeps preCompactState=FINALIZE so resume re-enters at the
-  // checkpoint -- a broad preCompactState gate would wedge that post-verify
-  // resume). Cancelling a FINALIZE park keeps it limit-kind for the same reason
-  // (see downgradeLimitParkToCompact), so this gate still fires for it.
-  // After clear-compact --force, a clean-HEAD resume re-enters FINALIZE at its
-  // recorded finalizeCheckpoint (already-landed commits are detected and
-  // skipped); only external HEAD drift routes RECOVERY_MAPPING[FINALIZE] ->
-  // IMPLEMENT with the code checkpoint reset. See T-425 for the replay-safe
-  // staged recovery that will lift this gate.
-  if (info.state.interruptionKind === "limit" && info.state.preCompactState === "FINALIZE") {
-    return guideError(new Error(
-      `Session ${args.sessionId} was stopped by a usage limit during FINALIZE. ` +
-      "Auto-resume is disabled for finalization because replaying it can duplicate commits. " +
-      "Manual recovery: verify what landed with `git log` (commit, push, ticket updates), " +
-      `then run "storybloq session clear-compact ${args.sessionId} --force" and resume; ` +
-      "the session re-enters FINALIZE at its recorded checkpoint (an already-landed commit " +
-      "is detected and not repeated), so remove or amend duplicates first.",
-    ));
-  }
-
   const shouldRebindOwner = !!callerTask && (
     leaseWasExpired || legacySameOwner || unownedLegacy || (knownForeignOwner && args.takeover === true)
   );

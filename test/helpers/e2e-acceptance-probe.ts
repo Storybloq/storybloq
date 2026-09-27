@@ -19,7 +19,8 @@ import { createHash } from "node:crypto";
 import { skillTargets, codexConfigPath as skillMarkerCodexConfigPath } from "../../src/core/skill-version-marker.js";
 import { codexConfigPath as setupSkillCodexConfigPath, codexHooksPath } from "../../src/cli/commands/setup-skill.js";
 import { cachePath } from "../../src/core/update-check.js";
-import { limitLedgerPath, wakerLockPath } from "../../src/core/limit-ledger.js";
+import { storybloqGlobalDir } from "../../src/core/global-config.js";
+import { RETIREMENT_MARKER_BASENAME } from "../../src/core/limit-retirement.js";
 
 export type AuditedPathKind = "dir" | "file";
 
@@ -27,7 +28,8 @@ export type AuditedPathKind = "dir" | "file";
  * P1: HARD-FAIL paths are only ever written by version-skew refresh or drift
  * reconcile (rare by design once commit 5's upgrade-only fix ships) -- a
  * change there means a real isolation gap. WARN-ONLY paths (update-check
- * cache, limit ledger, waker lock) are legitimately written by concurrent
+ * cache, and the retired usage-limit ledger, waker lock and retirement
+ * marker) are legitimately written by concurrent
  * LIVE Claude Code sessions/hooks on this machine independent of this test
  * run (ISS-978: the globally-symlinked storybloq binary means ordinary CLI
  * traffic from other sessions writes these during any long suite run) -- a
@@ -47,10 +49,11 @@ export { skillMarkerCodexConfigPath, setupSkillCodexConfigPath };
 
 /**
  * The complete list of real-HOME-adjacent paths `preCommandHousekeeping` can
- * write. `limitLedgerPath`/`wakerLockPath` are included as a defense-in-depth
- * cross-check that STORYBLOQ_GLOBAL_DIR isolation actually held (this probe
- * itself runs with no env override, so it reads the REAL machine's ledger
- * path) -- under a correctly-isolated fixture those two entries should never
+ * write. The T-534 retirement's global-dir paths (the retired ledger and
+ * waker lock it removes, the marker it writes) are included as a
+ * defense-in-depth cross-check that STORYBLOQ_GLOBAL_DIR isolation actually
+ * held (this probe itself runs with no env override, so it reads the REAL
+ * machine's global dir) -- under a correctly-isolated fixture those entries should never
  * move, since every fixture-spawned child points its own STORYBLOQ_GLOBAL_DIR
  * elsewhere; when they DO move it's attributed to live concurrent traffic
  * (warn), not blamed on this suite's isolation (hard-fail).
@@ -67,8 +70,9 @@ export function auditedPaths(): AuditedPath[] {
     { label: "codex hooks.json", path: codexHooksPath(), kind: "file" as const, severity: "hard" as const },
     { label: "claude settings.json", path: join(homedir(), ".claude", "settings.json"), kind: "file" as const, severity: "hard" as const },
     { label: "update-check cache", path: cachePath(), kind: "file" as const, severity: "warn" as const },
-    { label: "limit ledger", path: limitLedgerPath(), kind: "file" as const, severity: "warn" as const },
-    { label: "waker lock", path: wakerLockPath(), kind: "file" as const, severity: "warn" as const },
+    { label: "limit ledger", path: join(storybloqGlobalDir(), "limit-ledger.json"), kind: "file" as const, severity: "warn" as const },
+    { label: "waker lock", path: join(storybloqGlobalDir(), "waker.lock"), kind: "file" as const, severity: "warn" as const },
+    { label: "limit retirement marker", path: join(storybloqGlobalDir(), RETIREMENT_MARKER_BASENAME), kind: "file" as const, severity: "warn" as const },
   ];
 }
 

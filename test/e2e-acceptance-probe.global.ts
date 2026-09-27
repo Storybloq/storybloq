@@ -69,7 +69,7 @@ export async function teardown(): Promise<void> {
     const lines = warnDiffs.map((d) => `  - ${d.label}: ${d.before ?? "<absent>"} -> ${d.after ?? "<absent>"}`);
     process.stderr.write(
       "ISS-1091 e2e acceptance probe (WARN, not a failure): the update-check cache / limit ledger / waker " +
-        "lock changed during this run. These are legitimately written by concurrent LIVE Claude Code " +
+        "lock / limit retirement marker changed during this run. These are legitimately written by concurrent LIVE Claude Code " +
         "sessions/hooks on this machine (ISS-978's globally-symlinked storybloq binary), independent of this " +
         "suite's own isolation. Set STORYBLOQ_E2E_PROBE_STRICT=1 to promote this to a hard failure (used by " +
         "the ship-time quiet-window verification in RELEASE.md).\n" +

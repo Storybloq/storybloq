@@ -8,8 +8,7 @@ function readConfigBounded(path: string): string | null {
 /**
  * ISS-1012: is the Stop hook allowed to do status work in this project?
  *
- * Hot-path sibling of readLimitResumeConfig: same bounded raw read, same
- * crash-proof posture, and fails ENABLED on every uncertainty (absent config,
+ * A hot-path reader: a bounded raw read, crash-proof, that fails ENABLED on every uncertainty (absent config,
  * unreadable, malformed JSON, non-boolean value) so a broken config can never
  * silently blind the Mac app. Only an explicit `false` disables.
  *

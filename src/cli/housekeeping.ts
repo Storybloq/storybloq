@@ -77,18 +77,18 @@ export function shouldSkipHousekeeping(argv: string[]): boolean {
   // T-427: the PostToolUse (on-tool) Bus hook fires after every tool call and must
   // start instantly and never phone the npm registry.
   if (command === "hook-bus-tool") return true;
-  // T-424: waker-run is the detached background waker; limit-stop is the
-  // StopFailure hook. Both must start instantly and never phone the registry.
-  if (command === "waker-run") return true;
   // T-502: `storybloq health` REPORTS on the tooling, so nothing may change it
-  // first. A skill refresh, a hook reconcile, a telemetry sweep, a waker spawn
-  // or a background registry fetch running before the checks would let the
+  // first. A skill refresh, a hook reconcile, a telemetry sweep or a
+  // background registry fetch running before the checks would let the
   // command silently repair what it was asked to describe, and the user would
   // be told everything was fine.
   if (command === "health") return true;
   if (
     command === "session" &&
-    (subcommand === "compact-prepare" || subcommand === "resume-prompt" || subcommand === "limit-stop" ||
+    (subcommand === "compact-prepare" || subcommand === "resume-prompt" ||
+      // T-534: the retired StopFailure hook's tombstone runs the retirement
+      // itself and must stay instant for installs that still carry the hook.
+      subcommand === "limit-stop" ||
       // T-499: the SessionStart capture and the synchronous UserPromptSubmit
       // sample fire on every session start and every prompt; the prompt hook
       // in particular sits on the user's critical path.
@@ -104,13 +104,13 @@ export async function preCommandHousekeeping(version: string, argv: string[] = [
   // A setup invocation carrying --skip-hooks is an explicit opt-out: BOTH the
   // version-refresh reconcile (inside autoRefreshSkillIfStale) and the direct
   // reconcile below must honor it. This flag is computed FIRST so the refresh
-  // call can suppress its limit-hook reconcile too (otherwise --skip-hooks was
+  // call can suppress its hook reconcile too (otherwise --skip-hooks was
   // defeated by the refresh installing hooks before setup ran).
   const isSetupSkippingHooks =
     (argv[0] === "setup" || argv[0] === "setup-skill") && argv.includes("--skip-hooks");
   try {
     const { autoRefreshSkillIfStale } = await import("../core/skill-version-marker.js");
-    await autoRefreshSkillIfStale(version, { reconcileLimitHooks: !isSetupSkippingHooks });
+    await autoRefreshSkillIfStale(version, { reconcileHooks: !isSetupSkippingHooks });
   } catch {
     // Best-effort; never block the user's command.
   }

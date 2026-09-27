@@ -1376,13 +1376,14 @@ describe("formatStatus positional compatibility (ISS-943, Codex round 4)", () =>
 
     // Byte-identical: the appended parameter defaults to `[]`, so omitting it
     // is indistinguishable from passing an empty array explicitly, and every
-    // pre-existing field (bus, limitStops, sessionDiagnostics) is unaffected.
+    // pre-existing field (bus, sessionDiagnostics) is unaffected. T-534: the
+    // limit-stop slot is kept and ignored, so sessionDiagnostics still lands.
     expect(withoutNewArg).toBe(withExplicitEmptyNewArg);
     const parsed = JSON.parse(withoutNewArg) as {
-      data: { expiredLeaseSessions: unknown[]; limitStops: unknown[]; bus: unknown; sessionDiagnostics: unknown[] };
+      data: { expiredLeaseSessions: unknown[]; bus: unknown; sessionDiagnostics: unknown[] } & Record<string, unknown>;
     };
     expect(parsed.data.expiredLeaseSessions).toEqual([]);
-    expect(parsed.data.limitStops).toEqual(limitStops);
+    expect("limitStops" in parsed.data).toBe(false);
     expect(parsed.data.sessionDiagnostics).toEqual(diagnostics);
     expect(parsed.data.bus).toEqual(bus);
   });
@@ -1502,24 +1503,12 @@ describe("formatStatus compact mode (T-320 commit 3)", () => {
     });
   });
 
-  it("compact:true keeps limitStops whole (the ticket text calling for a reduction there was a slip)", () => {
+  it("compact:true carries no limitStops and ignores the retained slot (T-534)", () => {
     const state = makeState();
-    const limitStop = {
-      key: "k1",
-      sessionType: "autonomous",
-      storybloqSessionId: "sess-1",
-      clientTaskId: "task-1",
-      status: "deferred",
-      limitType: "usage",
-      reasonCode: null,
-      mode: "headless",
-      nextAttemptAt: "2026-01-01T00:00:00.000Z",
-      wakeAttempts: 1,
-    } as never;
     const parsed = JSON.parse(
-      formatStatus(state, "json", [], [], undefined, [limitStop], undefined, [], undefined, true),
-    ) as { data: { limitStops: unknown[] } };
-    expect(parsed.data.limitStops).toEqual([limitStop]);
+      formatStatus(state, "json", [], [], undefined, [{ key: "k1" }], undefined, [], undefined, true),
+    ) as { data: Record<string, unknown> };
+    expect("limitStops" in parsed.data).toBe(false);
   });
 
   it("compact:true keeps sessionDiagnostics and arrangements/arrangementWarnings unreduced", () => {

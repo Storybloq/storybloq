@@ -33,7 +33,7 @@ describe("auditedPaths (anti-staleness -- F10)", () => {
   it("marks the version-skew/drift-reconcile targets hard, and the concurrent-live-write targets warn (P1)", () => {
     const all = auditedPaths();
     const warnLabels = all.filter((p) => p.severity === "warn").map((p) => p.label);
-    expect(warnLabels.sort()).toEqual(["limit ledger", "update-check cache", "waker lock"].sort());
+    expect(warnLabels.sort()).toEqual(["limit ledger", "limit retirement marker", "update-check cache", "waker lock"].sort());
     const hardLabels = all.filter((p) => p.severity === "hard").map((p) => p.label);
     expect(hardLabels).toHaveLength(all.length - warnLabels.length);
     expect(hardLabels).toEqual(expect.arrayContaining(["codex config.toml", "codex hooks.json", "claude settings.json"]));
@@ -54,6 +54,7 @@ describe("auditedPaths (anti-staleness -- F10)", () => {
         "update-check cache",
         "limit ledger",
         "waker lock",
+        "limit retirement marker",
       ]),
     );
   });

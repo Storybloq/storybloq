@@ -215,16 +215,14 @@ const pendingDir = (f: Fixture): string => join(f.root, ".story", "telemetry", "
 const markerDir = (f: Fixture): string => join(f.root, ".claude", "rules");
 
 /**
- * Runs a hook handler inside the fixture. The resume handler's waker respawn
- * reads the global limit ledger and may start a detached process, so the
- * spawn is disabled and the ledger pointed into the fixture.
+ * Runs a hook handler inside the fixture, with the global storybloq dir
+ * pointed into the fixture.
  */
 async function inRoot<T>(root: string, fn: () => Promise<T>): Promise<T> {
   const cwd = process.cwd();
   const env = {
     STORYBLOQ_PROJECT_ROOT: undefined,
     CLAUDESTORY_PROJECT_ROOT: undefined,
-    STORYBLOQ_DISABLE_WAKER_SPAWN: "1",
     STORYBLOQ_GLOBAL_DIR: join(root, ".global"),
   } as const;
   const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));

@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. limitStops, sessionDiagnostics, arrangements/arrangementWarnings, and every other top-level field are kept whole.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. sessionDiagnostics, arrangements/arrangementWarnings, and every other top-level field are kept whole.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -505,12 +505,6 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--session", "--format"],
   },
   {
-    name: "limit-status",
-    description: "Show pending usage-limit auto-resumes (global across projects); cancel or requeue records",
-    usage: "storybloq limit-status [--cancel <value>] [--requeue <value>] [--recent] [--format <json|md>]",
-    flags: ["--cancel", "--requeue", "--recent", "--format"],
-  },
-  {
     name: "session intel-start",
     description: "Capture the auto-compact setting for the current process era (SessionStart hook)",
     usage: "storybloq session intel-start [--client <claude|codex>]",
@@ -899,12 +893,6 @@ export const COMMANDS: readonly CommandEntry[] = [
     description: "Output resume instruction after compaction (SessionStart hook)",
     usage: "storybloq session resume-prompt [--codex-hook-json]",
     flags: ["--codex-hook-json"],
-  },
-  {
-    name: "session limit-stop",
-    description: "Record a usage-limit stop for auto-resume (StopFailure hook)",
-    usage: "storybloq session limit-stop",
-    flags: [],
   },
   {
     name: "session clear-compact",

@@ -387,77 +387,6 @@ export function ensureGitignore(root: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// T-424: limit auto-resume evidence + opportunistic waker respawn
-// ---------------------------------------------------------------------------
-
-/**
- * A Stop hook firing means this session just completed a successful turn --
- * external evidence that its usage limit is no longer blocking. Best-effort
- * marks the matching ledger record `resumed` and respawns the waker if other
- * records still pend (the reboot/crash recovery path). Gated on a lockless
- * ledger probe so the hot path stays fast when no limit records exist.
- *
- * The 30s detection grace protects against a queued Stop event from the
- * session's LAST successful turn landing after the StopFailure record: for
- * autonomous records reconciliation would re-arm, but plain `resumed` is
- * terminal and the notify would be silently lost.
- */
-async function markLimitEvidenceAndRespawn(clientTaskId: string | null): Promise<void> {
-  try {
-    const { hasPendingLimitRecords, peekLimitRecord, markResumed, limitRecordKey } =
-      await import("../../core/limit-ledger.js");
-    if (!hasPendingLimitRecords()) return;
-    if (clientTaskId) {
-      const key = limitRecordKey(clientTaskId);
-      // Lockless peek: the Stop hook must never wait on the ledger lock for a
-      // read (markResumed below is the CAS'd authority, and IT is bounded).
-      const rec = peekLimitRecord(key);
-      // Status whitelist mirrors markResumed's: NEVER touch a `preparing`
-      // intent (during ledger-first detection the intent exists BEFORE the
-      // session is parked, and marking it resumed would destroy the
-      // detector's activation), nor cancelling/manual/terminal/resuming
-      // records. AND never while an attempt lingers: a preserved attempt names
-      // a wake child whose death is unconfirmed (an interactive takeover
-      // async-SIGTERM'd our displaced child without waiting), so terminalizing
-      // here would orphan a possibly-live child -- markResumed refuses this
-      // too, but skipping the call avoids the lock entirely.
-      const eligible =
-        (rec?.status === "stopped" || rec?.status === "deferred" || rec?.status === "interactive") &&
-        rec.attempt == null;
-      if (rec && eligible && Date.now() - rec.detectedAt > 30_000) {
-        // For autonomous records the ONLY authoritative resume evidence is the
-        // matching session leaving its limit-pending COMPACT state: a Stop
-        // event from a turn that never touched the guide (or a delayed
-        // pre-limit Stop) must not terminalize the record. Plain records have
-        // no session state; the completed turn plus the 30s detection grace is
-        // the evidence. Both paths CAS on the generation this read observed,
-        // so a concurrent StopFailure's new episode is never marked by us.
-        let sessionEvidence = true;
-        if (rec.sessionType === "autonomous" && rec.storybloqSessionId) {
-          const { readSessionSnapshot } = await import("../../autonomous/waker.js");
-          const snap = readSessionSnapshot(rec.projectRoot, rec.storybloqSessionId);
-          // undefined (unreadable) or null (gone) => leave for reconciliation.
-          // ANY limit-pending park blocks the mark -- even under a different
-          // limitEventId, which just means a newer episode is mid-detection
-          // (its record transition belongs to that handler/reconciliation,
-          // not to this delayed Stop event).
-          sessionEvidence =
-            snap != null &&
-            !(snap.compactPending && snap.interruptionKind === "limit");
-        }
-        if (sessionEvidence) {
-          // Short lock deadline: the Stop hook must never stall behind ledger
-          // contention; a missed mark is healed by reconciliation.
-          markResumed(key, rec.generation, Date.now(), { deadlineMs: 250 });
-        }
-      }
-    }
-  } catch {
-    // Best-effort -- never delay or fail the Stop hook.
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Write status.json
 // ---------------------------------------------------------------------------
 
@@ -566,10 +495,6 @@ export async function handleHookStatus(options: { client?: BusClient } = {}): Pr
     } catch {
       // Best-effort cleanup; never fail a turn over it.
     }
-
-    // T-424: turns are evidence a limit stop cleared; also the waker respawn hook.
-    const hookTaskId = typeof input!.session_id === "string" ? normalizeClientTaskId(input!.session_id) : null;
-    await markLimitEvidenceAndRespawn(hookTaskId);
 
     // T-428: advise (STDERR only, never bare stdout) when this checkout's Bus
     // runtime was deleted. The delivery claim's own gate closes after a wipe (the

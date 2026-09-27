@@ -353,13 +353,14 @@ describe("reconcileDuplicateHookRows", () => {
       },
     }, null, 2));
     const out = await reconcileDuplicateHookRows(settingsPath, globalFor(NVM));
+    // T-534: StopFailure is no longer an event Storybloq registers under, so
+    // an empty group there is someone else's and stays, like Notification's.
     expect(out).toEqual({ changed: true, reconciled: [], unresolved: [], pruned: [
       { hookType: "SessionStart", matcher: "resume" },
-      { hookType: "StopFailure", matcher: "rate_limit" },
     ] });
     const after = JSON.parse(readFileSync(settingsPath, "utf-8")) as { hooks: Record<string, Array<{ matcher: string; hooks: unknown[] }>> };
     expect(after.hooks.SessionStart.map((g) => g.matcher)).toEqual([FULL]);
-    expect(after.hooks.StopFailure).toEqual([]);
+    expect(after.hooks.StopFailure).toEqual([{ matcher: "rate_limit", hooks: [] }]);
     expect(after.hooks.Notification).toEqual([{ matcher: "", hooks: [] }]);
     // Second run: nothing left to prune, no write.
     const text = readFileSync(settingsPath, "utf-8");

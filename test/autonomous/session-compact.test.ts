@@ -116,10 +116,10 @@ async function makeProjectRoot(
 /**
  * ISS-1309: runs a hook handler as if Claude Code started it in `root`, and
  * nowhere else. The project-root overrides are cleared so discovery starts
- * from the cwd; the waker is never spawned; the global storybloq dir (limit
- * ledger, waker lock) points inside `root`. Everything is restored after.
+ * from the cwd, and the global storybloq dir points inside `root`.
+ * Everything is restored after.
  */
-const HOOK_ENV = ["STORYBLOQ_PROJECT_ROOT", "CLAUDESTORY_PROJECT_ROOT", "STORYBLOQ_DISABLE_WAKER_SPAWN", "STORYBLOQ_GLOBAL_DIR"] as const;
+const HOOK_ENV = ["STORYBLOQ_PROJECT_ROOT", "CLAUDESTORY_PROJECT_ROOT", "STORYBLOQ_GLOBAL_DIR"] as const;
 
 async function inHookRoot<T>(root: string, fn: () => Promise<T> | T): Promise<T> {
   const cwd = process.cwd();
@@ -127,7 +127,6 @@ async function inHookRoot<T>(root: string, fn: () => Promise<T> | T): Promise<T>
   try {
     delete process.env.STORYBLOQ_PROJECT_ROOT;
     delete process.env.CLAUDESTORY_PROJECT_ROOT;
-    process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = "1";
     process.env.STORYBLOQ_GLOBAL_DIR = join(root, ".global");
     process.chdir(root);
     return await fn();
@@ -1262,33 +1261,29 @@ describe("evaluatePressure with compaction context", () => {
 });
 
 describe("ISS-1309: hook calls in this file are isolated", () => {
-  it("inHookRoot disables the waker, points the global dir inside the root, and restores everything", async () => {
+  it("inHookRoot points the global dir inside the root, and restores everything", async () => {
     const root = await makeProjectRoot();
     const before = Object.fromEntries(HOOK_ENV.map((k) => [k, process.env[k]]));
     const cwd = process.cwd();
     process.env.STORYBLOQ_GLOBAL_DIR = "/prior/global";
     try {
       const seen = await inHookRoot(root, () => ({
-        disable: process.env.STORYBLOQ_DISABLE_WAKER_SPAWN,
         global: process.env.STORYBLOQ_GLOBAL_DIR,
         storyRoot: process.env.STORYBLOQ_PROJECT_ROOT,
         claudeRoot: process.env.CLAUDESTORY_PROJECT_ROOT,
         cwd: process.cwd(),
       }));
       expect(seen).toEqual({
-        disable: "1",
         global: join(root, ".global"),
         storyRoot: undefined,
         claudeRoot: undefined,
         cwd: realpathSync(root),
       });
       expect(process.env.STORYBLOQ_GLOBAL_DIR).toBe("/prior/global");
-      expect(process.env.STORYBLOQ_DISABLE_WAKER_SPAWN).toBe(before.STORYBLOQ_DISABLE_WAKER_SPAWN);
       expect(process.cwd()).toBe(cwd);
 
       await expect(inHookRoot(root, () => { throw new Error("boom"); })).rejects.toThrow("boom");
       expect(process.env.STORYBLOQ_GLOBAL_DIR).toBe("/prior/global");
-      expect(process.env.STORYBLOQ_DISABLE_WAKER_SPAWN).toBe(before.STORYBLOQ_DISABLE_WAKER_SPAWN);
       expect(process.cwd()).toBe(cwd);
     } finally {
       for (const [k, v] of Object.entries(before)) {

@@ -1,9 +1,9 @@
 /**
  * T-534 Step 0 + Part A through the built CLI on an isolated HOME: the first
  * ordinary command retires the usage-limit auto-resume, and later commands
- * (including the `session limit-stop` tombstone and the read-only
- * `limit-status`) never recreate a hook, the ledger, `wake-claims/`, the lock
- * files or the config member.
+ * (including the `session limit-stop` tombstone) never recreate a hook, the
+ * ledger, `wake-claims/`, the lock files or the config member. The
+ * `limit-status` command is gone.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -98,10 +98,9 @@ describe("usage-limit retirement on upgrade (T-534)", () => {
     });
     expect(stop.status).toBe(0);
 
-    const status = runE2ECli(fixture, ["limit-status"]);
-    expect(status.status).toBe(0);
-    const cancel = runE2ECli(fixture, ["limit-status", "--cancel", "claude:t1"]);
-    expect(cancel.stdout + cancel.stderr).toContain("retired");
+    // The inspection command was removed with the runtime it inspected.
+    const gone = runE2ECli(fixture, ["limit-status"]);
+    expect(gone.status).not.toBe(0);
 
     runE2ECli(fixture, ["status"]);
     expectRetired();

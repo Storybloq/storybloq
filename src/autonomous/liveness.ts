@@ -2195,18 +2195,16 @@ export function permitsRecoveryOffer(v: OwnerLivenessVerdict): boolean {
  * How long owner-task ACTIVITY must have lapsed before an owner-gone candidate
  * may even be considered.
  *
- * Deliberately NOT `ALIVE_FRESH_MS` (30s, in `waker.ts`), and deliberately not
- * derived from it. The two measure different subjects:
+ * Deliberately NOT the 30s freshness window of the alive FILE (the retired
+ * usage-limit waker's `ALIVE_FRESH_MS`, T-534), and deliberately not derived
+ * from it. The two measure different subjects:
  *
- * - `ALIVE_FRESH_MS` is the alive FILE, rewritten every 10s by a sidecar whose
- *   parent is the MCP server. It answers "is a client process ticking".
+ * - The alive FILE is rewritten every 10s by a sidecar whose parent is the
+ *   MCP server. It answers "is a client process ticking".
  * - This is `lastGuideCall`, refreshed by `refreshLease` on the OWNER TASK's
  *   own guide calls. Those fire at workflow-state transitions, so a healthy
  *   session in IMPLEMENT running a test suite lapses for many minutes.
  *   Anything near 30s here would flag every working session.
- *
- * It lives in this module rather than beside `ALIVE_FRESH_MS` because `waker`
- * imports `liveness`, so the reverse import would be a cycle.
  *
  * Bounded on both sides: it must exceed the longest legitimate gap between
  * guide calls, and stay well under `LEASE_DURATION_MS` (45 min) or the band

@@ -27,34 +27,6 @@ export const BusConfigSchema = z.object({
 export type BusConfig = z.infer<typeof BusConfigSchema>;
 
 /**
- * T-424: Per-project usage-limit auto-resume configuration (feature-scoped, at
- * ConfigSchema ROOT, deliberately not under recipeOverrides). The hook/waker
- * hot paths read this shape through core/limit-config.ts (raw JSON + clamping,
- * crash-proof); this schema is the validation + documentation surface.
- * Precedence: global kill switch (~/.claude/storybloq/config.json) >
- * project enabled:false > default on.
- */
-// Numeric bounds mirror LIMIT_CONFIG_BOUNDS in core/limit-config.ts (the
-// hot-path clamping reader): out-of-bounds values there fall back to defaults,
-// and here they fail validation, so the two surfaces cannot silently drift.
-export const LimitResumeConfigSchema = z.object({
-  enabled: z.boolean().optional(),                       // default true
-  plainMode: z.enum(["notify", "headless"]).optional(),  // default "notify"
-  /** Autonomous-only: explicit per-project opt-in to wake bypass-posture sessions headlessly. Default false. */
-  inheritBypass: z.boolean().optional(),
-  // default 5. 0 is valid and means "never headless-wake" -- notify-mode
-  // records (plain default + FINALIZE stops) still deliver their reset
-  // notification because the waker dispatches notifies BEFORE the attempt cap.
-  maxAttempts: z.number().int().min(0).max(100).optional(),
-  staggerMs: z.number().int().min(0).max(600_000).optional(),     // default 20_000
-  maxConcurrent: z.number().int().min(1).max(16).optional(),      // default 2
-  /** 0 = inactivity-based child termination disabled (opt-in). Default 0. */
-  childInactivityMs: z.number().int().min(0).max(86_400_000).optional(),
-  fallbackResetMs: z.number().int().min(60_000).max(691_200_000).optional(), // default 18_000_000 (5h)
-  notify: z.boolean().optional(),                        // default true
-}).optional();
-
-/**
  * ISS-1012: per-project control of the turn-end status writer (feature-scoped,
  * at ConfigSchema ROOT, deliberately not under recipeOverrides -- that object is
  * a plain z.object whose undeclared keys are STRIPPED by parse, and this is not
@@ -168,7 +140,6 @@ export const ConfigSchema = z
     language: z.string(),
     features: FeaturesSchema,
     bus: BusConfigSchema.optional(),
-    limitResume: LimitResumeConfigSchema,
     statusWriter: StatusWriterConfigSchema.optional(),
     sessionIntel: SessionIntelConfigSchema.optional(),
     healthCheck: HealthCheckConfigSchema.optional(),

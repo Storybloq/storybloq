@@ -26,9 +26,6 @@ import {
   PRECOMPACT_SUBCOMMAND,
   SESSIONSTART_SUBCOMMAND,
   STOP_SUBCOMMAND,
-  LIMITSTOP_SUBCOMMAND,
-  STOPFAILURE_MATCHER,
-  LIMIT_SESSIONSTART_MATCHER,
   INTELSTART_SUBCOMMAND,
   INTELPROMPT_SUBCOMMAND,
   SESSION_INTEL_SESSIONSTART_MATCHER,
@@ -713,7 +710,7 @@ export async function removePresenceHooks(
 }
 
 // ---------------------------------------------------------------------------
-// T-424: limit-stop hooks (StopFailure + SessionStart "resume" group)
+// Matcher coverage
 // ---------------------------------------------------------------------------
 
 /** Does a SessionStart matcher (a source regex) already cover `source`? Empty matcher matches everything. */
@@ -725,141 +722,11 @@ function matcherCoversSource(matcher: string | undefined, source: string): boole
   } catch {
     // A matcher we cannot compile cannot be PROVEN to cover `source`. Treat it
     // as non-covering so a valid hook is still installed -- a `|`-split
-    // fallback would read `rate_limit|[` as covering `rate_limit` and suppress
+    // fallback would read `resume|[` as covering `resume` and suppress
     // installation of a working hook. A redundant entry is harmless; a
     // silently-missing one is not.
     return false;
   }
-}
-
-/**
- * Registers the StopFailure hook (usage-limit stop detection). Narrow matcher:
- * only rate_limit stops matter; overloaded/server_error are seconds-scale.
- */
-export async function registerLimitStopFailureHook(
-  settingsPath?: string,
-  binPath?: string,
-): Promise<"registered" | "exists" | "skipped"> {
-  const bin = binPath ?? resolveStorybloqBin() ?? "storybloq";
-  const command = formatHookCommand(bin, LIMITSTOP_SUBCOMMAND);
-  // ISS-1222: registerHook itself answers "exists" when a row with the same
-  // semantic command sits in any group whose matcher covers rate_limit, so the
-  // exact-matcher group is never added beside a covering one.
-  return registerHook("StopFailure", { type: "command", command }, settingsPath, STOPFAILURE_MATCHER);
-}
-
-/**
- * Registers the SessionStart "resume" matcher group (same resume-prompt
- * command as the "compact" group). Skipped when an existing group carrying
- * our command already covers source "resume" (e.g. the Bus-broadened
- * "startup|resume|clear|compact" matcher) -- a second group would double-fire.
- */
-export async function registerLimitSessionStartHook(
-  settingsPath?: string,
-  binPath?: string,
-): Promise<"registered" | "exists" | "skipped"> {
-  const bin = binPath ?? resolveStorybloqBin() ?? "storybloq";
-  const command = formatHookCommand(bin, SESSIONSTART_SUBCOMMAND);
-  // ISS-1222: registerHook answers "exists" when a row with the same semantic
-  // command sits in any group covering the resume source (the Bus-broadened
-  // "startup|resume|clear|compact" group included), so no second group is added.
-  return registerHook("SessionStart", { type: "command", command }, settingsPath, LIMIT_SESSIONSTART_MATCHER);
-}
-
-/**
- * Matcher-scoped hook removal: removes `command` ONLY from the group with the
- * given matcher (removeHook strips it from every group, which would also
- * delete the "compact" resume-prompt entry).
- */
-export async function removeHookFromMatcherGroup(
-  hookType: string,
-  command: string,
-  matcher: string,
-  settingsPath?: string,
-): Promise<"removed" | "not_found" | "skipped"> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
-  return withSettingsWriteLock(path, "skipped", () => removeHookFromMatcherGroupLocked(hookType, command, matcher, path));
-}
-
-async function removeHookFromMatcherGroupLocked(
-  hookType: string,
-  command: string,
-  matcher: string,
-  path: string,
-): Promise<"removed" | "not_found" | "skipped"> {
-
-  let raw = "{}";
-  if (existsSync(path)) {
-    try {
-      raw = await readFile(path, "utf-8");
-    } catch {
-      return "skipped";
-    }
-  }
-
-  let settings: Record<string, unknown>;
-  try {
-    settings = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return "skipped";
-  } catch {
-    return "skipped";
-  }
-
-  if (!("hooks" in settings) || typeof settings.hooks !== "object" || settings.hooks === null) return "not_found";
-  const hooks = settings.hooks as Record<string, unknown>;
-  if (!(hookType in hooks) || !Array.isArray(hooks[hookType])) return "not_found";
-
-  const hookArray = hooks[hookType] as unknown[];
-  let removed = false;
-  for (const group of hookArray) {
-    if (typeof group !== "object" || group === null) continue;
-    const g = group as MatcherGroup;
-    if ((g.matcher ?? "") !== matcher || !Array.isArray(g.hooks)) continue;
-    const before = g.hooks.length;
-    g.hooks = g.hooks.filter((entry) => !isHookWithCommand(entry, command));
-    if (g.hooks.length < before) removed = true;
-  }
-  if (!removed) return "not_found";
-
-  try {
-    await atomicWriteFollowingSymlink(path, JSON.stringify(settings, null, 2) + "\n");
-  } catch {
-    return "skipped";
-  }
-  return "removed";
-}
-
-/**
- * Idempotent reconcile of the limit-stop hooks against the global kill switch.
- * Called from housekeeping on every non-skipped CLI invocation and from the
- * skill auto-refresh (unconditionally, NOT count-gated -- the legacy sweep
- * only renames/removes existing entries and can never install an absent hook
- * type, so upgrades would otherwise never reach the installed base).
- *
- * Enabled  -> ensure StopFailure + SessionStart "resume" group registered.
- * Disabled -> ensure both removed (the "compact" group is untouched).
- */
-export async function ensureLimitHooksRegistered(
-  settingsPath?: string,
-  binPath?: string,
-): Promise<{ changed: boolean; action: "installed" | "removed" | "unchanged" }> {
-  const bin = binPath ?? resolveStorybloqBin();
-  if (!bin) return { changed: false, action: "unchanged" };
-
-  const { isLimitResumeGloballyDisabled } = await import("../../core/limit-ledger.js");
-  if (isLimitResumeGloballyDisabled()) {
-    const stopCmd = formatHookCommand(bin, LIMITSTOP_SUBCOMMAND);
-    const sessionCmd = formatHookCommand(bin, SESSIONSTART_SUBCOMMAND);
-    const r1 = await removeHook("StopFailure", stopCmd, settingsPath);
-    const r2 = await removeHookFromMatcherGroup("SessionStart", sessionCmd, LIMIT_SESSIONSTART_MATCHER, settingsPath);
-    const changed = r1 === "removed" || r2 === "removed";
-    return { changed, action: changed ? "removed" : "unchanged" };
-  }
-
-  const r1 = await registerLimitStopFailureHook(settingsPath, bin);
-  const r2 = await registerLimitSessionStartHook(settingsPath, bin);
-  const changed = r1 === "registered" || r2 === "registered";
-  return { changed, action: changed ? "installed" : "unchanged" };
 }
 
 // ---------------------------------------------------------------------------

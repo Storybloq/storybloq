@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isHealthCheckGloballyDisabled } from "../../src/core/global-config.js";
 
-// T-502: the machine-wide health switch, beside the limitResume and
-// sessionIntel ones. Absence means enabled: the command exists to tell the
+// T-502: the machine-wide health switch, beside the sessionIntel one. Absence means enabled: the command exists to tell the
 // user things, and a missing config is not consent to stay quiet.
 describe("isHealthCheckGloballyDisabled (T-502)", () => {
   let home: string;

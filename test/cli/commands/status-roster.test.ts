@@ -58,7 +58,7 @@ async function ctxAt(root: string, format: "json" | "md" = "json"): Promise<Comm
 const COMPACT_KEYS = [
   "project", "totalTickets", "completeTickets", "openTickets", "blockedTickets", "openIssues", "issueFlow",
   "activeNotes", "activeLessons", "handovers", "isEmptyScaffold", "phases", "activeSessions", "resumableSessions",
-  "expiredLeaseSessions", "limitStops", "arrangements", "arrangementWarnings",
+  "expiredLeaseSessions", "arrangements", "arrangementWarnings",
 ];
 
 const sampleRoster: StatusRoster = {

@@ -473,8 +473,8 @@ export function defaultHealthDeps(opts: { ledgerRoot: string | null }): HealthDe
       marker: (target) => markerRead(join(target.dir, SKILL_MARKER_FILE)),
     },
     // The kill-switch predicate stays the single source of the rule (it sits
-    // beside the limitResume and sessionIntel switches, where a reader looks
-    // for them); this dep is the injection point that lets a test express the
+    // beside the sessionIntel switch, where a reader looks
+    // for it); this dep is the injection point that lets a test express the
     // switch as a plain object.
     globalConfig: () => (isHealthCheckGloballyDisabled() ? { healthCheck: { enabled: false } } : null),
     bundledBridge: () => resolveBundledBridge(),

@@ -369,13 +369,12 @@ async function refreshModsIfBinMoved(): Promise<void> {
 
 export async function autoRefreshSkillIfStale(
   runningVersion: string,
-  opts: { reconcileLimitHooks?: boolean } = {},
+  opts: { reconcileHooks?: boolean } = {},
 ): Promise<boolean> {
   // Default true for ordinary upgrades; a `setup --skip-hooks` invocation
   // passes false so the version refresh does not install hooks the user
-  // explicitly opted out of. (The name predates T-534; it now gates only the
-  // session-intel reconcile.)
-  const reconcileLimitHooks = opts.reconcileLimitHooks !== false;
+  // explicitly opted out of. It gates the session-intel reconcile.
+  const reconcileHooks = opts.reconcileHooks !== false;
   // ISS-1302: the bundle is fingerprinted once per invocation, and only when
   // a copy is installed for it to be compared with.
   const installed = skillTargets().some((target) => existsSync(join(target.dir, "SKILL.md")));
@@ -522,7 +521,7 @@ export async function autoRefreshSkillIfStale(
       // T-499: reconcile the session-intel hooks (not count-gated, kill-switch
       // aware, honors --skip-hooks). T-534: the limit-stop hooks are no longer
       // installed here; the retirement migration removes them.
-      if (reconcileLimitHooks) {
+      if (reconcileHooks) {
         try {
           const { ensureSessionIntelHooksRegistered } = await import("../cli/commands/setup-skill.js");
           const intelHooks = await ensureSessionIntelHooksRegistered(undefined, bin);

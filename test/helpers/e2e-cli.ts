@@ -86,7 +86,6 @@ export class E2ECliFixture {
       CODEX_HOME: this.codexHome,
       STORYBLOQ_GLOBAL_DIR: this.globalDir,
       XDG_CONFIG_HOME: this.xdgConfigHome,
-      STORYBLOQ_DISABLE_WAKER_SPAWN: "1",
     };
     // ISS-1220: a CLI subprocess runs git of its own. An inherited GIT_DIR (or
     // friend) would point that git at whatever repository the *parent* vitest

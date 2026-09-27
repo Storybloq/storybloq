@@ -1399,27 +1399,9 @@ export const SessionStateSchema = z.object({
   compactObservedAt: z.string().nullable().default(null),
   resumeBlocked: z.boolean().default(false),
 
-  // T-424: Usage-limit interruption. Rides the COMPACT lane; interruptionKind
-  // discriminates the two park reasons (absent = "compact" for back-compat).
-  // limitPermissionMode is the AUTHORITY for wake posture (written only under
-  // withSessionLock from the StopFailure hook payload, enum-validated) -- the
-  // global ledger is a work queue, never a posture source.
-  //
-  // T-534: the auto-resume is retired. The four defaulted fields are optional
-  // with no default, so an ordinary write never re-adds them; a session carries
-  // them only while a legacy write persisted them, and the retirement
-  // normalisation strips them (decided from raw key presence). Absent reads as
-  // the old default.
-  interruptionKind: z.enum(["compact", "limit"]).nullish(),
-  limitStopPending: z.boolean().optional(),
-  limitResumeAt: z.number().nullable().optional(),
-  // Closed set at the SCHEMA level, not just at write time: this field is the
-  // posture authority, so a hand-corrupted value must degrade to null (no
-  // flag, safest posture) rather than pass through as an arbitrary string.
-  // .catch(null) keeps a malformed value from bricking the whole session read.
-  // .optional() is outermost so an absent key stays absent (never caught to null).
-  limitPermissionMode: z.enum(["bypassPermissions", "acceptEdits", "default", "plan"]).nullable().catch(null).optional(),
-  limitEventId: z.string().nullable().optional(),
+  // T-534: the retired usage-limit auto-resume's five keys (LIMIT_KEYS in
+  // session.ts) are no longer part of the schema. The passthrough below keeps
+  // them on a legacy state.json until the retirement normalisation strips them.
 
   // Last cumulative work boundary reserved for an automatic checkpoint handover.
   lastCheckpointWorkCount: z.number().int().min(0).default(0),

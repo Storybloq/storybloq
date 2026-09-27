@@ -158,27 +158,19 @@ describe("preCommandHousekeeping end-to-end", () => {
     return { binPath, settingsPath };
   }
 
-  it("threads `setup --skip-hooks` through housekeeping: no limit hooks installed", async () => {
-    // The CLI entry point must honor the explicit opt-out end-to-end: neither
-    // the version-refresh reconcile nor the direct ensureLimitHooksRegistered
-    // may install limit hooks over hook-free settings.
+  it("threads `setup --skip-hooks` through housekeeping: no hooks installed", async () => {
+    // The CLI entry point must honor the explicit opt-out end-to-end: the
+    // version-refresh reconcile may not install hooks over hook-free settings.
     const { settingsPath } = await seedBinAndHookFreeSettings();
-    const savedDisable = process.env.STORYBLOQ_DISABLE_WAKER_SPAWN;
-    process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = "1";
-    try {
-      const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
-      await preCommandHousekeeping("1.1.6", ["setup", "--skip-hooks"]);
+    const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
+    await preCommandHousekeeping("1.1.6", ["setup", "--skip-hooks"]);
 
-      const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as { hooks?: Record<string, unknown> };
-      expect(settings.hooks?.StopFailure).toBeUndefined();
-      expect(settings.hooks?.SessionStart).toBeUndefined();
-      expect((settings.hooks as Record<string, unknown> | undefined)?.UserPromptSubmit).toBeUndefined();
-      // T-534: `--skip-hooks` also skips the retirement, so nothing is recorded.
-      expect(existsSync(join(tempDir, ".claude", "storybloq", ".limit-retired-v1"))).toBe(false);
-    } finally {
-      if (savedDisable === undefined) delete process.env.STORYBLOQ_DISABLE_WAKER_SPAWN;
-      else process.env.STORYBLOQ_DISABLE_WAKER_SPAWN = savedDisable;
-    }
+    const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as { hooks?: Record<string, unknown> };
+    expect(settings.hooks?.StopFailure).toBeUndefined();
+    expect(settings.hooks?.SessionStart).toBeUndefined();
+    expect((settings.hooks as Record<string, unknown> | undefined)?.UserPromptSubmit).toBeUndefined();
+    // T-534: `--skip-hooks` also skips the retirement, so nothing is recorded.
+    expect(existsSync(join(tempDir, ".claude", "storybloq", ".limit-retired-v1"))).toBe(false);
   });
 
   it("retires the limit hooks through housekeeping for an ordinary invocation and installs none (T-534)", async () => {

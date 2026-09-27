@@ -22,7 +22,7 @@ import { registerAllTools } from "../../src/mcp/tools.js";
 import { toolSchema } from "../mcp/tool-schema-helpers.js";
 import { initProject } from "../../src/core/init.js";
 import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
-import { createSession, prepareForLimitStop, sessionDir, writeSessionSync } from "../../src/autonomous/session.js";
+import { createSession, prepareForCompact, sessionDir, writeSessionSync } from "../../src/autonomous/session.js";
 import { deriveWorkspaceId, type FullSessionState, type GuideInput } from "../../src/autonomous/session-types.js";
 import { handleIssueCreate, handleIssueUpdate } from "../../src/cli/commands/issue.js";
 import { handleSessionReport } from "../../src/cli/commands/session-report.js";
@@ -41,7 +41,24 @@ afterEach(() => {
 });
 
 /**
- * T-534: a resume of a limit park reads the retired runtime's global ledger.
+ * T-534: a park as the retired usage-limit auto-resume wrote it: an ordinary
+ * compact park plus the five raw limit keys a legacy state.json can carry.
+ */
+function plantLegacyLimitPark(dir: string, state: FullSessionState, limitEventId: string): { preCompactState: string } {
+  const result = prepareForCompact(dir, state);
+  writeSessionSync(dir, {
+    ...readState(dir),
+    interruptionKind: "limit",
+    limitStopPending: true,
+    limitResumeAt: Date.now() + 60_000,
+    limitPermissionMode: null,
+    limitEventId,
+  } as FullSessionState);
+  return result;
+}
+
+/**
+ * T-534: a resume of a legacy limit park reads the retired runtime's global ledger.
  * Point the global dir at a scratch directory and seed a ledger whose only
  * attempt belongs to another session and has exited, so the read is real and
  * never touches the operator's ~/.claude.
@@ -339,7 +356,7 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
     expect(accepted.text).toContain(`Knowledge review accepted for **${fx.displayId}**: none.`);
   });
 
-  it("a limit stop resumes headless into the stage (not the FINALIZE refusal), and a same-key report after the resume is idempotent", async () => {
+  it("a legacy limit park resumes into the stage (not a FINALIZE refusal), and a same-key report after the resume is idempotent", async () => {
     const fx = await setupProject();
     const ledgerPath = isolateGlobalLedger(fx.root);
     const ledgerBefore = readFileSync(ledgerPath, "utf-8");
@@ -347,11 +364,11 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
     await commitDone(fx, sessionId);
     const review = readState(dir).knowledgeReview;
 
-    const result = prepareForLimitStop(dir, readState(dir), { resumeAt: Date.now() + 60_000, limitEventId: "limit-evt-527" });
+    const result = plantLegacyLimitPark(dir, readState(dir), "limit-evt-527");
     expect(result.preCompactState).toBe("KNOWLEDGE_REVIEW");
     expect(readState(dir)).toMatchObject({ state: "COMPACT", interruptionKind: "limit", knowledgeReview: review });
 
-    // The waker's headless resume is a plain guide resume.
+    // A plain guide resume normalises the legacy park, then resumes it.
     const resumed = await guide(fx.root, { sessionId, action: "resume" });
     expect(resumed.isError).toBe(false);
     expect(resumed.text).not.toContain("stopped by a usage limit during FINALIZE");
@@ -373,7 +390,7 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
     expect(afterReplay.knowledgeReview).toEqual(afterFirst.knowledgeReview);
   });
 
-  it("an acceptance whose response was lost to a limit stop is not stored twice when the report is replayed after the resume", async () => {
+  it("an acceptance whose response was lost to a legacy limit park is not stored twice when the report is replayed after the resume", async () => {
     const fx = await setupProject();
     isolateGlobalLedger(fx.root);
     const { sessionId, dir } = finalizeSession(fx);
@@ -383,7 +400,7 @@ describe("T-527 guide (D6): KNOWLEDGE_REVIEW is an ordinary persisted stage", ()
     const accepted = readState(dir);
     expect(accepted.knowledgeImpacts).toHaveLength(1);
 
-    prepareForLimitStop(dir, accepted, { resumeAt: Date.now() + 60_000, limitEventId: "limit-evt-527b" });
+    plantLegacyLimitPark(dir, accepted, "limit-evt-527b");
     const resumed = await guide(fx.root, { sessionId, action: "resume" });
     expect(resumed.isError).toBe(false);
     await report(fx.root, sessionId, body);

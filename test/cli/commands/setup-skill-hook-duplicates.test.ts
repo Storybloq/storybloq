@@ -14,8 +14,7 @@ import {
   enableClaudeBusHooks,
   migrateLegacyHookVariants,
   globalLauncher,
-  registerLimitSessionStartHook,
-  registerLimitStopFailureHook,
+  registerPreCompactHook,
   registerPresenceHooks,
   registerSessionStartHook,
   registerStopHook,
@@ -56,62 +55,64 @@ describe("registerHook by semantic command and coverage (ISS-1222)", () => {
     return (s.hooks[event] ?? []).map((g) => ({ matcher: g.matcher ?? "", commands: g.hooks.map((h) => h.command) }));
   }
 
+  // T-534: the retired limit registrars were the vehicles here; PreCompact
+  // (matcher "") and SessionStart "compact" carry the same rules.
   it("an npx row is rewritten in place to the global command; one row remains; result registered", async () => {
-    await seed({ StopFailure: [{ matcher: "rate_limit", hooks: [row(`${NPX} session limit-stop`)] }] });
-    expect(await registerLimitStopFailureHook(settingsPath, NVM)).toBe("registered");
-    expect(await groupsOf("StopFailure")).toEqual([{ matcher: "rate_limit", commands: [`${NVM} session limit-stop`] }]);
+    await seed({ PreCompact: [{ matcher: "", hooks: [row(`${NPX} session compact-prepare`)] }] });
+    expect(await registerPreCompactHook(settingsPath, NVM)).toBe("registered");
+    expect(await groupsOf("PreCompact")).toEqual([{ matcher: "", commands: [`${NVM} session compact-prepare`] }]);
   });
 
   it("a non-global candidate never adds a row beside a covering row; result exists", async () => {
-    await seed({ StopFailure: [{ matcher: "rate_limit", hooks: [row(`${NVM} session limit-stop`)] }] });
-    expect(await registerLimitStopFailureHook(settingsPath, NPX)).toBe("exists");
-    expect(await groupsOf("StopFailure")).toEqual([{ matcher: "rate_limit", commands: [`${NVM} session limit-stop`] }]);
+    await seed({ PreCompact: [{ matcher: "", hooks: [row(`${NVM} session compact-prepare`)] }] });
+    expect(await registerPreCompactHook(settingsPath, NPX)).toBe("exists");
+    expect(await groupsOf("PreCompact")).toEqual([{ matcher: "", commands: [`${NVM} session compact-prepare`] }]);
   });
 
   it("the exact command in a covering group is exists, with no write", async () => {
-    await seed({ StopFailure: [{ matcher: "", hooks: [row(`${NVM} session limit-stop`)] }] });
+    await seed({ PreCompact: [{ matcher: "", hooks: [row(`${NVM} session compact-prepare`)] }] });
     const before = await readFile(settingsPath, "utf-8");
-    expect(await registerLimitStopFailureHook(settingsPath, NVM)).toBe("exists");
+    expect(await registerPreCompactHook(settingsPath, NVM)).toBe("exists");
     expect(await readFile(settingsPath, "utf-8")).toBe(before);
   });
 
   it("two stale variants then the global command leave exactly one row", async () => {
-    await seed({ StopFailure: [{ matcher: "rate_limit", hooks: [row(`${NPX} session limit-stop`), row(`${OLD} session limit-stop`)] }] });
-    expect(await registerLimitStopFailureHook(settingsPath, NVM)).toBe("registered");
-    expect(await groupsOf("StopFailure")).toEqual([{ matcher: "rate_limit", commands: [`${NVM} session limit-stop`] }]);
+    await seed({ PreCompact: [{ matcher: "", hooks: [row(`${NPX} session compact-prepare`), row(`${OLD} session compact-prepare`)] }] });
+    expect(await registerPreCompactHook(settingsPath, NVM)).toBe("registered");
+    expect(await groupsOf("PreCompact")).toEqual([{ matcher: "", commands: [`${NVM} session compact-prepare`] }]);
   });
 
   it("with no validated global launcher a colliding candidate is exists and nothing is written", async () => {
     globalLauncher.override = () => null;
-    await seed({ StopFailure: [{ matcher: "rate_limit", hooks: [row(`${NPX} session limit-stop`)] }] });
+    await seed({ PreCompact: [{ matcher: "", hooks: [row(`${NPX} session compact-prepare`)] }] });
     const before = await readFile(settingsPath, "utf-8");
-    expect(await registerLimitStopFailureHook(settingsPath, NVM)).toBe("exists");
+    expect(await registerPreCompactHook(settingsPath, NVM)).toBe("exists");
     expect(await readFile(settingsPath, "utf-8")).toBe(before);
   });
 
-  it("the live shape: the full group's global row covers resume, so the limit registration adds no second group and leaves the npx resume row to the reconcile", async () => {
+  it("the live shape: the full group's global row covers compact, so the registration adds no second group and leaves the npx compact row to the reconcile", async () => {
     await seed({ SessionStart: [
       { matcher: FULL, hooks: [row(`${NVM} session resume-prompt`)] },
-      { matcher: "resume", hooks: [row(`${NPX} session resume-prompt`)] },
+      { matcher: "compact", hooks: [row(`${NPX} session resume-prompt`)] },
     ] });
-    expect(await registerLimitSessionStartHook(settingsPath, NVM)).toBe("exists");
+    expect(await registerSessionStartHook(settingsPath, NVM)).toBe("exists");
     expect(await groupsOf("SessionStart")).toEqual([
       { matcher: FULL, commands: [`${NVM} session resume-prompt`] },
-      { matcher: "resume", commands: [`${NPX} session resume-prompt`] },
+      { matcher: "compact", commands: [`${NPX} session resume-prompt`] },
     ]);
   });
 
-  it("resume-only npx row, then the global limit registration: rewritten in place, one row", async () => {
-    await seed({ SessionStart: [{ matcher: "resume", hooks: [row(`${NPX} session resume-prompt`)] }] });
-    expect(await registerLimitSessionStartHook(settingsPath, NVM)).toBe("registered");
-    expect(await groupsOf("SessionStart")).toEqual([{ matcher: "resume", commands: [`${NVM} session resume-prompt`] }]);
+  it("compact-only npx row, then the global registration: rewritten in place, one row", async () => {
+    await seed({ SessionStart: [{ matcher: "compact", hooks: [row(`${NPX} session resume-prompt`)] }] });
+    expect(await registerSessionStartHook(settingsPath, NVM)).toBe("registered");
+    expect(await groupsOf("SessionStart")).toEqual([{ matcher: "compact", commands: [`${NVM} session resume-prompt`] }]);
   });
 
   it("a global candidate overlapping a partial npx group collapses to one row with the union matcher", async () => {
-    await seed({ SessionStart: [{ matcher: "startup|resume", hooks: [row(`${NPX} session resume-prompt`)] }] });
-    // The limit registration targets "resume": the seeded group overlaps but does not cover it.
-    expect(await registerLimitSessionStartHook(settingsPath, NVM)).toBe("registered");
-    expect(await groupsOf("SessionStart")).toEqual([{ matcher: "startup|resume", commands: [`${NVM} session resume-prompt`] }]);
+    await seed({ SessionStart: [{ matcher: "startup|compact", hooks: [row(`${NPX} session resume-prompt`)] }] });
+    // The registration targets "compact": the seeded group overlaps but does not cover it.
+    expect(await registerSessionStartHook(settingsPath, NVM)).toBe("registered");
+    expect(await groupsOf("SessionStart")).toEqual([{ matcher: "startup|compact", commands: [`${NVM} session resume-prompt`] }]);
   });
 
   it("a global candidate whose target is disjoint from an npx group installs its own group", async () => {
@@ -124,15 +125,11 @@ describe("registerHook by semantic command and coverage (ISS-1222)", () => {
     ]);
   });
 
-  it("compact-only and disjoint compact plus resume: each target installs once and re-registers as exists", async () => {
+  it("a compact-only group re-registers as exists, however often", async () => {
     await seed({ SessionStart: [{ matcher: "compact", hooks: [row(`${NVM} session resume-prompt`)] }] });
     expect(await registerSessionStartHook(settingsPath, NVM)).toBe("exists");
-    expect(await registerLimitSessionStartHook(settingsPath, NVM)).toBe("registered");
-    expect(await registerLimitSessionStartHook(settingsPath, NVM)).toBe("exists");
-    expect(await groupsOf("SessionStart")).toEqual([
-      { matcher: "compact", commands: [`${NVM} session resume-prompt`] },
-      { matcher: "resume", commands: [`${NVM} session resume-prompt`] },
-    ]);
+    expect(await registerSessionStartHook(settingsPath, NVM)).toBe("exists");
+    expect(await groupsOf("SessionStart")).toEqual([{ matcher: "compact", commands: [`${NVM} session resume-prompt`] }]);
   });
 
   it("a lone resume-group row no longer counts as compact coverage", async () => {

@@ -193,7 +193,7 @@ describe("ensureSessionIntelHooksRegistered", () => {
     expect(await ensureSessionIntelHooksRegistered(settingsPath, BIN)).toEqual({ changed: false, action: "unchanged" });
   });
 
-  it("the limit-resume kill switch does not disable the intel hooks, and vice versa", async () => {
+  it("a leftover limitResume member of the global config does not disable the intel hooks", async () => {
     writeFileSync(join(globalDir, "config.json"), JSON.stringify({ limitResume: { enabled: false } }));
     expect(await ensureSessionIntelHooksRegistered(settingsPath, BIN)).toEqual({ changed: true, action: "installed" });
   });
@@ -216,7 +216,7 @@ describe("legacy sweep for the intel hooks", () => {
       },
     }));
     const counts = await countLegacyHooks(BIN, settingsPath);
-    expect(counts).toMatchObject({ UserPromptSubmit: 1, PreCompact: 0, Stop: 0, StopFailure: 0 });
+    expect(counts).toMatchObject({ UserPromptSubmit: 1, PreCompact: 0, Stop: 0 });
     // The sweep only removes legacy entries (it never installs); the un-gated
     // reconcile is what puts the canonical entries back.
     expect(await sweepLegacyHooks(BIN, settingsPath)).toBe(2);

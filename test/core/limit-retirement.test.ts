@@ -3,7 +3,6 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync,
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { wakeChildMarkers } from "../../src/autonomous/wake-claim.js";
 import { acquireProjectLockAsync, releaseProjectLock } from "../../src/core/project-lock.js";
 import { settingsLockPath } from "../../src/core/settings-write-lock.js";
 import { captureProcessSignatureSync } from "../../src/core/process-identity.js";
@@ -22,6 +21,7 @@ import {
   runLimitRetirement,
   stopRetiredWaker,
   unlinkIdentified,
+  wakeChildMarkers,
   type RetirementDeps,
   type WakerStopDeps,
 } from "../../src/core/limit-retirement.js";

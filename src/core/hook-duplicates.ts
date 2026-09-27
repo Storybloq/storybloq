@@ -123,7 +123,7 @@ export interface DedupeOutcome {
  * that removed the group's last row) and is pruned; empty groups under any
  * other event belong to someone else and are never touched.
  */
-export const STORYBLOQ_HOOK_EVENTS: ReadonlySet<string> = new Set(["PreCompact", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+export const STORYBLOQ_HOOK_EVENTS: ReadonlySet<string> = new Set(["PreCompact", "SessionStart", "Stop", "UserPromptSubmit"]);
 
 /** The validated global launcher's command for a subcommand, or null when none was established. */
 export type GlobalCommandFor = (rest: string) => string | null;

@@ -100,7 +100,6 @@ function busStatusLines(bus: BusStatusInput): string[] {
     ? [`Bus: ${bus.setupState}`]
     : ["Bus: enabled, not set up in this checkout; run `storybloq bus setup`"];
 }
-import type { LimitStopSummary } from "./limit-ledger.js";
 import { phasesWithStatus, isBlockerCleared } from "./queries.js";
 
 function resolveTicketRefDisplay(ref: string, state: ProjectState): string {
@@ -490,41 +489,6 @@ function formatConfigHints(state: ProjectState): string[] {
 
 // --- Format Functions ---
 
-/** T-424: md lines for the limit-stopped section (shared by both status formatters). */
-function limitStopsSection(limitStops: readonly LimitStopSummary[]): string[] {
-  if (limitStops.length === 0) return [];
-  // Neutral heading: the section mixes SCHEDULED records (stopped/deferred) with
-  // in-progress and stood-down ones, so "auto-resume pending" would mislabel the
-  // manual/cancelling/resuming rows.
-  const lines = ["", "## Limit-stop records", ""];
-  for (const s of limitStops) {
-    const when = new Date(s.nextAttemptAt).toLocaleString();
-    const target = s.sessionType === "autonomous" && s.storybloqSessionId
-      ? `session ${s.storybloqSessionId.slice(0, 8)}`
-      : `plain session ${s.clientTaskId.slice(0, 8)}`;
-    // Action text follows STATUS, not just mode: only stopped/deferred are
-    // actually SCHEDULED; manual is stood down, resuming/interactive are
-    // in-progress, and cancelling/preparing are transitions.
-    const action = s.status === "manual"
-      ? (s.reasonCode === "cancellation_blocked"
-          ? "cancellation blocked on a live wake child"
-          : `stood down -- requeue: storybloq limit-status --requeue ${s.key}`)
-      : s.status === "cancelling"
-        ? "cancellation in progress"
-        : s.status === "preparing"
-          ? "detection in progress"
-          : s.status === "resuming"
-            ? "auto-resume in progress"
-            : s.status === "interactive"
-              ? "interactive resume in progress"
-              : s.mode === "headless" ? `auto-resumes ~${when}` : `notifies ~${when}`;
-    const reason = s.reasonCode ? ` [${s.reasonCode}]` : "";
-    lines.push(`- ${target} -- ${s.status}${reason}, ${s.limitType} limit, ${action} (attempts ${s.wakeAttempts})`);
-  }
-  lines.push("", "Manage with: storybloq limit-status [--cancel <key>] [--requeue <key>]");
-  return lines;
-}
-
 /**
  * Markdown for the faults a session scan could not account for (ISS-897).
  *
@@ -809,7 +773,6 @@ export function buildCompactStatusData(
   activeSessions: readonly ActiveSessionSummary[],
   resumableSessions: readonly ActiveSessionSummary[],
   bus: BusStatusInput,
-  limitStops: readonly LimitStopSummary[],
   sessionDiagnostics: readonly SessionScanDiagnostic[] | undefined,
   expiredLeaseSessions: readonly ActiveSessionSummary[],
   arrangements: StatusArrangements,
@@ -847,9 +810,6 @@ export function buildCompactStatusData(
     expiredLeaseSessions: expiredLeaseSessions.map(reduceSessionForCompact),
     ...(sessionDiagnostics ? { sessionDiagnostics } : {}),
     ...(bus ? { bus: reduceBusForCompact(bus) } : {}),
-    // Kept whole -- the ticket's amendment: the original text calling for a
-    // reduced `limitStops` was a slip.
-    limitStops,
     arrangements: arrangements.items,
     arrangementWarnings: arrangements.warnings,
   };
@@ -874,12 +834,15 @@ export function formatStatus(
   activeSessions: readonly ActiveSessionSummary[] = [],
   resumableSessions: readonly ActiveSessionSummary[] = [],
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
-  limitStops: readonly LimitStopSummary[] = [],
+  // T-534: the usage-limit auto-resume is retired and status no longer
+  // reports limit stops. The positional slot stays (ignored) so callers
+  // passing the later arguments by position are not shifted.
+  _retiredLimitStops: readonly unknown[] = [],
   sessionDiagnostics?: readonly SessionScanDiagnostic[],
   // ISS-943, APPENDED LAST and deliberately not inserted beside
   // `activeSessions`/`resumableSessions`: `formatStatus` is positional and
   // exported from the package root (`core/index.ts` -> `src/index.ts`), so
-  // inserting a parameter anywhere but the end would shift `bus`/`limitStops`/
+  // inserting a parameter anywhere but the end would shift `bus`/the retired slot/
   // `sessionDiagnostics` for any external caller still using positional args.
   expiredLeaseSessions: readonly ActiveSessionSummary[] = [],
   // T-473, same APPENDED-LAST discipline as `expiredLeaseSessions` above.
@@ -908,7 +871,6 @@ export function formatStatus(
           activeSessions,
           resumableSessions,
           bus,
-          limitStops,
           sessionDiagnostics,
           expiredLeaseSessions,
           arrangements,
@@ -979,10 +941,6 @@ export function formatStatus(
     // `enabled: false` for a disabled project rather than undefined -- so its
     // absence here means only that a caller omitted the argument.
     ...(bus ? { bus } : {}),
-    // ISS-893: always present, empty when there are none -- the same contract
-    // ISS-891 gave the session arrays, for the same reason. This was the last
-    // field in these two objects still using the omit-when-empty pattern.
-    limitStops,
     // T-473: active-only arrangements, same always-present/empty-when-none
     // convention. `arrangementWarnings` is a separate, purely advisory key --
     // never merged into `sessionDiagnostics` or any other channel this
@@ -1072,7 +1030,6 @@ export function formatStatus(
 
   lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
-  lines.push(...limitStopsSection(limitStops));
   lines.push(...arrangementsSection(arrangements));
 
   if (state.isEmptyScaffold) {
@@ -1093,7 +1050,10 @@ export function formatFederatedStatus(
   activeSessions: readonly ActiveSessionSummary[] = [],
   resumableSessions: readonly ActiveSessionSummary[] = [],
   bus?: BusSummary | { readonly enabled: true; readonly error: { readonly code: string; readonly message: string } },
-  limitStops: readonly LimitStopSummary[] = [],
+  // T-534: the usage-limit auto-resume is retired and status no longer
+  // reports limit stops. The positional slot stays (ignored) so callers
+  // passing the later arguments by position are not shifted.
+  _retiredLimitStops: readonly unknown[] = [],
   sessionDiagnostics?: readonly SessionScanDiagnostic[],
   // ISS-943: appended last, matching `formatStatus`'s placement, for signature
   // symmetry between the two -- this function is not in `core/index.ts`'s
@@ -1159,10 +1119,6 @@ export function formatFederatedStatus(
     // `enabled: false` for a disabled project rather than undefined -- so its
     // absence here means only that a caller omitted the argument.
     ...(bus ? { bus } : {}),
-    // ISS-893: always present, empty when there are none -- the same contract
-    // ISS-891 gave the session arrays, for the same reason. This was the last
-    // field in these two objects still using the omit-when-empty pattern.
-    limitStops,
     // T-473: active-only arrangements, same always-present/empty-when-none
     // convention. `arrangementWarnings` is a separate, purely advisory key --
     // never merged into `sessionDiagnostics` or any other channel this
@@ -1265,7 +1221,6 @@ export function formatFederatedStatus(
 
   lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
-  lines.push(...limitStopsSection(limitStops));
   lines.push(...arrangementsSection(arrangements));
 
   return lines.join("\n");
@@ -3383,7 +3338,7 @@ export function formatReference(
   lines.push("");
   lines.push("### JSON output envelope");
   lines.push("");
-  lines.push('`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `limit-status`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).');
+  lines.push('`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).');
   lines.push("");
   lines.push("Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.");
   lines.push("");

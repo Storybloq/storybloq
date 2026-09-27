@@ -20,15 +20,36 @@ import { withSettingsWriteLock } from "./settings-write-lock.js";
 import { captureProcessSignatureSync, inspectProcessIdentitySync, type ProcessIdentity } from "./process-identity.js";
 import { hasArgvSignature, probeArgvSignature, safeUnlinkLock } from "../autonomous/liveness.js";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "./project-lock.js";
-import { wakeChildMarkers } from "../autonomous/wake-claim.js";
 import {
   defaultSettingsPath,
-  LIMITSTOP_SUBCOMMAND,
-  LIMIT_SESSIONSTART_MATCHER,
   SESSIONSTART_SUBCOMMAND,
   STORYBLOQ_LEGACY_BASENAMES,
   parseHookCommand,
 } from "./hook-migration.js";
+
+/** The retired StopFailure hook's subcommand (the `session limit-stop` tombstone). */
+export const LIMITSTOP_SUBCOMMAND = "session limit-stop";
+/** The retired second SessionStart group's matcher (same resume-prompt command as "compact"). */
+export const LIMIT_SESSIONSTART_MATCHER = "resume";
+
+// ---------------------------------------------------------------------------
+// Wake child identity (moved from the deleted autonomous/wake-claim.ts)
+// ---------------------------------------------------------------------------
+
+/** Attempt-specific argv sentinel, embedded in the wake child's prompt. */
+export function wakeAttemptSentinel(attemptId: string): string {
+  return `[storybloq-wake ${attemptId}]`;
+}
+
+/**
+ * Full identity of a wake child: the resume session UUID PLUS the
+ * attempt-specific sentinel embedded in its prompt argv. An interactive
+ * `claude --resume <id>` shares the UUID but never the attempt sentinel, so
+ * it can never be matched (or signalled) as the wake child.
+ */
+export function wakeChildMarkers(clientTaskId: string, attemptId: string): string[] {
+  return [clientTaskId, wakeAttemptSentinel(attemptId)];
+}
 
 // ---------------------------------------------------------------------------
 // Hooks

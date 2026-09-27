@@ -234,7 +234,7 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     ]);
   });
 
-  it("autoRefreshSkillIfStale does NOT install limit hooks when the global kill switch is set", async () => {
+  it("autoRefreshSkillIfStale installs no hooks when the session-intel kill switch is set", async () => {
     const binDir = join(tempDir, "bin");
     await mkdir(binDir, { recursive: true });
     const binPath = join(binDir, "storybloq");
@@ -244,7 +244,7 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
 
     const globalDir = join(tempDir, "storybloq-global");
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, "config.json"), JSON.stringify({ limitResume: { enabled: false }, sessionIntel: { enabled: false } }), "utf-8");
+    await writeFile(join(globalDir, "config.json"), JSON.stringify({ sessionIntel: { enabled: false } }), "utf-8");
     const savedGlobal = process.env.STORYBLOQ_GLOBAL_DIR;
     process.env.STORYBLOQ_GLOBAL_DIR = globalDir;
     try {
@@ -263,9 +263,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     }
   });
 
-  it("autoRefreshSkillIfStale honors reconcileLimitHooks:false (setup --skip-hooks not defeated by refresh)", async () => {
-    // `setup --skip-hooks` threads reconcileLimitHooks:false through the pre-
-    // command version refresh; a stale refresh must NOT install limit hooks over
+  it("autoRefreshSkillIfStale honors reconcileHooks:false (setup --skip-hooks not defeated by refresh)", async () => {
+    // `setup --skip-hooks` threads reconcileHooks:false through the pre-
+    // command version refresh; a stale refresh must NOT install hooks over
     // hook-free settings, or the skip would be silently undone.
     const binDir = join(tempDir, "bin");
     await mkdir(binDir, { recursive: true });
@@ -278,9 +278,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     await writeFile(settingsPath, JSON.stringify({ model: "opus" }, null, 2), "utf-8");
 
     const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
-    // The skill refresh still runs (returns true); only the limit-hook
+    // The skill refresh still runs (returns true); only the hook
     // reconciliation is suppressed.
-    expect(await autoRefreshSkillIfStale("1.1.6", { reconcileLimitHooks: false })).toBe(true);
+    expect(await autoRefreshSkillIfStale("1.1.6", { reconcileHooks: false })).toBe(true);
 
     const { readFile } = await import("node:fs/promises");
     const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as {

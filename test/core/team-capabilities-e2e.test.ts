@@ -210,7 +210,7 @@ describe("ISS-736: update banner stays out of non-interactive stderr", () => {
   // that exact HOME, so fixture.env({HOME: home}) (which correctly keeps
   // REJECTING a HOME override, per F12) cannot be used here. Instead this
   // takes the fixture's isolated CODEX_HOME/STORYBLOQ_GLOBAL_DIR/
-  // XDG_CONFIG_HOME/STORYBLOQ_DISABLE_WAKER_SPAWN (via fixture.env()) and
+  // XDG_CONFIG_HOME (via fixture.env()) and
   // overrides only HOME/USERPROFILE on the resulting object, rather than
   // going through fixture.env()'s own override parameter (which rejects a
   // HOME override outright, by design, to stop a call site from silently

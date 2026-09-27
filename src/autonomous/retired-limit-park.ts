@@ -27,6 +27,7 @@ import {
   withSessionLock,
   withoutLimitKeys,
   writeSessionSync,
+  isRetiredLimitPark,
   LIMIT_KEYS,
 } from "./session.js";
 import { WORKFLOW_STATES, type FullSessionState } from "./session-types.js";
@@ -182,7 +183,7 @@ export async function normalizeRetiredLimitParkLocked(
 
   // Inert keys from an ordinary write under the old schema, or stale limit
   // metadata on a session that ended or already resumed: strip only.
-  if (state.interruptionKind !== "limit" || isTerminal(state) || state.state !== "COMPACT") return strip();
+  if (!isRetiredLimitPark(state) || isTerminal(state) || state.state !== "COMPACT") return strip();
 
   if (!state.compactPending || !state.preCompactState || !RESUMABLE_STATES.includes(state.preCompactState)) {
     return {

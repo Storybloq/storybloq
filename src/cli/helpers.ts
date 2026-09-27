@@ -128,7 +128,7 @@ export const JSON_ENVELOPE_EPILOGUE =
  * Such a command does not register --raw AT ALL, so strict parsing rejects
  * `--raw` during argument validation, before the handler runs. That ordering
  * is the point: several of these commands mutate (`gc --apply`, `resolve`,
- * `team init/setup/reserve`, `limit-status --cancel`), and rejecting at the
+ * `team init/setup/reserve`), and rejecting at the
  * output seam instead would let the mutation happen and only then report a
  * raw-mode error, inviting a retry of work that already succeeded.
  */

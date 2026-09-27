@@ -4,12 +4,12 @@
 
 ### JSON output envelope
 
-`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `limit-status`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).
+`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).
 
 Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.
 
 - **init** (--name?, --force?, --type?, --language?, --node?, --format?) - Initialize a new .story/ project
-- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. limitStops, sessionDiagnostics, arrangements/arrangementWarnings, and every other top-level field are kept whole.
+- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. sessionDiagnostics, arrangements/arrangementWarnings, and every other top-level field are kept whole.
 - **ticket list** (--status?, --phase?, --type?, --format?, --node?) - List tickets with optional filters
 - **ticket get <id>** (--format?) - Get ticket details by ID
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
@@ -90,7 +90,6 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **selftest** (--format?) - Run integration smoke test: create/update/delete cycle across all entity types
 - **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. --format json is the shared {version, data} envelope with the result under data; --raw unwraps it
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
-- **limit-status** (--cancel?, --requeue?, --recent?, --format?) - Show pending usage-limit auto-resumes (global across projects); cancel or requeue records
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink); a refusal names the rule that failed
@@ -156,7 +155,6 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **review-stats** (--fleet?, --open-window?, --close-window?, --contract?, --format?) - Review efficiency metrics over review verdict artifacts
 - **session compact-prepare** (--client?) - Prepare session for compaction (PreCompact hook)
 - **session resume-prompt** (--codex-hook-json?) - Output resume instruction after compaction (SessionStart hook)
-- **session limit-stop** - Record a usage-limit stop for auto-resume (StopFailure hook)
 - **session clear-compact [sessionId]** (--force?) - Clear stale compact marker (admin)
 - **session stop [sessionId]** - Stop an active session (admin)
 - **session list** (--status?, --format?) - List sessions on disk (admin)

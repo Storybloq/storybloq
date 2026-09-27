@@ -114,10 +114,10 @@ describe("--raw end to end", () => {
   });
 
   it("a deviant-shape command rejects --raw at PARSE time, before its handler can run", () => {
-    // limit-status emits {ok, data}. It does not register --raw, so strict
-    // parsing rejects the flag during validation -- the seam-level rejection
-    // would come too late for the mutating members of this family.
-    const { code, out } = run(projectDir, "limit-status", "--format", "json", "--raw");
+    // gc emits {ok, data}. It does not register --raw, so strict parsing
+    // rejects the flag during validation -- the seam-level rejection would
+    // come too late for the mutating members of this family.
+    const { code, out } = run(projectDir, "gc", "--format", "json", "--raw");
     expect(code).not.toBe(0);
     expect(out).toContain("Unknown argument: raw");
   });
@@ -155,8 +155,8 @@ describe("deviant-shape annotations match actual output", () => {
     keys.includes("version") &&
     (keys.includes("data") || keys.includes("error"));
 
-  it("gc and limit-status: help names the {ok, data} shape AND they really emit it", () => {
-    for (const argv of [["gc"], ["limit-status"]]) {
+  it("gc: help names the {ok, data} shape AND it really emits it", () => {
+    for (const argv of [["gc"]]) {
       const help = run(projectDir, ...argv, "--help");
       expect(squash(help.out), `${argv.join(" ")} --help`).toContain(squash('{"ok", "data"}'));
       expect(squash(help.out), `${argv.join(" ")} --help`).toContain(squash("NOT the shared"));

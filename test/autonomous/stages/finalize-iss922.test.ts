@@ -16,7 +16,9 @@
  * after a hand-written poisoning would prove nothing about whether the stage
  * can still be closed, which is the property that actually failed.
  *
- * P1 and P2 call the REAL park functions, so they pin the writers themselves.
+ * P2 calls the REAL park function, so it pins the writer itself. (P1 pinned
+ * the usage-limit park, whose writer was retired with the auto-resume in
+ * T-534; a legacy park is now normalised before any resume, never replayed.)
  * P3 does NOT: it is a stage-level test over the state that guide.ts's resume
  * fast-forward produces, constructed directly. The real resume writer is pinned
  * separately in test/autonomous/handle-resume.test.ts. P3 therefore cannot
@@ -31,7 +33,7 @@ import { join } from "node:path";
 
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { FinalizeStage } from "../../../src/autonomous/stages/finalize.js";
-import { prepareForCompact, prepareForLimitStop } from "../../../src/autonomous/session.js";
+import { prepareForCompact } from "../../../src/autonomous/session.js";
 import { gitDiffTreeNames } from "../../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 import { git as fixtureGit } from "../../helpers/git-fixture.js";
@@ -198,25 +200,6 @@ describe("ISS-922: a park between commit and FINALIZE must not close the stage",
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("P1: the usage-limit park (the observed failure) leaves every exit open", () => {
-    const base = makeState(root);
-    const workCommit = landWorkCommit(root);
-
-    // The REAL park function, with the head it really captures at limit time.
-    prepareForLimitStop(dir, { ...base, git: { ...base.git, itemBaseHead: initHead, expectedHead: initHead } }, {
-      expectedHead: workCommit,
-      permissionMode: "acceptEdits",
-      resumeAt: Date.now() + 60_000,
-      limitEventId: "evt-922",
-    });
-
-    const parked = readState(dir);
-    expect(parked.git.expectedHead, "park should still record the observation").toBe(workCommit);
-    expect(parked.git.itemBaseHead, "park must NOT move the finalization baseline").toBe(initHead);
-
-    return assertAllThreeExitsOpen(root, dir, { ...parked, state: "FINALIZE", compactPending: false }, workCommit);
-  });
-
   it("P2: the pre-FINALIZE compact window leaves every exit open", () => {
     const base = makeState(root, { state: "ISSUE_FIX" });
     const workCommit = landWorkCommit(root);
@@ -332,7 +315,7 @@ describe("ISS-922: diagnosing a session poisoned by a pre-fix CLI, without heali
   /**
    * Legacy state as PARKING leaves it: no itemBaseHead at all, expectedHead
    * promoted onto the work commit, and mergeBase still on the item's review
-   * base. That last part matters -- prepareForCompact / prepareForLimitStop
+   * base. That last part matters -- prepareForCompact (and the retired usage-limit park)
    * move expectedHead alone, and the diagnosis uses mergeBase to tell this
    * shape apart from foreign drift, which moves both.
    */

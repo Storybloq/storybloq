@@ -7,7 +7,6 @@ import { writeFederationCache } from "../../federation/cache.js";
 import { CrossNodeBlockingResolver } from "../../federation/cross-node-resolver.js";
 import { join } from "node:path";
 import type { CommandContext, CommandResult } from "../types.js";
-import type { LimitStopSummary } from "../../core/limit-ledger.js";
 import { busSummary } from "../../bus/store.js";
 import { BusError } from "../../bus/errors.js";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
@@ -184,7 +183,7 @@ function enrichPresenceForCaller(root: string, explicitClientTaskId: string | nu
     }));
   } catch {
     // Best-effort, matching every other status side-read in this function
-    // (limitStops, bus): a broken enrichment path must never fail status.
+    // (bus): a broken enrichment path must never fail status.
   }
 }
 
@@ -231,14 +230,6 @@ export async function handleStatus(
   } = scanSessionSummaries(ctx.root);
   const config = ctx.state.config;
 
-  // T-424: pending limit auto-resumes for this project (best-effort).
-  let limitStops: LimitStopSummary[] = [];
-  try {
-    const { listLimitStopsForProject } = await import("../../core/limit-ledger.js");
-    limitStops = listLimitStopsForProject(ctx.root);
-  } catch {
-    // Status must render even when the global ledger is unreadable.
-  }
   // D7: the Bus capability block is always present in JSON (even when disabled);
   // the Markdown formatter stays quiet until the Bus is enabled.
   let bus;
@@ -293,7 +284,7 @@ export async function handleStatus(
         activeSessions,
         resumableSessions,
         bus,
-        limitStops,
+        [],
         sessionDiagnostics,
         expiredLeaseSessions,
         arrangements,
@@ -311,7 +302,7 @@ export async function handleStatus(
     activeSessions,
     resumableSessions,
     bus,
-    limitStops,
+    [],
     sessionDiagnostics,
     expiredLeaseSessions,
     arrangements,

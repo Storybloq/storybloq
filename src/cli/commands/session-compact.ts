@@ -22,26 +22,6 @@ import {
   LIMIT_KEYS,
   type ActiveSessionInfo,
 } from "../../autonomous/session.js";
-import {
-  limitRecordKey,
-  readLimitLedger,
-  resolveOwnerlessRecord,
-  peekLimitRecord,
-  markInteractive,
-  LIMIT_STATUS_META,
-  type LimitRecordStatus,
-  type LimitRecord,
-} from "../../core/limit-ledger.js";
-import { withLimitLock } from "../../core/limit-lock.js";
-import {
-  WAKE_ATTEMPT_ENV,
-  parseWakeAttemptEnv,
-  readWakeClaim,
-  clearWakeClaim,
-  wakeClaimLockPath,
-  signalWakeChild,
-  wakeChildMarkers,
-} from "../../autonomous/wake-claim.js";
 import { WORKFLOW_STATES } from "../../autonomous/session-types.js";
 import {
   checkSurvivingWakeAttempts,
@@ -332,9 +312,6 @@ export interface SessionStartHookContext {
   readonly sessionId?: string;
   readonly cwd?: string;
   readonly transcriptPath?: string;
-  // T-424: StopFailure payload fields (additive; absent on other hook events).
-  readonly errorType?: string;
-  readonly permissionMode?: string;
   readonly hookEventName?: string;
   // ISS-1307: subagent signals (additive). `agent_type` is deliberately not
   // read: a `claude --agent X` main session carries it on every hook.
@@ -412,9 +389,6 @@ export async function readHookStdinContext(
       session_id?: unknown;
       cwd?: unknown;
       transcript_path?: unknown;
-      error_type?: unknown;
-      error?: unknown;
-      permission_mode?: unknown;
       hook_event_name?: unknown;
       agent_id?: unknown;
       trigger?: unknown;
@@ -428,15 +402,6 @@ export async function readHookStdinContext(
     const transcriptPath = typeof parsed.transcript_path === "string" &&
       parsed.transcript_path.length > 0 && parsed.transcript_path.length <= 4096
       ? parsed.transcript_path
-      : undefined;
-    // T-424: the StopFailure error field is semi-documented; accept both spellings.
-    const errorType = typeof parsed.error_type === "string"
-      ? parsed.error_type
-      : typeof parsed.error === "string"
-        ? parsed.error
-        : undefined;
-    const permissionMode = typeof parsed.permission_mode === "string" && parsed.permission_mode.length <= 64
-      ? parsed.permission_mode
       : undefined;
     const hookEventName = typeof parsed.hook_event_name === "string" && parsed.hook_event_name.length <= 64
       ? parsed.hook_event_name
@@ -456,8 +421,6 @@ export async function readHookStdinContext(
       ...(sessionId ? { sessionId } : {}),
       ...(cwd ? { cwd } : {}),
       ...(transcriptPath ? { transcriptPath } : {}),
-      ...(errorType ? { errorType } : {}),
-      ...(permissionMode ? { permissionMode } : {}),
       ...(hookEventName ? { hookEventName } : {}),
       ...(agentId ? { agentId } : {}),
       ...(trigger ? { trigger } : {}),
@@ -500,252 +463,6 @@ function busEndpointMarker(endpoint: BusEndpoint, pending: { cursor: number; cou
     "[/storybloq-bus-endpoint]",
     "",
   ].join("\n");
-}
-
-/**
- * T-424: SessionStart handling for a limit-parked session. Distinguishes the
- * waker's own headless child (env token matches the active wake claim; stays
- * silent -- its wake prompt already carries the resume instruction) from an
- * interactive reopen (revokes the claim, marks the ledger record
- * `interactive`, async-terminates the waker's child) and gates the emitted
- * instruction by the record's mode/reasonCode. Never throws, never blocks.
- */
-function emitLimitResumePrompt(args: {
-  info: ActiveSessionInfo;
-  sessionId: string;
-  taskArg: string;
-  stale: boolean;
-  writeResumeMessage: (message: string) => void;
-}): void {
-  const { info, sessionId, taskArg, stale, writeResumeMessage } = args;
-  const state = info.state;
-  const resumeAtText = state.limitResumeAt
-    ? new Date(state.limitResumeAt).toLocaleString()
-    : "the limit reset";
-  const clientTaskId = state.ownerTask?.client === "claude"
-    ? state.ownerTask.id
-    : state.claudeCodeSessionId ?? null;
-
-  // Resolve the ledger key. Normally the session's own owner identity seeds it.
-  // If the session lost BOTH owner identifiers, fall back to the CURRENT-episode
-  // record located by storybloqSessionId + limitEventId (mirrors
-  // cancelLimitAutoResume) so a tokenless reopen still stands a live headless
-  // wake down instead of racing it. `recordClientTaskId` (the record's own
-  // clientTaskId) drives wake-child markers, since the session no longer carries
-  // that identity.
-  let key: string | null = clientTaskId ? limitRecordKey(clientTaskId) : null;
-  let recordClientTaskId: string | null = clientTaskId;
-  let ownerlessResolveFailed = false;
-  if (!key) {
-    try {
-      // Locked, fail-closed resolution: a throw (lock unavailable / ambiguous)
-      // means we CANNOT prove no live wake child owns this session, so we must
-      // NOT emit a bare guide instruction. A null result IS authoritative (no
-      // current-episode record) -> a genuine ownerless park, safe to instruct.
-      const found = resolveOwnerlessRecord(state.sessionId, state.limitEventId);
-      if (found) {
-        key = found.key;
-        recordClientTaskId = found.clientTaskId;
-      }
-    } catch {
-      ownerlessResolveFailed = true;
-    }
-  }
-
-  // Self-wake recognition: a process carrying STORYBLOQ_WAKE_ATTEMPT is
-  // definitively one of OUR spawned wake children -- the token is a per-attempt
-  // secret an interactive reopen never has. Identify it against the LEDGER
-  // (authoritative), not the claim FILE: a transient readWakeClaim failure must
-  // never make our own child fall through to the interactive-takeover path and
-  // SIGTERM itself. Stay silent only while the ledger confirms it is the LIVE
-  // `resuming` attempt; a superseded/cancelled one (or an unconfirmable one)
-  // stands down instead of racing the interactive session.
-  const claim = readWakeClaim(info.dir);
-  const envAttempt = parseWakeAttemptEnv(process.env[WAKE_ATTEMPT_ENV]);
-  if (envAttempt) {
-    let live = false;
-    if (key) {
-      try {
-        const rec = peekLimitRecord(key);
-        live =
-          rec?.status === "resuming" &&
-          rec.attempt?.id === envAttempt.attemptId &&
-          rec.attempt.token === envAttempt.token;
-      } catch {
-        // FAIL CLOSED: ledger unreadable -> cannot prove this is our current
-        // live child -> stand down (a genuine live child is re-dispatched by
-        // the waker on its next poll).
-        live = false;
-      }
-    }
-    if (live) return; // the waker's own live child: stay silent
-    writeResumeMessage(
-      "This headless wake attempt was superseded (another resume owns the session). " +
-      "Do NOT call the autonomous guide; end this run without further action.\n",
-    );
-    return;
-  }
-
-  // FINALIZE stops are manual-recovery only (see handleResume's enforcement).
-  if (state.preCompactState === "FINALIZE") {
-    writeResumeMessage(
-      `Session ${sessionId} was stopped by a usage limit during FINALIZE. ` +
-      "Do NOT resume it blindly: replaying finalization can duplicate commits. " +
-      "Verify what landed with `git log` (commit, push, ticket updates), then run " +
-      `"storybloq session clear-compact ${sessionId} --force" and resume.\n`,
-    );
-    return;
-  }
-
-  // Tokenless reopen: this is an interactive resume. Under the wake-claim lock,
-  // stand the waker down (mark `interactive`, revoke the claim) so two
-  // processes never drive one transcript.
-  let record: LimitRecord | undefined;
-  let supersededResuming = false;
-  let supersededChildPid: number | null = null;
-  let supersededAttemptId: string | null = null;
-  let takeoverContested = false;
-  if (key) {
-    try {
-      record = readLimitLedger().records[key];
-      if (record && record.mode === "headless" &&
-          (record.status === "resuming" || record.status === "stopped" || record.status === "deferred")) {
-        const outcome = withLimitLock(
-          wakeClaimLockPath(info.dir),
-          (): { marked: ReturnType<typeof markInteractive>; fresh?: LimitRecord } => {
-            const m = markInteractive(key);
-            if (m) {
-              clearWakeClaim(info.dir); // revoke the claim ONLY on a successful takeover CAS
-              return { marked: m };
-            }
-            // CAS lost: cancellation or a new generation won between the
-            // pre-lock read and here. Do NOT clear the claim; re-read the
-            // record so messaging reflects real state, not the stale snapshot.
-            return { marked: null, fresh: readLimitLedger().records[key] };
-          },
-          { deadlineMs: 750 },
-        );
-        if (outcome.marked) {
-          // A `resuming` record is superseded even when childPid is still null:
-          // the waker may be BETWEEN claim and spawn, and emitting the normal
-          // resume instruction here would let the interactive and headless
-          // clients drive one transcript concurrently. (The waker's own
-          // recordAttemptSpawn CAS fails against `interactive` and terminates
-          // the just-spawned child.)
-          supersededResuming = outcome.marked.priorStatus === "resuming";
-          supersededChildPid = outcome.marked.attempt?.childPid ?? claim?.childPid ?? null;
-          supersededAttemptId = outcome.marked.attempt?.id ?? claim?.attemptId ?? null;
-        } else {
-          // Takeover CAS contested: never authorize the normal resume prompt
-          // from the stale snapshot -- the record may now be cancelling or a
-          // newer episode. Emit a stand-down and reflect the current record.
-          takeoverContested = true;
-          record = outcome.fresh;
-        }
-      }
-    } catch {
-      // Ledger/wake-claim lock unavailable: we CANNOT prove that no headless
-      // attempt owns this session, so FAIL CLOSED. Emitting the normal resume
-      // instruction here could let this interactive client drive the transcript
-      // beside a live wake child. Stand down and have the user retry.
-      takeoverContested = true;
-    }
-  }
-
-  if (takeoverContested && key) {
-    writeResumeMessage(
-      `Session ${sessionId}'s usage-limit auto-resume state could not be confirmed right now (it may be ` +
-      "cancelling, re-limited, or the ledger was briefly locked). Do NOT call the autonomous guide now; " +
-      "retry /story in a moment.\n",
-    );
-    return;
-  }
-
-  if ((supersededResuming || supersededChildPid) && key && recordClientTaskId) {
-    if (supersededChildPid && supersededAttemptId) {
-      signalWakeChild(supersededChildPid, wakeChildMarkers(recordClientTaskId, supersededAttemptId));
-    }
-    writeResumeMessage(
-      `A headless auto-resume of session ${sessionId} is being stopped in favor of this interactive session. ` +
-      "Retry /story in a moment to continue it here.\n",
-    );
-    return;
-  }
-
-  if (record?.status === "manual") {
-    if (record.reasonCode === "bypass_not_opted_in") {
-      writeResumeMessage(
-        `Session ${sessionId} hit a usage limit while running with bypassed permissions. ` +
-        "Automatic wake needs a one-time opt-in: set limitResume.inheritBypass=true in .story/config.json. " +
-        `To continue here now, call storybloq_autonomous_guide with:\n` +
-        `{"sessionId": "${sessionId}", "action": "resume"${taskArg}}\n`,
-      );
-      return;
-    }
-    if (record.reasonCode === "cancellation_blocked") {
-      writeResumeMessage(
-        `Session ${sessionId} has a limit auto-resume in a blocked cancellation (a wake child could not be terminated). ` +
-        `Check "storybloq limit-status" before resuming.\n`,
-      );
-      return;
-    }
-    writeResumeMessage(
-      `Session ${sessionId} was stopped by a usage limit; automatic resume stood down` +
-      `${record.reasonCode ? ` (${record.reasonCode})` : ""}. ` +
-      `To continue here, call storybloq_autonomous_guide with:\n` +
-      `{"sessionId": "${sessionId}", "action": "resume"${taskArg}}\n`,
-    );
-    return;
-  }
-
-  // Any remaining NON-terminal record we did not convert to an interactive
-  // takeover is mid-transition: `cancelling` (a stand-down in progress), a
-  // `preparing` intent the StopFailure handler has not activated, or an
-  // `interactive` claim already held by a different client. Resuming over it
-  // would race in-flight work (a wake child still terminating, session
-  // cancellation completing). Fail closed -- never emit the guide instruction.
-  // A `stopped`/`deferred` record we DID mark interactive falls through to the
-  // normal instruction below (there is no in-flight child to race).
-  if (
-    record &&
-    !LIMIT_STATUS_META[record.status as LimitRecordStatus]?.terminal &&
-    record.status !== "stopped" &&
-    record.status !== "deferred"
-  ) {
-    writeResumeMessage(
-      `Session ${sessionId}'s usage-limit auto-resume is mid-transition (status: ${record.status}); ` +
-      "it may be cancelling, still being set up, or already claimed by another resume. " +
-      "Do NOT call the autonomous guide now; retry /story in a moment.\n",
-    );
-    return;
-  }
-
-  if (ownerlessResolveFailed) {
-    // Ownerless session + the ledger could not be read under its lock: we cannot
-    // rule out a live headless wake child, so fail closed (no guide instruction).
-    writeResumeMessage(
-      `Session ${sessionId}'s usage-limit auto-resume state could not be confirmed right now ` +
-      "(the ledger was briefly locked). Do NOT call the autonomous guide now; retry /story in a moment.\n",
-    );
-    return;
-  }
-
-  if (record?.status === "failed" || stale) {
-    writeResumeMessage(
-      `Session ${sessionId} was stopped by a usage limit and automatic resume ` +
-      `${record?.status === "failed" ? `gave up after ${record.wakeAttempts} attempt(s)` : "did not complete"}. ` +
-      `To continue here, call storybloq_autonomous_guide with:\n` +
-      `{"sessionId": "${sessionId}", "action": "resume"${taskArg}}\n`,
-    );
-    return;
-  }
-
-  writeResumeMessage(
-    `Session ${sessionId} is paused at a usage limit (auto-resume scheduled around ${resumeAtText}). ` +
-    `To continue in THIS session instead, call storybloq_autonomous_guide with:\n` +
-    `{"sessionId": "${sessionId}", "action": "resume"${taskArg}}\n` +
-    "The guide validates git state; the pending auto-resume stands down automatically.\n",
-  );
 }
 
 /**
@@ -1036,14 +753,6 @@ export async function handleSessionResumePrompt(
 
     const taskArg = callerTask ? `, "clientTaskId": "${callerTask.id}"` : "";
 
-    // T-424: limit-parked sessions get limit-aware handling (self-wake
-    // recognition, interactive-reopen supersede, gated instructions).
-    // T-534: unreachable after the normalisation above; removed in C3.
-    if (info.state.interruptionKind === "limit") {
-      emitLimitResumePrompt({ info, sessionId, taskArg, stale, writeResumeMessage });
-      return;
-    }
-
     // Stale check first -- stale sessions get stale message regardless of resumeBlocked
     if (stale) {
       // Stale session -- output recovery message (not silence)
@@ -1292,18 +1001,8 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
 }
 
 // ---------------------------------------------------------------------------
-// session-limit-stop (StopFailure hook)  [T-424]
+// session limit-stop (retired StopFailure hook)  [T-534 tombstone]
 // ---------------------------------------------------------------------------
-
-export interface SessionLimitStopOptions {
-  readonly clientTaskId?: string;
-  readonly cwd?: string;
-  readonly transcriptPath?: string;
-  readonly errorType?: string;
-  readonly permissionMode?: string;
-  /** Injected clock for tests. */
-  readonly now?: number;
-}
 
 /**
  * T-534 tombstone. Installs that still carry the StopFailure hook land here:
@@ -1311,7 +1010,7 @@ export interface SessionLimitStopOptions {
  * (which removes the hook itself), writes nothing to stdout and never fails.
  * No park, ledger record or waker is created.
  */
-export async function handleSessionLimitStop(_options: SessionLimitStopOptions = {}): Promise<void> {
+export async function handleSessionLimitStop(): Promise<void> {
   try {
     const { retireLimitAutoResumeBestEffort } = await import("../limit-retirement-entry.js");
     await retireLimitAutoResumeBestEffort(process.env.STORYBLOQ_VERSION ?? "0.0.0-dev");

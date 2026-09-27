@@ -5315,102 +5315,6 @@ export function registerHookBusToolCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
-// limit-status (T-424: pending limit auto-resumes)
-// ---------------------------------------------------------------------------
-
-export function registerLimitStatusCommand(yargs: Argv): Argv {
-  return yargs.command(
-    "limit-status",
-    "Show what the retired usage-limit ledger still holds (read-only)",
-    (y) =>
-      addFormatOption(y
-        .option("cancel", {
-          type: "string",
-          describe: "Retired with the usage-limit auto-resume (T-534); refused",
-        })
-        .option("requeue", {
-          type: "string",
-          describe: "Retired with the usage-limit auto-resume (T-534); refused",
-        })
-        .option("recent", {
-          type: "boolean",
-          describe: "ISS-944: also list terminal records (defer_exhausted, attempts_exhausted, etc.)",
-        }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
-    async (argv) => {
-      const { handleLimitStatus } = await import("./commands/limit-status.js");
-      try {
-        const result = await handleLimitStatus({
-          cancel: argv.cancel as string | undefined,
-          requeue: argv.requeue as string | undefined,
-          format: argv.format as "json" | "md",
-          recent: argv.recent as boolean | undefined,
-        });
-        // ISS-910: all output through writeOutput, never process.stdout. This
-        // command does NOT register --raw (its JSON shape is deviant, so the
-        // flag is rejected during argument validation); the seam still owns
-        // EPIPE handling and keeps one output path for the whole CLI.
-        writeOutput(result.output);
-        if (result.errorCode) process.exitCode = 1;
-      } catch (err: unknown) {
-        // ISS-910: an automated caller parses stdout. Answering only on
-        // stderr left it with empty stdout on failure, which is as
-        // unparseable as prose; emit this command's documented shape.
-        const message = err instanceof Error ? err.message : String(err);
-        writeOutput(
-          argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
-        );
-        process.exitCode = 1;
-      }
-    },
-  );
-}
-
-// ---------------------------------------------------------------------------
-// waker-run (T-424: hidden detached limit-waker entry point)
-// ---------------------------------------------------------------------------
-
-export function registerWakerRunCommand(yargs: Argv): Argv {
-  return yargs.command(
-    "waker-run",
-    false as unknown as string, // hidden -- spawned detached by spawnWakerIfNeeded
-    (y) =>
-      y
-        .option("sb-waker", {
-          type: "boolean",
-          default: false,
-          hidden: true,
-          describe: "argv sentinel for PID-reuse-safe singleton identification",
-        })
-        .option("once", {
-          type: "boolean",
-          default: false,
-          hidden: true,
-          describe: "Run a single poll tick and exit (E2E simulation / debugging)",
-        }),
-    async (argv) => {
-      // Require the singleton sentinel BEFORE entering the loop. A sentinel-less
-      // run would acquire and heartbeat the waker.lock while isWakerAlive()
-      // reports it absent (its argv lacks the marker), so every later
-      // housekeeping invocation would spawn another waker that futilely contends.
-      if (argv.sbWaker !== true) {
-        process.stderr.write(
-          "[storybloq] waker-run is an internal, self-spawned command; run it via the auto-resume flow, not directly.\n",
-        );
-        return;
-      }
-      try {
-        const { runWaker } = await import("../autonomous/waker.js");
-        await runWaker(undefined, argv.once === true ? { maxTicks: 1 } : {});
-      } catch (err) {
-        process.stderr.write(
-          `[storybloq] waker exited with error: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
-      }
-    },
-  );
-}
-
-// ---------------------------------------------------------------------------
 // config
 // ---------------------------------------------------------------------------
 
@@ -5591,7 +5495,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
                 full: argv.full === true,
                 clientTaskId: argv["client-task-id"] as string | undefined,
               });
-              // Same project-free template as limit-status: every byte through writeOutput.
+              // Project-free template: every byte through writeOutput.
               writeOutput(result.output);
               if (result.errorCode) process.exitCode = 1;
             } catch (err: unknown) {
@@ -5675,19 +5579,16 @@ export function registerSessionCommand(yargs: Argv): Argv {
         )
         .command(
           "limit-stop",
-          "Record a usage-limit stop for auto-resume (StopFailure hook)",
+          // T-534 tombstone, hidden: installs that still carry the retired
+          // StopFailure hook land here and only run the retirement.
+          false as unknown as string,
           (y2) => y2,
           async () => {
             try {
               const { handleSessionLimitStop, readHookStdinContext } = await import("./commands/session-compact.js");
-              const hookContext = await readHookStdinContext(process.stdin);
-              await handleSessionLimitStop({
-                clientTaskId: hookContext.sessionId,
-                cwd: hookContext.cwd,
-                transcriptPath: hookContext.transcriptPath,
-                errorType: hookContext.errorType,
-                permissionMode: hookContext.permissionMode,
-              });
+              // Drain the hook payload; nothing in it is used.
+              await readHookStdinContext(process.stdin);
+              await handleSessionLimitStop();
             } catch (err) {
               // Hook contract: always exit 0; the session is already stopped.
               process.stderr.write(
@@ -5708,7 +5609,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
               .option("force", {
                 type: "boolean",
                 default: false,
-                describe: "Required for limit-stopped sessions (destroys the pending auto-resume)",
+                describe: "Clear a FINALIZE park left by the retired usage-limit auto-resume while git is unavailable (recovers to IMPLEMENT)",
               }),
           async (argv) => {
             const { discoverProjectRoot } = await import("../core/project-root-discovery.js");
@@ -6066,7 +5967,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
         )
         .demandCommand(
           1,
-          "Specify a session subcommand: compact-prepare, resume-prompt, intel, intel-start, intel-prompt, limit-stop, clear-compact, stop, list, show, repair, delete, health, watch, milestone",
+          "Specify a session subcommand: compact-prepare, resume-prompt, intel, intel-start, intel-prompt, clear-compact, stop, list, show, repair, delete, health, watch, milestone",
         )
         .strict(),
     () => {},

@@ -9,31 +9,11 @@ import { makeState, makeTicket, makeRoadmap, makePhase } from "../../core/test-f
 import { describeAddressableAgedAnomaly } from "../../../src/core/session-age.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 import type { ActiveSessionSummary, SessionScanDiagnostic } from "../../../src/core/session-scan.js";
-import type { LimitStopSummary } from "../../../src/core/limit-ledger.js";
 import type { FederationState } from "../../../src/federation/state.js";
 import type { Config } from "../../../src/models/config.js";
 
-/**
- * ISS-893: a COMPLETE LimitStopSummary. The markdown section reads
- * clientTaskId, nextAttemptAt, status, mode, limitType and wakeAttempts, so a
- * partial cast would render "undefined" and pass the JSON assertions while
- * silently proving nothing about the markdown branch.
- */
-const sampleLimitStop: LimitStopSummary = {
-  key: "limit-key-1",
-  clientTaskId: "task-abcdef01",
-  storybloqSessionId: null,
-  projectRoot: "/tmp/project",
-  sessionType: "plain",
-  status: "stopped",
-  mode: "headless",
-  limitType: "session",
-  resetAt: Date.parse("2026-07-29T00:00:00Z"),
-  nextAttemptAt: Date.parse("2026-07-29T00:05:00Z"),
-  wakeAttempts: 0,
-  generation: 1,
-  reasonCode: null,
-};
+/** T-534: what a caller of the retained positional slot may still pass; it is ignored. */
+const retiredLimitStop = { key: "limit-key-1", status: "stopped" };
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -543,53 +523,25 @@ describe("formatStatus with active sessions (ISS-023)", () => {
     expect(parsed.data.resumableSessions).toEqual([]);
   });
 
-  it("emits limitStops empty rather than omitting it, on both paths (ISS-893)", () => {
-    // Same contract, same reasoning as the session arrays above: omission made
-    // "no limit stops" and "server too old to report limit stops" the same
-    // observation. ISS-891 deliberately fixed only the arrays it named; this is
-    // the one remaining field in these two objects that carried the old pattern.
-    const plain = JSON.parse(formatStatus(makeState(), "json", []));
-    expect(plain.data.limitStops).toEqual([]);
-    expect(Object.keys(plain.data)).toContain("limitStops");
-
-    const federated = JSON.parse(
-      formatFederatedStatus(sampleFedState, orchestratorConfig, "json", []),
-    );
-    expect(federated.data.limitStops).toEqual([]);
-    expect(Object.keys(federated.data)).toContain("limitStops");
-  });
-
-  it("still reports limit stops when they exist, on both paths (ISS-893)", () => {
-    // Guards the opposite failure: hardcoding []. toEqual([]) above would pass
-    // for the wrong reason if the key were present but never populated.
-    const plain = JSON.parse(
-      formatStatus(makeState(), "json", [], [], undefined, [sampleLimitStop]),
-    );
-    expect(plain.data.limitStops.map((s: LimitStopSummary) => s.key)).toEqual(["limit-key-1"]);
-
-    const federated = JSON.parse(
-      formatFederatedStatus(
-        sampleFedState, orchestratorConfig, "json", [], [], undefined, [sampleLimitStop],
-      ),
-    );
-    expect(federated.data.limitStops.map((s: LimitStopSummary) => s.key)).toEqual(["limit-key-1"]);
-  });
-
-  it("leaves the markdown branch unchanged in both cases (ISS-893)", () => {
-    // This contract change is JSON-only. The markdown section already omits
-    // itself when empty and must keep doing so, on both paths.
-    expect(formatStatus(makeState(), "md", [])).not.toContain("## Limit-stop records");
-    expect(formatFederatedStatus(sampleFedState, orchestratorConfig, "md", []))
-      .not.toContain("## Limit-stop records");
-
-    const plainMd = formatStatus(makeState(), "md", [], [], undefined, [sampleLimitStop]);
-    expect(plainMd).toContain("## Limit-stop records");
-    expect(plainMd).toContain("auto-resumes");
-
-    const fedMd = formatFederatedStatus(
-      sampleFedState, orchestratorConfig, "md", [], [], undefined, [sampleLimitStop],
-    );
-    expect(fedMd).toContain("## Limit-stop records");
+  it("carries no limitStops on either path, and ignores the retained positional slot (T-534)", () => {
+    // The usage-limit auto-resume is retired: status neither reads nor reports
+    // its records. formatStatus and formatFederatedStatus keep the slot so no
+    // later positional parameter shifts for an existing caller.
+    for (const plain of [
+      JSON.parse(formatStatus(makeState(), "json", [])),
+      JSON.parse(formatStatus(makeState(), "json", [], [], undefined, [retiredLimitStop])),
+    ]) {
+      expect(Object.keys(plain.data)).not.toContain("limitStops");
+    }
+    for (const federated of [
+      JSON.parse(formatFederatedStatus(sampleFedState, orchestratorConfig, "json", [])),
+      JSON.parse(formatFederatedStatus(sampleFedState, orchestratorConfig, "json", [], [], undefined, [retiredLimitStop])),
+    ]) {
+      expect(Object.keys(federated.data)).not.toContain("limitStops");
+    }
+    expect(formatStatus(makeState(), "md", [], [], undefined, [retiredLimitStop])).not.toContain("Limit-stop");
+    expect(formatFederatedStatus(sampleFedState, orchestratorConfig, "md", [], [], undefined, [retiredLimitStop]))
+      .not.toContain("Limit-stop");
   });
 
   it("still reports sessions when they exist, on both paths (ISS-891)", () => {

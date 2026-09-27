@@ -29,11 +29,6 @@ describe("E2ECliFixture", () => {
     expect(fixture.home).not.toBe(homedir());
   });
 
-  it("sets STORYBLOQ_DISABLE_WAKER_SPAWN=1 unconditionally", async () => {
-    fixture = await E2ECliFixture.create();
-    expect(fixture.env().STORYBLOQ_DISABLE_WAKER_SPAWN).toBe("1");
-  });
-
   it("merges caller-supplied overrides that aren't protected vars", async () => {
     fixture = await E2ECliFixture.create();
     const env = fixture.env({ SHIM_LOG: "/tmp/whatever.log" });

@@ -541,7 +541,7 @@ export function boardNode(dashboard: DashboardState, elements: any, board: Sideb
 * the two plugin manifests on every release; test/plugin/sidebar-validate
 * holds it equal to package.json so a forgotten bump fails before publish.
 */
-export const MOD_VERSION = "1.15.9";
+export const MOD_VERSION = "1.16.0";
 function wordmarkNode(dashboard: DashboardState, elements: any): unknown {
   const sweep = dashboard.motion.activity().sweep;
   return paneText(dashboard, elements.Text, { key: "wordmark", bold: true,

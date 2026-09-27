@@ -1,0 +1,769 @@
+{
+  "schemaVersion": 1,
+  "header": "storybloq-ledger-revision/1\n",
+  "vectors": [
+    {
+      "name": "empty-ledger",
+      "description": "an empty .story/: three absent singletons, no directories",
+      "nodes": [],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        }
+      ],
+      "revision": "4cac8762b74b902f3e78d5dcf0bb44f5d8dc9190aa910236ee68000b57a6a5fa"
+    },
+    {
+      "name": "base",
+      "description": "config, one ticket, one issue, one ruling; both catalogs absent",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "d87de0bdadcb82d2959e8c7f71f8b11f19bbccb7dc718089f1847155f27b9076"
+    },
+    {
+      "name": "empty-catalogs",
+      "description": "base with both catalogs present and zero bytes long: a line with the empty file's hash, not `-`",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "capabilities.json",
+          "content": ""
+        },
+        {
+          "path": "glossary.json",
+          "content": ""
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "75e5ac92c1b2e6317590b93a79165e0df93da6f96042fd285331306b9518236d"
+    },
+    {
+      "name": "catalogs",
+      "description": "base with both catalogs holding an empty envelope",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "capabilities.json",
+          "content": "{\"version\":1,\"capabilities\":[]}\n"
+        },
+        {
+          "path": "glossary.json",
+          "content": "{\"version\":1,\"terms\":[]}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "a65371eca953889d91549f907a48568df8a5e381ba4523a4cdaa781d91839735"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "24bc8ecb76a7fc220ba4bc8c8e3a1fb2bd56d39195a95b3c14f046898b17844a"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "7b0023823c4c8445d1acb0696efdeecb722308faee06f3b3a104014973f5004a"
+    },
+    {
+      "name": "ticket-added",
+      "description": "base plus a second ticket",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "tickets/T-2.json",
+          "content": "{\"id\":\"T-2\",\"title\":\"Second\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        },
+        {
+          "path": "tickets/T-2.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "7ff6c688340493a70be295328598d3289058dc790af86b1ef647240e3c396245"
+          }
+        }
+      ],
+      "revision": "63a9ddfb67a19b4f6907fb4062a13c3e9a7fd0953a5f0b7ecae48c6da287293d"
+    },
+    {
+      "name": "ticket-deleted",
+      "description": "base without its ticket (the directory stays, empty)",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "tickets",
+          "directory": true
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        }
+      ],
+      "revision": "611a980529a3626c097f72b308f4b54694f68987e2e7fb701a2d898b0dd8dd0e"
+    },
+    {
+      "name": "one-byte-edit",
+      "description": "base with a same-length, one-byte edit to the ticket",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetik\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b88e2df0e5b72ab48cd9bcaf904cdc4cdc8006fd85161ec510ddad22d26c755f"
+          }
+        }
+      ],
+      "revision": "0dd90cd6e4f7260c0eca3b8a741c19d31416745fdbf4e90032487dbb4ca65baa"
+    },
+    {
+      "name": "nfd-name",
+      "description": "a ruling whose file name is written in NFD; the revision line carries the NFC form",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "rulings/Café.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/Café.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "e93467e1ce46610cfe29786cf462cdc180424ebf07fa78e6010de05b87b7062f"
+    },
+    {
+      "name": "utf8-order",
+      "description": "rulings named .json, U+E000.json and U+10000.json: UTF-8 byte order puts U+E000 before U+10000, UTF-16 code-unit order the reverse",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "rulings/.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "rulings/.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "rulings/𐀀.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "rulings/.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "rulings/𐀀.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "5394d96ac414bd436d6ee64e97a5fbebd269c95177301be26b2f2f8057adedad"
+    },
+    {
+      "name": "non-json-ignored",
+      "description": "base plus a non-JSON file in tickets/ and a JSON file in an unlisted directory; neither is an input",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "tickets/README.md",
+          "content": "notes\n"
+        },
+        {
+          "path": "notes/N-1.json",
+          "content": "{\"id\":\"N-1\"}\n"
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        }
+      ],
+      "revision": "d87de0bdadcb82d2959e8c7f71f8b11f19bbccb7dc718089f1847155f27b9076"
+    },
+    {
+      "name": "unreadable-entry",
+      "description": "base plus a directory named like a ticket file: unreadable, so the revision is null",
+      "nodes": [
+        {
+          "path": "config.json",
+          "content": "{\"version\":2,\"project\":\"vectors\"}\n"
+        },
+        {
+          "path": "tickets/T-1.json",
+          "content": "{\"id\":\"T-1\",\"title\":\"Synthetic\"}\n"
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "content": "{\"id\":\"ISS-1\",\"title\":\"Synthetic issue\"}\n"
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "content": "{\"id\":\"r-1111111111111111\",\"text\":\"Verbatim\"}\n"
+        },
+        {
+          "path": "tickets/T-5.json",
+          "directory": true
+        }
+      ],
+      "entries": [
+        {
+          "path": "capabilities.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "config.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "b5456767d30ce8fe1d37a8526ec56b6cf06e305827b239e0d381d8d90aacd6bb"
+          }
+        },
+        {
+          "path": "glossary.json",
+          "state": {
+            "kind": "absent"
+          }
+        },
+        {
+          "path": "issues/ISS-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "07b7341dace5522dac361ba9cfc9f8397da8fdfc8f3862ebd62bdafc595e690a"
+          }
+        },
+        {
+          "path": "rulings/r-1111111111111111.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "3f6dd6990ff3c67ab52ea58d0c2ce3092f4ce44a3d97022274c24f32e4c47ea5"
+          }
+        },
+        {
+          "path": "tickets/T-1.json",
+          "state": {
+            "kind": "ok",
+            "sha256": "e5332be00c1a678963b24b9bdaa67913058b38ccec04e123e278b2683bbc5465"
+          }
+        },
+        {
+          "path": "tickets/T-5.json",
+          "state": {
+            "kind": "unreadable",
+            "reason": ""
+          }
+        }
+      ],
+      "revision": null
+    }
+  ]
+}

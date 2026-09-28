@@ -67,5 +67,18 @@
   },
   "rules": [
     "each conflict is surfaced with its consequence and a recommendation before planning proceeds"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {},
+      "pendingComponents": [
+        "."
+      ]
+    },
+    "questionExamples": [
+      "conflicting briefs: a rule the sources disagree on is unresolved, so asking about it is expected",
+      "a proposal the owner has not accepted is still open, so asking about it is expected"
+    ]
+  }
 }

@@ -77,5 +77,17 @@
   },
   "rules": [
     "later items appear only as deferred, never as first-version tickets"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {},
+      "pendingComponents": [
+        "."
+      ]
+    },
+    "questionExamples": [
+      "brief-only: the waiting list's order is settled by brief.md line 20 (\"strictly first come, first served\"); asking about it, alone or joined to an open question, re-asks a settled answer"
+    ]
+  }
 }

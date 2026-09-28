@@ -36,8 +36,20 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow).toContain("When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.");
   });
 
+  it("pins the check set 2 forms the harness parses (T-536 batch 2)", () => {
+    expect(flow).toContain("- `Independent review: <verdict>, invocation R<n>`: `<verdict>` is the captured response's `verdict` value exactly, and `R<n>` is the review id of the call that returned it.");
+    expect(flow).toContain("- `Independent review: skipped at the owner's request`: only after the owner chose \"Continue without independent review\".");
+    expect(flow).toContain("put `Review id: R<n>` as the first line of the plan you send");
+    expect(flow).toContain("`Review not rerun: <what changed> changes no ticket's scope, dependencies or responsibilities.`");
+    expect(flow).toContain("State the level on one line, `Quality level: <level>`, naming exactly one of the three right after the colon; a reason may follow after a comma or period.");
+    expect(flow).toContain('"Inspect details" shows what the user asks for, changes nothing in the plan, and re-asks the same question with the same status line; a change is an adjustment.');
+    expect(flow).toContain("jest `**/*.{test,spec}.*` and `__tests__`");
+    expect(flow).toContain("**A discovery turn ends with its question.** In plain text, the question is the last thing in the message");
+    expect(flow).toContain("**Last check before sending the completion message.**");
+  });
+
   it("marks the pending tooling line verbatim", () => {
-    expect(flow).toContain('- one line per pending stage, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)".');
+    expect(flow).toContain('- one line per pending stage, and per component when the project has several, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)", or with a component "Verification tooling to establish: <stage> (<component>): <proposed command> (pending: <reason>)".');
   });
 
   it("lets a mode file's fixed closing lines override SKILL.md's prose rule for Codex", () => {

@@ -1,0 +1,10 @@
+[project]
+name = "shelf-labels"
+version = "0.1.0"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["checks"]
+python_files = ["check_*.py"]

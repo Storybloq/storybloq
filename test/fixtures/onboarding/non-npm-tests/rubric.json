@@ -40,5 +40,20 @@
   "rules": [
     "never npm test",
     "the fairness acceptance names the boundary (a difference of two fails) and the infeasible case"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {
+        ".": {
+          "commands": [
+            "pytest",
+            "python -m pytest",
+            "python3 -m pytest"
+          ]
+        }
+      },
+      "pendingComponents": []
+    }
+  }
 }

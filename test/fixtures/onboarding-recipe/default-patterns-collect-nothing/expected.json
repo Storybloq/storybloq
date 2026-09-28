@@ -1,0 +1,39 @@
+{
+  "why": "pytest's default patterns (test_*.py, *_test.py) collect nothing here: pending",
+  "expectedRecipe": {
+    "testStages": "components",
+    "components": {},
+    "pendingComponents": [
+      "."
+    ]
+  },
+  "correct": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": false
+        },
+        "TEST": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  "wrong": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "pytest"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "pytest"
+        }
+      }
+    }
+  },
+  "wrongFinding": "no component has an established test command, so both test stages are disabled, got pytest"
+}

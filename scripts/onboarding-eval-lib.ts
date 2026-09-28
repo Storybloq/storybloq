@@ -136,7 +136,7 @@ const CODEX_ACTIVITY = new Set(["command_execution", "mcp_tool_call", "file_chan
  * The terminal interaction is the last agent message, and only when no tool
  * activity followed it: a message superseded by more work is stale.
  */
-export function codexTurn(lines: readonly Record<string, unknown>[]): EvalTurn {
+export function codexTurn(lines: readonly Record<string, unknown>[], checkSet = 1): EvalTurn {
   const calls: EvalCall[] = [];
   let lastMessage = "";
   let messageAt = -1;
@@ -153,7 +153,8 @@ export function codexTurn(lines: readonly Record<string, unknown>[]): EvalTurn {
     }
     if (ev.type !== "item.completed") continue;
     const item = (ev.item ?? {}) as Record<string, unknown>;
-    if (typeof item.type === "string" && CODEX_ACTIVITY.has(item.type)) activityAt = at;
+    // Check set 2: an agent spawn or wait after the message is activity too, so the message is no longer the turn's stop.
+    if (typeof item.type === "string" && (CODEX_ACTIVITY.has(item.type) || (checkSet >= 2 && item.type === "collab_tool_call"))) activityAt = at;
     switch (item.type) {
       case "agent_message":
         if (typeof item.text === "string") { lastMessage = item.text; messageAt = at; }
@@ -166,6 +167,17 @@ export function codexTurn(lines: readonly Record<string, unknown>[]): EvalTurn {
         break;
       case "file_change":
         calls.push({ name: "Write", input: { changes: item.changes }, isError: item.status === "failed" });
+        break;
+      case "collab_tool_call":
+        // Check set 2: an agent spawn or wait is a call, so a reviewer agent's completion can be bound. Check set 1 dropped them.
+        if (checkSet >= 2) {
+          calls.push({
+            name: `collab:${String(item.tool ?? "")}`,
+            input: { sender_thread_id: item.sender_thread_id ?? null, receiver_thread_ids: Array.isArray(item.receiver_thread_ids) ? item.receiver_thread_ids : [], prompt: typeof item.prompt === "string" ? item.prompt : null },
+            isError: item.status === "failed",
+            result: JSON.stringify(item.agents_states ?? {}),
+          });
+        }
         break;
       default:
         break;
@@ -1375,10 +1387,15 @@ export function resolveTestStages(config: Record<string, unknown>): TestStages {
 }
 
 export interface ExpectedRecipe {
-  readonly testStages: "disabled" | "same-command" | "same-command-or-disabled" | "disabled-or-components";
+  readonly testStages: "disabled" | "same-command" | "same-command-or-disabled" | "disabled-or-components" | "components";
   readonly command?: string;
-  /** For `disabled-or-components`: every part's directory; an enabled command must run each part's tests from it. */
-  readonly components?: readonly string[];
+  /**
+   * For `disabled-or-components`: every part's directory; an enabled command must run each part's tests from it.
+   * For check set 2 `components`: each established component (`.` is the root) with the commands accepted there.
+   */
+  readonly components?: readonly string[] | Readonly<Record<string, { readonly commands: readonly string[] }>>;
+  /** Check set 2 `components`: every component whose test command is pending. */
+  readonly pendingComponents?: readonly string[];
 }
 
 /**
@@ -1502,13 +1519,269 @@ export function checkRecipe(stages: TestStages, expected: ExpectedRecipe): strin
   if (stages.kind === "abort") return `the guide would refuse to start: ${stages.reason}`;
   if (expected.testStages === "disabled-or-components") {
     if (stages.kind === "disabled") return null;
-    const f = componentCommandFindings(stages.command, expected.components ?? []);
+    const f = componentCommandFindings(stages.command, Array.isArray(expected.components) ? expected.components : []);
     return f.length === 0 ? null : `component test command: ${f.join("; ")}`;
   }
   if (expected.testStages === "disabled") return stages.kind === "disabled" ? null : `expected both test stages disabled, got ${stages.command}`;
   if (stages.kind === "disabled") return expected.testStages === "same-command-or-disabled" ? null : `expected ${expected.command}, got both disabled`;
   if (expected.command && stages.command !== expected.command) return `expected ${expected.command}, got ${stages.command}`;
   return null;
+}
+
+// --- check set 2: the command-evidence contract -----------------------------------------
+
+/** The approved quality level (setup-flow.md, 1d), as the package states it. */
+export type QualityLevel = "full" | "tests-only" | "minimal";
+
+const QUALITY_LABELS: readonly (readonly [QualityLevel, string])[] = [["full", "full pipeline"], ["tests-only", "tests only"], ["minimal", "minimal"]];
+
+/** What may follow the level on its line: nothing, a closing period, or a delimiter (`,` `;` `:` `.` then a space, ` (`, ` - `) and a reason. */
+const QUALITY_SUFFIX = /^(?:\.?$|[,;:.]\s|\s+\(|\s+-\s)/;
+/** A reason that opens by negating or deferring the level it follows (`; not approved`, `(undecided)`); a later "not" inside a reason is prose. */
+const QUALITY_NEGATION = /^[,;:.]?\s*[(-]?\s*(?:not|no|undecided|unapproved|rejected|tbd|to be decided|if approved|unless)\b/;
+
+/**
+ * The quality level a package approves: every line that begins `Quality level:` (list marker, emphasis and code marks
+ * stripped) must name exactly one of the three immediately after the colon, followed by nothing or a delimited reason
+ * that names no other level and negates nothing. Any such line that does not, or two lines naming different levels,
+ * leave the level unnamed (null).
+ */
+export function qualityLevel(packageText: string): QualityLevel | null {
+  const found = new Set<QualityLevel>();
+  for (const raw of packageText.split("\n")) {
+    const line = raw.trim().replace(LIST_MARKER, "").replace(/\*\*|__|`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!line.startsWith("quality level:")) continue;
+    const value = line.slice("quality level:".length).trim();
+    const hit = QUALITY_LABELS.find(([, label]) => value.startsWith(label));
+    if (hit === undefined) return null;
+    const suffix = value.slice(hit[1].length);
+    if (!QUALITY_SUFFIX.test(suffix)) return null;
+    if (QUALITY_LABELS.some(([, label]) => suffix.includes(label)) || QUALITY_NEGATION.test(suffix)) return null;
+    found.add(hit[0]);
+  }
+  return found.size === 1 ? [...found][0]! : null;
+}
+
+/** A fixture's command evidence under check set 2: the established components with their accepted commands, and the pending ones. `""` is the root. */
+export interface RecipeContract {
+  readonly established: Readonly<Record<string, readonly string[]>>;
+  readonly pending: readonly string[];
+}
+
+const componentKey = (dir: string): string => (dir === "." ? "" : resolveDir("", dir) ?? dir);
+const componentName = (dir: string): string => (dir === "" ? "the root" : dir);
+
+/** The contract a check set 2 `components` expectation states; null for any other form. */
+export function recipeContract(expected: ExpectedRecipe): RecipeContract | null {
+  if (expected.testStages !== "components") return null;
+  const established: Record<string, readonly string[]> = {};
+  const components = Array.isArray(expected.components) ? {} : (expected.components ?? {}) as Readonly<Record<string, { readonly commands: readonly string[] }>>;
+  for (const [dir, spec] of Object.entries(components)) established[componentKey(dir)] = spec.commands;
+  return { established, pending: (expected.pendingComponents ?? []).map(componentKey) };
+}
+
+/** The test stages a quality level uses. */
+export function stagesUsed(level: QualityLevel): readonly ("WRITE_TESTS" | "TEST")[] {
+  return level === "full" ? ["WRITE_TESTS", "TEST"] : level === "tests-only" ? ["TEST"] : [];
+}
+
+const SEPARATOR_NAMES: Readonly<Record<string, string>> = { "\n": "newline" };
+
+/**
+ * The shape `step (&& step)*` before any word is read: every quote closes, no escape is left dangling, and every
+ * `&&` has a non-empty step on both sides (the tokenizer drops empty segments, so `&& pytest` would otherwise pass).
+ */
+function sequenceSyntax(command: string): string | null {
+  const steps: string[] = [];
+  let step = "";
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (ch === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close < 0) return "the test command has an unclosed quote";
+      step += command.slice(i, close + 1); i = close; continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < command.length && command[j] !== '"') j += command[j] === "\\" ? 2 : 1;
+      if (j >= command.length) return "the test command has an unclosed quote";
+      step += command.slice(i, j + 1); i = j; continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= command.length) return "the test command ends in a dangling escape";
+      step += command.slice(i, i + 2); i++; continue;
+    }
+    if (ch === "&" && command[i + 1] === "&") { steps.push(step); step = ""; i++; continue; }
+    step += ch;
+  }
+  steps.push(step);
+  if (steps.some((x) => x.trim() === "")) return "the test command has an empty step: every `&&` joins two steps";
+  return null;
+}
+
+/** Whether a command's words are exactly an accepted command's arguments, token by token (quoting that keeps each argument whole is harmless). */
+function sameArgv(words: readonly string[], accepted: string): boolean {
+  const want = shellCommands(accepted)[0] ?? [];
+  return words.length === want.length && words.every((w, k) => w === want[k]);
+}
+
+/** Django's own runner, `python manage.py test` or `django-admin test`: a test invocation for the check set 2 grammar only. */
+function isDjangoTest(argv: readonly string[]): boolean {
+  const bin = baseName(argv[0] ?? "");
+  if (bin === "django-admin") return argv[1] === "test";
+  if (bin === "manage.py") return argv[1] === "test";
+  return /^python[0-9.]*$/.test(bin) && baseName(argv[1] ?? "") === "manage.py" && argv[2] === "test";
+}
+
+/**
+ * Check set 2's grammar for a test command: `step (&& step)*`, a step being `cd <dir>` or an accepted test invocation
+ * in the directory it runs in. Anything else fails: another separator, a subshell or group, a redirection, an
+ * environment prefix, a control word, a construct the tokenizer cannot see through, or a command that is neither.
+ */
+export function testCommandFindings(command: string, contract: RecipeContract): string[] {
+  const syntax = sequenceSyntax(command);
+  if (syntax !== null) return [syntax];
+  const { commands, operators } = shellSequence(command);
+  for (const c of commands) {
+    if (c.heredoc || c.live.length > 0 || UNSUPPORTED_SYNTAX.test(c.bare)) return [`the test command uses shell syntax the grammar does not accept: \`${c.words.join(" ")}\``];
+  }
+  const group = operators.find((op) => op === "(" || op === ")" || op === "{" || op === "}");
+  if (group !== undefined) return [`the test command uses shell syntax the grammar does not accept: a subshell or group (\`${group}\`)`];
+  const separator = operators.find((op) => op !== "&&");
+  if (separator !== undefined) return [`separator \`${SEPARATOR_NAMES[separator] ?? separator}\` is not allowed; steps are joined only by &&`];
+  const accepted = Object.values(contract.established).flat();
+  const pending = new Set(contract.pending);
+  const findings: string[] = [];
+  const covered = new Set<string>();
+  let cwd: string | null = "";
+  for (const { words } of commands) {
+    const text = words.join(" ");
+    if (words.some((w) => REDIRECTION_WORD.test(w))) { findings.push(`the test command uses shell syntax the grammar does not accept: a redirection in \`${text}\``); continue; }
+    if (ASSIGNMENT.test(words[0] ?? "")) { findings.push(`an environment prefix is not allowed: \`${text}\``); continue; }
+    if (RESERVED.has(words[0] ?? "")) { findings.push(`the test command uses shell syntax the grammar does not accept: \`${words[0]}\``); continue; }
+    if (words[0] === "cd") {
+      if (words.length !== 2) { findings.push(`\`${text}\` is not a cd step with exactly one directory`); cwd = null; continue; }
+      cwd = cwd === null ? null : resolveDir(cwd, words[1]);
+      if (cwd === null) findings.push(`\`${text}\` leaves the repository or cannot be resolved`);
+      continue;
+    }
+    const testish = accepted.some((a) => sameArgv(words, a)) || isTestInvocation(words) || isDjangoTest(words);
+    if (!testish) { findings.push(`\`${text}\` is not a cd step or an accepted test invocation`); continue; }
+    if (cwd === null) continue;
+    const commandsHere = contract.established[cwd];
+    if (commandsHere !== undefined) {
+      if (commandsHere.some((a) => sameArgv(words, a))) covered.add(cwd);
+      else findings.push(`\`${text}\` in ${componentName(cwd)} is not an accepted runner (${commandsHere.join(", ")})`);
+    } else if (pending.has(cwd)) findings.push(`\`${text}\` runs in ${componentName(cwd)}, whose test command is pending`);
+    else if (cwd === "") findings.push(`\`${text}\` runs at the root, which is not a component`);
+    else findings.push(`\`${text}\` runs in ${cwd}, which is not a component`);
+  }
+  for (const dir of Object.keys(contract.established)) if (!covered.has(dir)) findings.push(`the test command does not run ${componentName(dir)}`);
+  return findings;
+}
+
+/**
+ * Check set 2's recipe rule. The command comes from the established components (none: no command); the approved
+ * quality level then decides activation: Full pipeline enables both stages, Tests only enables TEST, Minimal enables
+ * neither, and without a command nothing is enabled.
+ */
+export function recipeFindings(stages: TestStages, contract: RecipeContract, level: QualityLevel | null): string[] {
+  if (stages.kind === "abort") return [`the guide would refuse to start: ${stages.reason}`];
+  if (level === null) return ["the approved package names no single quality level (a `Quality level:` line naming Full pipeline, Tests only or Minimal)"];
+  const dirs = Object.keys(contract.established);
+  if (dirs.length === 0 || level === "minimal") {
+    if (stages.kind === "disabled") return [];
+    return [level === "minimal" ? `Minimal expects both test stages disabled, got ${stages.command}` : `no component has an established test command, so both test stages are disabled, got ${stages.command}`];
+  }
+  if (stages.kind === "disabled") return [`expected test commands for ${dirs.map(componentName).join(", ")}, got both disabled`];
+  const findings: string[] = [];
+  if (level === "full" && !(stages.writeTests && stages.test)) findings.push("Full pipeline enables both WRITE_TESTS and TEST");
+  if (level === "tests-only" && !(stages.test && !stages.writeTests)) findings.push("Tests only enables TEST and disables WRITE_TESTS");
+  return [...findings, ...testCommandFindings(stages.command, contract)];
+}
+
+/** One parsed `Verification tooling to establish:` line. */
+export interface PendingLine { readonly stage: string; readonly component: string; readonly merged: boolean }
+
+const PENDING_LINE = /^Verification tooling to establish: (.+?)(?: \(([^()]+)\))?: (.+) \(pending: (.+)\)\.?$/;
+const STAGE_NAMES = /\b(WRITE_TESTS|TEST|BUILD|VERIFY)\b/g;
+
+/** Every pending-tooling line in the exact grammar (setup-flow.md, 1f), list markers and emphasis stripped. */
+export function pendingLines(text: string): PendingLine[] {
+  const out: PendingLine[] = [];
+  for (const raw of text.split("\n")) {
+    const line = raw.trim().replace(LIST_MARKER, "").replace(/^(?:\*\*|__)|(?:\*\*|__)$/g, "").replace(/`/g, "").trim();
+    const m = PENDING_LINE.exec(line);
+    if (m === null) continue;
+    const stages = m[1]!.match(STAGE_NAMES) ?? [];
+    out.push({ stage: m[1]!.trim(), component: m[2]?.trim() ?? "", merged: stages.length > 1 });
+  }
+  return out;
+}
+
+/** The pending lines a summary owes: each pending component (named when the project has several) for each stage the level uses. */
+export function pendingInventory(contract: RecipeContract, level: QualityLevel): { readonly stage: string; readonly component: string }[] {
+  const several = Object.keys(contract.established).length + contract.pending.length > 1;
+  return contract.pending.flatMap((dir) => stagesUsed(level).map((stage) => ({ stage, component: several ? dir : "" })));
+}
+
+export function pendingFindings(summary: string, inventory: readonly { readonly stage: string; readonly component: string }[]): string[] {
+  const lines = pendingLines(summary);
+  const findings: string[] = [];
+  if (lines.some((l) => l.merged)) findings.push("pending tooling line names more than one stage");
+  for (const item of inventory) {
+    if (!lines.some((l) => !l.merged && l.stage === item.stage && l.component === item.component)) findings.push(`pending tooling line missing: ${item.stage}${item.component ? ` (${item.component})` : ""}`);
+  }
+  return findings;
+}
+
+// --- check set 2: the review status line --------------------------------------------------
+
+export type ReviewStatus =
+  | { readonly kind: "result"; readonly verdict: string; readonly ref: string }
+  | { readonly kind: "skip" }
+  | { readonly kind: "none" }
+  | { readonly kind: "several" };
+
+const STATUS_RESULT = /^Independent review: (.+), invocation (R[1-9][0-9]*)$/;
+const STATUS_SKIP = /^Independent review: skipped at the owner's request$/;
+export const NOT_RERUN = /^Review not rerun: (.+) changes no ticket's scope, dependencies or responsibilities\.$/;
+
+/** A line as the exact forms read it: list marker, surrounding emphasis or code marks and trailing spaces stripped, a typographic apostrophe read as `'`. */
+function formLine(raw: string): string {
+  return raw.replace(/\s+$/, "").trim().replace(LIST_MARKER, "").replace(/^(?:\*\*|__|[*_`])+|(?:\*\*|__|[*_`])+$/g, "").replace(/’/g, "'").trim();
+}
+
+/** The review status of a package or summary: exactly one line in one of the two forms, each anchored to its whole line. */
+export function reviewStatus(text: string): ReviewStatus {
+  const found: ReviewStatus[] = [];
+  for (const raw of text.split("\n")) {
+    const line = formLine(raw);
+    const r = STATUS_RESULT.exec(line);
+    if (r !== null) { found.push({ kind: "result", verdict: r[1]!.trim(), ref: r[2]! }); continue; }
+    if (STATUS_SKIP.test(line)) found.push({ kind: "skip" });
+  }
+  return found.length === 0 ? { kind: "none" } : found.length > 1 ? { kind: "several" } : found[0]!;
+}
+
+/** The `Review not rerun:` declarations in a package, as written. */
+export function notRerunLines(text: string): string[] {
+  return text.split("\n").map(formLine).filter((l) => NOT_RERUN.test(l));
+}
+
+// --- check set 2: a plain-text discovery turn ends at its question -----------------------------
+
+/** What follows the last question of a plain-text discovery stop: the rest of its paragraph and every later one; "" when nothing does. */
+export function discoveryTail(stopText: string): string {
+  const paragraphs = stopText.split(/\n\s*\n/);
+  let at = -1;
+  for (let k = paragraphs.length - 1; k >= 0; k--) if (hasQuestion(paragraphs[k]!)) { at = k; break; }
+  if (at < 0) return "";
+  const paragraph = paragraphs[at]!;
+  const marks = [...paragraph.matchAll(/\?[*_"'”’)\]]*(?=\s|$)/g)];
+  const last = marks.at(-1)!;
+  const rest = paragraph.slice(last.index! + last[0].length);
+  return [rest, ...paragraphs.slice(at + 1)].map((x) => x.trim()).filter(Boolean).join("\n\n");
 }
 
 /** The labels every implementation ticket's description carries (setup-flow.md, 1c2), in template order. */
@@ -1617,6 +1890,27 @@ export function setupRecordText(storyDir: string): string {
 
 // --- reviewer, degraded discovery and the verdict ------------------------------------
 
+/**
+ * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
+ * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
+ */
+export const CHECK_SET_VERSION = 2;
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2];
+
+/**
+ * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises
+ * byte for byte as before it existed; check set 2 replaces each overlaid key in place and appends the new ones.
+ */
+export function rubricFor(raw: Record<string, unknown>, checkSet: number): Record<string, unknown> {
+  const { checkSet2, ...legacy } = raw;
+  if (checkSet < 2 || checkSet2 === undefined || checkSet2 === null || typeof checkSet2 !== "object") return legacy;
+  const out: Record<string, unknown> = {};
+  const overlay = checkSet2 as Record<string, unknown>;
+  for (const [k, v] of Object.entries(legacy)) out[k] = k in overlay ? overlay[k] : v;
+  for (const [k, v] of Object.entries(overlay)) if (!(k in legacy)) out[k] = v;
+  return out;
+}
+
 export interface ReviewerInvocation {
   readonly via: "codex-exec" | "review_plan" | "agent";
   /**
@@ -1630,6 +1924,286 @@ export interface ReviewerInvocation {
   readonly input: string;
   /** What it returned, verbatim. */
   readonly result: string;
+  /** Check set 2: the `Review id: R<n>` its input names, or null. */
+  readonly reviewId?: string | null;
+  /** Check set 2: the `verdict` string of its captured response, or null. */
+  readonly verdict?: string | null;
+  /** Check set 2: where the review started and where its response was captured; equal for a synchronous call. */
+  readonly startIndex?: number;
+  readonly completionIndex?: number;
+  /** Check set 2: why a not-ok entry is not a review. */
+  readonly reason?: string;
+}
+
+const REVIEW_ID = /(?:^|\n)[ \t]*Review id: (R[1-9][0-9]*)[ \t]*(?=\r?\n|$)/;
+
+/** The review id the first `Review id: R<n>` line of a reviewer's input names, or null. */
+export function reviewIdOf(text: string): string | null {
+  return REVIEW_ID.exec(text)?.[1] ?? null;
+}
+
+/** Every top-level JSON object in `text`, in order, strings honoured; text that is not JSON is skipped. */
+function jsonObjects(text: string): unknown[] {
+  const out: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k]!;
+    if (inString) {
+      if (ch === "\\") k++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"' && depth > 0) { inString = true; continue; }
+    if (ch === "{") { if (depth === 0) start = k; depth++; continue; }
+    if (ch === "}" && depth > 0 && --depth === 0) {
+      try { out.push(JSON.parse(text.slice(start, k + 1))); } catch { /* not JSON */ }
+    }
+  }
+  return out;
+}
+
+function verdictIn(v: unknown, depth: number): string | null {
+  if (depth > 4 || v === null || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (!Array.isArray(v) && typeof o.verdict === "string") return o.verdict;
+  for (const key of ["structuredContent", "structured_content", "result"]) {
+    const r = verdictIn(o[key], depth + 1);
+    if (r !== null) return r;
+  }
+  const content = Array.isArray(v) ? v : o.content;
+  if (Array.isArray(content)) {
+    for (let k = content.length - 1; k >= 0; k--) {
+      const item = content[k] as { text?: unknown } | null;
+      const r = typeof item?.text === "string" ? verdictOfDepth(item.text, depth + 1) : verdictIn(item, depth + 1);
+      if (r !== null) return r;
+    }
+  }
+  return null;
+}
+
+function verdictOfDepth(text: string, depth: number): string | null {
+  const objects = jsonObjects(text);
+  for (let k = objects.length - 1; k >= 0; k--) {
+    const r = verdictIn(objects[k], depth);
+    if (r !== null) return r;
+  }
+  if (/^\s*\[/.test(text)) { try { return verdictIn(JSON.parse(text), depth); } catch { /* not JSON */ } }
+  return null;
+}
+
+/**
+ * The `verdict` of a captured reviewer response: the last top-level JSON object carrying a string `verdict`
+ * (codex exec's schema output, an agent's final message), looking through an MCP result's content text.
+ */
+export function verdictOf(text: string): string | null {
+  return verdictOfDepth(text, 0);
+}
+
+/** The text a reviewer was given: the plan argument, the agent prompt, or the command with its here-document. */
+function reviewSource(call: EvalCall, fallback: string): string {
+  const input = call.input as { plan?: unknown; prompt?: unknown } | null;
+  if (typeof input?.plan === "string") return input.plan;
+  if (typeof input?.prompt === "string") return input.prompt;
+  return fallback;
+}
+
+interface TrackedAgent { readonly id: string; readonly spawnIndex: number; readonly prompt: string; done: boolean; failure: string | null }
+
+/** The body of the first here-document in `text` with a simple delimiter, or null when there is none or it never ends. */
+function heredocBody(text: string): string | null {
+  const m = /<<(-?)[ \t]*(?:'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)"|\\?([A-Za-z0-9_]+))/.exec(text);
+  if (m === null) return null;
+  const delimiter = m[2] ?? m[3] ?? m[4]!;
+  const nl = text.indexOf("\n", m.index + m[0].length);
+  if (nl < 0) return null;
+  const body: string[] = [];
+  for (const line of text.slice(nl + 1).split("\n")) {
+    if ((m[1] === "-" ? line.replace(/^\t+/, "") : line) === delimiter) return body.join("\n");
+    body.push(line);
+  }
+  return null;
+}
+
+/**
+ * Check set 2: what a `codex exec` review was actually given. The shell call must be that one command (through
+ * wrappers and a nested shell), so neither its input nor its output can come from another command: its prompt is the
+ * here-document it reads when its prompt argument is `-`, otherwise its last argument. Anything else is refused.
+ */
+function codexExecAttribution(text: string, depth: number): { readonly source: string } | { readonly reason: string } {
+  const { commands } = shellSequence(text);
+  if (commands.length !== 1) return { reason: "the codex exec review shares its shell call with other commands, so its input and output cannot be attributed to it" };
+  const { argv, inner } = unwrap(commands[0]!.words);
+  if (inner !== null) return depth < 3 ? codexExecAttribution(inner, depth + 1) : { reason: "the codex exec review is nested too deeply to attribute" };
+  const args = argv.slice(argv.indexOf("exec") + 1);
+  if (!args.includes("-")) return { source: args.at(-1) ?? "" };
+  // Closed form: the command's redirections must be exactly one quoted (literal) here-document on standard input plus,
+  // at most, `2>/dev/null` and `2>&1`. The shell reads the LAST standard-input redirection and a descriptor duplication
+  // (`3<file ... 0<&3`) can replace it, so any other redirection leaves what Codex read unattributable.
+  const command = commands[0]!;
+  const redirections = redirectionsOf(command.bare);
+  const heredocs = redirections.filter((r) => (r.op === "<<" || r.op === "<<-") && (r.fd === "" || r.fd === "0"));
+  if (heredocs.length === 0) return { reason: "the codex exec review reads standard input that is not a here-document in the same call" };
+  if (heredocs.length > 1) return { reason: "the codex exec review has more than one standard input redirection, so what it read is the last one, not the here-document" };
+  if (redirections.some((r) => !heredocs.includes(r) && !ALLOWED_CODEX_REDIRECTION.has(`${r.fd}${r.op}${r.target}`))) {
+    return { reason: "the codex exec review carries a redirection other than its here-document, so what it read cannot be attributed" };
+  }
+  const body = !command.heredocUnquoted && !command.heredocComplex ? heredocBody(text) : null;
+  return body === null ? { reason: "the codex exec review reads standard input that is not a here-document in the same call" } : { source: body };
+}
+
+/** The only redirections a codex exec review may carry besides its here-document: its standard error discarded or merged. */
+const ALLOWED_CODEX_REDIRECTION: ReadonlySet<string> = new Set(["2>/dev/null", "2>&1"]);
+
+/**
+ * Every redirection in a command's skeleton line (a here-document body appended below it is not read): its descriptor
+ * (digits or `{name}` opening the word, else empty), its operator (an optional `&`, a `<` or `>`, then any run of
+ * `<`, `>`, `&`, `|` and `-`) and its target word, which ends at a space or the next `<` or `>`.
+ */
+function redirectionsOf(bare: string): { readonly fd: string; readonly op: string; readonly target: string }[] {
+  const line = bare.split("\n")[0]!;
+  const out: { fd: string; op: string; target: string }[] = [];
+  for (const m of line.matchAll(/(^|\s)?((?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?)(&?[<>][<>&|-]*)[ \t]*([^\s<>]*)/g)) {
+    out.push({ fd: m[1] === undefined ? "" : m[2]!, op: m[3]!, target: m[4]! });
+  }
+  return out;
+}
+
+/** The agent id a Claude background launch acknowledged (`agentId: <id>`), or null. */
+function launchedAgentId(result: string): string | null {
+  return /\bagent_?id["']?\s*[:=]\s*["']?([A-Za-z0-9_-]+)/i.exec(result)?.[1] ?? null;
+}
+
+/** An output-tool read of a background agent: its id, status and final output, or null when the call is not one. */
+function agentOutput(call: EvalCall): { readonly id: string | null; readonly status: string | null; readonly output: string } | null {
+  if (call.name !== "TaskOutput" && call.name !== "AgentOutputTool") return null;
+  const input = call.input as Record<string, unknown> | null;
+  const raw = input?.task_id ?? input?.taskId ?? input?.agentId ?? input?.agent_id;
+  const result = call.result ?? "";
+  let status = /<status>\s*([A-Za-z_]+)\s*<\/status>/.exec(result)?.[1] ?? null;
+  let output = /<output>([\s\S]*?)<\/output>/.exec(result)?.[1] ?? null;
+  if (status === null) {
+    try {
+      const parsed = JSON.parse(result) as { status?: unknown; output?: unknown };
+      if (typeof parsed.status === "string") status = parsed.status;
+      if (typeof parsed.output === "string") output = parsed.output;
+    } catch { /* not JSON */ }
+  }
+  return { id: typeof raw === "string" ? raw : null, status: status?.toLowerCase() ?? null, output: output ?? "" };
+}
+
+/**
+ * Check set 2's reviewer invocations. A synchronous call (codex exec, review_plan, a foreground Agent/Task) starts and
+ * completes at its own index. A spawned agent is identified by the spawn's receiver_thread_ids and tracked across
+ * every later wait: running, pending or timed out keeps it open, and its first completed state with a non-empty
+ * message is its completion, one invocation per agent at that wait's index. An agent that never completes is one
+ * not-ok entry at its spawn; a wait on no agent, or on an id no spawn listed, is a not-ok entry of its own.
+ */
+function reviewerInvocationsV2(calls: readonly EvalCall[]): ReviewerInvocation[] {
+  const out: ReviewerInvocation[] = [];
+  const sync = (via: ReviewerInvocation["via"], ok: boolean, index: number, input: string, result: string, source: string): void => {
+    out.push({ via, ok, index, input, result, reviewId: reviewIdOf(source), verdict: ok ? verdictOf(result) : null, startIndex: index, completionIndex: index });
+  };
+  const agents = new Map<string, TrackedAgent>();
+  const background = new Map<string, TrackedAgent>();
+  const unknown = new Set<string>();
+  calls.forEach((call, index) => {
+    const result = call.result ?? "";
+    const ok = !call.isError && result.trim().length > 0;
+    const input = typeof call.input === "string" ? call.input : JSON.stringify(call.input ?? null);
+    if (call.name === "collab:spawn_agent") {
+      if (call.isError) return;
+      const spawn = call.input as { receiver_thread_ids?: unknown; prompt?: unknown } | null;
+      const ids = Array.isArray(spawn?.receiver_thread_ids) ? spawn.receiver_thread_ids.filter((x): x is string => typeof x === "string") : [];
+      for (const id of ids) if (!agents.has(id)) agents.set(id, { id, spawnIndex: index, prompt: typeof spawn?.prompt === "string" ? spawn.prompt : "", done: false, failure: null });
+      return;
+    }
+    if (call.name === "collab:wait") {
+      // A failed wait captures nothing: every agent it named stays open for a later successful wait.
+      if (call.isError) return;
+      const wait = call.input as { receiver_thread_ids?: unknown } | null;
+      const receivers = Array.isArray(wait?.receiver_thread_ids) ? wait.receiver_thread_ids.filter((x): x is string => typeof x === "string") : [];
+      let states: Record<string, { status?: unknown; message?: unknown }> = {};
+      try { const parsed = JSON.parse(result) as unknown; if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) states = parsed as typeof states; } catch { /* no states */ }
+      const ids = [...new Set([...receivers, ...Object.keys(states)])];
+      if (ids.length === 0) {
+        out.push({ via: "agent", ok: false, index, input, result, reviewId: null, verdict: null, startIndex: index, completionIndex: index, reason: "a wait on no agent" });
+        return;
+      }
+      for (const id of ids) {
+        const agent = agents.get(id);
+        if (agent === undefined) {
+          if (!unknown.has(id)) { unknown.add(id); out.push({ via: "agent", ok: false, index, input, result, reviewId: null, verdict: null, startIndex: index, completionIndex: index, reason: `a wait on unknown agent ${id}` }); }
+          continue;
+        }
+        if (agent.done) continue;
+        const state = states[id];
+        const status = typeof state?.status === "string" ? state.status : null;
+        const message = typeof state?.message === "string" ? state.message : "";
+        if (status === "completed" && message.trim().length > 0) {
+          agent.done = true;
+          out.push({ via: "agent", ok: true, index, input: agent.prompt, result: message, reviewId: reviewIdOf(agent.prompt), verdict: verdictOf(message), startIndex: agent.spawnIndex, completionIndex: index });
+        } else if (status === "completed") agent.failure = "incomplete: completed with an empty message";
+        else if (status !== null && ["errored", "interrupted", "shutdown", "not_found"].includes(status)) agent.failure = `agent ended ${status}`;
+      }
+      return;
+    }
+    if (call.name === "review_plan") { sync("review_plan", ok, index, input, result, reviewSource(call, input)); return; }
+    if ((call.name === "Agent" || call.name === "Task") && !call.nested) {
+      const launched = (call.input as { run_in_background?: unknown } | null)?.run_in_background === true;
+      if (!launched) { sync("agent", ok, index, input, result, reviewSource(call, input)); return; }
+      // A background launch returns an acknowledgement; its review arrives later, through an output read of that agent.
+      const id = ok ? launchedAgentId(result) : null;
+      if (id === null || background.has(id)) {
+        out.push({ via: "agent", ok: false, index, input, result, reviewId: reviewIdOf(reviewSource(call, input)), verdict: null, startIndex: index, completionIndex: index, reason: "acknowledgement only" });
+        return;
+      }
+      background.set(id, { id, spawnIndex: index, prompt: reviewSource(call, input), done: false, failure: null });
+      return;
+    }
+    const read = call.nested ? null : agentOutput(call);
+    if (read !== null) {
+      const agent = read.id === null ? undefined : background.get(read.id);
+      if (agent === undefined) {
+        out.push({ via: "agent", ok: false, index, input, result, reviewId: null, verdict: null, startIndex: index, completionIndex: index, reason: `an output read for unknown agent ${read.id ?? "(none)"}` });
+        return;
+      }
+      // A failed read, or one that finds the agent still running, captures nothing and leaves it open.
+      if (agent.done || call.isError) return;
+      if (read.status === "completed" && read.output.trim().length > 0) {
+        agent.done = true;
+        out.push({ via: "agent", ok: true, index, input: agent.prompt, result: read.output, reviewId: reviewIdOf(agent.prompt), verdict: verdictOf(read.output), startIndex: agent.spawnIndex, completionIndex: index });
+      } else if (read.status === "completed") agent.failure = "incomplete: completed with an empty message";
+      else if (read.status !== null && ["failed", "error", "errored", "killed", "cancelled", "interrupted"].includes(read.status)) agent.failure = `agent ended ${read.status}`;
+      return;
+    }
+    const cmd = commandOf(call);
+    if (cmd === null) return;
+    if (!runsCodexExec(cmd, 0)) return;
+    const attribution = codexExecAttribution(cmd, 0);
+    if ("reason" in attribution) {
+      out.push({ via: "codex-exec", ok: false, index, input: cmd, result, reviewId: null, verdict: null, startIndex: index, completionIndex: index, reason: attribution.reason });
+      return;
+    }
+    sync("codex-exec", ok, index, cmd, result, attribution.source);
+  });
+  for (const agent of [...agents.values(), ...background.values()]) {
+    if (agent.done) continue;
+    out.push({ via: "agent", ok: false, index: agent.spawnIndex, input: agent.prompt, result: "", reviewId: reviewIdOf(agent.prompt), verdict: null, startIndex: agent.spawnIndex, completionIndex: agent.spawnIndex, reason: agent.failure ?? "acknowledgement only" });
+  }
+  return out.map((r, k) => ({ r, k })).sort((a, b) => a.r.index - b.r.index || a.k - b.k).map(({ r }) => r);
+}
+
+/** Whether a shell command runs `codex exec` (help and version probes excluded), through wrappers and nested shells. */
+function runsCodexExec(text: string, depth: number): boolean {
+  return shellCommands(text).some((words) => {
+    const { argv, inner } = unwrap(words);
+    if (inner !== null) return depth < 3 && runsCodexExec(inner, depth + 1);
+    if (baseName(argv[0] ?? "") !== "codex") return false;
+    const at = argv.indexOf("exec");
+    return at > 0 && !isCodexProbe(argv.slice(at + 1));
+  });
 }
 
 /** `codex exec` asked for help or its version: a probe, never a review. */
@@ -1646,7 +2220,8 @@ function isCodexProbe(execArgs: readonly string[]): boolean {
  * never arrives as this tool result, so nothing here can capture it. Nothing here decides that a
  * candidate reviewed the proposal: an unrelated agent task passes this filter.
  */
-export function reviewerInvocations(calls: readonly EvalCall[]): ReviewerInvocation[] {
+export function reviewerInvocations(calls: readonly EvalCall[], checkSet = 1): ReviewerInvocation[] {
+  if (checkSet >= 2) return reviewerInvocationsV2(calls);
   const out: ReviewerInvocation[] = [];
   calls.forEach((call, index) => {
     const result = call.result ?? "";
@@ -1660,13 +2235,6 @@ export function reviewerInvocations(calls: readonly EvalCall[]): ReviewerInvocat
     }
     const cmd = commandOf(call);
     if (cmd === null) return;
-    const runsCodexExec = (text: string, depth: number): boolean => shellCommands(text).some((words) => {
-      const { argv, inner } = unwrap(words);
-      if (inner !== null) return depth < 3 && runsCodexExec(inner, depth + 1);
-      if (baseName(argv[0] ?? "") !== "codex") return false;
-      const at = argv.indexOf("exec");
-      return at > 0 && !isCodexProbe(argv.slice(at + 1));
-    });
     if (runsCodexExec(cmd, 0)) out.push({ via: "codex-exec", ok, index, input: cmd, result });
   });
   return out;

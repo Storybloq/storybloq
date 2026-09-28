@@ -61,7 +61,13 @@ For each fact you will use, keep a source reference (file and heading, or "conve
 
 #### 1c. Establish Success
 
-Reuse what the brief and the conversation already answered. Ask only about **material gaps** -- unresolved questions whose answer would change the plan -- a few at a time, in free text or with `AskUserQuestion`. When the material already answers everything, ask nothing. A decision the user postpones is recorded as an open owner decision: only the work it affects waits on it, and the rest is planned normally. The topics, where the material leaves them open:
+Reuse what the brief and the conversation already answered. Ask only about **material gaps** -- unresolved questions whose answer would change the plan -- a few at a time, in free text or with `AskUserQuestion`. When the material already answers everything, ask nothing. A decision the user postpones is recorded as an open owner decision: only the work it affects waits on it, and the rest is planned normally.
+
+**Check the material before asking.** An answer is settled when an applicable requirement (1b), or an explicit owner decision, states it and no unresolved source conflict touches it. Conflicts are adjudicated first (1b); only then are settled answers left unasked. A proposal is not a requirement: a floated idea is still open. For every question you draft, search the material for its answer. If it is settled, do not ask; cite the source in the plan instead. A question that joins a settled rule to an open one asks only the open part.
+
+**A discovery turn ends with its question.** In plain text, the question is the last thing in the message: no offer to leave a topic undecided, no default you will assume, no instruction or note after it. With a structured question tool, the question call is the last thing in the turn, and anything you want to say comes before it. When the owner postpones a topic in their answer, it becomes an open owner decision (above).
+
+The topics, where the material leaves them open:
 
 - the intended users, the problem they have, and the primary journey;
 - what a successful first version lets them do;
@@ -105,15 +111,33 @@ Every label carries content. Where one does not apply, write `none` (for example
 
 Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner reviews>`. Its description holds `Question:` for a decision, or `Criteria:` for a demonstration or acceptance, and names the artifact the owner reviews. The ticket is `blockedBy` the work that produces what it reviews, and only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint; unrelated work stays unblocked. Stage-1 limitation: nothing enforces the gate yet, so a checkpoint ticket can be closed like any other ticket. Say so in the package.
 
-**Independent review, by default.** Review the full plan with an available supported reviewer, trying them in this capability order:
+**Independent review, by default.** First probe which supported reviewers this session can use, then review the full plan with the first whose probe passes, in this capability order:
 
-1. a native Codex CLI, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
-2. the `review_plan` MCP tool;
-3. an independent agent, if the client can start one.
+1. a native Codex CLI, when `command -v codex` prints a path, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
+2. the `review_plan` MCP tool, when it is in your tool list (after one exact-name tool discovery call where the client defers tools);
+3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent.
+
+Give every review a review id, `R1`, `R2` and so on in order, and put `Review id: R<n>` as the first line of the plan you send (the here-document body, the `review_plan` plan text, or the agent's prompt). Ask for the answer in the schema's shape, a `verdict` and `findings`.
 
 The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Maximum 2 review rounds; incorporate the findings. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
 
-**When no reviewer is available**, or every call fails, say so plainly and use `AskUserQuestion`: "Retry the review" or "Continue without independent review". Stop there until the user answers. A retry runs the order again; continuing records the skip, which appears in the package, the setup summary and the initial handover. A review counts only when a supported reviewer returned a completed response with a verdict and findings about the plan you supplied, captured in this session and quoted in the package. Error output, a launch acknowledgement, a refusal or incomplete output is not a review, and neither is a collaboration agent whose response you did not capture; wait for an asynchronous reviewer to finish. When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.
+**The review status line.** Every package and the setup summary carries exactly one review status line, on its own line, in one of two forms, verbatim:
+
+- `Independent review: <verdict>, invocation R<n>`: `<verdict>` is the captured response's `verdict` value exactly, and `R<n>` is the review id of the call that returned it.
+- `Independent review: skipped at the owner's request`: only after the owner chose "Continue without independent review".
+
+Describe findings in your own words elsewhere if useful, but never state a review outcome outside the status line.
+
+**When every probe fails**, or every reviewer call fails, send this stop and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
+
+No supported reviewer is available to review this plan.
+How should I proceed?
+Retry the review
+Continue without independent review
+
+A retry runs the probes again. Continuing records the skip for the whole setup: later adjustments carry the skip status line and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+
+**What counts as a review.** A review counts only when a supported reviewer returned a completed response with a verdict and findings about the plan you supplied, captured in this session and quoted in the package. Never narrate a review you have no captured output for: not "Independent review passed", not "I have sent it for review", not a verdict you inferred or remember. Error output, a launch acknowledgement, a refusal or incomplete output is not a review. A wait with no agent started, or a wait that returned no message, is a wait on nothing, not a review. An agent is reviewed only once its completed final message is captured, from the start call's own result or from a wait on it; keep waiting on a running agent rather than reporting it. When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.
 
 #### 1d. Present Proposal
 
@@ -123,13 +147,13 @@ Present one setup package. A readable summary comes first:
 - the milestones and what each one demonstrates;
 - the important unresolved decisions and labelled assumptions;
 - the work that can begin immediately;
-- the review outcome (findings incorporated, findings still open) or the recorded review skip, and the stage-1 checkpoint limitation when checkpoints are planned.
+- the review status line in its exact form (1c2), with findings incorporated or still open described above it in prose, and the stage-1 checkpoint limitation when checkpoints are planned.
 
 Then the ticket inventory grouped by milestone. Each ticket shows its purpose, its dependencies and any checkpoint it waits on. Then what else the approval covers:
 
 - **Project:** name, type, language (every part of a mixed stack).
 - **Governance files** to write: `CLAUDE.md` (or `AGENTS.md`), `RULES.md` and `REVIEW.md`, each previewed on request. Omit a file that already exists; it is never overwritten.
-- **Quality level** with its recipe stages: **Full pipeline**, **Tests only** or **Minimal**. Propose Full pipeline for business rules, workflows, multiple organisations, AI evaluation needs or a sensitive domain, and say why. Show each stage command as proposed and whether it is established from the manifests or still pending (see 1e).
+- **Quality level** with its recipe stages: **Full pipeline**, **Tests only** or **Minimal**. Propose Full pipeline for business rules, workflows, multiple organisations, AI evaluation needs or a sensitive domain, and say why. Show each stage command as proposed and whether it is established or still pending (see 1e). State the level on one line, `Quality level: <level>`, naming exactly one of the three right after the colon; a reason may follow after a comma or period.
 - **Git:** `git init` when the folder is not a repository, and the `.gitignore` entries.
 - For an `interrupted` scaffold: the existing `p0` phase kept first, and any difference between the existing config and the package (name, type, language), which is reported, not overwritten.
 - Imported GitHub issues, if any.
@@ -144,6 +168,8 @@ Then ONE `AskUserQuestion`:
   - "Adjust the plan" -- change scope, milestones, tickets, files, quality level or git
   - "Inspect details" -- expand a ticket, a file preview or the coverage map
 
+"Inspect details" shows what the user asks for, changes nothing in the plan, and re-asks the same question with the same status line; a change is an adjustment. "Adjust the plan" applies the change, classifies it, re-shows the package and re-asks. A change is **material** when it alters any ticket's scope (what it includes or excludes), its dependencies, or where a persistence, reliability, security or privacy responsibility sits, including moving work from one ticket to another. A material change reruns the reviewer on the adjusted plan with a new review id before the adjusted package is shown, and that package's status line cites the new id. For any other change, the package keeps the previous package's status line unchanged and carries one line above it, verbatim: `Review not rerun: <what changed> changes no ticket's scope, dependencies or responsibilities.` After an authorised skip, the adjusted package carries the skip status line instead (1c2). One approval covers everything listed. Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup". An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again with the four lines.
+
 **Without a structured question tool**, end the package with exactly these four lines, one per line, no blank line between them and nothing after them:
 
 How should I proceed with this setup?
@@ -153,13 +179,13 @@ Inspect details
 
 Do not paraphrase a label or add a citation or closing paragraph: the owner, a reviewer or an evaluation harness reads these exact labels.
 
-"Inspect details" shows what the user asks for and re-asks the same question. "Adjust the plan" iterates, reruns the review only when the change is material, re-shows the package and re-asks. One approval covers everything listed. Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup". An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again with the four lines.
+The fourth line is the last thing in the message, in every turn that shows the package: the first, after "Inspect details" and after "Adjust the plan". The review status line sits above the four lines. Nothing follows them: no citation or link, no reminder that nothing is written before approval, no status note or sign-off, and no trailing spaces on the four lines.
 
 #### 1e. Execute on Approval
 
 Everything below runs only after approval as defined in 1d.
 
-1. **Initialise only when `.story/` is absent.** Call `storybloq_init` with name, type and language. For an `interrupted` scaffold, skip init: its config and phases are reused as they are, and init is never forced over them. A default `p0` "Setup" phase (which a fresh init also writes) stays first, and setup phases go after it. If the scaffold is no longer empty (tickets, issues, handovers or non-default phases appeared), stop and name what you found.
+1. **Initialise only when `.story/` is absent.** Call `storybloq_init` with name, type and language. For an `interrupted` scaffold, skip init: its config and phases are reused as they are, and init is never forced over them. An owner's instruction about the config is applied as given, never widened or narrowed. Scaffold metadata (name, type, language) is always preserved. The recipe stages are a separate item in the package (quality level) and are written only as approved there. If the owner forbids any config change, the package says which defaults then stay enabled (`WRITE_TESTS` and `TEST` with `npm test`) and asks the owner to decide about them before approval. A default `p0` "Setup" phase (which a fresh init also writes) stays first, and setup phases go after it. If the scaffold is no longer empty (tickets, issues, handovers or non-default phases appeared), stop and name what you found.
 
 2. **Readiness by capability.** The creation tools are `storybloq_phase_create`, `storybloq_ticket_create`, `storybloq_ticket_update`, `storybloq_issue_create` and `storybloq_snapshot`. After init (or at once for a reused scaffold), check which are callable. For any that are not, call the client's tool discovery/search tool (`ToolSearch`, `tool_search`, or equivalent) by exact name, with a small result limit. In Codex, use the `limit` field for that result limit. Some clients cache the pre-init tool list and only refresh when asked. If a tool is still missing, fall back to the CLI via `Bash` (`storybloq phase create ...`, `storybloq ticket create ...`, `storybloq ticket update ...`, `storybloq issue create ...`, `storybloq snapshot`) and note that a client restart may be needed. If the CLI is unavailable too, stop with a concrete blocker naming the missing tools and the restart step.
 
@@ -167,11 +193,32 @@ Everything below runs only after approval as defined in 1d.
    ```
    storybloq config set-overrides --json '<JSON>'
    ```
-   The default recipe enables `WRITE_TESTS` and `TEST` with `npm test`, an override only replaces what it names, and a reused scaffold may already carry overrides. So all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `"enabled"` value:
+   The default recipe enables `WRITE_TESTS` and `TEST` with `npm test`, an override only replaces what it names, and a reused scaffold may already carry overrides. So all four stages, `WRITE_TESTS`, `TEST`, `BUILD` and `VERIFY`, are always written with an explicit `"enabled"` value.
 
-   - **Test command established** (a real test script in the manifest, or a real test target in the build file): write `WRITE_TESTS` and `TEST` with that same command. Full pipeline enables both; Tests only enables `TEST` and writes `WRITE_TESTS` with `"enabled": false`; Minimal writes both with `"enabled": false`.
-   - **Test command not established** (an empty project, or a manifest with no test script): write both with `"enabled": false` and record the proposed command as pending. Never leave them to the defaults.
-   - **`BUILD` and `VERIFY`:** `"enabled": true` only for Full pipeline, and only with commands established from the manifests (VERIFY also needs an applicable project type, below). Everything else writes them with `"enabled": false`: Tests only, Minimal, pending tooling, and project types VERIFY does not apply to. Record a pending proposal as pending.
+   **When a test command is established.** Classify every component first (the root counts as one): its test command is either established or pending. It is established only when both hold. Nothing is established by running it: never execute an install, test, build or dev server during setup.
+
+   1. **A command**, taken in this order of precedence:
+      - an explicit repository command: a `test` script in `package.json`, a `test` target in a `Makefile`, or a test command documented in the README or CLAUDE.md;
+      - otherwise exactly one configured runner: a runner configuration section or file, such as pytest in `pyproject.toml`, `pytest.ini`, `setup.cfg` or `tox.ini`, or a jest or vitest config;
+      - otherwise exactly one runner convention row below.
+
+      When two sources at the same level disagree, the command is pending with the reason "conflicting test command evidence". A higher level wins over a lower one. A Django project whose Makefile runs `pytest` uses `pytest`, not `python manage.py test`.
+   2. **Test sources the runner collects:** at least one test file exists that the runner would collect. Use the repository's collection configuration first, such as pytest `testpaths` and `python_files`, jest `testMatch` or vitest `include`. The patterns in the table are defaults, used only when nothing is configured.
+
+   | Runner convention | Applies when | Default test sources | Command |
+   |---|---|---|---|
+   | npm script | `package.json` has a `test` script | files that script's runner collects (vitest `**/*.{test,spec}.*`, jest `**/*.{test,spec}.*` and `__tests__`) | `npm test` |
+   | pytest | pytest configuration or a pytest dependency | `test_*.py` / `*_test.py` under the component | `pytest` |
+   | Django | `manage.py` present | `tests.py` or `tests/` in an app | `python manage.py test` |
+   | Go | `go.mod` | `*_test.go` | `go test ./...` |
+   | Rust | `Cargo.toml` | `tests/*.rs`, or `#[test]` inside `src` | `cargo test` |
+   | Flutter | `pubspec.yaml` with `flutter_test` | `test/**/*_test.dart` | `flutter test` |
+
+   **Then build one test command from the established components only.** With one, it is that component's command, run from the root, or `cd <dir> && <command>` for a component in a subdirectory. With several, write one plain sequence of `cd` steps and test commands joined only by `&&`, for example `cd backend && pytest` or `cd frontend && npm test && cd ../backend && pytest`. Use no subshell `( ... )`, no `;`, `||` or `|`, and no other command. **Then apply the approved quality level:** Full pipeline and Tests only write `WRITE_TESTS` and `TEST` with that same command, Full pipeline enabling both and Tests only enabling `TEST` and writing `WRITE_TESTS` with `"enabled": false`; Minimal writes both with `"enabled": false`, even when a command is established. When no component is established, write both with `"enabled": false` and record the proposed command as pending. Never leave them to the defaults.
+
+   **Every pending component gets its pending lines** (1f), one per test stage the quality level uses, whether or not the stages are enabled for the others.
+
+   **`BUILD` and `VERIFY`:** `"enabled": true` only for Full pipeline, and only with commands established from the manifests (VERIFY also needs an applicable project type, below). Everything else writes them with `"enabled": false`: Tests only, Minimal, pending tooling, and project types VERIFY does not apply to. Record a pending proposal as pending.
 
    Full pipeline with an established test command, for example:
    ```json
@@ -183,17 +230,17 @@ Everything below runs only after approval as defined in 1d.
    }}
    ```
 
-   Nothing is established by running it: read the command from the manifest or build file, never execute an install, test, build or dev server during setup. The table below lists candidates to look for, not values to write:
+   For `BUILD` and `VERIFY`, the candidates to look for (read from the manifest or build file, never values to write unchecked):
 
-   | Stack | Test | Dev server | Readiness URL | Build |
-   |-------|------|------------|---------------|-------|
-   | Node (`package.json` scripts) | `npm test` | `npm run dev` | `http://localhost:3000` | `npm run build` |
-   | Vite / SvelteKit | `npm test` | `npm run dev` | `http://localhost:5173` | `npm run build` |
-   | Python (pytest configured) | `pytest` | per framework | `http://localhost:8000` | -- |
-   | Django | `python manage.py test` | `python manage.py runserver` | `http://localhost:8000` | -- |
-   | Go | `go test ./...` | `go run .` | `http://localhost:8080` | -- |
-   | Rust | `cargo test` | -- | -- | `cargo build` |
-   | Flutter | `flutter test` | -- | -- | `flutter build` |
+   | Stack | Dev server | Readiness URL | Build |
+   |-------|------------|---------------|-------|
+   | Node (`package.json` scripts) | `npm run dev` | `http://localhost:3000` | `npm run build` |
+   | Vite / SvelteKit | `npm run dev` | `http://localhost:5173` | `npm run build` |
+   | Python | per framework | `http://localhost:8000` | -- |
+   | Django | `python manage.py runserver` | `http://localhost:8000` | -- |
+   | Go | `go run .` | `http://localhost:8080` | -- |
+   | Rust | -- | -- | `cargo build` |
+   | Flutter | -- | -- | `flutter build` |
 
    A Python project with no `package.json` never gets `npm test`. Skip VERIFY for static sites, CLIs, libraries, packages, mobile-only apps and projects with no custom server.
 
@@ -253,8 +300,8 @@ Same sanitization and read-back rules as CLAUDE.md -- a REVIEW.md reported as cr
 
 **Summary.** Confirm what was created with concrete, verified counts: do not say "CLAUDE.md created" unless the read-back confirmed it, and do not give a ticket count unless every create call returned success; the counts must equal what is on disk. Example: "Created 5 phases, 18 tickets, 3 issues, CLAUDE.md (2,814 chars), RULES.md (1,206 chars). Git repo initialized." Then:
 
-- the review outcome, or "Independent review skipped at the user's request";
-- one line per pending stage, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)".
+- the review status line of the approved package, in its exact form (1c2);
+- one line per pending stage, and per component when the project has several, verbatim in this form: "Verification tooling to establish: <stage>: <proposed command> (pending: <reason>)", or with a component "Verification tooling to establish: <stage> (<component>): <proposed command> (pending: <reason>)".
 
 **Initial handover and setup note.** Write an initial handover that records the product brief and its acceptance conditions, the coverage map, the answers from 1c, the conflicts and how they were ruled, the approved quality level with its established and pending commands, the review outcome or the recorded skip, and the checkpoint tickets with the stage-1 limitation. Also create a setup note (`storybloq_note_create`, tag `setup`) holding the coverage map and the pending verification tooling. The handover is the source of truth for setup decisions; CLAUDE.md is the project description.
 
@@ -262,8 +309,10 @@ Present a brief completion message and tell the user how to start:
 
 "Your project is set up -- [X] phases, [Y] tickets, AGENTS.md/CLAUDE.md, and RULES.md created. Type **`/story`** in Claude Code or **`$story`** in Codex at the start of any session to load context and see what to work on. Or use **`/story auto`** / **`$story auto`** to work through the tickets autonomously."
 
-Keep it to 2-3 sentences. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work.
+Keep that prose to 2-3 sentences; the pending lines are not prose: they are never shortened, merged, bulleted or left to the note or handover instead. The system teaches itself through use -- `/story` loads context, shows status, and suggests next work.
 
 **Hooks note (Claude Code).** When `storybloq setup` registered hooks, the session now carries context-pressure awareness (T-499): a SessionStart hook captures the auto-compact setting for the process, a synchronous UserPromptSubmit hook samples the transcript tail on every prompt and injects one line only when pressure is imperative or compact-needed, and the Stop hook samples at every turn end. Nothing to configure; `storybloq session intel` shows the current numbers. Machine-wide opt-out: `~/.claude/storybloq/config.json` `{"sessionIntel": {"enabled": false}}`, then re-run `storybloq setup` or any CLI command to remove the hooks.
 
 **Design evaluation hint** (show only for a web, mobile or desktop app): add one line after the completion message: "Tip: Run `/story design` anytime to evaluate your frontend against [detected platform] best practices and generate improvement issues." Use the actual command that invoked this flow (e.g., `/story design` for standalone, `/story:go design` for plugin).
+
+**Last check before sending the completion message.** Every stage, and every component, whose command you recorded as pending has its own line in the message itself, `WRITE_TESTS` and `TEST` on separate lines. The same line in the note or handover does not count.

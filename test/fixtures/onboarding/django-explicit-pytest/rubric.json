@@ -1,0 +1,61 @@
+{
+  "fixture": "django-explicit-pytest",
+  "class": "existing",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "a member books a court for a one-hour slot",
+      "source": "README.md"
+    },
+    {
+      "id": "R2",
+      "text": "a court is never booked twice for the same slot",
+      "source": "README.md"
+    },
+    {
+      "id": "R3",
+      "text": "a member cancels a booking up to two hours before it starts",
+      "source": "README.md"
+    },
+    {
+      "id": "D1",
+      "text": "payment for guest bookings deferred",
+      "source": "README.md",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users and sign-in",
+    "how far ahead a court can be booked",
+    "how many slots a member may hold at once"
+  ],
+  "answeredInMaterial": [
+    "first version scope",
+    "framework",
+    "how the tests are run"
+  ],
+  "expectedRecipe": {
+    "testStages": "same-command",
+    "command": "pytest"
+  },
+  "rules": [
+    "the Makefile's test target runs pytest, so the test command is pytest (or make test), never python manage.py test",
+    "never npm test"
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {
+        ".": {
+          "commands": [
+            "pytest",
+            "python -m pytest",
+            "python3 -m pytest",
+            "make test"
+          ]
+        }
+      },
+      "pendingComponents": []
+    }
+  }
+}

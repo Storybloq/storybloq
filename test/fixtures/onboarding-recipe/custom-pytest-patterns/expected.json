@@ -1,0 +1,45 @@
+{
+  "why": "pytest configured, and its configured python_files collect checks/check_models.py: established",
+  "expectedRecipe": {
+    "testStages": "components",
+    "components": {
+      ".": {
+        "commands": [
+          "pytest",
+          "python -m pytest",
+          "python3 -m pytest"
+        ]
+      }
+    },
+    "pendingComponents": []
+  },
+  "correct": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "pytest"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "pytest"
+        }
+      }
+    }
+  },
+  "wrong": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": false
+        },
+        "TEST": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  "wrongFinding": "expected test commands for the root, got both disabled"
+}

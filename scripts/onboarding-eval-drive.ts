@@ -5,9 +5,10 @@
  * through the same code, so a regrade is the runner's own computation replayed, not a second opinion.
  */
 import {
-  checkRecipe, checkStop, degradedFindings, executionCalls, resolveTestStages, reviewerInvocations, STOP_RULE_VERSION,
+  checkRecipe, checkStop, degradedFindings, discoveryTail, executionCalls, notRerunLines, pendingFindings, pendingInventory, qualityLevel,
+  recipeContract, recipeFindings, resolveTestStages, reviewerInvocations, reviewStatus, STOP_RULE_VERSION,
   stopRoute, summaryCounts, ticketFindings, treeCheckOutcome, WRITE_RULE_VERSION, writeCalls,
-  type EvalCall, type EvalTurn, type ExpectedRecipe, type RuntimeExclusion, type StopCheck, type StopKind,
+  type EvalCall, type EvalTurn, type ExpectedRecipe, type ReviewerInvocation, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
 import { sha256 } from "./continuity-lib.js";
 
@@ -67,6 +68,8 @@ export interface DriveState {
   reviewSkipped: boolean;
   /** The runner's final result: the last turn a send returned, null once a send was refused after an infrastructure failure. */
   final: EvalTurn | null;
+  /** The check set the run is graded under (lib CHECK_SET_VERSION); 1 for a record written before check sets existed. */
+  readonly checkSet: number;
 }
 
 export interface DriveOptions {
@@ -79,16 +82,16 @@ export interface DriveOptions {
 
 /** The producer of one failure. `turn` is the index of the turn it belongs to. */
 export type FailureSource =
-  | { readonly kind: "infrastructure" | "stop" | "tree"; readonly turn: number }
-  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" };
+  | { readonly kind: "infrastructure" | "stop" | "tree" | "tail"; readonly turn: number }
+  | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" };
 
 function fail(s: DriveState, source: FailureSource, text: string): void {
   s.failures.push(text);
   s.sources.push(source);
 }
 
-export function newDriveState(): DriveState {
-  return { turns: [], allCalls: [], failures: [], sources: [], infraFailed: false, initTools: null, rounds: 0, reviewSkipped: false, final: null };
+export function newDriveState(checkSet = 1): DriveState {
+  return { turns: [], allCalls: [], failures: [], sources: [], infraFailed: false, initTools: null, rounds: 0, reviewSkipped: false, final: null, checkSet };
 }
 
 /** The shell constructs the parser could not read, in call order: the segments a needs-review reason joins with "; ". */
@@ -126,6 +129,11 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
     const tree = expected ? treeCheckOutcome(label, treeChanges, o.exclusion) : null;
     if (tree?.failure) fail(s, { kind: "tree", turn: s.turns.length }, tree.failure);
     const unparsed = expected ? unparsedSegments(r.turn.calls) : [];
+    // Check set 2: a plain-text discovery question is the last thing in its turn.
+    if (s.checkSet >= 2 && stop?.kind === "semantic" && stop.candidate === "discovery" && r.turn.pendingQuestion === undefined) {
+      const tail = discoveryTail(r.turn.stopText);
+      if (tail !== "") fail(s, { kind: "tail", turn: s.turns.length }, `the discovery question is followed by more text (${label}): ${tail}`);
+    }
     s.turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed });
     return r.turn;
   }
@@ -137,6 +145,7 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
     if (kind === "package") break;
     if (kind === "review-unavailable") {
       if (o.variant !== "reviewer-unavailable") fail(s, { kind: "flow" }, "review reported unavailable in a variant where a reviewer is available");
+      if (s.checkSet >= 2 && s.reviewSkipped) fail(s, { kind: "review" }, "the skip decision was asked again");
       s.reviewSkipped = true;
       s.final = yield* send("continue-without-review", "Continue without independent review.", preApproval);
       continue;
@@ -171,16 +180,20 @@ export interface DriveEvidence {
   readonly bound: Record<string, number[]>;
   /** Every shell construct the parser could not read, whole run, in call order. */
   readonly unparsed: string[];
+  /** Check set 2: the judge lines the review checks add, one per distinct review binding (bound) and one per non-material declaration. */
+  readonly reviewLines: string[];
 }
 
 /** Evidence and the whole-run checks after the flow, appended to the failures in the runner's order. */
 export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
+  const cs = s.checkSet;
   const { turns, allCalls } = s;
   // Every proposal the owner was shown, by turn, with a hash the evidence below is linked to.
   const proposals = turns.filter((x) => stopRoute(x.stop) === "package").map((x) => ({ turn: x.label, sha256: sha256(x.stopText), text: x.stopText }));
   // Each candidate review with what it was given and returned, the turn it ran in, and the proposal it preceded.
   const turnOf = (index: number): string => turns.find((x) => index >= x.callRange[0] && index < x.callRange[1])?.label ?? "unknown";
-  const candidates = reviewerInvocations(allCalls).map((r) => {
+  const invocations = reviewerInvocations(allCalls, cs);
+  const candidates = invocations.map((r) => {
     const turnAt = turns.findIndex((x) => r.index >= x.callRange[0] && r.index < x.callRange[1]);
     const next = turns.slice(Math.max(turnAt, 0)).find((x) => stopRoute(x.stop) === "package");
     return { ...r, turn: turnOf(r.index), precedesProposal: next ? sha256(next.stopText) : null };
@@ -196,6 +209,12 @@ export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
   // A candidate must exist before the package was first shown, unless the owner explicitly skipped review; the judge then binds the ruling to one.
   if (!s.reviewSkipped && !s.infraFailed && !reviewEvidence.beforeFirstPackage.some((r) => r.ok)) fail(s, { kind: "no-reviewer" }, "no successful supported reviewer invocation with a captured result before the package was shown");
   const bound: Record<string, number[]> = s.reviewSkipped ? {} : { [reviewLine]: reviewEvidence.beforeFirstPackage.filter((r) => r.ok).map((r) => r.index) };
+  const reviewLines: string[] = [];
+  if (cs >= 2 && !s.infraFailed) {
+    const lines = reviewStatusChecks(s, invocations);
+    for (const b of lines.bindings) { reviewLines.push(b.line); bound[b.line] = b.allowed; }
+    reviewLines.push(...lines.declarations);
+  }
 
   // Before approval nothing ran; after it, still no install, test, build or dev server, nested agents included.
   const execs = executionCalls(allCalls);
@@ -203,7 +222,124 @@ export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
   const unparsed = unparsedSegments(allCalls);
   if (ran.length > 0) fail(s, { kind: "executed" }, `executed during setup: ${ran.map((e) => (e.call.nested ? `[nested] ${e.segment}` : e.segment)).join("; ")}`);
   if (unparsed.length > 0) fail(s, { kind: "unparsed" }, `needs review, shell construct not parsed: ${unparsed.join("; ")}`);
-  return { proposals, reviewEvidence, bound, unparsed };
+  return { proposals, reviewEvidence, bound, unparsed, reviewLines };
+}
+
+/** The judge line for one review binding: whether the cited invocation reviewed the plan the package it binds showed. */
+export function bindingLine(ref: string, calls: readonly number[], label: string): string {
+  return `Invocation ${ref} (call ${calls.join(" and ")}): its input contains the plan shown in the ${label} package, and its response reviews that plan, not another one`;
+}
+
+/** The judge line for one `Review not rerun:` declaration: whether that change alone is not material. */
+export function materialityLine(label: string, declaration: string): string {
+  return `the change declared in the ${label} package ("${declaration}") alters no ticket's scope (what it includes or excludes), no dependency, and no placement of a persistence, reliability, security or privacy responsibility`;
+}
+
+/** The judge line for one restated package: whether it kept the plan of the package before it. */
+export function restatementLine(label: string, ref: string, previous: string): string {
+  return `the ${label} package, which cites ${ref}, presents the plan of the ${previous} package or that plan with detail added: it changes no ticket's scope (what it includes or excludes), no dependency, and no placement of a persistence, reliability, security or privacy responsibility`;
+}
+
+/**
+ * Check set 2's review status checks over every package and the setup summary: each carries one status line in its
+ * exact form, a result line binds to exactly one captured invocation with that review id and the verdict it quotes,
+ * and an adjusted package is either the owner's skip (A), a fresh review started and completed inside the adjustment
+ * (B), or a declared non-material change that keeps the previous package's reference (C). Returns the judge lines:
+ * one binding line per distinct (reference, originally reviewed package), one materiality line per declaration, and one restatement line per inspect or probe package.
+ */
+function reviewStatusChecks(s: DriveState, invocations: readonly ReviewerInvocation[]): { bindings: { line: string; allowed: number[] }[]; declarations: string[] } {
+  const bad = (text: string): void => fail(s, { kind: "review" }, text);
+  const bindings: { line: string; allowed: number[] }[] = [];
+  const declarations: string[] = [];
+  const skipped = s.reviewSkipped;
+  const skipUnauthorised = (label: string): void => bad(`review skip stated without the owner's skip decision (${label})`);
+  const bind = (ref: string, verdict: string, label: string): ReviewerInvocation | null => {
+    const matches = invocations.filter((r) => r.reviewId === ref);
+    if (matches.length === 0) { bad(`review reference ${ref} matches no captured invocation (${label})`); return null; }
+    if (matches.length > 1) { bad(`review reference ${ref} matches several invocations (${label})`); return null; }
+    const r = matches[0]!;
+    if (!r.ok || r.verdict === null || r.verdict === undefined) { bad(`review reference ${ref} has no captured verdict (${label})`); return null; }
+    if (r.verdict.trim() !== verdict.trim()) { bad(`review status quotes ${verdict}, the captured verdict of ${ref} is ${r.verdict} (${label})`); return null; }
+    return r;
+  };
+  const origin = new Map<string, string>();
+  const addBinding = (ref: string, r: ReviewerInvocation, label: string): void => {
+    origin.set(ref, label);
+    const calls = [...new Set([r.startIndex ?? r.index, r.completionIndex ?? r.index])];
+    const line = bindingLine(ref, calls, label);
+    if (!bindings.some((b) => b.line === line)) bindings.push({ line, allowed: calls });
+  };
+  let prior: string | null = null;
+  const boundRefs = new Set<string>();
+  const packages = s.turns.filter((t) => stopRoute(t.stop) === "package");
+  packages.forEach((t, k) => {
+    const label = t.label;
+    const status = reviewStatus(t.stopText);
+    // Every package the owner is shown carries exactly one status line, a restated one included.
+    if (status.kind === "none") { bad(`review status line missing (${label})`); return; }
+    if (status.kind === "several") { bad(`more than one review status line (${label})`); return; }
+    if (k === 0) {
+      if (skipped) { if (status.kind !== "skip") bad(`after the owner's skip the package must carry the skip status line (${label})`); return; }
+      if (status.kind === "skip") { skipUnauthorised(label); return; }
+      if (status.kind !== "result") return;
+      const r = bind(status.ref, status.verdict, label);
+      if (r === null) return;
+      if ((r.completionIndex ?? r.index) >= t.callRange[1]) { bad(`the package cites ${status.ref}, which completed after it was shown (${label})`); return; }
+      prior = status.ref; boundRefs.add(status.ref); addBinding(status.ref, r, label);
+      return;
+    }
+    if (label.startsWith("adjust")) {
+      const declared = notRerunLines(t.stopText);
+      // Branch A: once the owner skipped review, the skip line and nothing else, whatever else binds.
+      if (skipped) {
+        if (status.kind !== "skip" || declared.length > 0) bad(`after the owner's skip the adjusted package must carry the skip status line (${label})`);
+        return;
+      }
+      if (status.kind === "skip") { skipUnauthorised(label); return; }
+      if (status.kind !== "result") return;
+      if (declared.length > 1) { bad(`the adjusted package declares no re-review more than once (${label})`); return; }
+      const r = bind(status.ref, status.verdict, label);
+      if (r === null) return;
+      const [from, to] = t.callRange;
+      const completion = r.completionIndex ?? r.index;
+      const start = r.startIndex ?? r.index;
+      const fresh = !boundRefs.has(status.ref);
+      const completesIn = completion >= from && completion < to;
+      if (declared.length === 0) {
+        if (!fresh) { bad(`the adjusted package was neither reviewed again nor declared not material (${label})`); return; }
+        if (completion >= to) { bad(`the adjusted package cites ${status.ref}, which completed after it was shown (${label})`); return; }
+        if (!completesIn) { bad(`the adjusted package cites ${status.ref}, which completed before the adjustment (${label})`); return; }
+        if (start < from) { bad(`the adjusted package cites ${status.ref}, whose reviewer started before the adjustment (${label})`); return; }
+        // Branch B: a new review of the adjusted plan.
+        prior = status.ref; boundRefs.add(status.ref); addBinding(status.ref, r, label);
+        return;
+      }
+      if (fresh && completesIn) { bad(`the adjusted package both cites a new review and declares it not rerun (${label})`); return; }
+      if (status.ref !== prior) { bad(`the adjusted package declares no re-review but cites ${status.ref}, not the previously bound ${prior ?? "(none)"} (${label})`); return; }
+      // Branch C: the reference keeps binding the plan it reviewed; the change itself goes to the judge.
+      declarations.push(materialityLine(label, declared[0]!));
+      return;
+    }
+    // Inspect and approval-probe packages restate the package: they cite the bound reference, and the judge rules that
+    // the restatement kept the previous package's plan (detail may be added, scope may not change).
+    if (skipped) { if (status.kind !== "skip") bad(`after the owner's skip the package must carry the skip status line (${label})`); return; }
+    if (status.kind === "skip") { skipUnauthorised(label); return; }
+    if (bind(status.ref, status.verdict, label) === null) return;
+    if (status.ref !== prior) { bad(`the package cites ${status.ref}, not the previously bound ${prior ?? "(none)"} (${label})`); return; }
+    declarations.push(restatementLine(label, status.ref, packages[k - 1]!.label));
+  });
+  // The setup summary: the approved package's status line.
+  const last = s.turns.at(-1);
+  if (last !== undefined && last.stop === null && packages.length > 0) {
+    const status = reviewStatus(last.stopText);
+    const label = "summary";
+    if (status.kind === "none") bad(`review status line missing (${label})`);
+    else if (status.kind === "several") bad(`more than one review status line (${label})`);
+    else if (skipped) { if (status.kind !== "skip") bad(`after the owner's skip the summary must carry the skip status line`); }
+    else if (status.kind === "skip") skipUnauthorised(label);
+    else if (bind(status.ref, status.verdict, label) !== null && status.ref !== prior) bad(`the summary cites ${status.ref}, the approved package cites ${prior ?? "(none)"}`);
+  }
+  return { bindings, declarations };
 }
 
 /** Read access to the project's `.story/` after approval, relative to it; the runner reads disk, the regrade the raw copy. */
@@ -265,20 +401,28 @@ export function inspectAfter(
   const ledger = tickets.map((x) => ({ id: x.id, title: x.title, description: x.description ?? "", status: x.status, blockedBy: x.blockedBy ?? [] }));
   ledgerRecords = tickets;
   const stages = resolveTestStages(config);
-  const recipeFinding = checkRecipe(stages, rubric.expectedRecipe);
+  const contract = s.checkSet >= 2 ? recipeContract(rubric.expectedRecipe) : null;
+  // Check set 2: the approved package (the last one shown) names the quality level the stages are checked against.
+  const approved = [...s.turns].reverse().find((x) => stopRoute(x.stop) === "package");
+  const level = contract === null ? null : qualityLevel(approved?.stopText ?? "");
+  const recipeFinding = contract === null ? checkRecipe(stages, rubric.expectedRecipe) : null;
   const record = setupRecordFrom(story);
   const counts = summaryCounts(t.stopText);
   const createdPhases = roadmap.phases.filter((p) => p.id !== rubric.scaffold?.keepPhase).length;
   Object.assign(inspection, { testStages: stages, ticketCount: tickets.length, phaseIds: roadmap.phases.map((p) => p.id), summaryCounts: counts });
+  if (contract !== null) inspection.qualityLevel = level;
   for (const f of ticketFindings(ledger)) fail(s, { kind: "inspection" }, `ticket: ${f}`);
   if (recipeFinding) fail(s, { kind: "recipe" }, `recipe: ${recipeFinding}`);
+  if (contract !== null) for (const f of recipeFindings(stages, contract, level)) fail(s, { kind: "recipe" }, `recipe: ${f}`);
   if (!/coverage/i.test(record)) fail(s, { kind: "inspection" }, "no coverage map in the setup note or handover");
   if (s.reviewSkipped) {
     if (!/skip/i.test(record)) fail(s, { kind: "inspection" }, "the review skip is not recorded");
   } else if (!/review/i.test(record) || /review[^.\n]{0,40}\bpending\b/i.test(record)) {
     fail(s, { kind: "inspection" }, "no completed review outcome recorded");
   }
-  if (stages.kind === "disabled" && !t.stopText.includes("Verification tooling to establish")) fail(s, { kind: "inspection" }, "pending verification tooling not listed in the summary");
+  if (contract !== null) {
+    if (level !== null) for (const f of pendingFindings(t.stopText, pendingInventory(contract, level))) fail(s, { kind: "pending" }, f);
+  } else if (stages.kind === "disabled" && !t.stopText.includes("Verification tooling to establish")) fail(s, { kind: "inspection" }, "pending verification tooling not listed in the summary");
   if (counts.tickets !== null && counts.tickets !== tickets.length) fail(s, { kind: "inspection" }, `summary says ${counts.tickets} tickets, disk has ${tickets.length}`);
   if (counts.phases !== null && counts.phases !== createdPhases) fail(s, { kind: "inspection" }, `summary says ${counts.phases} phases, disk has ${createdPhases} created`);
   if (rubric.scaffold) {
@@ -298,7 +442,7 @@ export function packetText(p: {
   readonly runId: string; readonly semanticLines: readonly string[]; readonly reviewSkipped: boolean; readonly exclusion: RuntimeExclusion;
   readonly rubric: unknown; readonly briefs: Record<string, string>; readonly projectFiles: Record<string, string>;
   readonly turns: readonly DriveTurn[]; readonly evidence: DriveEvidence; readonly ledgerRecords: unknown[];
-  readonly setupRecord: string; readonly final: EvalTurn | null;
+  readonly setupRecord: string; readonly final: EvalTurn | null; readonly checkSet?: number;
 }): string {
   const packet = {
     note: PACKET_NOTE,
@@ -309,6 +453,7 @@ export function packetText(p: {
       stop: STOP_RULE_VERSION,
       write: WRITE_RULE_VERSION,
       treeExclusion: p.exclusion,
+      ...((p.checkSet ?? 1) >= 2 ? { checkSet: p.checkSet } : {}),
     },
     rubric: p.rubric,
     briefs: p.briefs,

@@ -1,0 +1,59 @@
+{
+  "fixture": "custom-pytest-patterns",
+  "class": "existing",
+  "requirements": [
+    {
+      "id": "R1",
+      "text": "read the catalogue CSV (title, author, call number)",
+      "source": "README.md"
+    },
+    {
+      "id": "R2",
+      "text": "a printable label sheet with the call number and the author's surname on each label",
+      "source": "README.md"
+    },
+    {
+      "id": "R3",
+      "text": "books with no call number are listed, not labelled",
+      "source": "README.md"
+    },
+    {
+      "id": "D1",
+      "text": "barcode printing deferred",
+      "source": "README.md",
+      "deferred": true
+    }
+  ],
+  "unresolvedGaps": [
+    "users",
+    "label sheet size and layout",
+    "what happens with two books sharing a call number"
+  ],
+  "answeredInMaterial": [
+    "first version scope",
+    "language"
+  ],
+  "expectedRecipe": {
+    "testStages": "same-command",
+    "command": "pytest"
+  },
+  "rules": [
+    "never npm test",
+    "pytest collects checks/check_*.py through the configured testpaths and python_files, so the test command is established as pytest"
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {
+        ".": {
+          "commands": [
+            "pytest",
+            "python -m pytest",
+            "python3 -m pytest"
+          ]
+        }
+      },
+      "pendingComponents": []
+    }
+  }
+}

@@ -880,7 +880,7 @@ describe("setup-skill", () => {
     const plan = flowSection(await readSetupFlow(), "1c2");
     expect(plan).toContain("**Independent review, by default.**");
     expect(plan).toContain("This runs before anything is shown for approval, every time.");
-    const codex = plan.indexOf("a native Codex CLI, as a read-only review");
+    const codex = plan.indexOf("a native Codex CLI, when `command -v codex` prints a path, as a read-only review");
     const mcp = plan.indexOf("`review_plan`");
     const agent = plan.indexOf("an independent agent");
     expect(codex).toBeGreaterThanOrEqual(0);
@@ -888,8 +888,7 @@ describe("setup-skill", () => {
     expect(agent).toBeGreaterThan(mcp);
     expect(plan).toContain("Maximum 2 review rounds");
     expect(plan).toContain("never weakened");
-    expect(plan).toContain('"Retry the review"');
-    expect(plan).toContain('"Continue without independent review"');
+    expect(plan).toContain("No supported reviewer is available to review this plan.\nHow should I proceed?\nRetry the review\nContinue without independent review\n");
     expect(plan).toContain("Stop there until the user answers");
     expect(await readSetupFlow()).not.toContain("Review skipped -- no review backends available");
   });

@@ -1,0 +1,43 @@
+{
+  "why": "a Jest test script with no collection override collects *.spec.* as well as *.test.*, so a project whose only test is a .spec.ts file has an established command",
+  "expectedRecipe": {
+    "testStages": "components",
+    "components": {
+      ".": {
+        "commands": [
+          "npm test"
+        ]
+      }
+    },
+    "pendingComponents": []
+  },
+  "correct": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "npm test"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "npm test"
+        }
+      }
+    }
+  },
+  "wrong": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": false
+        },
+        "TEST": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  "wrongFinding": "expected test commands for the root, got both disabled"
+}

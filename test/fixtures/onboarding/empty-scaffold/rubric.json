@@ -48,5 +48,14 @@
     "p0 kept first",
     "config project/type/language not overwritten",
     "the package notes the config difference"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {},
+      "pendingComponents": [
+        "."
+      ]
+    }
+  }
 }

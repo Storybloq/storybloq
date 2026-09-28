@@ -61,5 +61,27 @@
     "both manifests are recognised",
     "pending or proposed commands are listed per part",
     "a test command, if enabled, runs each part from its own directory; a root-level npm test or pytest is wrong"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {
+        "backend": {
+          "commands": [
+            "pytest",
+            "python -m pytest",
+            "python3 -m pytest"
+          ]
+        }
+      },
+      "pendingComponents": [
+        "frontend"
+      ]
+    },
+    "rules": [
+      "both manifests are recognised",
+      "pending or proposed commands are listed per part",
+      "a test command, if enabled, runs only the backend, from its own directory, with pytest; the frontend has no test files and is listed as pending; a root-level npm test or pytest is wrong"
+    ]
+  }
 }

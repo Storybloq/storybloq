@@ -1,0 +1,48 @@
+{
+  "why": "the Makefile's test target (an explicit repository command) outranks the Django convention",
+  "expectedRecipe": {
+    "testStages": "components",
+    "components": {
+      ".": {
+        "commands": [
+          "pytest",
+          "python -m pytest",
+          "python3 -m pytest",
+          "make test"
+        ]
+      }
+    },
+    "pendingComponents": []
+  },
+  "correct": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "pytest"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "pytest"
+        }
+      }
+    }
+  },
+  "wrong": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "python manage.py test"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "python manage.py test"
+        }
+      }
+    }
+  },
+  "wrongFinding": "`python manage.py test` in the root is not an accepted runner (pytest, python -m pytest, python3 -m pytest, make test)"
+}

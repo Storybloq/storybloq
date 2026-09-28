@@ -62,5 +62,14 @@
     "member data stays in the building: no hosted database, third-party service or network call receives member data (a service that never sees member data, such as a font or a package registry, is not a violation)",
     "verification includes a check that no member data leaves the building",
     "the shared-laptop setting is reflected in sign-in and data handling (no per-person accounts are assumed)"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {},
+      "pendingComponents": [
+        "."
+      ]
+    }
+  }
 }

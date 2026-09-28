@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { join } from "node:path";
 
 import {
-  claudeTurn, codexTurn, runVerdict, STOP_RULE_VERSION, subshellOnly, WRITE_RULE_VERSION,
+  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, STOP_RULE_VERSION, subshellOnly, WRITE_RULE_VERSION,
   type EvalTurn, type JudgeLine, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
@@ -68,6 +68,8 @@ export interface FixtureInputs {
   readonly projectFiles: Record<string, string>;
   /** The fixture files the flow and packet read, hashed over their bytes into the manifest. */
   readonly files: readonly ManifestEntry[];
+  /** The check set the rubric was projected and the owner script chosen for; it must be the record's. */
+  readonly checkSet: number;
 }
 
 /** Read access to the raw `.story/` copy as bytes: every file is hashed as stored and decoded from those same bytes. */
@@ -89,7 +91,7 @@ export interface RegradeInput {
   readonly fixture: FixtureInputs;
   readonly reviewLine: string;
   /** The runner's `runSemanticLines`, for the fixture's variant. */
-  readonly semanticLines: (reviewSkipped: boolean, turns: readonly DriveTurn[], exclusion: RuntimeExclusion, adjusted: boolean) => string[];
+  readonly semanticLines: (reviewSkipped: boolean, turns: readonly DriveTurn[], exclusion: RuntimeExclusion, adjusted: boolean, checkSet: number, reviewLines: readonly string[]) => string[];
 }
 
 export interface Regraded {
@@ -103,6 +105,8 @@ export interface Regraded {
   readonly regradeEvidenceHash: string;
   readonly semanticLines: readonly string[];
   readonly bound: Record<string, number[]>;
+  /** The record's check set, only from 2 on: legacy regrades keep their exact shape and hash. */
+  readonly checkSet?: number;
 }
 
 export type RegradeOutcome = { readonly ok: true; readonly result: Regraded } | { readonly ok: false; readonly reason: string };
@@ -129,7 +133,7 @@ export const turnFile = (index: number, label: string): string => `turn-${String
 export function evidenceHash(e: {
   readonly originalRecordSha256: string; readonly packetSha256: string; readonly manifest: readonly ManifestEntry[];
   readonly candidates: readonly Candidate[]; readonly stopRuleVersion: string; readonly writeRuleVersion: string; readonly guarantee: string;
-  readonly status: RevisionFile["status"];
+  readonly status: RevisionFile["status"]; readonly checkSet?: number;
 }): string {
   const candidates = [...e.candidates].map(canonical).sort();
   return createHash("sha256").update(canonical({ ...e, candidates })).digest("hex");
@@ -178,11 +182,11 @@ function stderrPathOf(failures: readonly string[], runId: string, label: string,
   return `<absent>${suffix}`;
 }
 
-function parseTurn(client: string, raw: string): EvalTurn {
+function parseTurn(client: string, raw: string, checkSet: number): EvalTurn {
   if (client === "claude") return claudeTurn(parseStream(raw).events);
   const lines: Record<string, unknown>[] = [];
   for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* non-JSON line */ } }
-  return codexTurn(lines);
+  return codexTurn(lines, checkSet);
 }
 
 function stringArray(v: unknown, what: string): string[] {
@@ -213,10 +217,17 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   const failures = record.failures as string[] | undefined;
   if (!Array.isArray(failures)) refuse("the record has no failures list");
   const recTurns = turns!;
-  let packet: { harnessNormalisation?: { stop?: unknown; write?: unknown } };
+  let packet: { harnessNormalisation?: { stop?: unknown; write?: unknown; checkSet?: unknown } };
   try { packet = JSON.parse(packetText) as typeof packet; } catch { return refuse("grading-packet.json is not JSON"); }
   const versions = packet.harnessNormalisation;
   if (versions?.stop !== STOP_RULE_VERSION || versions.write !== WRITE_RULE_VERSION) refuse("the run was graded under a stop or write rule version this regrade does not support");
+  // The check set: the record's own, never this code's current one. A record before check sets carries none and is 1.
+  const recordSet = record.checkSetVersion;
+  const checkSet = recordSet === undefined ? 1 : recordSet;
+  if (typeof checkSet !== "number" || !KNOWN_CHECK_SETS.includes(checkSet)) refuse(`the run was graded under check set ${String(checkSet)}, which this regrade does not support`);
+  if ((recordSet === undefined) !== (versions?.checkSet === undefined) || (recordSet !== undefined && versions?.checkSet !== recordSet)) refuse("the record and packet name different check sets");
+  if (input.fixture.checkSet !== checkSet) refuse(`the fixture inputs were read for check set ${input.fixture.checkSet}, the record names ${String(checkSet)}`);
+  const cs = checkSet as number;
   const recFailures = failures!;
 
   // Turn identity: position is identity, the file name is fixed by it, and nothing else may sit beside them.
@@ -234,7 +245,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
 
   // Replay through the runner's own flow.
   const exclusion = record.treeExclusion as RuntimeExclusion;
-  const state = newDriveState();
+  const state = newDriveState(cs);
   const flow = driveFlow({ variant, firstPrompt: input.fixture.firstPrompt, discoveryPrompt: input.fixture.discoveryPrompt, afterPackage: input.fixture.afterPackage, exclusion }, state);
   let consumed = 0;
   for (let step = flow.next(); !step.done;) {
@@ -247,7 +258,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     const rawBytes = input.readRaw(`${file}.jsonl`);
     manifest.push({ path: `${file}.jsonl`, sha256: sha256(rawBytes) }, { path: `${file}.stderr.txt`, sha256: sha256(input.readRaw(`${file}.stderr.txt`)) });
     const raw = rawBytes.toString("utf-8");
-    const turn = { ...parseTurn(client, raw), models: Array.isArray(rec!.models) ? rec!.models : [] };
+    const turn = { ...parseTurn(client, raw, cs), models: Array.isArray(rec!.models) ? rec!.models : [] };
     checkInfrastructure(consumed, rec!.infraFailure, turn);
     const response: TurnResponse = {
       turn, exitCode: rec!.exitCode, infraFailure: rec!.infraFailure,
@@ -260,7 +271,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   if (consumed !== recTurns.length) refuse(`the record has ${recTurns.length} turns, the flow ends after ${consumed}`);
 
   const evidence = finishDrive(state, input.reviewLine);
-  const semanticLines = input.semanticLines(state.reviewSkipped, state.turns, exclusion, input.fixture.afterPackage.some((x) => x.label === "adjust"));
+  const semanticLines = input.semanticLines(state.reviewSkipped, state.turns, exclusion, input.fixture.afterPackage.some((x) => x.label === "adjust"), cs, evidence.reviewLines);
   const seen = new Map<string, string>();
   const story = input.story === null ? EMPTY_STORY : recordingReader(input.story, seen);
   const { inspection, ledgerRecords } = inspectAfter(state, story, input.fixture.rubric, input.fixture.beforeConfig, variant);
@@ -271,7 +282,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   // The packet the run would have written must be the packet it did write.
   const rebuilt = buildPacketText({
     runId, semanticLines, reviewSkipped: state.reviewSkipped, exclusion, rubric: input.fixture.rubric, briefs: input.fixture.briefs,
-    projectFiles: input.fixture.projectFiles, turns: state.turns, evidence, ledgerRecords, setupRecord, final: state.final,
+    projectFiles: input.fixture.projectFiles, turns: state.turns, evidence, ledgerRecords, setupRecord, final: state.final, checkSet: cs,
   });
   if (!Buffer.from(rebuilt, "utf-8").equals(input.packetBytes)) refuse("the grading packet differs from the one the replayed run produces");
   const packetSha256 = sha256(input.packetBytes);
@@ -326,9 +337,10 @@ function regradeOrThrow(input: RegradeInput): Regraded {
 
   const originalRecordSha256 = sha256(input.recordBytes);
   const verdict: RunVerdict["verdict"] = hard.length > 0 ? "FAIL" : "PENDING_SEMANTIC";
-  const regradeEvidenceHash = evidenceHash({ originalRecordSha256, packetSha256, manifest, candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, status: verdict === "FAIL" ? "fail" : "pending" });
+  const setField = cs >= 2 ? { checkSet: cs } : {};
+  const regradeEvidenceHash = evidenceHash({ originalRecordSha256, packetSha256, manifest, candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, status: verdict === "FAIL" ? "fail" : "pending", ...setField });
   const reasons = hard.length > 0 ? hard : candidates.length > 0 ? [`${candidates.length} question(s) for the judge`] : ["mechanical checks passed; no judge result yet"];
-  return { verdict, reasons, hard, candidates, manifest, originalRecordSha256, packetSha256, regradeEvidenceHash, semanticLines, bound: evidence.bound };
+  return { verdict, reasons, hard, candidates, manifest, originalRecordSha256, packetSha256, regradeEvidenceHash, semanticLines, bound: evidence.bound, ...setField };
 }
 
 /** The command of a recipe failure that is only a subshell the harness cannot place, or null when the failure is hard. */
@@ -391,6 +403,8 @@ export interface RevisionFile {
   readonly judgeSessionId: string | null;
   readonly judgeObservedModel: string | null;
   readonly regradedAt: string;
+  /** The record's check set, only from 2 on; part of the evidence hash. */
+  readonly checkSet?: number;
 }
 
 const REVISION_DIR = /^\d{3}$/;
@@ -413,7 +427,7 @@ export function readRevisions(recordDir: string): { readonly dir: string; readon
     if (!consistent) refuseValue(`regrade/${name}: status ${rev.status} does not fit verdict ${String(rev.verdict)}`);
     const regrade = pair.regrade as Record<string, unknown> | undefined;
     if (!regrade || regrade.revision !== rev.revision || regrade.status !== rev.status || regrade.verdict !== rev.verdict || !same(regrade.reasons, rev.reasons) || !same(regrade.candidates, rev.candidates) || regrade.regradeEvidenceHash !== rev.regradeEvidenceHash) refuseValue(`regrade/${name}: its two files disagree`);
-    const recomputed = evidenceHash({ originalRecordSha256: rev.originalRecordSha256, packetSha256: rev.packetSha256, manifest: rev.manifest, candidates: rev.candidates, stopRuleVersion: rev.stopRuleVersion, writeRuleVersion: rev.writeRuleVersion, guarantee: rev.guarantee, status: rev.status });
+    const recomputed = evidenceHash({ originalRecordSha256: rev.originalRecordSha256, packetSha256: rev.packetSha256, manifest: rev.manifest, candidates: rev.candidates, stopRuleVersion: rev.stopRuleVersion, writeRuleVersion: rev.writeRuleVersion, guarantee: rev.guarantee, status: rev.status, checkSet: rev.checkSet });
     if (recomputed !== rev.regradeEvidenceHash) refuseValue(`regrade/${name}: its evidence hash does not match its own inputs`);
     out.push({ dir, revision: rev, regradeJsonSha256: sha256(text) });
   }
@@ -473,6 +487,7 @@ export function runRegrade(recordDir: string, input: RegradeInput, judge: Regrad
     const base = {
       candidates: g.candidates, regradeEvidenceHash: g.regradeEvidenceHash, originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256,
       manifest: g.manifest, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, limitation: OPAQUE_LIMIT, regradedAt: now(),
+      ...(g.checkSet !== undefined ? { checkSet: g.checkSet } : {}),
     };
     if (judge === null) {
       if (revisions.length > 0) return { ok: false, reason: `already regraded (revision ${revisions.length}); complete a pending revision with --judge` };
@@ -489,7 +504,7 @@ export function runRegrade(recordDir: string, input: RegradeInput, judge: Regrad
     const blocked = judgeable(g);
     if (blocked !== null) return { ok: false, reason: blocked };
     const v = judgeVerdict(g, input.packetBytes.toString("utf-8"), judge);
-    const judgedHash = evidenceHash({ originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256, manifest: g.manifest, candidates: g.candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G2, status: "judged" });
+    const judgedHash = evidenceHash({ originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256, manifest: g.manifest, candidates: g.candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G2, status: "judged", checkSet: g.checkSet });
     const revision: RevisionFile = {
       ...base, guarantee: G2, regradeEvidenceHash: judgedHash, revision: latest.revision.revision + 1, status: "judged", verdict: v.verdict, reasons: v.reasons,
       parent: { revision: latest.revision.revision, regradeJsonSha256: latest.regradeJsonSha256 }, rulings: judge.unparsedRulings,

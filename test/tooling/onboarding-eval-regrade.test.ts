@@ -201,7 +201,7 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
     recordBytes: Buffer.from(JSON.stringify(record, null, 2)), packetBytes: Buffer.from(text), rawNames: [...raw.keys(), "project.after"],
     readRaw: (name) => { const t = raw.get(name); if (t === undefined) throw new Error(`no raw ${name}`); return Buffer.from(t); },
     story: storyDir === null ? null : diskStoryBytes(storyDir),
-    fixture: { firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: RUBRIC, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [] },
+    fixture: { firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: RUBRIC, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [], checkSet: 1 },
     reviewLine: REVIEW_LINE, semanticLines: runSemanticLines,
   };
   return { input, state, record, packet: JSON.parse(text) as Record<string, any> };

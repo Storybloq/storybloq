@@ -1,0 +1,39 @@
+{
+  "why": "a package.json test script and a Makefile test target at the same level disagree: pending, conflicting test command evidence",
+  "expectedRecipe": {
+    "testStages": "components",
+    "components": {},
+    "pendingComponents": [
+      "."
+    ]
+  },
+  "correct": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": false
+        },
+        "TEST": {
+          "enabled": false
+        }
+      }
+    }
+  },
+  "wrong": {
+    "recipe": "coding",
+    "recipeOverrides": {
+      "stages": {
+        "WRITE_TESTS": {
+          "enabled": true,
+          "command": "npm test"
+        },
+        "TEST": {
+          "enabled": true,
+          "command": "npm test"
+        }
+      }
+    }
+  },
+  "wrongFinding": "no component has an established test command, so both test stages are disabled, got npm test"
+}

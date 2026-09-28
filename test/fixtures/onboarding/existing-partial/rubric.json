@@ -46,5 +46,18 @@
   },
   "rules": [
     "no capability is called complete without code evidence: search and lending are planned work, not completed tickets"
-  ]
+  ],
+  "checkSet2": {
+    "expectedRecipe": {
+      "testStages": "components",
+      "components": {
+        ".": {
+          "commands": [
+            "npm test"
+          ]
+        }
+      },
+      "pendingComponents": []
+    }
+  }
 }

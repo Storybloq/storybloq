@@ -55,7 +55,7 @@ import {
   type PackageTurn, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
 import {
-  claudeTurn, codexRolloutModels, codexTurn, digestChanges, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, codexTurn, digestChanges, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { runRegrade, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
@@ -332,7 +332,7 @@ function runTurn(o: Options, ctx: { readonly project: string; readonly env: Node
   } else {
     const lines: Record<string, unknown>[] = [];
     for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* non-JSON line */ } }
-    turn = codexTurn(lines);
+    turn = codexTurn(lines, CHECK_SET_VERSION);
     if (ctx.first && turn.sessionId) ctx.sessionId = turn.sessionId;
     if (ctx.sessionId && ctx.env.CODEX_HOME) turn = { ...turn, models: rolloutModels(ctx.env.CODEX_HOME, ctx.sessionId) };
   }
@@ -379,8 +379,8 @@ async function main(): Promise<void> {
   if (o.client === "claude" && !process.env.CLAUDE_CODE_OAUTH_TOKEN) throw new Error("onboarding-eval: CLAUDE_CODE_OAUTH_TOKEN is required for a fresh Claude config");
 
   const fixtureDir = join(FIXTURES, o.fixture);
-  const rubric = JSON.parse(readFileSync(join(fixtureDir, "rubric.json"), "utf-8")) as { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
-  const script = ownerScript(readFileSync(join(fixtureDir, "owner-answers.md"), "utf-8"));
+  const rubric = rubricFor(JSON.parse(readFileSync(join(fixtureDir, "rubric.json"), "utf-8")) as Record<string, unknown>, CHECK_SET_VERSION) as unknown as FixtureRubric;
+  const script = ownerScript(readFileSync(join(fixtureDir, ownerScriptFile(fixtureDir, CHECK_SET_VERSION)), "utf-8"));
   const afterPackage = packageTurns(o.variant, script); // throws before anything is spawned when the variant's sections are missing
   const firstPrompt = firstPromptFor(o.client, readFileSync(join(fixtureDir, "opening-prompt.txt"), "utf-8"));
 
@@ -436,7 +436,7 @@ async function main(): Promise<void> {
   const before = treeDigest(project);
   const exclusion = runtimeExclusion(project);
   const ctx = { project, env, clientBin, claudeArgs, sessionId: o.client === "claude" ? randomUUID() : null as string | null, first: true };
-  const state = newDriveState();
+  const state = newDriveState(CHECK_SET_VERSION);
   let turnNo = 0;
   // The owner's side of the conversation; each step spawns one turn and records its raw output.
   const flow = driveFlow({ variant: o.variant, firstPrompt, discoveryPrompt: script.discovery, afterPackage, exclusion }, state);
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
   const { turns, failures, reviewSkipped } = state;
   const evidence = finishDrive(state, REVIEW_LINE);
   const { reviewEvidence, bound } = evidence;
-  const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"));
+  const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"), CHECK_SET_VERSION, evidence.reviewLines);
 
   const story = join(project, ".story");
   const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, o.variant);
@@ -463,13 +463,13 @@ async function main(): Promise<void> {
 
   const packetText = buildPacketText({
     runId, semanticLines, reviewSkipped, exclusion, rubric, briefs, projectFiles, turns, evidence, ledgerRecords,
-    setupRecord: existsSync(story) ? setupRecordFrom(diskReader(story)) : "", final: state.final,
+    setupRecord: existsSync(story) ? setupRecordFrom(diskReader(story)) : "", final: state.final, checkSet: CHECK_SET_VERSION,
   });
   const verdict = runVerdict(failures, packetText, null, semanticLines, bound);
   const recordDir = join(o.out, runId);
   mkdirSync(recordDir, { recursive: true });
   await writeAtomic(join(recordDir, "record.json"), JSON.stringify({
-    runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model,
+    runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
     modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
     writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
     semanticLines, bound, packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
@@ -479,6 +479,14 @@ async function main(): Promise<void> {
   process.stdout.write(`${runId} ${verdict.verdict}\n${verdict.reasons.map((f) => `  - ${f}`).join("\n")}\n`);
   // 0 only for a full PASS, which needs --finalize with a judge result; mechanical success alone is 3 (pending).
   process.exitCode = verdict.verdict === "FAIL" ? 1 : verdict.verdict === "PENDING_SEMANTIC" ? 3 : 0;
+}
+
+/** A fixture's rubric as the drive reads it, after the check set projection (lib `rubricFor`). */
+type FixtureRubric = { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
+
+/** The owner script a check set reads: check set 2 prefers `owner-answers.checkset-2.md` when the fixture has one. */
+export function ownerScriptFile(fixtureDir: string, checkSet: number): string {
+  return checkSet >= 2 && existsSync(join(fixtureDir, "owner-answers.checkset-2.md")) ? "owner-answers.checkset-2.md" : "owner-answers.md";
 }
 
 /** The semantic rubric lines only a judge can rule on; every run's packet asks for all of them. */
@@ -516,13 +524,21 @@ export function semanticLinesFor(reviewSkipped: boolean, adjusted = true): strin
  * semantic stop and, when tree exclusion was disabled, the tree line. Neither
  * of those is a mechanical result, so each needs a ruling (even with no change).
  */
-export function runSemanticLines(reviewSkipped: boolean, turns: readonly { readonly label: string; readonly stop: Pick<StopCheck, "kind" | "candidate"> | null }[], exclusion: RuntimeExclusion, adjusted = true): string[] {
+export function runSemanticLines(
+  reviewSkipped: boolean, turns: readonly { readonly label: string; readonly stop: Pick<StopCheck, "kind" | "candidate"> | null }[], exclusion: RuntimeExclusion, adjusted = true,
+  checkSet = 1, reviewLines: readonly string[] = [],
+): string[] {
   return [
     ...semanticLinesFor(reviewSkipped, adjusted),
     ...turns.filter((x) => x.stop?.kind === "semantic").map((x) => semanticStopLine(x.label, x.stop!.candidate!)),
     ...(exclusion.source === "disabled" && turns.some((x) => x.stop !== null) ? [TREE_EXCLUSION_LINE] : []),
+    // Check set 2: prose about the review agrees with the status lines, and each review binding and non-material declaration is ruled on.
+    ...(checkSet >= 2 ? [REVIEW_STATEMENTS_LINE, ...reviewLines] : []),
   ];
 }
+
+/** Check set 2: the review outcome is stated only by the status line; any other statement about the review must agree with it. */
+export const REVIEW_STATEMENTS_LINE = "every statement about the independent review in the packages and summary agrees with that turn's review status line and the captured reviewer evidence; nothing reports a review outcome the evidence does not show";
 
 /**
  * The fixture's text files, split into briefs (prose documents) and everything else, each file capped for the packet,
@@ -591,15 +607,17 @@ export async function finalize(argv: readonly string[]): Promise<void> {
 /** A finished run's stored evidence and its fixture, as the regrade reads them. Throws when the record names no known fixture. */
 export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = FIXTURES): RegradeInput {
   const recordBytes = readFileSync(join(recordDir, "record.json"));
-  const record = JSON.parse(recordBytes.toString("utf-8")) as { client?: unknown; fixture?: unknown; variant?: unknown };
+  const record = JSON.parse(recordBytes.toString("utf-8")) as { client?: unknown; fixture?: unknown; variant?: unknown; checkSetVersion?: unknown };
+  // The record's own check set decides the rubric projection and the owner script; the regrade refuses one it does not know.
+  const checkSet = record.checkSetVersion === undefined ? 1 : Number(record.checkSetVersion);
   const fixture = String(record.fixture);
   if (!/^[a-z0-9-]+$/.test(fixture) || !existsSync(join(fixtures, fixture, "rubric.json"))) throw new Error(`the record names no known fixture (${fixture})`);
   if (record.client !== "claude" && record.client !== "codex") throw new Error(`the record names no known client (${String(record.client)})`);
   const fixtureDir = join(fixtures, fixture);
   const files: ManifestEntry[] = [];
   const pinned = (rel: string): string => { const b = readFileSync(join(fixtureDir, rel)); files.push({ path: `fixture/${rel}`, sha256: sha256(b) }); return b.toString("utf-8"); };
-  const rubric = JSON.parse(pinned("rubric.json")) as { class: string; expectedRecipe: ExpectedRecipe; scaffold?: { keepPhase: string; configUnchanged: string[] } };
-  const script = ownerScript(pinned("owner-answers.md"));
+  const rubric = rubricFor(JSON.parse(pinned("rubric.json")) as Record<string, unknown>, checkSet) as unknown as FixtureRubric;
+  const script = ownerScript(pinned(ownerScriptFile(fixtureDir, checkSet)));
   const firstPrompt = firstPromptFor(record.client, pinned("opening-prompt.txt"));
   const beforePath = join("project", ".story", "config.json");
   const beforeText = existsSync(join(fixtureDir, beforePath)) ? pinned(beforePath) : null;
@@ -616,6 +634,7 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
       beforeConfig: () => { if (beforeText === null) throw new Error("the fixture has no .story/config.json"); return JSON.parse(beforeText) as Record<string, unknown>; },
       briefs: evidence.briefs, projectFiles: evidence.projectFiles,
       files: [...files, ...evidence.hashes.map((h) => ({ path: `fixture/${h.path}`, sha256: h.sha256 }))],
+      checkSet,
     },
     reviewLine: REVIEW_LINE,
     semanticLines: runSemanticLines,

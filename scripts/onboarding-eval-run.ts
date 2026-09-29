@@ -326,7 +326,7 @@ function runTurn(o: Options, ctx: { readonly project: string; readonly env: Node
   const stderr = r.stderr ?? "";
   let turn: EvalTurn;
   if (o.client === "claude") {
-    turn = claudeTurn(parseStream(raw).events);
+    turn = claudeTurn(parseStream(raw).events, CHECK_SET_VERSION);
     // A resumed print-mode session can come back under a new id; the next turn resumes whichever id this one reported.
     if (turn.sessionId) ctx.sessionId = turn.sessionId;
   } else {

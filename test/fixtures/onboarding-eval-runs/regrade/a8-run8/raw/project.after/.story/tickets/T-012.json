@@ -1,0 +1,19 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-005",
+    "T-007",
+    "T-016"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: After first-version acceptance, the coordinator sees a grid of all 40 plots with current holders, from brief.md item 5, explicitly deferred by owner instruction: Defer the plot map view to after the first version.\nScope: Labelled grid, season context, vacant/allocated status, holders and accessible list alternative; confirm grid layout with owner during this ticket.\nExcludes: First-version prototype or launch gate; geographic surveying and drag/drop allocation.\nAcceptance: First version already accepted. Exactly 40 distinct plots shown with correct current holdings; refresh reflects allocations; contacts remain coordinator-only; owner validates map layout.\nBehaviour: Phone-readable, keyboard-operable, non-colour statuses; empty/no-allocation/error/retry states and readable list alternative.\nVerification: Fixture counts, holder/season accuracy, authorization tests and phone/keyboard walkthrough with owner.\nPrerequisites: T-002, T-003, T-005, T-007, T-016.\nAssumptions: Logical grid; physical arrangement confirmed during this post-v1 ticket, not during first-version checkpoint.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 10,
+  "phase": "post-v1-map",
+  "status": "open",
+  "title": "Post-v1: coordinator plot map",
+  "type": "task"
+}

@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Runnable foundation enables all first-version journeys (brief.md: First version must; owner delegates technology).\nScope: Django/Python, PostgreSQL, server-rendered HTML/CSS/minimal JavaScript, environment configuration, email adapter, pinned dependencies, migrations, README commands and collected smoke tests. Evaluate hosting/mail/scheduler feasibility including delivery idempotency; establish static collection, /health/ readiness and target browsers. Excludes: features, purchases and deployment during setup.\nAcceptance: Local app and isolated PostgreSQL test database start; smoke test collected; development email captured; commands and feasible hosting/mail choices documented.\nBehaviour: Clear configuration/connection errors; secrets outside repository; no production email from tests.\nVerification: Clean-environment walkthrough, smoke test, health response and captured email. Prerequisites: none. Assumptions: approved proposed stack; external credentials obtained before release.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Establish application, database and email foundations",
+  "type": "task"
+}

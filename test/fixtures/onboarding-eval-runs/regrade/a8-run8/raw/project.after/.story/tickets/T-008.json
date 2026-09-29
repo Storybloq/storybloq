@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The coordinator reviews applications, allocates plots and transfers unallocated applicants to the queue, from brief.md §First version must, item 2.\nScope: Ordered cohorts, preferences and prior holdings, available-plot selector, preview/confirm assignment. Persisted initial/finalized season-round state and atomic, audited, idempotent finalization serialized against application submissions.\nExcludes: Automatic optimizer; reversible normal-UI finalization; map or replacement whole-garden holder dashboard.\nAcceptance: Invalid/ineligible assignments refused. Finalization prohibited before Feb 1 cutoff and until eligible initial returners processed or capacity exhausted. Confirmation explains returning priority ends at finalization. Remaining applicants are queued by immutable original order; submissions during/after finalization cannot be lost or bypass the queue. Spare capacity after finalization is allocated via head-only queue promotion.\nBehaviour: No-applicant/full-garden states, confirmation and actionable stale-view recovery; concurrent finalization cannot duplicate or omit queue entries.\nVerification: End-to-end initial round with more than 40 applicants, permission checks, pre-cutoff finalization refusal, concurrent submit/finalize, repeated finalization and durable round-state tests.\nPrerequisites: T-003, T-006, T-007.\nAssumptions: One household per plot/season; coordinator intentionally finalizes after reviewing initial applications; no normal UI round reopening.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Build coordinator allocation and round finalization",
+  "type": "task"
+}

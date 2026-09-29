@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Allocated gardener reports a problem, from brief.md / First version 4 and Constraints.\nScope: Plain-text report associated with household, plot and season. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Exactly one persisted report on retry; immediately visible to coordinator; cannot report against another plot.\nBehaviour: Accessible phone form, validation, submission confirmation and draft preservation on failure. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Own-plot authorization, retry and input tests plus phone journey. Prerequisites: T-002, T-003, T-006. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Report an own-plot problem",
+  "type": "task"
+}

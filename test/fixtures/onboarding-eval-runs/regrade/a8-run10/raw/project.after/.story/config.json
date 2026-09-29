@@ -1,0 +1,30 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "Python, HTML, CSS, JavaScript",
+  "project": "Plotbook",
+  "schemaVersion": 2,
+  "type": "python",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": false
+      },
+      "TEST": {
+        "enabled": false
+      },
+      "BUILD": {
+        "enabled": false
+      },
+      "VERIFY": {
+        "enabled": false
+      }
+    }
+  }
+}

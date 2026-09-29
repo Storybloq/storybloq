@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardener sees own plot and season dates (brief.md: First version must 3).\nScope: Household dashboard for pending, waiting and allocated states, plot label and dates. Excludes: other household identities/contact details.\nAcceptance: Current status truthful after allocation/release; no allocation distinct from failure; season dates shown.\nBehaviour: Safe session expiry. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: All status states, ownership checks and phone walkthrough. Prerequisites: T-007, T-008. Assumptions: none.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Show gardener application and allocation status",
+  "type": "task"
+}

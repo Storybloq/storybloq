@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator sees open reports and resolves them (brief.md: First version must 4).\nScope: Open list/detail, resolved status/timestamp/audit, retained report links after allocation changes. Excludes: messaging, task dispatch and reopen workflow.\nAcceptance: Resolved reports leave open list; repeated resolve safe; gardeners see only own reports; untrusted content escaped.\nBehaviour: Empty open list, permission failures and concurrent update feedback. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Role checks, resolution transitions, malicious content and changed-allocation history tests. Prerequisites: T-012. Assumptions: no reopen workflow.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 20,
+  "phase": "reporting",
+  "status": "open",
+  "title": "Coordinator reviews and resolves reports",
+  "type": "task"
+}

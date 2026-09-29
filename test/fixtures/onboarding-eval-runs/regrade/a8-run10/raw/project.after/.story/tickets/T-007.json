@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator allocates according to household and timely-returner rules (brief.md: Rules; First version must 2).\nScope: Initial allocation opening guard, eligibility, mandatory returner priority, manual assignment, transactional constraints, audited correction/release and recalculation. Excludes: optimisation, guaranteed preferred/previous plot, discretionary priority bypass.\nAcceptance: Initial allocations prohibited before Feb 1 00:00 of season year in garden timezone. Active last-season holders who applied before that instant receive available plots before ordinary applicants. Reason or waitlisted status cannot bypass priority; explicit withdrawals audited. Oversubscribed returners use application timestamp/stable ID order. One holder per plot and one plot per household/season even concurrently. Corrections atomic; after finalization route allocations through T-008 FIFO service.\nBehaviour: Priority explanations and safe retry; conflicts roll back without partial updates. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Test exact deadline, prior vs older history, late returner, attempted January allocation followed by timely returner, reason/waitlist bypass, oversubscription, concurrency and rollback. Prerequisites: T-006. Assumptions: initial allocation begins Feb 1; late returners ordinary pool; within each group application order, stable ID ties.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Allocate plots fairly and correct or release allocations",
+  "type": "task"
+}

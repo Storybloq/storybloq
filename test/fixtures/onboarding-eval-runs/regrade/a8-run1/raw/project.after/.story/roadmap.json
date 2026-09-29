@@ -1,0 +1,43 @@
+{
+  "blockers": [],
+  "date": "2026-09-28",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate working tooling, an accessible phone prototype, secure household identity and season records.",
+      "id": "foundation",
+      "label": "PHASE 1",
+      "name": "Foundation"
+    },
+    {
+      "description": "Demonstrate applications, priority allocation, FIFO waiting list and own allocation/date views.",
+      "id": "applications",
+      "label": "PHASE 2",
+      "name": "Applications"
+    },
+    {
+      "description": "Demonstrate own-plot reporting, coordinator resolution and reliable daily email.",
+      "id": "problems",
+      "label": "PHASE 3",
+      "name": "Problems"
+    },
+    {
+      "description": "Verify all first-version journeys on staging, release, and obtain owner acceptance.",
+      "id": "launch",
+      "label": "PHASE 4",
+      "name": "Launch"
+    },
+    {
+      "description": "After first-version acceptance, deliver the deferred coordinator plot map.",
+      "id": "later",
+      "label": "PHASE 5",
+      "name": "Later"
+    }
+  ],
+  "title": "Plotbook"
+}

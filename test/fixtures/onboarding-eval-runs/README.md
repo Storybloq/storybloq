@@ -124,3 +124,52 @@ packet byte for byte. Two things the run left are not kept, because git cannot
 carry them and the regrade never reads them: project.after/.git (the client's
 `git init`) and project.after/.story/snapshots/ (ignored by the fixture's own
 .gitignore).
+
+`regrade/a8-run1`, `regrade/a8-run8` and `regrade/a8-run10`: attempt 8 runs 1
+(brief-only), 8 (brief-only, reviewer-unavailable, ISS-1335) and 10
+(brief-only, approval-boundary), check set 2, stored the same way, with the
+same two omissions plus the runtime state the fixture's .story/.gitignore
+excludes. `a8-closings.json`: the first package turn's ending of attempt 8
+runs 2 to 7, verbatim from their records.
+
+Check set 3 (T-536 batch 3) reads, for every package and the setup summary
+that carries a review status line:
+
+- **The probe line**, `Reviewer probe: `command -v codex` printed <path|nothing>`,
+  directly above the status line.
+- **Probe evidence.** An attempt is a main-agent shell call in which
+  `command -v codex` stands in command position in some segment, through
+  wrappers and nested shells. An argument, a quoted payload or a here-document
+  body never counts.
+  - An attempt is valid only when it is the whole call: bare
+    `command -v codex`, or exactly one top-level `/bin/zsh -lc` running
+    exactly it (Codex's own wrapper), with no redirection. The probe alone
+    under any other shell, shell path, flag or a nested wrapper is recognised
+    but not valid ("runs under a shell other than a single /bin/zsh -lc");
+    anything sharing the call is "shares its call". Both still supersede.
+  - The latest attempt before the presentation is authoritative, with no
+    fallback to an earlier one. Latest means by issue order: Codex completes
+    items in parallel, so an older probe that completes later does not decide.
+  - Codex evidence is its numeric exit status and aggregated output, with one
+    trailing newline removed. An issued item that never completed is an
+    incomplete call.
+  - Claude evidence is the tool result. `Exit code 1` exactly means nothing was
+    printed; any other error content is unknown. This is synthetic, not yet
+    checked against a captured Claude transcript, so it fails closed.
+  - Only exit 0 with one line (a path) and exit 1 with no output are read.
+    Everything else is "probe unknown" with its reason.
+- **A result after a nothing probe** counts only when it binds to a
+  `review_plan` or agent review started after that probe.
+- **The empty-wait scope.** A result whose id binds nothing fails as "claimed
+  on a wait with no agent" only when a wait on no agent came before that
+  presentation and no agent was started before it.
+- **The closing form.** A turn with no pending structured question that routes
+  package, or that carries the three labels as whole lines, ends byte for byte,
+  trailing newlines removed, with the four closing lines. Its failure source is
+  `closing`, so the regrade never folds it into a parser question.
+- **The approved quality level.** A restatement with no `Quality level:` line
+  inherits the level of the latest package that names one and cites the same
+  review. An adjusted package names its own.
+- **The stop rule** recorded and validated is the record's check set's:
+  - check sets 1 and 2 keep `2026-09-27.16`;
+  - check set 3 records `2026-09-28.1`, which adds the closing clause.

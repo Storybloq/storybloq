@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator sees all plots and their holders (brief.md: First version must 5).\nScope: Responsive schematic 40-plot grid, labels, vacancies/holders, season selector and accessible list equivalent. Excludes: GIS and gardener access.\nAcceptance: Exactly 40 plots represented; displayed holders agree with stored allocations after correction; availability not colour-only.\nBehaviour: Empty season, load failures and responsive navigation. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Populated/vacant fixtures, coordinator-only requests, keyboard and phone tests. Prerequisites: T-007, T-003. Assumptions: actual plot arrangement supplied by coordinator.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 50,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Show coordinator 40-plot map",
+  "type": "task"
+}

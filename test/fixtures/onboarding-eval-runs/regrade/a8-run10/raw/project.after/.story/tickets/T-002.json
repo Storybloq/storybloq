@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Owner can inspect understandable phone journeys (brief.md: Users, Constraints).\nScope: Synthetic prototypes for emailed login, application preferences, pending/waitlisted/allocated status, coordinator grid and reports. Excludes: production persistence.\nAcceptance: Phone and desktop views include large text, readable controls, full garden, no allocation and error examples.\nBehaviour: Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Keyboard/phone walkthrough and screen inventory. Prerequisites: none. Assumptions: schematic grid until actual plot labels/layout supplied.",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Create mobile journey prototype",
+  "type": "task"
+}

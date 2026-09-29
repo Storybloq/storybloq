@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-011",
+    "T-016"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Artifact: staged app, synthetic demonstration and verification report.\nCriteria: owner accepts applications, priority/FIFO allocation, own plot/dates, coordinator grid, reporting/resolution, daily email, privacy and mobile accessibility against brief.md and sign-in/notification decisions.\nDo not claim product completion before explicit acceptance. Stage-1 limitation: ordinary ticket; Storybloq does not enforce human approval.",
+  "displayId": "T-017",
+  "id": "T-017",
+  "order": 30,
+  "phase": "readiness",
+  "status": "open",
+  "title": "Checkpoint: accept Plotbook first version",
+  "type": "task"
+}

@@ -5,8 +5,9 @@
  * through the same code, so a regrade is the runner's own computation replayed, not a second opinion.
  */
 import {
-  checkRecipe, checkStop, degradedFindings, discoveryTail, executionCalls, notRerunLines, pendingFindings, pendingInventory, qualityLevel,
-  recipeContract, recipeFindings, resolveTestStages, reviewerInvocations, reviewStatus, STOP_RULE_VERSION,
+  approvedQualityLevel, authoritativeProbe, checkRecipe, checkStop, degradedFindings, discoveryTail, endsWithClosingLines, executionCalls, hasApprovalBlock,
+  notRerunLines, pendingFindings, pendingInventory, probeAttempts, probeLines, qualityLevel,
+  recipeContract, recipeFindings, resolveTestStages, reviewerInvocations, reviewStatus, reviewStatusLineIndex, stopRuleFor,
   stopRoute, summaryCounts, ticketFindings, treeCheckOutcome, WRITE_RULE_VERSION, writeCalls,
   type EvalCall, type EvalTurn, type ExpectedRecipe, type ReviewerInvocation, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
@@ -82,7 +83,7 @@ export interface DriveOptions {
 
 /** The producer of one failure. `turn` is the index of the turn it belongs to. */
 export type FailureSource =
-  | { readonly kind: "infrastructure" | "stop" | "tree" | "tail"; readonly turn: number }
+  | { readonly kind: "infrastructure" | "stop" | "tree" | "tail" | "closing"; readonly turn: number }
   | { readonly kind: "flow" | "probe" | "no-reviewer" | "executed" | "unparsed" | "inspection" | "recipe" | "review" | "pending" };
 
 function fail(s: DriveState, source: FailureSource, text: string): void {
@@ -133,6 +134,10 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
     if (s.checkSet >= 2 && stop?.kind === "semantic" && stop.candidate === "discovery" && r.turn.pendingQuestion === undefined) {
       const tail = discoveryTail(r.turn.stopText);
       if (tail !== "") fail(s, { kind: "tail", turn: s.turns.length }, `the discovery question is followed by more text (${label}): ${tail}`);
+    }
+    // Check set 3: a turn that shows the package, by its route or by the three option labels as lines, ends at `Inspect details`.
+    if (s.checkSet >= 3 && expected !== null && r.turn.pendingQuestion === undefined && (stopRoute(stop) === "package" || hasApprovalBlock(r.turn.stopText)) && !endsWithClosingLines(r.turn.stopText)) {
+      fail(s, { kind: "closing", turn: s.turns.length }, `the package does not end with the four closing lines (${label})`);
     }
     s.turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed });
     return r.turn;
@@ -214,6 +219,7 @@ export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
     const lines = reviewStatusChecks(s, invocations);
     for (const b of lines.bindings) { reviewLines.push(b.line); bound[b.line] = b.allowed; }
     reviewLines.push(...lines.declarations);
+    if (cs >= 3) probeChecks(s, invocations);
   }
 
   // Before approval nothing ran; after it, still no install, test, build or dev server, nested agents included.
@@ -342,6 +348,57 @@ function reviewStatusChecks(s: DriveState, invocations: readonly ReviewerInvocat
   return { bindings, declarations };
 }
 
+/** The one invocation a result status line binds to (one match, ok, its captured verdict the quoted one), or null. */
+function boundInvocation(invocations: readonly ReviewerInvocation[], ref: string, verdict: string): ReviewerInvocation | null {
+  const matches = invocations.filter((r) => r.reviewId === ref);
+  if (matches.length !== 1) return null;
+  const r = matches[0]!;
+  return r.ok && typeof r.verdict === "string" && r.verdict.trim() === verdict.trim() ? r : null;
+}
+
+/** A main-agent agent start: a Codex spawn or a Claude Agent/Task call. */
+const isAgentStart = (c: EvalCall): boolean => (c.name === "collab:spawn_agent" && !c.isError) || ((c.name === "Agent" || c.name === "Task") && !c.nested);
+
+/**
+ * Check set 3's probe checks over every package and the setup summary that carries a review status line: the probe line
+ * sits directly above it and says what the latest `command -v codex` attempt before the presentation printed; a result
+ * after a probe that printed nothing binds to a review_plan or agent review started after that probe; and a result whose
+ * id binds nothing, shown after a wait on no agent with no agent started, is named as resting on that wait.
+ */
+function probeChecks(s: DriveState, invocations: readonly ReviewerInvocation[]): void {
+  const bad = (text: string): void => fail(s, { kind: "review" }, text);
+  const attempts = probeAttempts(s.allCalls);
+  const issued = (i: number): number => i + (s.allCalls[i]?.issueShift ?? 0);
+  const packages = s.turns.filter((t) => stopRoute(t.stop) === "package");
+  const shown = packages.map((t) => ({ label: t.label, text: t.stopText, end: t.callRange[1] }));
+  const last = s.turns.at(-1);
+  if (last !== undefined && last.stop === null && packages.length > 0) shown.push({ label: "summary", text: last.stopText, end: last.callRange[1] });
+  for (const { label, text, end } of shown) {
+    const status = reviewStatus(text);
+    if (status.kind !== "result" && status.kind !== "skip") continue;
+    const lines = probeLines(text);
+    if (lines.length === 0) bad(`review status without a probe line (${label})`);
+    else if (lines.length > 1) bad(`more than one probe line (${label})`);
+    else if (lines[0]!.index !== reviewStatusLineIndex(text) - 1) bad(`the probe line is not directly above the review status line (${label})`);
+    const probe = authoritativeProbe(attempts, end);
+    if (probe === null) { if (lines.length === 1) bad(`the probe line has no captured probe (${label})`); }
+    else if (probe.value.kind === "unknown") bad(`the latest probe is unknown: ${probe.value.reason} (${label})`);
+    else if (lines.length === 1) {
+      const printed = probe.value.kind === "path" ? probe.value.path : "nothing";
+      if (lines[0]!.printed !== printed) bad(`the probe line says ${lines[0]!.printed}, the captured probe printed ${printed} (${label})`);
+    }
+    if (status.kind !== "result") continue;
+    const r = boundInvocation(invocations, status.ref, status.verdict);
+    if (probe !== null && probe.value.kind === "nothing") {
+      // Started after the probe means issued after it: a reviewer issued earlier never saw the outcome, whenever it completed.
+      const after = r !== null && (r.via === "review_plan" || r.via === "agent") && issued(r.startIndex ?? r.index) > probe.issued;
+      if (!after) bad(`review claimed after a probe that found no reviewer (${label})`);
+    }
+    const emptyWait = invocations.some((i) => !i.ok && i.reason === "a wait on no agent" && i.index < end);
+    if (r === null && emptyWait && !s.allCalls.slice(0, end).some(isAgentStart)) bad(`review claimed on a wait with no agent (${label})`);
+  }
+}
+
 /** Read access to the project's `.story/` after approval, relative to it; the runner reads disk, the regrade the raw copy. */
 export interface StoryReader {
   exists(rel: string): boolean;
@@ -404,7 +461,9 @@ export function inspectAfter(
   const contract = s.checkSet >= 2 ? recipeContract(rubric.expectedRecipe) : null;
   // Check set 2: the approved package (the last one shown) names the quality level the stages are checked against.
   const approved = [...s.turns].reverse().find((x) => stopRoute(x.stop) === "package");
-  const level = contract === null ? null : qualityLevel(approved?.stopText ?? "");
+  // Check set 3: a restatement of the approved package inherits the level its reviewed package named.
+  const approvedLevel = s.checkSet >= 3 ? approvedQualityLevel(s.turns.filter((x) => stopRoute(x.stop) === "package").map((x) => ({ label: x.label, text: x.stopText }))) : null;
+  const level = contract === null ? null : approvedLevel !== null ? approvedLevel.level : qualityLevel(approved?.stopText ?? "");
   const recipeFinding = contract === null ? checkRecipe(stages, rubric.expectedRecipe) : null;
   const record = setupRecordFrom(story);
   const counts = summaryCounts(t.stopText);
@@ -413,7 +472,10 @@ export function inspectAfter(
   if (contract !== null) inspection.qualityLevel = level;
   for (const f of ticketFindings(ledger)) fail(s, { kind: "inspection" }, `ticket: ${f}`);
   if (recipeFinding) fail(s, { kind: "recipe" }, `recipe: ${recipeFinding}`);
-  if (contract !== null) for (const f of recipeFindings(stages, contract, level)) fail(s, { kind: "recipe" }, `recipe: ${f}`);
+  if (contract !== null && approvedLevel !== null) for (const f of approvedLevel.findings) fail(s, { kind: "recipe" }, `recipe: ${f}`);
+  // A level the check set 3 rules could not establish is already named; the generic finding would repeat it.
+  const named = approvedLevel !== null && approvedLevel.explained;
+  if (contract !== null && !named) for (const f of recipeFindings(stages, contract, level)) fail(s, { kind: "recipe" }, `recipe: ${f}`);
   if (!/coverage/i.test(record)) fail(s, { kind: "inspection" }, "no coverage map in the setup note or handover");
   if (s.reviewSkipped) {
     if (!/skip/i.test(record)) fail(s, { kind: "inspection" }, "the review skip is not recorded");
@@ -450,7 +512,7 @@ export function packetText(p: {
     semanticLines: p.semanticLines,
     reviewSkipped: p.reviewSkipped,
     harnessNormalisation: {
-      stop: STOP_RULE_VERSION,
+      stop: stopRuleFor(p.checkSet ?? 1),
       write: WRITE_RULE_VERSION,
       treeExclusion: p.exclusion,
       ...((p.checkSet ?? 1) >= 2 ? { checkSet: p.checkSet } : {}),

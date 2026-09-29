@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Unallocated applicants enter a fair queue and vacancies go to its head (brief.md: First version must 2; Rules).\nScope: Initial-round finalization only at/after deadline and when capacity exhausted or all active applicants allocated; remaining active applications queued by original timestamp/stable ID; head-only promotion, audit, explicit withdrawal and integrated release/correction service. Excludes: reordering, returner queue priority and arbitrary skipping.\nAcceptance: Unallocated active applications queued once; later applications join proper place; edits never improve place; only queue head receives vacancy; promotion races/duplicates safe; returner priority cannot reorder finalized FIFO queue.\nBehaviour: No-vacancy/empty-queue/head-waiting states; failed promotion preserves position. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: FIFO and equal timestamp ties, release, late applications, withdrawal and concurrent promotion tests. Prerequisites: T-007. Assumptions: preferences advisory, no automated expiry, explicit withdrawal can remove head.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Maintain strict application-order waiting list",
+  "type": "task"
+}

@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardener applies for a coming season, from brief.md / First version 1 and Rules.\nScope: One application per household/season with zero to three distinct preferred plots through labelled choices. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Preference bounds enforced; retries cannot duplicate submissions; original server receipt timestamp/sequence immutable; confirmation shows preferences.\nBehaviour: Preserve draft on failure; explain absent/closed season; no silent lost submission. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Phone journey and validation, duplicate and concurrent submission tests. Prerequisites: T-002, T-003, T-004. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "applications",
+  "status": "open",
+  "title": "Submit seasonal applications",
+  "type": "task"
+}

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator receives new reports in one daily email, from owner daily-email decision; brief.md / Constraints.\nScope: New reports since last successful digest including reports already resolved; durable cursor/outbox and stable message identity; authenticated detail links; omit contacts. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: One logical digest per local day; no email without new reports; failure does not advance success cursor; retry/catch-up; provider dedupe where supported and ambiguous delivery surfaced.\nBehaviour: 09:00 garden-local assumed; sender/recipient/timezone configured; document failure recovery. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Fake clock/provider tests for day boundary, DST, downtime, retry and resolved reports; N/O provide staging inbox verification. Prerequisites: T-010. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 30,
+  "phase": "problems",
+  "status": "open",
+  "title": "Deliver daily coordinator digest",
+  "type": "task"
+}

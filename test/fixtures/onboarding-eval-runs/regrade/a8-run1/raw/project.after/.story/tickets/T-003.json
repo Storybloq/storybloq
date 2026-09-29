@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardeners sign in securely to their household, from owner sign-in decision; brief.md / Rules and Constraints.\nScope: Email one-time links, coordinator role, verified household memberships, declaration confirmation and duplicate reconciliation. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Links expire and work once; resend/logout work; role and household isolation enforced; only coordinator sees contacts. Merge retains earliest valid application receipt/sequence, verified memberships and history; conflicting holdings must be resolved. Unconfirmed or duplicate households cannot receive allocations.\nBehaviour: Generic email responses, rate limits, hashed tokens, secure sessions, safe return URLs; no token/contact logs; safe retry. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Integration tests for replay, expiry, enumeration, role isolation and household merges. Prerequisites: T-001, T-002. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Passwordless identity and household access",
+  "type": "task"
+}

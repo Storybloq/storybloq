@@ -1,0 +1,9 @@
+snapshots/
+status.json
+sessions/
+spawn/
+federation-cache.json
+channel-inbox/
+servers/
+/telemetry/
+cache/

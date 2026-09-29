@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator receives one daily email listing new reports (owner notification answer).\nScope: Durable cursor/batch, configurable local schedule/timezone, coordinator-only authenticated links, escaped content, delivery ledger, idempotent jobs/provider capability, retry/catch-up and observable failures. Excludes: immediate notifications and other recipients.\nAcceptance: Daily summary contains all new reports including since-resolved ones; empty days get no-new-reports summary. Cutoff arrivals not lost. Overlap/retry cannot duplicate batch/delivery; provider acceptance/local crash reconciled. Failed sends retain backlog; no gardener contact details in email.\nBehaviour: Retry without loss; coordinator/operator can see failures. Block release until delivery deduplication mechanism proven.\nVerification: Fake clock/transport tests for cutoffs, outages, overlap, restart and ambiguous provider responses; real sandbox delivery before acceptance. Prerequisites: T-012. Assumptions: 09:00 garden local time, empty-day summary, provider capability established in T-001.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 30,
+  "phase": "reporting",
+  "status": "open",
+  "title": "Send one daily new-report digest",
+  "type": "task"
+}

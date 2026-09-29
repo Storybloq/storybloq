@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardeners sign in using an emailed one-time link without passwords, from owner answer; private role-appropriate access follows brief.md §Constraints.\nScope: Expiring single-use links and invitations, sessions/logout, rate limiting, generic request response, safe redirects, secure coordinator bootstrap, server-side role/household authorization. Audited coordinator email-address recovery after independent membership verification revokes old sessions/tokens and preserves household identity.\nExcludes: Passwords, social sign-in and public household membership claims.\nAcceptance: Valid invitation/link signs in; expired/reused/wrong links fail and can be re-requested. A previously unregistered gardener can be verified, invited and sign in for application. Knowing another household email grants no access. Gardeners cannot read other household records or contacts through direct requests. Recovery changes email without creating a duplicate household and revokes previous access.\nBehaviour: Accessible request/sent/expired/error states with recovery paths; generic responses prevent account enumeration; delivery failures recoverable; no credentials, tokens or contacts in logs.\nVerification: Auth and adversarial role/household tests, sandbox email journey, enrollment-to-sign-in scenario and recovery revocation tests; application integration exercised in T-006.\nPrerequisites: T-001, T-002.\nAssumptions: 15-minute link expiry; coordinator role securely provisioned outside public flow.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Implement passwordless access, invitations and recovery",
+  "type": "task"
+}

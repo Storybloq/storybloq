@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Artifact: seeded application with 40 plots, timely/late returners and excess applications.\nCriteria: owner sees application, initial priority, FIFO vacancy promotion, own plot and season dates, and coordinator grid; no contact leakage.\nThis milestone checkpoint gates final acceptance, not independent reporting work. Stage-1 limitation: ordinary ticket; human approval not technically enforced.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 60,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: demonstrate applications and fair allocation",
+  "type": "task"
+}

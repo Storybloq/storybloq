@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Owner sees allocation working end to end, from brief.md / First version 1–3 and Rules; owner map deferral.\nScope: Local working application, allocation, waitlist and own-status demonstration with fictional records. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Criteria: demonstrate returning priority, household uniqueness, global FIFO and season dates including deadline boundary cases; record owner feedback.\nBehaviour: Unmet criteria stay open; unrelated reporting work can proceed. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Recorded owner walkthrough of local app; no staging prerequisite. Prerequisites: T-007, T-008. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover. Stage-1 limitation: checkpoint is an ordinary ticket and approval is not mechanically enforced.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 50,
+  "phase": "applications",
+  "status": "open",
+  "title": "Checkpoint: allocation milestone",
+  "type": "chore"
+}

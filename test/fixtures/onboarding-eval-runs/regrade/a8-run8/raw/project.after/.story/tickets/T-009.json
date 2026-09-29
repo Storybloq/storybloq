@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-006",
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The coordinator sees unallocated applicants in original order and assigns the next household when a plot is available, from brief.md §Rules and item 2.\nScope: Durable waiting status, original timestamp/sequence order, head-only promotion using shared atomic allocation transaction and refreshed availability. Later applications join the queue by original submission order.\nExcludes: Skipping waiters, preference/returning-status reordering and self-service plot release.\nAcceptance: Promotion rejected before round finalization. No duplicate waiters; promotion removes exactly one waiter and preserves all allocation constraints. No available plot leaves queue unchanged. Priority never overrides FCFS after finalization.\nBehaviour: Clear empty/no-availability states; stale/concurrent promotion rejected safely with refresh/retry.\nVerification: Queue ordering after restart; before-finalization rejection; simultaneous promotion and submission/finalization boundary tests; verify no returning or preference reorder.\nPrerequisites: T-006, T-007, T-008.\nAssumptions: Vacancies and corrections use T-015 audited coordinator procedure; original submission order remains authoritative.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Implement strict FCFS waiting list and promotion",
+  "type": "task"
+}

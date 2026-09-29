@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-005",
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Assignments respect household uniqueness and returning-gardener priority, from brief.md §Rules.\nScope: Eligibility from prior-season holdings and exclusive Feb 1 local-midnight cutoff; returning-first initial cohort, FCFS within cohorts, one household per plot and one plot per household per season; atomic assignment/audit using T-006 application contract.\nExcludes: Automatic preference optimizer, coordinator UI and plot map.\nAcceptance: No new applicant assignment before cutoff or ahead of eligible pending returners in the initial round. Returning applicants may be allocated earlier. Reused/double/concurrent assignments rejected without partial state; cross-season holdings allowed. Applicants exactly at cutoff do not receive returning priority.\nBehaviour: Explain rejected actions and stale conflicts; no silent overwrite or loss of household/plot constraints.\nVerification: TDD for prior holdings, insufficient capacity, tied timestamps, household/plot uniqueness and concurrent assignments. Fake-clock tests: reject early new-applicant allocation; preserve priority for application immediately before cutoff; exclude at-cutoff application.\nPrerequisites: T-002, T-005, T-006.\nAssumptions: Manual allocation; initial cohorts ordered FCFS; preferences advisory. Local cutoff is midnight beginning Feb 1 in the target season year.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Enforce allocation priority and atomic persistence",
+  "type": "task"
+}

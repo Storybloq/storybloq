@@ -26,6 +26,12 @@ export interface EvalCall {
   readonly nested?: boolean;
   /** The call's captured result text, when the client reported one. */
   readonly result?: string;
+  /** Check set 3: a Codex shell call's numeric exit status, null when the completed item reported none. Absent for Claude. */
+  readonly exitCode?: number | null;
+  /** Check set 3: the call was issued and never completed (no captured result). */
+  readonly incomplete?: true;
+  /** Check set 3, Codex: the call's position in its turn by issue order minus its position by completion order, when they differ. */
+  readonly issueShift?: number;
 }
 
 /** Whether the client itself reported finishing the turn. Anything but `completed` is an infrastructure failure. */
@@ -86,10 +92,14 @@ function questionText(input: unknown): string {
  * activity and is neither failed nor answered. A question followed by more
  * text or more tool use was not where the turn stopped.
  */
-export function claudeTurn(events: readonly StreamEvent[]): EvalTurn {
+export function claudeTurn(events: readonly StreamEvent[], checkSet = 1): EvalTurn {
   const { usage, toolCalls } = summarizeStream(events);
   const ordered = [...toolCalls].sort((a, b) => a.issuedAt - b.issuedAt);
-  const calls: EvalCall[] = ordered.map((c) => ({ name: bareToolName(c.name), input: c.input, isError: c.isError, result: c.result, ...(c.parentToolUseId !== null ? { nested: true } : {}) }));
+  // Check set 3: a call with no tool_result is marked incomplete, so a probe that never returned is not read as one that did.
+  const calls: EvalCall[] = ordered.map((c) => ({
+    name: bareToolName(c.name), input: c.input, isError: c.isError, result: c.result, ...(c.parentToolUseId !== null ? { nested: true } : {}),
+    ...(checkSet >= 3 && c.resolvedAt === null ? { incomplete: true as const } : {}),
+  }));
   let lastMain: { readonly kind: "text" } | { readonly kind: "tool"; readonly id: string } | null = null;
   // Every main-agent text block, in order: before a pending question they are its preamble.
   const mainTexts: string[] = [];
@@ -143,8 +153,19 @@ export function codexTurn(lines: readonly Record<string, unknown>[], checkSet = 
   let activityAt = -1;
   let sessionId: string | null = null;
   let terminal: TurnTerminal = { status: "missing", detail: "no turn.completed event" };
+  // Check set 3: shell calls issued (item.started) and never completed, placed where they were issued among the completed ones.
+  const started = new Map<string, { readonly at: number; readonly before: number; readonly command: unknown }>();
+  const completedIds = new Set<string>();
+  // Check set 3: the line each call in `calls` was issued at (its item.started, else its completion).
+  const issuedAt: number[] = [];
+  const startLine = new Map<string, number>();
   for (let at = 0; at < lines.length; at++) {
     const ev = lines[at]!;
+    if (checkSet >= 3 && ev.type === "item.started") {
+      const item = (ev.item ?? {}) as Record<string, unknown>;
+      if (typeof item.id === "string" && !startLine.has(item.id)) startLine.set(item.id, at);
+      if (item.type === "command_execution" && typeof item.id === "string" && !started.has(item.id)) started.set(item.id, { at, before: calls.length, command: item.command });
+    }
     if (ev.type === "thread.started" && typeof ev.thread_id === "string") sessionId = ev.thread_id;
     if (ev.type === "turn.completed") terminal = { status: "completed", detail: "turn.completed" };
     if (ev.type === "turn.failed" || ev.type === "error") {
@@ -153,6 +174,7 @@ export function codexTurn(lines: readonly Record<string, unknown>[], checkSet = 
     }
     if (ev.type !== "item.completed") continue;
     const item = (ev.item ?? {}) as Record<string, unknown>;
+    const before = calls.length;
     // Check set 2: an agent spawn or wait after the message is activity too, so the message is no longer the turn's stop.
     if (typeof item.type === "string" && (CODEX_ACTIVITY.has(item.type) || (checkSet >= 2 && item.type === "collab_tool_call"))) activityAt = at;
     switch (item.type) {
@@ -160,7 +182,11 @@ export function codexTurn(lines: readonly Record<string, unknown>[], checkSet = 
         if (typeof item.text === "string") { lastMessage = item.text; messageAt = at; }
         break;
       case "command_execution":
-        calls.push({ name: "Bash", input: { command: item.command }, isError: typeof item.exit_code === "number" && item.exit_code !== 0, result: typeof item.aggregated_output === "string" ? item.aggregated_output : "" });
+        calls.push({
+          name: "Bash", input: { command: item.command }, isError: typeof item.exit_code === "number" && item.exit_code !== 0, result: typeof item.aggregated_output === "string" ? item.aggregated_output : "",
+          ...(checkSet >= 3 ? { exitCode: typeof item.exit_code === "number" ? item.exit_code : null } : {}),
+        });
+        if (typeof item.id === "string") completedIds.add(item.id);
         break;
       case "mcp_tool_call":
         calls.push({ name: String(item.tool ?? ""), input: item.arguments ?? null, isError: item.status === "failed" || item.error != null, result: item.result == null ? "" : JSON.stringify(item.result) });
@@ -182,6 +208,17 @@ export function codexTurn(lines: readonly Record<string, unknown>[], checkSet = 
       default:
         break;
     }
+    if (calls.length > before) {
+      const issued = typeof item.id === "string" ? startLine.get(item.id) ?? at : at;
+      issuedAt.push(issued);
+    }
+  }
+  if (checkSet >= 3) {
+    const open = [...started].filter(([id]) => !completedIds.has(id)).map(([, v]) => v).sort((a, b) => b.before - a.before || b.at - a.at);
+    for (const o of open) { calls.splice(o.before, 0, { name: "Bash", input: { command: o.command }, isError: true, result: "", exitCode: null, incomplete: true }); issuedAt.splice(o.before, 0, o.at); }
+    // Completed items arrive in completion order; each call also carries where it stands in issue order.
+    const byIssue = issuedAt.map((at, pos) => ({ at, pos })).sort((a, b) => a.at - b.at || a.pos - b.pos);
+    byIssue.forEach(({ pos }, rank) => { if (rank !== pos) calls[pos] = { ...calls[pos]!, issueShift: rank - pos }; });
   }
   return { calls, stopText: messageAt > activityAt ? lastMessage : "", models: [], sessionId, terminal, initTools: null };
 }
@@ -990,6 +1027,14 @@ const CITATION_WORDS: ReadonlySet<string> = new Set(["the", "a", "this", "story"
  */
 export const STOP_RULE_VERSION = "2026-09-27.16: a trailing paragraph without a question mark is dropped only when nothing remains after its opening marker, link URLs (labels stay as words), file path tokens (rooted at /, ./, ~/ or .story/ with an extended last segment, or a bare .md/.json name), punctuation and the connective allowlist; a package is clean only when its closing paragraph is the option list (an optional single prefix line that is the skill's package question verbatim or one listed selection question, then exactly the three option lines, each one label as a list item or bare, then nothing) or is exactly one listed selection question (one sentence, case-folded, emphasis and trailing punctuation stripped), otherwise semantic, whatever options it names; a pending structured question preceded by any non-empty main-agent text (every text block before it, in any message, and the result text) is semantic (candidate package when the question renders the package, otherwise discovery), the preceding prose never validated; a question is read through trailing emphasis; a discovery stop is never clean: any question mark in an ending without the package options is semantic with candidate discovery, none without one; a stop that classifies only with a residue paragraph removed is semantic, routed on its candidate and ruled by the judge; package labels as whole phrases, case- and emphasis-insensitive, all three; a semantic stop's candidate is read from its last question-bearing paragraph (a ? ending a sentence, through closing emphasis, quotes or brackets) to the end: package when that text names \"approve setup\" as a whole phrase, review-unavailable when it offers retry and continuing without independent review, otherwise discovery; an older package above that question never decides the route, except that a question paragraph immediately after a paragraph carrying the three option labels as lines routes package when its last question sentence, stripped of closing punctuation, is a listed selection form, alone or followed by a comma suffix that only cites (citation-only, or one leading per, given, according to or see, then at least one link or path and only punctuation and the connective allowlist, a link's label dropped), commentary after that sentence allowed";
 
+/** Check set 3's stop rule: check set 2's, plus the closed closing form. */
+export const STOP_RULE_VERSION_3 = `2026-09-28.1: ${STOP_RULE_VERSION.slice(STOP_RULE_VERSION.indexOf(": ") + 2)}; check set 3: a turn with no pending structured question that routes package, or that carries the three option labels as whole lines (list markers or emphasis allowed), must end, trailing newlines removed, byte for byte with the package question and the three option lines, one per line, nothing after Inspect details`;
+
+/** The stop rule a record of this check set is graded under: check sets 1 and 2 keep the text they were recorded with. */
+export function stopRuleFor(checkSet: number): string {
+  return checkSet >= 3 ? STOP_RULE_VERSION_3 : STOP_RULE_VERSION;
+}
+
 /**
  * A paragraph that only cites where the question came from: it asks nothing,
  * and once its opening marker, every link URL (the label stays), every file
@@ -1088,6 +1133,19 @@ const hasQuestion = (paragraph: string): boolean => /\?[*_"'”’)\]]*(?=\s|$)/
 function hasOptionLines(paragraph: string): boolean {
   const named = new Set(paragraph.split("\n").map(optionOfLine).filter((o) => o !== null));
   return named.size === PACKAGE_OPTIONS.length;
+}
+
+/** Check set 3: the four closing lines every turn that shows the package ends with, byte for byte. */
+export const CLOSING_LINES = `\n${"How should I proceed with this setup?"}\n${PACKAGE_OPTIONS.join("\n")}`;
+
+/** Check set 3: the approval block, the three option labels as whole lines anywhere in the text (list markers or emphasis allowed). */
+export function hasApprovalBlock(text: string): boolean {
+  return hasOptionLines(text);
+}
+
+/** Check set 3: whether a stop ends byte for byte with the four closing lines, trailing newlines removed. */
+export function endsWithClosingLines(stopText: string): boolean {
+  return stopText.replace(/\n+$/, "").endsWith(CLOSING_LINES);
 }
 
 /**
@@ -1562,6 +1620,38 @@ export function qualityLevel(packageText: string): QualityLevel | null {
   return found.size === 1 ? [...found][0]! : null;
 }
 
+/** Whether a package carries a `Quality level:` line at all, well formed or not. */
+function hasQualityLine(text: string): boolean {
+  return text.split("\n").some((raw) => raw.trim().replace(LIST_MARKER, "").replace(/\*\*|__|`/g, "").trim().toLowerCase().startsWith("quality level:"));
+}
+
+/** The status a package's review status line gives, as a key two packages can be compared by. */
+function statusKey(text: string): string {
+  const st = reviewStatus(text);
+  return st.kind === "result" ? st.ref : st.kind;
+}
+
+/**
+ * Check set 3: the quality level the owner approved. The approved package is the last one shown; a restatement of it
+ * (after Inspect details, or the same question asked again) that carries no `Quality level:` line inherits the level of
+ * the most recent package that names one, provided both cite the same review (or both the skip); an adjusted package
+ * re-shows the plan and must name its own. `explained` is set when a finding says why the level cannot be established; a
+ * null level otherwise is left to the recipe checks (no package names one, or the named one is not a single level).
+ */
+export function approvedQualityLevel(packages: readonly { readonly label: string; readonly text: string }[]): { readonly level: QualityLevel | null; readonly findings: readonly string[]; readonly explained: boolean } {
+  const findings = packages.filter((p) => p.label.startsWith("adjust") && !hasQualityLine(p.text)).map((p) => `adjusted package names no quality level (${p.label})`);
+  const approved = packages.at(-1);
+  if (approved === undefined) return { level: null, findings, explained: false };
+  if (hasQualityLine(approved.text)) return { level: qualityLevel(approved.text), findings, explained: false };
+  if (approved.label.startsWith("adjust")) return { level: null, findings, explained: true };
+  const source = [...packages.slice(0, -1)].reverse().find((p) => hasQualityLine(p.text));
+  if (source === undefined) return { level: null, findings, explained: false };
+  if (statusKey(source.text) !== statusKey(approved.text)) {
+    return { level: null, findings: [...findings, `the approved package (${approved.label}) cites ${statusKey(approved.text)}, but its quality level was named in the ${source.label} package, which cites ${statusKey(source.text)}`], explained: true };
+  }
+  return { level: qualityLevel(source.text), findings, explained: false };
+}
+
 /** A fixture's command evidence under check set 2: the established components with their accepted commands, and the pending ones. `""` is the root. */
 export interface RecipeContract {
   readonly established: Readonly<Record<string, readonly string[]>>;
@@ -1769,6 +1859,140 @@ export function notRerunLines(text: string): string[] {
   return text.split("\n").map(formLine).filter((l) => NOT_RERUN.test(l));
 }
 
+/** Check set 3: the index, among `text`'s raw lines, of its one review status line, or -1 when it has none or several. */
+export function reviewStatusLineIndex(text: string): number {
+  const at: number[] = [];
+  text.split("\n").forEach((raw, k) => { const line = formLine(raw); if (STATUS_RESULT.test(line) || STATUS_SKIP.test(line)) at.push(k); });
+  return at.length === 1 ? at[0]! : -1;
+}
+
+// --- check set 3: the reviewer probe ------------------------------------------------------------
+
+/** What a probe established: the path it printed, that it printed nothing, or why it cannot be read. */
+export type ProbeValue =
+  | { readonly kind: "path"; readonly path: string }
+  | { readonly kind: "nothing" }
+  | { readonly kind: "unknown"; readonly reason: string };
+
+/** One recognised `command -v codex` attempt: the call that issued it, its shape, its completion, and what it established. */
+export interface ProbeAttempt {
+  readonly index: number;
+  /** The attempt's position in issue order: `index` shifted by its call's issueShift (Codex); `index` itself for Claude. */
+  readonly issued: number;
+  /** The whole call is the probe alone: bare `command -v codex`, or `/bin/zsh -lc` running exactly that, with no redirection. */
+  readonly valid: boolean;
+  readonly completed: boolean;
+  readonly exitCode: number | null;
+  readonly output: string;
+  readonly value: ProbeValue;
+}
+
+/** Stands in for a `command` word that begins `command -v codex`, so wrapper peeling reports it in executable position. */
+const PROBE_WORD = "\u0000probe";
+
+/** How many segments of a shell text, through wrappers and nested shells, are `command -v codex` in command position. */
+function probeSegments(text: string, depth: number): number {
+  let n = 0;
+  for (const c of shellSequence(text).commands) {
+    const words = c.words.map((w, k, all) => (w === "command" && all[k + 1] === "-v" && all[k + 2] === "codex" ? PROBE_WORD : w));
+    const { argv, inner } = unwrap(words);
+    if (argv[0] === PROBE_WORD) { n++; continue; }
+    if (inner !== null && depth < 3) n += probeSegments(inner, depth + 1);
+  }
+  return n;
+}
+
+/** Why a recognised attempt is not valid: it shares its call, or it runs under a wrapper other than Codex's own. */
+const PROBE_REASON = {
+  compound: "the probe shares its call with other commands or a redirection",
+  wrapper: "the probe runs under a shell other than a single /bin/zsh -lc",
+} as const;
+type ProbeShape = "valid" | keyof typeof PROBE_REASON;
+
+/**
+ * The shape of a shell text that holds an attempt. Valid is exactly `command -v codex`, or, at the top level only,
+ * exactly `/bin/zsh -lc` running exactly that (Codex's own wrapper). A probe alone under any other shell, shell path,
+ * flag or nesting is a wrapper; anything else sharing the call, a redirection or a here-document is compound.
+ */
+function probeShape(text: string, topLevel: boolean, depth = 0): ProbeShape {
+  const { commands, operators } = shellSequence(text);
+  if (commands.length !== 1 || operators.some((o) => o !== "\n")) return "compound";
+  const c = commands[0]!;
+  if (c.heredoc || redirectionsOf(c.bare).length > 0) return "compound";
+  const w = c.words;
+  if (w.length === 3 && w[0] === "command" && w[1] === "-v" && w[2] === "codex") return "valid";
+  if (depth < 3 && w.length === 3 && /^(?:\/[^\s]*\/)?(?:ba|z|da|k)?sh$/.test(w[0]!) && /^-l?c$/.test(w[1]!)) {
+    const inner = probeShape(w[2]!, false, depth + 1);
+    if (inner === "compound") return "compound";
+    return topLevel && inner === "valid" && w[0] === "/bin/zsh" && w[1] === "-lc" ? "valid" : "wrapper";
+  }
+  return "compound";
+}
+
+/**
+ * What a completed probe printed. Codex: its numeric exit status and aggregated output, one trailing newline removed.
+ * Claude: a success is exit 0 with the result text; an error whose content is exactly `Exit code 1` is exit 1 with no
+ * output; any other error content is unknown (unverified against a captured Claude transcript, so it fails closed).
+ */
+function probeValue(call: EvalCall, shape: ProbeShape): { readonly exitCode: number | null; readonly output: string; readonly value: ProbeValue } {
+  const raw = call.result ?? "";
+  const output = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const unknown = (reason: string, exitCode: number | null = null): { exitCode: number | null; output: string; value: ProbeValue } => ({ exitCode, output, value: { kind: "unknown", reason } });
+  if (call.incomplete === true) return unknown("the probe never completed");
+  let exitCode: number | null;
+  if ("exitCode" in call) {
+    if (typeof call.exitCode !== "number") return unknown("the probe reported no exit status");
+    exitCode = call.exitCode;
+  } else if (!call.isError) exitCode = 0;
+  else if (raw === "Exit code 1") return { exitCode: 1, output: "", value: shape === "valid" ? { kind: "nothing" } : { kind: "unknown", reason: PROBE_REASON[shape] } };
+  else return unknown("the probe failed with content that is not an exit status");
+  if (shape !== "valid") return unknown(PROBE_REASON[shape], exitCode);
+  if (exitCode === 0) {
+    if (output.trim() === "") return unknown("the probe exited 0 and printed nothing", 0);
+    if (output.includes("\n")) return unknown("the probe printed more than one line", 0);
+    return { exitCode, output, value: { kind: "path", path: output.trim() } };
+  }
+  if (exitCode === 1) return output === "" ? { exitCode, output, value: { kind: "nothing" } } : unknown("the probe exited 1 and printed output", 1);
+  return unknown(`the probe exited ${exitCode}`, exitCode);
+}
+
+/**
+ * Every recognised `command -v codex` attempt in call order: a main-agent shell call in which `command -v codex`
+ * stands in command position in some segment (through wrappers and nested shells; an argument, a quoted payload or a
+ * here-document body never counts). A call with several attempt segments is one unsupported attempt.
+ */
+export function probeAttempts(calls: readonly EvalCall[]): ProbeAttempt[] {
+  const out: ProbeAttempt[] = [];
+  calls.forEach((call, index) => {
+    if (call.nested) return;
+    const cmd = commandOf(call);
+    if (cmd === null || probeSegments(cmd, 0) === 0) return;
+    const shape = probeShape(cmd, true);
+    const v = probeValue(call, shape);
+    out.push({ index, issued: index + (call.issueShift ?? 0), valid: shape === "valid", completed: call.incomplete !== true, ...v });
+  });
+  return out;
+}
+
+/** The authoritative probe before call index `end`: the latest recognised attempt by issue order, whatever its shape, or null. */
+export function authoritativeProbe(attempts: readonly ProbeAttempt[], end: number): ProbeAttempt | null {
+  const before = attempts.filter((a) => a.index < end);
+  return before.reduce<ProbeAttempt | null>((latest, a) => (latest === null || a.issued > latest.issued ? a : latest), null);
+}
+
+const PROBE_LINE = /^Reviewer probe: `command -v codex` printed (.+)$/;
+
+/** Check set 3: every probe line in `text`, with its raw line index and what it says was printed. */
+export function probeLines(text: string): { readonly index: number; readonly printed: string }[] {
+  const out: { index: number; printed: string }[] = [];
+  text.split("\n").forEach((raw, index) => {
+    const line = raw.replace(/\s+$/, "").trim().replace(LIST_MARKER, "").replace(/^(?:\*\*|__|[*_])+|(?:\*\*|__|[*_])+$/g, "").trim();
+    const m = PROBE_LINE.exec(line);
+    if (m !== null) out.push({ index, printed: m[1]!.trim().replace(/^`(.*)`$/, "$1") });
+  });
+  return out;
+}
+
 // --- check set 2: a plain-text discovery turn ends at its question -----------------------------
 
 /** What follows the last question of a plain-text discovery stop: the rest of its paragraph and every later one; "" when nothing does. */
@@ -1894,8 +2118,8 @@ export function setupRecordText(storyDir: string): string {
  * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
  * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
  */
-export const CHECK_SET_VERSION = 2;
-export const KNOWN_CHECK_SETS: readonly number[] = [1, 2];
+export const CHECK_SET_VERSION = 3;
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3];
 
 /**
  * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises

@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-004",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Application can be verified on staging with operational controls, from brief.md / Constraints and owner email choices.\nScope: Select hosting/email provider; secrets, HTTPS/domain, secure coordinator bootstrap, durable scheduler, backups/restore; implement contact/report retention/deletion with finite documented periods reviewed by coordinator, backup expiry and deletion replay after restore; minimized allocation history. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Controlled-inbox sign-in/digest delivered; restore and deletion evidence; no contact/token logs; staging ready. Production release belongs to Q.\nBehaviour: Document outage recovery, monitoring and configuration; avoid unnecessary personal data. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Staging delivery, restore and retention/deletion checks, including backups and post-restore replay. Prerequisites: T-003, T-004, T-012. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 10,
+  "phase": "launch",
+  "status": "open",
+  "title": "Prepare staging and operational readiness",
+  "type": "task"
+}

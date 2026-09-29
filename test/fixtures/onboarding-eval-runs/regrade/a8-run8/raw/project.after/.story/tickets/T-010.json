@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Criteria: Demonstrate with synthetic households returning eligibility before/at cutoff, prevention of early new allocation/finalization, household/plot uniqueness, full allocation of 40 plots, durable original-order waiting list and safe head-only promotion.\nArtifact: Working coordinator application/allocation/queue flow and rule-test evidence.\nAcceptance: Record the owner's demonstration decision and required corrections before first-version acceptance.\nVerification: Walk through brief.md §Rules and item 2 with overflow applicants and concurrent-action evidence.\nStage-1 limitation: Ordinary ticket; owner gate is not mechanically enforced. Unrelated reporting work can proceed; T-016 waits on this checkpoint.\nPrerequisites: T-008, T-009.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 50,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: allocation and waiting-list demonstration",
+  "type": "chore"
+}

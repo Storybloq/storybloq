@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The coordinator receives one daily email listing new problem reports, from owner notification decision.\nScope: Garden-timezone schedule, durable batches/cursor, unique report membership, retries and operational visibility. Include newly created reports even if now resolved, with status and authenticated links but no gardener contacts.\nExcludes: Immediate notifications and gardener notification emails.\nAcceptance: Since-last-success reports included in batch accounting; subsequent batches exclude previously accounted reports. Empty day sends nothing. Concurrent runs cannot duplicate a batch; scheduler downtime catches up. Failed batch stays available for retry; ambiguous delivery is surfaced for reconciliation rather than falsely marked successful.\nBehaviour: No lost unsent reports on failure/restart; expose uncertain provider acknowledgement; do not claim exactly-once SMTP delivery.\nVerification: Fake clock/mail tests for date boundary/DST, failure/restart/catch-up/concurrency and ambiguous delivery; sandbox delivered email plus report retry membership test.\nPrerequisites: T-001, T-013.\nAssumptions: 08:00 garden local time; use provider idempotency if available; owner provides email service credentials.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 30,
+  "phase": "daily-use",
+  "status": "open",
+  "title": "Send daily new-problem email digest",
+  "type": "task"
+}

@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-011",
+    "T-012",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Establish acceptance evidence for the four remaining first-version requirements, from brief.md / First version 1–4, Rules and Constraints; owner map deferral and email decisions.\nScope: Automated functional/authorization tests and manual phone/keyboard/screen-reader checks on staging; email and retention evidence. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Applications, allocation/waitlist, own allocation/dates and reporting/resolution pass alongside all three rules, privacy/usability constraints and owner email choices.\nBehaviour: Exercise failure/recovery and empty states; no invented speed targets. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Recorded suite results, manual journey checks, negative authorization cases and controlled inbox evidence. Prerequisites: T-009, T-011, T-012, T-013. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 20,
+  "phase": "launch",
+  "status": "open",
+  "title": "Verify complete first-version journeys",
+  "type": "task"
+}

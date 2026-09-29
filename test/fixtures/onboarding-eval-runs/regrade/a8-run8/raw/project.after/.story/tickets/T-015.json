@@ -1,0 +1,19 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-009",
+    "T-011",
+    "T-013",
+    "T-014"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The volunteer can operate, recover and correct the first version, derived from brief workflow correctness and privacy constraints.\nScope: Deploy/migrate/coordinator provisioning, backup/restore, safe logs, email/scheduler monitoring, verified 40-plot registry and paper prior holdings. Contact-retention policy before live data. Audited, validated administrative corrections for mistaken allocation/household or vacancy preserving uniqueness and queue order.\nExcludes: General self-service administration features; post-v1 plot map and map-dependent launch checks.\nAcceptance: Staging deploy and restore demonstrated with synthetic data; digest failure recovery rehearsed. Correction transactions preserve one plot per household/one household per plot, FCFS and audit. Owner-supplied timezone/dates/accounts and contact-retention policy recorded before live use.\nBehaviour: Safe failure, rollback and recovery runbook; no contact or token leakage in logs.\nVerification: Staging rehearsal, backup restore and transactional correction tests; scheduler/mail monitoring and documented recovery checks.\nPrerequisites: T-008, T-009, T-011, T-013, T-014.\nAssumptions: Owner supplies provider accounts, exact season dates and garden timezone; synthetic data used until ready.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 10,
+  "phase": "launch",
+  "status": "open",
+  "title": "Establish deployment, recovery and correction procedures",
+  "type": "task"
+}

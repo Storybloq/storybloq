@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-004",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardeners sign in without passwords (owner sign-in answer; brief.md: Constraints).\nScope: Hashed expiring single-use email tokens, throttling, generic request responses, secure sessions/logout, household association, separately provisioned coordinator role. Excludes: passwords and social login.\nAcceptance: Only intended household signs in; expired/replayed tokens fail and concurrent consumption has one winner; link scanner GET cannot consume token before confirmation; email change cannot seize household; gardeners cannot grant roles.\nBehaviour: Accessible sent/confirm/expired/resend states; recoverable mail errors; no tokens or contact details in logs. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Expiry/replay/race, rate-limit/enumeration and role tests; captured-email walkthrough. Prerequisites: T-001, T-004, T-003. Assumptions: 15-minute token lifetime.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 50,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Implement secure emailed one-time sign-in",
+  "type": "task"
+}

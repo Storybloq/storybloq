@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-004",
+    "T-006",
+    "T-016"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator sees 40-plot holder grid after first-version acceptance, from brief.md / original First version 5 superseded by owner's explicit after-first-version deferral.\nScope: Accessible grid with plot IDs, household holder labels, occupied/free state, season selector and allocation links; map-specific owner design review during implementation. Excludes: payments, tool lending, attachments, public contact directory.\nAcceptance: Exactly 40 plots consistent with allocations; phone/keyboard operation; text conveys status without colour dependence; coordinator-only access.\nBehaviour: Loading/empty/error/retry; no gardener access. Earlier prototype review is not approval of map design. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Data consistency and role tests, phone/keyboard inspection and recorded map design review. Prerequisites: T-004, T-006, T-016. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-017",
+  "id": "T-017",
+  "order": 10,
+  "phase": "later",
+  "status": "open",
+  "title": "Coordinator plot map (after first version)",
+  "type": "task"
+}

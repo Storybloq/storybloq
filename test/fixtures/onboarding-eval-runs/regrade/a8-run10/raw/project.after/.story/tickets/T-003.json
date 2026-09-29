@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Artifact: T-002 mobile journey prototype.\nQuestion: Are application, allocation and reporting journeys understandable on a phone with readable text?\nRecord owner feedback and required changes. This checkpoint gates user-facing feature screens via T-005/T-010, not independent foundations. Stage-1 limitation: this is an ordinary ticket; Storybloq does not enforce human approval.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: owner reviews mobile journeys",
+  "type": "task"
+}

@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: A runnable development base enables phone-based garden workflows and email, from brief.md §Constraints and owner sign-in/digest decisions.\nScope: Python/Django server-rendered responsive app, PostgreSQL migrations, email adapter, scheduled management-command interface, secrets configuration, synthetic fixtures, provider/cost/provisioning documentation, CI and test/deployment/runtime verification commands.\nExcludes: Product workflows; provisioning paid accounts during setup.\nAcceptance: Reproducible local startup and persistence after restart; test sources collected; sandbox email and scheduled-command execution demonstrated; hosting/email choices and owner provisioning documented. Establish actual verification commands and enable supported Full pipeline stages only after evidence exists. Keep BUILD disabled if deployment needs no build artifact.\nBehaviour: Startup, migration and mail failures provide actionable recovery without logging credentials or link tokens.\nVerification: Smoke startup, migration recovery rehearsal, collected sample test, sandbox mail and scheduler evidence; document deployment packaging and validate with python manage.py check (not build evidence).\nPrerequisites: none.\nAssumptions: Approved Python/Django/PostgreSQL stack; hosting/email providers selected here with costs documented; owner provisions accounts.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Establish application, email and verification tooling",
+  "type": "task"
+}

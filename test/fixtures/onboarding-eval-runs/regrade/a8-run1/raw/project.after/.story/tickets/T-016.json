@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-015"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Owner accepts released first version, from brief.md / First version 1–4, Rules, Constraints and owner decisions.\nScope: Review deployed app and O/Q evidence. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Criteria: four first-version requirements, all three rules, phone usability/large text/plain language/contact privacy, one-time email sign-in and daily digest demonstrated. Map/payments/tool lending excluded.\nBehaviour: Unmet criteria remain open; no automatic owner acceptance. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Recorded owner acceptance with artifact/evidence links. Prerequisites: T-015. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover. Stage-1 limitation: checkpoint is an ordinary ticket and approval is not mechanically enforced.",
+  "displayId": "T-016",
+  "id": "T-016",
+  "order": 40,
+  "phase": "launch",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "chore"
+}

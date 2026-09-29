@@ -81,6 +81,21 @@ Write the result as a concise product brief with observable acceptance condition
 
 This runs before anything is shown for approval, every time.
 
+**Probe the reviewers first**, before drafting the plan. Run `command -v codex` as a shell call of its own, nothing else in that call, and keep exactly what it printed. Then check the other two reviewers in the order below. When none of the three can run, send the unavailable stop below now, before drafting; do not draft or describe a review.
+
+1. a native Codex CLI, when `command -v codex` prints a path, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
+2. the `review_plan` MCP tool, when it is in your tool list (after one exact-name tool discovery call where the client defers tools);
+3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent.
+
+**When no reviewer can run**, or every reviewer call fails, send this stop and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
+
+No supported reviewer is available to review this plan.
+How should I proceed?
+Retry the review
+Continue without independent review
+
+A retry runs the probes again. Continuing records the skip for the whole setup: later adjustments carry the skip status line and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+
 **Decompose the entire in-scope brief** by outcomes and real dependencies. There are no phase or ticket quotas: as many phases and tickets as the scope needs.
 
 - Phases are milestones. Each says what the user will be able to demonstrate when it is done.
@@ -111,13 +126,9 @@ Every label carries content. Where one does not apply, write `none` (for example
 
 Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner reviews>`. Its description holds `Question:` for a decision, or `Criteria:` for a demonstration or acceptance, and names the artifact the owner reviews. The ticket is `blockedBy` the work that produces what it reviews, and only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint; unrelated work stays unblocked. Stage-1 limitation: nothing enforces the gate yet, so a checkpoint ticket can be closed like any other ticket. Say so in the package.
 
-**Independent review, by default.** First probe which supported reviewers this session can use, then review the full plan with the first whose probe passes, in this capability order:
+**Independent review, by default.** Review the full plan with the first reviewer whose probe passed, in the capability order above.
 
-1. a native Codex CLI, when `command -v codex` prints a path, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
-2. the `review_plan` MCP tool, when it is in your tool list (after one exact-name tool discovery call where the client defers tools);
-3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent.
-
-Give every review a review id, `R1`, `R2` and so on in order, and put `Review id: R<n>` as the first line of the plan you send (the here-document body, the `review_plan` plan text, or the agent's prompt). Ask for the answer in the schema's shape, a `verdict` and `findings`.
+Give every review a review id, `R1`, `R2` and so on in order, and put `Review id: R<n>` as the first line of the plan you send (the here-document body, the `review_plan` plan text, or the agent's prompt). Ask for the answer in the schema's shape, a `verdict` and `findings`. An id exists only once you send it as the first line of a reviewer call's input; a status line cites only an id you sent and whose response you captured, never an id for a review that did not run.
 
 The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Maximum 2 review rounds; incorporate the findings. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
 
@@ -128,14 +139,7 @@ The review checks coverage and fidelity to the brief, journey completeness and u
 
 Describe findings in your own words elsewhere if useful, but never state a review outcome outside the status line.
 
-**When every probe fails**, or every reviewer call fails, send this stop and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
-
-No supported reviewer is available to review this plan.
-How should I proceed?
-Retry the review
-Continue without independent review
-
-A retry runs the probes again. Continuing records the skip for the whole setup: later adjustments carry the skip status line and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+**The probe line.** The line directly above every review status line, in each package and the setup summary, is the probe line, verbatim in one of two forms: `Reviewer probe: `command -v codex` printed <path>`, where `<path>` is exactly what your most recent probe printed, or `Reviewer probe: `command -v codex` printed nothing`. After a probe that printed nothing, a review result can only come from the `review_plan` tool or an agent you started after that probe. Unless the owner has already chosen Continue without independent review, if neither ran and returned a review, send the unavailable stop. After an authorised skip, continue with the probe line and the skip status line without asking again.
 
 **What counts as a review.** A review counts only when a supported reviewer returned a completed response with a verdict and findings about the plan you supplied, captured in this session and quoted in the package. Never narrate a review you have no captured output for: not "Independent review passed", not "I have sent it for review", not a verdict you inferred or remember. Error output, a launch acknowledgement, a refusal or incomplete output is not a review. A wait with no agent started, or a wait that returned no message, is a wait on nothing, not a review. An agent is reviewed only once its completed final message is captured, from the start call's own result or from a wait on it; keep waiting on a running agent rather than reporting it. When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.
 
@@ -177,9 +181,16 @@ Approve setup
 Adjust the plan
 Inspect details
 
-Do not paraphrase a label or add a citation or closing paragraph: the owner, a reviewer or an evaluation harness reads these exact labels.
+Do not paraphrase a label: the owner, a reviewer or an evaluation harness reads these exact labels. The message ends at `Inspect details`: that line, with no trailing spaces, is the last line of every turn that shows the package (the first, after "Inspect details" and after "Adjust the plan"). The probe and status lines sit above the question line. A citation of this file, a reminder that nothing is written before approval, or any other note also goes above the question line, never below `Inspect details`:
 
-The fourth line is the last thing in the message, in every turn that shows the package: the first, after "Inspect details" and after "Adjust the plan". The review status line sits above the four lines. Nothing follows them: no citation or link, no reminder that nothing is written before approval, no status note or sign-off, and no trailing spaces on the four lines.
+```
+This setup follows setup-flow.md: "One approval of the setup package authorises all of it."
+
+How should I proceed with this setup?
+Approve setup
+Adjust the plan
+Inspect details
+```
 
 #### 1e. Execute on Approval
 

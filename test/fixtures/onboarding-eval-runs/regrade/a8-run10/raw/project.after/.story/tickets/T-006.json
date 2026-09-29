@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-004",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardener applies for coming season and coordinator reviews applications (brief.md: First version must 1–2).\nScope: Zero to three distinct ordered valid plot preferences, one application per household/season, immutable submitted_at, confirmation, coordinator list and pre-allocation edits preserving order. Excludes: payments.\nAcceptance: Own application saved/reloaded; >3, duplicate or invalid preferences rejected; repeated/concurrent submit yields one application; coordinator sees timestamp, preferences and prior-holder status.\nBehaviour: Closed/wrong season explained; owner/coordinator access only. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Preference boundaries, duplicate/race, access tests and phone application walkthrough. Prerequisites: T-004, T-005. Assumptions: preferences optional/advisory; coming season configured by coordinator.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Submit and review seasonal applications",
+  "type": "task"
+}

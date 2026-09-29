@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-005",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: A gardener sees their allocated plot and season dates, from brief.md §First version must, item 3.\nScope: Own application pending/waitlisted/allocated views, plot label and season dates, phone-readable statuses.\nExcludes: Other household records, other gardener contacts and public plot-holder directory.\nAcceptance: Displayed status, plot and dates match persisted records after reload; direct unauthorized requests fail.\nBehaviour: Plain-language empty/loading/error/retry states and no allocation message; labelled, keyboard-operable phone UI.\nVerification: Household isolation tests and mobile end-to-end status/date journey.\nPrerequisites: T-003, T-005, T-006, T-007.\nAssumptions: Only own household allocation is visible to a gardener.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 10,
+  "phase": "daily-use",
+  "status": "open",
+  "title": "Show gardener allocation and season dates",
+  "type": "task"
+}

@@ -1,0 +1,37 @@
+{
+  "blockers": [],
+  "date": "2026-09-28",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate mobile journeys and establish secure application, household, season and sign-in foundations.",
+      "id": "foundation",
+      "label": "MILESTONE 1",
+      "name": "Accessible foundation"
+    },
+    {
+      "description": "Demonstrate applications, returning priority, FIFO waiting list, gardener allocation and the 40-plot grid.",
+      "id": "allocation",
+      "label": "MILESTONE 2",
+      "name": "Applications and fair allocation"
+    },
+    {
+      "description": "Demonstrate own-plot reporting, coordinator resolution and reliable daily report email.",
+      "id": "reporting",
+      "label": "MILESTONE 3",
+      "name": "Problem reporting"
+    },
+    {
+      "description": "Demonstrate private operation, recovery, acceptance evidence and owner acceptance.",
+      "id": "readiness",
+      "label": "MILESTONE 4",
+      "name": "First-version readiness"
+    }
+  ],
+  "title": "Plotbook"
+}

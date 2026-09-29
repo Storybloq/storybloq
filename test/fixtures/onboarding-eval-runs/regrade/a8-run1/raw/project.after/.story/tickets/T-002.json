@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Review the first-version phone journeys, from brief.md / Constraints and owner map deferral.\nScope: Owner inspects A's fictional-data prototype: sign-in, application, allocation lists/forms, own status and reporting. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Question: Are these journeys understandable and usable on a phone? Record the owner's decision on large text, plain language, labels, focus and keyboard operation.\nBehaviour: Include loading, empty, validation, retry and expired-link screens. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Recorded owner prototype review; dependent UI awaits this checkpoint. Prerequisites: T-001. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover. Stage-1 limitation: checkpoint is an ordinary ticket and approval is not mechanically enforced.",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: phone prototype",
+  "type": "chore"
+}

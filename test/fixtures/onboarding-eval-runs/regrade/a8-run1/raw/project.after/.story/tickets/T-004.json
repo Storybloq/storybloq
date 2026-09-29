@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator maintains records needed for allocation, from brief.md / Background, First version 2–3 and Rules.\nScope: Ordinary list/forms for 40 stable plot IDs, season dates/timezone, household records and prior-season holdings; manual paper-record import with preview. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Invalid date ranges and duplicate holdings rejected; import atomic; allocation history preserved; prior holdings support priority; timezone configured before deadline-sensitive use.\nBehaviour: Confirm corrections; clear validation; no partial import after failure. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Constraint tests and representative preview/import fixtures. Prerequisites: T-003. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Manage seasons, plot records and prior holdings",
+  "type": "task"
+}

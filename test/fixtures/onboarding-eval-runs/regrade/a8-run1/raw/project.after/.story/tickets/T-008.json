@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardener sees own application, waitlist position, allocated plot and dates, from brief.md / First version 3 and Constraints.\nScope: Own household status and allocation view. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Accurate after allocation/release; another household's data/contact details inaccessible.\nBehaviour: Accessible pending/empty/loading/error/retry states. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Authorization/status tests and phone walkthrough of every state. Prerequisites: T-005, T-006, T-007. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 40,
+  "phase": "applications",
+  "status": "open",
+  "title": "Show gardener status, allocation and season",
+  "type": "task"
+}

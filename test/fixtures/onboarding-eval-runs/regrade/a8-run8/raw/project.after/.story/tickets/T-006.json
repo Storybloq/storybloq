@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: A household applies for the coming season with up to three preferred plots, from brief.md §First version must, item 1.\nScope: Phone form, eligible upcoming season and plot choices, application schema, immutable submission timestamp plus stable sequence, durable receipt and household-level application uniqueness.\nExcludes: Allocation, self-service editing and withdrawal.\nAcceptance: Save 0–3 distinct valid preferred plots; reject a fourth, duplicate or unknown choice. Retry/double-submit creates one application; confirmation survives reload. Newly enrolled gardener completes the application journey.\nBehaviour: Clear labelled validation, loading and no-open-season states; failed submission retains input and supports safe retry.\nVerification: Form, persistence and concurrent duplicate tests, phone journey and enrollment-to-application integration.\nPrerequisites: T-002, T-003, T-005.\nAssumptions: Preferences optional, advisory and unranked; original application ordering immutable with sequence as tie-break.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Build seasonal plot applications",
+  "type": "task"
+}

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator has trustworthy season, household and returner records (brief.md: Background, Rules, Constraints).\nScope: Household identity separate from email login, controlled coordinator provisioning, duplicate-household reconciliation, 40 plots and labels, season dates/timezone, prior-season entry, database integrity and audit. Excludes: bulk historical import and public contact directory.\nAcceptance: Coordinator prepares coming season and previous holders; household/plot allocations unique per season; invalid dates and duplicate history refused. Reconciliation preserves history and original application order. Only coordinator accesses gardener contact details.\nBehaviour: Atomic reconciliation; clear conflicts and missing-history states; unauthorized access denied.\nVerification: PostgreSQL constraints, date boundaries, reconciliation and role tests. Prerequisites: T-001. Assumptions: coordinator supplies paper records/plot layout and timezone; one email login represents household but email alone does not prove unique household; dates default March 1–October 31, editable within March–October.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Configure households, 40 plots, seasons and prior allocations",
+  "type": "task"
+}

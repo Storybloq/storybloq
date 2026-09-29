@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Question: Are the first-version screens understandable, and do the proposed household verification, cutoff, advisory preferences and FCFS interpretations fit garden practice?\nArtifact: T-004 prototype plus synthetic returning-priority, cutoff and waiting-list examples. No plot-map artifact is required.\nAcceptance: Record the owner's decision and any requested corrections before affected UI/rules work proceeds.\nVerification: Owner walkthrough against brief.md §Rules and §Constraints and approved setup assumptions.\nStage-1 limitation: This is an ordinary ticket; the owner gate is not mechanically enforced. Do not mark complete without recording the owner response.\nPrerequisites: T-004.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 50,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: phone journeys and allocation examples",
+  "type": "chore"
+}

@@ -1,0 +1,12 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+secrets/

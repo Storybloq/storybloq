@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Provide the application foundation and a reviewable phone prototype for the four first-version journeys, from brief.md / First version and Constraints and the owner's map-deferral decision.\nScope: Responsive TypeScript app, PostgreSQL schema/migrations, local setup, real test/build scripts, and fictional-data static screens for sign-in, applications, allocation lists/forms, own status and problem reporting. Select framework during implementation. Excludes: map/grid, payments, tool lending and feature-completion claims.\nAcceptance: Clean local setup works; migrations repeat safely; a real smoke test is collected; prototype is available for the owner checkpoint; scripts establish the pending verification commands before recipe stages are enabled.\nBehaviour: Clear startup errors, no secrets in the repository, phone/keyboard-friendly large text and plain language. Prototype includes loading, empty, validation, retry and expired-link states.\nVerification: Clean-database migration, actual smoke test, build and browser checks during implementation. Prerequisites: none. Assumptions: TypeScript/npm and PostgreSQL; proposed npm test, npm run build and npm run dev/readiness http://localhost:3000 remain pending until established.\n",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Establish app, database, tooling and phone prototype",
+  "type": "task"
+}

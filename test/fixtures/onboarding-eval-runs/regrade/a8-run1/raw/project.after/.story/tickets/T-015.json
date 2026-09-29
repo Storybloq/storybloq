@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-014"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Verified first version becomes available in production, from brief.md / First version 1–4 and owner decisions.\nScope: Deploy O-verified release, backup before migration, production sign-in/scheduler smoke checks and documented rollback. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: O passes before release; production operational smoke evidence recorded.\nBehaviour: Rollback/recovery available for failed deployment. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Deployment, smoke and rollback checklist with evidence. Prerequisites: T-014. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 30,
+  "phase": "launch",
+  "status": "open",
+  "title": "Release verified application",
+  "type": "task"
+}

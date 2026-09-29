@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-014"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: First version operates with sign-in, digest and recoverable data (derived from brief.md: reliability of workflows and contact privacy).\nScope: Chosen hosting deployment instructions/config, HTTPS/secrets, verified sender/coordinator recipient, timezone/scheduler, restricted logs/backups, restore rehearsal and health. Excludes: purchases or live deployment during Storybloq setup.\nAcceptance: Staging sign-in/digest delivered, scheduled run demonstrated, restored synthetic database preserves history and queue; contacts/secrets protected; outstanding operating inputs recorded.\nBehaviour: Missing configuration stops release clearly; failed mail/jobs actionable; no sensitive logs.\nVerification: Staging checklist and backup/restore drill. Prerequisites: T-005, T-014. Assumptions: credentials/hosting supplied before release; lifecycle/retention documented with owner; synthetic data in repository.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 10,
+  "phase": "readiness",
+  "status": "open",
+  "title": "Prepare private release and recovery",
+  "type": "task"
+}

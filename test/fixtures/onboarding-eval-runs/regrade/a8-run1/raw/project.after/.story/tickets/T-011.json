@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator sees open reports and resolves them, from brief.md / First version 4.\nScope: Open report list, persistent resolution and gardener's own report status. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Repeat resolution safe; original plot/season association retained after reallocation; contacts coordinator-only.\nBehaviour: Clear empty list, stale action and retry handling. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Role/state-transition and historical-association tests. Prerequisites: T-010. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 20,
+  "phase": "problems",
+  "status": "open",
+  "title": "Review and resolve plot problems",
+  "type": "task"
+}

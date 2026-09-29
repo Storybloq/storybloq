@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Eligible unallocated applicants receive fair vacancy handling, from brief.md / First version 2 and Rules.\nScope: Atomically reconcile queue against ALL eligible unallocated applications before assignment; original application timestamp/sequence; coordinator records acceptance, decline and withdrawal. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Selective/delayed waitlisting cannot bypass earlier eligible applications; unresolved household declarations require reconciliation preserving original order before vacancy assignment; no returning-priority reordering within queue; released plot safely reassigned.\nBehaviour: Reject stale actions; empty queue clear; consistent application/waitlist states; no automatic offer expiry. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Tests for delayed/out-of-order waitlisting, tie-breaks, release, accept/decline/withdrawal and retries. Prerequisites: T-006. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "applications",
+  "status": "open",
+  "title": "Manage FIFO waiting list and vacancies",
+  "type": "task"
+}

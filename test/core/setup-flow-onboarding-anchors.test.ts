@@ -17,7 +17,7 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
   const flow = read("setup-flow.md");
 
   it("fixes the plain-text package prompt to the four exact lines", () => {
-    expect(flow).toContain("**Without a structured question tool**, end the package with exactly these four lines, one per line, no blank line between them and nothing after them:\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n\nDo not paraphrase a label or add a citation or closing paragraph: the owner, a reviewer or an evaluation harness reads these exact labels.");
+    expect(flow).toContain("**Without a structured question tool**, end the package with exactly these four lines, one per line, no blank line between them and nothing after them:\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n\nDo not paraphrase a label: the owner, a reviewer or an evaluation harness reads these exact labels. The message ends at `Inspect details`");
   });
 
   it("says what is and is not approval, and runs 1e only after it", () => {
@@ -46,6 +46,22 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow).toContain("jest `**/*.{test,spec}.*` and `__tests__`");
     expect(flow).toContain("**A discovery turn ends with its question.** In plain text, the question is the last thing in the message");
     expect(flow).toContain("**Last check before sending the completion message.**");
+  });
+
+  it("pins the check set 3 probe, id and closing forms (T-536 batch 3)", () => {
+    expect(flow).toContain("**Probe the reviewers first**, before drafting the plan. Run `command -v codex` as a shell call of its own, nothing else in that call, and keep exactly what it printed.");
+    expect(flow).toContain("When none of the three can run, send the unavailable stop below now, before drafting; do not draft or describe a review.");
+    expect(flow).toContain("`Reviewer probe: `command -v codex` printed <path>`, where `<path>` is exactly what your most recent probe printed, or `Reviewer probe: `command -v codex` printed nothing`.");
+    expect(flow).toContain("After a probe that printed nothing, a review result can only come from the `review_plan` tool or an agent you started after that probe");
+    expect(flow).toContain("An id exists only once you send it as the first line of a reviewer call's input; a status line cites only an id you sent and whose response you captured, never an id for a review that did not run.");
+    expect(flow).toContain("The message ends at `Inspect details`: that line, with no trailing spaces, is the last line of every turn that shows the package");
+    expect(flow).toContain("```\nThis setup follows setup-flow.md: \"One approval of the setup package authorises all of it.\"\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n```");
+    expect(flow).toContain("**When no reviewer can run**, or every reviewer call fails, send this stop and nothing else");
+    expect(flow).toContain("No supported reviewer is available to review this plan.\nHow should I proceed?\nRetry the review\nContinue without independent review");
+    // An authorised skip is never asked again, even after a probe that printed nothing.
+    expect(flow).toContain("Unless the owner has already chosen Continue without independent review, if neither ran and returned a review, send the unavailable stop. After an authorised skip, continue with the probe line and the skip status line without asking again.");
+    // The probe comes before the plan is drafted.
+    expect(flow.indexOf("**Probe the reviewers first**")).toBeLessThan(flow.indexOf("**Decompose the entire in-scope brief**"));
   });
 
   it("marks the pending tooling line verbatim", () => {

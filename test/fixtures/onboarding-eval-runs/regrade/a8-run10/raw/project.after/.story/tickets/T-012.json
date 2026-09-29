@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardener reports a broken tap, path or other plot problem (brief.md: First version must 4).\nScope: Plain-text report linked to authorized household, plot and season, confirmation and own status. Excludes: uploads and public discussion.\nAcceptance: Allocated gardener saves report durably to correct allocation; forged other-plot requests denied; repeated submit safe; empty content rejected.\nBehaviour: Explain no allocated plot; recoverable submit errors. Large text and plain language; phone layout, labelled controls, keyboard/focus support and explicit empty/loading/error/success states. Preserve input on failure and permit retries without duplicate writes; enforce permissions on server.\nVerification: Ownership, validation, deduplication and phone reporting tests. Prerequisites: T-009. Assumptions: no attachments in V1.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 10,
+  "phase": "reporting",
+  "status": "open",
+  "title": "Report a problem with own plot",
+  "type": "task"
+}

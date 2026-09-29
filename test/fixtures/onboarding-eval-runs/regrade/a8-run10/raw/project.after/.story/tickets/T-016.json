@@ -1,0 +1,20 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-009",
+    "T-010",
+    "T-013",
+    "T-014",
+    "T-015"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: All brief acceptance conditions are demonstrated before release (brief.md: First version must, Rules, Constraints).\nScope: Integrated PostgreSQL regression, mail sandbox, mobile/keyboard/readability checks, races and authorization; repeatable 40-plot fixtures with >40 applications. Excludes: invented performance SLAs.\nAcceptance: All five requirements and three rules have passing evidence; sign-in/digest failures recover; gardeners cannot access others' contacts/reports/dashboard; grid usable on phone; failures fixed or release blocked.\nBehaviour: Exercise empty/loading/failure/recovery states, focus and clear validation.\nVerification: Record automated commands/results and manual browser/phone checklist; check permissions in HTML/API/mail. Prerequisites: T-008, T-009, T-010, T-013, T-014, T-015. Assumptions: target browsers set in T-001.",
+  "displayId": "T-016",
+  "id": "T-016",
+  "order": 20,
+  "phase": "readiness",
+  "status": "open",
+  "title": "Verify first-version journeys, privacy and accessibility",
+  "type": "task"
+}

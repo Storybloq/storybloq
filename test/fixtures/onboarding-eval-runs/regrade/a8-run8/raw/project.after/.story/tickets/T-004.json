@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The owner can inspect understandable gardener and coordinator journeys, from brief.md §Users, §Constraints and v1 requirements 1–4; map excluded by owner deferral.\nScope: Synthetic wireframes/clickable prototype for application, own allocation, problem report, coordinator application review/allocation/waiting list and problem handling. Large text, plain language, keyboard focus/labels, non-colour statuses and narrow-screen layouts.\nExcludes: Backend implementation and post-v1 plot map or replacement holder dashboard.\nAcceptance: All first-version primary journeys include loading, empty, validation, error and recovery states. Screens remain legible and operable on phones. Allocation examples explain priority and later FCFS behaviour.\nBehaviour: Show accessible validation and recovery rather than only success screens.\nVerification: Owner walkthrough script and mobile/keyboard checks; present artifacts to T-005.\nPrerequisites: none.\nAssumptions: Prototype format chosen during ticket; no invented user research or performance targets.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Prototype accessible first-version phone journeys",
+  "type": "task"
+}

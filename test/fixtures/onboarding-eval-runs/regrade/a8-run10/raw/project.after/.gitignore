@@ -1,0 +1,8 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+.venv/
+__pycache__/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Coordinator allocates from applications fairly, from brief.md / First version 2 and Rules.\nScope: Ordinary application lists/forms; priority, transactional allocation, release/reassignment confirmations and audit. Excludes: plot map/grid, payments, tool lending, attachments, public contact directory.\nAcceptance: Confirmed households only; at most one plot/household and one holder/plot each season. No final new-applicant allocation before February 1 local cutoff or while timely eligible returners unresolved. Late returners ordinary applicants. Declines/withdrawals recorded; waiting-list vacancies must follow G.\nBehaviour: Reject stale/concurrent conflicts clearly; audit actor and changes; resolve duplicate households/holdings before allocation. All interfaces use phone-friendly large text, plain language, accessible labels and keyboard operation; server-side role/household authorization.\nVerification: Tests for deadline boundary and last-minute returning application after earlier new applications; household merge, uniqueness and concurrency tests. Prerequisites: T-005. Assumptions: Editable March 1–October 31 defaults; garden timezone configured; coordinator-confirmed households; application receipt timestamp plus stable sequence for ties; preferences advisory; no automatic vacancy-offer expiry; 09:00 daily digest without empty emails. Framework/providers and finite retention periods settled in A/N. See setup handover.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "applications",
+  "status": "open",
+  "title": "Allocate plots with priority and integrity",
+  "type": "task"
+}

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: The coordinator maintains reliable household and season records for allocations, from brief.md §Background, §Users and §Rules.\nScope: Exactly 40 plots, households and memberships, coordinator role, prior-season holdings, season dates/timezone; verified manual entry from garden records; coordinator enrollment/invitation initiation and duplicate-household reconciliation. Give unregistered gardeners a plain-language route to contact the coordinator.\nExcludes: Applications, allocation workflows and whole-garden holder map/dashboard.\nAcceptance: Exactly 40 distinct valid plots; members linked to verified households; prior holdings recorded; incomplete/duplicate households flagged for reconciliation. Coordinator independently verifies membership before registering an invited email. Season dates are in March–October and the Feb 1 cutoff uses the configured garden timezone.\nBehaviour: Invalid records rejected without partial writes; contacts accessible only to coordinator; enrollment errors explain how to seek help.\nVerification: Registry validation, persistence and authorization tests with synthetic records; duplicate reconciliation and previously unregistered gardener enrollment scenarios.\nPrerequisites: T-001.\nAssumptions: Coordinator verifies household identity and paper prior holdings, not email equality alone; exact season dates and local timezone supplied before launch.",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Register plots, seasons, households and verified enrollment",
+  "type": "task"
+}

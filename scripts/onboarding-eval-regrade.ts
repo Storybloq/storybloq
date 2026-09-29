@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { join } from "node:path";
 
 import {
-  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, STOP_RULE_VERSION, subshellOnly, WRITE_RULE_VERSION,
+  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, stopRuleFor, subshellOnly, WRITE_RULE_VERSION,
   type EvalTurn, type JudgeLine, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
@@ -183,7 +183,7 @@ function stderrPathOf(failures: readonly string[], runId: string, label: string,
 }
 
 function parseTurn(client: string, raw: string, checkSet: number): EvalTurn {
-  if (client === "claude") return claudeTurn(parseStream(raw).events);
+  if (client === "claude") return claudeTurn(parseStream(raw).events, checkSet);
   const lines: Record<string, unknown>[] = [];
   for (const l of raw.split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* non-JSON line */ } }
   return codexTurn(lines, checkSet);
@@ -220,11 +220,12 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   let packet: { harnessNormalisation?: { stop?: unknown; write?: unknown; checkSet?: unknown } };
   try { packet = JSON.parse(packetText) as typeof packet; } catch { return refuse("grading-packet.json is not JSON"); }
   const versions = packet.harnessNormalisation;
-  if (versions?.stop !== STOP_RULE_VERSION || versions.write !== WRITE_RULE_VERSION) refuse("the run was graded under a stop or write rule version this regrade does not support");
   // The check set: the record's own, never this code's current one. A record before check sets carries none and is 1.
   const recordSet = record.checkSetVersion;
   const checkSet = recordSet === undefined ? 1 : recordSet;
+  // The stop rule is the one the record's check set was graded under, never this code's newest one.
   if (typeof checkSet !== "number" || !KNOWN_CHECK_SETS.includes(checkSet)) refuse(`the run was graded under check set ${String(checkSet)}, which this regrade does not support`);
+  if (versions?.stop !== stopRuleFor(checkSet as number) || versions.write !== WRITE_RULE_VERSION) refuse("the run was graded under a stop or write rule version this regrade does not support");
   if ((recordSet === undefined) !== (versions?.checkSet === undefined) || (recordSet !== undefined && versions?.checkSet !== recordSet)) refuse("the record and packet name different check sets");
   if (input.fixture.checkSet !== checkSet) refuse(`the fixture inputs were read for check set ${input.fixture.checkSet}, the record names ${String(checkSet)}`);
   const cs = checkSet as number;
@@ -338,7 +339,7 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   const originalRecordSha256 = sha256(input.recordBytes);
   const verdict: RunVerdict["verdict"] = hard.length > 0 ? "FAIL" : "PENDING_SEMANTIC";
   const setField = cs >= 2 ? { checkSet: cs } : {};
-  const regradeEvidenceHash = evidenceHash({ originalRecordSha256, packetSha256, manifest, candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, status: verdict === "FAIL" ? "fail" : "pending", ...setField });
+  const regradeEvidenceHash = evidenceHash({ originalRecordSha256, packetSha256, manifest, candidates, stopRuleVersion: stopRuleFor(cs), writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, status: verdict === "FAIL" ? "fail" : "pending", ...setField });
   const reasons = hard.length > 0 ? hard : candidates.length > 0 ? [`${candidates.length} question(s) for the judge`] : ["mechanical checks passed; no judge result yet"];
   return { verdict, reasons, hard, candidates, manifest, originalRecordSha256, packetSha256, regradeEvidenceHash, semanticLines, bound: evidence.bound, ...setField };
 }
@@ -486,7 +487,7 @@ export function runRegrade(recordDir: string, input: RegradeInput, judge: Regrad
     const record = JSON.parse(input.recordBytes.toString("utf-8")) as Record<string, unknown>;
     const base = {
       candidates: g.candidates, regradeEvidenceHash: g.regradeEvidenceHash, originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256,
-      manifest: g.manifest, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, limitation: OPAQUE_LIMIT, regradedAt: now(),
+      manifest: g.manifest, stopRuleVersion: stopRuleFor(g.checkSet ?? 1), writeRuleVersion: WRITE_RULE_VERSION, guarantee: G1, limitation: OPAQUE_LIMIT, regradedAt: now(),
       ...(g.checkSet !== undefined ? { checkSet: g.checkSet } : {}),
     };
     if (judge === null) {
@@ -504,7 +505,7 @@ export function runRegrade(recordDir: string, input: RegradeInput, judge: Regrad
     const blocked = judgeable(g);
     if (blocked !== null) return { ok: false, reason: blocked };
     const v = judgeVerdict(g, input.packetBytes.toString("utf-8"), judge);
-    const judgedHash = evidenceHash({ originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256, manifest: g.manifest, candidates: g.candidates, stopRuleVersion: STOP_RULE_VERSION, writeRuleVersion: WRITE_RULE_VERSION, guarantee: G2, status: "judged", checkSet: g.checkSet });
+    const judgedHash = evidenceHash({ originalRecordSha256: g.originalRecordSha256, packetSha256: g.packetSha256, manifest: g.manifest, candidates: g.candidates, stopRuleVersion: stopRuleFor(g.checkSet ?? 1), writeRuleVersion: WRITE_RULE_VERSION, guarantee: G2, status: "judged", checkSet: g.checkSet });
     const revision: RevisionFile = {
       ...base, guarantee: G2, regradeEvidenceHash: judgedHash, revision: latest.revision.revision + 1, status: "judged", verdict: v.verdict, reasons: v.reasons,
       parent: { revision: latest.revision.revision, regradeJsonSha256: latest.regradeJsonSha256 }, rulings: judge.unparsedRulings,

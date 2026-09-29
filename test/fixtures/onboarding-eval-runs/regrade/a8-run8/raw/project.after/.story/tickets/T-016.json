@@ -1,0 +1,19 @@
+{
+  "blockedBy": [
+    "T-010",
+    "T-011",
+    "T-013",
+    "T-014",
+    "T-015"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Criteria: Owner demonstrates brief.md first-version items 1–4: apply with preferences, coordinator allocation and FCFS waiting list, own allocation/dates, problem submission/resolution. Also demonstrate passwordless email sign-in/invitations/recovery, daily digest, phone readability/plain language/keyboard operation, contact isolation, cutoff/uniqueness/concurrency rules, deploy and backup/recovery evidence.\nArtifact: Working staging app, verification report and volunteer runbook.\nExcludes: Plot map (owner-deferred to T-012 after this checkpoint), payments and tool lending.\nAcceptance: Record explicit owner acceptance against these outcomes; do not complete merely because tests pass.\nVerification: Owner walkthrough plus test evidence and recovery rehearsal; no dependency on T-012.\nStage-1 limitation: Ordinary checkpoint ticket; gate not mechanically enforced. T-012 begins only after this first-version acceptance.\nPrerequisites: T-010, T-011, T-013, T-014, T-015.",
+  "displayId": "T-016",
+  "id": "T-016",
+  "order": 20,
+  "phase": "launch",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "chore"
+}

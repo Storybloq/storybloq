@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-005",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-28",
+  "description": "Outcome: Gardeners report their own plot problems and coordinator sees open reports and resolves them, from brief.md item 4.\nScope: Plain text report tied to authenticated household/current allocation, durable created timestamp and confirmation, coordinator open list/detail/resolve. Persist client submission idempotency key per household/request; preserve original plot association.\nExcludes: Attachments and chat.\nAcceptance: Unauthorized plot reports refused; saved report survives reload; idempotent resolution removes from open list without deleting history. Retry of a timed-out committed submission returns the same report and cannot create a second digest entry; separate deliberate reports allowed.\nBehaviour: Accessible validation, retained input on failure, clear empty/open/resolved states and duplicate-safe submission retry.\nVerification: Submission/resolution end-to-end, household/role permissions, retry-after-commit and historical association tests.\nPrerequisites: T-003, T-005, T-007.\nAssumptions: Reports require current allocation; original association preserved even after later correction.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 20,
+  "phase": "daily-use",
+  "status": "open",
+  "title": "Report plot problems and resolve them",
+  "type": "task"
+}

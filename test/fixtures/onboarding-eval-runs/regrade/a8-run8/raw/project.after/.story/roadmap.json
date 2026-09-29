@@ -1,0 +1,43 @@
+{
+  "blockers": [],
+  "date": "2026-09-28",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate a runnable base, verified household enrollment, passwordless private access and a phone-first prototype.",
+      "id": "foundation",
+      "label": "M1",
+      "name": "Foundation and access"
+    },
+    {
+      "description": "Demonstrate applications, returning-gardener priority, safe round finalization and strict FCFS waiting-list promotion.",
+      "id": "allocation",
+      "label": "M2",
+      "name": "Applications and allocation"
+    },
+    {
+      "description": "Demonstrate gardeners viewing allocations, reporting problems, coordinator resolution and a reliable daily email digest.",
+      "id": "daily-use",
+      "label": "M3",
+      "name": "Daily use"
+    },
+    {
+      "description": "Demonstrate deployment, recovery and all approved v1 outcomes to the owner.",
+      "id": "launch",
+      "label": "M4",
+      "name": "First-version acceptance"
+    },
+    {
+      "description": "After first-version acceptance, demonstrate a coordinator grid of all 40 plots and their holders.",
+      "id": "post-v1-map",
+      "label": "M5",
+      "name": "Post-v1: plot map"
+    }
+  ],
+  "title": "Plotbook"
+}

@@ -729,9 +729,10 @@ interface OffChainCommit {
 /**
  * Only changes inside listed commits belong to this session, and each must be
  * explained: an impact target, or a stamp or marker on an id named in
- * `checked`. Changes in unlisted chain commits are external maintenance. A
- * listed commit off the chain is held to the same rule against its own first
- * parent: listing it claims its changes, whether or not its merge is listed.
+ * `checked`. Issue changes are the exception (ISS-1340): see `unexplained`.
+ * Changes in unlisted chain commits are external maintenance. A listed commit
+ * off the chain is held to the same rule against its own first parent:
+ * listing it claims its changes, whether or not its merge is listed.
  */
 async function attribute(ctx: Ctx, checked: ReadonlySet<string>, offChain: readonly OffChainCommit[]): Promise<string | null> {
   const h = ctx.history;
@@ -754,6 +755,12 @@ async function attribute(ctx: Ctx, checked: ReadonlySet<string>, offChain: reado
 
 function unexplained(ctx: Ctx, checked: ReadonlySet<string>, commit: string, changes: readonly Change[]): string | null {
   for (const c of changes) {
+    // ISS-1340: an issue is not recorded knowledge. Resolving or editing one is
+    // an operational ledger update, like a ticket update, and needs no impact.
+    // Issues stay in the changed families only so an issue cited as pending
+    // evidence is held to its own checks, which run before attribution: it
+    // exists at HEAD, is open, names the record, and passes provenance.
+    if (c.family === "issues") continue;
     const how = ctx.explained.get(`${c.family}:${c.id}`);
     if (how === "whole") continue;
     const stampable = c.family === "capability" || c.family === "term";

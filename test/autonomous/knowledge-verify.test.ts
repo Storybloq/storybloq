@@ -117,8 +117,8 @@ function issue(impact: string, overrides: Record<string, unknown> = {}): string 
 const CAPS = ".story/capabilities.json";
 const TERMS = ".story/glossary.json";
 
-/** A repo with a ledger, then the implementation commit (code only). */
-function setup(): { root: string; base: string; impl: string } {
+/** A repo with a ledger, then the implementation commit (code only). `seed` adds base records. */
+function setup(seed: (root: string) => void = () => {}): { root: string; base: string; impl: string } {
   const root = mkdtempSync(join(tmpdir(), "knowledge-verify-"));
   roots.push(root);
   git(root, ["init", "-q", "-b", "main"]);
@@ -130,6 +130,7 @@ function setup(): { root: string; base: string; impl: string } {
   write(root, TERMS, terms(term()));
   write(root, NOTE_PATH, note("The core module logs to stderr."));
   write(root, `.story/rulings/${R1}.json`, ruling(R1));
+  seed(root);
   const base = commit(root, "base");
   write(root, "src/a.ts", "export const a = 2;\n");
   const impl = commit(root, "implementation");
@@ -787,6 +788,66 @@ describe("rule (d): provenance", () => {
     const m1 = commit(root, "m1");
     const rep = impacts(impl, [m1], [impact("cap-new", "capability-added", "pending"), impact("N-001", "stale-reference", "applied")], ["cap-new"]);
     expect(await refusal(verify(root, review(impl), rep))).toContain("cap-new (marker) is unchanged since the baseline");
+  });
+});
+
+describe("ISS-1340: issue changes in listed maintenance commits", () => {
+  const LEGACY_ISSUE_PATH = ".story/issues/ISS-002.json";
+  function legacyIssue(overrides: Record<string, unknown> = {}): string {
+    const { displayId: _unused, ...rest } = JSON.parse(issue("The old module is misnamed.", { id: "ISS-002", title: "Closeout", ...overrides })) as Record<string, unknown>;
+    return doc(rest);
+  }
+  const RESOLVED = { status: "resolved", resolution: "done", resolvedDate: DATE };
+  const withOpenIssues = (root: string): void => {
+    write(root, ISSUE_PATH, issue("The core module is misnamed."));
+    write(root, LEGACY_ISSUE_PATH, legacyIssue());
+  };
+
+  it("accepts outcome none for a listed commit that resolves a hash-named issue", async () => {
+    const { root, impl } = setup(withOpenIssues);
+    write(root, ISSUE_PATH, issue("The core module is misnamed.", RESOLVED));
+    const m1 = commit(root, "ledger: resolve ISS-001");
+    expect(await verify(root, review(impl), report(impl, { maintenanceCommits: [m1] }))).toMatchObject({ ok: true });
+  });
+
+  it("accepts outcome none for a listed commit that resolves a legacy ISS-NNN.json issue", async () => {
+    const { root, impl } = setup(withOpenIssues);
+    write(root, LEGACY_ISSUE_PATH, legacyIssue(RESOLVED));
+    const m1 = commit(root, "ledger: resolve ISS-002");
+    expect(await verify(root, review(impl), report(impl, { maintenanceCommits: [m1] }))).toMatchObject({ ok: true });
+  });
+
+  it("still refuses an unexplained capability or note change beside the issue resolution, naming it", async () => {
+    const { root, impl } = setup(withOpenIssues);
+    write(root, ISSUE_PATH, issue("The core module is misnamed.", RESOLVED));
+    const m1 = commit(root, "ledger: resolve ISS-001");
+    expect(await verify(root, review(impl), report(impl, { maintenanceCommits: [m1] }))).toMatchObject({ ok: true });
+    write(root, CAPS, caps(cap(), cap({ id: "cap-other", name: "Other" })));
+    const m2 = commit(root, "ledger: also adds an entry");
+    expect(await refusal(verify(root, review(impl), report(impl, { maintenanceCommits: [m1, m2] })))).toContain(`cap-other changed in listed commit ${m2.slice(0, 12)}`);
+
+    const second = setup(withOpenIssues);
+    write(second.root, LEGACY_ISSUE_PATH, legacyIssue(RESOLVED));
+    write(second.root, NOTE_PATH, note("The core module logs through the logger."));
+    const n1 = commit(second.root, "ledger: resolve ISS-002 and edit a note");
+    expect(await refusal(verify(second.root, review(second.impl), report(second.impl, { maintenanceCommits: [n1] })))).toContain(
+      `n-0000000000000001 changed in listed commit ${n1.slice(0, 12)}`,
+    );
+  });
+
+  it("keeps every pending-evidence check when the same commit also resolves another issue", async () => {
+    const pendingOn = (evidence: string, overrides: Record<string, unknown>, issueId = "ISS-001") => {
+      const fx = setup((root) => write(root, LEGACY_ISSUE_PATH, legacyIssue()));
+      write(fx.root, LEGACY_ISSUE_PATH, legacyIssue(RESOLVED));
+      if (evidence !== "") write(fx.root, ISSUE_PATH, issue(evidence, overrides));
+      const m1 = commit(fx.root, "ledger: closeout plus a follow-up");
+      const rep = impacts(fx.impl, [m1], [impact("N-001", "stale-reference", "pending", { issueId })], ["N-001"]);
+      return verify(fx.root, review(fx.impl), rep);
+    };
+    expect(await pendingOn("N-001 is stale after T-001", {})).toMatchObject({ ok: true });
+    expect(await refusal(pendingOn("N-001 is stale after T-001", RESOLVED))).toContain("issue ISS-001 is resolved");
+    expect(await refusal(pendingOn("", {}))).toContain("issue ISS-001 is not in the ledger at HEAD");
+    expect(await refusal(pendingOn("Something else entirely", {}))).toContain("issue ISS-001 must name N-001");
   });
 });
 

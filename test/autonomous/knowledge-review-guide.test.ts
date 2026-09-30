@@ -304,6 +304,34 @@ describe("T-527 guide: FINALIZE -> KNOWLEDGE_REVIEW -> COMPLETE -> HANDOVER", ()
   });
 });
 
+describe("ISS-1340 guide: an issue closeout in a listed maintenance commit", () => {
+  it("accepts outcome none, advances past KNOWLEDGE_REVIEW through COMPLETE, and keeps the maintenance commit", async () => {
+    const fx = await setupProject();
+    const { sessionId, dir } = finalizeSession(fx);
+    expect((await commitDone(fx, sessionId)).isError).toBe(false);
+    expect(readState(dir).state).toBe("KNOWLEDGE_REVIEW");
+
+    // The session's own ledger closeout edits the issue, in a ledger-only commit it lists.
+    await handleIssueUpdate(fx.issueId, { resolution: "renamed src/old.ts to src/new.ts" }, "json", fx.root);
+    const m1 = commit(fx.root, "ledger: issue closeout");
+    const accepted = await report(fx.root, sessionId, { completedAction: "knowledge_reviewed", knowledgeImpact: noneImpact(fx, [m1]) });
+    expect(accepted.isError).toBe(false);
+    expect(accepted.text).toContain(`Knowledge review accepted for **${fx.displayId}**`);
+    const done = readState(dir);
+    expect(done.state).not.toBe("KNOWLEDGE_REVIEW");
+    expect(done.knowledgeReview?.status).toBe("accepted");
+    expect(done.knowledgeImpacts).toHaveLength(1);
+    expect(done.knowledgeImpacts[0]).toMatchObject({ itemId: fx.issueId, implementationCommit: fx.impl, headAtAcceptance: m1, maintenanceCommits: [m1] });
+    const transitions = readFileSync(join(dir, "events.log"), "utf-8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as { type?: string; data?: { from?: string; to?: string } })
+      .filter((e) => e.type === "transition")
+      .map((e) => `${e.data?.from}->${e.data?.to}`);
+    expect(transitions).toContain("KNOWLEDGE_REVIEW->COMPLETE");
+  });
+});
+
 describe("T-527 guide: a FINALIZE state that already committed", () => {
   it("routes a pending review to KNOWLEDGE_REVIEW, and a pre-1.16 state (no field) to COMPLETE", async () => {
     const fx = await setupProject();

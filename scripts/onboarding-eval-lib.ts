@@ -3186,3 +3186,41 @@ export function runVerdict(
   }
   return reasons.length > 0 ? { verdict: "FAIL", reasons } : { verdict: "PASS", reasons: [] };
 }
+
+/** ISS-1348: one ruling as the judge runner's output schema carries it: the line by index, its text echoed. */
+export interface JudgeRuling {
+  readonly index: number;
+  readonly echo: string;
+  readonly verdict: "pass" | "fail";
+  readonly reason: string;
+  readonly citations: readonly number[];
+}
+
+export type JudgeMapping =
+  | { readonly kind: "ok"; readonly result: JudgeResult }
+  | { readonly kind: "schema-mapping"; readonly reason: string };
+
+/**
+ * The judge runner's response mapped onto the record's canonical lines, by index, never by text. A line ruled once
+ * with its text echoed exactly keeps the ruling, citations whole (runVerdict checks them against `bound`); a line
+ * ruled more than once, or whose echo differs, becomes a mapping-error fail; an unruled line emits nothing, so
+ * runVerdict reports it. Any index outside the lines makes the whole response untrustworthy. The packet hash is
+ * of the bytes as read; nothing from the response is used for it.
+ */
+export function judgeFromResponse(
+  record: { readonly semanticLines: readonly string[] }, packetBytes: Buffer, rulings: readonly JudgeRuling[], observedModel: string,
+): JudgeMapping {
+  const lines = record.semanticLines;
+  const outside = rulings.find((r) => !Number.isInteger(r.index) || r.index < 0 || r.index >= lines.length);
+  if (outside) return { kind: "schema-mapping", reason: `the judge ruled on index ${outside.index}, outside 0..${lines.length - 1}` };
+  const out: JudgeLine[] = [];
+  lines.forEach((line, i) => {
+    const mine = rulings.filter((r) => r.index === i);
+    if (mine.length === 0) return;
+    if (mine.length > 1) { out.push({ line, verdict: "fail", reason: `mapping error: index ${i} ruled ${mine.length} times`, citations: [] }); return; }
+    const r = mine[0]!;
+    if (r.echo !== line) { out.push({ line, verdict: "fail", reason: `mapping error: the judge's echo differs from line ${i}`, citations: [] }); return; }
+    out.push({ line, verdict: r.verdict, reason: r.reason, citations: [...r.citations] });
+  });
+  return { kind: "ok", result: { packetSha256: sha256(packetBytes), observedModel, lines: out } };
+}

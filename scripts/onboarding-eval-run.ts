@@ -300,7 +300,7 @@ interface TurnResult {
 }
 
 /** The observed models from this thread's rollout file under the scratch CODEX_HOME. */
-function rolloutModels(codexHome: string, threadId: string): string[] {
+export function rolloutModels(codexHome: string, threadId: string): string[] {
   return codexRolloutModels(rolloutLines(codexHome, threadId));
 }
 
@@ -581,6 +581,20 @@ export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly 
 }
 
 /**
+ * Why `packetText` is not this record's grading packet, or null when it is: the hash the run recorded, the run id and
+ * the semantic lines must all match. Finalize and the judge runner (ISS-1348) share it.
+ */
+export function packetMismatch(record: Readonly<Record<string, unknown>>, packetText: string): string | null {
+  if (typeof record.packetSha256 !== "string" || sha256(packetText) !== record.packetSha256) return "the grading packet on disk does not match the hash this run recorded";
+  let packet: { runId?: unknown; semanticLines?: unknown };
+  try { packet = JSON.parse(packetText) as typeof packet; } catch { return "the grading packet is not JSON"; }
+  if (packet.runId !== record.runId) return `the grading packet is for run ${String(packet.runId)}, not ${String(record.runId)}`;
+  const lines = record.semanticLines;
+  if (!Array.isArray(lines) || JSON.stringify(lines) !== JSON.stringify(packet.semanticLines)) return "the packet's semantic lines differ from the record's";
+  return null;
+}
+
+/**
  * Bind a judge result to a finished run. Refused, with nothing written, when
  * the packet on disk is not the one the run recorded (hash or run id differs)
  * or its semantic lines differ from the record's. PASS only when the
@@ -590,12 +604,9 @@ export function fixtureEvidence(root: string, capBytes = 64 * 1024): { readonly 
 export function finalizeRecord(
   record: Readonly<Record<string, unknown>>, packetText: string, judge: JudgeResult,
 ): { readonly ok: true; readonly verdict: RunVerdict; readonly record: Record<string, unknown> } | { readonly ok: false; readonly reason: string } {
-  if (typeof record.packetSha256 !== "string" || sha256(packetText) !== record.packetSha256) return { ok: false, reason: "the grading packet on disk does not match the hash this run recorded" };
-  let packet: { runId?: unknown; semanticLines?: unknown };
-  try { packet = JSON.parse(packetText) as typeof packet; } catch { return { ok: false, reason: "the grading packet is not JSON" }; }
-  if (packet.runId !== record.runId) return { ok: false, reason: `the grading packet is for run ${String(packet.runId)}, not ${String(record.runId)}` };
-  const lines = record.semanticLines;
-  if (!Array.isArray(lines) || JSON.stringify(lines) !== JSON.stringify(packet.semanticLines)) return { ok: false, reason: "the packet's semantic lines differ from the record's" };
+  const mismatch = packetMismatch(record, packetText);
+  if (mismatch !== null) return { ok: false, reason: mismatch };
+  const lines = record.semanticLines as string[];
   const failures = Array.isArray(record.failures) ? (record.failures as string[]) : ["the record has no failures list"];
   const bound = (record.bound ?? {}) as Record<string, number[]>;
   const verdict = runVerdict(failures, packetText, judge, lines as string[], bound);

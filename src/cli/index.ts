@@ -147,7 +147,7 @@ async function runCli(): Promise<void> {
       // other error class, including plain Errors from .check(), keeps its path.
       const arrayOptionError = err ? takeArrayOptionError(msg ?? "") : null;
       if (arrayOptionError) {
-        writeOutput(formatError(arrayOptionError.code, arrayOptionError.message, errorFormat));
+        writeOutput(formatError(arrayOptionError.code, arrayOptionError.message, errorFormat), errorFormat);
         process.exitCode = ExitCode.USER_ERROR;
         throw new HandledError();
       }
@@ -185,10 +185,10 @@ async function runCli(): Promise<void> {
       const usage = buildUsageInfo(helpText, failUsage.getDescriptions(), cli as unknown as FailUsageOptionsSource);
       if (errorFormat === "json") {
         const envelope = errorEnvelope("invalid_input", msg ?? "Unknown error");
-        writeOutput(JSON.stringify({ ...envelope, error: { ...envelope.error, usage } }, null, 2));
+        writeOutput(JSON.stringify({ ...envelope, error: { ...envelope.error, usage } }, null, 2), "json");
       } else {
         const { text } = truncateHelpText(helpText, FAIL_USAGE_HELP_BYTE_BUDGET);
-        writeOutput([formatError("invalid_input", msg ?? "Unknown error", errorFormat), "", text].join("\n"));
+        writeOutput([formatError("invalid_input", msg ?? "Unknown error", errorFormat), "", text].join("\n"), errorFormat);
       }
       process.exitCode = ExitCode.USER_ERROR;
       throw new HandledError();
@@ -209,7 +209,7 @@ async function runCli(): Promise<void> {
     .middleware((argv) => {
       const problem = checkRawMode(argv as { raw?: unknown; format?: unknown });
       if (problem !== true) {
-        writeOutput(formatError("invalid_input", problem, errorFormat));
+        writeOutput(formatError("invalid_input", problem, errorFormat), errorFormat);
         process.exitCode = ExitCode.USER_ERROR;
         throw new HandledError();
       }
@@ -271,7 +271,7 @@ async function runCli(): Promise<void> {
   function handleUnexpectedError(err: unknown): void {
     if (err instanceof HandledError) return;
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, errorFormat));
+    writeOutput(formatError("io_error", message, errorFormat), errorFormat);
     process.exitCode = ExitCode.USER_ERROR;
   }
 

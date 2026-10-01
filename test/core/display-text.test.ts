@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeDisplayText, sanitizeDisplayPath } from "../../src/core/display-text.js";
+import { sanitizeDisplayText, sanitizeDisplayPath, sanitizeTerminalDocument } from "../../src/core/display-text.js";
 import { escapeMarkdownDocumentStrict } from "../../src/core/output-formatter.js";
 
 /**
@@ -290,5 +290,63 @@ describe("encode first, neutralize Markdown second", () => {
 
     expect(forward(realEsc)).not.toBe(forward(literal));
     expect(reversed(realEsc)).not.toBe(reversed(literal));
+  });
+});
+
+/**
+ * ISS-1281: a whole Markdown document on its way to a terminal. Same class as
+ * the label sanitizer, minus four code points that are not terminal controls:
+ * LF and TAB (document structure), U+200D and U+FE0F (emoji composition). No
+ * cap, and CRLF is a line end, not a carriage return.
+ */
+describe("sanitizeTerminalDocument (ISS-1281)", () => {
+  const KEPT = new Set([0x0a, 0x09, 0x200d, 0xfe0f]);
+
+  it("U1: replaces each control with exactly one ?, keeps the four exemptions, normalises CRLF, never caps", () => {
+    const blocked: Array<[string, string]> = [
+      ["ESC", "\u001b"], ["BEL", "\u0007"], ["NUL", "\u0000"], ["DEL", "\u007f"], ["C1 CSI", "\u009b"],
+      ["RLO", "\u202e"], ["LS", "\u2028"], ["ZWSP", "\u200b"], ["SHY", "\u00ad"], ["VS15", "\ufe0e"],
+      ["lone high surrogate", "\ud800"], ["lone low surrogate", "\udc00"],
+      ["tag (astral)", "\u{E0001}"], ["VS17 (astral)", "\u{E0100}"],
+    ];
+    for (const [label, ch] of blocked) {
+      expect(sanitizeTerminalDocument(`a${ch}b`), label).toBe("a?b");
+    }
+    expect(sanitizeTerminalDocument("a\nb\tc\u200dd\ufe0fe")).toBe("a\nb\tc\u200dd\ufe0fe");
+    expect(sanitizeTerminalDocument("a\r\nb")).toBe("a\nb");
+    expect(sanitizeTerminalDocument("a\rb")).toBe("a?b");
+    expect(sanitizeTerminalDocument("\ud83d\ude00")).toBe("\u{1F600}");
+    const long = Array.from({ length: 10_000 }, (_, i) => (i % 80 === 79 ? "\n" : "x")).join("");
+    expect(sanitizeTerminalDocument(long)).toBe(long);
+  });
+
+  it("U2: for every code point, kept exactly when outside the label class or one of the four exemptions", () => {
+    let mismatches = 0;
+    const first: string[] = [];
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      const ch = String.fromCodePoint(cp);
+      const inClass = sanitizeDisplayText(ch) !== ch;
+      const expected = inClass && !KEPT.has(cp) ? "?" : ch;
+      if (sanitizeTerminalDocument(ch) !== expected) {
+        mismatches++;
+        if (first.length < 5) first.push(cp.toString(16));
+      }
+    }
+    expect(first).toEqual([]);
+    expect(mismatches).toBe(0);
+  });
+
+  it("U3: ZWJ and VS16 emoji are byte-preserved, and a control beside one is the only thing replaced", () => {
+    const emoji = [
+      "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}",
+      "\u{1F469}\u200d\u{1F4BB}",
+      "\u26a0\ufe0f",
+      "\u2764\ufe0f",
+    ];
+    for (const e of emoji) {
+      expect(sanitizeTerminalDocument(e)).toBe(e);
+      expect(sanitizeTerminalDocument(`\u001b${e}\u001b`)).toBe(`?${e}?`);
+      expect(sanitizeTerminalDocument(`\u009b${e}\u202e`)).toBe(`?${e}?`);
+    }
   });
 });

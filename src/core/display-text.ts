@@ -144,6 +144,29 @@ export function sanitizeDisplayText(value: string, maxLength = MAX_DISPLAY_LENGT
 }
 
 /**
+ * The members of the class a whole DOCUMENT keeps (ISS-1281). LF and TAB are
+ * its structure; U+200D ZERO WIDTH JOINER and U+FE0F VARIATION SELECTOR-16
+ * compose emoji. None of the four drives a terminal, so keeping them leaves the
+ * injection class closed.
+ */
+const DOCUMENT_KEPT = new Set(["\n", "\t", "\u200d", "\ufe0f"]);
+
+/**
+ * Sanitize a whole Markdown document on its way to a terminal (ISS-1281).
+ *
+ * Not `sanitizeDisplayText`: that caps at a label width and folds LF and TAB,
+ * so over a document it would truncate and flatten everything. This uses the
+ * same class through the same regex, minus `DOCUMENT_KEPT`, so the two cannot
+ * drift, and it never caps. CRLF is a line end, normalised first; a lone CR
+ * overwrites a line and becomes `?` like any other control.
+ */
+export function sanitizeTerminalDocument(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(CONTROL_CHARACTERS, (ch) => (DOCUMENT_KEPT.has(ch) ? ch : "?"));
+}
+
+/**
  * Sanitize a path the operator is expected to ACT on.
  *
  * Bounded by `PATH_MAX` rather than by a label width, so a real address is

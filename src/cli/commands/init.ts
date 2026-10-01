@@ -69,21 +69,21 @@ export function registerInitCommand(yargs: Argv): Argv {
           type: argv.type as string | undefined,
           language: argv.language as string | undefined,
         });
-        writeOutput(formatInitResult(result, format));
+        writeOutput(formatInitResult(result, format), format);
         process.exitCode = ExitCode.OK;
       } catch (err: unknown) {
         if (err instanceof ProjectLoaderError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         if (err instanceof CliValidationError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        writeOutput(formatError("io_error", message, format));
+        writeOutput(formatError("io_error", message, format), format);
         process.exitCode = ExitCode.USER_ERROR;
       }
     },
@@ -98,34 +98,34 @@ async function handleNodeInit(
   try {
     const orchRoot = discoverProjectRoot();
     if (!orchRoot) {
-      writeOutput(formatError("not_found", "No .story/ project found. Run from an orchestrator project.", format));
+      writeOutput(formatError("not_found", "No .story/ project found. Run from an orchestrator project.", format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
 
     const configResult = tryReadFile(join(orchRoot, ".story", "config.json"));
     if (!configResult.ok) {
-      writeOutput(formatError("io_error", "Cannot read orchestrator config.", format));
+      writeOutput(formatError("io_error", "Cannot read orchestrator config.", format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
 
     let config: Record<string, unknown>;
     try { config = JSON.parse(configResult.content) as Record<string, unknown>; } catch {
-      writeOutput(formatError("validation_failed", "Orchestrator config.json is not valid JSON.", format));
+      writeOutput(formatError("validation_failed", "Orchestrator config.json is not valid JSON.", format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
 
     if (config.type !== "orchestrator") {
-      writeOutput(formatError("not_orchestrator", "--node is only available on orchestrator projects.", format));
+      writeOutput(formatError("not_orchestrator", "--node is only available on orchestrator projects.", format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
 
     const rawNodes = config.nodes;
     if (!rawNodes || typeof rawNodes !== "object" || Array.isArray(rawNodes) || !(nodeName in (rawNodes as Record<string, unknown>))) {
-      writeOutput(formatError("node_not_found", `Node "${nodeName}" not found in orchestrator config.`, format));
+      writeOutput(formatError("node_not_found", `Node "${nodeName}" not found in orchestrator config.`, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
@@ -133,7 +133,7 @@ async function handleNodeInit(
     const nodeConf = (rawNodes as Record<string, Record<string, unknown>>)[nodeName]!;
     const rawPath = typeof nodeConf.path === "string" ? nodeConf.path : "";
     if (!rawPath) {
-      writeOutput(formatError("node_not_found", `Node "${nodeName}" has no path configured.`, format));
+      writeOutput(formatError("node_not_found", `Node "${nodeName}" has no path configured.`, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
@@ -142,7 +142,7 @@ async function handleNodeInit(
     let targetPath: string;
     if (resolved.resolved) {
       if (!(argv.force as boolean | undefined)) {
-        writeOutput(formatError("already_exists", `Node "${nodeName}" already has .story/. Use --force to reinitialize.`, format));
+        writeOutput(formatError("already_exists", `Node "${nodeName}" already has .story/. Use --force to reinitialize.`, format), format);
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
@@ -150,7 +150,7 @@ async function handleNodeInit(
     } else if (resolved.reason === "no .story/config.json found" && resolved.absolutePath) {
       targetPath = resolved.absolutePath;
     } else {
-      writeOutput(formatError("io_error", `Cannot resolve path for node "${nodeName}": ${resolved.reason}`, format));
+      writeOutput(formatError("io_error", `Cannot resolve path for node "${nodeName}": ${resolved.reason}`, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
@@ -163,16 +163,16 @@ async function handleNodeInit(
       language: argv.language as string | undefined,
     });
 
-    writeOutput(formatInitResult(result, format));
+    writeOutput(formatInitResult(result, format), format);
     process.exitCode = ExitCode.OK;
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }

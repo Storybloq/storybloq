@@ -113,16 +113,16 @@ async function runBus<T>(
 ): Promise<void> {
   const root = discoverProjectRoot();
   if (!root) {
-    writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format));
+    writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
   try {
     const result = await action(root);
-    writeOutput(formatData(result, format, markdown));
+    writeOutput(formatData(result, format, markdown), format);
     process.exitCode = unhealthy?.(result) ? ExitCode.VALIDATION_ERROR : ExitCode.OK;
   } catch (err) {
-    writeOutput(formatFailure(err, format));
+    writeOutput(formatFailure(err, format), format);
     // T-428: runtime_lost is a validation-class failure (like corrupt): the
     // runtime was deleted from this checkout, not a plain user/usage error.
     process.exitCode = err instanceof BusError && (err.code === "corrupt" || err.code === "runtime_lost")
@@ -140,7 +140,7 @@ async function runBus<T>(
 async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: number, args: IdentityArgs): Promise<void> {
   const root = discoverProjectRoot();
   if (!root) {
-    writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format));
+    writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
@@ -150,7 +150,7 @@ async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: numb
     writeOutput(formatFailure(
       new BusError("invalid_input", `--timeout must be an integer between ${WAIT_TIMEOUT_MIN_SECONDS} and ${WAIT_TIMEOUT_MAX_SECONDS} seconds.`),
       format,
-    ));
+    ), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
@@ -158,7 +158,7 @@ async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: numb
   try {
     owned = await resolveOwnedEndpoint(root, args);
   } catch (err) {
-    writeOutput(formatFailure(err, format));
+    writeOutput(formatFailure(err, format), format);
     process.exitCode = err instanceof BusError && (err.code === "corrupt" || err.code === "runtime_lost")
       ? ExitCode.VALIDATION_ERROR
       : ExitCode.USER_ERROR;
@@ -168,7 +168,7 @@ async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: numb
     writeOutput(formatFailure(
       new BusError("invalid_input", "`bus poll --wait` requires a v2 Bus runtime. Run `storybloq bus setup` to migrate, then retry."),
       format,
-    ));
+    ), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
@@ -183,11 +183,11 @@ async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: numb
     });
   } catch (err) {
     if (err instanceof WaiterActiveError) {
-      writeOutput(formatFailure(new BusError("conflict", err.message), format));
+      writeOutput(formatFailure(new BusError("conflict", err.message), format), format);
       process.exitCode = ExitCode.WAITER_ACTIVE;
       return;
     }
-    writeOutput(formatFailure(err, format));
+    writeOutput(formatFailure(err, format), format);
     process.exitCode = err instanceof BusError && (err.code === "corrupt" || err.code === "runtime_lost")
       ? ExitCode.VALIDATION_ERROR
       : ExitCode.USER_ERROR;
@@ -195,17 +195,17 @@ async function runBusWait(format: BusFormat, timeoutSeconds: number, limit: numb
   }
   switch (outcome.kind) {
     case "message":
-      writeOutput(formatData(outcome.result, format, renderPoll));
+      writeOutput(formatData(outcome.result, format, renderPoll), format);
       process.exitCode = ExitCode.OK;
       return;
     case "timeout":
       // SUCCESS-shaped empty envelope carrying the final authoritative poll's REAL
       // endpointId/cursor (not a fabricated 0); the exit code (4) is the timeout signal.
-      writeOutput(formatData(outcome.result, format, renderPoll));
+      writeOutput(formatData(outcome.result, format, renderPoll), format);
       process.exitCode = ExitCode.TIMEOUT;
       return;
     case "error":
-      writeOutput(formatFailure(outcome.err, format));
+      writeOutput(formatFailure(outcome.err, format), format);
       process.exitCode = outcome.errorClass === "validation" ? ExitCode.VALIDATION_ERROR : ExitCode.USER_ERROR;
       return;
     case "signal":
@@ -1576,7 +1576,7 @@ export function registerBusCommand(yargs: Argv): Argv {
           async (argv) => {
             const format = formatValue(argv.format);
             if (argv.force !== true) {
-              writeOutput(formatFailure(new BusError("invalid_input", "Endpoint retirement requires --force."), format));
+              writeOutput(formatFailure(new BusError("invalid_input", "Endpoint retirement requires --force."), format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -1893,7 +1893,7 @@ export function registerBusCommand(yargs: Argv): Argv {
           const format = formatValue(argv.format);
           const root = discoverProjectRoot();
           if (!root) {
-            writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format));
+            writeOutput(formatFailure(new BusError("not_found", "No .story/ project found."), format), format);
             process.exitCode = ExitCode.USER_ERROR;
             return;
           }
@@ -1904,7 +1904,7 @@ export function registerBusCommand(yargs: Argv): Argv {
             // registry, or the legacy v1 registry plus finding-extracted UUIDs)
             // so a v1 runtime's endpoint UUIDs are redacted rather than leaked.
             const endpointIds = await doctorEndpointRedactionSet(root, result);
-            writeOutput(formatData(result, format, (value) => renderDoctorMarkdown(value, endpointIds)));
+            writeOutput(formatData(result, format, (value) => renderDoctorMarkdown(value, endpointIds)), format);
             process.exitCode = result.healthy ? ExitCode.OK : ExitCode.VALIDATION_ERROR;
           } catch (err) {
             // A disabled project still deserves readiness guidance, not a bare error.
@@ -1912,11 +1912,11 @@ export function registerBusCommand(yargs: Argv): Argv {
               // T-428: surface the config-revert diagnostic when this checkout
               // carries evidence of an instance it stood up but the feature is off.
               const note = await busConfigRevertNote(root).catch(() => null);
-              writeOutput(formatData(disabledDoctorResult(note), format, renderDoctorDisabledMarkdown));
+              writeOutput(formatData(disabledDoctorResult(note), format, renderDoctorDisabledMarkdown), format);
               process.exitCode = ExitCode.OK;
               return;
             }
-            writeOutput(formatFailure(err, format));
+            writeOutput(formatFailure(err, format), format);
             process.exitCode = err instanceof BusError && err.code === "corrupt"
               ? ExitCode.VALIDATION_ERROR
               : ExitCode.USER_ERROR;
@@ -1930,7 +1930,7 @@ export function registerBusCommand(yargs: Argv): Argv {
         async (argv) => {
           const format = formatValue(argv.format);
           if (argv.ship !== true) {
-            writeOutput(formatFailure(new BusError("invalid_input", "Only `storybloq bus check --ship` is supported."), format));
+            writeOutput(formatFailure(new BusError("invalid_input", "Only `storybloq bus check --ship` is supported."), format), format);
             process.exitCode = ExitCode.USER_ERROR;
             return;
           }

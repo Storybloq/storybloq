@@ -9,7 +9,7 @@
 import type { Argv } from "yargs";
 import type { CodexReviewKind } from "./commands/codex-review.js";
 import type { SetupClient } from "./commands/setup-skill.js";
-import { runReadCommand, runReadCommandWithRoot, runDeleteCommand, writeOutput, applyHandlerWarnings } from "./run.js";
+import { runReadCommand, runReadCommandWithRoot, runDeleteCommand, writeOutput, outputFormatOf, applyHandlerWarnings } from "./run.js";
 import {
   addFormatOption,
   parseOutputFormat,
@@ -300,12 +300,12 @@ export function registerProjectionCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const result = await (await import("./commands/projection.js")).handleProjectionWrite(format, root);
-            writeOutput(result.output);
+            writeOutput(result.output, format);
             process.exitCode = result.exitCode ?? ExitCode.OK;
           },
         )
@@ -335,7 +335,7 @@ export function registerValidateCommand(yargs: Argv): Argv {
       ).discoverProjectRoot();
       const root = discovered ?? await discoverIntegrityRoot();
       if (!root) {
-        writeOutput(formatError("not_found", "No .story/ project found.", format));
+        writeOutput(formatError("not_found", "No .story/ project found.", format), format);
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
@@ -345,7 +345,7 @@ export function registerValidateCommand(yargs: Argv): Argv {
         includeAuxiliary: integrityOnly,
       });
       if (integrityOnly || !integrity.valid) {
-        writeOutput(formatLedgerIntegrity(integrity, format));
+        writeOutput(formatLedgerIntegrity(integrity, format), format);
         process.exitCode = integrity.valid ? ExitCode.OK : ExitCode.VALIDATION_ERROR;
         return;
       }
@@ -376,12 +376,12 @@ export function registerRepairCommand(yargs: Argv): Argv {
         await withProjectLock(root, { strict: false }, async ({ state, warnings }) => {
           const result = computeRepairs(state, warnings, { canonicalizeRefs });
           if (result.error) {
-            writeOutput(result.error);
+            writeOutput(result.error, "md");
             process.exitCode = ExitCode.USER_ERROR;
             return;
           }
           if (result.fixes.length === 0) {
-            writeOutput("No stale references found. Project is clean.");
+            writeOutput("No stale references found. Project is clean.", "md");
             return;
           }
           await applyRepairPatches(root, result.patches);
@@ -389,7 +389,7 @@ export function registerRepairCommand(yargs: Argv): Argv {
           for (const fix of result.fixes) {
             lines.push(`- ${fix.entity}.${fix.field}: ${fix.description}`);
           }
-          writeOutput(lines.join("\n"));
+          writeOutput(lines.join("\n"), "md");
         });
       }
     },
@@ -417,7 +417,7 @@ export function registerReconcileCommand(yargs: Argv): Argv {
         rebalanceRanks: argv["rebalance-ranks"] as boolean,
         format: (argv.format as "md" | "json") ?? "md",
       });
-      writeOutput(result.output);
+      writeOutput(result.output, outputFormatOf(argv.format));
       if (result.exitCode !== undefined && result.exitCode !== 0) {
         process.exitCode = result.exitCode;
       }
@@ -441,10 +441,10 @@ export function registerConflictsCommand(yargs: Argv): Argv {
           (y2) => addFormatOption(y2, 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
           async (argv) => {
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
             const { handleConflictsList } = await import("./commands/conflicts.js");
             const result = await handleConflictsList(root, (argv.format as "md" | "json") ?? "md");
-            writeOutput(result.output);
+            writeOutput(result.output, outputFormatOf(argv.format));
           },
         )
         .command(
@@ -455,10 +455,10 @@ export function registerConflictsCommand(yargs: Argv): Argv {
               .positional("id", { type: "string", demandOption: true, describe: "Entity ID" }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
           async (argv) => {
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+            if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
             const { handleConflictsShow } = await import("./commands/conflicts.js");
             const result = await handleConflictsShow(argv.id as string, root, (argv.format as "md" | "json") ?? "md");
-            writeOutput(result.output);
+            writeOutput(result.output, outputFormatOf(argv.format));
             if (result.exitCode) process.exitCode = result.exitCode;
           },
         )
@@ -489,7 +489,7 @@ export function registerResolveCommand(yargs: Argv): Argv {
       }), 'an {"ok", "data"} object (or {"ok", "error"} on failure)'),
     async (argv) => {
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-      if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+      if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
       try {
         const { handleResolve } = await import("./commands/conflicts.js");
         let parsedValue: unknown;
@@ -508,7 +508,7 @@ export function registerResolveCommand(yargs: Argv): Argv {
           keep: argv.keep,
           format: (argv.format as "md" | "json") ?? "md",
         });
-        writeOutput(result.output);
+        writeOutput(result.output, outputFormatOf(argv.format));
         if (result.exitCode) process.exitCode = result.exitCode;
       } catch (err: unknown) {
         // ISS-910: same rule the gc and team-reserve adapters already follow
@@ -518,6 +518,7 @@ export function registerResolveCommand(yargs: Argv): Argv {
         const message = err instanceof Error ? err.message : String(err);
         writeOutput(
           argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message,
+          outputFormatOf(argv.format),
         );
         process.exitCode = ExitCode.USER_ERROR;
       }
@@ -553,7 +554,7 @@ export function registerGcCommand(yargs: Argv): Argv {
     async (argv) => {
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
       if (!root) {
-        writeOutput(noProjectFoundOutput(argv.format, "ok"));
+        writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format));
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
@@ -566,7 +567,7 @@ export function registerGcCommand(yargs: Argv): Argv {
           retentionDays: argv["retention-days"] as number,
           format: gcFormat,
         });
-        writeOutput(result.output);
+        writeOutput(result.output, gcFormat);
         if (result.exitCode) process.exitCode = result.exitCode;
       } catch (err: unknown) {
         // ISS-805 R3: a post-validation handler failure must still honor
@@ -576,6 +577,7 @@ export function registerGcCommand(yargs: Argv): Argv {
           gcFormat === "json"
             ? JSON.stringify({ ok: false, error: message }, null, 2)
             : message,
+          gcFormat,
         );
         process.exitCode = ExitCode.USER_ERROR;
       }
@@ -644,7 +646,7 @@ export function registerTeamCommand(yargs: Argv): Argv {
             ci: argv.ci as boolean,
             format: (argv.format as "md" | "json") ?? "md",
           });
-          writeOutput(result.output);
+          writeOutput(result.output, outputFormatOf(argv.format));
           if (result.exitCode !== undefined && result.exitCode !== 0) {
             process.exitCode = result.exitCode;
           }
@@ -666,15 +668,15 @@ export function registerTeamCommand(yargs: Argv): Argv {
           const countError = validateReserveCount(argv.count as number);
           if (countError) {
             const res = formatReserveCountError(countError, reserveFormat);
-            writeOutput(res.output);
+            writeOutput(res.output, reserveFormat);
             if (res.exitCode) process.exitCode = res.exitCode;
             return;
           }
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
           try {
             const result = await handleReserve(root, argv.type as "tickets" | "issues" | "notes" | "lessons", argv.count as number, reserveFormat);
-            writeOutput(result.output);
+            writeOutput(result.output, reserveFormat);
             if (result.exitCode) process.exitCode = result.exitCode;
           } catch (err: unknown) {
             // ISS-805 R3: a post-validation handler failure must still honor
@@ -684,6 +686,7 @@ export function registerTeamCommand(yargs: Argv): Argv {
               reserveFormat === "json"
                 ? JSON.stringify({ ok: false, error: message }, null, 2)
                 : message,
+              reserveFormat,
             );
             process.exitCode = ExitCode.USER_ERROR;
           }
@@ -698,14 +701,14 @@ export function registerTeamCommand(yargs: Argv): Argv {
             .option("id-allocator", { type: "string", choices: ["local", "git-refs"], describe: "ID allocation strategy: local (default) needs no remote but divergent branches can mint duplicate display ids (run `storybloq reconcile` after merges); git-refs reserves ids via remote refs, preventing collisions at the source" }), "its own top-level result object with no envelope"),
         async (argv) => {
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
           const { handleTeamInit } = await import("./commands/team-init.js");
           const result = await handleTeamInit(root, {
             claimStalenessHours: argv["claim-staleness-hours"] as number | undefined,
             idAllocator: argv["id-allocator"] as "local" | "git-refs" | undefined,
             format: (argv.format as "md" | "json") ?? "md",
           });
-          writeOutput(result.output);
+          writeOutput(result.output, outputFormatOf(argv.format));
           if (result.exitCode !== 0) process.exitCode = result.exitCode;
         },
       )
@@ -715,10 +718,10 @@ export function registerTeamCommand(yargs: Argv): Argv {
         (y2) => addFormatOption(y2, "its own top-level result object with no envelope"),
         async (argv) => {
           const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok")); process.exitCode = ExitCode.USER_ERROR; return; }
+          if (!root) { writeOutput(noProjectFoundOutput(argv.format, "ok"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
           const { handleTeamSetup } = await import("./commands/team-setup.js");
           const result = await handleTeamSetup(root, { format: (argv.format as "md" | "json") ?? "md" });
-          writeOutput(result.output);
+          writeOutput(result.output, outputFormatOf(argv.format));
           if (result.exitCode !== 0) process.exitCode = result.exitCode;
         },
       )
@@ -733,10 +736,10 @@ export function registerTeamCommand(yargs: Argv): Argv {
               (y2) => addFormatOption(y2),
               async (argv) => {
                 const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope")); process.exitCode = ExitCode.USER_ERROR; return; }
+                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
                 const { handleTeamConfigShow } = await import("./commands/team-config.js");
                 const result = handleTeamConfigShow(root, parseOutputFormat(argv.format));
-                writeOutput(result.output);
+                writeOutput(result.output, outputFormatOf(argv.format));
               },
             )
             .command(
@@ -750,10 +753,10 @@ export function registerTeamCommand(yargs: Argv): Argv {
                 ),
               async (argv) => {
                 const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope")); process.exitCode = ExitCode.USER_ERROR; return; }
+                if (!root) { writeOutput(noProjectFoundOutput(argv.format, "envelope"), outputFormatOf(argv.format)); process.exitCode = ExitCode.USER_ERROR; return; }
                 const { handleTeamConfigSet } = await import("./commands/team-config.js");
                 const result = await handleTeamConfigSet(root, argv.key as string, argv.value as string, parseOutputFormat(argv.format));
-                writeOutput(result.output);
+                writeOutput(result.output, outputFormatOf(argv.format));
               },
             )
             .demandCommand(1, "Specify: show or set"),
@@ -785,12 +788,12 @@ export function registerMigrateCommand(yargs: Argv): Argv {
       const { handleMigrate } = await import("./commands/migrate.js");
       const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
       if (!root) {
-        writeOutput(formatError("not_found", "No .story/ project found.", format));
+        writeOutput(formatError("not_found", "No .story/ project found.", format), format);
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
       const result = await handleMigrate(root, format, { dryRun });
-      writeOutput(result.output);
+      writeOutput(result.output, format);
       if (result.errorCode) {
         process.exitCode = ExitCode.USER_ERROR;
       }
@@ -911,6 +914,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -921,6 +925,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
               if (process.stdin.isTTY) {
                 writeOutput(
                   formatError("invalid_input", "Cannot read from stdin: no pipe detected. Use --content instead.", format),
+                  format,
                 );
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
@@ -941,22 +946,22 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1033,6 +1038,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -1046,11 +1052,11 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1058,13 +1064,13 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1097,6 +1103,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -1108,11 +1115,11 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1120,13 +1127,13 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1171,9 +1178,9 @@ export function registerTicketCommand(yargs: Argv): Argv {
             const nodeName = argv.node as string | undefined;
             if (nodeName) {
               const orchRoot = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format)); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format), format); process.exitCode = ExitCode.USER_ERROR; return; }
               const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
-              if (!eff.ok) { writeOutput(eff.output); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!eff.ok) { writeOutput(eff.output, format); process.exitCode = ExitCode.USER_ERROR; return; }
               await runReadCommandWithRoot(format, eff.root, (ctx) =>
                 handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined }, ctx),
               );
@@ -1275,13 +1282,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const eff = resolveRootWithNode(orchRoot, argv.node as string | undefined, true, format);
             if (!eff.ok) {
-              writeOutput(eff.output);
+              writeOutput(eff.output, format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -1306,11 +1314,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 format,
                 eff.root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1318,13 +1326,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1413,13 +1421,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const eff = resolveRootWithNode(orchRoot, argv.node as string | undefined, true, format);
             if (!eff.ok) {
-              writeOutput(eff.output);
+              writeOutput(eff.output, format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -1455,11 +1464,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 eff.root,
                 argv.force as boolean,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1467,13 +1476,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1526,6 +1535,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -1549,11 +1559,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   root,
                 )
                 : await handleTicketMetaUnset(id, path, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1561,13 +1571,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1587,7 +1597,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
             const id = parseTicketId(argv.id as string);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -1598,17 +1608,17 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 before: argv.before as string | undefined,
                 format: format as "md" | "json",
               });
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               if (result.exitCode) process.exitCode = result.exitCode;
             } catch (err: unknown) {
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1667,23 +1677,24 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const eff = resolveRootWithNode(orchRoot, undefined, true, format);
             if (!eff.ok) {
-              writeOutput(eff.output);
+              writeOutput(eff.output, format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             try {
               const result = await handleTicketUnclaim(id, format, eff.root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1691,13 +1702,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1723,23 +1734,24 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const eff = resolveRootWithNode(orchRoot, undefined, true, format);
             if (!eff.ok) {
-              writeOutput(eff.output);
+              writeOutput(eff.output, format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             try {
               const result = await handleTicketStart(id, format, eff.root, force);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1747,13 +1759,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -1898,6 +1910,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -1924,11 +1937,11 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -1936,13 +1949,13 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2024,6 +2037,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2056,11 +2070,11 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2068,13 +2082,13 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2127,6 +2141,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2150,11 +2165,11 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   root,
                 )
                 : await handleIssueMetaUnset(id, path, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2162,13 +2177,13 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2230,9 +2245,9 @@ export function registerPhaseCommand(yargs: Argv): Argv {
             const nodeName = argv.node as string | undefined;
             if (nodeName) {
               const orchRoot = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format)); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format), format); process.exitCode = ExitCode.USER_ERROR; return; }
               const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
-              if (!eff.ok) { writeOutput(eff.output); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!eff.ok) { writeOutput(eff.output, format); process.exitCode = ExitCode.USER_ERROR; return; }
               await runReadCommandWithRoot(format, eff.root, handlePhaseList);
             } else {
               await runReadCommand(format, handlePhaseList);
@@ -2323,13 +2338,14 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             const eff = resolveRootWithNode(orchRoot, argv.node as string | undefined, true, format);
             if (!eff.ok) {
-              writeOutput(eff.output);
+              writeOutput(eff.output, format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -2347,11 +2363,11 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 format,
                 eff.root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2359,13 +2375,13 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2411,6 +2427,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2427,11 +2444,11 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2439,13 +2456,13 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2484,6 +2501,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2498,11 +2516,11 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2510,13 +2528,13 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2550,6 +2568,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   "No .story/ project found.",
                   format,
                 ),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2561,11 +2580,11 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -2573,13 +2592,13 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 "../core/errors.js"
               );
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message =
                 err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2623,6 +2642,7 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
         }
         writeOutput(
           formatError("not_found", "No .story/ project found.", format),
+          format,
         );
         process.exitCode = ExitCode.USER_ERROR;
         return;
@@ -2630,7 +2650,7 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
       try {
         const result = await handleSnapshot(root, format, { quiet });
         if (!quiet && result.output) {
-          writeOutput(result.output);
+          writeOutput(result.output, format);
         }
         process.exitCode = result.exitCode ?? ExitCode.OK;
       } catch (err: unknown) {
@@ -2641,18 +2661,18 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
           return;
         }
         if (err instanceof CliValidationError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         const { ProjectLoaderError } = await import("../core/errors.js");
         if (err instanceof ProjectLoaderError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        writeOutput(formatError("io_error", message, format));
+        writeOutput(formatError("io_error", message, format), format);
         process.exitCode = ExitCode.USER_ERROR;
       }
     },
@@ -2869,6 +2889,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2890,22 +2911,22 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -2961,6 +2982,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -2988,22 +3010,22 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3062,28 +3084,28 @@ async function runArrangementMaintenance(
   const format = parseOutputFormat(argv.format as string);
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
-    writeOutput(formatError("not_found", "No .story/ project found.", format));
+    writeOutput(formatError("not_found", "No .story/ project found.", format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
   try {
     const result = await run(format, root);
-    writeOutput(result.output);
+    writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const { ProjectLoaderError } = await import("../core/errors.js");
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }
@@ -3280,11 +3302,11 @@ export function registerDuetCommand(yargs: Argv): Argv {
                 penTaskId: argv["pen-task-id"] as string | undefined,
                 recover: argv.recover as boolean,
               }, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (error) {
               const code = error instanceof CliValidationError ? error.code : "io_error";
-              writeOutput(formatError(code, error instanceof Error ? error.message : String(error), format));
+              writeOutput(formatError(code, error instanceof Error ? error.message : String(error), format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3314,12 +3336,12 @@ export function registerArrangementCommand(yargs: Argv): Argv {
               const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
               if (!root) throw new CliValidationError("not_found", "No .story/ project found.");
               const result = await handleDuetCoordinate(input, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (error) {
               const { ProjectLoaderError } = await import("../core/errors.js");
               const code = error instanceof CliValidationError || error instanceof ProjectLoaderError ? error.code : "io_error";
-              writeOutput(formatError(code, error instanceof Error ? error.message : String(error), format));
+              writeOutput(formatError(code, error instanceof Error ? error.message : String(error), format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3400,7 +3422,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -3416,22 +3438,22 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3457,7 +3479,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -3468,22 +3490,22 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3551,30 +3573,30 @@ function narrativeArgs(argv: Record<string, unknown>): NarrativeArgs {
 async function runRulingWrite(format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
-    writeOutput(formatError("not_found", "No .story/ project found.", format));
+    writeOutput(formatError("not_found", "No .story/ project found.", format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
   try {
     const result = await fn(root);
-    writeOutput(result.output);
+    writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
     // T-528: a ruling write succeeded, so the projection is regenerated once.
     if (process.exitCode === ExitCode.OK) await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
   } catch (err: unknown) {
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const { ProjectLoaderError } = await import("../core/errors.js");
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }
@@ -3655,7 +3677,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -3673,23 +3695,23 @@ export function registerRulingCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
               if (process.exitCode === ExitCode.OK) await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3719,7 +3741,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -3739,23 +3761,23 @@ export function registerRulingCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
               if (process.exitCode === ExitCode.OK) await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3922,7 +3944,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -3942,22 +3964,22 @@ export function registerGateAckCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -3975,28 +3997,28 @@ export function registerGateAckCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             try {
               const result = await handleGateAckContest(argv.id as string, argv.reason as string, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4064,9 +4086,9 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
             const nodeName = argv.node as string | undefined;
             if (nodeName) {
               const orchRoot = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
-              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format)); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!orchRoot) { writeOutput(formatError("not_found", "No .story/ project found.", format), format); process.exitCode = ExitCode.USER_ERROR; return; }
               const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
-              if (!eff.ok) { writeOutput(eff.output); process.exitCode = ExitCode.USER_ERROR; return; }
+              if (!eff.ok) { writeOutput(eff.output, format); process.exitCode = ExitCode.USER_ERROR; return; }
               await runReadCommandWithRoot(format, eff.root, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
             } else {
               await runReadCommand(format, (ctx) => handleEarmarkGet(argv.ref as string, ctx));
@@ -4087,7 +4109,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4106,22 +4128,22 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 root,
                 argv.node as string | undefined,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4141,7 +4163,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4157,22 +4179,22 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 root,
                 argv.node as string | undefined,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4190,7 +4212,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4201,22 +4223,22 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 root,
                 argv.node as string | undefined,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4235,7 +4257,7 @@ export function registerReferenceCommand(yargs: Argv): Argv {
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       const output = handleReference(format);
-      writeOutput(output);
+      writeOutput(output, format);
     },
   );
 }
@@ -4477,6 +4499,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -4501,22 +4524,22 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4576,6 +4599,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -4602,22 +4626,22 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+              writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4642,28 +4666,29 @@ export function registerLessonCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
             try {
               const result = await handleLessonReinforce(id, format, root);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4695,6 +4720,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
             if (!root) {
               writeOutput(
                 formatError("not_found", "No .story/ project found.", format),
+                format,
               );
               process.exitCode = ExitCode.USER_ERROR;
               return;
@@ -4706,17 +4732,17 @@ export function registerLessonCommand(yargs: Argv): Argv {
               const resolvedId = resolveAndNormalizeLessonRef(state, id);
               const lesson = state.lessonByID(resolvedId);
               const result = await handleLessonDelete(resolvedId, format, root, hard, lesson?.displayId ?? resolvedId);
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
@@ -4725,12 +4751,12 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 // ISS-805: an ambiguous ref is caller input, not a project
                 // conflict; classify it invalid_input, keep missing as not_found.
                 const code = err.reason === "missing" ? "not_found" : "invalid_input";
-                writeOutput(formatError(code, err.message, format));
+                writeOutput(formatError(code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4795,7 +4821,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
               await import("../core/project-root-discovery.js")
             ).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4819,22 +4845,22 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4855,7 +4881,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
               await import("../core/project-root-discovery.js")
             ).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4867,11 +4893,11 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4904,7 +4930,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
               await import("../core/project-root-discovery.js")
             ).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -4918,22 +4944,22 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -4993,7 +5019,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
               await import("../core/project-root-discovery.js")
             ).discoverProjectRoot();
             if (!root) {
-              writeOutput(formatError("not_found", "No .story/ project found.", format));
+              writeOutput(formatError("not_found", "No .story/ project found.", format), format);
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
@@ -5019,22 +5045,22 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 format,
                 root,
               );
-              writeOutput(result.output);
+              writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
               if (err instanceof CliValidationError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const { ProjectLoaderError } = await import("../core/errors.js");
               if (err instanceof ProjectLoaderError) {
-                writeOutput(formatError(err.code, err.message, format));
+                writeOutput(formatError(err.code, err.message, format), format);
                 process.exitCode = ExitCode.USER_ERROR;
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
               process.exitCode = ExitCode.USER_ERROR;
             }
           },
@@ -5105,6 +5131,7 @@ export function registerHealthCommand(yargs: Argv): Argv {
             `Unknown check id: ${unknown.join(", ")}. Valid ids: ${HEALTH_CHECK_IDS.join(", ")}.`,
             format,
           ),
+          format,
         );
         process.exitCode = ExitCode.USER_ERROR;
         return;
@@ -5116,7 +5143,7 @@ export function registerHealthCommand(yargs: Argv): Argv {
         ...(requested.length > 0 ? { only: requested as never } : {}),
         refresh: argv.refresh === true,
       });
-      writeOutput(result.output);
+      writeOutput(result.output, format);
       // Deliberately always OK: a tooling report is information, not a gate,
       // so scripts and hooks can call it without arming a failure.
       process.exitCode = ExitCode.OK;
@@ -5141,28 +5168,29 @@ export function registerSelftestCommand(yargs: Argv): Argv {
       if (!root) {
         writeOutput(
           formatError("not_found", "No .story/ project found.", format),
+          format,
         );
         process.exitCode = ExitCode.USER_ERROR;
         return;
       }
       try {
         const result = await handleSelftest(root, format);
-        writeOutput(result.output);
+        writeOutput(result.output, format);
         process.exitCode = result.exitCode ?? ExitCode.OK;
       } catch (err: unknown) {
         if (err instanceof CliValidationError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         const { ProjectLoaderError } = await import("../core/errors.js");
         if (err instanceof ProjectLoaderError) {
-          writeOutput(formatError(err.code, err.message, format));
+          writeOutput(formatError(err.code, err.message, format), format);
           process.exitCode = ExitCode.USER_ERROR;
           return;
         }
         const message = err instanceof Error ? err.message : String(err);
-        writeOutput(formatError("io_error", message, format));
+        writeOutput(formatError("io_error", message, format), format);
         process.exitCode = ExitCode.USER_ERROR;
       }
     },
@@ -5204,10 +5232,10 @@ export function registerCodexReviewCommand(yargs: Argv): Argv {
           sessionId: argv.session as string,
           format: "guide-report",
         });
-        writeOutput(JSON.stringify(result, null, 2));
+        writeOutput(JSON.stringify(result, null, 2), "json");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        writeOutput(formatError("io_error", message, "json"));
+        writeOutput(formatError("io_error", message, "json"), "json");
         process.exitCode = ExitCode.USER_ERROR;
       }
     },
@@ -5367,16 +5395,16 @@ export function registerConfigCommand(yargs: Argv): Argv {
                 deep: argv.deep === true,
               },
             );
-            writeOutput(result.output);
+            writeOutput(result.output, format);
             if (result.errorCode) process.exitCode = 1;
           } catch (err: unknown) {
             const { formatError, ExitCode } = await import("../core/output-formatter.js");
             const { ProjectLoaderError } = await import("../core/errors.js");
             if (err instanceof ProjectLoaderError) {
-              writeOutput(formatError(err.code, err.message, format));
+              writeOutput(formatError(err.code, err.message, format), format);
             } else {
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
             }
             process.exitCode = ExitCode.USER_ERROR;
           }
@@ -5399,7 +5427,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
             await import("../core/project-root-discovery.js")
           ).discoverProjectRoot();
           if (!root) {
-            writeOutput(formatError("not_found", "No .story/ project found.", format));
+            writeOutput(formatError("not_found", "No .story/ project found.", format), format);
             process.exitCode = ExitCode.USER_ERROR;
             return;
           }
@@ -5407,15 +5435,15 @@ export function registerConfigCommand(yargs: Argv): Argv {
             const result = await handleConfigSetFederation(root, format, {
               allowNodeWrites: argv["allow-node-writes"] as boolean | undefined,
             });
-            writeOutput(result.output);
+            writeOutput(result.output, format);
             if (result.errorCode) process.exitCode = 1;
           } catch (err: unknown) {
             const { ProjectLoaderError } = await import("../core/errors.js");
             if (err instanceof ProjectLoaderError) {
-              writeOutput(formatError(err.code, err.message, format));
+              writeOutput(formatError(err.code, err.message, format), format);
             } else {
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(formatError("io_error", message, format));
+              writeOutput(formatError("io_error", message, format), format);
             }
             process.exitCode = ExitCode.USER_ERROR;
           }
@@ -5509,11 +5537,11 @@ export function registerSessionCommand(yargs: Argv): Argv {
                 clientTaskId: argv["client-task-id"] as string | undefined,
               });
               // Project-free template: every byte through writeOutput.
-              writeOutput(result.output);
+              writeOutput(result.output, outputFormatOf(argv.format));
               if (result.errorCode) process.exitCode = 1;
             } catch (err: unknown) {
               const message = err instanceof Error ? err.message : String(err);
-              writeOutput(argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message);
+              writeOutput(argv.format === "json" ? JSON.stringify({ ok: false, error: message }, null, 2) : message, outputFormatOf(argv.format));
               process.exitCode = 1;
             }
           },
@@ -6130,7 +6158,7 @@ export function registerFeedbackCommand(yargs: Argv): Argv {
               argv.format as "md" | "json",
             );
             // ISS-910: accepts --raw, so it prints through the seam.
-            writeOutput(result.output);
+            writeOutput(result.output, outputFormatOf(argv.format));
             if (result.exitCode) process.exitCode = result.exitCode;
           },
         )
@@ -6473,37 +6501,37 @@ async function runCatalogWrite(
   const { formatError, ExitCode } = await import("../core/output-formatter.js");
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
-    writeOutput(formatError("not_found", "No .story/ project found.", format));
+    writeOutput(formatError("not_found", "No .story/ project found.", format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
   try {
     const result = await run(root);
-    writeOutput(result.output);
+    writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
     if (refreshProjection && process.exitCode === ExitCode.OK) {
       await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
     }
   } catch (err: unknown) {
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const { CatalogLoadError } = await import("../core/catalog.js");
     if (err instanceof CatalogLoadError) {
-      writeOutput(formatError("io_error", err.message, format));
+      writeOutput(formatError("io_error", err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const { ProjectLoaderError } = await import("../core/errors.js");
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }
@@ -6754,20 +6782,20 @@ export function registerBriefCommand(yargs: Argv): Argv {
 async function runCheckpointCommand(format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
-    writeOutput(formatError("not_found", "No .story/ project found.", format));
+    writeOutput(formatError("not_found", "No .story/ project found.", format), format);
     process.exitCode = ExitCode.USER_ERROR;
     return;
   }
   try {
     const result = await fn(root);
-    writeOutput(result.output);
+    writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {
     const { ProjectLoaderError } = await import("../core/errors.js");
     if (err instanceof CliValidationError || err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
     } else {
-      writeOutput(formatError("io_error", err instanceof Error ? err.message : String(err), format));
+      writeOutput(formatError("io_error", err instanceof Error ? err.message : String(err), format), format);
     }
     process.exitCode = ExitCode.USER_ERROR;
   }

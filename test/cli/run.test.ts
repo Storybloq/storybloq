@@ -12,7 +12,7 @@ import { RefResolutionError } from "../../src/core/ref-normalization.js";
 describe("writeOutput", () => {
   it("writes to stdout", () => {
     const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    writeOutput("hello");
+    writeOutput("hello", "md");
     expect(spy).toHaveBeenCalledWith("hello\n");
     spy.mockRestore();
   });

@@ -8,6 +8,7 @@ import { RefResolutionError } from "../core/ref-normalization.js";
 import type { OutputFormat } from "../models/types.js";
 import type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
 import { transformForRawMode } from "./raw-mode.js";
+import { sanitizeTerminalDocument } from "../core/display-text.js";
 
 // Re-export types so existing test imports that reference run.ts still resolve.
 export type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
@@ -23,13 +24,30 @@ process.stdout.on("error", (err: NodeJS.ErrnoException) => {
 });
 
 /**
+ * The format of bytes rendered by the `=== "json"` rule that
+ * `noProjectFoundOutput` and the `(argv.format as ...) ?? "md"` handlers
+ * follow: JSON exactly when the option says json, Markdown otherwise.
+ */
+export function outputFormatOf(raw: unknown): OutputFormat {
+  return raw === "json" ? "json" : "md";
+}
+
+/**
  * Writes output to stdout with EPIPE handling.
  * Treats EPIPE as controlled termination (e.g. piping to head).
+ *
+ * `format` is the format of `text` as written, stated by the caller (ISS-1281).
+ * It is not the parsed --format option: status --compact and codex-review write
+ * JSON whatever that says.
  */
-export function writeOutput(text: string): void {
+export function writeOutput(text: string, format: OutputFormat): void {
   // ISS-910: the single seam where --raw unwraps the standard JSON envelope
-  // (identity unless raw mode is active).
-  const finalText = transformForRawMode(text);
+  // (identity unless raw mode is active). It parses the original bytes, so it
+  // runs before the sanitizer.
+  const unwrapped = transformForRawMode(text);
+  // ISS-1281: no terminal control from a repo-sourced field reaches the
+  // terminal through Markdown. JSON is never touched.
+  const finalText = format === "json" ? unwrapped : sanitizeTerminalDocument(unwrapped);
   try {
     process.stdout.write(finalText + "\n");
   } catch (err: unknown) {
@@ -61,7 +79,7 @@ function emitCliBanner(root: string, format: OutputFormat, pushes: ReadCommandPu
           const banner = cliBannerFor(root, cliFormat, { cwd: process.cwd() });
           return { stdout: banner.stdout ? [banner.stdout] : [], stderr: banner.stderr ? [banner.stderr] : [] };
         })();
-    for (const line of out.stdout) writeOutput(`\n${line}`);
+    for (const line of out.stdout) writeOutput(`\n${line}`, cliFormat);
     for (const line of out.stderr) process.stderr.write(`${line}\n`);
   } catch {
     // never
@@ -132,6 +150,7 @@ export async function runReadCommand(
     if (!root) {
       writeOutput(
         formatError("not_found", "No .story/ project found. Run `storybloq init` first.", format),
+        format,
       );
       process.exitCode = ExitCode.USER_ERROR;
       return;
@@ -141,7 +160,7 @@ export async function runReadCommand(
     const handoversDir = join(root, ".story", "handovers");
 
     const result = await handler({ state, warnings, root, handoversDir, format });
-    writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+    writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
     emitCliBanner(root, format, pushes);
 
     let exitCode = result.exitCode ?? ExitCode.OK;
@@ -154,24 +173,24 @@ export async function runReadCommand(
     process.exitCode = exitCode;
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof RefResolutionError) {
       const code = err.reason === "missing" ? "not_found" : "invalid_input";
-      writeOutput(formatError(code, err.message, format));
+      writeOutput(formatError(code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     // Unknown error -- catch-all
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }
@@ -187,7 +206,7 @@ export async function runReadCommandWithRoot(
     const handoversDir = join(explicitRoot, ".story", "handovers");
 
     const result = await handler({ state, warnings, root: explicitRoot, handoversDir, format });
-    writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []));
+    writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
     emitCliBanner(explicitRoot, format, pushes);
 
     let exitCode = result.exitCode ?? ExitCode.OK;
@@ -197,23 +216,23 @@ export async function runReadCommandWithRoot(
     process.exitCode = exitCode;
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof RefResolutionError) {
       const code = err.reason === "missing" ? "not_found" : "invalid_input";
-      writeOutput(formatError(code, err.message, format));
+      writeOutput(formatError(code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }
@@ -233,6 +252,7 @@ export async function runDeleteCommand(
     if (!root) {
       writeOutput(
         formatError("not_found", "No .story/ project found. Run `storybloq init` first.", format),
+        format,
       );
       process.exitCode = ExitCode.USER_ERROR;
       return;
@@ -249,33 +269,34 @@ export async function runDeleteCommand(
           "Project has integrity issues. Use --force to delete anyway.",
           format,
         ),
+        format,
       );
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
 
     const result = await handler({ state, warnings, root, handoversDir, format, force });
-    writeOutput(result.output);
+    writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {
     if (err instanceof ProjectLoaderError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof CliValidationError) {
-      writeOutput(formatError(err.code, err.message, format));
+      writeOutput(formatError(err.code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     if (err instanceof RefResolutionError) {
       const code = err.reason === "missing" ? "not_found" : "invalid_input";
-      writeOutput(formatError(code, err.message, format));
+      writeOutput(formatError(code, err.message, format), format);
       process.exitCode = ExitCode.USER_ERROR;
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    writeOutput(formatError("io_error", message, format));
+    writeOutput(formatError("io_error", message, format), format);
     process.exitCode = ExitCode.USER_ERROR;
   }
 }

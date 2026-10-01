@@ -25,12 +25,13 @@
  * check keep reading it as they always have.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, realpathSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { compareVersionStrings } from "./team-capabilities.js";
 import { readBoundedFile } from "./bounded-read.js";
+import { sanitizeDisplayPath } from "./display-text.js";
 
 /** T-502: exported so the health check's default adapter reads the same file name. */
 export const SKILL_MARKER_FILE = ".storybloq-version";
@@ -335,6 +336,90 @@ async function ensureFunctionHooksSwitch(): Promise<void> {
   }
 }
 
+/**
+ * ISS-1323: whether the running CLI is the operator's global install. Only
+ * the package `npm root -g` names as @storybloq/storybloq ("owner") may
+ * rewrite the global skill copies and the Mods on its own. Another package
+ * (a clone's dist/cli.js, a local devDependency, an npx copy) is "foreign";
+ * when either side cannot be established the verdict is "unknown". Both skip
+ * the automatic write: `storybloq setup` is the deliberate way to install a
+ * non-global CLI's skill.
+ */
+export type RefreshOwnership = "owner" | "foreign" | "unknown";
+
+export interface RefreshOwnershipResult {
+  readonly verdict: RefreshOwnership;
+  readonly runningRoot: string | null;
+  readonly globalRoot: string | null;
+}
+
+/**
+ * Test seam and per-process memo for the verdict. It spawns npm, so it is
+ * computed only when a write is pending, and at most once per process.
+ */
+export const refreshOwner: { override: (() => RefreshOwnership) | null; memo: { value: RefreshOwnershipResult } | null; noticed: boolean } =
+  { override: null, memo: null, noticed: false };
+
+const PACKAGE_NAME = "@storybloq/storybloq";
+
+function storybloqPackageRoot(dir: string): string | null {
+  const real = realpathSync(dir);
+  const pkg = JSON.parse(readFileSync(join(real, "package.json"), "utf-8")) as { name?: unknown };
+  return pkg.name === PACKAGE_NAME ? real : null;
+}
+
+async function computeRefreshOwnership(): Promise<RefreshOwnershipResult> {
+  let runningRoot: string | null = null;
+  let globalRoot: string | null = null;
+  try {
+    const { resolveSkillSourceDir, npmGlobalRoot } = await import("../cli/commands/setup-skill.js");
+    // <pkg>/src/skill in both the dist and the source layout.
+    runningRoot = realpathSync(resolve(resolveSkillSourceDir(), "..", ".."));
+    const npmRoot = npmGlobalRoot();
+    if (npmRoot === null) return { verdict: "unknown", runningRoot, globalRoot };
+    globalRoot = storybloqPackageRoot(join(npmRoot, "@storybloq", "storybloq"));
+    if (globalRoot === null) return { verdict: "unknown", runningRoot, globalRoot };
+    const same = process.platform === "win32"
+      ? globalRoot.toLowerCase() === runningRoot.toLowerCase()
+      : globalRoot === runningRoot;
+    return { verdict: same ? "owner" : "foreign", runningRoot, globalRoot };
+  } catch {
+    return { verdict: "unknown", runningRoot, globalRoot };
+  }
+}
+
+/** The memoised verdict (the override, when a test set one). */
+export async function refreshOwnershipVerdict(): Promise<RefreshOwnershipResult> {
+  if (refreshOwner.override) return { verdict: refreshOwner.override(), runningRoot: null, globalRoot: null };
+  if (refreshOwner.memo === null) refreshOwner.memo = { value: await computeRefreshOwnership() };
+  return refreshOwner.memo.value;
+}
+
+/** The memoised verdict, for callers that already hold it; null before the first computation. */
+export function refreshOwnership(): RefreshOwnershipResult | null {
+  if (refreshOwner.override) return { verdict: refreshOwner.override(), runningRoot: null, globalRoot: null };
+  return refreshOwner.memo?.value ?? null;
+}
+
+/**
+ * True when this process may write. Otherwise prints the one notice (once per
+ * process) and returns false.
+ */
+async function mayAutoRefresh(): Promise<boolean> {
+  const { verdict, runningRoot, globalRoot } = await refreshOwnershipVerdict();
+  if (verdict === "owner") return true;
+  if (!refreshOwner.noticed) {
+    refreshOwner.noticed = true;
+    const running = runningRoot === null ? "unknown location" : sanitizeDisplayPath(runningRoot);
+    const global = globalRoot === null ? "not found" : sanitizeDisplayPath(globalRoot);
+    process.stderr.write(
+      `storybloq: skill files not refreshed: this storybloq (${running}) is not the global install (${global}); ` +
+      `run 'storybloq setup' to install its skill on purpose\n`,
+    );
+  }
+  return false;
+}
+
 async function refreshModsIfBinMoved(): Promise<void> {
   try {
     const { installMods, modsInstalled, readModsBin, MODS_DISPLAY_PATH } = await import("./mods-install.js");
@@ -343,6 +428,8 @@ async function refreshModsIfBinMoved(): Promise<void> {
     const bin = resolveStorybloqBin();
     const recorded = readModsBin();
     if (recorded !== undefined && recorded === bin) return;
+    // ISS-1323: the reinstall copies the running package's Mods.
+    if (!(await mayAutoRefresh())) return;
     // Same shape as the version-advance branch: the copy is on disk either
     // way, so the switch is not conditional on this re-copy succeeding.
     try {
@@ -384,6 +471,8 @@ export async function autoRefreshSkillIfStale(
     await refreshModsIfBinMoved();
     return false;
   }
+  // ISS-1323: every write below copies from the running package.
+  if (!(await mayAutoRefresh())) return false;
 
   try {
     const { copyDirRecursive, resolveSkillSourceDir, resolveStorybloqBin } =

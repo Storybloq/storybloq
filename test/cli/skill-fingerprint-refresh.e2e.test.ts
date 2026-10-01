@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile, stat, symlink } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { E2ECliFixture, runE2ECli } from "../helpers/e2e-cli.js";
@@ -25,9 +25,27 @@ async function cliVersion(): Promise<string> {
   return (JSON.parse(await readFile(join(pkgRoot, "package.json"), "utf-8")) as { version: string }).version;
 }
 
+/**
+ * ISS-1323: only the package `npm root -g` names may refresh, so the owner is
+ * made explicit: an `npm` first on PATH whose global root links
+ * @storybloq/storybloq to this package. Never borrowed from the machine, so a
+ * standalone clone reads as the owner too.
+ */
+async function ownerEnv(fixture: E2ECliFixture): Promise<Record<string, string>> {
+  const global = join(fixture.root, "npm-global");
+  const stubs = join(fixture.root, "npm-stub");
+  await mkdir(join(global, "@storybloq"), { recursive: true });
+  await mkdir(stubs, { recursive: true });
+  await symlink(pkgRoot, join(global, "@storybloq", "storybloq"));
+  await writeFile(join(stubs, "npm"), `#!/bin/sh\necho '${global}'\n`, "utf-8");
+  await chmod(join(stubs, "npm"), 0o755);
+  return { PATH: [stubs, process.env.PATH ?? ""].join(delimiter) };
+}
+
 describe("ISS-1302: any command refreshes a same-version copy whose bundle changed", () => {
   let fixture: E2ECliFixture;
   let skillDir: string;
+  let env: Record<string, string>;
 
   beforeEach(async () => {
     fixture = await E2ECliFixture.create();
@@ -35,6 +53,7 @@ describe("ISS-1302: any command refreshes a same-version copy whose bundle chang
     await mkdir(skillDir, { recursive: true });
     await writeFile(join(skillDir, "SKILL.md"), "# a copy written before duet spawn existed\n", "utf-8");
     await writeFile(join(skillDir, ".storybloq-version"), `${await cliVersion()}\n`, "utf-8");
+    env = await ownerEnv(fixture);
   });
 
   afterEach(async () => {
@@ -44,7 +63,7 @@ describe("ISS-1302: any command refreshes a same-version copy whose bundle chang
   it("a copy from before the sidecar (the live machine today): the first command refreshes it with the same-version line, the second rewrites nothing", async () => {
     const version = await cliVersion();
     const line = `refreshed skill files at ~/.claude/skills/story/ to match CLI v${version} (same version, bundled skill changed)`;
-    const first = runE2ECli(fixture, ["reference", "--format", "json"]);
+    const first = runE2ECli(fixture, ["reference", "--format", "json"], { env });
     expect(first.status).toBe(0);
     expect(first.stderr).toContain(line);
     expect(await readFile(join(skillDir, "SKILL.md"), "utf-8")).toBe(await readFile(join(BUNDLE, "SKILL.md"), "utf-8"));
@@ -53,7 +72,7 @@ describe("ISS-1302: any command refreshes a same-version copy whose bundle chang
     expect(await readFile(join(skillDir, ".storybloq-version"), "utf-8")).toBe(`${version}\n`);
     const before = (await stat(join(skillDir, "SKILL.md"))).mtimeMs;
 
-    const second = runE2ECli(fixture, ["reference", "--format", "json"]);
+    const second = runE2ECli(fixture, ["reference", "--format", "json"], { env });
     expect(second.status).toBe(0);
     expect(second.stderr).not.toContain("refreshed skill files");
     expect(second.stderr).not.toContain("(same version, bundled skill changed)");
@@ -64,7 +83,7 @@ describe("ISS-1302: any command refreshes a same-version copy whose bundle chang
     const other = "sha256:" + "0".repeat(64);
     expect(other).not.toBe(skillSourceFingerprint(BUNDLE));
     await writeFile(join(skillDir, SKILL_FINGERPRINT_FILE), `${other}\n`, "utf-8");
-    const res = runE2ECli(fixture, ["reference", "--format", "json"]);
+    const res = runE2ECli(fixture, ["reference", "--format", "json"], { env });
     expect(res.status).toBe(0);
     expect(res.stderr).toContain("(same version, bundled skill changed)");
     expect((await readFile(join(skillDir, SKILL_FINGERPRINT_FILE), "utf-8")).trim()).toBe(skillSourceFingerprint(BUNDLE));

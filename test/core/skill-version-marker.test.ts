@@ -11,8 +11,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { readFile, writeFile, mkdir, rm, chmod, rename } from "node:fs/promises";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { readFile, writeFile, mkdir, rm, chmod, rename, symlink } from "node:fs/promises";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -161,7 +161,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       },
     }, null, 2), "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -207,7 +209,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     }, null, 2);
     await writeFile(settingsPath, original, "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -251,7 +255,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       const settingsPath = join(tempDir, ".claude", "settings.json");
       await writeFile(settingsPath, JSON.stringify({ model: "opus" }, null, 2), "utf-8");
 
-      const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+      const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+      refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
       expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
 
       const { readFile } = await import("node:fs/promises");
@@ -277,7 +283,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     const settingsPath = join(tempDir, ".claude", "settings.json");
     await writeFile(settingsPath, JSON.stringify({ model: "opus" }, null, 2), "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     // The skill refresh still runs (returns true); only the hook
     // reconciliation is suppressed.
     expect(await autoRefreshSkillIfStale("1.1.6", { reconcileHooks: false })).toBe(true);
@@ -299,7 +307,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     await writeFile(join(codexSkillDir, "SKILL.md"), "# stale codex stub\n", "utf-8");
     await writeFile(join(codexSkillDir, ".storybloq-version"), "1.1.0\n", "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
 
     expect(refreshed).toBe(true);
@@ -329,7 +339,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     ].join("\n"), "utf-8");
     process.env.CODEX_HOME = codexHome;
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
 
     expect(refreshed).toBe(true);
@@ -359,7 +371,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     await writeFile(configPath, original, "utf-8");
     process.env.CODEX_HOME = codexHome;
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
 
     expect(refreshed).toBe(true);
@@ -396,7 +410,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       },
     }, null, 2), "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
 
     expect(refreshed).toBe(true);
@@ -430,7 +446,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     process.env.CODEX_HOME = codexHome;
     const hooksPath = join(codexHome, "hooks.json");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
 
     expect(refreshed).toBe(true);
@@ -466,7 +484,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       },
     }, null, 2), "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -508,7 +528,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       },
     }, null, 2), "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -546,7 +568,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
     }, null, 2);
     await writeFile(settingsPath, beforeJson, "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -592,7 +616,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       };
     });
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
 
@@ -631,7 +657,9 @@ describe("autoRefreshSkillIfStale with legacy hook sweep", () => {
       };
     });
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     // Must not throw.
     const refreshed = await autoRefreshSkillIfStale("1.1.6");
     expect(refreshed).toBe(true);
@@ -768,7 +796,8 @@ describe("the Mods refresh writes the function-hooks switch (ISS-1233)", () => {
   }
 
   it("writes env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 when settings.json has no such key", async () => {
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
 
     // The refresh's own stderr rides along in the message: a failure here
@@ -788,7 +817,9 @@ describe("the Mods refresh writes the function-hooks switch (ISS-1233)", () => {
       return { ...actual, installMods: async () => { throw new Error("disk full (simulated)"); } };
     });
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
 
     expect(err.join("")).toContain("Mods refresh failed (non-fatal): disk full (simulated)");
@@ -801,7 +832,9 @@ describe("the Mods refresh writes the function-hooks switch (ISS-1233)", () => {
     const original = `{\n    "env": {\n        "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "0"\n    }\n}\n`;
     await writeFile(settingsPath, original, "utf-8");
 
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
 
     expect(await readFile(settingsPath, "utf-8"), err.join("")).toBe(original);
@@ -913,7 +946,8 @@ describe("ISS-1302: the installed copy follows a content fingerprint of the bund
 
   it("bump one byte of a bundled file: the next invocation refreshes the copy at the same version and says why; the one after rewrites nothing", async () => {
     await installCurrent("1.1.6");
-    const { autoRefreshSkillIfStale, skillSourceFingerprint, SKILL_FINGERPRINT_FILE } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, skillSourceFingerprint, SKILL_FINGERPRINT_FILE, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false); // current copy: nothing to do
     await writeFile(join(bundle, "SKILL.md"), "# bundle v2\n", "utf-8");
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
@@ -931,7 +965,8 @@ describe("ISS-1302: the installed copy follows a content fingerprint of the bund
 
   it("a copy with no sidecar, or a malformed one, at the same version is refreshed once and then left alone", async () => {
     await installCurrent("1.1.6");
-    const { autoRefreshSkillIfStale, skillSourceFingerprint, SKILL_FINGERPRINT_FILE } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, skillSourceFingerprint, SKILL_FINGERPRINT_FILE, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     await rm(join(skillDir(), SKILL_FINGERPRINT_FILE));
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
     expect((await readFile(join(skillDir(), SKILL_FINGERPRINT_FILE), "utf-8")).trim()).toBe(skillSourceFingerprint(bundle));
@@ -944,11 +979,261 @@ describe("ISS-1302: the installed copy follows a content fingerprint of the bund
   it("an older CLI never refreshes over a newer copy whatever the bundle holds; a version advance keeps its own wording", async () => {
     await installCurrent("1.2.0");
     await writeFile(join(bundle, "SKILL.md"), "# older bundle\n", "utf-8");
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
     expect(await readFile(join(skillDir(), "SKILL.md"), "utf-8")).toBe("# bundle v1\n");
     expect(await autoRefreshSkillIfStale("1.3.0")).toBe(true);
     expect(err.join("")).toContain("to match CLI v1.3.0\n");
     expect(err.join("")).not.toContain("same version");
+  });
+});
+
+// ISS-1323: only the package npm names as the global install may rewrite the
+// global skill copies or the Mods. A clone's CLI (or an npx copy, a local
+// devDependency) is not that package, so it leaves them alone and says so.
+describe("ISS-1323: only the global install auto-refreshes the skill copies and Mods", () => {
+  const PKG_ROOT = fileURLToPath(new URL("../../", import.meta.url)).replace(/\/$/, "");
+  let tempDir: string;
+  let binDir: string;
+  let npmCalls: string;
+  let originalHome: string | undefined;
+  let originalPath: string | undefined;
+  let originalCodexHome: string | undefined;
+  let err: string[];
+  let stderrSpy: { mockRestore: () => void } | undefined;
+
+  /** An `npm` on PATH whose `root -g` prints `body`'s output and counts its calls. */
+  async function npmStub(body: string): Promise<void> {
+    const path = join(binDir, "npm");
+    await writeFile(path, `#!/bin/sh\necho x >> '${npmCalls}'\n${body}\n`, "utf-8");
+    await chmod(path, 0o755);
+  }
+
+  /** A global root whose @storybloq/storybloq is a package of its own (foreign). */
+  async function foreignGlobalRoot(name = "@storybloq/storybloq"): Promise<string> {
+    const root = join(tempDir, "global", "lib", "node_modules");
+    const pkg = join(root, "@storybloq", "storybloq");
+    await mkdir(join(pkg, "src", "skill"), { recursive: true });
+    await writeFile(join(pkg, "package.json"), JSON.stringify({ name }), "utf-8");
+    await writeFile(join(pkg, "src", "skill", "SKILL.md"), "# another package's skill\n", "utf-8");
+    return root;
+  }
+
+  /** A global root whose @storybloq/storybloq links to the running package (owner). */
+  async function ownerGlobalRoot(): Promise<string> {
+    const root = join(tempDir, "global", "lib", "node_modules");
+    await mkdir(join(root, "@storybloq"), { recursive: true });
+    await symlink(PKG_ROOT, join(root, "@storybloq", "storybloq"));
+    return root;
+  }
+
+  /** Every file under the two skill roots, with its bytes and mtime. */
+  function snapshot(): Record<string, string> {
+    const out: Record<string, string> = {};
+    const walk = (dir: string): void => {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else out[p] = `${statSync(p).mtimeMs}:${readFileSync(p, "utf-8")}`;
+      }
+    };
+    walk(join(tempDir, ".claude", "skills"));
+    walk(join(tempDir, ".agents", "skills"));
+    return out;
+  }
+
+  function notices(): number {
+    return err.join("").split("\n").filter((line) => line.includes("skill files not refreshed")).length;
+  }
+
+  async function staleSkill(): Promise<void> {
+    const skillDir = join(tempDir, ".claude", "skills", "story");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# stub\n", "utf-8");
+    await writeFile(join(skillDir, ".storybloq-version"), "1.1.0\n", "utf-8");
+  }
+
+  /** A Mods copy whose recorded bin is not what this process resolves, so it reads as moved. */
+  async function movedMods(): Promise<void> {
+    const hooks = join(tempDir, ".claude", "skills", "storybloq", "hooks");
+    await mkdir(hooks, { recursive: true });
+    await writeFile(join(hooks, "mod.ts"), "// stub\n", "utf-8");
+    await writeFile(join(hooks, ".storybloq-bin"), "/somewhere/else/storybloq\n", "utf-8");
+  }
+
+  beforeEach(async () => {
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), "storybloq-owner-")));
+    binDir = join(tempDir, "bin");
+    npmCalls = join(tempDir, "npm-calls");
+    await mkdir(binDir, { recursive: true });
+    originalHome = process.env.HOME;
+    originalPath = process.env.PATH;
+    originalCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = tempDir;
+    process.env.CODEX_HOME = join(tempDir, ".codex");
+    process.env.PATH = binDir;
+    err = [];
+    const { vi } = await import("vitest");
+    vi.resetModules();
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    }) as never);
+  });
+
+  afterEach(async () => {
+    stderrSpy?.mockRestore();
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
+    await rm(tempDir, { recursive: true, force: true });
+    const { vi } = await import("vitest");
+    vi.resetModules();
+  });
+
+  it("T1: npm names another storybloq package: foreign, nothing written, one notice", async () => {
+    await staleSkill();
+    const root = await foreignGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const before = snapshot();
+    const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+    expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+    expect(snapshot()).toEqual(before);
+    expect(notices(), err.join("")).toBe(1);
+    expect(err.join("")).toContain(join(root, "@storybloq", "storybloq"));
+    expect(refreshOwnership()?.verdict).toBe("foreign");
+  });
+
+  it("T2: npm's @storybloq/storybloq links to the running package: owner, refreshed as today", async () => {
+    await staleSkill();
+    const root = await ownerGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+    expect(await autoRefreshSkillIfStale("1.1.6"), err.join("")).toBe(true);
+    expect(readFileSync(join(tempDir, ".claude", "skills", "story", "SKILL.md"), "utf-8"))
+      .toBe(readFileSync(join(PKG_ROOT, "src", "skill", "SKILL.md"), "utf-8"));
+    expect(notices()).toBe(0);
+    expect(refreshOwnership()?.verdict).toBe("owner");
+  });
+
+  it("T3: a local launcher for this package ahead on PATH does not make it the global install", async () => {
+    await staleSkill();
+    const root = await foreignGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const proj = join(tempDir, "proj", "node_modules");
+    await mkdir(join(proj, "@storybloq"), { recursive: true });
+    await mkdir(join(proj, ".bin"), { recursive: true });
+    await symlink(PKG_ROOT, join(proj, "@storybloq", "storybloq"));
+    await symlink(join(proj, "@storybloq", "storybloq", "dist", "cli.js"), join(proj, ".bin", "storybloq"));
+    process.env.PATH = `${join(proj, ".bin")}:${binDir}`;
+    const before = snapshot();
+    const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+    expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+    expect(snapshot()).toEqual(before);
+    expect(refreshOwnership()?.verdict).toBe("foreign");
+  });
+
+  // PATH is binDir alone, so the timeout stub names sleep absolutely, and execs
+  // it: a sleep left as the shell's child would hold stdout open past the kill,
+  // and the probe would wait the full 6 s for the pipe to close.
+  const unknownCases: Array<[string, () => Promise<string>]> = [
+    ["npm fails", async () => "exit 3"],
+    ["npm times out", async () => "exec /bin/sleep 6"],
+    ["npm prints an empty root", async () => "echo ''"],
+    ["the global root holds no storybloq package", async () => {
+      const root = join(tempDir, "empty-global");
+      await mkdir(root, { recursive: true });
+      return `echo '${root}'`;
+    }],
+    ["the package there has another name", async () => `echo '${await foreignGlobalRoot("not-storybloq")}'`],
+    ["the root is a shim tree with no package (asdf/Volta style)", async () => {
+      const shims = join(tempDir, "shims", "lib", "node_modules");
+      await mkdir(join(shims, "@storybloq", "storybloq", "bin"), { recursive: true });
+      return `echo '${shims}'`;
+    }],
+  ];
+  for (const [label, body] of unknownCases) {
+    it(`T4: ${label}: unknown, neither the skill nor the moved Mods is written, one notice`, async () => {
+      await staleSkill();
+      await movedMods();
+      await npmStub(await body());
+      const before = snapshot();
+      const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+      const started = Date.now();
+      expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+      const elapsed = Date.now() - started;
+      expect(snapshot()).toEqual(before);
+      expect(notices(), err.join("")).toBe(1);
+      expect(refreshOwnership()?.verdict).toBe("unknown");
+      if (label === "npm times out") {
+        // The 3 s probe timeout fired: not an instant failure, not the full sleep.
+        expect(elapsed).toBeGreaterThanOrEqual(2_500);
+        expect(elapsed).toBeLessThan(6_000);
+      }
+    }, 15_000);
+  }
+
+  it("T5: foreign with nothing stale but the Mods bin moved: the Mods are not reinstalled", async () => {
+    await movedMods();
+    const root = await foreignGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const before = snapshot();
+    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+    expect(snapshot()).toEqual(before);
+    expect(notices(), err.join("")).toBe(1);
+  });
+
+  it("T6: nothing pending, foreign or owner: npm is never spawned and nothing is printed", async () => {
+    const root = await foreignGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+    // A current copy and current Mods: nothing to write.
+    const skillDir = join(tempDir, ".claude", "skills", "story");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# stub\n", "utf-8");
+    await writeFile(join(skillDir, ".storybloq-version"), "1.1.6\n", "utf-8");
+    const { skillSourceFingerprint, SKILL_FINGERPRINT_FILE } = await import("../../src/core/skill-version-marker.js");
+    await writeFile(join(skillDir, SKILL_FINGERPRINT_FILE), `${skillSourceFingerprint(join(PKG_ROOT, "src", "skill"))}\n`, "utf-8");
+    expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+    expect(existsSync(npmCalls)).toBe(false);
+    expect(err.join("")).toBe("");
+  });
+
+  it("T7: a throw inside the verdict reads unknown and the call returns normally", async () => {
+    await staleSkill();
+    const { vi } = await import("vitest");
+    vi.doMock("../../src/cli/commands/setup-skill.js", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("../../src/cli/commands/setup-skill.js")>();
+      return { ...actual, npmGlobalRoot: () => { throw new Error("boom (simulated)"); } };
+    });
+    try {
+      const before = snapshot();
+      const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+      expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
+      expect(snapshot()).toEqual(before);
+      expect(notices(), err.join("")).toBe(1);
+      expect(refreshOwnership()?.verdict).toBe("unknown");
+    } finally {
+      vi.doUnmock("../../src/cli/commands/setup-skill.js");
+    }
+  });
+
+  it("the verdict is computed once per process", async () => {
+    await staleSkill();
+    const root = await foreignGlobalRoot();
+    await npmStub(`echo '${root}'`);
+    const { autoRefreshSkillIfStale, refreshOwnership } = await import("../../src/core/skill-version-marker.js");
+    await autoRefreshSkillIfStale("1.1.6");
+    await autoRefreshSkillIfStale("1.1.6");
+    refreshOwnership();
+    expect(readFileSync(npmCalls, "utf-8").trim().split("\n")).toHaveLength(1);
+    expect(notices()).toBe(1);
   });
 });

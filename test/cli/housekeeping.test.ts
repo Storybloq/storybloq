@@ -117,6 +117,8 @@ describe("preCommandHousekeeping end-to-end", () => {
     // Invoke the exact function cli/index.ts runs before dispatching
     // any user command.
     const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
+    // ISS-1323: run as the global install, so the refresh may write.
+    (await import("../../src/core/skill-version-marker.js")).refreshOwner.override = () => "owner";
     await preCommandHousekeeping("1.1.6");
 
     // (a) marker advanced to the running version
@@ -163,6 +165,8 @@ describe("preCommandHousekeeping end-to-end", () => {
     // version-refresh reconcile may not install hooks over hook-free settings.
     const { settingsPath } = await seedBinAndHookFreeSettings();
     const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
+    // ISS-1323: run as the global install, so the refresh may write.
+    (await import("../../src/core/skill-version-marker.js")).refreshOwner.override = () => "owner";
     await preCommandHousekeeping("1.1.6", ["setup", "--skip-hooks"]);
 
     const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as { hooks?: Record<string, unknown> };
@@ -184,7 +188,11 @@ describe("preCommandHousekeeping end-to-end", () => {
     }, null, 2), "utf-8");
 
     const { preCommandHousekeeping } = await import("../../src/cli/housekeeping.js");
+    // ISS-1323: run as the global install, so the refresh may write.
+    (await import("../../src/core/skill-version-marker.js")).refreshOwner.override = () => "owner";
     await preCommandHousekeeping("1.1.6", ["status"]);
+    // ISS-1323: run as the global install, so the refresh may write.
+    (await import("../../src/core/skill-version-marker.js")).refreshOwner.override = () => "owner";
     await preCommandHousekeeping("1.1.6", ["status"]);
 
     const settings = JSON.parse(await readFile(settingsPath, "utf-8")) as {

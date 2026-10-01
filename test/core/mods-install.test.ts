@@ -721,7 +721,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
 
     const newBin = await fakeBin(join(tempDir, "nvm", "v22", "bin"));
     process.env.PATH = dirname(newBin);
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
 
     const installTs = await readFile(join(modsDir(), "hooks", "install.ts"), "utf-8");
@@ -743,7 +744,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
 
     const newBin = await fakeBin(join(tempDir, "nvm", "v22", "bin"));
     process.env.PATH = dirname(newBin);
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false); // nothing stale, and still:
     const installTs = await readFile(join(modsDir(), "hooks", "install.ts"), "utf-8");
     expect(installTs).toContain(`return ${JSON.stringify(newBin)};`);
@@ -761,7 +763,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
     const before = new Map<string, number>();
     for (const [rel] of await snapshotTree(modsDir())) before.set(rel, (await stat(join(modsDir(), rel))).mtimeMs);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
     for (const [rel, mtime] of before) {
       expect((await stat(join(modsDir(), rel))).mtimeMs, rel).toBe(mtime);
@@ -776,7 +779,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
     expect(readModsBin()).toBeUndefined();
     await markSkillCurrent(tempDir, "1.1.6");
     process.env.PATH = dirname(bin);
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(false);
     expect(readModsBin()).toBe(bin);
   });
@@ -784,7 +788,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
   it("installs no Mods copy where none was installed: the refresh is not a setup", async () => {
     const { modsDir } = await import("../../src/core/mods-install.js");
     process.env.PATH = dirname(await fakeBin(join(tempDir, "bin")));
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
     expect(existsSync(modsDir())).toBe(false);
   });
@@ -793,7 +798,8 @@ describe("the version-marker refresh re-resolves the binary (pen hold 1, T-507)"
     const { installMods, modsDir } = await import("../../src/core/mods-install.js");
     await installMods({ bin: await fakeBin(join(tempDir, "old", "bin")) });
     process.env.PATH = "";
-    const { autoRefreshSkillIfStale } = await import("../../src/core/skill-version-marker.js");
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
     expect(await autoRefreshSkillIfStale("1.1.6")).toBe(true);
     expect(await readFile(join(modsDir(), "hooks", "install.ts"), "utf-8")).toContain('return "storybloq";');
     expect(existsSync(join(modsDir(), "hooks", "mod.ts"))).toBe(true);

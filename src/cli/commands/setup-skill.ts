@@ -336,16 +336,28 @@ function realpathOrNull(path: string): string | null {
   }
 }
 
-export function resolveGlobalStorybloqBin(probe: Partial<GlobalLauncherProbe> = {}): string | null {
+/**
+ * ISS-1323: npm's global package root (the last non-empty line of
+ * `npm root -g`), or null when npm is missing, fails, times out or prints
+ * nothing. The one place the global install is discovered: the launcher check
+ * below and the skill auto-refresh's ownership verdict both read it.
+ */
+export function npmGlobalRoot(probe: Partial<Pick<GlobalLauncherProbe, "run" | "platform">> = {}): string | null {
   const platform = probe.platform ?? process.platform;
   const run = probe.run ?? runNpmRootG;
-  const pathWalk = probe.pathWalk ?? resolveStorybloqBin;
-  const realpath = probe.realpath ?? realpathOrNull;
-  const isExecutable = probe.isExecutable ?? isExecutableFile;
   const out = run(platform === "win32" ? "npm.cmd" : "npm", ["root", "-g"], GLOBAL_LAUNCHER_PROBE_TIMEOUT_MS);
   if (out === null) return null;
   const root = out.trim().split(/\r?\n/).pop()?.trim() ?? "";
-  if (root.length === 0) return null;
+  return root.length === 0 ? null : root;
+}
+
+export function resolveGlobalStorybloqBin(probe: Partial<GlobalLauncherProbe> = {}): string | null {
+  const platform = probe.platform ?? process.platform;
+  const pathWalk = probe.pathWalk ?? resolveStorybloqBin;
+  const realpath = probe.realpath ?? realpathOrNull;
+  const isExecutable = probe.isExecutable ?? isExecutableFile;
+  const root = npmGlobalRoot({ run: probe.run, platform });
+  if (root === null) return null;
   const launcher = platform === "win32"
     ? winPath.join(winPath.dirname(root), "storybloq.cmd")
     : posixPath.join(posixPath.dirname(posixPath.dirname(root)), "bin", "storybloq");

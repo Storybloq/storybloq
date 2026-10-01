@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-011",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator receives one daily email listing new problem reports, from owner decision\nScope: Authenticated scheduled job; garden-local daily schedule; durable digest records/cutoff, send tracking, retry/deduplication; sanitized content and delivery failure visibility. Excludes: Per-report emails and SMS\nAcceptance: One scheduled digest per nonempty day; include reports created since last successful delivery cutoff even if already resolved; empty days send none; concurrent/retried jobs do not make separate digest records; failures retain pending data; delayed runs cover backlog; email links require sign-in\nBehaviour: Coordinator can see outage/retry status; avoid secret/contact leakage; document duplicate risk after uncertain external send and use provider idempotency where available\nVerification: Fake clock/provider tests for empty day, daylight-saving boundary, outage/retry, overlapping jobs, cutoff edge and resolved-new reports; real staging-email check. Prerequisites: T-001, T-011, T-012. Assumptions: Coordinator configures send time; provider credentials available for staging; no exactly-once external delivery claim",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 30,
+  "phase": "problems",
+  "status": "open",
+  "title": "Reliable daily report email",
+  "type": "task"
+}

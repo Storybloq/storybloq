@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner reviews synthetic-data demonstration of find/lend/return, due-date entry, empty/failure/recovery states and restart retention. Overdue is explicitly excluded from v1.\nArtifact: Running browser workflow and reproducible walkthrough from T-005.\nPrerequisites: T-005. Only T-007 waits on this checkpoint.\nStage-1 limitation: Ordinary ticket; human approval is not technically enforced. Record the owner's actual review before marking complete.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "teacher-workspace",
+  "status": "open",
+  "title": "Checkpoint: review first-version book-room workflow",
+  "type": "chore"
+}

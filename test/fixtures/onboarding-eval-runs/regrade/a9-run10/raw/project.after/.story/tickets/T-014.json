@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-009",
+    "T-012",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: First version is demonstrably usable and recoverable, from brief.md requirements and Constraints plus owner decisions\nScope: Complete role journeys; phone/accessibility checks; staging email/job validation; backup/restore drill; migrations/restarts; privacy/security checks; operator guide and deployment/rollback procedure. Excludes: Invented performance SLA or compliance claims\nAcceptance: Every mapped requirement has evidence; backup restored; no cross-household/contact leak; setup/digest failure recovery documented; scheduled job configured; synthetic data sufficient for tests\nBehaviour: Actionable operational errors; restore never silently overwrites production\nVerification: Recorded tests, keyboard/zoom/phone walkthrough, staging mail/deployment and restore evidence. Prerequisites: T-008, T-009, T-012, T-013. Assumptions: Owner supplies production credentials/domain before launch; retention policy made owner-visible/configurable before launch",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 10,
+  "phase": "release",
+  "status": "open",
+  "title": "Release verification and recovery",
+  "type": "task"
+}

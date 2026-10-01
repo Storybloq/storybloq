@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Teacher lends a copy to a pupil and records its return, from owner v1 scope.\nScope: Persistent loans with minimal pupil display label and explicit YYYY-MM-DD due date, one active loan per copy, transactional availability and idempotent lend/return endpoints. Excludes: overdue query/display (deferred), accounts, fines and notifications.\nAcceptance: Concurrent double lending rejected; unknown IDs, invalid dates and blank pupil labels rejected. Return makes copy available; repeat return is harmless. Book/loan state persists atomically across restart. Replay results contain no pupil labels. Returning removes pupil label from current application-managed state; historical backup retention follows documented policy.\nBehaviour: Explicit conflicts, failures and uncertain outcomes; reconcile before declaring success or rollback. Safe same-token retries do not duplicate loans or returns.\nVerification: State-machine, HTTP, concurrency, active/returned restart and uncertain-retry tests; inspect current state and replay records for label removal after return. Prerequisites: T-002 storage and T-003 safe API adapter. Assumptions: physical-copy records; teacher supplies due date for later overdue functionality.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 10,
+  "phase": "lending",
+  "status": "open",
+  "title": "Lending, returns and availability",
+  "type": "task"
+}

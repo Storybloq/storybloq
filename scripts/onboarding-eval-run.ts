@@ -452,7 +452,7 @@ async function main(): Promise<void> {
   const { turns, failures, reviewSkipped } = state;
   const evidence = finishDrive(state, REVIEW_LINE);
   const { reviewEvidence, bound } = evidence;
-  const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"), CHECK_SET_VERSION, evidence.reviewLines);
+  const semanticLines: string[] = runSemanticLines(reviewSkipped, turns, exclusion, afterPackage.some((x) => x.label === "adjust"), CHECK_SET_VERSION, evidence.reviewLines, evidence.judgeLines ?? []);
 
   const story = join(project, ".story");
   const { inspection, ledgerRecords } = inspectAfter(state, diskReader(story), rubric, () => JSON.parse(readFileSync(join(fixtureDir, "project", ".story", "config.json"), "utf-8")) as Record<string, unknown>, o.variant);
@@ -472,7 +472,8 @@ async function main(): Promise<void> {
     runId, client: o.client, fixture: o.fixture, variant: o.variant, modelRequested: o.model, checkSetVersion: CHECK_SET_VERSION,
     modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
     writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
-    semanticLines, bound, packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
+    semanticLines, bound, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
+    packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);
   cpSync(project, join(rawDir, "project.after"), { recursive: true, verbatimSymlinks: true });
@@ -526,7 +527,7 @@ export function semanticLinesFor(reviewSkipped: boolean, adjusted = true): strin
  */
 export function runSemanticLines(
   reviewSkipped: boolean, turns: readonly { readonly label: string; readonly stop: Pick<StopCheck, "kind" | "candidate"> | null }[], exclusion: RuntimeExclusion, adjusted = true,
-  checkSet = 1, reviewLines: readonly string[] = [],
+  checkSet = 1, reviewLines: readonly string[] = [], judgeLines: readonly string[] = [],
 ): string[] {
   return [
     ...semanticLinesFor(reviewSkipped, adjusted),
@@ -534,6 +535,8 @@ export function runSemanticLines(
     ...(exclusion.source === "disabled" && turns.some((x) => x.stop !== null) ? [TREE_EXCLUSION_LINE] : []),
     // Check set 2: prose about the review agrees with the status lines, and each review binding and non-material declaration is ruled on.
     ...(checkSet >= 2 ? [REVIEW_STATEMENTS_LINE, ...reviewLines] : []),
+    // Check set 4: each qualifying post-approval python script, and each package citing a review that did not approve.
+    ...(checkSet >= 4 ? judgeLines : []),
   ];
 }
 

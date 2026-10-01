@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Demonstrate first-version mobile journeys, from brief.md First version must 1–4 and Constraints; owner deferred requirement 5\nScope: Synthetic-data application, coordinator application/allocation list, own-allocation, problem-report and triage screens; large text, plain language, keyboard and screen-reader labels. Excludes: live backend and plot map/grid\nAcceptance: Both roles can navigate complete phone journeys; representative empty, loading and error states; contact details coordinator-only\nBehaviour: Accessible errors, recoverable form values, clear pending/success states\nVerification: Prototype walkthrough, mobile viewport and keyboard/screen-reader checks. Prerequisites: none. Assumptions: proposed vocabulary and layout, reviewed at T-004",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "experience",
+  "status": "open",
+  "title": "Mobile journey prototype",
+  "type": "task"
+}

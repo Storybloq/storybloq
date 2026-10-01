@@ -1,0 +1,49 @@
+{
+  "blockers": [],
+  "date": "2026-09-29",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate accessible mobile journeys and a persistent 40-plot household/season model.",
+      "id": "experience",
+      "label": "PHASE 1",
+      "name": "Experience and foundation"
+    },
+    {
+      "description": "A verified household signs in with an emailed link and applies for the coming season.",
+      "id": "applications",
+      "label": "PHASE 2",
+      "name": "Authenticated applications"
+    },
+    {
+      "description": "Coordinator assigns plots with returning priority and strict FIFO; gardeners see their own allocation.",
+      "id": "allocation",
+      "label": "PHASE 3",
+      "name": "Fair allocation"
+    },
+    {
+      "description": "Gardeners report plot problems; coordinator resolves them and receives a daily digest.",
+      "id": "problems",
+      "label": "PHASE 4",
+      "name": "Problems and notifications"
+    },
+    {
+      "description": "Demonstrate and accept requirements 1–4, passwordless access and daily notifications with operational evidence.",
+      "id": "release",
+      "label": "PHASE 5",
+      "name": "First-version release"
+    },
+    {
+      "description": "Coordinator sees a responsive accessible grid of all 40 plots and their holders.",
+      "id": "plot-map",
+      "label": "PHASE 6",
+      "name": "After first version: plot map"
+    }
+  ],
+  "title": "Plotbook"
+}

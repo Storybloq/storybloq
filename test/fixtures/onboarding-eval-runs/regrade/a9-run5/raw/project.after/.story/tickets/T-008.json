@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-004",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: After v1, teacher sees overdue books, from owner original scope and subsequent explicit deferral.\nScope: Overdue API plus accessible browser list showing book, pupil and due date; documentation. Excludes: reminders and fines.\nAcceptance: Active loans dated before server-local today appear; today and returned loans excluded. Browser displays useful empty state and accessible results.\nBehaviour: Loading/error/retry states, safe rendering, keyboard/labels, injectable clock.\nVerification: Fixed-clock date boundary and returned-loan API tests plus synthetic browser demonstration. Prerequisites: T-004 loan model and T-005 teacher workspace. Assumptions: server-local calendar day documented.\nDEFERRED: Do not select or implement until T-007 first-version acceptance is recorded. T-007 is an operational release gate, not a fabricated technical blockedBy dependency. No v1 ticket depends on this work.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 10,
+  "phase": "post-v1-overdue",
+  "status": "open",
+  "title": "Deferred: overdue API and browser list after v1",
+  "type": "task"
+}

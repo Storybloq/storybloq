@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-010",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator receives one daily email listing new reports, from owner notification decision\nScope: Scheduled durable outbox/digest windows, coordinator-only recipient, reusable email adapter, configurable garden-local time, no empty email, minimal data/authenticated links, reports created since last successfully covered interval even if already resolved, stable idempotency keys, bounded retries and failure visibility. Excludes: instant notifications and marketing\nAcceptance: All new reports included in appropriate digest; concurrent jobs produce one logical digest; retries/restarts do not omit reports; provider supports deduplication or ambiguous deliveries go to operator resolution rather than blind repeats\nBehaviour: Delayed-job catch-up and visible failures; never mark sent before confirmed send\nVerification: Fake-clock/provider tests and restart/concurrency/failure injection. Prerequisites: T-010, T-003. Assumptions: provider selected/configured before staging; daily hour configurable",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 20,
+  "phase": "problems",
+  "status": "open",
+  "title": "Daily coordinator problem-report email",
+  "type": "task"
+}

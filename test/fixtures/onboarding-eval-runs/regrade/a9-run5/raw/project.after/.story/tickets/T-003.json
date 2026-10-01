@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Teacher finds books by title or author, from owner scope and README.\nScope: Case-insensitive substring search via GET /books query, empty query lists all, validated add-copy endpoint, bounded body, consistent HTTP errors, mutation token validation and storage adapter. Excludes: lending and browser UI.\nAcceptance: Title/author matches returned; no match yields empty list. Invalid JSON/title and oversized bodies return errors without crashing. IDs stable and duplicate-title physical copies allowed. Retrying add with the same token never duplicates a copy. Storage failures and uncertain outcomes are explicit; reads reflect reconciled state.\nBehaviour: Consistent 400/404/413/500 responses as applicable, no stack/private-data leakage, empty list is valid.\nVerification: HTTP tests for search, empty/no-match cases, malformed/oversized requests, storage failure and idempotent retries. Prerequisites: T-002 durable storage. Assumptions: each catalogue record represents one physical copy.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "reliable-catalogue",
+  "status": "open",
+  "title": "Search and validated catalogue API",
+  "type": "task"
+}

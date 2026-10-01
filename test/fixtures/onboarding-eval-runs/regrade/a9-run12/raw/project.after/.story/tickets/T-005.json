@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: A court can never have two active bookings for the same slot, including simultaneous requests, from README and the owner's explicit request for a separate double-booking ticket.\nScope: Database-enforced active-slot uniqueness; safe migration from existing unconditional uniqueness with no unprotected migration gap; atomic conflict handling and SQLite-supported write transaction foundation; reuse canceled slots while preserving cancellation history. Excludes: member quota policy, cancellation authorization/cutoff action and UI.\nAcceptance: Sequential duplicates are denied; concurrent independent connections targeting the same court/instant yield exactly one active booking; different courts or slots remain bookable; direct persistence cannot bypass uniqueness; canceled rows do not reserve slots; failed writes roll back and canceled records survive migration.\nBehaviour: Useful occupied-slot errors, bounded contention handling and safe retries/rollback without partial writes. Do not rely on ineffective SQLite select_for_update.\nVerification: make test database-constraint/migration regression tests, real concurrent independent connections against a file-backed SQLite database, canceled-slot reuse fixtures. Prerequisites: Court slot validation and booking persistence. Assumptions: SQLite retained; cancellation ticket later provides the user action; tests may construct canceled rows directly.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 20,
+  "phase": "safe-booking",
+  "status": "open",
+  "title": "Prevent double bookings",
+  "type": "task"
+}

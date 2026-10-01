@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardeners sign in without passwords and contacts remain coordinator-only, from owner sign-in decision and brief.md Constraints\nScope: Single-use hashed expiring tokens, resend/rate limits, safe redirects, session logout, configurable mail adapter, operator coordinator bootstrap and roles; authorize every data path; unknown verified emails see restricted pending-access page and submit minimal household verification details; coordinator searches then links or creates canonical household with duplicate checks and auditable decision. Excludes: daily digest and passwords\nAcceptance: Links usable once; safe expiry recovery; only approved household members access applications/own allocations/reporting; multiple accounts share household entitlement; unknown household can reach approval and apply; pending/rejected requests have correction/contact path; other contacts absent from gardener APIs and logs; direct unauthorized requests rejected\nBehaviour: Non-enumerating link request response, mail-failure recovery, accessible phone pending/approved/rejected states and errors\nVerification: Auth/role integration tests, token replay/expiry, new household onboarding-to-application E2E, duplicate household requests and two accounts in one household. Prerequisites: T-002. Assumptions: provider credentials established before staging; proposed verification workflow can be adjusted following T-004",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 10,
+  "phase": "applications",
+  "status": "open",
+  "title": "Email-link access and household onboarding",
+  "type": "task"
+}

@@ -590,8 +590,8 @@ describe("check set 2: the command-evidence contract", () => {
 // --- versioning -------------------------------------------------------------------------------------------------
 
 describe("check set 2: every run is graded under the check set it was recorded with", () => {
-  it("the current check set is 3; check set 2 records still replay under 2", () => {
-    expect(CHECK_SET_VERSION).toBe(3);
+  it("the current check set is 4; check set 2 records still replay under 2", () => {
+    expect(CHECK_SET_VERSION).toBe(4);
   });
 
   it("the rubric projection: check set 1 drops the overlay; check set 2 replaces in place and appends", () => {
@@ -647,8 +647,8 @@ describe("check set 2: every run is graded under the check set it was recorded w
   });
 
   it("(c) an unknown check set is refused (Mv3)", () => {
-    const r = regrade(edit(recorded(), (x) => { x.checkSetVersion = 4; }, (p) => p.replace('"checkSet": 2', '"checkSet": 4')));
-    expect(r.ok ? "accepted" : r.reason).toBe("the run was graded under check set 4, which this regrade does not support");
+    const r = regrade(edit(recorded(), (x) => { x.checkSetVersion = 5; }, (p) => p.replace('"checkSet": 2', '"checkSet": 5')));
+    expect(r.ok ? "accepted" : r.reason).toBe("the run was graded under check set 5, which this regrade does not support");
   });
 
   it("(d) a record and packet naming different check sets are refused, both directions (Mv4)", () => {

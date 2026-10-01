@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Demonstrate returning-gardener priority, strict chronological waiting list, 40-plot map, household/plot uniqueness and gardener season dates.\nArtifact: T-008/T-009 working synthetic-season demonstration and T-007 rule-test evidence.\nFollow-on gate: T-015 release acceptance; problem handling proceeds independently.\nStage-1 limitation: this is an ordinary ticket; human approval is not automatically enforced. Record the owner's decision before closing.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 50,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: allocation milestone",
+  "type": "chore"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-006",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardener sees their plot and season dates, from brief.md First version must 3\nScope: Accessible phone page with own allocation, awaiting decision and waitlisted states. Excludes: others contact details and map\nAcceptance: Reload shows current own assignment and configured season dates; no-allocation states clear; tampered household ID cannot expose another household\nBehaviour: Login expiry, error/retry and accessible status messages\nVerification: Gardener E2E including unauthorized household identifiers. Prerequisites: T-006, T-003. Assumptions: none",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Gardener allocation and season view",
+  "type": "task"
+}

@@ -419,6 +419,14 @@ function commandOf(call: EvalCall): string | null {
  */
 export const WRITE_RULE_VERSION = "2026-09-27.8: a write is a file-writing tool, a storybloq MCP write, or a shell command whose own argv is `git init` or a storybloq CLI write; a git or storybloq call that parses -h, --help, -V or --version as its last word, where its CLI accepts it (git: among its global options or directly after the subcommand, plus git's own --help <command>; storybloq: anywhere), is a probe, never a write, any word after the flag declining the probe, unless a help or version option appears more than once in any spelling or in a negated or valued form (--no-help, --help=<anything>, -h<attached>), which declines the probe, with parsing stopped at -- and the values of value-taking options (git's global value options, storybloq's from the CLI reference table, and the word after any option the command does not list) never read as flags, any doubt reading as a write; quoted operands are data, except quoted text the shell runs (a nested shell's -c string, eval's operands, a $(...) or backtick span inside double quotes), which is walked as code; source and . operands are files, not code; a construct the parser cannot read falls back to the textual patterns on its unquoted skeleton only; past nesting depth 3 the text is read unblanked, fail-closed, so a quoted prompt that deep counts as a write; a here-document's body is never read as commands, and only a simple delimiter word is modelled ([A-Za-z0-9_]+ bare, or wrapped whole in one pair of single quotes or of double quotes, or behind one backslash, any fd prefix, <<- included): under a simple quoted one the shell never expands the body, so it is data, and under a simple unquoted one it is read unblanked, fail-closed; any other delimiter word (a backslash or quote inside it, mixed quoting, a continuation, $, a backtick, a carriage return, any non-word character) is complex: its end is not known, so everything after it is read unblanked, fail-closed, and the command is needs-review (complex here-document delimiter); a here-document an interpreter reads (python, node, sh, bash, zsh, dash, ksh, perl, ruby), quoted delimiter or not, is a script the harness cannot read, so it is needs-review, never clean, and its writes are not counted: writesAfterApproval is a lower bound whenever a needs-review construct carries the writes; a shell redirect or tee is never a counted write: its target is not resolved, so it is needs-review (file redirect, target not resolved), and the tree check is the truth for project files, so a redirect into the project before approval is caught as a project change before approval, not by the counter, and writesAfterApproval stays a lower bound; any unrecognised redirection reads as a file redirect, review: only a descriptor duplication or close (>&N, N>&M, >&N-, N>&M-, >&-, N>&-, {name}>&-), a redirection into /dev/null and a process substitution are exempt; a comparison inside [[ ]] or $(( )) reads as a redirect too, fail-closed";
 
+/** Check set 4's write rule: check set 3's, plus the literal loop and the judged post-approval python script. */
+export const WRITE_RULE_VERSION_4 = `2026-09-30.1: ${WRITE_RULE_VERSION.slice(WRITE_RULE_VERSION.indexOf(": ") + 2)}; check set 4: a whole call that is one exec wrapper (sh, bash or zsh with -c or -lc and one quoted string) is read through its string, a double-quoted string only when the shell would not expand it (no $, backtick or backslash-newline), otherwise it is needs-review as before; one for loop whose variable is named p, d, f, dir or file (any other name declines, the shell managing some itself), over 1 to 16 literal words, whose variable is expanded only inside double quotes, whose body is simple commands (if, then, elif, else and fi allowed), each starting with one of test, [, echo, cat, ls, head, tail, wc, true or : written bare (so no wrapper, no quoted command name and never the loop variable at command position), with no single-quoted word, that cannot change or re-read the variable, whose variable is not mentioned after done, as an expansion or by its bare name, nor by its bare name before for, and whose command holds no \${!, (P) or eval and no word that changes how the shell reads the loop (setopt, unsetopt, set, emulate, alias, trap, function, typeset, declare, local, integer, readonly, shopt, in any quoting), and around which everything else in the call (before for and after done, after a qualifying here-document is excised) is simple commands joined by ;, a newline or &&, each word one unquoted run of [A-Za-z0-9._/=:@,+-] with no expansion, glob, redirection, pipe, || or &, each command starting with one of cat, ls, pwd, echo, head, tail, wc, true, : or test and no assignment, is unrolled and each copy scanned, any other loop staying needs-review; a loop body word or loop word that is a mutator or nesting word declines whatever its quoting, as does a body word any iteration's substitution turns into one (or into a word that changes how the shell reads the loop), and a loop word that is a wrapper; a word read as the executable (argv[0], or one a wrapper hands on, read before the wrapper, shell or probe is recognised) that holds an expansion ($ or a backtick) is needs-review, an unrolled copy's literal word excepted; a write the scanned text shows (a wrapper's string, an excised here-document's remainder, an unrolled copy) is the call's write, before approval and in writesAfterApproval; after approval, one here-document read directly by python3 - (or python3) at a command boundary under a quoted simple delimiter with its terminator found, nothing after the operator on its line, no pipe, a body of at most 8192 bytes that a fail-closed prefilter passes (no install, test, build, dev, shell or interpreter command, no os.system, popen, pty, exec, eval, shell=True, chdir or cwd, no write naming a path outside the project), is excised and judged instead of needs-review: its body is in the packet and a judge line asks whether it ran nothing and wrote nothing outside the project, and the rest of the call is scanned; its writes are not counted, so writesAfterApproval stays a lower bound`;
+
+/** The write rule a record of this check set is graded under: check sets 1 to 3 keep the text they were recorded with. */
+export function writeRuleFor(checkSet: number): string {
+  return checkSet >= 4 ? WRITE_RULE_VERSION_4 : WRITE_RULE_VERSION;
+}
+
 /** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, `git init`. A shell redirect is review; the tree check reports the files it changes. */
 export function writeCalls(calls: readonly EvalCall[]): EvalCall[] {
   return calls.filter((call) => {
@@ -754,6 +762,8 @@ interface Unwrapped {
   readonly ambiguous: string | null;
   /** A wrapper changed the working directory (`env -C`, `sudo -D`). */
   readonly chdir: boolean;
+  /** Check set 4: the first word read as the executable (argv[0] or one a wrapper hands on) that holds `$` or a backtick. */
+  readonly expanded?: string;
 }
 
 /** Strip assignments, reserved words and wrappers (`env`, `timeout 5`, `nohup` ...) down to the executable and its arguments. */
@@ -761,10 +771,12 @@ function unwrap(words: readonly string[]): Unwrapped {
   let i = 0;
   let ambiguous: string | null = null;
   let chdir = false;
+  let expanded: string | undefined;
   for (;;) {
     while (i < words.length && ASSIGNMENT.test(words[i]!)) i++;
     const w = words[i];
-    if (w === undefined) return { argv: [], inner: null, ambiguous, chdir };
+    if (w === undefined) return { argv: [], inner: null, ambiguous, chdir, expanded };
+    if (expanded === undefined && /[$`]/.test(w)) expanded = w;
     if (RESERVED.has(w)) { ambiguous ??= `shell control structure (${w})`; i++; continue; }
     const base = baseName(w);
     if (base === "env") {
@@ -780,7 +792,7 @@ function unwrap(words: readonly string[]): Unwrapped {
           : null;
         if (split !== null) {
           const after = i + (o === "-S" || o === "--split-string" ? 2 : 1);
-          return { argv: [], inner: [split, ...words.slice(after).map(shellQuote)].join(" "), ambiguous, chdir };
+          return { argv: [], inner: [split, ...words.slice(after).map(shellQuote)].join(" "), ambiguous, chdir, expanded };
         }
         if (/^(-C|--chdir)(=|$)|^-C./.test(o)) chdir = true;
         const width = optionWidth(o, ENV_SPEC);
@@ -793,7 +805,7 @@ function unwrap(words: readonly string[]): Unwrapped {
     if (base === "command") {
       const rest = words.slice(i + 1);
       const end = rest.findIndex((x) => x === "--" || !x.startsWith("-"));
-      if ((end < 0 ? rest : rest.slice(0, end)).some((x) => /^-[pvV]*[vV][pvV]*$/.test(x))) return { argv: [], inner: null, ambiguous, chdir };
+      if ((end < 0 ? rest : rest.slice(0, end)).some((x) => /^-[pvV]*[vV][pvV]*$/.test(x))) return { argv: [], inner: null, ambiguous, chdir, expanded };
     }
     const spec = WRAPPERS[base];
     if (spec) {
@@ -807,9 +819,9 @@ function unwrap(words: readonly string[]): Unwrapped {
       const c = words.indexOf("-c", i + 1);
       const lc = words.findIndex((x, k) => k > i && /^-[a-z]*c[a-z]*$/.test(x));
       const at = c >= 0 ? c : lc;
-      return { argv: words.slice(i), inner: at >= 0 ? (words[at + 1] ?? null) : null, ambiguous, chdir };
+      return { argv: words.slice(i), inner: at >= 0 ? (words[at + 1] ?? null) : null, ambiguous, chdir, expanded };
     }
-    return { argv: words.slice(i), inner: null, ambiguous, chdir };
+    return { argv: words.slice(i), inner: null, ambiguous, chdir, expanded };
   }
 }
 
@@ -935,13 +947,24 @@ function codexExecReadsStdin(words: readonly string[]): boolean {
 /** Shell commands that run a build, test, install or dev server, from every call including nested agents'. Reading a manifest never matches. */
 export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
   const hits: ExecutionHit[] = [];
-  // One classification per simple command: a construct is matched on the
-  // command's unquoted skeleton, so a quoted multi-line payload is one command.
-  // A nested shell's string is judged once, inside; outside, only the
-  // wrapper's own words (everything but that string) are.
+  for (const call of calls) {
+    const cmd = commandOf(call);
+    if (cmd !== null) scanExecutions(call, cmd, 0, hits);
+  }
+  return hits;
+}
+
+/**
+ * One call's command, scanned from `depth`, its hits appended to `hits`.
+ * One classification per simple command: a construct is matched on the
+ * command's unquoted skeleton, so a quoted multi-line payload is one command.
+ * A nested shell's string is judged once, inside; outside, only the
+ * wrapper's own words (everything but that string) are.
+ */
+function scanExecutions(call: EvalCall, text: string, from: number, hits: ExecutionHit[], commandWords = false): void {
   const scan = (call: EvalCall, cmd: string, depth: number): void => {
     for (const { words, bare, heredoc, heredocComplex, heredocUnquoted } of shellSequence(cmd).commands) {
-      const { argv, inner, ambiguous } = unwrap(words);
+      const { argv, inner, ambiguous, expanded } = unwrap(words);
       const residue = inner === null ? bare : words.filter((w) => w !== inner).join(" ");
       // The skill's own review command (setup-flow.md): a direct `codex exec ... -` with its prompt on stdin from a
       // here-document whose every delimiter is simple and quoted. That body is data, so the `<<` alone is no unparsed
@@ -958,6 +981,9 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
       if (reasons.length > 0) hits.push({ call, segment: `${residue} [${reasons.join("; ")}]`, kind: "review" });
       else if (UNSUPPORTED_SYNTAX.test(skeleton)) hits.push({ call, segment: residue, kind: "review" });
       else if (executable !== null) hits.push({ call, segment: `${argv.join(" ")} [${executable}]`, kind: "review" });
+      // Check set 4: the command a variable or substitution names is not known from the text. It is read before any
+      // wrapper, shell or probe is recognised (`$x/env true` is not `env`), on argv[0] and on each word a wrapper hands on.
+      else if (commandWords && expanded !== undefined) hits.push({ call, segment: `${words.join(" ")} [expansion at command position]`, kind: "review" });
       if (ambiguous !== null) hits.push({ call, segment: `${words.join(" ")} [${ambiguous}]`, kind: "review" });
       if (inner !== null) {
         if (depth >= 3) hits.push({ call, segment: words.join(" "), kind: "review" });
@@ -969,11 +995,522 @@ export function executionCalls(calls: readonly EvalCall[]): ExecutionHit[] {
       if (kind !== null) hits.push({ call, segment: argv.join(" "), kind });
     }
   };
-  for (const call of calls) {
-    const cmd = commandOf(call);
-    if (cmd !== null) scan(call, cmd, 0);
+  scan(call, text, from);
+}
+
+// --- check set 4: raw lexing, the exec wrapper, one literal loop, one post-approval python heredoc ----------
+
+/** One quoted or unquoted run inside a word, as written: a double-quoted run keeps its backslashes. */
+export interface RawSegment { readonly kind: "bare" | "single" | "double"; readonly text: string }
+export type RawItem =
+  | { readonly type: "word"; readonly segments: readonly RawSegment[]; readonly start: number; readonly end: number }
+  | { readonly type: "op"; readonly op: string; readonly start: number; readonly end: number }
+  | {
+    readonly type: "heredoc"; readonly start: number; readonly end: number; readonly fd: string; readonly strip: boolean;
+    /** Null for a delimiter word outside the simple forms. */
+    readonly delimiter: string | null; readonly quote: "single" | "double" | "backslash" | "none";
+    /** Filled when the body is read: its span, and the end of the terminator line (its newline excluded). */
+    bodyStart: number; bodyEnd: number; lineEnd: number; terminated: boolean;
+  };
+
+/**
+ * Check set 4: one command string as raw tokens, each word keeping its quote segments and every span its source
+ * position, so a recogniser reads quoting that `shellSequence` removes (`'$p'"$p"` and `'$p$p'""` are one word there).
+ * Separators, parentheses, braces and redirections are ops; a here-document's body is read as its own span, never
+ * lexed. It returns null for anything it cannot place (an unterminated quote, a continuation, a comment, a complex
+ * delimiter), and the recogniser that asked then declines.
+ */
+export function rawTokens(text: string): RawItem[] | null {
+  const items: RawItem[] = [];
+  let segments: RawSegment[] = [];
+  let start = -1;
+  const pending: Extract<RawItem, { type: "heredoc" }>[] = [];
+  const endWord = (at: number): void => {
+    if (segments.length > 0) items.push({ type: "word", segments, start, end: at });
+    segments = []; start = -1;
+  };
+  const addSegment = (kind: RawSegment["kind"], t: string, at: number): void => {
+    if (start < 0) start = at;
+    const last = segments[segments.length - 1];
+    if (kind === "bare" && last?.kind === "bare") segments[segments.length - 1] = { kind, text: last.text + t };
+    else segments.push({ kind, text: t });
+  };
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "'") {
+      const close = text.indexOf("'", i + 1);
+      if (close < 0) return null;
+      addSegment("single", text.slice(i + 1, close), i); i = close + 1; continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      if (j >= text.length) return null;
+      addSegment("double", text.slice(i + 1, j), i); i = j + 1; continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 >= text.length || text[i + 1] === "\n") return null;
+      addSegment("bare", text.slice(i, i + 2), i); i += 2; continue;
+    }
+    if (ch === "#" && segments.length === 0) return null;
+    if (ch === "<" && text[i + 1] === "<" && text[i + 2] !== "<") {
+      // A word of digits directly before `<<` is its descriptor.
+      let fd = "";
+      if (segments.length === 1 && segments[0]!.kind === "bare" && /^\d+$/.test(segments[0]!.text)) { fd = segments[0]!.text; segments = []; start = -1; }
+      endWord(i);
+      let k = i + 2;
+      const strip = text[k] === "-";
+      if (strip) k++;
+      while (text[k] === " " || text[k] === "\t") k++;
+      const rest = text.slice(k);
+      let delimiter: string | null = null;
+      let quote: "single" | "double" | "backslash" | "none" = "none";
+      let width = 0;
+      for (const [q, re] of [["single", /^'([A-Za-z0-9_]+)'/], ["double", /^"([A-Za-z0-9_]+)"/], ["backslash", /^\\([A-Za-z0-9_]+)/], ["none", /^([A-Za-z0-9_]+)/]] as const) {
+        const m = re.exec(rest);
+        if (m !== null && /^(?:[ \t\n;|&<>()]|$)/.test(rest.slice(m[0].length))) { delimiter = m[1]!; quote = q; width = m[0].length; break; }
+      }
+      if (delimiter === null) return null;
+      const h = { type: "heredoc" as const, start: i, end: k + width, fd, strip, delimiter, quote, bodyStart: -1, bodyEnd: -1, lineEnd: -1, terminated: false };
+      items.push(h); pending.push(h);
+      i = k + width; continue;
+    }
+    if (ch === "\n") {
+      endWord(i);
+      items.push({ type: "op", op: "\n", start: i, end: i + 1 });
+      let pos = i + 1;
+      for (const h of pending) {
+        h.bodyStart = pos;
+        for (;;) {
+          if (pos >= text.length) { h.bodyEnd = text.length; h.lineEnd = text.length; break; }
+          const nl = text.indexOf("\n", pos);
+          const end = nl < 0 ? text.length : nl;
+          const line = text.slice(pos, end);
+          if ((h.strip ? line.replace(/^\t+/, "") : line) === h.delimiter) { h.bodyEnd = Math.max(h.bodyStart, pos - 1); h.lineEnd = end; h.terminated = true; pos = end; break; }
+          pos = end + 1;
+        }
+        if (!h.terminated) return items;
+      }
+      pending.length = 0;
+      i = pos; continue;
+    }
+    if (ch === " " || ch === "\t") { endWord(i); i++; continue; }
+    const two = text.slice(i, i + 2);
+    if (["&&", "||", ";;", ">>", "&>", ">&", "<&", ">|"].includes(two)) { endWord(i); items.push({ type: "op", op: two, start: i, end: i + 2 }); i += 2; continue; }
+    if ("&|;()<>".includes(ch) || ((ch === "{" || ch === "}") && segments.length === 0)) { endWord(i); items.push({ type: "op", op: ch, start: i, end: i + 1 }); i++; continue; }
+    addSegment("bare", ch, i); i++;
   }
-  return hits;
+  endWord(text.length);
+  return items;
+}
+
+/** The text of a word that is exactly one bare segment, or null. */
+const bareWord = (item: RawItem | undefined): string | null => (item?.type === "word" && item.segments.length === 1 && item.segments[0]!.kind === "bare" ? item.segments[0]!.text : null);
+/** Separators after which the next word is at command position. */
+const COMMAND_BREAKS: ReadonlySet<string> = new Set([";", "\n", "&&", "||"]);
+
+/** A Codex exec wrapper as read: its inner command string, or `undecidable` when the shell would expand it. */
+export type WrapperReading = { readonly shell: string; readonly quote: "single" | "double"; readonly inner: string } | "undecidable" | null;
+
+/**
+ * Check set 4: the exec wrapper (`/bin/zsh -lc '...'`, `bash -c "..."`) as a whole call command, one quoted word after
+ * the flag and nothing else. A single-quoted string is the inner command as written. A double-quoted one is decoded
+ * as zsh would (`\\` and `\"` lose their backslash, any other `\x` stays) unless the shell would expand it first: an
+ * unescaped `$`, a backtick, `\$` or a backslash-newline makes it undecidable. Any other command is not a wrapper.
+ */
+export function readWrapper(command: string): WrapperReading {
+  const items = rawTokens(command);
+  if (items === null || items.length !== 3 || items.some((x) => x.type !== "word")) return null;
+  const shell = bareWord(items[0]);
+  const flag = bareWord(items[1]);
+  if (shell === null || flag === null || !/^(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)$/.test(shell) || !/^-l?c$/.test(flag)) return null;
+  const word = items[2] as Extract<RawItem, { type: "word" }>;
+  if (word.segments.length !== 1) return null;
+  const seg = word.segments[0]!;
+  if (seg.kind === "single") return { shell, quote: "single", inner: seg.text };
+  if (seg.kind !== "double") return null;
+  let inner = "";
+  for (let k = 0; k < seg.text.length; k++) {
+    const ch = seg.text[k]!;
+    if (ch === "$" || ch === "`") return "undecidable";
+    if (ch !== "\\") { inner += ch; continue; }
+    const next = seg.text[k + 1] ?? "";
+    if (next === "\n" || next === "$" || next === "`") return "undecidable";
+    if (next === "\\" || next === '"') { inner += next; k++; continue; }
+    inner += ch;
+  }
+  return { shell, quote: "double", inner };
+}
+
+/** Words a loop body may not use: each can change or read around the loop variable. */
+const LOOP_MUTATORS: ReadonlySet<string> = new Set(["read", "readarray", "mapfile", "getopts", "export", "local", "declare", "typeset", "unset", "let", "printf", "eval", "source", ".", "alias", "set", "shift", "IFS"]);
+const LOOP_KEYWORDS: ReadonlySet<string> = new Set(["if", "then", "elif", "else", "fi"]);
+const LOOP_NESTING: ReadonlySet<string> = new Set(["for", "while", "until", "case", "select", "function", "do", "coproc", "!", "[[", "]]", "esac", "in"]);
+
+/** A word that runs the words after it as a command: `env` or a wrapper `unwrap` knows, by base name. */
+const leadsCommand = (word: string): boolean => baseName(word) === "env" || Object.hasOwn(WRAPPERS, baseName(word));
+
+/** Words that change how the shell reads or expands a later loop: options, emulation, aliases, traps, declarations. */
+const SHELL_MODE_WORDS: ReadonlySet<string> = new Set(["setopt", "unsetopt", "set", "emulate", "alias", "trap", "function", "typeset", "declare", "local", "integer", "readonly", "shopt"]);
+
+/** The read-only commands allowed outside an unrolled loop, and the separators between them. A closed list. */
+const OUTSIDE_COMMANDS: ReadonlySet<string> = new Set(["cat", "ls", "pwd", "echo", "head", "tail", "wc", "true", ":", "test"]);
+/** The names a loop variable may have. A closed list: none is one a shell sets, ties or reads itself. */
+const LOOP_NAMES: ReadonlySet<string> = new Set(["p", "d", "f", "dir", "file"]);
+/** The commands a loop body may run. A closed list, read-only; no wrapper is in it. */
+const BODY_COMMANDS: ReadonlySet<string> = new Set(["test", "[", "echo", "cat", "ls", "head", "tail", "wc", "true", ":"]);
+const OUTSIDE_BREAKS: ReadonlySet<string> = new Set([";", "\n", "&&"]);
+
+export type LoopReading =
+  | { readonly kind: "none" }
+  | { readonly kind: "declined"; readonly reason: string }
+  | { readonly kind: "unrolled"; readonly text: string; readonly name: string; readonly words: readonly string[] };
+
+/**
+ * Check set 4: at most one `for NAME in W1 .. Wn; do BODY; done`, unrolled into n copies of BODY with each whole
+ * `$NAME` or `${NAME}` replaced by the word. Every word is literal (one bare or single-quoted segment of
+ * `[A-Za-z0-9._/-]`, 1 to 16 of them), and the loop variable is expanded only inside a double-quoted segment:
+ * an unquoted expansion is split on IFS, which the text before the loop can change, so it declines. The body is
+ * simple commands joined by `;`, newlines, `&&` and `||`, with `if`/`then`/`elif`/`else`/`fi` at command position
+ * (each branch is then scanned as a command); nesting, a pipe, a background `&`, a redirection, a here-document, a
+ * backslash, any other `$`, and anything that can change the variable decline. So does any mention of the variable
+ * after `done`, as an expansion or as its bare name (an indirect read), since it would keep the last word, and any
+ * `${!`, `(P)` or `eval` in the command. Every command in the body starts with one of a closed list of read-only
+ * commands written bare (`test`, `[`, `echo`, `cat`, `ls`, `head`, `tail`, `wc`, `true`, `:`), so no wrapper, no quoted
+ * command name and never the variable stands at command position, and no body word is single-quoted. In argument
+ * position the variable may be concatenated (`"$NAME/AGENTS.md"`), but no iteration may assemble a mutator, nesting or
+ * shell-mode word, and no loop word is one or a wrapper. NAME is one of `p`, `d`, `f`, `dir`, `file`.
+ * Outside the loop, the variable's bare name before `for` (a declaration can transform what it receives) and, anywhere
+ * in the command in any quoting, a word that changes how the shell reads the loop (`setopt`, `emulate`, `alias`,
+ * `trap`, `typeset` ...) decline too. Those clauses are defence in depth; the gate is a grammar: everything before
+ * `for` and after `done` is simple commands joined by `;`, newlines or `&&`, every word one bare run of
+ * `[A-Za-z0-9._/=:@,+-]`, each command's first word one of a closed list of read-only commands and no assignment.
+ * Anything else outside the loop declines. A declined loop stays needs-review.
+ */
+export function unrollLoop(text: string): LoopReading {
+  const items = rawTokens(text);
+  if (items === null) return { kind: "none" };
+  const atCommand = (k: number): boolean => {
+    const prev = items[k - 1];
+    return prev === undefined || (prev.type === "op" && COMMAND_BREAKS.has(prev.op)) || LOOP_KEYWORDS.has(bareWord(prev) ?? "") || bareWord(prev) === "do";
+  };
+  const fors = items.map((x, k) => (bareWord(x) === "for" && atCommand(k) ? k : -1)).filter((k) => k >= 0);
+  if (fors.length === 0) return { kind: "none" };
+  const decline = (reason: string): LoopReading => ({ kind: "declined", reason });
+  if (fors.length > 1) return decline("more than one loop");
+  let k = fors[0]!;
+  const forStart = items[k]!.start;
+  const name = bareWord(items[++k]);
+  if (name === null || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return decline("loop variable");
+  // The shell manages some names itself (`_` is the last argument in bash, `path` is tied to PATH in zsh).
+  if (!LOOP_NAMES.has(name)) return decline(`loop variable not allowlisted: ${name}`);
+  if (bareWord(items[++k]) !== "in") return decline("loop without in");
+  const words: string[] = [];
+  for (k++; k < items.length && items[k]!.type === "word"; k++) {
+    const w = items[k] as Extract<RawItem, { type: "word" }>;
+    if (w.segments.length !== 1 || w.segments[0]!.kind === "double" || !/^[A-Za-z0-9._/-]+$/.test(w.segments[0]!.text)) return decline("loop word not literal");
+    // A loop word substituted at command position would run as itself: a mutator or nesting word declines.
+    if (LOOP_NESTING.has(w.segments[0]!.text) || LOOP_MUTATORS.has(w.segments[0]!.text) || leadsCommand(w.segments[0]!.text)) return decline(`${w.segments[0]!.text} as a loop word`);
+    words.push(w.segments[0]!.text);
+  }
+  if (words.length < 1 || words.length > 16) return decline("loop word count");
+  const sep = items[k];
+  if (sep?.type !== "op" || (sep.op !== ";" && sep.op !== "\n")) return decline("loop words not ended");
+  for (k++; items[k]?.type === "op" && (items[k] as { op: string }).op === "\n"; k++);
+  if (bareWord(items[k]) !== "do") return decline("loop without do");
+  const bodyFrom = items[k]!.end;
+  const reference = new RegExp(`\\$${name}(?![A-Za-z0-9_])|\\$\\{${name}\\}`, "g");
+  const doubleOk = new RegExp(`^(?:[A-Za-z0-9._/:-]|\\$${name}(?![A-Za-z0-9_])|\\$\\{${name}\\})*$`);
+  const blanks: [number, number][] = [];
+  let done = -1;
+  for (k++; k < items.length; k++) {
+    const item = items[k]!;
+    if (item.type === "heredoc") return decline("here-document in loop body");
+    if (item.type === "op") {
+      if (!COMMAND_BREAKS.has(item.op)) return decline(`${item.op === "\n" ? "newline" : item.op} in loop body`);
+      continue;
+    }
+    const bare = bareWord(item);
+    if (bare === "done" && atCommand(k)) { done = k; break; }
+    if (bare !== null && LOOP_KEYWORDS.has(bare) && atCommand(k)) { blanks.push([item.start, item.end]); continue; }
+    // The gate for the body: every command is one of a closed list of read-only commands, written bare. No wrapper,
+    // no quoted command name and never the loop variable can stand at command position.
+    if (atCommand(k)) {
+      const command = item.segments.length === 1 && item.segments[0]!.kind === "bare" ? item.segments[0]!.text : null;
+      if (command === null || !BODY_COMMANDS.has(command)) return decline(`loop body command not allowlisted: ${item.segments.map((x) => x.text).join("")}`);
+    }
+    if (item.segments.length !== 1) return decline("mixed quoting in loop body");
+    const seg = item.segments[0]!;
+    if (seg.text.includes("\\")) return decline("backslash in loop body");
+    // Quoting does not stop the shell running a word as a command (`'printf' -v p`), so every word is checked unquoted.
+    if (LOOP_NESTING.has(seg.text) || LOOP_MUTATORS.has(seg.text)) return decline(`${seg.text} in loop body`);
+    if (seg.kind === "single") return decline("single-quoted word in loop body");
+    if (seg.kind === "double") {
+      if (!doubleOk.test(seg.text)) return decline("expansion in loop body");
+      if (seg.text.includes("$")) {
+        // No iteration may turn the word into one the body may not hold.
+        for (const w of words) {
+          const assembled = seg.text.replace(reference, w);
+          if (LOOP_NESTING.has(assembled) || LOOP_MUTATORS.has(assembled) || SHELL_MODE_WORDS.has(assembled)) return decline(`${assembled} assembled in loop body`);
+        }
+      }
+      continue;
+    }
+    if (seg.text.includes("$")) return decline("unquoted expansion in loop body");
+    if (!/^[A-Za-z0-9._/=:[\]-]+$/.test(seg.text)) return decline("loop body word");
+    if (new RegExp(`^${name}=`).test(seg.text)) return decline("assignment in loop body");
+  }
+  if (done < 0) return decline("loop without done");
+  const after = items[done + 1];
+  if (after !== undefined && (after.type !== "op" || !COMMAND_BREAKS.has(after.op))) return decline("loop followed by an operator");
+  const doneEnd = items[done]!.end;
+  if (new RegExp(`\\$${name}(?![A-Za-z0-9_])|\\$\\{${name}`).test(text.slice(doneEnd))) return decline("loop variable used after done");
+  // An indirect read names the variable without `$NAME`: `v=p; "${!v}"`, `"${(P)v}"`, `eval "\$""p"`.
+  if (new RegExp(`(?<![A-Za-z0-9_./-])${name}(?![A-Za-z0-9_./-])`).test(text.slice(doneEnd))) return decline("loop variable named after done");
+  if (text.includes("${!")) return decline("indirect expansion in the command");
+  if (text.includes("(P)")) return decline("indirect expansion in the command");
+  if (/(?<![A-Za-z0-9_./-])eval(?![A-Za-z0-9_./-])/.test(text)) return decline("eval in the command");
+  // A declaration before the loop can transform what the variable receives (`typeset -l p` lowercases it).
+  if (new RegExp(`(?<![A-Za-z0-9_./-])${name}(?![A-Za-z0-9_./-])`).test(text.slice(0, forStart))) return decline("loop variable named before the loop");
+  // So can a word that changes how the shell reads or expands the loop without naming the variable, in any quoting.
+  for (const item of items) {
+    if (item.type !== "word") continue;
+    const word = item.segments.map((x) => x.text).join("");
+    if (SHELL_MODE_WORDS.has(word)) return decline(`${word} in the command`);
+  }
+  // The gate: everything outside the loop is literal read-only commands, or the loop declines. The clauses above are
+  // defence in depth; this grammar is what a spelling of a declaration (`type\set -l pa""ram`) cannot get past.
+  const outside = (side: "prefix" | "suffix", from: number, to: number): string | null => {
+    let first = true;
+    for (let j = from; j < to; j++) {
+      const item = items[j]!;
+      if (item.type === "heredoc") return `${side} here-document`;
+      if (item.type === "op") {
+        if (!OUTSIDE_BREAKS.has(item.op)) return `${side} operator: ${item.op}`;
+        first = true;
+        continue;
+      }
+      const word = item.segments.length === 1 && item.segments[0]!.kind === "bare" ? item.segments[0]!.text : null;
+      if (word === null || !/^[A-Za-z0-9._/=:@,+-]+$/.test(word)) return `${side} word not literal`;
+      if (first) {
+        if (ASSIGNMENT.test(word)) return `${side} assignment: ${word}`;
+        if (!OUTSIDE_COMMANDS.has(word)) return `${side} command not allowlisted: ${word}`;
+        first = false;
+      }
+    }
+    return null;
+  };
+  const refused = outside("prefix", 0, fors[0]!) ?? outside("suffix", done + 1, items.length);
+  if (refused !== null) return decline(refused);
+  let body = "";
+  let at = bodyFrom;
+  for (const [s, e] of blanks) { body += text.slice(at, s) + " ".repeat(e - s); at = e; }
+  body += text.slice(at, items[done]!.start);
+  const copies = words.map((w) => body.replace(reference, w));
+  return { kind: "unrolled", text: `${text.slice(0, forStart)}\n${copies.join("\n")}\n${text.slice(doneEnd)}`, name, words };
+}
+
+/**
+ * A body a qualifying heredoc may not carry: it can start installs, tests, builds or servers, run a shell, or, on one
+ * line, write with a path outside the project. A text match, fail-closed: it only ever keeps a call needs-review; the
+ * judge line, not this, rules on what the script did.
+ */
+const SCRIPT_RUNNERS = "npm|pnpm|yarn|bun|pip|pip3|poetry|uv|pipenv|hatch|pdm|cargo|go|gradle|gradlew|mvn|mvnw|make|swift|xcodebuild|dotnet|flutter|dart|deno|rake|bundle|mix";
+const SCRIPT_SUBS = "install|i|add|ci|test|t|build|run|run-script|dev|start|serve|exec|dlx|x|sync|check|package|task";
+const SCRIPT_PREFILTER: readonly RegExp[] = [
+  new RegExp(`['"](?:${SCRIPT_RUNNERS})['"]\\s*,\\s*['"](?:${SCRIPT_SUBS})['"]`),
+  new RegExp(`['"](?:${SCRIPT_RUNNERS})\\s+(?:${SCRIPT_SUBS})(?![A-Za-z0-9_-])`),
+  /['"](?:npx|bunx|pnpx|pytest|py\.test|vitest|jest|vite|tsc|next|tox|nox|playwright|uvicorn|gunicorn|flask)(?:['"\s])/,
+  /['"](?:python[0-9.]*|node|sh|bash|zsh|dash|ksh|perl|ruby|env|xargs|sudo)['"]\s*[,\]]/,
+  /\bos\.(?:system|popen|exec\w*|spawn\w*|fork)\b|\bpty\b|\bexec\s*\(|\beval\s*\(|shell\s*=\s*True|\bchdir\b|\bcwd\s*=/,
+];
+const SCRIPT_WRITE = /\bopen\s*\([^)\n]*,\s*['"][^'"]*[wax+]|\.open\s*\(\s*['"][^'"]*[wax+]|write_text|write_bytes|\bshutil\.|os\.rename|os\.replace|os\.remove|\bunlink\b|rmtree|\bmkdir|\.touch\s*\(|os\.symlink|\.symlink_to/;
+const SCRIPT_OUTSIDE = /['"]\/|['"]~|\.\.\/|['"]\.\.['"]|expanduser|\bHOME\b|environ|\bPath\.home\b|gettempdir|tempfile/;
+
+/** Why a script body cannot qualify, or null. */
+function scriptBodyFinding(body: string): string | null {
+  if (Buffer.byteLength(body, "utf-8") > 8192) return "script longer than 8192 bytes";
+  if (SCRIPT_PREFILTER.some((re) => re.test(body))) return "script runs a command";
+  if (body.split("\n").some((line) => SCRIPT_WRITE.test(line) && SCRIPT_OUTSIDE.test(line))) return "script may write outside the project";
+  return null;
+}
+
+export interface DirectHeredoc {
+  /** Where the excised span starts (`<<`) and ends (the terminator line, its newline kept). */
+  readonly start: number;
+  readonly end: number;
+  readonly delimiter: string;
+  readonly quote: "single" | "double" | "backslash";
+  readonly body: string;
+}
+
+/**
+ * Check set 4: the one here-document in `text`, when it is a direct `python3 -` (or `python3`) reading a quoted
+ * simple delimiter at a command boundary: no wrapper, assignment or descriptor, no `<<-`, nothing after the
+ * operator on its line, a terminator found, no pipe on either side, a body of at most 8192 bytes that the fail-closed
+ * prefilter passes. Null otherwise; the call then stays needs-review.
+ */
+export function readDirectPythonHeredoc(text: string): DirectHeredoc | null {
+  const items = rawTokens(text);
+  if (items === null) return null;
+  const docs = items.filter((x): x is Extract<RawItem, { type: "heredoc" }> => x.type === "heredoc");
+  if (docs.length !== 1) return null;
+  const h = docs[0]!;
+  if (h.delimiter === null || h.quote === "none" || h.strip || h.fd !== "" || !h.terminated) return null;
+  const at = items.indexOf(h);
+  let from = at;
+  while (from > 0 && items[from - 1]!.type === "word") from--;
+  const boundary = items[from - 1];
+  if (boundary !== undefined && (boundary.type !== "op" || !COMMAND_BREAKS.has(boundary.op))) return null;
+  const argv = items.slice(from, at).map(bareWord);
+  if (!((argv.length === 2 && argv[0] === "python3" && argv[1] === "-") || (argv.length === 1 && argv[0] === "python3"))) return null;
+  const nl = text.indexOf("\n", h.end);
+  if (nl < 0 || !/^[ \t]*$/.test(text.slice(h.end, nl))) return null;
+  if (/^[ \t]*[|&]/.test(text.slice(h.lineEnd + 1))) return null;
+  const body = h.bodyEnd > h.bodyStart ? text.slice(h.bodyStart, h.bodyEnd) : "";
+  if (scriptBodyFinding(body) !== null) return null;
+  return { start: h.start, end: h.lineEnd, delimiter: h.delimiter, quote: h.quote, body };
+}
+
+/** The judge line one qualifying post-approval python script requires. */
+export function interpreterScriptLine(callIndex: number, turn: string): string {
+  return `call ${callIndex} (turn ${turn}) runs a python3 script after approval: it runs no install, test, build or dev server, directly or via subprocess, and writes nothing outside the project.`;
+}
+
+export interface InterpreterScript {
+  readonly callIndex: number;
+  readonly turn: string;
+  readonly command: string;
+  readonly wrapper: { readonly shell: string; readonly quote: "single" | "double" } | null;
+  readonly delimiter: string;
+  readonly quote: "single" | "double" | "backslash";
+  readonly terminated: true;
+  readonly body: string;
+}
+
+export interface CallAnalysis {
+  readonly executions: readonly ExecutionHit[];
+  /** The needs-review segments, in call order. */
+  readonly unresolved: readonly string[];
+  readonly loops: readonly { readonly callIndex: number; readonly turn: string; readonly name: string; readonly words: readonly string[] }[];
+  readonly interpreterScripts: readonly InterpreterScript[];
+  readonly semanticLines: readonly string[];
+  /**
+   * The calls that write setup state. Before check set 4 it is `writeCalls` exactly. From check set 4 a shell call
+   * also counts when the text the analysis scanned (a wrapper's string, the remainder of an excised heredoc, an
+   * unrolled loop) writes: the write is the original call's.
+   */
+  readonly writes: readonly EvalCall[];
+}
+
+/** A turn as the analysis reads it: its label and the calls it made. */
+export interface AnalysedTurn { readonly label: string; readonly callRange: readonly [number, number] }
+
+/**
+ * The shell analysis of a run's calls under a check set: every consumer (the per-turn stop, the whole-run checks, the
+ * regrade and the cross-check) reads this one function. Before check set 4 it is `executionCalls` exactly. From check
+ * set 4 each call first gets its approval context from the turn whose range holds it (`after` from the first turn
+ * labelled `approve`, `before` otherwise, a call outside every range read as `before`); then, when the whole call is
+ * one exec wrapper, its inner string is read (an undecidable wrapper keeps the check set 3 result), a qualifying
+ * python heredoc is excised after approval, and one literal loop is unrolled; what remains is scanned as check set 3
+ * scans. A call nothing applies to, or whose loop declines, keeps the check set 3 result.
+ */
+export function analyseCalls(calls: readonly EvalCall[], turns: readonly AnalysedTurn[], checkSet: number): CallAnalysis {
+  if (checkSet < 4) {
+    const executions = executionCalls(calls);
+    return { executions, unresolved: executions.filter((e) => e.kind === "review").map((e) => e.segment), loops: [], interpreterScripts: [], semanticLines: [], writes: writeCalls(calls) };
+  }
+  const approveAt = turns.findIndex((t) => t.label === "approve");
+  const turnOf = (index: number): number => turns.findIndex((t) => index >= t.callRange[0] && index < t.callRange[1]);
+  const executions: ExecutionHit[] = [];
+  const loops: { callIndex: number; turn: string; name: string; words: readonly string[] }[] = [];
+  const interpreterScripts: InterpreterScript[] = [];
+  const semanticLines: string[] = [];
+  const writes: EvalCall[] = [];
+  calls.forEach((call, index) => {
+    const cmd = commandOf(call);
+    if (cmd === null) { if (writeCalls([call]).length > 0) writes.push(call); return; }
+    let wrote = shellWrites(cmd);
+    const settle = (): void => { if (wrote) writes.push(call); };
+    const t = turnOf(index);
+    const label = t < 0 ? "unknown" : turns[t]!.label;
+    const after = approveAt >= 0 && t >= approveAt;
+    const wrapper = readWrapper(cmd);
+    if (wrapper === "undecidable") { scanExecutions(call, cmd, 0, executions, true); settle(); return; }
+    let text = wrapper === null ? cmd : wrapper.inner;
+    const heredoc = after ? readDirectPythonHeredoc(text) : null;
+    if (heredoc !== null) text = text.slice(0, heredoc.start) + text.slice(heredoc.end);
+    const loop = unrollLoop(text);
+    if (loop.kind === "declined" || (loop.kind === "none" && heredoc === null)) { scanExecutions(call, cmd, 0, executions, true); settle(); return; }
+    if (loop.kind === "unrolled") { text = loop.text; loops.push({ callIndex: index, turn: label, name: loop.name, words: loop.words }); }
+    scanExecutions(call, text, wrapper === null ? 0 : 1, executions, true);
+    // The scanned text is what runs: a write it shows (`git init` from an unrolled copy) is this call's write.
+    wrote ||= shellWrites(text);
+    settle();
+    if (heredoc !== null) {
+      interpreterScripts.push({
+        callIndex: index, turn: label, command: cmd, wrapper: wrapper === null ? null : { shell: wrapper.shell, quote: wrapper.quote },
+        delimiter: heredoc.delimiter, quote: heredoc.quote, terminated: true, body: heredoc.body,
+      });
+      semanticLines.push(interpreterScriptLine(index, label));
+    }
+  });
+  return { executions, unresolved: executions.filter((e) => e.kind === "review").map((e) => e.segment), loops, interpreterScripts, semanticLines, writes };
+}
+
+/** Check set 4 (G2): what the run shows about an agent reviewer, recorded for every variant; it fails nothing. */
+export interface ReviewerCapability {
+  readonly toolInventory: { readonly status: "observed"; readonly tools: readonly string[] } | { readonly status: "unknown" };
+  readonly waitWithoutLaunch: readonly { readonly callIndex: number; readonly turn: string; readonly item: string }[];
+  readonly observedLeak: readonly { readonly callIndex: number; readonly turn: string; readonly item: string }[];
+  readonly reviewerCapability: "leak-observed" | "confirmed-unavailable" | "unknown";
+}
+
+/** The agent tools reviewer detection reads (lib `reviewerInvocations`): a Codex spawn or wait, a Claude Agent or Task. */
+const AGENT_TOOLS: ReadonlySet<string> = new Set(["Agent", "Task", "spawn_agent", "wait", "collab:spawn_agent", "collab:wait"]);
+/** A shell tool: an inventory without one is not the client's full list. */
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash", "shell", "exec_command"]);
+
+/**
+ * Check set 4 (G2). `leak-observed` when an agent tool demonstrably worked: a spawn that returned a thread, a wait
+ * on named threads that returned a message, or a main-agent Agent/Task call that succeeded. `confirmed-unavailable`
+ * only when the client reported its tool list, that list is familiar (it has a shell tool and no tool whose name
+ * suggests an agent other than the ones listed) and holds none of the agent tools, and nothing leaked. Otherwise
+ * `unknown`, which Codex (no inventory) always is without a leak.
+ */
+export function reviewerCapabilityOf(calls: readonly EvalCall[], initTools: readonly string[] | null, turnOf: (index: number) => string): ReviewerCapability {
+  const item = (c: EvalCall): string => JSON.stringify({ name: c.name, input: c.input ?? null, result: c.result ?? null, isError: c.isError });
+  const waitWithoutLaunch: { callIndex: number; turn: string; item: string }[] = [];
+  const observedLeak: { callIndex: number; turn: string; item: string }[] = [];
+  const spawned = new Set<string>();
+  const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  calls.forEach((c, index) => {
+    const input = c.input as { receiver_thread_ids?: unknown } | null;
+    if (c.name === "collab:spawn_agent") {
+      const threads = c.isError ? [] : ids(input?.receiver_thread_ids);
+      threads.forEach((x) => spawned.add(x));
+      if (threads.length > 0) observedLeak.push({ callIndex: index, turn: turnOf(index), item: item(c) });
+      return;
+    }
+    if (c.name === "collab:wait") {
+      const receivers = ids(input?.receiver_thread_ids);
+      if (receivers.length === 0 || !receivers.some((x) => spawned.has(x))) waitWithoutLaunch.push({ callIndex: index, turn: turnOf(index), item: item(c) });
+      let states: Record<string, { message?: unknown }> = {};
+      try { const parsed = JSON.parse(c.result ?? "") as unknown; if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) states = parsed as typeof states; } catch { /* no states */ }
+      const message = Object.values(states).some((s) => typeof s?.message === "string" && s.message.trim() !== "");
+      if (!c.isError && receivers.length > 0 && message) observedLeak.push({ callIndex: index, turn: turnOf(index), item: item(c) });
+      return;
+    }
+    if ((c.name === "Agent" || c.name === "Task") && !c.nested && !c.isError && (c.result ?? "").trim() !== "") observedLeak.push({ callIndex: index, turn: turnOf(index), item: item(c) });
+  });
+  const toolInventory = initTools === null ? { status: "unknown" as const } : { status: "observed" as const, tools: [...initTools] };
+  const names = (initTools ?? []).map(bareToolName);
+  const familiar = names.some((n) => SHELL_TOOLS.has(n)) && !names.some((n) => !AGENT_TOOLS.has(n) && /agent|spawn|collab/i.test(n));
+  const reviewerCapability = observedLeak.length > 0 ? "leak-observed"
+    : initTools !== null && familiar && !names.some((n) => AGENT_TOOLS.has(n)) ? "confirmed-unavailable"
+    : "unknown";
+  return { toolInventory, waitWithoutLaunch, observedLeak, reviewerCapability };
 }
 
 // --- client turns ------------------------------------------------------------------
@@ -1030,9 +1567,12 @@ export const STOP_RULE_VERSION = "2026-09-27.16: a trailing paragraph without a 
 /** Check set 3's stop rule: check set 2's, plus the closed closing form. */
 export const STOP_RULE_VERSION_3 = `2026-09-28.1: ${STOP_RULE_VERSION.slice(STOP_RULE_VERSION.indexOf(": ") + 2)}; check set 3: a turn with no pending structured question that routes package, or that carries the three option labels as whole lines (list markers or emphasis allowed), must end, trailing newlines removed, byte for byte with the package question and the three option lines, one per line, nothing after Inspect details`;
 
-/** The stop rule a record of this check set is graded under: check sets 1 and 2 keep the text they were recorded with. */
+/** Check set 4's stop rule: check set 3's, plus the fixed line and trailing blanks on the closing lines. */
+export const STOP_RULE_VERSION_4 = `2026-09-30.1: ${STOP_RULE_VERSION_3.slice(STOP_RULE_VERSION_3.indexOf(": ") + 2)}; check set 4: spaces or tabs ending any of the four closing lines are ignored, and the paragraph before them must end with the line Nothing is written until you choose Approve setup., trailing spaces or tabs ignored`;
+
+/** The stop rule a record of this check set is graded under: check sets 1 to 3 keep the text they were recorded with. */
 export function stopRuleFor(checkSet: number): string {
-  return checkSet >= 3 ? STOP_RULE_VERSION_3 : STOP_RULE_VERSION;
+  return checkSet >= 4 ? STOP_RULE_VERSION_4 : checkSet >= 3 ? STOP_RULE_VERSION_3 : STOP_RULE_VERSION;
 }
 
 /**
@@ -1143,9 +1683,20 @@ export function hasApprovalBlock(text: string): boolean {
   return hasOptionLines(text);
 }
 
-/** Check set 3: whether a stop ends byte for byte with the four closing lines, trailing newlines removed. */
-export function endsWithClosingLines(stopText: string): boolean {
-  return stopText.replace(/\n+$/, "").endsWith(CLOSING_LINES);
+/** Check set 3: whether a stop ends byte for byte with the four closing lines, trailing newlines removed. Check set 4 ignores spaces or tabs ending each line. */
+export function endsWithClosingLines(stopText: string, checkSet = 3): boolean {
+  const text = stopText.replace(/\n+$/, "");
+  return (checkSet >= 4 ? text.replace(/[ \t]+$/gm, "") : text).endsWith(CLOSING_LINES);
+}
+
+/** Check set 4: the line every package carries above its question, one blank line between. */
+export const FIXED_LINE = "Nothing is written until you choose Approve setup.";
+
+/** Check set 4: whether the paragraph before the closing paragraph ends with the fixed line (trailing spaces or tabs ignored). */
+export function hasFixedLine(stopText: string): boolean {
+  const paragraphs = stopText.replace(/[ \t]+$/gm, "").trim().split(/\n[ \t]*\n/);
+  if (paragraphs.length < 2) return false;
+  return paragraphs[paragraphs.length - 2]!.split("\n").at(-1) === FIXED_LINE;
 }
 
 /**
@@ -1284,14 +1835,16 @@ export function semanticStopLine(label: string, candidate: StopKind): string {
 }
 
 /** A pre-approval stop: the turn ended at the expected question and wrote nothing. */
-export function checkStop(turn: EvalTurn, expected: readonly StopKind[]): StopCheck {
+export function checkStop(turn: EvalTurn, expected: readonly StopKind[], checkSet = 1): StopCheck {
   const { kind, candidate } = readTurnStop(turn);
   const reasons: string[] = [];
   const route = stopRoute({ kind, candidate })!;
   if (!expected.includes(route)) reasons.push(`stopped at ${kind === "semantic" ? `semantic (candidate ${route})` : kind}, expected ${expected.join(" or ")}`);
-  const writes = writeCalls(turn.calls);
+  // A stop is before approval: no call of it is in an approved turn.
+  const analysis = analyseCalls(turn.calls, [], checkSet);
+  const writes = analysis.writes;
   if (writes.length > 0) reasons.push(`wrote before approval: ${writes.map((w) => commandOf(w) ?? w.name).join("; ")}`);
-  const execs = executionCalls(turn.calls);
+  const execs = analysis.executions;
   const ran = execs.filter((e) => e.kind === "execution");
   const unclear = execs.filter((e) => e.kind === "review");
   if (ran.length > 0) reasons.push(`executed during setup: ${ran.map((e) => (e.call.nested ? `[nested] ${e.segment}` : e.segment)).join("; ")}`);
@@ -2118,8 +2671,8 @@ export function setupRecordText(storyDir: string): string {
  * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
  * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
  */
-export const CHECK_SET_VERSION = 3;
-export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3];
+export const CHECK_SET_VERSION = 4;
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4];
 
 /**
  * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises
@@ -2188,33 +2741,43 @@ function jsonObjects(text: string): unknown[] {
   return out;
 }
 
-function verdictIn(v: unknown, depth: number): string | null {
+/** The response object in `v`: the one carrying a string `verdict`, looked for through an MCP result's envelopes. */
+function responseIn(v: unknown, depth: number): Record<string, unknown> | null {
   if (depth > 4 || v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  if (!Array.isArray(v) && typeof o.verdict === "string") return o.verdict;
+  if (!Array.isArray(v) && typeof o.verdict === "string") return o;
   for (const key of ["structuredContent", "structured_content", "result"]) {
-    const r = verdictIn(o[key], depth + 1);
+    const r = responseIn(o[key], depth + 1);
     if (r !== null) return r;
   }
   const content = Array.isArray(v) ? v : o.content;
   if (Array.isArray(content)) {
     for (let k = content.length - 1; k >= 0; k--) {
       const item = content[k] as { text?: unknown } | null;
-      const r = typeof item?.text === "string" ? verdictOfDepth(item.text, depth + 1) : verdictIn(item, depth + 1);
+      const r = typeof item?.text === "string" ? responseOfDepth(item.text, depth + 1) : responseIn(item, depth + 1);
       if (r !== null) return r;
     }
   }
   return null;
 }
 
-function verdictOfDepth(text: string, depth: number): string | null {
+function responseOfDepth(text: string, depth: number): Record<string, unknown> | null {
   const objects = jsonObjects(text);
   for (let k = objects.length - 1; k >= 0; k--) {
-    const r = verdictIn(objects[k], depth);
+    const r = responseIn(objects[k], depth);
     if (r !== null) return r;
   }
-  if (/^\s*\[/.test(text)) { try { return verdictIn(JSON.parse(text), depth); } catch { /* not JSON */ } }
+  if (/^\s*\[/.test(text)) { try { return responseIn(JSON.parse(text), depth); } catch { /* not JSON */ } }
   return null;
+}
+
+/**
+ * Check set 4: the `findings` of the captured response's verdict object, each a string (another value as its JSON),
+ * or null when they cannot be read. The object is the one `verdictOf` reads its verdict from, envelopes included.
+ */
+export function findingsOf(text: string): string[] | null {
+  const findings = responseOfDepth(text, 0)?.findings;
+  return Array.isArray(findings) ? findings.map((f) => (typeof f === "string" ? f : JSON.stringify(f))) : null;
 }
 
 /**
@@ -2222,7 +2785,7 @@ function verdictOfDepth(text: string, depth: number): string | null {
  * (codex exec's schema output, an agent's final message), looking through an MCP result's content text.
  */
 export function verdictOf(text: string): string | null {
-  return verdictOfDepth(text, 0);
+  return (responseOfDepth(text, 0)?.verdict as string | undefined) ?? null;
 }
 
 /** The text a reviewer was given: the plan argument, the agent prompt, or the command with its here-document. */

@@ -1,0 +1,37 @@
+{
+  "blockers": [],
+  "date": "2026-09-29",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate household records, passwordless sign-in, privacy and an owner-reviewed phone journey.",
+      "id": "foundation",
+      "label": "PHASE 1",
+      "name": "Foundation and access"
+    },
+    {
+      "description": "Demonstrate applications, rule-correct allocations, strict waiting list, own allocation and 40-plot coordinator map.",
+      "id": "allocation",
+      "label": "PHASE 2",
+      "name": "Seasonal allocation"
+    },
+    {
+      "description": "Demonstrate own-plot reports, coordinator resolution and reliable daily email.",
+      "id": "problems",
+      "label": "PHASE 3",
+      "name": "Problem handling"
+    },
+    {
+      "description": "Demonstrate end-to-end acceptance evidence, privacy/accessibility and operational recovery.",
+      "id": "release",
+      "label": "PHASE 4",
+      "name": "Release acceptance"
+    }
+  ],
+  "title": "Plotbook"
+}

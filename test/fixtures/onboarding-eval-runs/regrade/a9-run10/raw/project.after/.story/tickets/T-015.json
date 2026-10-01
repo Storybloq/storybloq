@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-014",
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner accepts gardener/coordinator journeys and map against all brief requirements and emailed sign-in/daily digest decisions; confirms timezone, season dates, household roster and production operating settings.\nArtifact: staging application, T-014 verification evidence and operating guide.\nFollow-on gate: production deployment, which setup does not authorize.\nStage-1 limitation: this is an ordinary ticket; human approval is not automatically enforced. Record the owner's decision before closing.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 20,
+  "phase": "release",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "chore"
+}

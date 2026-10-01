@@ -1,0 +1,13 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+db.sqlite3
+db.sqlite3-*
+.env
+.env.*
+!.env.example

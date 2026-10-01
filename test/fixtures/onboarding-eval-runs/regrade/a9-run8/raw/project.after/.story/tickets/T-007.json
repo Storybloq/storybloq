@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator reviews applications, allocates and manages FIFO, from brief.md First version must 2\nScope: Controls backed by T-006, application/preference context, accessible plain list of assignments and available plots. Excludes: spatial map/grid (post-v1 T-014), gardener-wide directory\nAcceptance: List matches persisted assignments; queue order and limits clear; keyboard and phone usable; no unauthorized coordinator access\nBehaviour: Loading/empty/error states, mutation confirmation, stale-conflict refresh\nVerification: Role-protected E2E allocate/waitlist/promote journey and keyboard/mobile checks. Prerequisites: T-006. Assumptions: checkpoint-reviewed rules; no visual map in v1",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Coordinator allocation workspace",
+  "type": "task"
+}

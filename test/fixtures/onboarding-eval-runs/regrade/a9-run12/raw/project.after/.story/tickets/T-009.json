@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Staff can provision approximately 80 individual accounts and run and verify the first version, from owner instructions and delegated operating choices.\nScope: Integrated acceptance matrix, account/timezone setup guide, backup/restore smoke procedure, production configuration checklist (external secrets, DEBUG off, allowed hosts, HTTPS/secure cookies) and supported server start/readiness command. Excludes: public deployment execution and invented load targets.\nAcceptance: Evidence covers every authentication/booking rule and failure, concurrent slot/quota safety, eight-date navigation, clean setup and a repeatable two-account demo; production configuration is documented before real use.\nBehaviour: Recovery guidance for lock contention, booking conflicts and legacy ownership mapping; no secrets in documentation.\nVerification: make test integrated regressions; documented restore and keyboard walkthrough during implementation, never during Storybloq setup. Prerequisites: Live availability, booking and cancellation screens. Assumptions: Hosting remains undecided and does not block a local first version; proposed server command python manage.py runserver 127.0.0.1:8000 with login-page readiness must be established.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 20,
+  "phase": "member-experience",
+  "status": "open",
+  "title": "Acceptance evidence and staff operating guide",
+  "type": "task"
+}

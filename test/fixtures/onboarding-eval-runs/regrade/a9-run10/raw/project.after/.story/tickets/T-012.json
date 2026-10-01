@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-011"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator sees open problems and marks them resolved, from brief.md: First version must 4\nScope: Open/resolved lists, plot/time detail, resolution action and audit timestamp, server-side coordinator permission checks. Excludes: General messaging\nAcceptance: New report is open; resolution removes it from open list and updates gardener status; no public exposure\nBehaviour: Accessible empty/loading/error states; idempotent resolution; stale-update recovery\nVerification: Report-to-resolution journey and authorization tests. Prerequisites: T-011. Assumptions: Resolved reports retained; reopening deferred",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 20,
+  "phase": "problems",
+  "status": "open",
+  "title": "Coordinator problem resolution",
+  "type": "task"
+}

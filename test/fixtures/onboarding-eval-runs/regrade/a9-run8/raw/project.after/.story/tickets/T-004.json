@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Question: Review the mobile prototype and proposed household-verification approach; confirm garden timezone, stable timestamp tie handling and late-returner interpretation. Artifact: T-001 prototype without map and T-002 data examples. Fixed criteria from brief.md Rules and Constraints are not reopened: one household plot per season, returning applicants before 1 February prioritized, strict FIFO waiting list, coordinator-only contacts and accessible phone journeys. Assumptions: late returners use ordinary priority; stable ID breaks exact timestamp ties. T-005 waits on this review before applications/allocation proceed. T-003 may build the proposed workflow and adjust after review. Stage-1 limitation: this is an ordinary ticket; owner approval is not mechanically enforced.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 30,
+  "phase": "experience",
+  "status": "open",
+  "title": "Checkpoint: mobile prototype and household verification",
+  "type": "task"
+}

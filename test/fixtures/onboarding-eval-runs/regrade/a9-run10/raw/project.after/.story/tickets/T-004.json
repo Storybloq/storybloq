@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Owner inspects plain-language large-text journeys, from brief.md: Constraints\nScope: Navigable synthetic prototype for application/preferences, allocation and waitlist status, reporting, coordinator allocation/map/problems; keyboard/focus, labels and reflow. Excludes: Production writes\nAcceptance: All key screens have empty/loading/error states; usable narrow phone viewport and zoom; readable type and plain language\nBehaviour: Accessible feedback and recovery; no color-only meaning\nVerification: Keyboard, zoom and mobile walkthrough. Prerequisites: T-001. Assumptions: Visual style delegated",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Phone journey prototype",
+  "type": "task"
+}

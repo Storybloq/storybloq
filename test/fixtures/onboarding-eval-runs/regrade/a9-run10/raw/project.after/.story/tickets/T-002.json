@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator prepares trusted seasonal allocation data, from brief.md: Background and Rules\nScope: 40 uniquely labelled plots; household/email memberships; coordinator bootstrap; validated prior-season holdings import with preview; exact March-October season dates, timezone, February cutoff and digest schedule; audited duplicate-household merge before allocation. Excludes: Public contact directory\nAcceptance: Exactly 40 unique plots; conflicting household/email records require resolution; unique household and plot holdings per season enforced in database; initial roster and required seasonal configuration approved by coordinator before opening\nBehaviour: Accessible forms and invalid-row explanations; atomic import/merge with no partial corruption\nVerification: Constraint, invalid import, merge, access-control and timezone-boundary tests. Prerequisites: T-001. Assumptions: Coordinator is final authority on household identity; synthetic data in development",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Household, season and plot records",
+  "type": "task"
+}

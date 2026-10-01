@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006",
+    "T-007",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardener sees own allocated plot and exact season dates, from brief.md: First version must 3\nScope: Own plot and season dates; pending/waiting/offered/allocated/declined states with next steps. Excludes: Other households' identities or contact details\nAcceptance: Coordinator actions update displayed state; dates match season; no other household records returned\nBehaviour: Plain-language empty/loading/error/retry states; phone and keyboard support\nVerification: State-transition journeys and cross-household authorization tests. Prerequisites: T-003, T-006, T-007, T-005. Assumptions: Contact coordinator for questions",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Gardener allocation and queue status",
+  "type": "task"
+}

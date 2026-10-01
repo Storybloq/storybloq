@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006",
+    "T-007",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator reviews applications, allocates, waitlists and sees holders in a grid, from brief.md: First version must 2 and 5\nScope: Priority indicators/filters; valid allocation actions; bulk move unallocated applicants to ordered queue; offer/accept/decline controls; accessible map/list alternative; audit view. Excludes: Contacts on gardener screens\nAcceptance: Grid always shows all 40 plots with vacancy or holder; server-side role checks; promotion follows allocation rules; only coordinator can see contact data\nBehaviour: Readable mobile map/list; no-application/loading/error states; refresh concurrent changes\nVerification: API/role/UI tests plus 41 or more competing applications across 40 plots. Prerequisites: T-003, T-006, T-007, T-004. Assumptions: Coordinator contacts gardener and records acceptance or decline",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Coordinator allocation workspace and 40-plot map",
+  "type": "task"
+}

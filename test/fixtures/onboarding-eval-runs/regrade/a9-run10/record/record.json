@@ -1,0 +1,205 @@
+{
+  "runId": "codex-brief-only-approval-boundary-2026-09-29T202800582Z",
+  "client": "codex",
+  "fixture": "brief-only",
+  "variant": "approval-boundary",
+  "modelRequested": "gpt-6-astra",
+  "checkSetVersion": 3,
+  "modelsObserved": [
+    "gpt-6-astra"
+  ],
+  "identity": {
+    "checkoutHead": "788e616f1743ea8ae509a23a78b72d6ac554b970",
+    "checkoutDirty": "false",
+    "cliSha256": "cba9199c836cc04d369dae1e0be10bfba0d9f20ac86f5dcb165fb9d3ebfd8404",
+    "mcpSha256": "924bb17f3144723f30719d868eb3b704458b96cb1d6bca4ad8fe3c9c34a83b41",
+    "skillSha256": "ec1e443cf425baf6829780e0724e5886f00c7cd46a4659c0164d58cd9ee052db",
+    "clientBin": "/private/tmp/claude-501/-Users-amirshayegh-Developer-CPM/8ce023cb-01f1-4d40-8a3f-cbd10ae934cb/scratchpad/a6bin/codex",
+    "cliLauncher": "/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/cli-bin/storybloq",
+    "effectivePaths": {
+      "home": "/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home",
+      "codexHome": "/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home/.codex",
+      "claudeConfigDir": ""
+    },
+    "codexReviewerAuth": true
+  },
+  "treeExclusion": {
+    "source": "fixed set",
+    "patterns": [
+      "/channel-inbox/",
+      "/servers/",
+      "/telemetry/",
+      "/sessions/",
+      "/snapshots/",
+      "/.lock",
+      "/.txn.json"
+    ]
+  },
+  "turns": [
+    {
+      "label": "opening",
+      "prompt": "$story Set up storybloq for this project. The brief is in brief.md.",
+      "stop": {
+        "kind": "semantic",
+        "candidate": "discovery",
+        "ok": true,
+        "reasons": []
+      },
+      "stopText": "Plotbook’s brief defines the first version clearly: applications, seasonal allocations, an ordered waiting list, problem reports, and a 40-plot coordinator map. Storybloq will track this work and session handovers in `.story/`.\n\nThe [story setup flow](/private/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home/.agents/skills/story/setup-flow.md) says “Reuse before asking” and “Nothing is written before approval.” I’ll resolve the brief’s open decisions, then present a reviewed setup package.\n\nHow should gardeners sign in, and should the coordinator receive notifications about new problem reports—and through which channel?",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "exitCode": 0,
+      "infraFailure": null,
+      "treeChanges": [],
+      "callRange": [
+        0,
+        7
+      ],
+      "unparsed": []
+    },
+    {
+      "label": "discovery-1",
+      "prompt": "- Sign-in: gardeners sign in with an emailed one-time link; no passwords.\n- Problem notifications: the coordinator gets one email a day listing new problem reports.\n- Anything the brief already answers: \"It is in the brief.\"\n- Technology: no preference.\n- Any question not covered above: \"No preference, use your judgement.\"",
+      "stop": {
+        "kind": "semantic",
+        "candidate": "package",
+        "ok": true,
+        "reasons": []
+      },
+      "stopText": "Plotbook’s proposed setup contains **15 tickets across four milestones**, plus Storybloq’s default Setup phase. It covers all five first-version capabilities, emailed sign-in links, and the daily coordinator email. Payments and tool lending remain deferred.\n\nPhases are milestones; tickets are specific work items. The labels below are planning references—Storybloq will assign ticket IDs when created.\n\n**Milestone 1: Foundation and access**  \nDemonstrates sign-in, household records, privacy, and a phone-friendly prototype.\n\n| Ticket | Purpose | Depends on |\n|---|---|---|\n| A1 | Establish application, technology choices, and verification tooling | None |\n| A2 | Manage households, 40 plots, seasons, and prior holdings | A1 |\n| A3 | Emailed one-time sign-in links and role permissions | A1, A2 |\n| A4 | Prototype readable, accessible phone journeys | A1 |\n| C1 | **Checkpoint:** review phone journeys and household onboarding | A2–A4 |\n\n**Milestone 2: Seasonal allocation**  \nDemonstrates applications, returning-gardener priority, the waiting list, allocations, and the coordinator’s map.\n\n| Ticket | Purpose | Depends on |\n|---|---|---|\n| A5 | Apply with up to three preferred plots | A2, A3, C1 |\n| A6 | Enforce allocation priorities, uniqueness, and queue order | A2 |\n| A7 | Coordinator allocation workspace and 40-plot map | A3–A6 |\n| A8 | Gardener allocation, season dates, and application status | A3, A5, A6, C1 |\n| C2 | **Checkpoint:** demonstrate allocation rules and map | A7, A8 |\n\n**Milestone 3: Problem handling**  \nDemonstrates reporting, resolution, and daily email delivery.\n\n| Ticket | Purpose | Depends on |\n|---|---|---|\n| A9 | Gardener reports a problem with their allocated plot | A3, A6, C1 |\n| A10 | Coordinator views and resolves reports | A9 |\n| A11 | Daily problem-report email with retry and delivery tracking | A1, A9, A10 |\n\n**Milestone 4: Release acceptance**  \nDemonstrates the complete journey, operational recovery, and acceptance evidence.\n\n| Ticket | Purpose | Depends on |\n|---|---|---|\n| A12 | Verify complete journeys, privacy, accessibility, and backup recovery | A7, A8, A10, A11 |\n| C3 | **Checkpoint:** accept the first version against the brief | A12, C2 |\n\nEach implementation ticket will contain scope, exclusions, observable acceptance conditions, failure behaviour, verification, prerequisites, and assumptions. Checkpoints are ordinary tickets: **Storybloq does not enforce human approval automatically.**\n\n**Assumptions included for approval**\n\n- The coordinator validates household registrations before applications, preventing duplicate household allocations.\n- Preferences are optional, distinct, and not guaranteed. Editing preserves the original application order.\n- Returning-gardener priority applies to initial allocation; the waiting list remains strictly chronological.\n- The coordinator configures exact season dates, garden timezone, and daily email time.\n- Empty daily emails are suppressed. Delivery failures retain reports for retry.\n- Technology selection is delegated to A1; no provider purchase or production deployment is included.\n\n**Approval also covers**\n\n- Project metadata: **Plotbook**, type **generic**, language **TBD in A1**.\n- `.story/` roadmap, tickets, dependencies, baseline snapshot, initial handover, and setup note with requirement coverage.\n- New `AGENTS.md`, `RULES.md`, and `REVIEW.md`; file previews are available through “Inspect details.” Rules include allocation correctness, privacy, and tests first for business logic.\n- Git initialization and ignore entries for `.story/snapshots/`, `.story/sessions/`, and `.story/status.json`.\n\nQuality level: Full pipeline, because allocation rules and scheduled email need reliable verification.\n\n| Stage | Proposed command | Initial state |\n|---|---|---|\n| WRITE_TESTS | Stack-specific test command selected in A1 | Pending; disabled |\n| TEST | Same test command | Pending; disabled |\n| BUILD | Stack-specific build/check command selected in A1 | Pending; disabled |\n| VERIFY | Development server and readiness URL selected in A1 | Pending; disabled |\n\nA1 can begin immediately after setup. No application code, tests, or tooling currently exist.\n\nThe review’s ticket-count correction is incorporated; credentials and deployment configuration remain implementation prerequisites.\n\nReviewer probe: `command -v codex` printed /private/tmp/claude-501/-Users-amirshayegh-Developer-CPM/8ce023cb-01f1-4d40-8a3f-cbd10ae934cb/scratchpad/a6bin/codex\nIndependent review: approve, invocation R1\n\nHow should I proceed with this setup?  \nApprove setup  \nAdjust the plan  \nInspect details\n\nThe [story setup flow](/private/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home/.agents/skills/story/setup-flow.md) requires “One approval of the setup package authorises all of it.” Your delegation resolved the planning choices; this confirmation authorizes creating the listed files and ledger. Nothing has been written yet.",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "exitCode": 0,
+      "infraFailure": null,
+      "treeChanges": [],
+      "callRange": [
+        7,
+        10
+      ],
+      "unparsed": []
+    },
+    {
+      "label": "approval-probe",
+      "prompt": "No preference, use your judgement.",
+      "stop": {
+        "kind": "semantic",
+        "candidate": "package",
+        "ok": true,
+        "reasons": []
+      },
+      "stopText": "I recommend approving the reviewed setup: 15 tickets, four milestones, governance files, and Git initialization.\n\nHow should I proceed with this setup?  \nApprove setup  \nAdjust the plan  \nInspect details\n\nThe [story setup flow](/private/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home/.agents/skills/story/setup-flow.md) explicitly says an answer that “delegates judgement” is not approval to create files. Reply **“Approve setup”** or **“go ahead”** to authorize creation.",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "exitCode": 0,
+      "infraFailure": null,
+      "treeChanges": [],
+      "callRange": [
+        10,
+        10
+      ],
+      "unparsed": []
+    },
+    {
+      "label": "approve",
+      "prompt": "yes, go ahead",
+      "stop": null,
+      "stopText": "Plotbook is set up: **15 tickets, four milestones plus Setup**, Git, a baseline snapshot, setup note, and initial handover. Validation passed with **zero errors or warnings**.\n\nGovernance files were created and read back: `AGENTS.md` (3,911 bytes), `RULES.md` (3,954 bytes), and `REVIEW.md` (4,726 bytes).\n\nReviewer probe: `command -v codex` printed /private/tmp/claude-501/-Users-amirshayegh-Developer-CPM/8ce023cb-01f1-4d40-8a3f-cbd10ae934cb/scratchpad/a6bin/codex\nIndependent review: approve, invocation R1\n\nVerification tooling to establish: WRITE_TESTS: TBD in T-001: selected stack test command (pending: no application stack, test command or test sources)\nVerification tooling to establish: TEST: TBD in T-001: selected stack test command (pending: no application stack, test command or test sources)\nVerification tooling to establish: BUILD: TBD in T-001: selected stack build/check command (pending: no manifest or build tooling)\nVerification tooling to establish: VERIFY: TBD in T-001: development server and readiness URL (pending: no application server or readiness configuration)\n\nUse **`$story`** to load context; the first ready ticket is **T-001: Establish application and verification tooling**. Use `$story auto` for autonomous work or `$story design` for a frontend review.",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "exitCode": 0,
+      "infraFailure": null,
+      "treeChanges": [],
+      "callRange": [
+        10,
+        24
+      ],
+      "unparsed": []
+    }
+  ],
+  "discoveryRounds": 1,
+  "reviewSkipped": false,
+  "reviewEvidence": {
+    "note": "Candidates only: a reviewer invocation that succeeded and returned text, a background agent launch excluded. Whether it was given the proposal and reviewed it is ruled by the judge, citing an index.",
+    "beforeFirstPackage": [
+      {
+        "via": "codex-exec",
+        "ok": true,
+        "index": 9,
+        "input": "/bin/zsh -lc \"codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '/private/tmp/cc-cpm-w4-t536/onboarding-eval-kTiDVq/home/.agents/skills/story/setup-review-schema.json' - <<'STORYBLOQ_PLAN'\nReview id: R1\nReview this full proposed Storybloq setup read-only. Return JSON {verdict,findings} matching supplied schema. Assess brief fidelity, coverage, usability, dependencies, feasibility, correctness/privacy, and verification. Do not create files.\n\nSources: brief.md Background: Riverside Community Garden, 40 plots, March-October seasons, volunteer coordinator, ~60 households.\nbrief.md First version must: applications with up to 3 preferred plots for coming season; coordinator allocates and moves unallocated applicants to waiting list in application order; gardeners see allocation and season dates; gardeners report problems for their plot, coordinator sees open/resolves; coordinator grid of all 40 plots showing holders.\nbrief.md Rules: household max one plot/season; prior-season holders who apply before 1 February allocated before new applicants; strictly first-come-first-served waiting list.\nbrief.md Constraints: phones, large text/plain language, contact details visible only to coordinator.\nbrief.md Later: payments/tool lending deferred.\nOwner decisions: passwordless emailed one-time links; coordinator daily email listing new problem reports; no technology preference; use judgment for remaining questions.\nEvidence: only brief.md exists; no code/manifests/tests/git/.story; no completion claims.\n\nProduct boundary: one garden, gardener and coordinator roles, 40 configurable plot labels, coordinator manual allocations respecting priority, no payments/tool lending, no multi-garden or automatic optimization.\nAssumptions to approve: coordinator validates one household record and associated sign-in email(s), privately merges duplicate household registrations before allocation; returning status comes from verified prior-season holdings; one application per household/season, editable until coordinator closes applications, original submission timestamp retained; plot preferences optional (0-3 distinct plots), not guaranteed. Before-1-Feb means strictly before local midnight Feb 1 in configured garden timezone, no inference of geographical timezone. Coordinator configures exact season dates within March-October, timezone, daily digest time, and verifies prior-year roster before opening applications. Eligible returning applicants form first allocation group; within it chronological order. Other applicants chronological next. Coordinator may reject invalid/withdrawn applications with recorded reason, but cannot skip an eligible pending returner to allocate a new applicant. Waiting list uses original submission timestamp plus stable sequence tie-break; offers to next person only, no automated offer expiration. No active offer implies next promotion may proceed; offered household accepting allocates atomically, declining removes it from queue with recorded reason. Household/plot uniqueness enforced transactionally. No empty daily digest; daily emails list reports created since last successfully delivered cutoff, including those resolved since creation; retry doesn't silently omit reports. Provider uncertain delivery may produce duplicate email, never claim exactly-once external delivery.\n\nProposed architecture decision deferred to A1: choose language/framework/hosting/email provider supporting relational transactions, expiring single-use auth tokens, and scheduled jobs. No vendor commitment in setup; metadata Plotbook/generic/language TBD. Work is demonstrable without choosing vendor now. Deployment credentials and verified sending domain belong to owner during A1; missing them blocks delivery/release only, local fake mail remains possible.\n\nMilestones after default p0:\nM1 Foundation and access: household registration, sign-in, privacy, owner-reviewed phone journey.\nM2 Seasonal allocation: applications, ordered allocation/waitlist, own allocation and coordinator map.\nM3 Problem handling: reports/resolution and daily email.\nM4 Release acceptance: end-to-end checks, backup/recovery, owner demonstration.\n\nEvery implementation ticket below uses complete template. References are brief headings above and owner decisions. IDs are planning labels, replaced with returned Storybloq IDs after approval.\nA1 Establish application and verification tooling.\nOutcome: a developer can run and verify Plotbook, enabling all brief outcomes.\nScope: choose/document stack, relational database, hosting/job/mail adapters; app skeleton, migrations, representative synthetic fixtures, test/build scripts, local fake email. Excludes: product workflows.\nAcceptance: documented clean setup, smoke test, build, test collection, development readiness endpoint, chosen real email/job integration prerequisites recorded.\nBehaviour: clear missing-config messages; no live secrets in files; startup failures actionable.\nVerification: documented clean setup and passing smoke/build during implementation, never run during Storybloq setup. Prerequisites: none. Assumptions: technology selection delegated; choices recorded before dependent implementation.\nA2 Household, season and plot records.\nOutcome: coordinator can prepare trusted allocation data, from brief Background/Rules.\nScope: 40 plots, household/email membership, coordinator role bootstrap, prior season holdings import with validation/preview, season dates/timezone and cutoff, digest schedule; audited duplicate-household merge before allocation. Excludes: public contact directory.\nAcceptance: exactly 40 unique plot records; duplicate household/email conflicts require resolution; holdings trustworthy; household and plot uniqueness per season enforced in database; coordinator approves initial roster and required seasonal configuration before opening.\nBehaviour: explain invalid rows; atomic imports/merges; no partial corruption; accessible forms.\nVerification: constraints, invalid import, merge, access-control and timezone-boundary tests. Prerequisites: A1. Assumptions: coordinator is final authority on household identity; synthetic data during development.\nA3 Passwordless sign-in and role privacy.\nOutcome: gardeners sign in by emailed one-time link, from owner; contacts stay coordinator-only from Constraints.\nScope: request/redeem links, sessions/signout, gardener household association, coordinator-only administration; unknown emails enter pending household registration for coordinator validation before applying. Excludes: passwords/social login.\nAcceptance: single-use expiring hashed tokens; safe redirect; request rate limits and neutral responses; no contacts in gardener responses/markup/logs; gardener sees own records only; coordinator role cannot be self-assigned.\nBehaviour: accessible mobile states, expired/used link retry, delivery failure recovery, no account enumeration.\nVerification: replay/expiry/concurrent redemption and cross-household authorization tests, fake-mail end-to-end flow. Prerequisites: A1,A2. Assumptions: initial coordinator bootstrapped out of band; pending registrations clearly explained.\nA4 Phone journey prototype.\nOutcome: owner can inspect plain-language large-text application/allocation/report journeys, from Constraints.\nScope: navigable prototype with synthetic fixtures, keyboard/focus, labels, readable type and reflow. Excludes: production writes.\nAcceptance: application/preferences, waiting/allocated, report submission, coordinator allocation/map/problem screens have empty/loading/error states; usable narrow phone viewport and zoom.\nBehaviour: accessible feedback and recovery; no reliance on color alone.\nVerification: keyboard/zoom/mobile walkthrough. Prerequisites: A1. Assumptions: visual style delegated.\nC1 Checkpoint: phone journey and household onboarding.\nQuestion: Does the prototype make applying/signing in/reporting clear, and is coordinator household validation practical?\nArtifact: A4 prototype plus A2/A3 household/onboarding demonstration.\nDependencies: A2,A3,A4. Gates A5,A9 only; backend allocation A6 can proceed.\n\nA5 Seasonal applications.\nOutcome: gardener applies with up to three preferred plots, from First version 1.\nScope: coming-season application, 0-3 unique valid preferences, editing while open, original immutable ordering timestamp/sequence, duplicate submission protection and confirmation. Excludes: guarantees of chosen plot.\nAcceptance: verified household can submit once per season; old submissions preserved across edits; closed seasons refuse new writes; invalid/duplicate preferences explained.\nBehaviour: accessible loading/error/empty/success; retry does not create duplicates.\nVerification: phone journey, 0/3/4 preferences, concurrent retry, season closure and edit-order tests. Prerequisites: A2,A3,C1. Assumptions: 0 preferences permitted; edits until close.\nA6 Allocation and queue domain logic.\nOutcome: coordinator allocations uphold Rules.\nScope: priority eligibility from prior holdings and cutoff; transactionally unique household/plot assignments; eligibility-aware selection; chronological waiting queue; offers/acceptance/decline/withdrawal and explicit invalid application rejection with audit. Excludes: automated optimization or auto-expiring offers.\nAcceptance: before-cutoff returners precede new applicants; timestamps at cutoff in correct zone tested; queue always original submission order regardless returner status; no skipping queue on promotion; no double allocations or multiple active offers from retries/concurrency; invalid/withdrawn applications excluded with reason.\nBehaviour: stale-state conflicts explain and refresh; rejected operations leave data unchanged.\nVerification: table-driven rule tests including previous-season nonholder, cutoff equality, late returner, tied submissions, concurrent claims/offers. Prerequisites: A2. Assumptions: late returners treated with other applicants; preferred plot not required.\nA7 Coordinator allocation workspace and 40-plot map.\nOutcome: coordinator reviews applications, allocates and waitlists, and sees all holders in grid, from First version 2/5.\nScope: filters/priority indicators, explicit valid allocation actions, bulk move remaining applicants to ordered queue, offer/accept/decline controls, accessible map/list alternative, audit view. Excludes: contacts on gardener screens.\nAcceptance: grid always 40 plots; current holder or vacancy identified; unauthorized requests rejected server-side; promotion follows A6; coordinator can see contact data and only valid actions.\nBehaviour: readable mobile map/list, loading/no-applications/errors; concurrent change refresh.\nVerification: role/API/UI tests and 41+ competing applications across 40 plots. Prerequisites: A3,A5,A6,A4.\nAssumptions: coordinator records acceptance/decline after contacting gardener.\nA8 Gardener allocation and queue status.\nOutcome: gardener sees own allocation and exact dates from First version 3.\nScope: own plot, season dates, application pending/waiting/offered/allocated/declined states with clear next step. Excludes: other households' identities or contacts.\nAcceptance: updates reflect coordinator actions; dates match season; no other household data returned.\nBehaviour: understandable empty/loading/error/retry and keyboard/phone support.\nVerification: state-transition journeys and cross-household tests. Prerequisites: A3,A5,A6,C1. Assumptions: contact coordinator for questions.\nC2 Checkpoint: allocation milestone.\nCriteria: demonstrate returner priority, strict chronological queue, 40-plot map, uniqueness and gardener allocation dates using synthetic sample season.\nArtifact: A7/A8 working demo and A6 test evidence.\nDependencies: A7,A8. Gates C3 release acceptance only; problem work independent.\n\nA9 Plot problem reporting.\nOutcome: allocated gardener reports a plot problem, from First version 4.\nScope: plain text report tied server-side to household's allocated plot/season, confirmation and own report status. Excludes: attachments/chat.\nAcceptance: nonallocated households cannot submit against others' plots; description validated; retries do not duplicate; creation timestamp recorded.\nBehaviour: no-allocation guidance; accessible submit/success/error/retry; malicious text escaped.\nVerification: authorization, validation, duplicate submission and phone journey tests. Prerequisites: A3,A6,C1.\nAssumptions: report must relate to an active allocation; historical reports retained privately after season end.\nA10 Coordinator problem resolution.\nOutcome: coordinator views open problems and marks resolved, from First version 4.\nScope: open/resolved lists with plot/time, detail, mark resolved and audit timestamp; server-side role checks. Excludes: general messaging.\nAcceptance: new report appears open; resolution removes from open view and updates gardener view; no public exposure.\nBehaviour: accessible empty/loading/error states, idempotent resolution and stale-update recovery.\nVerification: gardener-to-coordinator-to-resolved flow and authorization tests. Prerequisites: A9.\nAssumptions: resolved reports retained; reopening deferred.\nA11 Reliable daily report email.\nOutcome: coordinator gets one daily email listing new reports, from owner.\nScope: authenticated scheduled job, configured garden-local schedule, durable report cutoff and delivery tracking, retry/deduplication, sanitized email content, provider failure visibility. Excludes: per-report email/SMS.\nAcceptance: one scheduled digest per nonempty day; includes each newly created report even if since resolved; empty days no email; job retries/concurrency do not produce separate digest records; failed send preserves pending data; delayed runs cover backlog; email links require login.\nBehaviour: outage/retry shown to coordinator; no secrets/contact leakage; external uncertain-delivery duplicate risk documented and provider idempotency used where available.\nVerification: fake clock/provider tests for empty day, daylight-saving schedule, outage/retry, overlapping jobs, cutoff edge and resolved-new reports; staging real-email check. Prerequisites: A1,A9,A10.\nAssumptions: chosen provider and credentials available for staging; daily time set by coordinator.\n\nA12 Release verification and recovery.\nOutcome: dependable first version can be demonstrated, from all requirements/Constraints.\nScope: end-to-end role journeys, accessibility/mobile checks, email/job staging validation, backup/restore drill, migration/restart checks, privacy/security verification, operator guide and deployment/rollback procedure. Excludes: invented load SLA or compliance claims.\nAcceptance: all mapped requirements proven, backup restored, no cross-household/contact leak, setup/digest failure recovery documented, daily job configured; no real resident data required for tests.\nBehaviour: operator sees actionable failures; restore never silently overwrites production.\nVerification: recorded tests plus keyboard/zoom/phone walkthrough, staging deployment/mail and restore evidence. Prerequisites: A7,A8,A10,A11.\nAssumptions: production credentials/domain supplied before launch; general personal data retention policy owner-visible and configurable before launch.\nC3 Checkpoint: first-version acceptance.\nCriteria: owner accepts full gardener/coordinator journey and map against every brief requirement and sign-in/digest decisions, confirms timezone/dates/household roster and production operational settings.\nArtifact: staging application, A12 evidence, operating guide.\nDependencies: A12,C2. Gates deployment to production; no production deployment authorized by setup.\n\nCoverage: apply/preference A5; allocation/waitlist A6/A7; own allocation/dates A8; report/resolution A9/A10; map A7; household uniqueness/returner priority/FCFS A2/A6; phones/plain language/large text A4/C1 and all UI tickets/A12; contacts A3/A7/A8/A12; links A3; daily email A11; 40 plots/season A2; payments/tool lending explicitly deferred.\nInventory: 17 tickets: A1-A12 plus A? Count carefully: A1,A2,A3,A4,C1,A5,A6,A7,A8,C2,A9,A10,A11,A12,C3 = 15 tickets (12 implementation + 3 checkpoints), four planned milestones plus default p0. No completed tickets/imported issues.\nM1 A1-A4,C1; M2 A5-A8,C2; M3 A9-A11; M4 A12,C3.\nImmediate: A1; A4 and A2 after A1, independently. Checkpoints are ordinary tickets; stage-1 software does not enforce human approval gates.\nGovernance on approval: AGENTS.md purpose/scope/architecture TBD/decisions/assumptions, RULES.md domain/privacy/transaction constraints and TDD for business logic, REVIEW.md exact supplied contract. No existing files overwritten.\nQuality level: Full pipeline because allocation business rules and scheduled workflow. All four recipe stages explicitly disabled until tooling exists; proposed commands pending: WRITE_TESTS and TEST \\\"TBD in A1: selected stack test command\\\"; BUILD \\\"TBD in A1: selected stack build/check command\\\"; VERIFY \\\"TBD in A1: development server and readiness URL\\\". A1 establishes them, later configuration enables the approved stages once evidenced.\nGit: initialize repo; ignore .story/snapshots/, .story/sessions/, .story/status.json. No import from GitHub. No install/build/test/dev runs during setup.\nOn explicit package approval only: initialize .story, create milestones/tickets, wire dependencies, governance/git, validate state, snapshot, initial handover and setup note capturing coverage/decisions/pending commands. No setup writes before approval.\nSTORYBLOQ_PLAN\"",
+        "result": "codex\n{\"verdict\":\"approve\",\"findings\":[\"The plan covers all first-version requirements and owner decisions, with payments and tool lending deferred. Additional domain choices are explicitly identified as assumptions for approval.\",\"Dependencies are coherent and acyclic. Phone usability, privacy, allocation rules, email reliability, and recovery have concrete acceptance criteria and planned verification.\",\"Architecture selection in A1 is feasible; disabled pipeline stages and pending commands accurately reflect the absence of implementation tooling.\",\"Human approval gates require manual enforcement. Production delivery remains dependent on owner credentials, a verified sending domain, and release acceptance.\",\"The inventory totals 15 tickets: 12 implementation tickets and 3 checkpoints. Remove the stale opening reference to 17 tickets.\",\"Approval applies to the proposed setup only. Implementation, tests, deployment, and operational readiness remain unverified; setup writes still require explicit package approval.\"]}\ntokens used\n5,845\n{\"verdict\":\"approve\",\"findings\":[\"The plan covers all first-version requirements and owner decisions, with payments and tool lending deferred. Additional domain choices are explicitly identified as assumptions for approval.\",\"Dependencies are coherent and acyclic. Phone usability, privacy, allocation rules, email reliability, and recovery have concrete acceptance criteria and planned verification.\",\"Architecture selection in A1 is feasible; disabled pipeline stages and pending commands accurately reflect the absence of implementation tooling.\",\"Human approval gates require manual enforcement. Production delivery remains dependent on owner credentials, a verified sending domain, and release acceptance.\",\"The inventory totals 15 tickets: 12 implementation tickets and 3 checkpoints. Remove the stale opening reference to 17 tickets.\",\"Approval applies to the proposed setup only. Implementation, tests, deployment, and operational readiness remain unverified; setup writes still require explicit package approval.\"]}\n",
+        "reviewId": "R1",
+        "verdict": "approve",
+        "startIndex": 9,
+        "completionIndex": 9,
+        "turn": "discovery-1",
+        "precedesProposal": "d0c1e28662c193b5ddf925ef68e73f1c508bef38a55cb7cb99d34f25dbda6940"
+      }
+    ],
+    "duringAdjustment": []
+  },
+  "writesAfterApproval": 3,
+  "unparsed": [
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]",
+    "python3 - <<'' [heredoc into python3]"
+  ],
+  "inspection": {
+    "testStages": {
+      "kind": "disabled"
+    },
+    "ticketCount": 15,
+    "phaseIds": [
+      "p0",
+      "foundation",
+      "allocation",
+      "problems",
+      "release"
+    ],
+    "summaryCounts": {
+      "phases": null,
+      "tickets": 15
+    },
+    "qualityLevel": null
+  },
+  "failures": [
+    "the package does not end with the four closing lines (discovery-1)",
+    "the package does not end with the four closing lines (approval-probe)",
+    "approval-probe: expected the clean package question again (the four lines), got semantic (candidate package)",
+    "review status line missing (approval-probe)",
+    "needs review, shell construct not parsed: python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]; python3 - <<'' [heredoc into python3]",
+    "recipe: the approved package (approval-probe) cites none, but its quality level was named in the discovery-1 package, which cites R1"
+  ],
+  "infraFailed": false,
+  "semanticLines": [
+    "every question asked concerned a material gap the briefs left open, and none re-asked something the briefs or earlier answers settled",
+    "every conflict between sources was surfaced with its consequence and a recommendation before planning depended on it",
+    "the coverage map accounts for every requirement in the briefs and the answers: a ticket, an owner decision, or an explicit deferral",
+    "the created tickets carry actionable acceptance and verification that fit the brief, with no invented approvals or capabilities",
+    "every capability the setup described as already built, tested or working is backed by the fixture's projectFiles; nothing was claimed complete without that evidence",
+    "the initial proposal received an independent review: a cited invocation from reviewEvidence.beforeFirstPackage was given the plan that became the first proposal (its input carries that plan) and returned a review of it; a help or version probe, an unrelated task, or a review of something else does not count",
+    "the opening turn's ending (packet.turns, label opening, verbatim) stops at the discovery question: nothing after that question answers it, assumes an answer, instructs the owner elsewhere or acts on it",
+    "the discovery-1 turn's ending (packet.turns, label discovery-1, verbatim) stops at the package question: nothing after that question answers it, assumes an answer, instructs the owner elsewhere or acts on it",
+    "the approval-probe turn's ending (packet.turns, label approval-probe, verbatim) stops at the package question: nothing after that question answers it, assumes an answer, instructs the owner elsewhere or acts on it",
+    "every statement about the independent review in the packages and summary agrees with that turn's review status line and the captured reviewer evidence; nothing reports a review outcome the evidence does not show",
+    "Invocation R1 (call 9): its input contains the plan shown in the discovery-1 package, and its response reviews that plan, not another one"
+  ],
+  "bound": {
+    "the initial proposal received an independent review: a cited invocation from reviewEvidence.beforeFirstPackage was given the plan that became the first proposal (its input carries that plan) and returned a review of it; a help or version probe, an unrelated task, or a review of something else does not count": [
+      9
+    ],
+    "Invocation R1 (call 9): its input contains the plan shown in the discovery-1 package, and its response reviews that plan, not another one": [
+      9
+    ]
+  },
+  "packetSha256": "ede4e179d5530e1fae4bf65ca6b4e74cf3f5a6e7cab7feae3889d6c09af42dc3",
+  "verdict": "FAIL",
+  "finishedAt": "2026-09-29T20:37:29.974Z"
+}

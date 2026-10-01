@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-007",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Allocated gardener reports a problem with their plot, from brief.md: First version must 4\nScope: Validated plain-text report tied server-side to own allocated plot and season; confirmation and own report status; creation timestamp. Excludes: Attachments and chat\nAcceptance: Cannot submit for another household's plot or without an active allocation; invalid descriptions explained; retries do not duplicate reports\nBehaviour: No-allocation guidance; accessible submission/loading/error/retry; escape malicious text\nVerification: Authorization, validation, duplicate submission and phone journey tests. Prerequisites: T-003, T-007, T-005. Assumptions: Reports require active allocation; historical reports retained privately after season",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Plot problem reporting",
+  "type": "task"
+}

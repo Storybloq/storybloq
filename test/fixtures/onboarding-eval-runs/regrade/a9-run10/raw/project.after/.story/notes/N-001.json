@@ -1,0 +1,11 @@
+{
+  "content": "# Plotbook setup coverage and pending tooling\n\nQuality level: Full pipeline\n\nAll four stages are explicitly disabled until commands and collected tests/server evidence are established in T-001. No npm defaults apply.\n\n| Source / requirement | Planned evidence |\n|---|---|\n| brief.md Background: 40 plots, March-October seasons | T-002 records/configuration; T-008 map |\n| First version 1: application and up to three preferences | T-006 |\n| First version 2: review, allocate, waitlist in application order | T-007, T-008 |\n| First version 3: own allocation and season dates | T-009 |\n| First version 4: own-plot problem reporting and resolution | T-011, T-012 |\n| First version 5: coordinator 40-plot grid with holders | T-008 |\n| Rules: one household plot per season | T-002 constraints, T-007 transactions |\n| Rules: timely returning gardeners first | T-002 prior holdings, T-007 cutoff/priority tests |\n| Rules: strictly first-come-first-served waiting list | T-006 immutable ordering, T-007 queue, T-008 UI |\n| Constraints: phone, large text, plain language | T-004 prototype, T-005 owner review, all UI tickets, T-014 walkthrough |\n| Constraints: contact details coordinator-only | T-003 authorization, T-008/T-009 views, T-014 privacy evidence |\n| Owner: emailed one-time sign-in links, no passwords | T-003 |\n| Owner: one daily new-report email | T-013 |\n| All first-version acceptance conditions | T-014 verification, T-015 owner acceptance |\n| Later: payments and tool lending | Explicitly deferred, no implementation ticket |\n\nVerification tooling to establish: WRITE_TESTS: TBD in T-001: selected stack test command (pending: no application stack, test command or test sources)\nVerification tooling to establish: TEST: TBD in T-001: selected stack test command (pending: no application stack, test command or test sources)\nVerification tooling to establish: BUILD: TBD in T-001: selected stack build/check command (pending: no manifest or build tooling)\nVerification tooling to establish: VERIFY: TBD in T-001: development server and readiness URL (pending: no application server or readiness configuration)\n",
+  "createdDate": "2026-09-29",
+  "id": "N-001",
+  "status": "active",
+  "tags": [
+    "setup"
+  ],
+  "title": "Approved setup coverage and verification tooling",
+  "updatedDate": "2026-09-29"
+}

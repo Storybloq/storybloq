@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: A developer can run and verify Plotbook, enabling brief.md: First version must\nScope: Select and document stack, relational database, hosting, job and mail adapters; application skeleton, migrations, synthetic fixtures, test/build scripts and local fake email. Excludes: Product workflows\nAcceptance: Document clean setup; collect and pass smoke tests; build/check succeeds; development readiness endpoint works; real email and job prerequisites recorded; enable approved Full pipeline stages only once commands and tests are established\nBehaviour: Explain missing configuration and startup failures; keep credentials out of files\nVerification: During implementation, demonstrate clean setup, smoke test, build/check and readiness; never install or run these during Storybloq setup. Prerequisites: none. Assumptions: Technology selection delegated by owner; record choices before dependent implementation; missing provider credentials block live delivery/release but not local development",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Establish application and verification tooling",
+  "type": "task"
+}

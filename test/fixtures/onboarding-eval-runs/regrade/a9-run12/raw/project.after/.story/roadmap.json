@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "date": "2026-09-29",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Members can sign in with individual accounts; the owner can inspect an accessible booking-flow preview and timezone display.",
+      "id": "accounts-preview",
+      "label": "PHASE 1",
+      "name": "Accounts and preview"
+    },
+    {
+      "description": "Booking services enforce valid hourly slots, no double bookings under concurrent requests, the two-upcoming-booking limit and authorized cancellation.",
+      "id": "safe-booking",
+      "label": "PHASE 2",
+      "name": "Safe booking"
+    },
+    {
+      "description": "Members use live availability, booking and cancellation; staff can operate the app and the owner demonstrates first-version acceptance.",
+      "id": "member-experience",
+      "label": "PHASE 3",
+      "name": "Member experience and acceptance"
+    }
+  ],
+  "title": "Court bookings"
+}

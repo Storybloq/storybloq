@@ -5,11 +5,11 @@
  * through the same code, so a regrade is the runner's own computation replayed, not a second opinion.
  */
 import {
-  approvedQualityLevel, authoritativeProbe, checkRecipe, checkStop, degradedFindings, discoveryTail, endsWithClosingLines, executionCalls, hasApprovalBlock,
-  notRerunLines, pendingFindings, pendingInventory, probeAttempts, probeLines, qualityLevel,
-  recipeContract, recipeFindings, resolveTestStages, reviewerInvocations, reviewStatus, reviewStatusLineIndex, stopRuleFor,
-  stopRoute, summaryCounts, ticketFindings, treeCheckOutcome, WRITE_RULE_VERSION, writeCalls,
-  type EvalCall, type EvalTurn, type ExpectedRecipe, type ReviewerInvocation, type RuntimeExclusion, type StopCheck, type StopKind,
+  analyseCalls, approvedQualityLevel, authoritativeProbe, checkRecipe, checkStop, degradedFindings, discoveryTail, endsWithClosingLines, findingsOf, hasApprovalBlock,
+  hasFixedLine, notRerunLines, pendingFindings, pendingInventory, probeAttempts, probeLines, qualityLevel,
+  recipeContract, recipeFindings, resolveTestStages, reviewerCapabilityOf, reviewerInvocations, reviewStatus, reviewStatusLineIndex, stopRuleFor,
+  stopRoute, summaryCounts, ticketFindings, treeCheckOutcome, writeRuleFor,
+  type EvalCall, type EvalTurn, type ExpectedRecipe, type InterpreterScript, type ReviewerCapability, type ReviewerInvocation, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
 import { sha256 } from "./continuity-lib.js";
 
@@ -95,9 +95,9 @@ export function newDriveState(checkSet = 1): DriveState {
   return { turns: [], allCalls: [], failures: [], sources: [], infraFailed: false, initTools: null, rounds: 0, reviewSkipped: false, final: null, checkSet };
 }
 
-/** The shell constructs the parser could not read, in call order: the segments a needs-review reason joins with "; ". */
-export function unparsedSegments(calls: readonly EvalCall[]): string[] {
-  return executionCalls(calls).filter((e) => e.kind === "review").map((e) => e.segment);
+/** The shell constructs the parser could not read, in call order: the segments a needs-review reason joins with "; ". A stop's calls are before approval. */
+export function unparsedSegments(calls: readonly EvalCall[], checkSet = 1): string[] {
+  return [...analyseCalls(calls, [], checkSet).unresolved];
 }
 
 /** A reply that is not approval must be answered by the clean package question again: a semantic package fails. */
@@ -124,20 +124,25 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
     const from = s.allCalls.length;
     s.allCalls.push(...r.turn.calls);
     if (r.infraFailure) { s.infraFailed = true; fail(s, { kind: "infrastructure", turn: s.turns.length }, `${label}: infrastructure: ${r.infraFailure} (stderr in ${r.stderrPath})`); }
-    const stop = expected ? checkStop(r.turn, expected) : null;
+    const stop = expected ? checkStop(r.turn, expected, s.checkSet) : null;
     const treeChanges = expected ? r.treeChanges() : [];
     if (stop && !stop.ok) fail(s, { kind: "stop", turn: s.turns.length }, `${label}: ${stop.reasons.join("; ")}`);
     const tree = expected ? treeCheckOutcome(label, treeChanges, o.exclusion) : null;
     if (tree?.failure) fail(s, { kind: "tree", turn: s.turns.length }, tree.failure);
-    const unparsed = expected ? unparsedSegments(r.turn.calls) : [];
+    const unparsed = expected ? unparsedSegments(r.turn.calls, s.checkSet) : [];
     // Check set 2: a plain-text discovery question is the last thing in its turn.
     if (s.checkSet >= 2 && stop?.kind === "semantic" && stop.candidate === "discovery" && r.turn.pendingQuestion === undefined) {
       const tail = discoveryTail(r.turn.stopText);
       if (tail !== "") fail(s, { kind: "tail", turn: s.turns.length }, `the discovery question is followed by more text (${label}): ${tail}`);
     }
     // Check set 3: a turn that shows the package, by its route or by the three option labels as lines, ends at `Inspect details`.
-    if (s.checkSet >= 3 && expected !== null && r.turn.pendingQuestion === undefined && (stopRoute(stop) === "package" || hasApprovalBlock(r.turn.stopText)) && !endsWithClosingLines(r.turn.stopText)) {
+    const shows = s.checkSet >= 3 && expected !== null && r.turn.pendingQuestion === undefined && (stopRoute(stop) === "package" || hasApprovalBlock(r.turn.stopText));
+    if (shows && !endsWithClosingLines(r.turn.stopText, s.checkSet)) {
       fail(s, { kind: "closing", turn: s.turns.length }, `the package does not end with the four closing lines (${label})`);
+    }
+    // Check set 4: the fixed line ends the paragraph above the question, one blank line between.
+    if (shows && s.checkSet >= 4 && !hasFixedLine(r.turn.stopText)) {
+      fail(s, { kind: "closing", turn: s.turns.length }, `the package does not carry the fixed line above the question (${label})`);
     }
     s.turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed });
     return r.turn;
@@ -187,6 +192,12 @@ export interface DriveEvidence {
   readonly unparsed: string[];
   /** Check set 2: the judge lines the review checks add, one per distinct review binding (bound) and one per non-material declaration. */
   readonly reviewLines: string[];
+  /** Check set 4: the judge lines for each qualifying post-approval python script and each package citing a review that did not approve. */
+  readonly judgeLines?: string[];
+  /** Check set 4: every qualifying post-approval python script, verbatim, for the judge. */
+  readonly interpreterScripts?: readonly InterpreterScript[];
+  /** Check set 4 (G2): what the run shows about an agent reviewer; it fails nothing. */
+  readonly reviewerCapability?: ReviewerCapability;
 }
 
 /** Evidence and the whole-run checks after the flow, appended to the failures in the runner's order. */
@@ -223,12 +234,42 @@ export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
   }
 
   // Before approval nothing ran; after it, still no install, test, build or dev server, nested agents included.
-  const execs = executionCalls(allCalls);
-  const ran = execs.filter((e) => e.kind === "execution");
-  const unparsed = unparsedSegments(allCalls);
+  const analysis = analyseCalls(allCalls, turns, cs);
+  const ran = analysis.executions.filter((e) => e.kind === "execution");
+  const unparsed = [...analysis.unresolved];
   if (ran.length > 0) fail(s, { kind: "executed" }, `executed during setup: ${ran.map((e) => (e.call.nested ? `[nested] ${e.segment}` : e.segment)).join("; ")}`);
   if (unparsed.length > 0) fail(s, { kind: "unparsed" }, `needs review, shell construct not parsed: ${unparsed.join("; ")}`);
-  return { proposals, reviewEvidence, bound, unparsed, reviewLines };
+  if (cs < 4) return { proposals, reviewEvidence, bound, unparsed, reviewLines };
+  const judgeLines = [...analysis.semanticLines, ...(s.infraFailed ? [] : findingLines(s, invocations))];
+  return { proposals, reviewEvidence, bound, unparsed, reviewLines, judgeLines, interpreterScripts: analysis.interpreterScripts, reviewerCapability: reviewerCapabilityOf(allCalls, s.initTools, turnOf) };
+}
+
+/** Check set 4: the judge line for a package citing a review that did not approve, its findings verbatim. */
+export function findingLine(label: string, ref: string, verdict: string, findings: readonly string[]): string {
+  return `the package at turn ${label} states each finding of ${ref} (${verdict}) as unresolved or incorporated: ${findings.join(" | ")}`;
+}
+
+/** Check set 4: one finding line per package whose result status line binds a review whose verdict is not approve; the skip line asks nothing. */
+/** Check set 4: the judge line when a cited non-approve review's findings could not be read from its captured response. */
+export function findingsUnextractedLine(label: string, ref: string, verdict: string): string {
+  return `the package at turn ${label} cites ${ref} (${verdict}), whose findings could not be extracted from the captured response: the package states each finding that response gives as unresolved or incorporated`;
+}
+
+function findingLines(s: DriveState, invocations: readonly ReviewerInvocation[]): string[] {
+  const out: string[] = [];
+  for (const t of s.turns) {
+    if (stopRoute(t.stop) !== "package") continue;
+    const status = reviewStatus(t.stopText);
+    if (status.kind !== "result" || status.verdict.trim() === "approve") continue;
+    const r = boundInvocation(invocations, status.ref, status.verdict);
+    if (r === null) continue;
+    const findings = findingsOf(r.result);
+    // Findings the harness cannot read are still findings the package owes: the judge reads the response instead.
+    if (findings === null) { out.push(findingsUnextractedLine(t.label, status.ref, status.verdict.trim())); continue; }
+    if (findings.length === 0) continue;
+    out.push(findingLine(t.label, status.ref, status.verdict.trim(), findings));
+  }
+  return out;
 }
 
 /** The judge line for one review binding: whether the cited invocation reviewed the plan the package it binds showed. */
@@ -513,7 +554,7 @@ export function packetText(p: {
     reviewSkipped: p.reviewSkipped,
     harnessNormalisation: {
       stop: stopRuleFor(p.checkSet ?? 1),
-      write: WRITE_RULE_VERSION,
+      write: writeRuleFor(p.checkSet ?? 1),
       treeExclusion: p.exclusion,
       ...((p.checkSet ?? 1) >= 2 ? { checkSet: p.checkSet } : {}),
     },
@@ -523,6 +564,7 @@ export function packetText(p: {
     turns: p.turns.map((x) => ({ label: x.label, prompt: x.prompt, stop: x.stop?.kind ?? null, candidate: x.stop?.candidate ?? null, assistant: x.stopText, treeChanges: x.treeChanges })),
     proposals: p.evidence.proposals,
     reviewEvidence: p.evidence.reviewEvidence,
+    ...((p.checkSet ?? 1) >= 4 ? { interpreterScripts: p.evidence.interpreterScripts ?? [] } : {}),
     tickets: p.ledgerRecords,
     setupRecord: p.setupRecord,
     finalSummary: p.final?.stopText ?? "",
@@ -531,4 +573,4 @@ export function packetText(p: {
 }
 
 /** The whole-run count of write calls, as the record states it. */
-export const writesAfterApprovalOf = (s: DriveState): number => writeCalls(s.allCalls).length;
+export const writesAfterApprovalOf = (s: DriveState): number => analyseCalls(s.allCalls, s.turns, s.checkSet).writes.length;

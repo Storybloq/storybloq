@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Acknowledged catalogue and loan data survive restart, from owner first-version requirement.\nScope: Private versioned local file snapshots using Node fs, stable IDs, serialized atomic replacement, file/directory sync, writer exclusion/recovery, durable idempotency records and backup instructions. Excludes: remote databases and hardware destruction guarantees.\nAcceptance: Acknowledge mutations only after durability boundary. Pre-replacement failure preserves previous state. Post-replacement uncertainty pauses mutations and reconciles disk before continuing; do not promise universal rollback. Stable mutation tokens replay identifier/status results without duplicate writes; tokens retained for v1 application lifetime. Replay records never contain pupil labels or request payloads. Corrupt existing files are preserved and startup fails closed; clean first use starts empty. Previously acknowledged data survives process interruption. Second writers are rejected; proven-dead same-host locks recover, ambiguous owners fail closed.\nBehaviour: Explicit uncertain/retry guidance, no silent resets, private local data permissions, no pupil logging. Historical backups can retain labels after return; document a finite owner-operated backup retention/deletion procedure separately.\nVerification: Isolated temporary-directory tests for write/rename/sync failures, termination around replace/sync/ack, simultaneous startup, abandoned-lock restart, concurrent mutations, idempotent retry and absence of pupil labels from replay records. Prerequisites: none. Assumptions: single writer on local filesystem supporting atomic replacement and sync; runtime store under data/.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "reliable-catalogue",
+  "status": "open",
+  "title": "Durable storage and restart recovery",
+  "type": "task"
+}

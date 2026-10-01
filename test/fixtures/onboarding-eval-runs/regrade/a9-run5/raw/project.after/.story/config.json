@@ -1,0 +1,33 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "javascript",
+  "project": "Shelfmate",
+  "schemaVersion": 2,
+  "type": "npm",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "npm test",
+        "onExhaustion": "plan"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "npm test"
+      },
+      "BUILD": {
+        "enabled": false
+      },
+      "VERIFY": {
+        "enabled": false
+      }
+    }
+  }
+}

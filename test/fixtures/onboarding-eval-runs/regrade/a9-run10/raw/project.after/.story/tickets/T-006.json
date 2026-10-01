@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardener applies for a coming-season plot with up to three preferences, from brief.md: First version must 1\nScope: Application with 0-3 distinct valid plots; edits while applications open; immutable initial timestamp/stable ordering sequence; duplicate submission protection and confirmation. Excludes: Guaranteed preferred plot\nAcceptance: One application per verified household/season; edits preserve original queue order; closed seasons reject new writes; invalid and duplicate preferences explained\nBehaviour: Accessible loading/empty/success/error states; retry never creates duplicate applications\nVerification: Phone journey and tests for 0/3/4 preferences, concurrent retry, closure and preserved edit order. Prerequisites: T-002, T-003, T-005. Assumptions: Preferences optional and not guaranteed; coordinator closes applications",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Seasonal applications",
+  "type": "task"
+}

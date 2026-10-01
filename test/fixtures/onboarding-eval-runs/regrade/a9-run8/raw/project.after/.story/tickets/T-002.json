@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Persist household, 40-plot, season and prior-season data enabling allocation, from brief.md Background and Rules\nScope: TypeScript Next.js/npm scaffold, PostgreSQL migrations, entities and transactions; unique household+season and plot+season allocations; canonical household membership, coordinator-maintained history and season/timezone configuration; seed/import validation; establish test/build/dev scripts and test sources. Excludes: authentication implementation, allocation algorithm/UI and map\nAcceptance: Exactly 40 distinct plots; validated households/history/dates survive restart; allocation constraints reject duplicates and races; timezone and March–October season configuration explicit; document coordinator bootstrap for T-003; establish commands before enabling Full pipeline stages\nBehaviour: Rollback failed migrations/invalid writes with actionable errors; no silent missing-history assumption\nVerification: Migration/constraint tests and representative prior-season fixtures; demonstrate actual npm test/build/dev commands before enabling stages. Prerequisites: none. Assumptions: approved TypeScript/Next.js/PostgreSQL; exact dates/timezone configured by coordinator",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "experience",
+  "status": "open",
+  "title": "Persistent garden foundation and verification tooling",
+  "type": "task"
+}

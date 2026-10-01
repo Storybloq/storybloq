@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: A household applies for the coming season with up to three preferences, from brief.md First version must 1\nScope: Phone form, 0–3 distinct valid plot preferences, one application per household/season, server submission timestamp, receipt and coordinator review list; accessible transition from pending verification to application. Excludes: allocation, post-submission preference editing and map\nAcceptance: Valid submission gets receipt; invalid/fourth preference rejected; repeat/concurrent submission preserves original application and timestamp; verification request is not application; receipt explains timing and waiting-list consequences; verified new household can apply\nBehaviour: No upcoming-season state, pending membership explanation, loading, accessible validation and retries retaining input\nVerification: New-household phone E2E, preference validation and concurrent/idempotent submission tests. Prerequisites: T-003, T-004. Assumptions: zero preferences permitted by up to three; configured season calendar",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 20,
+  "phase": "applications",
+  "status": "open",
+  "title": "Coming-season household applications",
+  "type": "task"
+}

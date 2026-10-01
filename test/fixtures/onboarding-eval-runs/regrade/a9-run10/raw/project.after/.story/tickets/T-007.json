@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Allocation obeys household uniqueness, returner priority and strict waiting-list order, from brief.md: Rules\nScope: Eligibility from verified prior-season holdings and cutoff; transactional unique assignments; priority-aware selection; chronological waiting queue; offers, accept/decline/withdrawal and invalid-application rejection with audit. Excludes: Automatic optimization and automated offer expiry\nAcceptance: Eligible pre-cutoff returners precede new applicants; cutoff is strictly before local February 1 midnight; late returners join other applicants; within groups use original submission order; waiting queue always original timestamp plus stable sequence regardless returning status; no queue skipping, duplicate allocation or multiple active offers; rejected/withdrawn entries have reason\nBehaviour: Stale conflicts explain and refresh; failed operations leave state unchanged\nVerification: Table-driven rules for cutoff equality/timezone, previous nonholders, late returners, tied submissions and concurrent allocations/offers. Prerequisites: T-002. Assumptions: Preferred plots not mandatory; coordinator records accept/decline; one active offer at a time; acceptance allocates atomically, decline removes from queue with reason",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Allocation and waiting-list domain logic",
+  "type": "task"
+}

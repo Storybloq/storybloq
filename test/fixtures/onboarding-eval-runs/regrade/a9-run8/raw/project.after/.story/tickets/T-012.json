@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-008",
+    "T-011"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Deployable verified first version, from brief.md First version must 1–4 and Constraints plus owner email decisions\nScope: Production configuration/secrets, email delivery and scheduler setup, backup/restore and retention documentation, phone/keyboard/screen-reader journeys, privacy/security regression, staging smoke evidence and operator runbook. Excludes: map/grid, payments and tool lending\nAcceptance: Restore rehearsal succeeds; real sign-in/digest delivery verified in staging; deployment repeatable; revised v1 journeys pass with privacy and allocation evidence\nBehaviour: Monitor failed sends/jobs and document recovery; usable error paths verified\nVerification: Integration/E2E, manual usability/accessibility checks, staging email delivery and restore rehearsal. Prerequisites: T-007, T-008, T-011. Assumptions: operator supplies hosting/mail accounts and garden calendar/timezone before staging",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 10,
+  "phase": "release",
+  "status": "open",
+  "title": "Release verification and operations",
+  "type": "task"
+}

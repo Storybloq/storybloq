@@ -1,0 +1,37 @@
+{
+  "blockers": [],
+  "date": "2026-09-29",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate restart-safe catalogue storage and title/author search.",
+      "id": "reliable-catalogue",
+      "label": "PHASE 1",
+      "name": "Reliable catalogue"
+    },
+    {
+      "description": "Demonstrate lending and returns with persistent availability and explicit due dates.",
+      "id": "lending",
+      "label": "PHASE 2",
+      "name": "Lending workflow"
+    },
+    {
+      "description": "Teacher demonstrates find, lend, return and restart retention in the browser; owner accepts v1. Overdue is not a v1 requirement.",
+      "id": "teacher-workspace",
+      "label": "PHASE 3",
+      "name": "Teacher workspace and v1 acceptance"
+    },
+    {
+      "description": "DEFERRED until owner accepts v1: overdue API and accessible browser view. Do not select this phase before the v1 acceptance checkpoint is complete.",
+      "id": "post-v1-overdue",
+      "label": "PHASE 4",
+      "name": "Post-v1 overdue list"
+    }
+  ],
+  "title": "Shelfmate"
+}

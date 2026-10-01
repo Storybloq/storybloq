@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Teacher completes v1 find/lend/return journey with restart retention, from owner scope and delegated UI choice.\nScope: Plain HTML/CSS/JavaScript served by existing Node server, local-only bind, catalogue search/add, loan date entry, availability and return controls, accessible labels/focus/keyboard, escaped content and clear recovery. Update README to match actual delivered features and document local operation/privacy/backups. Add GET / HTTP 200 and then enable VERIFY with npm start and http://localhost:3000. Excludes: overdue API/view/counters (post-v1 ticket T-008), public hosting/auth and pupil login.\nAcceptance: Teacher finds, lends and returns; durable response precedes success UI. Retry/reload never duplicates mutation. Persistent browser recovery stores only token/action/resource IDs, never pupil labels or form payloads; resolved recovery records are cleared. Unsent/error form input stays in memory only and clears when resolved/cancelled.\nBehaviour: Explicit loading, empty, error, success and uncertain-save states; input preserved in memory on failure; duplicate submissions prevented; unresolved token reconciled before retry.\nVerification: HTTP/static tests plus documented manual keyboard and synthetic end-to-end journey including restart, injected save failure, reload recovery and browser storage cleanup. Prerequisites: T-003 search/API and T-004 lending; overdue is NOT a dependency. Assumptions: local teacher workstation; no frontend framework.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "teacher-workspace",
+  "status": "open",
+  "title": "Teacher browser workflow and operating instructions",
+  "type": "task"
+}

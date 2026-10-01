@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Each of approximately 80 club members signs in with an individual club account, from the owner's setup instructions.\nScope: Django URLs/settings/templates, session login/logout, admin-only account provisioning and password reset, migrations and authenticated Booking ownership with explicit safe mapping of legacy free-text members. Excludes: public signup.\nAcceptance: Two accounts work independently; anonymous requests redirect; member identity is resolved server-side; mutations use CSRF; clean migration succeeds; existing free-text bookings require explicit mapping and unresolved records block migration rather than guessing ownership.\nBehaviour: Accessible labelled forms, generic invalid-login errors, safe logout, authorization failures and no silent legacy data loss.\nVerification: make test for login/access, clean and legacy migrations, mapping and rollback; document local setup. Prerequisites: none. Assumptions: Staff provisions accounts; no evidence of deployed data; Django/SQLite retained.",
+  "id": "T-001",
+  "order": 10,
+  "phase": "accounts-preview",
+  "status": "open",
+  "title": "Individual accounts and Django foundation",
+  "type": "task"
+}

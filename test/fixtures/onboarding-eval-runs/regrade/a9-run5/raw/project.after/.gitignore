@@ -1,0 +1,5 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+data/
+node_modules/

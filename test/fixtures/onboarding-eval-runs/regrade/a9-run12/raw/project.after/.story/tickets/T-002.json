@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: The owner can inspect the member booking journey before live integration, from README first-version scope and owner instructions.\nScope: Clearly labelled demo availability for three courts across the whole rolling booking window, own bookings, quota/conflict/cancellation states and timezone labels. Excludes: live booking writes.\nAcceptance: Keyboard-usable preview shows free and occupied slots, quota reached, empty bookings and unavailable cancellation without exposing other members' names. Expose every eligible hourly start through the inclusive 168-hour upper bound, even across eight calendar dates.\nBehaviour: Accessible labels, focus and error summaries, status feedback and explicit demo data.\nVerification: make test template checks and owner inspection. Prerequisites: Individual accounts and Django foundation. Assumptions: Server-rendered Django forms, local clock-hour slots and configurable club timezone initially UTC.",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "accounts-preview",
+  "status": "open",
+  "title": "Accessible booking-flow preview",
+  "type": "task"
+}

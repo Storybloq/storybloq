@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: A member can cancel their own booking with at least two hours remaining, from README first-version scope.\nScope: Authorized cancellation through the shared write serialization; retain canceled records and release the slot and member quota. Excludes: staff policy overrides and UI.\nAcceptance: Exactly two hours remaining permits cancellation; below two hours is denied; another member cannot cancel; repeated cancellation is safe; concurrent cancellation/create maintains slot uniqueness and quota.\nBehaviour: Privacy-preserving authorization failures, clear late-cancellation errors, timezone-aware clock and safe repeated requests.\nVerification: make test cutoff/ownership/retry/slot-reuse/quota-release and concurrency regression tests. Prerequisites: Enforce two upcoming bookings per member. Assumptions: Inclusive two-hour cutoff.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 40,
+  "phase": "safe-booking",
+  "status": "open",
+  "title": "Own-booking cancellation and cutoff enforcement",
+  "type": "task"
+}

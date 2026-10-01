@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardeners sign in by emailed one-time link (owner decision); contacts remain coordinator-only (brief.md: Constraints)\nScope: Request/redeem links; sessions/signout; household association; coordinator administration; unknown emails enter pending registration for coordinator validation before applying. Excludes: Passwords and social login\nAcceptance: Expiring hashed single-use tokens; safe redirects; request rate limits and neutral responses; no contact data in gardener responses, markup or logs; only own records accessible; coordinator role cannot be self-assigned\nBehaviour: Accessible mobile loading/error states; expired/used link retry and delivery recovery without account enumeration\nVerification: Expiry, replay, concurrent redemption, cross-household authorization and fake-mail end-to-end tests. Prerequisites: T-001, T-002. Assumptions: Initial coordinator bootstrapped out of band; explain pending registration clearly",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Passwordless sign-in and role privacy",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner sees returning/new/late and full-capacity examples, no duplicate household/plot allocation, strict queue ordering, coordinator plain list and gardener own allocation. Artifact: T-007/T-008 working flows plus T-006 rule-test evidence. Source: brief.md First version must 2–3 and Rules. No map required. Stage-1 limitation: ordinary ticket, not a mechanically enforced owner gate. Blocks final acceptance only; reporting work continues independently.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: demonstrate fair allocation",
+  "type": "task"
+}

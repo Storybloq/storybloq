@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner accepts finding books, lending, returns and persistence across restart; confirms local-only boundary, backup guidance and no pupil data tracked in git. Overdue is deferred and is not an acceptance blocker.\nArtifact: Application, synthetic-data walkthrough and updated README.\nPrerequisites: T-006 workflow review.\nStage-1 limitation: Ordinary ticket; human approval is not technically enforced. Record owner acceptance before completion. Post-v1 work becomes eligible only after this checkpoint is accepted.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "teacher-workspace",
+  "status": "open",
+  "title": "Checkpoint: accept first version",
+  "type": "chore"
+}

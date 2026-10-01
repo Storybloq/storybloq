@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator assigns plots fairly and queues unallocated applicants, from brief.md First version must 2 and Rules\nScope: Transactional explicit assignments, eligibility ordering, prevent bypassing eligible returning priority group until processed, application decisions/status, move unallocated applications to FIFO by original timestamp/stable ID, offer vacancies to earliest queued applicant, retry-safe operations. Excludes: automatic optimization, payments and plot map\nAcceptance: At most one plot per household/season and holder per plot/season; previous-season holders applying strictly before 1 February garden-local time prioritized; late returners ordinary priority; waiting list independent of returner status and strictly chronological; no double allocations on retries/races\nBehaviour: Stale-state conflict with reload; empty/no-capacity states; transaction rollback on failure\nVerification: Table-driven cutoff/timezone/priority/FIFO cases and database concurrency tests. Prerequisites: T-005. Assumptions: T-004-reviewed interpretations; preferences advisory, coordinator chooses assignments",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Allocation priority and FIFO waiting-list engine",
+  "type": "task"
+}

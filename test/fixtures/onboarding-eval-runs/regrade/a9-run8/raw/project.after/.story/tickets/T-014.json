@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Coordinator sees a grid of 40 plots and holders, from brief.md First version must 5 deferred by owner until after first version\nScope: Responsive coordinator-only 40-plot grid using persisted assignments, occupied/vacant states, accessible list alternative. Excludes: allocation-rule changes, gardener-wide directory, payments and tools\nAcceptance: Exactly 40 labelled plots; holders/vacancies match persisted assignments; no contact exposure to non-coordinators; phone, keyboard and screen-reader usable\nBehaviour: Loading/empty/error/retry states and refresh after assignment changes\nVerification: Role-boundary and grid/data consistency tests plus mobile/keyboard/accessibility checks. Prerequisites: T-007, T-013. Assumptions: none",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 10,
+  "phase": "plot-map",
+  "status": "open",
+  "title": "Coordinator 40-plot map after first version",
+  "type": "task"
+}

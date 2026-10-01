@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner demonstrates individual login, three courts/hour slots, inclusive rolling seven-day window, at most two active upcoming bookings, no duplicates under races, own cancellation at exactly two hours and rejection below it, privacy and agreed timezone display.\nArtifact: Running member site and the acceptance evidence/operating guide.\nPrerequisites: Acceptance evidence and staff operating guide.\nStage-1 limitation: This is an ordinary ticket and dependency, not an enforced owner-approval gate.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 30,
+  "phase": "member-experience",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "task"
+}

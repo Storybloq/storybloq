@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: A signed-in member chooses a court/hour, books, sees their upcoming bookings and cancels, from README and owner instructions.\nScope: Wire preview to validated booking, double-booking, quota and cancellation services; availability across the full rolling window; CSRF-protected POST forms and own-bookings screen. Excludes: other-member identity details and deferred features.\nAcceptance: Complete journey works; occupied/quota/cutoff states are clear; stale availability cannot create duplicates; forged requests cannot bypass rules; cancellations update availability; all eligible hourly starts through now+168h are navigable even across eight dates.\nBehaviour: Accessible labels/focus/errors/status, empty states, pending-submission feedback where relevant, safe repeated submissions, timezone labels and refreshed conflict states.\nVerification: make test Django-client journey/security tests and manual keyboard walkthrough. Prerequisites: Member journey/timezone checkpoint, quota enforcement and cancellation services (slot validation and double-booking prevention transitively). Assumptions: Server-rendered forms, no SPA.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 10,
+  "phase": "member-experience",
+  "status": "open",
+  "title": "Live availability, booking and cancellation screens",
+  "type": "task"
+}

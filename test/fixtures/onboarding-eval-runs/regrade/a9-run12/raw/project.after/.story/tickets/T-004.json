@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Represent and validate eligible one-hour court bookings, from README first-version scope and the owner's seven-day window.\nScope: Court range 1..3, timezone-aware local-hour starts, configurable club timezone, strictly future start and inclusive now+168h boundary, active/canceled lifecycle fields and migrations, basic internal persistence service. Preserve existing court/start uniqueness. Excludes: changing uniqueness for canceled-slot reuse or concurrent conflict handling (dedicated double-booking ticket); quota; cancellation action; live endpoints.\nAcceptance: Reject invalid courts, past/unaligned/nonexistent/out-of-window starts; allow exactly seven days when aligned; distinguish ambiguous local hours; persist/retrieve valid owned booking and lifecycle state without dropping existing uniqueness.\nBehaviour: Actionable validation errors and atomic rollback; member identity is a trusted server-side input; internal service stays unexposed until safeguards are complete. A slot lasts exactly one elapsed hour; repeated local hours use explicit offsets and distinct UTC instants.\nVerification: make test court/time boundary, DST, persistence and migration tests that preserve existing uniqueness. Prerequisites: Individual accounts and Django foundation. Assumptions: All hours offered; rolling 168-hour window, configurable timezone initially UTC.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 10,
+  "phase": "safe-booking",
+  "status": "open",
+  "title": "Court slot validation and booking persistence",
+  "type": "task"
+}

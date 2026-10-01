@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-09-29",
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Capture existing list/add catalogue from src/books.js and src/server.js.\nScope: In-memory GET/POST /books and numeric IDs. Excludes: search, lending, persistence.\nAcceptance: Existing routes and ID allocation verified by source inspection only.\nBehaviour: Title required; author defaults to empty string; no additional runtime guarantees claimed.\nVerification: Inspected src/books.js, src/server.js and test/books.test.js; tests not executed during setup. Prerequisites: none. Assumptions: none.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "reliable-catalogue",
+  "status": "complete",
+  "title": "Existing list/add catalogue API",
+  "type": "chore"
+}

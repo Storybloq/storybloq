@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Question: Are applying, sign-in and problem reporting clear, and is coordinator household validation practical?\nArtifact: T-004 prototype and T-002/T-003 household/onboarding demonstration.\nFollow-on gate: T-006 and T-011 wait; backend allocation T-007 may proceed independently. T-009 also cites this accepted phone journey.\nStage-1 limitation: this is an ordinary ticket; human approval is not automatically enforced. Record the owner's decision before closing.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 50,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: phone journey and household onboarding",
+  "type": "chore"
+}

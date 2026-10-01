@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Question: Is the preview understandable and is the timezone display appropriate?\nArtifact: Booking-flow preview screens and explicit hourly-slot/configurable UTC assumptions.\nCriteria: Owner inspects availability, own bookings, quota/conflict/cancel states and timezone labels; any requested changes are recorded.\nPrerequisites: Accessible booking-flow preview. Only live integration waits on this checkpoint; backend work uses configurable timezone.\nStage-1 limitation: This is an ordinary ticket and dependency, not an enforced owner-approval gate.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "accounts-preview",
+  "status": "open",
+  "title": "Checkpoint: member journey and timezone display",
+  "type": "task"
+}

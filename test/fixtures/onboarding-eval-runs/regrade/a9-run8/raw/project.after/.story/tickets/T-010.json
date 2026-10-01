@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: Gardener reports a problem and coordinator resolves it, from brief.md First version must 4\nScope: Persist report bound to verified own current-season allocation, plain-text description/status, coordinator open list and idempotent resolve, creation timestamps for digest. Excludes: photos, chat and map\nAcceptance: Receipt/report survive reload; another household cannot report against an unheld plot; coordinator sees open and resolved states\nBehaviour: No-allocation explanation, accessible validation/errors retaining form, duplicate-submit protection, loading and retry\nVerification: Report/resolve/permission integration and phone tests; seeded valid allocations permit development independent of T-006. Prerequisites: T-002, T-003. Assumptions: none",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Plot problem reporting and resolution",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-012",
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Criteria: Owner demonstrates brief.md First version must 1–4 plus emailed one-time sign-in and daily problem digest on a phone; privacy, accessibility and allocation-rule evidence accepted; no unresolved blocking defects; runbook handoff complete. Artifact: T-012 release evidence and T-009 allocation demonstration. Excludes: plot map (owner deferred until after first version), payments and tool lending. Stage-1 limitation: ordinary ticket, owner approval not mechanically enforced.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 20,
+  "phase": "release",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "task"
+}

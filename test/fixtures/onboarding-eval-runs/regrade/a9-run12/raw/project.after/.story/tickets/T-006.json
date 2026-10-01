@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-09-29",
+  "description": "Outcome: No member holds more than two active upcoming bookings, from the owner's setup instructions.\nScope: Enforce quota within the double-booking ticket's transaction strategy and booking service; serialize concurrent same-member writes; count active bookings with start strictly after now. Excludes: UI and cancellation action.\nAcceptance: Third booking is denied; past/canceled bookings are excluded; simultaneous requests for different slots by the same member cannot exceed two; slot uniqueness remains intact.\nBehaviour: Clear quota/conflict errors, bounded contention retries and rollback on failure.\nVerification: make test quota/time boundary and real independent-connection concurrency tests on file-backed SQLite. Prerequisites: Prevent double bookings. Assumptions: No additional overlapping-booking restriction beyond the stated quota.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 30,
+  "phase": "safe-booking",
+  "status": "open",
+  "title": "Enforce two upcoming bookings per member",
+  "type": "task"
+}

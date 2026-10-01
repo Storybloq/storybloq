@@ -1,4 +1,6 @@
 import { computeIssueFlow, formatIssueFlow, ISSUE_FLOW_SEMANTICS } from "./issue-flow.js";
+import { ExitCode } from "./exit-codes.js";
+export { ExitCode, type ExitCodeValue } from "./exit-codes.js";
 import type { ArrangementCompactResult, ArrangementRotateResult, DuetRoute, DuetView } from "./duet-coordination.js";
 import { arrangementCapacity, type ArrangementCapacity } from "./arrangement-compaction.js";
 import { assignmentIdOf, isCompactedAssignment } from "../models/duet.js";
@@ -123,22 +125,6 @@ function resolveLessonRefDisplay(ref: string, state: ProjectState): string {
 export const EMPTY_SCAFFOLD_HEADING = "## Getting Started";
 
 // --- Exit Codes ---
-
-export const ExitCode = {
-  OK: 0,
-  USER_ERROR: 1,
-  VALIDATION_ERROR: 2,
-  PARTIAL: 3,
-  // T-427 rendezvous long-poll: distinct codes so a background `bus poll --wait`
-  // consumer can tell a timeout (nothing arrived) and a contended waiter (another
-  // --wait already owns this endpoint) apart from a delivered message (OK) or a
-  // usage/validation error. Signals (SIGINT=130, SIGTERM=143) are set directly by
-  // the wait runner and are intentionally not enum members.
-  TIMEOUT: 4,
-  WAITER_ACTIVE: 5,
-} as const;
-
-export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];
 
 // --- JSON Envelopes ---
 

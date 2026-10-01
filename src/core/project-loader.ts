@@ -31,6 +31,7 @@ import {
   CROCKFORD_CLASS,
 } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
+import type { PreparedContentValidation } from "./update-write-hooks.js";
 import {
   ProjectLoaderError,
   MAX_SUPPORTED_SCHEMA_VERSION,
@@ -335,9 +336,10 @@ async function readIfExists(path: string): Promise<string | null> {
 export async function writeTicketUnlocked(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority },
+  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority } & PreparedContentValidation,
 ): Promise<void> {
   const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
+  await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -381,9 +383,10 @@ export async function prepareIssueWrite(
 export async function writeIssueUnlocked(
   issue: Issue,
   root: string,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean } & PreparedContentValidation,
 ): Promise<void> {
   const { target, content } = await prepareIssueWrite(issue, root);
+  await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {

@@ -22,6 +22,7 @@ import {
 import { writeTicketUnlocked } from "./project-loader.js";
 import { displayIdOf } from "./resolver.js";
 import type { Ticket } from "../models/ticket.js";
+import type { PreparedContentValidation } from "./update-write-hooks.js";
 
 export type CompletionOutcome =
   | { readonly kind: "completed"; readonly ticket: Ticket }
@@ -63,7 +64,7 @@ export function evidenceFor(resolver: CheckpointResolver, ticket: Pick<Ticket, "
  * that waits on none keeps no evidence: an entry naming a checkpoint it no
  * longer depends on would flag forever (reassessment row 1).
  */
-export async function completeDependent(state: CheckpointResolver, candidate: Ticket, root: string): Promise<CompletionOutcome> {
+export async function completeDependent(state: CheckpointResolver, candidate: Ticket, root: string, options?: PreparedContentValidation): Promise<CompletionOutcome> {
   if (candidate.status !== "complete") {
     throw new Error(`completeDependent: ${candidate.id} is not being completed (status ${candidate.status})`);
   }
@@ -75,7 +76,7 @@ export async function completeDependent(state: CheckpointResolver, candidate: Ti
   if (evidence.length > 0) next.checkpointEvidence = evidence;
   else delete next.checkpointEvidence;
   const ticket = next as Ticket;
-  await writeTicketUnlocked(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY });
+  await writeTicketUnlocked(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY, validatePreparedContent: options?.validatePreparedContent });
   return { kind: "completed", ticket };
 }
 

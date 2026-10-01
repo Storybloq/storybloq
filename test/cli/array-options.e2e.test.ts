@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { mkdtempSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { discoverArrayRegistrations, registrationKey } from "./array-registration-inventory.js";
@@ -442,6 +442,38 @@ function seedWordCollision(dir: string): void {
     _conflicts: [{ fieldPath: "/terms", kind: "invariant", rule: "term-owner", key: "pen, tier", entityIds: ["term-mgr", "term-pen"] }],
   };
   writeFileSync(join(dir, ".story", "glossary.json"), JSON.stringify(doc, null, 2) + "\n");
+}
+
+/** T-537: a project with owner checkpoints turned on. */
+function enableCheckpoints(dir: string): void {
+  const res = run(dir, "checkpoint", "enable");
+  expect(res.code, res.out).toBe(0);
+}
+
+type CheckpointState = { generation: number; revision: number; digest: string };
+
+/** `checkpoint create` for a decision, read back from its JSON summary. */
+function createCheckpoint(dir: string, ...extra: string[]): { id: string; expected: CheckpointState } {
+  const res = run(dir, "checkpoint", "create", "--title", "Pick a store", "--owner", "owner",
+    "--kind", "decision", "--question", "sqlite or pg?", "--format", "json", ...extra);
+  expect(res.code, res.out).toBe(0);
+  return (JSON.parse(res.out) as { data: { id: string; expected: CheckpointState } }).data;
+}
+
+/** The state a lifecycle change names, as `checkpoint list` prints it. */
+function expectedArgs(e: CheckpointState): string[] {
+  return ["--generation", String(e.generation), "--revision", String(e.revision), "--digest", e.digest];
+}
+
+/** `checkpoint resolve` that also records the response as an owner-direct ruling. */
+function resolveWithRuling(dir: string, id: string, expected: CheckpointState, ...extra: string[]): { code: number; out: string } {
+  return run(dir, "checkpoint", "resolve", id, ...expectedArgs(expected),
+    "--response", "sqlite", "--ruling", "owner-direct", "--client-task-id", "e2e-test-session",
+    ...extra, "--format", "json");
+}
+
+function evidenceRefs(dir: string, id: string): unknown {
+  return (byDisplayId(dir, "tickets", id).ownerCheckpoint as { evidenceRefs?: unknown }).evidenceRefs;
 }
 
 const MATRIX: Coverage[] = [
@@ -1173,6 +1205,55 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    key: "checkpoint create --blocked-by",
+    check: (dir) => {
+      seedTickets(dir, 2);
+      enableCheckpoints(dir);
+      const { id } = createCheckpoint(dir, "--blocked-by", "T-001,T-002");
+      expect(byDisplayId(dir, "tickets", id).blockedBy).toEqual(["T-001", "T-002"]);
+    },
+  },
+  {
+    key: "checkpoint create --evidence-ref",
+    check: (dir) => {
+      enableCheckpoints(dir);
+      const { id } = createCheckpoint(dir, "--evidence-ref", "docs/a.md,docs/b.md");
+      expect(evidenceRefs(dir, id)).toEqual(["docs/a.md", "docs/b.md"]);
+    },
+  },
+  {
+    key: "checkpoint attach --evidence-ref",
+    check: (dir) => {
+      seedTickets(dir, 1);
+      enableCheckpoints(dir);
+      const res = run(dir, "checkpoint", "attach", "T-001", "--owner", "owner",
+        "--kind", "decision", "--question", "sqlite or pg?", "--evidence-ref", "docs/a.md,docs/b.md");
+      expect(res.code, res.out).toBe(0);
+      expect(evidenceRefs(dir, "T-001")).toEqual(["docs/a.md", "docs/b.md"]);
+    },
+  },
+  {
+    key: "checkpoint change --evidence-ref",
+    check: (dir) => {
+      enableCheckpoints(dir);
+      const { id, expected } = createCheckpoint(dir);
+      const res = run(dir, "checkpoint", "change", id, ...expectedArgs(expected),
+        "--kind", "decision", "--question", "sqlite or pg?", "--evidence-ref", "docs/a.md,docs/b.md");
+      expect(res.code, res.out).toBe(0);
+      expect(evidenceRefs(dir, id)).toEqual(["docs/a.md", "docs/b.md"]);
+    },
+  },
+  {
+    key: "checkpoint resolve --ruling-scope-tag",
+    check: (dir) => {
+      enableCheckpoints(dir);
+      const { id, expected } = createCheckpoint(dir);
+      const res = resolveWithRuling(dir, id, expected, "--ruling-scope-tag", "alpha,beta");
+      expect(res.code, res.out).toBe(0);
+      expect(readEntities(dir, "rulings")[0]!.scopeTags).toEqual(["alpha", "beta"]);
+    },
+  },
+  {
     // T-502: `health --only` is a read-only selector, so unlike every row
     // above there is no stored field to inspect. What it proves instead is
     // the array behaviour itself: the comma expression selects exactly those
@@ -1204,6 +1285,21 @@ describe("ISS-886 registration coverage matrix", () => {
   it.each(MATRIX)("$key", ({ key, type, check }) => {
     const prefix = `iss886-${key.replace(/[^a-z0-9]+/gi, "-")}`;
     check(newProject(prefix, type ?? "npm"));
+  });
+});
+
+describe("ISS-1343 checkpoint resolve --ruling-scope-tag", () => {
+  it("refuses a separator-only value before anything is written", () => {
+    // `,` is the empty case under SPLIT_LIST: it yields no values and is
+    // refused. A lone "" is dropped instead (empty: "drop"), exactly as
+    // `ruling create --scope-tag` treats it.
+    const dir = newProject("iss1343-ruling-scope-tag-empty");
+    enableCheckpoints(dir);
+    const { id, expected } = createCheckpoint(dir);
+    const before = byDisplayId(dir, "tickets", id);
+    expectRejected(resolveWithRuling(dir, id, expected, "--ruling-scope-tag", ","), "contains separators but no values");
+    expect(existsSync(join(dir, ".story", "rulings")) ? readEntities(dir, "rulings") : []).toEqual([]);
+    expect(byDisplayId(dir, "tickets", id)).toEqual(before);
   });
 });
 

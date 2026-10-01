@@ -6811,14 +6811,18 @@ function expectedOptions<T>(y: Argv<T>) {
 }
 
 function contentOptions<T>(y: Argv<T>, required: boolean) {
-  return arrayOptions(
-    y
-      .option("kind", { type: "string", choices: ["decision", "acceptance"], demandOption: required, describe: "decision (a question) or acceptance (criteria)" })
-      .option("question", { type: "string", describe: "The question a decision asks the owner" })
-      .option("criteria", { type: "string", describe: "What an acceptance checks" }),
-    { "evidence-ref": { ...SPLIT_LIST, describe: "References the owner reviews (paths, URLs, ids)" } },
-  );
+  return y
+    .option("kind", { type: "string", choices: ["decision", "acceptance"], demandOption: required, describe: "decision (a question) or acceptance (criteria)" })
+    .option("question", { type: "string", describe: "The question a decision asks the owner" })
+    .option("criteria", { type: "string", describe: "What an acceptance checks" });
 }
+
+/**
+ * The --evidence-ref spec each content-taking checkpoint command registers in
+ * its own builder: the ISS-886 coverage gate names a registration only inside
+ * a .command() builder (ISS-1343).
+ */
+const EVIDENCE_REF = { ...SPLIT_LIST, describe: "References the owner reviews (paths, URLs, ids)" } as const;
 
 const contentOf = (argv: Record<string, unknown>) => ({
   kind: argv.kind as string | undefined,
@@ -6857,7 +6861,7 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
                 .option("description", { type: "string", describe: "Ticket description" })
                 .option("parent-ticket", { type: "string", describe: "Parent ticket ID" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
-              { "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
+              { "evidence-ref": EVIDENCE_REF, "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
             )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
@@ -6878,12 +6882,13 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
           "attach <id>",
           "Make an open, unclaimed ticket an owner checkpoint",
           (y2) =>
-            addFormatOption(
+            addFormatOption(arrayOptions(
               contentOptions(y2, true)
                 .positional("id", { type: "string", demandOption: true, describe: "Ticket ID" })
                 .option("owner", { type: "string", demandOption: true, describe: "Who answers the checkpoint" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
-            ),
+              { "evidence-ref": EVIDENCE_REF },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointAttach } = await import("./commands/checkpoint.js");
@@ -6895,15 +6900,15 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
           "resolve <id>",
           "Answer a checkpoint at the state you reviewed",
           (y2) =>
-            addFormatOption(
+            addFormatOption(arrayOptions(
               expectedOptions(y2)
                 .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
                 .option("response", { type: "string", demandOption: true, describe: "The owner's answer" })
                 .option("artifact-ref", { type: "string", describe: "The reviewed artifact (required for an acceptance)" })
                 .option("ruling", { type: "string", choices: ["owner-direct", "owner-via-manager-with-owner-veto", "manager-delegated"], describe: "Also record the response as an accepted ruling with this attribution, in one transaction" })
-                .option("ruling-scope-tag", { type: "string", array: true, describe: "Scope tags for that ruling" })
                 .option("client-task-id", { type: "string", describe: "Caller identity for the ruling, if not inferable from the environment" }),
-            ),
+              { "ruling-scope-tag": { ...SPLIT_LIST, describe: "Scope tags for that ruling" } },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointResolve } = await import("./commands/checkpoint.js");
@@ -6920,7 +6925,11 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
         .command(
           "change <id>",
           "Change what a checkpoint asks; an earlier answer no longer counts",
-          (y2) => addFormatOption(contentOptions(expectedOptions(y2), true).positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })),
+          (y2) =>
+            addFormatOption(arrayOptions(
+              contentOptions(expectedOptions(y2), true).positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" }),
+              { "evidence-ref": EVIDENCE_REF },
+            )),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointChange } = await import("./commands/checkpoint.js");

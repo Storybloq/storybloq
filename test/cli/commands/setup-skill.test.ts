@@ -881,8 +881,8 @@ describe("setup-skill", () => {
     expect(plan).toContain("**Independent review, by default.**");
     expect(plan).toContain("This runs before anything is shown for approval, every time.");
     const codex = plan.indexOf("a native Codex CLI, when `command -v codex` prints a path, as a read-only review");
-    const mcp = plan.indexOf("`review_plan`");
-    const agent = plan.indexOf("an independent agent");
+    const mcp = plan.indexOf("`review_plan`", codex);
+    const agent = plan.indexOf("an independent agent", mcp);
     expect(codex).toBeGreaterThanOrEqual(0);
     expect(mcp).toBeGreaterThan(codex);
     expect(agent).toBeGreaterThan(mcp);

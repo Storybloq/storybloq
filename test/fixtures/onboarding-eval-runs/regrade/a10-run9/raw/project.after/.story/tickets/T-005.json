@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Generate the fairest possible availability-respecting weekly rota, from README fairness definition and owner instruction to print the fairest rota possible and list who is over.\nScope: Assignment and structured diagnostics using normalized records. First maximize filled shifts, then globally minimize max count minus min count across ALL listed volunteers including zero counts, then minimize sum squared counts; deterministic input-order tie-break. Excludes: CSV reading/validation, CLI, email, cross-week fairness and per-volunteer daily caps.\nAcceptance: Never assign unavailable volunteers; each shift assigned at most once; explicitly list unfillable shifts. When possible count range <=1. Overload names/counts/excess are calculated above minimum count +1; none when range <=1. Exact optimum required; investigate feasibility before choosing any new solver dependency.\nBehaviour: No volunteers errors; empty shifts yields empty rota and zero totals; impossible coverage leaves shifts unfilled; impossible fairness returns best result with diagnostics rather than failing. No loading UI.\nVerification: pytest against an independent exhaustive small-input reference, including fair/impossible fairness/no availability/no volunteers/empty shifts/multiple same-day shifts and deterministic ties. Prerequisites: T-003 normalized models. Assumptions: Coverage precedes fairness, whole-day availability, one-week scope, no daily cap or invented performance target.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "scheduling",
+  "status": "open",
+  "title": "Implement optimal availability-aware scheduling",
+  "type": "task"
+}

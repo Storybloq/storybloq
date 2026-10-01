@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The coordinator reviews applications and assigns plots with returning-gardener priority, from brief.md / First version must 2 and Rules.\nScope: Coordinator application list, preference/contact review, available-plot selector and explicit initial allocation round. Prior-season holders who applied before local February 1 are allocated before new or late applicants while capacity remains. Excludes: automatic matching, payments and plot map.\nAcceptance: Enforce household-season and plot-season uniqueness atomically. Moving an eligible returning applicant to the waiting list cannot clear priority while capacity exists. If eligible returning demand exceeds capacity, process that cohort by original application timestamp and sequence. During the initial round, waiting placement occurs only after capacity is exhausted. Close the round when every applicant has allocation or waiting disposition. Later applicants and vacancy promotions use the chronological waiting list without renewed priority overrides.\nBehaviour: Explain priority, show empty applications and unavailable plots clearly, and recover from stale/conflicting assignments via refresh/retry; accessible list and selector support phone and keyboard use.\nVerification: Cutoff/timezone, priority-bypass, cohort ordering, capacity, initial-round transition, role and concurrent uniqueness tests. Prerequisites: T-005. Assumptions: returning priority applies in the initial round; subsequent waiting-list allocation is strictly chronological. Preferences do not guarantee specific plots.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Coordinator initial allocation",
+  "type": "task"
+}

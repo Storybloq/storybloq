@@ -724,7 +724,7 @@ describe("check sets 1-3 are unchanged byte for byte (D-pins)", () => {
     expect(lib.WRITE_RULE_VERSION_4.startsWith(`2026-09-30.1: ${lib.WRITE_RULE_VERSION.slice("2026-09-27.8: ".length)}; check set 4: `)).toBe(true);
     expect(lib.stopRuleFor(3)).toBe(lib.STOP_RULE_VERSION_3);
     expect(lib.stopRuleFor(4)).toBe(lib.STOP_RULE_VERSION_4);
-    expect(lib.CHECK_SET_VERSION).toBe(4);
+    expect(lib.CHECK_SET_VERSION).toBe(5);
   });
 
   it("T1d2: shellSequence reads every stored call exactly as before", () => {

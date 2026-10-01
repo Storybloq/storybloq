@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The coordinator receives one daily email listing new problem reports, from owner conversation.\nScope: Configured local send time and timezone, persistent digest batch/cursor, retry/deduplication, secure application links and delivery-failure visibility. Include reports since the last successful digest boundary even if resolved, labelled with status. Excludes: instant notifications, marketing and gardener contact details in email.\nAcceptance: Each new report belongs to one logical daily batch; retries cannot lose or skip reports; empty days send nothing; missed runs catch up. Persist batch identity across retries. Confirm provider idempotency support before claiming duplicate-free delivery; document limitations if unsupported.\nBehaviour: Scheduler downtime and provider errors preserve pending work, retry the same batch and expose actionable failure state without leaking secrets.\nVerification: Fake-clock/provider boundary, timezone, resolved-report, downtime, crash/retry and idempotency tests. Prerequisites: T-009 and T-003. Assumptions: daily schedule configured by coordinator; logical batch uniqueness is separate from provider delivery guarantees.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 20,
+  "phase": "problems",
+  "status": "open",
+  "title": "Daily coordinator problem digest",
+  "type": "task"
+}

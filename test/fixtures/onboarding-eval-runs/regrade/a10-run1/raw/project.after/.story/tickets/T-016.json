@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-009",
+    "T-013",
+    "T-014",
+    "T-015"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: owner accepts brief requirements excluding map, emailed access/digest decisions, household assumptions, exact dates/timezone/digest configuration, retention and operating arrangements.\nArtifact: deployable release candidate, verification evidence and runbook. Verification: record owner acceptance.\nPrerequisites: allocation demonstration, problem/email demonstration, operational readiness and regression/accessibility. No dependency on map. No automatic production launch. Stage-1 limitation: ordinary ticket without automatically enforced approval gate.",
+  "displayId": "T-016",
+  "id": "T-016",
+  "order": 30,
+  "phase": "release",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "task"
+}

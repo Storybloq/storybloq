@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Board updates automatically every ten seconds, from owner requirement and explicit request for a separate auto-refresh ticket.\nScope: Periodic fetch through V1 state/render interface; no overlapping requests; prevent stale/out-of-order overwrites; stale-data indicator; retry/reconnection; dispose timers/requests. Preserve V1 day-expiry clearing and never restore expired data. Excludes: new board layout/projection, operator polling and SMS.\nAcceptance: Next successful polling cycle reflects additions/claims/completions; ten-second cadence when no request is in flight; skip slow-request overlaps; visible stale state during outage; successful poll recovers; expired-day payload never restores names.\nBehaviour: Failed polls preserve only valid same-day display with stale indicator; expiry clears even disconnected; page disposal stops timers and requests.\nVerification: Fake-clock tests for cadence, overlap, out-of-order replies, outage/recovery, disposal and integrated polling across midnight. Prerequisites: V1 board page. Assumptions: ten-second interval, no update-latency guarantee while network fails.\nSetup label: V2.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 20,
+  "phase": "board",
+  "status": "open",
+  "title": "Board auto-refresh",
+  "type": "task"
+}

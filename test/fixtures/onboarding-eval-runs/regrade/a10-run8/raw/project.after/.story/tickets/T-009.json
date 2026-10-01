@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-006",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: A gardener reports a problem with their plot and the coordinator sees open problems and resolves them, from brief.md / First version must 4.\nScope: Persistent text report with plot, author, timestamp and status; coordinator open queue and resolution; gardener confirmation and own-report history/status. Excludes: attachments and chat.\nAcceptance: Only assigned households may report on their own plot; reject cross-household reporting; reports survive restart; idempotent resolution updates the open queue and personal status.\nBehaviour: Explain no-assigned-plot cases; prevent duplicate submissions; provide accessible phone-friendly validation, empty/loading/error/retry states.\nVerification: Create/read/resolve journey, duplicate-request, persistence and authorization tests. Prerequisites: T-006 and T-004. Assumptions: text-only reports; gardeners can see only their own report status.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Problem reporting and resolution",
+  "type": "task"
+}

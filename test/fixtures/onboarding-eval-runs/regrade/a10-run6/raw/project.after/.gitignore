@@ -1,0 +1,11 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+runtime/

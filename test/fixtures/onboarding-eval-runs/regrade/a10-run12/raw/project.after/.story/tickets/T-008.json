@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-004",
+    "T-006",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Members browse seven-day availability, book a court, view their own upcoming bookings and cancel, from README and owner setup answers.\nScope: Accessible server-rendered Django forms/pages, court/date navigation, confirmation, integration with T-005/T-006/T-007 and no alternate unvalidated write path. Excludes: public API, guest payment, recurring bookings and production deployment.\nAcceptance: Signed-in members complete the whole journey and see updated availability and remaining allowance; no identifying details of other members are exposed.\nBehaviour: Empty availability/bookings, clear form errors, submitting feedback, stale-slot conflict recovery, cutoff explanations, keyboard operation and correct focus/error association.\nVerification: Django request/integration tests and browser walkthrough on narrow and wide screens. Prerequisites: T-004, T-006 and T-007. Assumptions: Django templates; availability is visible without disclosing other member details.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 40,
+  "phase": "reservations",
+  "status": "open",
+  "title": "Accessible booking and cancellation website",
+  "type": "task"
+}

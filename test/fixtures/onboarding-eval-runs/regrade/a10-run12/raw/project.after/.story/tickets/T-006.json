@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: A member books eligible slots up to seven days ahead and holds at most two upcoming bookings, from owner setup answers.\nScope: Future/hour-aligned starts, valid courts, inclusive seven-day window and member-count checks inside T-005 shared serialized transaction; server-derived member identity. All externally reachable booking entry points enforce the complete policy. Excludes: separate concurrency infrastructure, cancellation and UI.\nAcceptance: Past/out-of-window starts rejected; exact seven-day boundary allowed; third upcoming booking rejected; simultaneous requests for different slots by one member never exceed two; T-005 same-slot guarantees preserved.\nBehaviour: Clear rule errors, full rollback on failure, safe retry without duplicate reservations, no leakage of another member identifying details.\nVerification: Controlled-clock boundary tests, separate-connection member-limit races and regression tests for T-005 conflicts. Prerequisites: T-005. Assumptions: upcoming means starts_at strictly greater than now; booking start no later than now plus seven days; configurable timezone initially UTC and all 24 hourly starts initially.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "reservations",
+  "status": "open",
+  "title": "Enforce booking window and member limits",
+  "type": "task"
+}

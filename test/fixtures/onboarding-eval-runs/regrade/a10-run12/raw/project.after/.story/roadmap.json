@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "date": "2026-10-01",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate member sign-in and valid booking data.",
+      "id": "foundation",
+      "label": "PHASE 1",
+      "name": "Foundation"
+    },
+    {
+      "description": "Demonstrate rule-correct booking and cancellation.",
+      "id": "reservations",
+      "label": "PHASE 2",
+      "name": "Reservations"
+    },
+    {
+      "description": "Owner accepts the complete first version against the agreed booking rules.",
+      "id": "acceptance",
+      "label": "PHASE 3",
+      "name": "Acceptance"
+    }
+  ],
+  "title": "Court bookings"
+}

@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-016"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: households and coordinator can use accepted Plotbook, from amended first-version outcome.\nScope: authorized deployment, real roster/history/40 plots, approved-recipient email checks, production smoke, recovery instructions and coordinator handoff. Excludes: map and purchase/deploy before explicit launch authorization.\nAcceptance: critical journeys usable, no demo data or public contacts, rollback available and handoff recorded.\nBehaviour: launch failure rolls back or closes access without data loss; no undocumented credentials.\nVerification: authorized production smoke and coordinator signoff. Prerequisites: first-version acceptance plus owner launch authorization. Assumptions: hosting/domain/mail credentials available.",
+  "displayId": "T-017",
+  "id": "T-017",
+  "order": 40,
+  "phase": "release",
+  "status": "open",
+  "title": "Launch approved first version",
+  "type": "task"
+}

@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Teacher finds, lends and returns through the browser, confirms record preservation across restart, and reviews evidence and local-use/privacy/recovery instructions. Artifact: first-version app, verification results and README from C2 and D1. Overdue listing is explicitly excluded and cannot block acceptance. Record actual owner acceptance; this release checkpoint gates deferred B3. Stage-1 limitation: ordinary ticket, owner approval is not technically enforced. Setup approval alone does not authorize autonomous feature execution. Setup alias: C3.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 20,
+  "phase": "acceptance",
+  "status": "open",
+  "title": "Checkpoint: teacher accepts first version",
+  "type": "task"
+}

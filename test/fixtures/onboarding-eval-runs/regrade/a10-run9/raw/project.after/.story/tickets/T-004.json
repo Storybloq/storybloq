@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Question: Can the organiser prepare the example volunteers/shifts CSVs and understand the proposed plain-text rota, totals, overload counts and unfilled-shift warnings?\nArtifact: Validated example CSV fixtures and a proposed sample output, prepared for this review; approved setup package R2.\nCriteria: Review day notation, empty availability, multiple shifts per day, normal output and unfair/unfilled examples before CLI implementation. Record owner feedback.\nPrerequisites: T-003 validation, including the examples from T-002. Only CLI implementation waits on this review; scheduling may proceed.\nStage-1 limitation: This is an ordinary checkpoint ticket; owner approval is not mechanically enforced.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "input-contract",
+  "status": "open",
+  "title": "Checkpoint: Review sample inputs and proposed output",
+  "type": "chore"
+}

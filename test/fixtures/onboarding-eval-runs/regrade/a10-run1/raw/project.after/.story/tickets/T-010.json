@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-005",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: gardener reports a problem with their allocated plot, from brief.md First version 4.\nScope: plain-text report, durable plot/season/household link and timestamp, idempotent submission and receipt/status. Excludes: attachments, chat and gardener email.\nAcceptance: own allocated plot only; nonempty bounded text; repeated submit safe; report retrievable by coordinator; no reports without allocation.\nBehaviour: safe escaping; accessible loading/empty/error/retry/success feedback.\nVerification: validation, authorization and retry tests plus phone journey. Prerequisites: prototype checkpoint, passwordless access and allocation workflow. Assumptions: text reports sufficient.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 10,
+  "phase": "problems",
+  "status": "open",
+  "title": "Gardener problem reports",
+  "type": "task"
+}

@@ -904,7 +904,9 @@ describe("setup-skill", () => {
     expect(pkg).toContain("**Quality level**");
     for (const level of ["**Full pipeline**", "**Tests only**", "**Minimal**"]) expect(pkg).toContain(level);
     expect(pkg).toContain("**Git:**");
-    expect(pkg).toContain("One approval covers everything listed");
+    expect(pkg).toContain('"Approve setup" -- create everything listed in this package');
+    expect(content).toContain("Everything below runs only after approval as defined in 1d.");
+    expect(content).not.toContain("One approval covers everything listed");
     expect(flowSection(content, "1e")).not.toMatch(/AskUserQuestion/);
   });
 

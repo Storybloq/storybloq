@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The coordinator maintains the 40 plots, household identities, season dates and previous-season holdings needed for allocation, from brief.md / Background and Rules.\nScope: Persistent registry and migrations, coordinator setup forms, current and historical holdings, local timezone and season dates. Excludes: grid positions and map layout (T-014), self-service household merges and bulk imports.\nAcceptance: Exactly 40 stable unique plot records; explicit March–October season dates; only coordinator can change registry and prior holdings; at most one allocation per household-season and one per plot-season, enforced atomically.\nBehaviour: Reject invalid dates and duplicate allocations with clear accessible validation; empty/loading/failure/retry states preserve entered values. Unauthorized writes fail.\nVerification: Model, role and form tests, including concurrent allocation constraint tests. Prerequisites: T-001 foundation and T-003 access. Assumptions: one verified email represents a household, with coordinator-managed identity corrections and previous-season records.",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Garden registry",
+  "type": "task"
+}

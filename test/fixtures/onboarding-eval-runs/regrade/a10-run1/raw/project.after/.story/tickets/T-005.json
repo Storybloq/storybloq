@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: gardeners sign in to their own household and coordinator accesses privileged functions, from owner sign-in answer and brief.md Constraints.\nScope: emailed short-lived single-use links; signed sessions/logout; replay protection/rate limits/safe redirects; coordinator provisioning; server/API record authorization and roster binding. Excludes: passwords, social login and self-service household merging.\nAcceptance: intended recipient gets own records only; coordinator alone sees other households/contact details; expired/used links denied with resend; unknown emails receive non-enumerating response and enrollment help; submitted IDs never elevate privileges.\nBehaviour: email failures recoverable, accessible feedback, token-safe logs.\nVerification: replay/expiry/session/cross-household integration tests and sandbox mail. Prerequisites: foundation, prototype checkpoint and records. Assumptions: one sign-in email per household; coordinator enrolls households.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 50,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Passwordless access and roles",
+  "type": "task"
+}

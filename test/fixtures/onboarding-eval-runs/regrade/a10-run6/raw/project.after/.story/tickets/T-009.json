@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-006",
+    "T-007",
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Owner accepts the agreed first version, from BRIEF.md and owner answers.\nScope: Complete demonstration and operating instructions. Excludes: SMS.\nCriteria: Door adds two visitors with the same first name; 3-6 repairer clients take without duplicate claims and finish; board shows first names/status/reference and refreshes every ten seconds; outage recovery works; all views and storage expire according to C1 ruling; B2 startup/readiness documented.\nArtifact: Working app, automated/manual evidence, deployment/timezone/retention instructions including any explicitly accepted operating limitations.\nAcceptance: Owner records acceptance against all criteria.\nBehaviour: Failed criteria remain open.\nVerification: Demonstration plus test evidence and explicit owner acceptance. Prerequisites: Q3 operator controls, V1 board page, V2 auto-refresh. Assumptions: trusted LAN deployment.\nStage-1 limitation: ordinary checkpoint ticket, not a technically enforced owner gate.\nSetup label: C2.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 30,
+  "phase": "board",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "task"
+}

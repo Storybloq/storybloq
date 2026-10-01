@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: owner sees mobile application, returning priority, FIFO promotion, own allocation/dates and conflict recovery without a plot map.\nArtifact: working seeded application-to-allocation demonstration. Verification: record owner acceptance.\nPrerequisites: gardener allocation view. Gates first-version acceptance; does not block independent problem work. Stage-1 limitation: ordinary ticket, no automatically enforced approval gate.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 40,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: application and allocation demonstration",
+  "type": "task"
+}

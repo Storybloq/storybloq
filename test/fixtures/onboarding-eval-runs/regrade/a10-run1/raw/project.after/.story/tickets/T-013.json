@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-011",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: owner reviews mobile report, coordinator open/resolved list and sample daily email including failure recovery.\nArtifact: working problem workflow and sandbox digest. Verification: record acceptance.\nPrerequisites: coordinator resolution and daily email. Gates first-version acceptance. Stage-1 limitation: ordinary ticket without automatically enforced approval gate.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 40,
+  "phase": "problems",
+  "status": "open",
+  "title": "Checkpoint: problems and daily email",
+  "type": "task"
+}

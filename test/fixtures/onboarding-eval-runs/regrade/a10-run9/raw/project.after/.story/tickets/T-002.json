@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Load weekly volunteer and shift CSV files, from README first-version scope and owner-approved setup R2.\nScope: File access, decoding, CSV syntax, quoted fields, raw headers/rows with line context, and example CSV fixtures. Excludes: domain/header/row validation, normalized models, scheduling and CLI.\nAcceptance: Preserve quoted values and blank cells; return raw rows and headers for validation; surface inaccessible files, decoding errors and malformed CSV syntax clearly.\nBehaviour: Empty files reach validation; no silent row loss or partial success on reader failure; local synchronous operation, no loading UI. Errors identify file and location where available.\nVerification: pytest cases for normal/quoted/blank input and access, encoding and syntax failures. Prerequisites: none. Assumptions: UTF-8 CSV; volunteers headers name,unavailable_days and shifts headers shift_id,day are enforced by the validation ticket.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "input-contract",
+  "status": "open",
+  "title": "Read CSV files and provide examples",
+  "type": "task"
+}

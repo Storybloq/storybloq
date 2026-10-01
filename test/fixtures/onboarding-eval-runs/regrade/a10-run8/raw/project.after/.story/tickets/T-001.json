@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: A runnable persistent web foundation enables the first-version application, allocation and reporting journeys, from brief.md / First version must and the approved setup package.\nScope: Choose the TypeScript framework, SQL database, deployment approach, scheduler and email adapter; implement migrations, configuration, development scripts and a test harness. Verify provider idempotency support. Excludes: purchasing services or live deployment.\nAcceptance: Document established test/build/dev/readiness commands; collect and run a smoke test; demonstrate persistence across restart and testable scheduler/email adapters. Enable and demonstrate WRITE_TESTS, TEST, BUILD and VERIFY using established commands; do not leave setup's disabled stages in place once tooling exists.\nBehaviour: Configuration and startup errors are actionable; keep credentials out of source and logs. Accessibility: none for infrastructure.\nVerification: Collected smoke test, restart exercise and evidence of each pipeline stage executing. Prerequisites: none. Assumptions: one TypeScript web application with SQL persistence; framework, provider and deployment selection delegated to implementation, with no paid purchase authorized.",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Foundation and feasibility",
+  "type": "task"
+}

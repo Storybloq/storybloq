@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-003",
+    "T-009"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: After first-version acceptance, teacher sees overdue outstanding loans, from original owner requirement explicitly deferred by latest instruction: Defer the overdue list to after the first version.\nScope: Overdue query and accessible UI with book, pupil label and due date; oldest-due ordering, catalogue navigation to existing return controls, injectable local calendar clock. Excludes: first-version delivery, reminders, fines and separate return flow.\nAcceptance: Include outstanding loans due before local today; exclude due today/future and returned loans. Clear empty view; refreshing after return clears entry.\nBehaviour: Safe labelled keyboard-accessible list/navigation, loading/error/retry.\nVerification: node:test date/month/year boundaries and returned-loan filtering, plus manual keyboard and return/refresh journey. Run only in later milestone. Prerequisites: B1 loan API, A2 catalogue UI, C3 first-version acceptance. C3 is an explicit owner-defined release boundary, not automatic phase chaining. Assumptions: local calendar overdue semantics.\nSetup alias: B3. Deferred: after first version.",
+  "displayId": "T-010",
+  "id": "T-010",
+  "order": 10,
+  "phase": "overdue",
+  "status": "open",
+  "title": "Deferred: overdue query and display",
+  "type": "feature"
+}

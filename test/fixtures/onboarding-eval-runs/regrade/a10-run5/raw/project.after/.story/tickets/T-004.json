@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Question: Is finding and identifying a physical copy and adding one understandable? Artifact: working local catalogue, add and search screen from A2. Record actual owner feedback before completing. Gates B2 interaction design only; unrelated backend work can proceed. Stage-1 limitation: this is an ordinary ticket; owner approval is not technically enforced. Setup alias: C1.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "catalogue",
+  "status": "open",
+  "title": "Checkpoint: teacher reviews catalogue",
+  "type": "task"
+}

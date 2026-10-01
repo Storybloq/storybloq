@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The coordinator places unallocated applicants on a strictly first-come-first-served waiting list and assigns vacancies from its head, from brief.md / First version must 2 and Rules.\nScope: Batch and individual waiting placement after initial allocation capacity is exhausted, ordering by original application timestamp plus deterministic sequence, atomic head allocation and subsequent applicant entry. Excludes: bypassing the head, returning-priority reordering, automatic offers and withdrawal workflow.\nAcceptance: Original application order is preserved regardless of enqueue time: adding an earlier applicant after a later applicant puts the earlier applicant first. Initial-round priority remains enforced by T-006; after that round the queue is authoritative. Concurrent assignments cannot double-allocate a plot or household.\nBehaviour: Explain empty queue, no available plot and concurrent conflicts with accessible recovery actions.\nVerification: Ordering tests including reversed enqueue order, initial-to-queue transition, head-only assignment and transaction race tests. Prerequisites: T-006. Assumptions: coordinator manually assigns the available plot to the head; no automatic offer expiry or withdrawal process in version one.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Strict chronological waiting list",
+  "type": "task"
+}

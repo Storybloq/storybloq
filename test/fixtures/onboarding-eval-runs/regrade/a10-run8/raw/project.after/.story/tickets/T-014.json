@@ -1,0 +1,18 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-006",
+    "T-007",
+    "T-013"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The coordinator sees all 40 plots with current holders and vacancies, from brief.md / First version must 5, explicitly deferred until after first version by owner conversation.\nScope: Configurable plot grid positions, coordinator-only map, holder/vacancy labels and accessible list alternative. Excludes: gardener/public map, contact exposure, payments and tool lending.\nAcceptance: Show all 40 stable plots exactly once; holders/vacancies reflect registry and allocations; layout positions persist; coordinator-only authorization enforced; no color-only meaning.\nBehaviour: Phone and keyboard usability; clear empty/loading/failure/retry states; reject duplicate or invalid layout positions safely.\nVerification: Layout persistence, plot count, assignment synchronization, authorization/privacy and accessibility tests. Prerequisites: T-002, T-006 and T-007 for data, and T-013 for the owner's after-first-version sequencing constraint. Assumptions: coordinator specifies layout; no inferred real-world geography. This ticket is not part of first-version acceptance.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 10,
+  "phase": "post-v1-map",
+  "status": "open",
+  "title": "Coordinator plot map (after first version)",
+  "type": "task"
+}

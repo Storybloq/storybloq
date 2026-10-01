@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Operate the queue in a browser, from BRIEF.md.\nScope: Accessible add form, waiting/helped lists with repair item and anonymous reference, take-next/finish actions and integration; clear all operator lists/forms at server-provided day expiry even offline; no browser persistence. Excludes: public board and polling.\nAcceptance: Successful add clears form; actions reflect server state; pending actions disabled; duplicates distinguishable; uncertain outcomes refresh before retry; current-day errors preserve input, day expiry clears name/item state and expired responses cannot restore it.\nBehaviour: Labels, keyboard access, focus handling, loading/empty/error states and actionable validation.\nVerification: Component and API workflow tests, disconnected rollover, cache/back-navigation and stale-response tests. Prerequisites: Q2 transitions. Assumptions: trusted LAN without sign-in; expiry applies to every operator view.\nSetup label: Q3.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 30,
+  "phase": "queue",
+  "status": "open",
+  "title": "Volunteer and repairer controls",
+  "type": "task"
+}

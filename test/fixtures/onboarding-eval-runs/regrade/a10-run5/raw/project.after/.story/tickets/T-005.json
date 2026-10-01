@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Teacher lends a copy to a pupil and records its return, from owner first-version requirements.\nScope: Active/returned loan records, minimal pupil label, loan/due dates and return timestamp, persistent loan ids, migration preserving books, one-active-loan invariant, shared atomic storage and operation-id recovery from A1. Automatically remove pupil label within successful return transaction while retaining book/loan ids and dates; retry ledger must not retain labels. Excludes: UI, accounts, fines and overdue query.\nAcceptance: Reject unknown ids/invalid pupil or dates. Concurrent lends accept at most one active loan per copy. Acknowledged transitions survive restart; repeated return preserves first return timestamp. Retrying the same operation cannot create another loan or resurrect returned state. Returned copy can be lent again. Return erases pupil label from serialized state and retry ledger but preserves recorded return. Migration preserves catalogue.\nBehaviour: Clear conflict/validation/private storage errors and uncertainty recovery per A1; no false rollback or pupil labels in logs/errors.\nVerification: node:test state-transition/date-validation/concurrency/migration/restart/retry tests, and serialized label-erasure checks. No overdue filtering tests in first version. Prerequisites: A1 durable storage/API. Assumptions: one record per physical copy, editable 14-calendar-day due-date default, local date-only fields, label erasure on return.\nSetup alias: B1.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "circulation",
+  "status": "open",
+  "title": "Durable lending and return API",
+  "type": "task"
+}

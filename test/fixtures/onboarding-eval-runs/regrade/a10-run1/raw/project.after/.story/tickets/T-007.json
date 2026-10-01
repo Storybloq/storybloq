@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator allocates plots and places unallocated applicants on FIFO waiting list, from brief.md First version 2/Rules.\nScope: application/preferences review, available-plot selector, priority queues, transactional assign/reassign/release, batch waitlist transition, confirmed promotion and history. Excludes: map/holder overview, preference optimization, allocation emails and time-limited offers.\nAcceptance: initial allocation prohibited before February 1 00:00 garden time; prior-season holders applying before cutoff precede others; returning applicants at/after cutoff join new applicants in ordinary submission order. Within category FIFO with stable ties. No duplicate plot/household allocation under concurrency. Waiting list preserves original application order; promotion, direct assignment and reassignment cannot bypass it. Unavailable preferences do not discard applicants.\nBehaviour: reject/refresh stale conflicting writes; explicit empty/full states; confirm reassignment; audit withdrawals.\nVerification: business-rule TDD, timezone/cutoff/ties/concurrent assignment/promotion; January new applicant followed by just-before-cutoff returner; exact-cutoff late-returner case and premature allocation rejection. Prerequisites: prototype checkpoint and seasonal application. Assumptions: no plot guarantee; coordinator confirms promotion and handles withdrawals explicitly.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Allocation and ordered waiting list",
+  "type": "task"
+}

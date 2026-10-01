@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: A member cancels their own booking up to two hours before it starts, from README first version.\nScope: Ownership and cutoff checks; remove booking and release slot/member allowance using the same atomic transaction rules as T-005 and T-006. Excludes: cancelling another member booking, staff override and payments.\nAcceptance: Cancellation exactly two hours before start is allowed; later refused; other members bookings unchanged; successful cancellation releases both court slot and member allowance.\nBehaviour: Safe idempotent repeated cancellation without disclosure, no false success after failed writes, safe simultaneous cancellation/booking.\nVerification: Ownership tests, controlled-clock boundary tests, repeated requests and concurrent cancel/book tests. Prerequisites: T-006. Assumptions: deletion allowed; no audit retention requirement was stated; cutoff equality is inclusive.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "reservations",
+  "status": "open",
+  "title": "Owner-authorized cancellation and released capacity",
+  "type": "task"
+}

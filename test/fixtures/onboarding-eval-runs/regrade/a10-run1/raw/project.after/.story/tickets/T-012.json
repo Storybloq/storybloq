@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator receives one daily email listing new reports, from owner notification answer.\nScope: durable local-time scheduler, immutable batch/outbox, stable provider idempotency key, private minimal summary and authenticated detail links; recipient configuration, observability and recovery. Excludes: immediate alerts, gardener mail and empty digests.\nAcceptance: include newly reported but since-resolved reports with status; no report loss on failure/restart; concurrent runners create one logical batch; only coordinator recipient. At most one successful logical digest per garden-local day.\nBehaviour: missed days without existing batch consolidate outstanding reports into next scheduled batch. Freeze membership on creation. Failed/ambiguous frozen batch is reconciled/retried with same provider key at subsequent scheduled runs before creating new batch; newer reports remain durably pending for a later day. Resolve ambiguous provider status before sending another; failed batch inspectable. No impossible exactly-once claim.\nVerification: fake-clock/timezone/DST, multiple missed days, concurrent scheduler, provider success/failure/timeout/retry, new reports during pending batch, daily delivery limit and sandbox rendered mail tests. Prerequisites: delivery feasibility and problem reporting. Assumptions: address/time/timezone configured before release; provider idempotency/status support established in foundation.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 30,
+  "phase": "problems",
+  "status": "open",
+  "title": "Daily new-report email",
+  "type": "task"
+}

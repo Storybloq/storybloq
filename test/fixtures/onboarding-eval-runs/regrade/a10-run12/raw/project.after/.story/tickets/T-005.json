@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Two members competing for one court/slot cannot both reserve it, from README and the owner request to make prevention of double bookings a separate ticket.\nScope: One shared atomic reservation write path built on the database uniqueness constraint; server-derived authenticated ownership; SQLite-compatible transaction/serialization; duplicate/conflict handling and bounded busy/retry outcomes. Provide an internal in-transaction policy hook for member-limit checks before writing. Excludes: seven-day window, two-upcoming cap, cancellation and member-facing pages.\nAcceptance: Competing separate-connection requests for one slot persist exactly one booking; rejected conflicts leave no write; another free slot remains reservable.\nBehaviour: Clear domain conflicts, bounded contention recovery, no partial writes, duplicate reservations or misleading success. Keep the internal path unexposed until full booking policies are installed; UI cannot bypass them.\nVerification: Real database concurrency tests with separate connections, duplicate-constraint handling and contention/retry tests. Do not assume select_for_update provides SQLite row locking. Prerequisites: T-002 and T-003. Assumptions: all later reservation writes share this atomic path.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "reservations",
+  "status": "open",
+  "title": "Prevent double bookings",
+  "type": "task"
+}

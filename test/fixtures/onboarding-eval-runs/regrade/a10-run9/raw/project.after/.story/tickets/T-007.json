@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Organiser accepts first version against README and owner-approved setup R2: local Python workflow reads CSV, never assigns unavailable volunteers, demonstrates fair counts when possible, globally optimal unfair result with correct over list, explicit unfilled-shift warnings, and invalid-input correction/retry.\nArtifact: Working python -m rota invocation, representative CSV fixtures, printed reports and verification results produced by T-006.\nPrerequisites: T-006. Email and cross-week fairness remain deferred; record acceptance or concrete remaining gaps.\nStage-1 limitation: This ordinary checkpoint ticket records the owner review; the gate is not mechanically enforced.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 20,
+  "phase": "weekly-cli",
+  "status": "open",
+  "title": "Checkpoint: Accept the first weekly rota version",
+  "type": "chore"
+}

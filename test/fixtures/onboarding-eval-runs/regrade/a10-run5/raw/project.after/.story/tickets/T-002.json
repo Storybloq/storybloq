@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Added books survive restart, from owner first-version requirements.\nScope: Built-in filesystem JSON repository for books and next id; single-process serialized atomic mutations; injectable storage; persisted operation ids/results in the same transaction for duplicate-safe retries; bounded request parsing and validation. Loopback binding, configured loopback Host/port allowlist, exact same-origin Origin for mutations, JSON content type and custom same-origin header; reject missing/foreign mutation Origin and foreign supplied read Origin, no permissive CORS. Excludes: loans, UI and accounts.\nAcceptance: Acknowledged additions survive restart; ids stay unique. Invalid JSON/fields return 4xx without crashing. Cross-site requests rejected. Only missing data file initializes empty; corruption stops startup without overwriting. Acknowledge only after supported atomic replacement and durability barrier. Pre-replacement failure leaves prior state. When replacement may have occurred but durability confirmation fails, report outcome uncertain, not rollback; stop mutations until recovery reloads/validates disk and reconciles operation id. Startup completes supported durability barrier before accepting mutations. Retried operation cannot duplicate addition.\nBehaviour: Explicit empty catalogue and actionable private startup/storage errors; no pupil data in logs/errors. Supported filesystem power-loss limits documented, no unsupported guarantees. Store runtime data under data/.\nVerification: node:test HTTP input/Host/Origin/content-type/header rejection tests, temp-directory restart, concurrent writes, corruption, and fault injection before/after replacement with restart and operation-id retry. API clients/tests send required headers. Prerequisites: none. Assumptions: approved single local process and filesystem, dependency-free Node.js.\nSetup alias: A1.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "catalogue",
+  "status": "open",
+  "title": "Durable catalogue and safe HTTP API",
+  "type": "task"
+}

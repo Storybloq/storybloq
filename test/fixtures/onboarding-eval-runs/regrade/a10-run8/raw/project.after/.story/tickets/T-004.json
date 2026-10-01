@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Question: Can a gardener who is not confident with technology understand applying, viewing their own allocation and reporting a problem, and can the coordinator understand list-based assignment?\nArtifact: A phone prototype covering these journeys, coordinator application lists and plot selectors, with large text, plain language, keyboard/focus/contrast and empty/loading/error/recovery examples.\nCriteria: Owner reviews and records feedback before dependent user-interface work proceeds. Source: brief.md / Users and Constraints, owner map deferral.\nPrerequisites: none. Follow-on tickets T-005, T-008 and T-009 wait on this checkpoint; server foundation stays unblocked.\nExcludes: coordinator map or grid design. Assumptions: prototype may use synthetic data. Stage-1 limitation: this is an ordinary ticket; owner approval is not automatically enforced.",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: phone journey prototype",
+  "type": "task"
+}

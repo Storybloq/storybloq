@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-01",
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Record existing starter from frontend/src/main.js, backend/app/main.py and backend/tests/test_health.py.\nScope: Placeholder Queue board screen and GET /health endpoint. Excludes: queue features.\nAcceptance: Source renders title and health returns status ok.\nBehaviour: Placeholder only.\nVerification: Inspected code and health test source; tests not run. Prerequisites: none. Assumptions: none.\nSetup label: B1.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "baseline",
+  "status": "complete",
+  "title": "Existing starter",
+  "type": "chore"
+}

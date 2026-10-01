@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-011",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: evidence demonstrates amended first version on phones, from brief.md except deferred map plus owner email decisions.\nScope: integrated role/journey, priority/cutoff/FIFO/concurrency/auth/digest tests; keyboard/screen-reader/zoom review and plain-language fixes. Excludes: map tests, invented performance targets and user research.\nAcceptance: reproducible evidence for all in-scope requirements; no known blocking correctness/privacy/accessibility defects; fictional 40-plot/60-household dataset.\nBehaviour: reproducible tracked failures; loading/empty/error states covered.\nVerification: automated suite and documented mobile/assistive walkthrough including early new applicant followed by on-time returner, late-returner ordinary category, premature allocation refusal, and daily email recovery. Prerequisites: allocation view, coordinator resolution and daily email. Assumptions: checked browser environments documented.",
+  "displayId": "T-015",
+  "id": "T-015",
+  "order": 20,
+  "phase": "release",
+  "status": "open",
+  "title": "First-version regression and accessibility",
+  "type": "task"
+}

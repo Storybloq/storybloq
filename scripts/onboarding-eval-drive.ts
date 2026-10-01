@@ -5,13 +5,14 @@
  * through the same code, so a regrade is the runner's own computation replayed, not a second opinion.
  */
 import {
-  analyseCalls, approvedQualityLevel, authoritativeProbe, checkRecipe, checkStop, degradedFindings, discoveryTail, endsWithClosingLines, findingsOf, hasApprovalBlock,
+  analyseCalls, approvedQualityLevel, asksOnlyLast, authoritativeProbe, checkRecipe, checkStop, degradedFindings, discoveryTail, endsWithClosingLines, findingsOf, hasApprovalBlock,
   hasFixedLine, notRerunLines, pendingFindings, pendingInventory, probeAttempts, probeLines, qualityLevel,
   recipeContract, recipeFindings, resolveTestStages, reviewerCapabilityOf, reviewerInvocations, reviewStatus, reviewStatusLineIndex, stopRuleFor,
   stopRoute, summaryCounts, ticketFindings, treeCheckOutcome, writeRuleFor,
   type EvalCall, type EvalTurn, type ExpectedRecipe, type InterpreterScript, type ReviewerCapability, type ReviewerInvocation, type RuntimeExclusion, type StopCheck, type StopKind,
 } from "./onboarding-eval-lib.js";
 import { sha256 } from "./continuity-lib.js";
+import { citingLines, findSkillCitations } from "./onboarding-eval-corpus-5.js";
 
 export const MAX_DISCOVERY_ROUNDS = 3;
 
@@ -71,7 +72,26 @@ export interface DriveState {
   final: EvalTurn | null;
   /** The check set the run is graded under (lib CHECK_SET_VERSION); 1 for a record written before check sets existed. */
   readonly checkSet: number;
+  /** Check set 5 (A3): setup skill citations in turns that do not show the package, recorded and never failed. */
+  readonly skillCitations: { turn: string; line: string }[];
 }
+
+/** Check set 5 (B2): a reviewer path as the harness's fixture contract establishes it, never as the agent's probe reads it. */
+export type ReviewerPath = "absent" | "present" | "unknown";
+export interface ReviewerInventory { readonly cli: ReviewerPath; readonly reviewPlan: ReviewerPath; readonly agent: ReviewerPath }
+
+/**
+ * The fixture contract's reviewer inventory (run.ts). The reviewer-unavailable variant removes codex from PATH and
+ * refuses `command -v codex`, gives the client a storybloq-only MCP config and turns agents off, so all three paths are
+ * absent. Every other variant leaves codex on PATH and the same storybloq-only MCP config; whether an agent can start is
+ * not established, so it is unknown, never absent.
+ */
+export function inventoryFor(variant: Variant): ReviewerInventory {
+  return variant === "reviewer-unavailable" ? { cli: "absent", reviewPlan: "absent", agent: "absent" } : { cli: "present", reviewPlan: "absent", agent: "unknown" };
+}
+
+/** Check set 5: the opening failure when every reviewer path is absent and the stop did not come alone first. */
+export const OPENING_STOP_FAILURE = "the reviewer-unavailable stop did not open the run";
 
 export interface DriveOptions {
   readonly variant: Variant;
@@ -79,6 +99,8 @@ export interface DriveOptions {
   readonly discoveryPrompt: string;
   readonly afterPackage: readonly PackageTurn[];
   readonly exclusion: RuntimeExclusion;
+  /** Check set 5: the reviewer paths the fixture contract establishes; `inventoryFor(variant)` when absent. */
+  readonly reviewerInventory?: ReviewerInventory;
 }
 
 /** The producer of one failure. `turn` is the index of the turn it belongs to. */
@@ -91,8 +113,14 @@ function fail(s: DriveState, source: FailureSource, text: string): void {
   s.sources.push(source);
 }
 
+/** The lines of a stop that cite the setup skill, a sentence broken across lines included; the whole stop if a citation maps to no line. */
+export function skillCitationLines(stopText: string): string[] {
+  const lines = citingLines(stopText);
+  return lines.length > 0 || findSkillCitations(stopText).length === 0 ? lines : [stopText.trim()];
+}
+
 export function newDriveState(checkSet = 1): DriveState {
-  return { turns: [], allCalls: [], failures: [], sources: [], infraFailed: false, initTools: null, rounds: 0, reviewSkipped: false, final: null, checkSet };
+  return { turns: [], allCalls: [], failures: [], sources: [], infraFailed: false, initTools: null, rounds: 0, reviewSkipped: false, final: null, checkSet, skillCitations: [] };
 }
 
 /** The shell constructs the parser could not read, in call order: the segments a needs-review reason joins with "; ". A stop's calls are before approval. */
@@ -141,8 +169,14 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
       fail(s, { kind: "closing", turn: s.turns.length }, `the package does not end with the four closing lines (${label})`);
     }
     // Check set 4: the fixed line ends the paragraph above the question, one blank line between.
-    if (shows && s.checkSet >= 4 && !hasFixedLine(r.turn.stopText)) {
+    if (shows && s.checkSet >= 4 && !hasFixedLine(r.turn.stopText, s.checkSet)) {
       fail(s, { kind: "closing", turn: s.turns.length }, `the package does not carry the fixed line above the question (${label})`);
+    }
+    // Check set 5: a package never cites the setup skill; a citation anywhere else is recorded, never failed.
+    if (s.checkSet >= 5) {
+      if (shows) {
+        if (findSkillCitations(r.turn.stopText).length > 0) fail(s, { kind: "closing", turn: s.turns.length }, `the package cites the setup skill (${label})`);
+      } else for (const line of skillCitationLines(r.turn.stopText)) s.skillCitations.push({ turn: label, line });
     }
     s.turns.push({ label, prompt, stop, stopText: r.turn.stopText, models: r.turn.models, exitCode: r.exitCode, infraFailure: r.infraFailure, treeChanges, callRange: [from, s.allCalls.length], unparsed });
     return r.turn;
@@ -150,6 +184,12 @@ export function* driveFlow(o: DriveOptions, s: DriveState): Generator<TurnReques
 
   const preApproval = preApprovalStops(o.variant);
   s.final = yield* send("opening", o.firstPrompt, preApproval);
+  // Check set 5: when the fixture contract makes every reviewer path absent, the opening is the unavailable stop alone.
+  const inventory = o.reviewerInventory ?? inventoryFor(o.variant);
+  if (s.checkSet >= 5 && !s.infraFailed && inventory.cli === "absent" && inventory.reviewPlan === "absent" && inventory.agent === "absent") {
+    const opening = s.turns[0]!;
+    if (!(stopRoute(opening.stop) === "review-unavailable" && asksOnlyLast(opening.stopText))) fail(s, { kind: "flow" }, OPENING_STOP_FAILURE);
+  }
   for (let guard = 0; guard < MAX_DISCOVERY_ROUNDS + 3 && !s.infraFailed; guard++) {
     const kind = stopRoute(s.turns.at(-1)!.stop);
     if (kind === "package") break;
@@ -198,6 +238,8 @@ export interface DriveEvidence {
   readonly interpreterScripts?: readonly InterpreterScript[];
   /** Check set 4 (G2): what the run shows about an agent reviewer; it fails nothing. */
   readonly reviewerCapability?: ReviewerCapability;
+  /** Check set 5 (A3): setup skill citations outside the package, by turn and line; they fail nothing. */
+  readonly skillCitations?: readonly { readonly turn: string; readonly line: string }[];
 }
 
 /** Evidence and the whole-run checks after the flow, appended to the failures in the runner's order. */
@@ -241,7 +283,8 @@ export function finishDrive(s: DriveState, reviewLine: string): DriveEvidence {
   if (unparsed.length > 0) fail(s, { kind: "unparsed" }, `needs review, shell construct not parsed: ${unparsed.join("; ")}`);
   if (cs < 4) return { proposals, reviewEvidence, bound, unparsed, reviewLines };
   const judgeLines = [...analysis.semanticLines, ...(s.infraFailed ? [] : findingLines(s, invocations))];
-  return { proposals, reviewEvidence, bound, unparsed, reviewLines, judgeLines, interpreterScripts: analysis.interpreterScripts, reviewerCapability: reviewerCapabilityOf(allCalls, s.initTools, turnOf) };
+  const evidence = { proposals, reviewEvidence, bound, unparsed, reviewLines, judgeLines, interpreterScripts: analysis.interpreterScripts, reviewerCapability: reviewerCapabilityOf(allCalls, s.initTools, turnOf) };
+  return cs < 5 ? evidence : { ...evidence, skillCitations: [...s.skillCitations] };
 }
 
 /** Check set 4: the judge line for a package citing a review that did not approve, its findings verbatim. */

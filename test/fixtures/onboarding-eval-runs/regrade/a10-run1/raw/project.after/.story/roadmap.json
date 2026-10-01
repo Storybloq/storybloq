@@ -1,0 +1,43 @@
+{
+  "blockers": [],
+  "date": "2026-10-01",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Review mobile journeys and establish tested records, passwordless access and delivery feasibility.",
+      "id": "foundation",
+      "label": "PHASE 1",
+      "name": "Foundation"
+    },
+    {
+      "description": "Demonstrate seasonal application, priority allocation, FIFO waiting list and own allocation details.",
+      "id": "allocation",
+      "label": "PHASE 2",
+      "name": "Allocation"
+    },
+    {
+      "description": "Demonstrate reporting, resolution and the daily coordinator email.",
+      "id": "problems",
+      "label": "PHASE 3",
+      "name": "Problems"
+    },
+    {
+      "description": "Verify privacy, accessibility and recovery; accept and authorize first-version launch.",
+      "id": "release",
+      "label": "PHASE 4",
+      "name": "Release"
+    },
+    {
+      "description": "Add the coordinator plot map after first-version launch. Payments and tool lending remain deferred.",
+      "id": "later",
+      "label": "LATER",
+      "name": "After first version"
+    }
+  ],
+  "title": "Plotbook"
+}

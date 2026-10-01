@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Gardeners sign in with emailed one-time links and contact details remain coordinator-only, from owner conversation and brief.md / Constraints.\nScope: Expiring secure single-use links, atomic token consumption, sessions/logout, rate limits, non-enumerating request responses, trusted-operator provisioning of the coordinator role and ownership authorization. Excludes: passwords and public coordinator signup.\nAcceptance: A valid link signs in the intended account once; expired or replayed links fail; gardeners cannot access other households' data or contact details, or perform coordinator actions.\nBehaviour: Accessible plain-language phone screens cover request/loading, delivery failure, expiry and resend; do not leak account existence, tokens or secrets.\nVerification: Authentication, authorization, replay/concurrency, rate-limit and session tests using a fake email provider. Prerequisites: T-001. Assumptions: selected email adapter is shared with the digest; one verified account per household.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Secure passwordless access",
+  "type": "task"
+}

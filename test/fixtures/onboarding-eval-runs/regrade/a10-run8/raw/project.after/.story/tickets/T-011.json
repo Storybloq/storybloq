@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Owner demonstrates qualifying returning applications before and after the cutoff, strict waiting order including later enqueue of an earlier application, exclusive household/plot allocations, coordinator list/selector assignment and the gardener's own phone allocation view.\nArtifact: Working application with representative synthetic fixtures and test evidence. Source: brief.md / First version must 1–3, Rules and Constraints; owner map deferral.\nPrerequisites: T-008. Only T-012 waits on this checkpoint.\nExcludes: map/grid evidence. Assumptions: none. Stage-1 limitation: this ordinary checkpoint ticket does not automatically enforce owner approval.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 50,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Checkpoint: allocation demonstration",
+  "type": "task"
+}

@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-004",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: One food-bank organiser runs the weekly workflow locally in Python, from README and owner decisions.\nScope: python -m rota --volunteers FILE --shifts FILE; connect readers, validation and scheduling; print deterministic assignments, all volunteer totals, overload names/excess and unfilled shifts; --help and README examples. Excludes: email, network services, persistence beyond input/output and cross-week fairness.\nAcceptance: Local CSVs produce readable results consistent with accepted sample output. Valid imperfect rotas exit 0 with explicit warnings; file, parsing or validation failures print clear stderr messages and exit nonzero without partial assignment output.\nBehaviour: Header-only shifts print an empty rota; no overloads/unfilled shifts stated clearly. Missing files and invalid data explain correction and retry. Plain text readable without colour; no interactive/loading UI required.\nVerification: pytest subprocess end-to-end cases using temporary CSVs covering fair, unfair, unfilled, empty, invalid, missing file and help outcomes and exit codes. Prerequisites: T-003 validation, T-004 owner sample review, T-005 scheduler; T-002 is transitive. Assumptions: Local single organiser, Python >=3.11, approved CSV schema and scheduling rules.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "weekly-cli",
+  "status": "open",
+  "title": "Deliver weekly CLI and printed reports",
+  "type": "task"
+}

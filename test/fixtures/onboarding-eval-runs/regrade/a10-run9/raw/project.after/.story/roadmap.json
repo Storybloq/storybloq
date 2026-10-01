@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "date": "2026-10-01",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Read and validate weekly CSV inputs; organiser reviews sample inputs and proposed output.",
+      "id": "input-contract",
+      "label": "Milestone 1",
+      "name": "Input contract"
+    },
+    {
+      "description": "Demonstrate availability-aware optimal assignment with overload and unfilled-shift diagnostics.",
+      "id": "scheduling",
+      "label": "Milestone 2",
+      "name": "Scheduling"
+    },
+    {
+      "description": "Organiser runs the complete weekly command and accepts printed results and error recovery.",
+      "id": "weekly-cli",
+      "label": "Milestone 3",
+      "name": "Weekly CLI"
+    }
+  ],
+  "title": "rota"
+}

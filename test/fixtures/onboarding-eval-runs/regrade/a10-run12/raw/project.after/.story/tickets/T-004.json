@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Question: Does the owner accept the authenticated member shell, staff account workflow and documented initial UTC/full-day hourly slot policy?\nArtifact: T-002 authenticated shell and the proposed slot-policy documentation.\nCriteria: Review account provisioning/reset, login/logout and displayed timezone/hourly assumptions before member booking UI work.\nPrerequisites: T-002. Only the booking website ticket waits on this checkpoint; proposed integrity and service work can proceed independently. A later policy change requires corresponding plan updates.\nStage-1 limitation: this is an ordinary ticket; Storybloq does not enforce an owner approval gate.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: member shell and slot policy",
+  "type": "chore"
+}

@@ -1,0 +1,34 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "javascript, python",
+  "project": "Queue board",
+  "schemaVersion": 2,
+  "type": "npm",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "cd backend && pytest",
+        "onExhaustion": "plan"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "cd backend && pytest"
+      },
+      "BUILD": {
+        "enabled": true,
+        "command": "cd frontend && npm run build"
+      },
+      "VERIFY": {
+        "enabled": false
+      }
+    }
+  }
+}

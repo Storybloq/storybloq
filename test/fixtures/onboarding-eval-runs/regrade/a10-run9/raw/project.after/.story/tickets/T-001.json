@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-01",
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Record existing round-robin assignment, evidenced by rota/schedule.py and tests/test_schedule.py.\nScope: Existing assign function cycles through volunteers and raises ValueError when there are none. Excludes: availability, CSV, optimization and CLI.\nAcceptance: Existing source implements rotation and the test specifies a,b,a for three shifts.\nBehaviour: No volunteers raises ValueError; no shifts returns an empty mapping when volunteers exist.\nVerification: Source and test inspection only; tests were not executed during setup. Prerequisites: none. Assumptions: Historical baseline only; does not claim first-version requirements are complete.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "input-contract",
+  "status": "complete",
+  "title": "Record existing round-robin assignment",
+  "type": "task"
+}

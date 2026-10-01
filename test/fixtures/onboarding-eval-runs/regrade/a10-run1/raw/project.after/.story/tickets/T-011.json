@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-010"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator views open problems and marks resolved, from brief.md First version 4.\nScope: accessible open list/detail, idempotent resolution timestamp and status history. Excludes: reopening, messaging and escalation.\nAcceptance: all open reports visible only to coordinator; resolution removes from open list without deleting history.\nBehaviour: safe report rendering and empty/loading/conflict/error recovery.\nVerification: role/state-transition tests and report-to-resolution journey. Prerequisites: problem reporting. Assumptions: no reopen action in first version.",
+  "displayId": "T-011",
+  "id": "T-011",
+  "order": 20,
+  "phase": "problems",
+  "status": "open",
+  "title": "Coordinator problem resolution",
+  "type": "task"
+}

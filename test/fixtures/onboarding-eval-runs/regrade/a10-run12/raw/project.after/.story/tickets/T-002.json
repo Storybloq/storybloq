@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Club members sign in with their own accounts, from owner setup answers.\nScope: Django login/logout, staff-only account provisioning and credential reset workflow, and authenticated page shell. Excludes: public signup and external identity providers.\nAcceptance: Members can sign in/out; anonymous access redirects; staff alone manage accounts.\nBehaviour: Clear invalid-login errors and recovery, accessible labels and errors, CSRF protection on mutations, no member-directory leakage.\nVerification: Django authentication/request tests and browser walkthrough. Prerequisites: none. Assumptions: staff-managed accounts and server-rendered Django pages; about 80 members is context, not a performance target.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Member accounts and authenticated pages",
+  "type": "task"
+}

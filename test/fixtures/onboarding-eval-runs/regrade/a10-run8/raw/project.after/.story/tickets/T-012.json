@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-010",
+    "T-011"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: The operator and owner can demonstrate reliable first-version operation, from brief.md / First version must 1–4, Rules and Constraints plus owner sign-in/digest decisions and map deferral.\nScope: Sign-in/apply/initial-allocate/wait/own-view/report/resolve/digest integration; phone/accessibility and contact-privacy checks; restart and backup/restore; email/scheduler runbook; representative synthetic fixtures; verification of enabled Full pipeline configuration. Excludes: map/layout acceptance, payments, tool lending and live deployment without authorization.\nAcceptance: Every first-version requirement has automated or manual evidence; verify initial returning priority and subsequent chronological queue; restore preserves allocations, original application order and reports; all four established pipeline stages execute.\nBehaviour: Validate user and operator guidance for auth, allocation conflict, delivery failure and recovery scenarios, including accessibility checks.\nVerification: Automated suite, manual phone/keyboard/accessibility evidence and recorded operator restore/scheduler rehearsal. Prerequisites: T-010 and T-011. Assumptions: deployment approach is documented, with no invented uptime or performance targets.",
+  "displayId": "T-012",
+  "id": "T-012",
+  "order": 10,
+  "phase": "acceptance",
+  "status": "open",
+  "title": "First-version verification and operator handoff",
+  "type": "task"
+}

@@ -237,6 +237,21 @@ export function codexRolloutModels(lines: readonly Record<string, unknown>[]): s
   return models;
 }
 
+/** Check set 5 (B3): the client's effective instruction context, from the rollout's session_meta when it carries one. */
+export type InstructionContext = { readonly status: "observed"; readonly sha256: string; readonly cliVersion: string | null } | { readonly status: "unknown" };
+
+/** The base instructions a Codex rollout recorded: their sha256 and the CLI version, or unknown when no session_meta carries text. */
+export function rolloutInstructions(lines: readonly Record<string, unknown>[]): InstructionContext {
+  for (const ev of lines) {
+    if (ev.type !== "session_meta") continue;
+    const payload = ev.payload as { base_instructions?: { text?: unknown }; cli_version?: unknown } | undefined;
+    const text = payload?.base_instructions?.text;
+    if (typeof text !== "string") continue;
+    return { status: "observed", sha256: sha256(text), cliVersion: typeof payload?.cli_version === "string" ? payload.cli_version : null };
+  }
+  return { status: "unknown" };
+}
+
 // --- write and execution detection ----------------------------------------------
 
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch"]);
@@ -422,9 +437,12 @@ export const WRITE_RULE_VERSION = "2026-09-27.8: a write is a file-writing tool,
 /** Check set 4's write rule: check set 3's, plus the literal loop and the judged post-approval python script. */
 export const WRITE_RULE_VERSION_4 = `2026-09-30.1: ${WRITE_RULE_VERSION.slice(WRITE_RULE_VERSION.indexOf(": ") + 2)}; check set 4: a whole call that is one exec wrapper (sh, bash or zsh with -c or -lc and one quoted string) is read through its string, a double-quoted string only when the shell would not expand it (no $, backtick or backslash-newline), otherwise it is needs-review as before; one for loop whose variable is named p, d, f, dir or file (any other name declines, the shell managing some itself), over 1 to 16 literal words, whose variable is expanded only inside double quotes, whose body is simple commands (if, then, elif, else and fi allowed), each starting with one of test, [, echo, cat, ls, head, tail, wc, true or : written bare (so no wrapper, no quoted command name and never the loop variable at command position), with no single-quoted word, that cannot change or re-read the variable, whose variable is not mentioned after done, as an expansion or by its bare name, nor by its bare name before for, and whose command holds no \${!, (P) or eval and no word that changes how the shell reads the loop (setopt, unsetopt, set, emulate, alias, trap, function, typeset, declare, local, integer, readonly, shopt, in any quoting), and around which everything else in the call (before for and after done, after a qualifying here-document is excised) is simple commands joined by ;, a newline or &&, each word one unquoted run of [A-Za-z0-9._/=:@,+-] with no expansion, glob, redirection, pipe, || or &, each command starting with one of cat, ls, pwd, echo, head, tail, wc, true, : or test and no assignment, is unrolled and each copy scanned, any other loop staying needs-review; a loop body word or loop word that is a mutator or nesting word declines whatever its quoting, as does a body word any iteration's substitution turns into one (or into a word that changes how the shell reads the loop), and a loop word that is a wrapper; a word read as the executable (argv[0], or one a wrapper hands on, read before the wrapper, shell or probe is recognised) that holds an expansion ($ or a backtick) is needs-review, an unrolled copy's literal word excepted; a write the scanned text shows (a wrapper's string, an excised here-document's remainder, an unrolled copy) is the call's write, before approval and in writesAfterApproval; after approval, one here-document read directly by python3 - (or python3) at a command boundary under a quoted simple delimiter with its terminator found, nothing after the operator on its line, no pipe, a body of at most 8192 bytes that a fail-closed prefilter passes (no install, test, build, dev, shell or interpreter command, no os.system, popen, pty, exec, eval, shell=True, chdir or cwd, no write naming a path outside the project), is excised and judged instead of needs-review: its body is in the packet and a judge line asks whether it ran nothing and wrote nothing outside the project, and the rest of the call is scanned; its writes are not counted, so writesAfterApproval stays a lower bound`;
 
-/** The write rule a record of this check set is graded under: check sets 1 to 3 keep the text they were recorded with. */
+/** Check set 5's write rule: check set 4's, plus the exec wrapper word made of single and double quoted segments. */
+export const WRITE_RULE_VERSION_5 = `2026-10-01.1: ${WRITE_RULE_VERSION_4.slice(WRITE_RULE_VERSION_4.indexOf(": ") + 2)}; check set 5: an exec wrapper's quoted word may be several adjacent single and double quoted segments (no unquoted segment), read as their concatenation: a single segment as written, a double segment under the double-quote rule, so a $, a backtick or a backslash-newline in a double segment makes the call undecidable, while a $ or backtick from a single segment is code in the inner shell`;
+
+/** The write rule a record of this check set is graded under: each check set keeps the text it was recorded with. */
 export function writeRuleFor(checkSet: number): string {
-  return checkSet >= 4 ? WRITE_RULE_VERSION_4 : WRITE_RULE_VERSION;
+  return checkSet >= 5 ? WRITE_RULE_VERSION_5 : checkSet >= 4 ? WRITE_RULE_VERSION_4 : WRITE_RULE_VERSION;
 }
 
 /** Every call that writes setup state: storybloq writes by MCP or CLI, file edits, `git init`. A shell redirect is review; the tree check reports the files it changes. */
@@ -1111,7 +1129,11 @@ const bareWord = (item: RawItem | undefined): string | null => (item?.type === "
 const COMMAND_BREAKS: ReadonlySet<string> = new Set([";", "\n", "&&", "||"]);
 
 /** A Codex exec wrapper as read: its inner command string, or `undecidable` when the shell would expand it. */
-export type WrapperReading = { readonly shell: string; readonly quote: "single" | "double"; readonly inner: string } | "undecidable" | null;
+export type WrapperReading =
+  | { readonly shell: string; readonly quote: "single" | "double"; readonly inner: string }
+  | { readonly shell: string; readonly quote: "mixed"; readonly inner: string; readonly segments: readonly { readonly kind: "single" | "double"; readonly text: string }[] }
+  | "undecidable"
+  | null;
 
 /**
  * Check set 4: the exec wrapper (`/bin/zsh -lc '...'`, `bash -c "..."`) as a whole call command, one quoted word after
@@ -1119,28 +1141,47 @@ export type WrapperReading = { readonly shell: string; readonly quote: "single" 
  * as zsh would (`\\` and `\"` lose their backslash, any other `\x` stays) unless the shell would expand it first: an
  * unescaped `$`, a backtick, `\$` or a backslash-newline makes it undecidable. Any other command is not a wrapper.
  */
-export function readWrapper(command: string): WrapperReading {
+export function readWrapper(command: string, checkSet = 4): WrapperReading {
   const items = rawTokens(command);
   if (items === null || items.length !== 3 || items.some((x) => x.type !== "word")) return null;
   const shell = bareWord(items[0]);
   const flag = bareWord(items[1]);
   if (shell === null || flag === null || !/^(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)$/.test(shell) || !/^-l?c$/.test(flag)) return null;
   const word = items[2] as Extract<RawItem, { type: "word" }>;
-  if (word.segments.length !== 1) return null;
+  if (word.segments.length !== 1) {
+    // Check set 5: adjacent single and double quoted segments are one word, read as the inner shell receives it.
+    if (checkSet < 5 || word.segments.some((x) => x.kind !== "single" && x.kind !== "double")) return null;
+    let inner = "";
+    const segments: { kind: "single" | "double"; text: string }[] = [];
+    for (const x of word.segments) {
+      const kind = x.kind as "single" | "double";
+      const text = kind === "single" ? x.text : decodeDouble(x.text);
+      if (text === null) return "undecidable";
+      inner += text;
+      segments.push({ kind, text: x.text });
+    }
+    return { shell, quote: "mixed", inner, segments };
+  }
   const seg = word.segments[0]!;
   if (seg.kind === "single") return { shell, quote: "single", inner: seg.text };
   if (seg.kind !== "double") return null;
+  const inner = decodeDouble(seg.text);
+  return inner === null ? "undecidable" : { shell, quote: "double", inner };
+}
+
+/** A double-quoted segment as zsh decodes it (`\\` and `\"` lose their backslash), or null when the shell would expand it first. */
+function decodeDouble(text: string): string | null {
   let inner = "";
-  for (let k = 0; k < seg.text.length; k++) {
-    const ch = seg.text[k]!;
-    if (ch === "$" || ch === "`") return "undecidable";
+  for (let k = 0; k < text.length; k++) {
+    const ch = text[k]!;
+    if (ch === "$" || ch === "`") return null;
     if (ch !== "\\") { inner += ch; continue; }
-    const next = seg.text[k + 1] ?? "";
-    if (next === "\n" || next === "$" || next === "`") return "undecidable";
+    const next = text[k + 1] ?? "";
+    if (next === "\n" || next === "$" || next === "`") return null;
     if (next === "\\" || next === '"') { inner += next; k++; continue; }
     inner += ch;
   }
-  return { shell, quote: "double", inner };
+  return inner;
 }
 
 /** Words a loop body may not use: each can change or read around the loop variable. */
@@ -1382,7 +1423,7 @@ export interface InterpreterScript {
   readonly callIndex: number;
   readonly turn: string;
   readonly command: string;
-  readonly wrapper: { readonly shell: string; readonly quote: "single" | "double" } | null;
+  readonly wrapper: { readonly shell: string; readonly quote: "single" | "double" } | { readonly shell: string; readonly quote: "mixed"; readonly segments: readonly { readonly kind: "single" | "double"; readonly text: string }[] } | null;
   readonly delimiter: string;
   readonly quote: "single" | "double" | "backslash";
   readonly terminated: true;
@@ -1436,7 +1477,7 @@ export function analyseCalls(calls: readonly EvalCall[], turns: readonly Analyse
     const t = turnOf(index);
     const label = t < 0 ? "unknown" : turns[t]!.label;
     const after = approveAt >= 0 && t >= approveAt;
-    const wrapper = readWrapper(cmd);
+    const wrapper = readWrapper(cmd, checkSet);
     if (wrapper === "undecidable") { scanExecutions(call, cmd, 0, executions, true); settle(); return; }
     let text = wrapper === null ? cmd : wrapper.inner;
     const heredoc = after ? readDirectPythonHeredoc(text) : null;
@@ -1450,7 +1491,7 @@ export function analyseCalls(calls: readonly EvalCall[], turns: readonly Analyse
     settle();
     if (heredoc !== null) {
       interpreterScripts.push({
-        callIndex: index, turn: label, command: cmd, wrapper: wrapper === null ? null : { shell: wrapper.shell, quote: wrapper.quote },
+        callIndex: index, turn: label, command: cmd, wrapper: wrapper === null ? null : wrapper.quote === "mixed" ? { shell: wrapper.shell, quote: "mixed", segments: wrapper.segments } : { shell: wrapper.shell, quote: wrapper.quote },
         delimiter: heredoc.delimiter, quote: heredoc.quote, terminated: true, body: heredoc.body,
       });
       semanticLines.push(interpreterScriptLine(index, label));
@@ -1570,9 +1611,12 @@ export const STOP_RULE_VERSION_3 = `2026-09-28.1: ${STOP_RULE_VERSION.slice(STOP
 /** Check set 4's stop rule: check set 3's, plus the fixed line and trailing blanks on the closing lines. */
 export const STOP_RULE_VERSION_4 = `2026-09-30.1: ${STOP_RULE_VERSION_3.slice(STOP_RULE_VERSION_3.indexOf(": ") + 2)}; check set 4: spaces or tabs ending any of the four closing lines are ignored, and the paragraph before them must end with the line Nothing is written until you choose Approve setup., trailing spaces or tabs ignored`;
 
-/** The stop rule a record of this check set is graded under: check sets 1 to 3 keep the text they were recorded with. */
+/** Check set 5's stop rule: check set 4's, plus the shape line, the skill citation and the opening reviewer-unavailable stop. */
+export const STOP_RULE_VERSION_5 = `2026-10-01.1: ${STOP_RULE_VERSION_4.slice(STOP_RULE_VERSION_4.indexOf(": ") + 2)}; check set 5: the paragraph before the four closing lines must end with the two lines Your answers shape the plan; creating it is your choice. and Nothing is written until you choose Approve setup., in that order; a turn that shows the package fails when its stop text carries a setup skill citation (a corpus sentence as a whole normalised entry on letter-or-digit boundaries, a path ending in skills/story/<file>, or a bare setup-flow.md or SKILL.md), and a citation in any other turn is recorded, never failed; when the fixture contract makes every reviewer path absent (the codex CLI, review_plan and an agent), the opening turn must be the reviewer-unavailable stop alone, with no question in any paragraph before the stop`;
+
+/** The stop rule a record of this check set is graded under: each check set keeps the text it was recorded with. */
 export function stopRuleFor(checkSet: number): string {
-  return checkSet >= 4 ? STOP_RULE_VERSION_4 : checkSet >= 3 ? STOP_RULE_VERSION_3 : STOP_RULE_VERSION;
+  return checkSet >= 5 ? STOP_RULE_VERSION_5 : checkSet >= 4 ? STOP_RULE_VERSION_4 : checkSet >= 3 ? STOP_RULE_VERSION_3 : STOP_RULE_VERSION;
 }
 
 /**
@@ -1692,11 +1736,49 @@ export function endsWithClosingLines(stopText: string, checkSet = 3): boolean {
 /** Check set 4: the line every package carries above its question, one blank line between. */
 export const FIXED_LINE = "Nothing is written until you choose Approve setup.";
 
-/** Check set 4: whether the paragraph before the closing paragraph ends with the fixed line (trailing spaces or tabs ignored). */
-export function hasFixedLine(stopText: string): boolean {
+/** Check set 5: the skill-owned line directly above the fixed line. */
+export const SHAPE_LINE = "Your answers shape the plan; creating it is your choice.";
+
+/**
+ * Check set 4: whether the paragraph before the closing paragraph ends with the fixed line (trailing spaces or tabs
+ * ignored). Check set 5: it ends with the shape line, then the fixed line.
+ */
+export function hasFixedLine(stopText: string, checkSet = 4): boolean {
   const paragraphs = stopText.replace(/[ \t]+$/gm, "").trim().split(/\n[ \t]*\n/);
   if (paragraphs.length < 2) return false;
-  return paragraphs[paragraphs.length - 2]!.split("\n").at(-1) === FIXED_LINE;
+  const lines = paragraphs[paragraphs.length - 2]!.split("\n");
+  if (checkSet >= 5) return lines.length >= 2 && lines.at(-2) === SHAPE_LINE && lines.at(-1) === FIXED_LINE;
+  return lines.at(-1) === FIXED_LINE;
+}
+
+/** The reviewer-unavailable block's two option lines, as setup-flow.md gives them. */
+const UNAVAILABLE_OPTIONS: readonly string[] = ["retry the review", "continue without independent review"];
+
+/**
+ * Which of those option lines a line is, -1 when it is neither: a list marker before it, emphasis or code marks
+ * around it and a closing full stop are allowed, any other word is not. A line that only mentions "retry" is neither.
+ */
+function unavailableOption(line: string): number {
+  const bare = line.replace(/^(?:[-*\u2022]|\d+[.)])\s+/, "").replace(/^[*_`]+|[*_`]+$/g, "").replace(/\.$/, "").replace(/[*_`]+$/, "");
+  return UNAVAILABLE_OPTIONS.indexOf(bare.toLowerCase());
+}
+
+/**
+ * Whether a stop asks only through its reviewer-unavailable block: it ends with the two option lines, Retry then
+ * Continue, and the one question line directly above them. An option line is a whole line (see unavailableOption),
+ * so it asks nothing; a stop that offers the options inside a sentence, in the other order, with a question added
+ * to one, or with anything after them does not end with the block. Every line before the block asks nothing,
+ * whether a blank line separates it from the block or not, and the block's question line asks once.
+ */
+export function asksOnlyLast(stopText: string): boolean {
+  const lines = stopText.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2 || unavailableOption(lines.at(-2)!) !== 0 || unavailableOption(lines.at(-1)!) !== 1) return false;
+  let start = lines.length - 2;
+  if (start > 0 && hasQuestion(lines[start - 1]!)) {
+    start--;
+    if (sentencesOf(lines[start]!).filter(hasQuestion).length > 1) return false;
+  }
+  return lines.slice(0, start).every((l) => !hasQuestion(l));
 }
 
 /**
@@ -1799,13 +1881,15 @@ export function readStop(stopText: string): StopReading {
  * main-agent text is semantic: that prose is not validated here, so the judge rules on it,
  * with the candidate the question's own shape gives (package when it renders the
  * package, otherwise discovery). With no preceding text the question is read
- * like any other ending.
+ * like any other ending. Check set 5: a question whose own shape is the reviewer-unavailable
+ * stop has that candidate, so the run answers it as that stop and the judge line names it.
  */
-export function readTurnStop(turn: Pick<EvalTurn, "stopText" | "pendingQuestion">): StopReading {
+export function readTurnStop(turn: Pick<EvalTurn, "stopText" | "pendingQuestion">, checkSet = 1): StopReading {
   const pending = turn.pendingQuestion;
   if (pending !== undefined && pending.preamble.trim() !== "") {
     const shape = readStop(pending.question);
-    const candidate = shape.kind === "package" || shape.candidate === "package" ? "package" : "discovery";
+    const candidate = shape.kind === "package" || shape.candidate === "package" ? "package"
+      : checkSet >= 5 && shape.kind === "review-unavailable" ? "review-unavailable" : "discovery";
     return { kind: "semantic", candidate };
   }
   return readStop(turn.stopText);
@@ -1836,7 +1920,7 @@ export function semanticStopLine(label: string, candidate: StopKind): string {
 
 /** A pre-approval stop: the turn ended at the expected question and wrote nothing. */
 export function checkStop(turn: EvalTurn, expected: readonly StopKind[], checkSet = 1): StopCheck {
-  const { kind, candidate } = readTurnStop(turn);
+  const { kind, candidate } = readTurnStop(turn, checkSet);
   const reasons: string[] = [];
   const route = stopRoute({ kind, candidate })!;
   if (!expected.includes(route)) reasons.push(`stopped at ${kind === "semantic" ? `semantic (candidate ${route})` : kind}, expected ${expected.join(" or ")}`);
@@ -2671,8 +2755,8 @@ export function setupRecordText(storyDir: string): string {
  * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
  * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
  */
-export const CHECK_SET_VERSION = 4;
-export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4];
+export const CHECK_SET_VERSION = 5;
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4, 5];
 
 /**
  * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises

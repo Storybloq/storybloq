@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-01",
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Record the existing court/start/member model, from bookings/models.py.\nScope: Existing Booking fields and unique court/starts_at declaration only. Excludes: claims of completed booking workflows.\nAcceptance: Inspected model contains court, starts_at, member and one_booking_per_slot constraint.\nBehaviour: none.\nVerification: Source inspection of bookings/models.py; bookings/tests.py only checks field assignment. No tests run during setup. Prerequisites: none. Assumptions: model declarations do not establish end-to-end completion.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "complete",
+  "title": "Existing booking model and uniqueness constraint",
+  "type": "chore"
+}

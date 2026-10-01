@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-007"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: gardener sees own allocated plot and season dates, from brief.md First version 3.\nScope: private own allocation/dates, awaiting-allocation and waiting-list states. Excludes: coordinator plot map, all-plot holder overview and other households' records.\nAcceptance: displayed allocation/dates match canonical records after save/refresh; no other household details exposed.\nBehaviour: readable mobile/keyboard layout with loading, empty, stale and error recovery; sensitive view not retained after logout.\nVerification: allocated/pending/waitlisted end-to-end fixtures, role isolation and phone/zoom checks. Prerequisites: prototype checkpoint and allocation workflow. Assumptions: no allocation emails.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 30,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Gardener allocation and season view",
+  "type": "task"
+}

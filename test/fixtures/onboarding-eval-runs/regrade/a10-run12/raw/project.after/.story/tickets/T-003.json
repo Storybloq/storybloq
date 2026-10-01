@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Valid one-hour court reservations belong to a real member, from README first version and owner account requirement.\nScope: Migrations, court identifiers 1-3, member user foreign key, timezone-aware hour-aligned starts, preserve existing unique court/start constraint. Existing member strings require explicit mapping; refuse ambiguous mappings and preserve data. Excludes: booking service, concurrency orchestration and UI.\nAcceptance: Invalid courts and duplicate court/start rows are rejected; valid member ownership; migrations safely handle existing records.\nBehaviour: Actionable mapping errors; no silent deletion or data loss.\nVerification: Model constraint tests and migration tests with representative fixtures. Prerequisites: existing model T-001. Assumptions: SQLite retained; one-hour slots, configurable timezone initially UTC.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Court validation, ownership and safe migrations",
+  "type": "task"
+}

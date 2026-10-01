@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Teacher finds books by title or author and adds copies, from README and owner requirements/correction that search is missing.\nScope: Case-insensitive title/author query filtering, plain HTML/CSS/JS catalogue and add form served by existing Node server; operation-id retries and required same-origin headers. Excludes: loans, overdue functionality and UI frameworks.\nAcceptance: Both title and author searchable; blank query lists all; distinguish empty catalogue from no results; each physical copy identifiable; new copy appears after refresh/restart.\nBehaviour: Labelled keyboard-accessible controls, visible focus/feedback, safe text rendering, loading/empty/no-results/error/retry states. Explain uncertain saves and recover using the same operation id; never blindly resubmit with a new id.\nVerification: node:test search/API cases and manual browser/keyboard/error/recovery journey. Prerequisites: durable catalogue API (A1). Assumptions: approved plain local browser UI and one record per physical copy.\nSetup alias: A2.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "catalogue",
+  "status": "open",
+  "title": "Searchable teacher catalogue UI",
+  "type": "feature"
+}

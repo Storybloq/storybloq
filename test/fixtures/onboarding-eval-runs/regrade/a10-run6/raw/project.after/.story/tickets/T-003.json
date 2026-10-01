@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Resolve interaction and retention choices before persistence implementation, from BRIEF.md and owner constraints.\nScope: Review sketch and data lifecycle. Excludes: SMS and implementation.\nQuestion: Confirm trusted local network without sign-in, FIFO, anonymous references for duplicate first names, any repairer may finish, and configured cafe timezone (default host timezone displayed in controls). Resolve storage conflict explicitly: daily SQLite survives restarts but cannot delete while powered off; choose volatile storage or an explicit owner ruling on operating limitations. The requirement nothing kept after day ends remains binding until ruled otherwise.\nArtifact: Door form: first name and repair item; repairer waiting/helped lists with references and take-next/finish controls; public board: first name/status/reference only. Proposed durable lifecycle: close and remove daily database and sidecars at running midnight; purge expired stores before startup accepts requests. Alternative: volatile queue loses entries on restart. Neither option permits visitor payload logs, browser persistence or backups.\nAcceptance: Explicit recorded owner ruling resolves retention and reviews sketch.\nBehaviour: Unresolved retention blocks queue storage work.\nVerification: Recorded decision, not inferred from setup approval. Prerequisites: none. Assumptions: one volunteer, 3-6 repairers, visitor display.\nStage-1 limitation: ordinary checkpoint ticket, not a technically enforced approval gate.\nSetup label: C1.",
+  "id": "T-003",
+  "order": 30,
+  "phase": "baseline",
+  "status": "open",
+  "title": "Checkpoint: privacy and interaction sketch",
+  "type": "task"
+}

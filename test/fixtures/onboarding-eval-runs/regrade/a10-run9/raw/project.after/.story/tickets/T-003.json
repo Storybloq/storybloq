@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Accept usable weekly inputs and explain invalid data, from README, whole-day owner decision and approved CSV split R2.\nScope: Required headers name,unavailable_days and shift_id,day; row structure; unique nonempty volunteer names and shift IDs; canonical mon..sun days; semicolon-separated unavailable days; normalized typed volunteer/shift models. Excludes: filesystem, decoding and CSV syntax handling owned by T-002; scheduling and CLI.\nAcceptance: Blank unavailability is valid; reject missing headers, malformed rows, duplicate identities, invalid days and no volunteers. Header-only shifts are valid. Multiple distinct shifts on one day are valid. Errors identify file/row/field; no partial accepted dataset after failure.\nBehaviour: Empty files fail required-header validation; organiser corrects input then retries. Plain actionable errors, no UI loading state.\nVerification: pytest table cases for each valid/invalid rule and reader-to-validator integration. Prerequisites: CSV reader T-002. Assumptions: Names identify volunteers; whole-day availability; no per-volunteer daily cap.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "input-contract",
+  "status": "open",
+  "title": "Validate CSV inputs and produce normalized records",
+  "type": "task"
+}

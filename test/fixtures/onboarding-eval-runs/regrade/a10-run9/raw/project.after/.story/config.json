@@ -1,0 +1,33 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "python",
+  "project": "rota",
+  "schemaVersion": 2,
+  "type": "python",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "pytest",
+        "onExhaustion": "plan"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "pytest"
+      },
+      "BUILD": {
+        "enabled": false
+      },
+      "VERIFY": {
+        "enabled": false
+      }
+    }
+  }
+}

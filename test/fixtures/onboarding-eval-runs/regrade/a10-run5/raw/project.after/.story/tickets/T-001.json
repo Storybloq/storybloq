@@ -1,0 +1,13 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-01",
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Existing list/add catalogue from README Status and src/books.js/src/server.js.\nScope: Current in-memory module and GET/POST /books endpoints. Excludes: durability, robust HTTP input handling, UI, search and loans.\nAcceptance: Source implements adding a titled book with an identifier and listing books.\nBehaviour: Missing title currently throws; this is a current limitation, not approved API error handling.\nVerification: src/books.js, src/server.js and test/books.test.js inspected. No tests run; completion is limited to source evidence. Prerequisites: none. Assumptions: none.\nSetup alias: E1.",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "phase": "catalogue",
+  "status": "complete",
+  "title": "Existing list/add catalogue",
+  "type": "task"
+}

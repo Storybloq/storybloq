@@ -1,0 +1,35 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "javascript",
+  "project": "shelfmate",
+  "schemaVersion": 2,
+  "type": "node",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "npm test",
+        "onExhaustion": "plan"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "npm test"
+      },
+      "BUILD": {
+        "enabled": false
+      },
+      "VERIFY": {
+        "enabled": true,
+        "startCommand": "npm start",
+        "readinessUrl": "http://localhost:3000/books"
+      }
+    }
+  }
+}

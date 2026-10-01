@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Add visitors and retrieve queue, from BRIEF.md and owner first-name/day-end constraints.\nScope: Visitor model, bounded plain-text first-name/item validation, add/list API, unique IDs, FIFO, C1-approved storage and retention, no-store headers, authoritative day expiry, no payload logging or visitor backups. Excludes: claim/finish and accounts.\nAcceptance: Nonblank bounded fields; stable unique IDs distinguish duplicate names; FIFO; approved restart/retention semantics; no expired record served. If SQLite is selected, close/delete daily database and sidecars at running midnight and purge expired stores before startup serves.\nBehaviour: Explicit invalid-input, empty, persistence-error and rollover-race handling.\nVerification: Validation, duplicate-name, restart, expiry/purge and race tests with isolated temporary stores matching the C1 ruling. Prerequisites: B2 verification/startup and C1 privacy ruling. Assumptions: storage blocked until conflict resolved; configured cafe timezone.\nSetup label: Q1.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 10,
+  "phase": "queue",
+  "status": "open",
+  "title": "Visitor queue API",
+  "type": "task"
+}

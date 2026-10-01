@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: First-version search/lend/return journey demonstrably preserves records on restart, from owner requirements.\nScope: Integrated HTTP/restart/uncertain-outcome/operation-id retry tests; active-label persistence and returned-label erasure; correct README claims, startup/testing/local-use/storage location, backup/restore, nondestructive recovery and privacy instructions; explicitly record overdue deferral. Excludes: overdue implementation, testing or demonstration; cloud and new backup services.\nAcceptance: Catalogue, ids, active loans, due dates and recorded returns survive restart. Corrupt bytes remain untouched; failed/uncertain saves never imply false success or rollback; operation retries converge after restart/recovery. Exercise documented backup/restore. Explain that old backups may retain pupil labels and require local access restrictions and manual deletion/rotation; do not claim automatic erasure of external copies.\nBehaviour: Actionable nondestructive recovery; fictional pupil labels, isolated temp-directory fixtures and cleanup limited to test-owned data.\nVerification: npm test during implementation plus manual browser, restart and backup/restore exercise limited to first-version journey. Prerequisites: A2 catalogue UI, B2 lending/return controls. Assumptions: single local process and documented supported filesystem durability limits.\nSetup alias: D1.",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 10,
+  "phase": "acceptance",
+  "status": "open",
+  "title": "First-version restart and recovery evidence",
+  "type": "task"
+}

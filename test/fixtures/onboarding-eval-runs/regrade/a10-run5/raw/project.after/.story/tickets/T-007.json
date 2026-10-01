@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-006"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Find an available copy, lend to a fictional pupil with selected due date, view the active loan, record return, confirm availability and pupil-label removal. Artifact: working browser app from B2. No overdue demonstration or dependency. Record actual owner acceptance; only final first-version acceptance waits on this checkpoint. Stage-1 limitation: ordinary ticket, owner approval is not technically enforced. Setup alias: C2.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 30,
+  "phase": "circulation",
+  "status": "open",
+  "title": "Checkpoint: teacher demonstrates circulation",
+  "type": "task"
+}

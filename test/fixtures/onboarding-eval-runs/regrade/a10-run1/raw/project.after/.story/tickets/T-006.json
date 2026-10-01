@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-003",
+    "T-004",
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: household applies for coming season with up to three preferred plots, from brief.md First version 1.\nScope: authenticated mobile form, zero to three distinct valid choices, prior-holdings eligibility, durable submit/receipt and pending status. Excludes: guaranteed preferences, self-service edits and map.\nAcceptance: one application per household-season, immutable initial server timestamp and stable ordering, retries never duplicate or reorder, coming season and configured application window clear.\nBehaviour: invalid/closed/stale data explained; accessible loading/success and safe retries; no contacts exposed.\nVerification: form/API tests for zero/one/three/four preferences, invalid/duplicate choices, retries and cutoff boundaries. Prerequisites: prototype checkpoint, records and passwordless access. Assumptions: coordinator configures application window; preferences optional.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Seasonal application",
+  "type": "task"
+}

@@ -23,6 +23,7 @@ import {
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
 import {
+  inventoryFor,
   driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
   type DriveTurn, type FailureSource, type PackageTurn, type Rubric, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
@@ -115,6 +116,15 @@ class Refusal extends Error {}
 const refuse = (reason: string): never => { throw new Refusal(reason); };
 
 /** JSON with object keys sorted, so equal values have equal text; undefined is dropped from objects and null in arrays, as JSON does. */
+/** Check set 5 (B3): an instruction context is `{status: "observed", sha256, cliVersion}` or `{status: "unknown"}`, nothing else. */
+function validInstructionContext(v: unknown): boolean {
+  if (v === null || typeof v !== "object") return false;
+  const o = v as Record<string, unknown>;
+  const keys = Object.keys(o).sort().join(",");
+  if (o.status === "unknown") return keys === "status";
+  return o.status === "observed" && keys === "cliVersion,sha256,status" && typeof o.sha256 === "string" && /^[0-9a-f]{64}$/.test(o.sha256) && (o.cliVersion === null || typeof o.cliVersion === "string");
+}
+
 export function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map((x) => (x === undefined ? "null" : canonical(x))).join(",")}]`;
   if (v !== null && typeof v === "object") {
@@ -315,7 +325,11 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     ["inspection", inspection], ["infraFailed", state.infraFailed], ["discoveryRounds", state.rounds], ["reviewSkipped", state.reviewSkipped],
     // Check set 4 (G2): the reviewer capability the run shows.
     ...(cs >= 4 ? [["reviewerCapability", evidence.reviewerCapability] as [string, unknown]] : []),
+    // Check set 5: the fixture contract's reviewer inventory and the citations outside the package.
+    ...(cs >= 5 ? [["reviewerInventory", inventoryFor(variant)], ["skillCitations", evidence.skillCitations ?? []]] as [string, unknown][] : []),
   ];
+  // Check set 5 (B3): the instruction context is the client's rollout, which the raw does not carry: only its shape is checked.
+  if (cs >= 5 && !validInstructionContext(record.instructionContext)) refuse("the record's instructionContext is not an observed sha256 or unknown");
   for (const [k, v] of fields) if (!same(record[k], v)) refuse(`the record's ${k} differs from the replayed run's`);
 
   // Partition by producer.

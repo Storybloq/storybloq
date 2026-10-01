@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-002",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: A gardener applies for the coming season with up to three preferred plots, from brief.md / First version must 1.\nScope: Open-season application form, zero to three distinct valid preferences, one application per household-season, server-recorded application timestamp and deterministic tie sequence, previous-season eligibility indication. Excludes: self-service post-submission amendment or cancellation.\nAcceptance: Persist the application and show confirmation; duplicate submissions return the existing application without changing original order; reject invalid or duplicate preferences; cutoff eligibility is computed in the configured local timezone.\nBehaviour: Accessible phone form explains no-open-season, validation, loading, failure and retry states without losing entered data.\nVerification: UI and integration tests covering 0–3 preferences, invalid choices, duplicate requests and February 1 boundary. Prerequisites: T-002 and T-004. Assumptions: zero preferences is valid; preferences are requests, not guarantees; no first-version amendment workflow.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 10,
+  "phase": "allocation",
+  "status": "open",
+  "title": "Season applications",
+  "type": "task"
+}

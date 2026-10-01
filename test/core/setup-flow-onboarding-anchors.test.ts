@@ -22,7 +22,7 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
   });
 
   it("says what is and is not approval, and runs 1e only after it", () => {
-    expect(flow).toContain('An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again: the same probe and status lines, the fixed line, one blank line, then the four lines, nothing after them.');
+    expect(flow).toContain('An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again: the same probe and status lines, the two fixed lines, one blank line, then the four lines, nothing after them.');
     expect(flow).toContain("Everything below runs only after approval as defined in 1d.");
     expect(flow).not.toContain('Everything below runs only after "Approve setup".');
   });
@@ -50,13 +50,14 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
   });
 
   it("pins the check set 3 probe, id and closing forms (T-536 batch 3)", () => {
-    expect(flow).toContain("**Probe the reviewers first**, before drafting the plan. Run `command -v codex` as a shell call of its own, nothing else in that call, and keep exactly what it printed.");
-    expect(flow).toContain("send the unavailable stop below now, without calling a wait, before drafting; do not draft or describe a review.");
+    expect(flow).toContain("**Probe the reviewers first**, in your first turn, before your first question. Run `command -v codex` as a shell call of its own, nothing else in that call, and keep exactly what it printed.");
+    expect(flow).toContain("send the unavailable stop below now as your whole first turn, with no discovery question, wait, draft or review; ask discovery questions only after the owner chooses Continue without independent review.");
+    expect(flow).not.toContain("before drafting; do not draft or describe a review");
     expect(flow).toContain("`Reviewer probe: `command -v codex` printed <path>`, where `<path>` is exactly what your most recent probe printed, or `Reviewer probe: `command -v codex` printed nothing`.");
     expect(flow).toContain("After a probe that printed nothing, a review result can only come from the `review_plan` tool or an agent you started after that probe");
     expect(flow).toContain("An id exists only once you send it as the first line of a reviewer call's input; a status line cites only an id you sent and whose response you captured, never an id for a review that did not run.");
     expect(flow).toContain("The message ends at `Inspect details`: that line, with no trailing spaces, is the last line of every turn that shows the package");
-    expect(flow).toContain("```\nNothing is written until you choose Approve setup.\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n```");
+    expect(flow).toContain("```\nYour answers shape the plan; creating it is your choice.\nNothing is written until you choose Approve setup.\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n```");
     expect(flow).toContain("**When no reviewer can run**, or every reviewer call fails, send this stop and nothing else");
     expect(flow).toContain("No supported reviewer is available to review this plan.\nHow should I proceed?\nRetry the review\nContinue without independent review");
     // An authorised skip is never asked again, even after a probe that printed nothing.
@@ -65,12 +66,17 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow.indexOf("**Probe the reviewers first**")).toBeLessThan(flow.indexOf("**Decompose the entire in-scope brief**"));
   });
 
-  it("pins the check set 4 fixed line, reviewer paths, re-ask layout and CLI rule (T-536 batch 4)", () => {
+  it("pins the check set 4 and 5 closing lines, reviewer paths, re-ask layout and CLI rule (T-536 batches 4 and 5)", () => {
     const fixed = "Nothing is written until you choose Approve setup.";
-    // T2d: the fixed line in the prose and in the example, a blank line below it, no citation of this file in the example.
-    expect(flow).toContain("Directly above the question line, with one blank line between them, put the line `Nothing is written until you choose Approve setup.`, verbatim. Do not cite, quote or link this file in the package. Any other note goes above that line, never below `Inspect details`, and no line ends in spaces:");
-    const example = /```\n(Nothing is written[^`]*)```/.exec(flow)?.[1] ?? "";
-    expect(example).toBe(`${fixed}\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n`);
+    const shape = "Your answers shape the plan; creating it is your choice.";
+    // T2d, batch 5 A2: the two fixed lines in the example, a blank line below them; the skill is named nowhere in the package.
+    expect(flow).toContain("Directly above the question line, with one blank line between them, put the two lines shown below, verbatim. Do not name or quote the setup skill or its rules in the package; name the governance files you propose as usual. Any other note goes above those lines, never below `Inspect details`, and no line ends in spaces:");
+    const example = /```\n(Your answers shape[^`]*)```/.exec(flow)?.[1] ?? "";
+    expect(example).toBe(`${shape}\n${fixed}\n\nHow should I proceed with this setup?\nApprove setup\nAdjust the plan\nInspect details\n`);
+    // Batch 5 A2: the explanatory sentences an agent quoted in its packages are gone from the skill.
+    expect(flow).not.toContain("One approval of the setup package authorises all of it.");
+    expect(flow).not.toContain("One approval covers everything listed.");
+    expect(flow).not.toContain("Do not cite, quote or link this file in the package.");
     expect(example).not.toContain("setup-flow.md");
     expect(flow).not.toContain("A citation of this file, a reminder that nothing is written before approval");
     // Byte-review w4-a6, finding 3: the old order could read as blank line, fixed line, question.
@@ -78,11 +84,11 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     // T3a: the wait-on-nothing sentence once, inside reviewer 3; the probe paragraph names all three unavailable paths.
     const wait = "A wait with no agent started, or a wait that returned no message, is a wait on nothing, not a review.";
     expect(flow.split(wait).length - 1).toBe(1);
-    expect(flow).toContain(`3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent. ${wait}`);
-    expect(flow).toContain("When none of the three can run (the probe printed nothing, `review_plan` is not in your tool list after one exact-name discovery call, and you cannot start an agent), send the unavailable stop below now, without calling a wait, before drafting;");
+    expect(flow).toContain(`3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent. ${wait} A wait tool alone cannot start one.`);
+    expect(flow).toContain("When none of the three can run (the probe printed nothing, `review_plan` is not in your tool list after one exact-name discovery call, and you cannot start an agent), send the unavailable stop below now as your whole first turn,");
     expect(flow).not.toContain("without reading the review schema");
     // T4a: the re-ask names the probe and status lines, the fixed line, the blank line and nothing after.
-    expect(flow).toContain("ask the same question again: the same probe and status lines, the fixed line, one blank line, then the four lines, nothing after them.");
+    expect(flow).toContain("ask the same question again: the same probe and status lines, the two fixed lines, one blank line, then the four lines, nothing after them.");
     // A3: one storybloq command per shell call on the CLI fallback.
     expect(flow).toContain("and note that a client restart may be needed. Run one storybloq command per shell call, never through an interpreter script, a loop or a here-document, and check the result with `storybloq ticket list` or `storybloq phase list`, not a script.");
   });

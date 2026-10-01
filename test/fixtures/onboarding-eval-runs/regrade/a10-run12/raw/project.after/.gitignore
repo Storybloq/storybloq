@@ -1,0 +1,9 @@
+.story/snapshots/
+.story/sessions/
+.story/status.json
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+db.sqlite3
+.env

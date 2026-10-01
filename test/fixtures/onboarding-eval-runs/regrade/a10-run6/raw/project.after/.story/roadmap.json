@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "date": "2026-10-01",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Demonstrate verification and startup readiness; resolve interaction and retention decisions.",
+      "id": "baseline",
+      "label": "PHASE 1",
+      "name": "Baseline and feasibility"
+    },
+    {
+      "description": "Volunteer adds visitors; repairers safely take next and finish repairs.",
+      "id": "queue",
+      "label": "PHASE 2",
+      "name": "Queue workflow"
+    },
+    {
+      "description": "Visitors see the live queue with ten-second refresh; owner accepts the complete workflow.",
+      "id": "board",
+      "label": "PHASE 3",
+      "name": "Live board and acceptance"
+    }
+  ],
+  "title": "Queue board"
+}

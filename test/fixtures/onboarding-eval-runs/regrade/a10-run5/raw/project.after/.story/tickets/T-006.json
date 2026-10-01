@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-005",
+    "T-003",
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Teacher lends and returns books without API tools, from owner first-version journey.\nScope: Availability, pupil-label and editable due-date form, active-loan details, return control and operation-id recovery integrated with catalogue. Excludes: overdue views, filters or highlighting, pupil login.\nAcceptance: Find available copy, lend, refresh and see loan, return, confirm availability, lend again. Due date editable; remove pupil label from view after confirmed return.\nBehaviour: Labelled keyboard controls and announced outcomes; prevent duplicate submission while pending, preserve inputs on failures, refresh stale conflicts and recover uncertain saves by operation id.\nVerification: API integration tests and manual browser/keyboard/error/refresh journey without overdue work. Prerequisites: B1 lending API, A2 catalogue UI, C1 teacher catalogue review. Assumptions: one teacher and minimal pupil label.\nSetup alias: B2.",
+  "displayId": "T-006",
+  "id": "T-006",
+  "order": 20,
+  "phase": "circulation",
+  "status": "open",
+  "title": "Teacher lending and return controls",
+  "type": "feature"
+}

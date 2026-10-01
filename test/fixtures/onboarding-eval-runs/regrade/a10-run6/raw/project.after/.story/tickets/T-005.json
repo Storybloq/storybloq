@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-004"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: 3-6 repairers safely take next visitor and finish repairs, from BRIEF.md and owner usage.\nScope: Atomic oldest-waiting claim, helped-to-finished transition, harmless repeated finish, remove completed entries from active board. Excludes: accounts and named repairer assignments.\nAcceptance: Concurrent claims never return the same visitor; only waiting visitors claimable; defined empty response; completed entries disappear.\nBehaviour: Handle stale actions, rollover and timeouts; refresh after uncertain mutations before retrying.\nVerification: Concurrent backend API and transition tests, including empty queue, repeats and rollover. Prerequisites: Q1 queue API. Assumptions: any repairer may finish an active repair.\nSetup label: Q2.",
+  "displayId": "T-005",
+  "id": "T-005",
+  "order": 20,
+  "phase": "queue",
+  "status": "open",
+  "title": "Take next and finish repairs",
+  "type": "task"
+}

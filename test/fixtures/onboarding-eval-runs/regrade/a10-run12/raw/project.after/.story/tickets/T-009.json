@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-008"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Owner demonstrates individual member accounts and privacy, two members competing for one slot, the seven-day boundary, two-upcoming-booking cap, cancellation cutoff and released capacity. The first version matches README and owner setup answers.\nArtifact: Working local app, automated test evidence and a short staff account-management guide.\nPrerequisites: T-008. Guest payments and production deployment remain excluded.\nStage-1 limitation: this is an ordinary ticket; Storybloq does not enforce an owner approval gate.",
+  "displayId": "T-009",
+  "id": "T-009",
+  "order": 10,
+  "phase": "acceptance",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "chore"
+}

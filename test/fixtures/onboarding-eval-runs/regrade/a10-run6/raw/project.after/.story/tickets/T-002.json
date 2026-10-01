@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Both components have usable verification and documented full-app startup, from manifest evidence.\nScope: Meaningful Vitest frontend tests; backend test dependencies including TestClient/httpx compatibility; backend server dependency; documented frontend/backend launch commands; LAN serving/proxy configuration and frontend-to-API readiness probe; enable recipe stages when established. Excludes: queue product features.\nAcceptance: Clean documented environment collects frontend/backend tests and readiness reaches API through frontend serving path.\nBehaviour: Actionable startup failures; trusted LAN deployment without public internet exposure.\nVerification: Clean install, component tests, launch and readiness during implementation (not setup). Prerequisites: none. Assumptions: retain Vite/Vitest and FastAPI/pytest.\nCommands: backend cd backend && pytest established by testpaths and test source; frontend cd frontend && npm test pending test sources; build cd frontend && npm run build manifest-established. Proposed launches cd backend && python -m uvicorn app.main:app and cd frontend && npm run dev; full-app readiness address must be established before enabling VERIFY.\nSetup label: B2.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "baseline",
+  "status": "open",
+  "title": "Verification and startup",
+  "type": "task"
+}

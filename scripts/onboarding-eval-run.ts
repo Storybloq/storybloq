@@ -51,11 +51,11 @@ import { randomUUID } from "node:crypto";
 import { ALTERNATE_AUTH_ENV_VARS, assertSubscriptionAuthOnly, writeAtomic } from "./headless-common.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
 import {
-  driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
+  driveFlow, finishDrive, inspectAfter, inventoryFor, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
   type PackageTurn, type StoryReader, type TurnResponse, type Variant,
 } from "./onboarding-eval-drive.js";
 import {
-  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, codexTurn, digestChanges, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
+  CHECK_SET_VERSION, claudeTurn, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { runRegrade, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
@@ -301,6 +301,11 @@ interface TurnResult {
 
 /** The observed models from this thread's rollout file under the scratch CODEX_HOME. */
 function rolloutModels(codexHome: string, threadId: string): string[] {
+  return codexRolloutModels(rolloutLines(codexHome, threadId));
+}
+
+/** Every parsed line of this thread's rollout files under the scratch CODEX_HOME. */
+function rolloutLines(codexHome: string, threadId: string): Record<string, unknown>[] {
   const found: string[] = [];
   const walk = (dir: string): void => {
     if (!existsSync(dir)) return;
@@ -315,7 +320,7 @@ function rolloutModels(codexHome: string, threadId: string): string[] {
   for (const f of found) {
     for (const l of readFileSync(f, "utf-8").split("\n")) { try { const v = JSON.parse(l); if (v && typeof v === "object") lines.push(v); } catch { /* partial line */ } }
   }
-  return codexRolloutModels(lines);
+  return lines;
 }
 
 function runTurn(o: Options, ctx: { readonly project: string; readonly env: NodeJS.ProcessEnv; readonly clientBin: string; readonly claudeArgs: readonly string[]; sessionId: string | null; first: boolean }, prompt: string): TurnResult {
@@ -473,6 +478,11 @@ async function main(): Promise<void> {
     modelsObserved: [...new Set(turns.flatMap((x) => x.models))], identity, treeExclusion: exclusion, turns, discoveryRounds: state.rounds, reviewSkipped, reviewEvidence,
     writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures, infraFailed: state.infraFailed,
     semanticLines, bound, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
+    // Check set 5: the fixture contract's reviewer paths, citations outside the package, and the client's instruction context (B3).
+    ...(CHECK_SET_VERSION >= 5 ? {
+      reviewerInventory: inventoryFor(o.variant), skillCitations: evidence.skillCitations ?? [],
+      instructionContext: ctx.sessionId !== null && ctx.env.CODEX_HOME ? rolloutInstructions(rolloutLines(ctx.env.CODEX_HOME, ctx.sessionId)) : { status: "unknown" },
+    } : {}),
     packetSha256: sha256(packetText), verdict: verdict.verdict, finishedAt: new Date().toISOString(),
   }, null, 2));
   await writeAtomic(join(recordDir, "grading-packet.json"), packetText);

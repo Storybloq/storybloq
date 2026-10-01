@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Criteria: Owner accepts sign-in, apply, initial allocate, strict wait, personal allocation/date view, report, resolve and daily-email journeys, supported by phone accessibility, privacy and recovery evidence.\nArtifact: T-012 verified application, requirement coverage checklist and operator runbook. Sources: brief.md / First version must 1–4, Rules and Constraints; owner auth/digest decisions and explicit deferral of must 5.\nPrerequisites: T-012. T-014 waits on this acceptance as the owner's sequencing constraint.\nExcludes: plot map, payments and tool lending. Assumptions: none. Stage-1 limitation: ordinary ticket status does not automatically enforce owner approval.",
+  "displayId": "T-013",
+  "id": "T-013",
+  "order": 20,
+  "phase": "acceptance",
+  "status": "open",
+  "title": "Checkpoint: first-version acceptance",
+  "type": "task"
+}

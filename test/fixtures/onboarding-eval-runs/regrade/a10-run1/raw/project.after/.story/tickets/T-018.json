@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-017"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator sees all 40 plots and holders in a grid, from brief.md original First version 5 explicitly deferred by owner.\nScope: private schematic grid, occupied/empty states and holder names from canonical allocations; accessible equivalent list and owner walkthrough. Excludes: public/gardener map, GIS/physical geography, payments and tool lending.\nAcceptance: exactly 40 plots; accurate holders/empty states; changes reflected on refresh; contacts and other-household records inaccessible to gardeners; coordinator confirms usefulness.\nBehaviour: accessible keyboard/list alternative, large readable phone/zoom layout, non-color-only status and loading/empty/error/stale recovery.\nVerification: full/partial/empty fixtures, role isolation and mobile/keyboard walkthrough. Prerequisites: first-version launch; explicitly excluded from first-version acceptance. Assumptions: schematic grid because physical layout unspecified.",
+  "displayId": "T-018",
+  "id": "T-018",
+  "order": 10,
+  "phase": "later",
+  "status": "open",
+  "title": "Coordinator plot map after first version",
+  "type": "task"
+}

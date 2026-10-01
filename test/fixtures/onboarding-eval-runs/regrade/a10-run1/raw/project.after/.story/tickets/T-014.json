@@ -1,0 +1,17 @@
+{
+  "blockedBy": [
+    "T-008",
+    "T-011",
+    "T-012"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator can operate reliable private service, from brief.md Constraints and persistent workflows.\nScope: staging/env/access audit, backup/restore rehearsal, secret management, email monitoring/retry, household corrections, retention proposal, operating instructions and real season/timezone/digest configuration. Excludes: map, unapproved purchases and live email without deployment authorization.\nAcceptance: staging journeys work; restored data preserves invariants; failed email recoverable; contacts unavailable to gardeners/logs; coordinator can follow runbook.\nBehaviour: observable secret-safe failures; restored email state reconciles against provider to avoid duplicate sends.\nVerification: staging authorization audit and restore/delivery failure drill. Prerequisites: allocation view, resolution and daily email. Assumptions: owner supplies deployment access; retention finalized before live use, no invented legal requirements.",
+  "displayId": "T-014",
+  "id": "T-014",
+  "order": 10,
+  "phase": "release",
+  "status": "open",
+  "title": "Deployment, recovery and privacy readiness",
+  "type": "task"
+}

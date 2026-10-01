@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-005"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: Visitors see waiting/helped first names and anonymous references, from BRIEF.md and owner privacy constraint.\nScope: Dedicated accessible board route; read-only API projection excluding repair details; initial fetch, ordering, shared state/render interface; no-store data; expiry timer from server day expiry; offline midnight clearing and rejection of expired initial/manual responses. Excludes: periodic polling and reconnection scheduler (V2).\nAcceptance: Page load shows current waiting/helped queue, no repair details; duplicates distinguishable; completed entries hidden; clear empty state; all displayed data removed at day expiry even offline.\nBehaviour: Safe text rendering, readable accessible display, loading/error/empty/expired-day states.\nVerification: Projection and component tests, fake-timer expiry, cache/back-navigation tests. Prerequisites: Q2 transitions. Assumptions: expiry timer enforces privacy, not polling; ten-second updates belong to V2.\nSetup label: V1. Split from auto-refresh at owner request.",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 10,
+  "phase": "board",
+  "status": "open",
+  "title": "Public board page",
+  "type": "task"
+}

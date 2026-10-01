@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: establish tools enabling the first-version journeys and emailed sign-in/digest, from brief.md First version/Constraints and owner answers.\nScope: select and document stack, relational database, hosting, email provider and durable scheduler; create minimal app, test/build/server commands and first real test; sandbox delivery feasibility and provider idempotency constraints. Excludes: feature implementation, purchases, production deployment and real-recipient mail.\nAcceptance: reproducible bootstrap, collected passing test, working documented commands, sandbox email feasibility and durable scheduling strategy; enable recipe stages only when commands and tests are established.\nBehaviour: actionable configuration errors; no secrets in repository/logs and no real emails in tests.\nVerification: clean bootstrap/test/build and sandbox checks during implementation. Prerequisites: none. Assumptions: owner delegated technology selection; credentials required before live delivery.",
+  "id": "T-001",
+  "order": 10,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Foundation and delivery feasibility",
+  "type": "task"
+}

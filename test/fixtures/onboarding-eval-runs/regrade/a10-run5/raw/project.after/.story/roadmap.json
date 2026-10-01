@@ -1,0 +1,37 @@
+{
+  "blockers": [],
+  "date": "2026-10-01",
+  "phases": [
+    {
+      "description": "Initial project setup.",
+      "id": "p0",
+      "label": "PHASE 0",
+      "name": "Setup"
+    },
+    {
+      "description": "Teacher can add and find physical book copies through a durable searchable catalogue.",
+      "id": "catalogue",
+      "label": "MILESTONE 1",
+      "name": "Durable catalogue"
+    },
+    {
+      "description": "Teacher can lend a copy to a pupil and record its return through the browser.",
+      "id": "circulation",
+      "label": "MILESTONE 2",
+      "name": "Circulation"
+    },
+    {
+      "description": "Teacher accepts finding, lending and returns with restart preservation and documented recovery; overdue functionality is excluded.",
+      "id": "acceptance",
+      "label": "MILESTONE 3",
+      "name": "First-version acceptance"
+    },
+    {
+      "description": "Explicitly deferred until first-version acceptance: teacher sees outstanding overdue loans and their due dates.",
+      "id": "overdue",
+      "label": "MILESTONE 4",
+      "name": "After first version: overdue list"
+    }
+  ],
+  "title": "shelfmate"
+}

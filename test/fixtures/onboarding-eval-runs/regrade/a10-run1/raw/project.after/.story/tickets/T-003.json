@@ -1,0 +1,15 @@
+{
+  "blockedBy": [
+    "T-002"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Question: are the mobile journeys and proposed household, February cutoff/opening, preferences and FIFO rules suitable?\nArtifact: mobile prototype and explicit approved setup assumptions. Qualifying prior-season holders applying before February 1 have priority; at/after-cutoff returning applicants join ordinary submission order.\nCriteria: record owner review before dependent interface/domain work. Verification: recorded owner decision.\nPrerequisites: prototype. Stage-1 limitation: ordinary ticket; approval gate is not automatically enforced.",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Checkpoint: first-version mobile journeys and allocation assumptions",
+  "type": "task"
+}

@@ -1,0 +1,12 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: owner can inspect mobile gardener and coordinator journeys, from brief.md Users/Constraints and owner map deferral.\nScope: sign-in/resend, applications/preferences/receipt, own allocation/dates and problem reports; coordinator roster, application/available-plot controls, waiting list and problems; locked pre-February allocation state. Excludes: plot map, all-plot holder overview and functional persistence.\nAcceptance: large readable text, plain language, labeled controls, keyboard/focus flow, status not conveyed by color alone.\nBehaviour: represent loading, empty, error, retry and success states.\nVerification: walkthrough, zoom and keyboard review with fictional data. Prerequisites: none. Assumptions: schematic prototype sufficient.",
+  "id": "T-002",
+  "order": 20,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Mobile first-version journey prototype",
+  "type": "task"
+}

@@ -1,0 +1,33 @@
+{
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "python",
+  "project": "Court bookings",
+  "schemaVersion": 2,
+  "type": "generic",
+  "version": 2,
+  "recipeOverrides": {
+    "stages": {
+      "WRITE_TESTS": {
+        "enabled": true,
+        "command": "make test",
+        "onExhaustion": "plan"
+      },
+      "TEST": {
+        "enabled": true,
+        "command": "make test"
+      },
+      "BUILD": {
+        "enabled": false
+      },
+      "VERIFY": {
+        "enabled": false
+      }
+    }
+  }
+}

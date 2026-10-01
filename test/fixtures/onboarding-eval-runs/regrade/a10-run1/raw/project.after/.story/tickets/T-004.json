@@ -1,0 +1,16 @@
+{
+  "blockedBy": [
+    "T-001",
+    "T-003"
+  ],
+  "completedDate": null,
+  "createdDate": "2026-10-01",
+  "description": "Outcome: coordinator can establish accurate households, 40 plot records, seasons and prior holdings, from brief.md Background/Rules.\nScope: durable relational schema; coordinator-only roster/contact management; validated private seed/import, exact seasonal dates/timezone/application window, historical holdings, stable household IDs, original timestamps and change history; transactional uniqueness. Excludes: allocation interface, plot map and holder overview.\nAcceptance: 40 configured plots; valid March-October seasons; evidence for returning status; one household per plot-season and one plot per household-season enforced; contacts restricted at server boundary.\nBehaviour: invalid/duplicate imports rejected atomically with actionable errors; sensitive data absent from logs. User-facing access waits for passwordless role enforcement.\nVerification: constraints/import and authorization tests with test principals. Prerequisites: foundation and prototype checkpoint. Assumptions: coordinator supplies accurate roster/history; one sign-in email per household.",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "foundation",
+  "status": "open",
+  "title": "Household, plot and season records",
+  "type": "task"
+}

@@ -90,8 +90,8 @@ describe("session list surfaces damaged sessions", () => {
     // ownership or lifecycle has to use `listAllSessionsDetailed` instead.
     // `session-compact.ts` was the last one that did not -- a single bad field
     // made a task's own autonomous session vanish and its limit stop record as
-    // `plain` -- and it now reads the detailed result and says so on stderr
-    // when it cannot account for an entry.
+    // `plain`. T-534 C2 retired that limit-stop classifier, so the file now
+    // makes no decision from a session list at all.
     expect(listAllSessions(root)).toHaveLength(0);
 
     const out = await handleSessionList(root, { status: "all", format: "text" });
@@ -109,7 +109,9 @@ describe("session list surfaces damaged sessions", () => {
     // indistinguishable from an absent one and the two lead to opposite
     // actions. `session-compact.ts` proved the point -- it decided
     // autonomous-vs-plain from a list that had silently dropped the session it
-    // was deciding about.
+    // was deciding about. T-534 C2 retired that classifier, and with it the
+    // file's only list-based decision, so there is no detailed call left to pin;
+    // the guard below keeps the dropping API out.
     const src = readFileSync(
       join(__dirname, "..", "..", "src", "cli", "commands", "session-compact.ts"),
       "utf-8",
@@ -117,7 +119,6 @@ describe("session list surfaces damaged sessions", () => {
     expect(src, "session-compact must not classify from the dropping API").not.toMatch(
       /\blistAllSessions\s*\(/,
     );
-    expect(src).toMatch(/\blistAllSessionsDetailed\s*\(/);
   });
 
   it("renders it regardless of the --status filter, because it has no status to filter on", async () => {

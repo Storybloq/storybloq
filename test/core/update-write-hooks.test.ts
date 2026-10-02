@@ -17,6 +17,10 @@ import {
 } from "../../src/core/checkpoint-lifecycle.js";
 import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 import { CHECKPOINT_SCHEMA_VERSION } from "../../src/core/errors.js";
+import {
+  handleNoteCreate,
+  handleNoteUpdate,
+} from "../../src/cli/commands/note.js";
 
 async function project(run: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "story-write-hook-"));
@@ -42,6 +46,65 @@ async function newTicket(root: string, blockedBy: string[] = []) {
   return JSON.parse(r.output).data.id as string;
 }
 describe("trusted update hooks", () => {
+  it("note locked preconditions can reject without changing canonical bytes", async () =>
+    project(async (root) => {
+      const created = await handleNoteCreate(
+        { title: "Original", content: "Authored note", tags: ["design"] },
+        "json",
+        root,
+      );
+      const id = JSON.parse(created.output).data.id as string,
+        path = join(root, ".story/notes", id + ".json"),
+        before = await readFile(path);
+      await expect(
+        handleNoteUpdate(id, { title: "Changed" }, "json", root, {
+          precondition: async (existing, state) => {
+            expect(existing.title).toBe("Original");
+            expect(state.noteByID(existing.id)?.content).toBe("Authored note");
+            throw new Error("Note precondition refused");
+          },
+        }),
+      ).rejects.toThrow("Note precondition refused");
+      expect(await readFile(path)).toEqual(before);
+    }));
+  it("final note serialization is validated before persistence, while default callers still save", async () =>
+    project(async (root) => {
+      const created = await handleNoteCreate(
+        { title: "Original", content: "Authored note" },
+        "json",
+        root,
+      );
+      const id = JSON.parse(created.output).data.id as string,
+        path = join(root, ".story/notes", id + ".json"),
+        before = await readFile(path);
+      await expect(
+        handleNoteUpdate(
+          id,
+          { title: "Changed", tags: [" Design ", "design"] },
+          "json",
+          root,
+          {
+            validatePreparedContent: (content) => {
+              expect(JSON.parse(content).title).toBe("Changed");
+              expect(JSON.parse(content).tags).toEqual(["design"]);
+              expect(content.endsWith("\n")).toBe(true);
+              throw new Error("Note serialized bytes refused");
+            },
+          },
+        ),
+      ).rejects.toThrow("Note serialized bytes refused");
+      expect(await readFile(path)).toEqual(before);
+      const result = await handleNoteUpdate(
+        id,
+        { title: "Normal CLI save" },
+        "json",
+        root,
+      );
+      expect(JSON.parse(result.output).data.title).toBe("Normal CLI save");
+      expect(JSON.parse(await readFile(path, "utf8")).title).toBe(
+        "Normal CLI save",
+      );
+    }));
   it("a rejected locked precondition leaves ticket and issue bytes unchanged", async () =>
     project(async (root) => {
       const ticket = await newTicket(root);

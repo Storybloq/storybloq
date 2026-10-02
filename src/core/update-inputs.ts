@@ -30,3 +30,11 @@ export interface IssueUpdateInput {
   citesRuling?: string[];
   clearCitesRulings?: boolean;
 }
+
+export interface NoteUpdateInput {
+  content?: string;
+  title?: string | null;
+  tags?: string[];
+  clearTags?: boolean;
+  status?: string;
+}

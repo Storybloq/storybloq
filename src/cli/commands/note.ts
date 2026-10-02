@@ -32,6 +32,8 @@ import {
   assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
+import type { NoteUpdateInput } from "../../core/update-inputs.js";
+import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
 
 export const NOTE_CORE_METADATA_KEYS = new Set([
   "id",
@@ -190,15 +192,10 @@ export async function handleNoteCreate(
 
 export async function handleNoteUpdate(
   id: string,
-  updates: {
-    content?: string;
-    title?: string | null;
-    tags?: string[];
-    clearTags?: boolean;
-    status?: string;
-  },
+  updates: NoteUpdateInput,
   format: OutputFormat,
   root: string,
+  hooks?: UpdateWriteHooks<Note>,
 ): Promise<CommandResult> {
   assertUpdateHasFields(updates, "note", "content, title, tags, clearTags, status");
   // ISS-1192: same round-trip-growth fix as ticket.ts's description -- an
@@ -230,6 +227,7 @@ export async function handleNoteUpdate(
     if (!existing) {
       throw new CliValidationError("not_found", `Note ${id} not found`);
     }
+    await hooks?.precondition?.(existing, state);
 
     // Tags: --clear-tags → []. --tags with values → replace. neither → unchanged.
     const tagsUpdate: Partial<Note> = {};
@@ -250,7 +248,7 @@ export async function handleNoteUpdate(
       updatedDate: todayISO(),
     };
 
-    await writeNoteUnlocked(note, root);
+    await writeNoteUnlocked(note, root, hooks);
     updatedNote = note;
   });
 

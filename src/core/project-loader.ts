@@ -667,7 +667,7 @@ export async function deleteIssue(
 export async function writeNoteUnlocked(
   note: Note,
   root: string,
-  options?: { createOnly?: boolean },
+  options?: { createOnly?: boolean } & PreparedContentValidation,
 ): Promise<void> {
   const parsed = NoteSchema.parse(note);
   if (!NOTE_ID_REGEX.test(parsed.id) && !NOTE_CANONICAL_ID_REGEX.test(parsed.id)) {
@@ -681,6 +681,7 @@ export async function writeNoteUnlocked(
   await mkdir(dirname(targetPath), { recursive: true });
   await guardPath(targetPath, wrapDir);
   const json = serializeJSON(parsed);
+  await options?.validatePreparedContent?.(json);
   if (options?.createOnly) {
     await atomicCreate(targetPath, json);
   } else {

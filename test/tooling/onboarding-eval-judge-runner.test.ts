@@ -39,6 +39,13 @@ image_generation = false
 view_image = false
 hooks = false
 skill_search = false
+browser_use_external = false
+browser_use_full_cdp_access = false
+in_app_browser = false
+sleep_tool = false
+tool_suggest = false
+code_mode_host = false
+unified_exec_zsh_fork = false
 `;
 
 interface Rig { root: string; fake: string; bin: string; wrapper: string; record: string; auth: string; home: string; tmp: string }
@@ -140,6 +147,8 @@ describe("ISS-1348 judge runner, fake codex", { timeout: 180_000 }, () => {
     expect(m.rawBytes).toBe(raw.length);
     expect(m.effectiveFeatures).toContainEqual({ name: "unified_exec", stage: "stable", enabled: true });
     expect(m.effectiveFeatures).toContainEqual({ name: "shell_tool", stage: "stable", enabled: false });
+    expect(m.effectiveFeatures).toContainEqual({ name: "tool_search_always_defer_mcp_tools", stage: "removed", enabled: true });
+    expect(m.effectiveFeatures).toContainEqual({ name: "unified_exec_zsh_fork", stage: "removed", enabled: false });
     expect(request(r).promptSha256).toBe(exec!.stdinSha256);
     expect(res.stdout).toContain(`--finalize ${r.record} --judge ${join(r.record, "judge.json")}`);
     // tsx keeps its own cache folder in TMPDIR; only the runner's scratch directories must be gone.
@@ -841,8 +850,31 @@ describe("ISS-1349 the codex the runner runs: real path, child PATH, version pin
     expect(execs(r)[0]!.homeEntries).toContain("auth.json");
   });
 
-  it("S11: the lockdown config is the one that judged attempt 10 run 1, byte for byte", () => {
+  it("S11: the lockdown config is the lockdown block of ISS-1350, byte for byte", () => {
     expect(JUDGE_CONFIG).toBe(LOCKDOWN);
-    expect(sha256(JUDGE_CONFIG)).toBe("dffed151be9deee4f5af5112228930dddd375ceea942211655bc1f3d52e6630b");
+    expect(sha256(JUDGE_CONFIG)).toBe("7fdbf96d64bc6c61a4946f0786677652aef06382f737dd451b1038ba56c9108a");
+  });
+
+  /** The lines of the features table: the config ends with one newline, and everything after `[features]` is the table. */
+  const featureLines = (): string[] => {
+    const lines = JUDGE_CONFIG.split("\n");
+    expect(lines[lines.length - 1]).toBe("");
+    const body = lines.slice(0, -1);
+    expect(body.filter((l) => l === "[features]")).toHaveLength(1);
+    return body.slice(body.indexOf("[features]") + 1);
+  };
+  const keyOf = (line: string): string => line.slice(0, line.indexOf(" ="));
+
+  it.each(["browser_use_external", "browser_use_full_cdp_access", "in_app_browser", "sleep_tool", "tool_suggest", "code_mode_host", "unified_exec_zsh_fork"])("S13: ISS-1350: the lockdown table turns %s off, in one line", (name) => {
+    expect(featureLines().filter((l) => keyOf(l) === name)).toEqual([`${name} = false`]);
+  });
+
+  it("S13b: ISS-1350: the table has 18 lines, all `= false`, none for tool_search_always_defer_mcp_tools, and the one unified_exec line it always had", () => {
+    const table = featureLines();
+    expect(table).toHaveLength(18);
+    for (const line of table) expect(line.endsWith(" = false")).toBe(true);
+    expect(new Set(table.map(keyOf)).size).toBe(18);
+    expect(table.filter((l) => l.startsWith("tool_search_always_defer_mcp_tools"))).toEqual([]);
+    expect(table.filter((l) => keyOf(l) === "unified_exec")).toEqual(["unified_exec = false"]);
   });
 });

@@ -31,10 +31,20 @@
  * Trust boundary: the grading packet is evidence written partly by the agent under evaluation. It goes to the
  * judge on standard input, after a fixed trust rule, inside a marked evidence block. The judge's CODEX_HOME turns
  * off every tool and feature it does not need, and it runs read-only, never asking for approval, in an empty
- * directory made for this invocation. Limit: `unified_exec` cannot be disabled on codex-cli 0.153.4 (it stays
- * effective true whatever the config says), so "no command tool" is enforced after the fact, by refusal, not by
- * config: any command, MCP, collaboration or web-search item in the event stream is outcome `tool-used`, and the
- * effective feature list is recorded in `meta.json` for every invocation.
+ * directory made for this invocation. Limit: two features cannot be disabled on codex-cli 0.153.4 and stay
+ * effective true whatever the config says: `unified_exec` (its config line is kept, and ignored) and
+ * `tool_search_always_defer_mcp_tools` (no config line; its stage is "removed"). For those two, "no tool" is
+ * enforced after the fact, by refusal, not by config: any command, MCP, collaboration or web-search item in the
+ * event stream is outcome `tool-used`, and the effective feature list is recorded in `meta.json` for every
+ * invocation. The other capability features that binary enables by default are turned off by the table (measured
+ * for ISS-1350: 37 enabled features become 30). Repeat the measurement when JUDGE_CODEX_VERSION changes: a key
+ * the binary no longer knows may be refused.
+ *
+ * Comparability: `judge.json` files written before ISS-1350 were ruled with seven more features enabled
+ * (browser_use_external, browser_use_full_cdp_access, in_app_browser, sleep_tool, tool_suggest, code_mode_host,
+ * unified_exec_zsh_fork). That covers run 1 of attempt 10 (judge.json sha256
+ * f0b56219663779cd84238eecc1489723cc589c252b2dc3aa3782ff36a107cfec). No tool item appeared in that run, but
+ * verdicts across the boundary are not strictly comparable.
  *
  * Preflight output that is kept: `meta.json` lists each preflight call (`probes`) with its status and the first
  * line of its stderr. Those calls receive HOME, CODEX_HOME and PATH only, so no credential variable of the caller,
@@ -87,6 +97,13 @@ export const JUDGE_CONFIG = [
   "view_image = false",
   "hooks = false",
   "skill_search = false",
+  "browser_use_external = false",
+  "browser_use_full_cdp_access = false",
+  "in_app_browser = false",
+  "sleep_tool = false",
+  "tool_suggest = false",
+  "code_mode_host = false",
+  "unified_exec_zsh_fork = false",
   "",
 ].join("\n");
 

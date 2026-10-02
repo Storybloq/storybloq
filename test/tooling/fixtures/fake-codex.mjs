@@ -65,9 +65,11 @@ if (argv[0] === "features" && argv[1] === "list") {
   }
   if (scenario.probe === "chmod-after-preflight") chmodSync(wrapper, 0o644);
   if (scenario.touchOnFeatures) appendFileSync(scenario.touchOnFeatures, " ");
-  // The pinned 0.153.4 output for the lockdown config, abridged: unified_exec stays effective true.
-  for (const [name, on] of [["apps", false], ["browser_use", false], ["computer_use", false], ["hooks", false], ["image_generation", false], ["multi_agent", false], ["plugins", false], ["shell_tool", false], ["skill_search", false], ["unified_exec", true], ["view_image", false]]) {
-    process.stdout.write(`${name.padEnd(41)}${"stable".padEnd(19)}${on}\n`);
+  // The pinned 0.153.4 output for the lockdown config, abridged: unified_exec and
+  // tool_search_always_defer_mcp_tools stay effective true, and two names carry the stage "removed" (ISS-1350).
+  const removed = ["tool_search_always_defer_mcp_tools", "unified_exec_zsh_fork"];
+  for (const [name, on] of [["apps", false], ["browser_use", false], ["browser_use_external", false], ["browser_use_full_cdp_access", false], ["code_mode_host", false], ["computer_use", false], ["hooks", false], ["image_generation", false], ["in_app_browser", false], ["multi_agent", false], ["plugins", false], ["shell_tool", false], ["skill_search", false], ["sleep_tool", false], ["tool_search_always_defer_mcp_tools", true], ["tool_suggest", false], ["unified_exec", true], ["unified_exec_zsh_fork", false], ["view_image", false]]) {
+    process.stdout.write(`${name.padEnd(41)}${(removed.includes(name) ? "removed" : "stable").padEnd(19)}${on}\n`);
   }
   process.exit(0);
 }

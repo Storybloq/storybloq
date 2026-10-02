@@ -2,9 +2,10 @@
  * ISS-1348: the judge runner end to end against a fake `codex` (test/tooling/fixtures/fake-codex.mjs). Each test
  * gets its own record copy (attempt 10 run 1), a dummy auth file the runner only links, and a scratch TMPDIR; the
  * fake logs every invocation and acts out the scenario the test writes. No real Codex or auth is involved.
+ * ISS-1349: the real path of codex, the child PATH, the version pin and the probes' first stderr lines.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, realpathSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, realpathSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { PassThrough, Writable } from "node:stream";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -12,7 +13,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { sha256 } from "../../scripts/continuity-lib.js";
 import { judgeFromResponse, type JudgeRuling } from "../../scripts/onboarding-eval-lib.js";
-import { capture, publish, snapshotOf, writeFailure, type Snapshot } from "../../scripts/onboarding-eval-judge.js";
+import { pathToFileURL } from "node:url";
+import { JUDGE_CODEX_VERSION, JUDGE_CONFIG, capture, childPathFor, childPathProblem, firstStderrLine, publish, snapshotOf, writeFailure, type Snapshot } from "../../scripts/onboarding-eval-judge.js";
 
 const PKG = resolve(__dirname, "..", "..");
 const TSX = join(PKG, "node_modules", "tsx", "dist", "cli.mjs");
@@ -40,7 +42,7 @@ skill_search = false
 `;
 
 interface Rig { root: string; fake: string; bin: string; wrapper: string; record: string; auth: string; home: string; tmp: string }
-interface LogEntry { kind: string; argv: string[]; cwd: string; cwdEntries?: string[]; env: Record<string, string>; config: string | null; stdinSha256?: string | null; stdinBytes?: number; invalid?: boolean }
+interface LogEntry { kind: string; argv: string[]; wrapper: string; homeEntries: string[]; cwd: string; cwdEntries?: string[]; env: Record<string, string>; config: string | null; stdinSha256?: string | null; stdinBytes?: number; invalid?: boolean }
 
 const rigs: string[] = [];
 afterEach(() => { for (const d of rigs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -208,7 +210,7 @@ describe("ISS-1348 judge runner, fake codex", { timeout: 180_000 }, () => {
     chmodSync(r.wrapper, 0o644);
     const res = run(r);
     expect(res.code).toBe(2);
-    expect(res.stderr).toContain("web-search-unverified");
+    expect(res.stderr).toContain("codex-version-mismatch");
     expect(existsSync(attempt(r))).toBe(false);
   });
 
@@ -656,5 +658,191 @@ describe("ISS-1348 capture: stream errors are reported, never thrown", () => {
     await done;
     expect(errors).toEqual(["source: EIO"]);
     expect(Buffer.concat(kept).toString()).toBe("kept\n");
+  });
+});
+
+describe("ISS-1349 the codex the runner runs: real path, child PATH, version pin, probe stderr", { timeout: 180_000 }, () => {
+  const VERSION_LINE = "codex-cli 0.153.4";
+  const UNKNOWN_VARIANT = "Error: unknown variant `storybloq-invalid`, expected one of `disabled`, `cached`, `indexed`, `live`";
+  interface Probe { name: string; exitStatus: number | null; signal: string | null; error: string | null; stderrFirstLine: string }
+
+  /**
+   * A `codex` as npm installs it: <root>/npm-bin/codex is a symlink to a launcher that needs `node` from PATH.
+   * The caller's PATH lists that directory first, the rig's ordinary wrapper second, and no node directory.
+   */
+  function launcherRig(scenarioOf: (link: string, r: Rig) => Record<string, unknown> = () => ({}), lib = "npm-lib"): { r: Rig; link: string; launcher: string; path: string } {
+    const r = rig();
+    const linkDir = join(r.root, "npm-bin");
+    const libDir = join(r.root, lib);
+    for (const d of [linkDir, libDir]) mkdirSync(d);
+    const launcher = join(libDir, "codex.js");
+    const link = join(linkDir, "codex");
+    writeFileSync(launcher, `#!/usr/bin/env node\nprocess.argv.splice(2, 0, "--fake-root", ${JSON.stringify(r.fake)}, "--fake-wrapper", ${JSON.stringify(launcher)});\nimport(${JSON.stringify(pathToFileURL(FAKE).href)});\n`, { mode: 0o755 });
+    symlinkSync(launcher, link);
+    scenario(r, scenarioOf(link, r));
+    return { r, link, launcher, path: `${linkDir}:${r.bin}:/usr/bin:/bin` };
+  }
+
+  it("S1: a symlinked launcher that needs node: the real path is resolved, recorded and run, with node's directory on the child PATH", () => {
+    const { r, link, launcher, path } = launcherRig();
+    const res = run(r, { PATH: path });
+    expect(res.stderr).toBe("");
+    expect(res.code).toBe(0);
+    const real = realpathSync(launcher);
+    expect(real).not.toBe(link);
+    expect(meta(r).codexPath).toBe(real);
+    expect(request(r).argv[0]).toBe(real);
+    const entries = log(r);
+    expect(entries.map((e) => e.kind)).toEqual(["version", "probe", "probe", "features", "exec"]);
+    for (const e of entries) {
+      expect(e.wrapper).toBe(launcher);
+      expect(e.env.PATH).toBe([...new Set([dirname(real), dirname(process.execPath), "/usr/bin", "/bin"])].join(":"));
+    }
+  });
+
+  it("S2: the codex symlink is retargeted after the last probe: the exec still runs the launcher resolved at the start", () => {
+    const { r, launcher, path } = launcherRig((link, rg) => {
+      const sentinel = join(rg.root, "sentinel");
+      writeFileSync(sentinel, `#!/bin/sh\necho ran > '${join(rg.root, "sentinel-ran")}'\nexit 99\n`, { mode: 0o755 });
+      return { retargetOnFeatures: { link, to: sentinel } };
+    });
+    const res = run(r, { PATH: path });
+    expect(res.stderr).toBe("");
+    expect(res.code).toBe(0);
+    expect(existsSync(join(r.record, "judge.json"))).toBe(true);
+    expect(existsSync(join(r.root, "sentinel-ran"))).toBe(false);
+    expect(execs(r)).toHaveLength(1);
+    expect(execs(r)[0]!.wrapper).toBe(launcher);
+  });
+
+  it("S2b: the codex symlink is removed after the last probe: the exec still runs and publishes", () => {
+    const { r, link, launcher, path } = launcherRig((l) => ({ retargetOnFeatures: { link: l } }));
+    const res = run(r, { PATH: path });
+    expect(res.code).toBe(0);
+    expect(existsSync(link)).toBe(false);
+    expect(existsSync(join(r.record, "judge.json"))).toBe(true);
+    expect(execs(r)[0]!.wrapper).toBe(launcher);
+  });
+
+  it("S3: a probe that exits 127 with a stderr line: the refusal carries the status and the first line only", () => {
+    const r = rig({ fail: { call: "config-as-written", exit: 127, stderr: "env: node: No such file or directory\nsecond line\n" } });
+    const res = run(r);
+    expect(res.code).toBe(2);
+    expect(res.stderr).toBe("onboarding-eval-judge: refused: web-search-unverified: the config as written did not load (exit 127; stderr: env: node: No such file or directory)\n");
+    expect(res.stdout).not.toContain("env: node");
+    expect(existsSync(attempt(r))).toBe(false);
+  });
+
+  it("S4: a long first line with a control character and a multi-byte character across the bound: at most 200 bytes, whole characters, no control character", () => {
+    const line = `${"a".repeat(100)}\u001b[31m${"b".repeat(94)}é${"c".repeat(300)}`;
+    const r = rig({ fail: { call: "config-as-written", exit: 1, stderr: `\n${line}\n` } });
+    const res = run(r);
+    expect(res.code).toBe(2);
+    const shown = /; stderr: (.*)\)\n$/.exec(res.stderr)![1]!;
+    expect(shown).toBe(`${"a".repeat(100)}?[31m${"b".repeat(94)}`);
+    expect(Buffer.byteLength(shown)).toBe(199);
+    expect(firstStderrLine(`${"x".repeat(198)}éy`)).toBe(`${"x".repeat(198)}é`);
+    expect(firstStderrLine(`${"x".repeat(250)}`)).toBe("x".repeat(200));
+    expect(firstStderrLine("\r\n \nkeep\ttabs\u0007\u009b\u007f\nnext")).toBe("keep\ttabs???");
+    expect(firstStderrLine("")).toBe("");
+  });
+
+  it.each([
+    ["version", "codex-version-mismatch: found exit 3; stderr: version boom, this runner is pinned to codex-cli 0.153.4"],
+    ["invalid-web-search", "web-search-unverified: an invalid web_search value was not refused as an unknown variant (exit 3; stderr: invalid-web-search boom)"],
+    ["features-list", "features-unread: codex features list failed (exit 3; stderr: features-list boom)"],
+  ])("S5: the %s call failing with a stderr line: its refusal carries the line", (call, message) => {
+    const r = rig({ fail: { call, exit: 3, stderr: `${call} boom\n` } });
+    const res = run(r);
+    expect(res.code).toBe(2);
+    expect(res.stderr).toBe(`onboarding-eval-judge: refused: ${message}\n`);
+    expect(existsSync(attempt(r))).toBe(false);
+  });
+
+  it.each(["codex-cli 0.154.0", "codex-cli 0.153.40", "0.153.4", "codex-cli 0.153.4 (beta)", ""])("S6: version line %j is not the pin: refused before any probe or reservation, naming both", (line) => {
+    const r = rig({ version: line });
+    const res = run(r);
+    expect(res.code).toBe(2);
+    expect(res.stderr).toBe(`onboarding-eval-judge: refused: codex-version-mismatch: found "${line}" (exit 0), this runner is pinned to codex-cli 0.153.4\n`);
+    expect(existsSync(attempt(r))).toBe(false);
+    expect(log(r).map((e) => e.kind)).toEqual(["version"]);
+  });
+
+  it("S6b: a wrong version line from a call that exits 0 and writes stderr: the refusal keeps the status and the first stderr line, sanitised", () => {
+    const r = rig({ version: "codex-cli 0.154.0", versionStderr: "warning:\u001b update available\nsecond line\n" });
+    const res = run(r);
+    expect(res.code).toBe(2);
+    expect(res.stderr).toBe('onboarding-eval-judge: refused: codex-version-mismatch: found "codex-cli 0.154.0" (exit 0; stderr: warning:? update available), this runner is pinned to codex-cli 0.153.4\n');
+    expect(existsSync(attempt(r))).toBe(false);
+  });
+
+  it("S7: a successful run records the real codex path, the version line and the four preflight calls in order", () => {
+    const r = rig();
+    expect(run(r).code).toBe(0);
+    const m = meta(r) as unknown as { codexPath: string; codexVersion: string; probes: Probe[] };
+    expect(m.codexPath).toBe(realpathSync(r.wrapper));
+    expect(m.codexPath.startsWith("/")).toBe(true);
+    expect(JUDGE_CODEX_VERSION).toBe("0.153.4");
+    expect(m.codexVersion).toBe(VERSION_LINE);
+    expect(m.probes).toEqual([
+      { name: "version", exitStatus: 0, signal: null, error: null, stderrFirstLine: "" },
+      { name: "config-as-written", exitStatus: 0, signal: null, error: null, stderrFirstLine: "" },
+      { name: "invalid-web-search", exitStatus: 1, signal: null, error: null, stderrFirstLine: UNKNOWN_VARIANT },
+      { name: "features-list", exitStatus: 0, signal: null, error: null, stderrFirstLine: "" },
+    ]);
+    expect(request(r).argv[0]).toBe(realpathSync(r.wrapper));
+  });
+
+  it("S8: a failure after the spawn records the codex path, the version and the preflight calls too", () => {
+    const r = rig({ toolItem: "command_execution" });
+    expectFailedAfterSpawn(r, run(r), "tool-used");
+    const m = meta(r) as unknown as { codexPath: string; codexVersion: string; probes: Probe[] };
+    expect(m.codexPath).toBe(realpathSync(r.wrapper));
+    expect(m.codexVersion).toBe(VERSION_LINE);
+    expect(m.probes.map((p) => p.name)).toEqual(["version", "config-as-written", "invalid-web-search", "features-list"]);
+  });
+
+  it("S9: the child PATH is codex's directory, node's directory, /usr/bin, /bin, each once", () => {
+    expect(childPathFor("/opt/codex/bin/codex", "/opt/node/bin/node")).toBe("/opt/codex/bin:/opt/node/bin:/usr/bin:/bin");
+    expect(childPathFor("/opt/tools/bin/codex", "/opt/tools/bin/node")).toBe("/opt/tools/bin:/usr/bin:/bin");
+    expect(childPathFor("/usr/bin/codex", "/opt/node/bin/node")).toBe("/usr/bin:/opt/node/bin:/bin");
+    expect(childPathFor("/opt/codex/bin/codex")).toBe([...new Set(["/opt/codex/bin", dirname(process.execPath), "/usr/bin", "/bin"])].join(":"));
+  });
+
+  it("S12: a codex whose real directory holds the PATH delimiter is refused before anything is spawned", () => {
+    const { r, path } = launcherRig(() => ({}), "npm:lib");
+    const res = run(r, { PATH: path });
+    expect(res.code).toBe(2);
+    expect(res.stderr).toBe("onboarding-eval-judge: refused: codex path unusable: directory contains a PATH delimiter\n");
+    expect(log(r)).toEqual([]);
+    expect(existsSync(attempt(r))).toBe(false);
+    expect(existsSync(join(r.record, "judge.json"))).toBe(false);
+  });
+
+  it("S12b: the delimiter check covers codex's directory and node's directory, and nothing else", () => {
+    const problem = "codex path unusable: directory contains a PATH delimiter";
+    expect(childPathProblem("/opt/tools:/tmp/bin/codex", "/opt/node/bin/node")).toBe(problem);
+    expect(childPathProblem("/opt/codex/bin/codex", "/opt/no:de/bin/node")).toBe(problem);
+    expect(childPathProblem("/opt/codex/bin/co:dex", "/opt/node/bin/no:de")).toBeNull();
+    expect(childPathProblem("/opt/codex/bin/codex")).toBeNull();
+  });
+
+  it("S10: the preflight calls get HOME, CODEX_HOME and PATH only, and a CODEX_HOME with no auth.json", () => {
+    const r = rig();
+    expect(run(r).code).toBe(0);
+    const preflight = log(r).filter((e) => e.kind !== "exec");
+    expect(preflight.map((e) => e.kind)).toEqual(["version", "probe", "probe", "features"]);
+    const shellOwn = new Set(["PWD", "OLDPWD", "SHLVL", "_", "__CF_USER_TEXT_ENCODING"]);
+    for (const e of preflight) {
+      expect(Object.keys(e.env).filter((k) => !shellOwn.has(k)).sort()).toEqual(["CODEX_HOME", "HOME", "PATH"]);
+      expect(e.homeEntries).toEqual(["config.toml"]);
+      expect(e.env.CODEX_HOME).not.toBe(execs(r)[0]!.env.CODEX_HOME);
+    }
+    expect(execs(r)[0]!.homeEntries).toContain("auth.json");
+  });
+
+  it("S11: the lockdown config is the one that judged attempt 10 run 1, byte for byte", () => {
+    expect(JUDGE_CONFIG).toBe(LOCKDOWN);
+    expect(sha256(JUDGE_CONFIG)).toBe("dffed151be9deee4f5af5112228930dddd375ceea942211655bc1f3d52e6630b");
   });
 });

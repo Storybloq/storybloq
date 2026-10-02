@@ -4,13 +4,27 @@
  *
  *   env -i HOME=<scratch> PATH=<dir of codex 0.153.4>:<dir of node>:/usr/bin:/bin CODEX_HOME=<dir holding auth.json> \
  *     npx tsx scripts/onboarding-eval-judge.ts --record <recordDir>
+ *   (or, without npx: node node_modules/tsx/dist/cli.mjs scripts/onboarding-eval-judge.ts --record <recordDir>)
+ *
+ * Which codex runs (ISS-1349): the first `codex` on the caller's PATH, resolved once to its real path; that path
+ * runs the preflight and the judge, so a link changed later changes nothing. Under npx the first one is
+ * node_modules/.bin/codex, the npm launcher, not a standalone install. Its first version line must equal
+ * `codex-cli ` + JUDGE_CODEX_VERSION, or the runner refuses: the lockdown limits below were measured on that
+ * version, so changing the pin is a code change that must repeat those measurements. The judge's PATH is, in this
+ * order: the real codex's directory, the directory of the node running this script, /usr/bin, /bin. Either of
+ * the first two holding the PATH delimiter in its name is refused, since it would read as two directories. The caller
+ * must trust the selected executable and both of those directories. Because codex's directory comes first, a file
+ * named `node` beside it would run in place of this script's node for a launcher that asks for `env node`; the
+ * runner does not defend against that, and records the selected path as `codexPath` in `request.json` (argv) and
+ * `meta.json`.
  *
  * `CODEX_HOME` only says where the subscription `auth.json` lives: it is linked into a scratch CODEX_HOME, never
  * opened, and no variable of the caller reaches the judge. There is no `--model`: the model is JUDGE_MODEL.
  *
  * Exit 2 refuses before anything is reserved or spawned: a record that is not PENDING_SEMANTIC, a packet that is
  * not this record's, repeated semantic lines, any judge artifact already in the record dir, or a web-search
- * setting the binary does not parse as an enum. Exit 3 is any failure after the spawn: `judge-attempt/` stays
+ * setting the binary does not parse as an enum, a codex of another version. A refusal from a preflight call names
+ * its exit status and the first line of its stderr. Exit 3 is any failure after the spawn: `judge-attempt/` stays
  * as evidence, `meta.json` names the outcome, no `judge.json` is published and nothing is retried. Exit 0
  * published `judge.json`.
  *
@@ -21,6 +35,11 @@
  * effective true whatever the config says), so "no command tool" is enforced after the fact, by refusal, not by
  * config: any command, MCP, collaboration or web-search item in the event stream is outcome `tool-used`, and the
  * effective feature list is recorded in `meta.json` for every invocation.
+ *
+ * Preflight output that is kept: `meta.json` lists each preflight call (`probes`) with its status and the first
+ * line of its stderr. Those calls receive HOME, CODEX_HOME and PATH only, so no credential variable of the caller,
+ * and a CODEX_HOME with no `auth.json` (the link is made after the reservation, in another directory). The line is
+ * cut to 200 bytes with control characters replaced: that is output sanitisation, not secret redaction.
  *
  * One writer: nothing else writes the record dir while the runner works; there is no lock shared with other tools.
  * Inside that assumption the runner still takes one validated snapshot of `record.json` and `grading-packet.json`
@@ -37,7 +56,7 @@
  * run again. The runner never deletes or overwrites an attempt, and refuses while any `judge.json` exists.
  */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import type { Writable } from "node:stream";
@@ -48,6 +67,8 @@ import { judgeFromResponse, type JudgeRuling } from "./onboarding-eval-lib.js";
 import { packetMismatch, resolveOnPath, rolloutModels } from "./onboarding-eval-run.js";
 
 export const JUDGE_MODEL = "gpt-6-astra";
+/** The codex-cli version the lockdown was measured on; `codex --version` must print `codex-cli <this>`. */
+export const JUDGE_CODEX_VERSION = "0.153.4";
 
 /** The judge's CODEX_HOME config: top-level keys first, then the features table. No MCP servers. */
 export const JUDGE_CONFIG = [
@@ -295,26 +316,87 @@ export function execArgs(schemaPath: string, cwd: string): string[] {
   return ["exec", "--json", "--model", JUDGE_MODEL, "--sandbox", "read-only", "-c", 'approval_policy="never"', "--skip-git-repo-check", "--output-schema", schemaPath, "-C", cwd, "-"];
 }
 
-/**
- * Establishes, on the binary the runner will spawn, that `web_search` is parsed as the mode enum: the config as
- * written loads, and an invalid value is refused naming the key and the `disabled` variant. Returns the effective
- * feature list read under the same config, or throws a Refusal.
- */
-function probeBinary(bin: string, env: NodeJS.ProcessEnv, cwd: string): ReturnType<typeof parseFeatures> {
-  const run = (args: string[]) => spawnSync(bin, args, { env, cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
-  const asWritten = run(["debug", "prompt-input", "probe"]);
-  if (asWritten.error || asWritten.status !== 0) throw new Refusal(`web-search-unverified: the config as written did not load (${asWritten.error?.message ?? `exit ${String(asWritten.status)}`})`);
-  const invalid = run(["debug", "prompt-input", "-c", `web_search="${INVALID_WEB_SEARCH}"`, "probe"]);
-  const stderr = invalid.stderr ?? "";
-  if (invalid.error || invalid.status === 0 || invalid.status === null || !stderr.includes(`unknown variant \`${INVALID_WEB_SEARCH}\``) || !stderr.includes("`disabled`") || !stderr.includes("`web_search`")) {
-    throw new Refusal(`web-search-unverified: an invalid web_search value was not refused as an unknown variant (${invalid.error?.message ?? `exit ${String(invalid.status)}`})`);
-  }
-  const features = run(["features", "list"]);
-  if (features.error || features.status !== 0) throw new Refusal(`features-unread: codex features list failed (${features.error?.message ?? `exit ${String(features.status)}`})`);
-  return parseFeatures(features.stdout ?? "");
+/** One preflight call as recorded: which, how it ended, and the first line of its stderr. */
+export interface ProbeEntry {
+  readonly name: "version" | "config-as-written" | "invalid-web-search" | "features-list";
+  readonly exitStatus: number | null;
+  readonly signal: string | null;
+  readonly error: string | null;
+  readonly stderrFirstLine: string;
 }
 
-/** Feeds the prompt with backpressure; never throws, always reports how much the child took. */
+/** `line` with control characters other than tab replaced, cut to at most 200 bytes of UTF-8, whole characters only. */
+function boundedLine(line: string): string {
+  let out = "";
+  let bytes = 0;
+  for (const ch of line.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/g, "?")) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > 200) break;
+    out += ch;
+    bytes += n;
+  }
+  return out;
+}
+
+/** The first non-blank line of a captured stderr, bounded for a refusal message or `meta.json`. */
+export function firstStderrLine(text: string): string {
+  return boundedLine(text.split(/\r?\n/).find((l) => l.trim() !== "") ?? "");
+}
+
+/** The judge's PATH: the real codex's directory, the running node's directory, /usr/bin, /bin, each once. */
+export function childPathFor(bin: string, node: string = process.execPath): string {
+  return [...new Set([dirname(bin), dirname(node), "/usr/bin", "/bin"])].join(delimiter);
+}
+
+/** Why codex's or node's directory cannot go on a PATH: a delimiter in its name would be read as two directories. */
+export function childPathProblem(bin: string, node: string = process.execPath): string | null {
+  return [dirname(bin), dirname(node)].some((d) => d.includes(delimiter)) ? "codex path unusable: directory contains a PATH delimiter" : null;
+}
+
+type ProbeRun = (name: ProbeEntry["name"], args: string[]) => { readonly status: number | null; readonly stdout: string; readonly stderr: string; readonly failed: boolean; readonly how: string };
+
+/** Runs one preflight call, appends its entry to `probes`, and returns what the checks need. */
+function probeRunner(bin: string, env: NodeJS.ProcessEnv, cwd: string, probes: ProbeEntry[]): ProbeRun {
+  return (name, args) => {
+    const p = spawnSync(bin, args, { env, cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });
+    const stderr = p.stderr ?? "";
+    const line = firstStderrLine(stderr);
+    probes.push({ name, exitStatus: p.status, signal: p.signal, error: p.error?.message ?? null, stderrFirstLine: line });
+    return { status: p.status, stdout: p.stdout ?? "", stderr, failed: p.error !== undefined, how: `${p.error?.message ?? `exit ${String(p.status)}`}${line === "" ? "" : `; stderr: ${line}`}` };
+  };
+}
+
+/** The version pin: the first line `codex --version` prints must be exactly `codex-cli <JUDGE_CODEX_VERSION>`. */
+function checkVersion(run: ProbeRun): string {
+  const pinned = `codex-cli ${JUDGE_CODEX_VERSION}`;
+  const version = run("version", ["--version"]);
+  if (version.failed || version.status !== 0) throw new Refusal(`codex-version-mismatch: found ${version.how}, this runner is pinned to ${pinned}`);
+  const line = (version.stdout.split(/\r?\n/)[0] ?? "").trim();
+  if (line !== pinned) throw new Refusal(`codex-version-mismatch: found "${boundedLine(line)}" (${version.how}), this runner is pinned to ${pinned}`);
+  return line;
+}
+
+/**
+ * The preflight on the binary the runner will spawn, in order: the version pin; that `web_search` is parsed as the
+ * mode enum (the config as written loads, and an invalid value is refused naming the key and the `disabled`
+ * variant); the effective feature list read under the same config. Returns that list, the version line and every
+ * call's entry, or throws a Refusal.
+ */
+function probeBinary(bin: string, env: NodeJS.ProcessEnv, cwd: string): { readonly features: ReturnType<typeof parseFeatures>; readonly codexVersion: string; readonly probes: ProbeEntry[] } {
+  const probes: ProbeEntry[] = [];
+  const run = probeRunner(bin, env, cwd, probes);
+  const codexVersion = checkVersion(run);
+  const asWritten = run("config-as-written", ["debug", "prompt-input", "probe"]);
+  if (asWritten.failed || asWritten.status !== 0) throw new Refusal(`web-search-unverified: the config as written did not load (${asWritten.how})`);
+  const invalid = run("invalid-web-search", ["debug", "prompt-input", "-c", `web_search="${INVALID_WEB_SEARCH}"`, "probe"]);
+  if (invalid.failed || invalid.status === 0 || invalid.status === null || !invalid.stderr.includes(`unknown variant \`${INVALID_WEB_SEARCH}\``) || !invalid.stderr.includes("`disabled`") || !invalid.stderr.includes("`web_search`")) {
+    throw new Refusal(`web-search-unverified: an invalid web_search value was not refused as an unknown variant (${invalid.how})`);
+  }
+  const features = run("features-list", ["features", "list"]);
+  if (features.failed || features.status !== 0) throw new Refusal(`features-unread: codex features list failed (${features.how})`);
+  return { features: parseFeatures(features.stdout), codexVersion, probes };
+}
+
 async function feedStdin(child: ChildProcessWithoutNullStreams, prompt: Buffer): Promise<StdinResult> {
   const stdin = child.stdin;
   let accepted = 0;
@@ -403,8 +485,10 @@ export async function main(argv: readonly string[]): Promise<number> {
   try { snap = snapshotOf(recordDir); } catch (err) { snap = { problem: `the record could not be read: ${err instanceof Error ? err.message : String(err)}` }; }
   if (snap.problem !== null) return refuse(snap.problem);
 
-  const bin = resolveOnPath("codex", process.env.PATH ?? "");
-  if (bin === null) return refuse("no codex on PATH");
+  const found = resolveOnPath("codex", process.env.PATH ?? "");
+  if (found === null) return refuse("no codex on PATH");
+  let bin: string;
+  try { bin = realpathSync(found); } catch { return refuse(`codex on PATH does not resolve: ${found}`); }
   const realAuth = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json");
   if (!existsSync(realAuth)) return refuse(`no Codex auth at ${realAuth}`);
 
@@ -417,10 +501,13 @@ export async function main(argv: readonly string[]): Promise<number> {
     const cwd = join(scratch, "cwd");
     for (const d of [home, probeHome, codexHome, dirname(schemaPath), cwd]) mkdirSync(d, { recursive: true });
     writeFileSync(join(probeHome, "config.toml"), JUDGE_CONFIG);
-    const childPath = [dirname(bin), "/usr/bin", "/bin"].join(delimiter);
-    let features: ReturnType<typeof parseFeatures>;
-    try { features = probeBinary(bin, { HOME: home, CODEX_HOME: probeHome, PATH: childPath }, scratch); }
+    const pathProblem = childPathProblem(bin);
+    if (pathProblem !== null) return refuse(pathProblem);
+    const childPath = childPathFor(bin);
+    let preflight: ReturnType<typeof probeBinary>;
+    try { preflight = probeBinary(bin, { HOME: home, CODEX_HOME: probeHome, PATH: childPath }, scratch); }
     catch (err) { if (err instanceof Refusal) return refuse(err.message); throw err; }
+    const { features, codexVersion, probes } = preflight;
 
     if (!sameAsSnapshot(recordDir, snap)) return refuse("record.json or grading-packet.json changed while the binary was being probed");
 
@@ -474,7 +561,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     const base = {
       exitStatus: exit.code, signal: exit.signal, timedOut, stdin, rawSha256: sha256(raw), rawBytes: raw.length,
       terminalEvent: events.terminalEvent, threadId: events.threadId, observedModels: models, toolItems: events.toolItems,
-      effectiveFeatures: features, spawnError, endedAt: "",
+      effectiveFeatures: features, codexPath: bin, codexVersion, probes, spawnError, endedAt: "",
     };
     const meta = (outcome: Outcome, extra: Record<string, unknown> = {}): void => {
       writeFileSync(join(attempt, "meta.json"), `${JSON.stringify({ ...base, endedAt: new Date().toISOString(), outcome, ...extra }, null, 2)}\n`, { flag: "wx" });

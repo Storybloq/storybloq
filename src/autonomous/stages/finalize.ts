@@ -247,6 +247,28 @@ async function checkpointFinalizeBlock(ctx: StageContext, at: "enter" | "commit"
 }
 
 /**
+ * ISS-047 + T-153: the refusal for a staged set that is missing the session's
+ * ticket or issue file, or null when the item's file is staged.
+ */
+function itemFileNotStaged(ctx: StageContext, staged: readonly string[]): string | null {
+  const ticketId = ctx.state.ticket?.id;
+  if (ticketId) {
+    const ticketPath = `.story/tickets/${ticketId}.json`;
+    if (!staged.includes(ticketPath)) {
+      return `Ticket file ${ticketPath} is not staged. Run \`git add ${ticketPath}\` and call me again with completedAction: "files_staged".`;
+    }
+  }
+  const issueId = ctx.state.currentIssue?.id;
+  if (issueId) {
+    const issuePath = `.story/issues/${issueId}.json`;
+    if (!staged.includes(issuePath)) {
+      return `Issue file ${issuePath} is not staged. Run \`git add ${issuePath}\` and call me again with completedAction: "files_staged".`;
+    }
+  }
+  return null;
+}
+
+/**
  * FINALIZE stage -- 3-checkpoint sub-machine for staging, pre-commit, and commit.
  *
  * Checkpoints (tracked via state.finalizeCheckpoint):
@@ -362,7 +384,9 @@ export class FinalizeStage implements WorkflowStage {
     }
 
     // --- Checkpoint: stage ---
-    if (action === "files_staged" && (!checkpoint || checkpoint === "staged" || checkpoint === "staged_override")) {
+    // ISS-1363: a re-sent files_staged after staging was accepted is routed
+    // back to handleStage instead of falling through to "Unexpected action".
+    if (action === "files_staged" && (!checkpoint || checkpoint === "staged" || checkpoint === "staged_override" || checkpoint === "precommit_passed")) {
       return this.handleStage(ctx, report);
     }
 
@@ -393,7 +417,18 @@ export class FinalizeStage implements WorkflowStage {
     // ISS-063: If already staged (override or not), skip overlap and return
     // the commit instruction idempotently. Prevents infinite loop when
     // agent re-reports files_staged after a successful override.
+    // ISS-1363: "staged_override" is the accepted override; the ticket and
+    // issue files are still re-checked when the staged set is readable.
+    // "precommit_passed" (no override) takes the full path below, so a
+    // pre-existing file staged since then is still refused.
     if (checkpoint === "staged" || checkpoint === "staged_override") {
+      if (checkpoint === "staged_override") {
+        const restaged = await gitDiffCachedNames(ctx.root);
+        if (restaged.ok && restaged.data.length > 0) {
+          const missing = itemFileNotStaged(ctx, restaged.data);
+          if (missing) return { action: "retry", instruction: missing };
+        }
+      }
       return {
         action: "retry",
         instruction: await nowCommitInstruction(ctx, "Files staged. Now commit."),
@@ -474,6 +509,7 @@ export class FinalizeStage implements WorkflowStage {
     // ISS-025 + ISS-063: Overlap detection -- block staging of pre-existing untracked files.
     // Exclude the current session's ticket and issue files from overlap (the guide picked
     // this work, so its .story/ files are expected even if untracked at session start).
+    let overrideAccepted = false;
     const baselineUntracked = ctx.state.git.baseline?.untrackedPaths ?? [];
     if (baselineUntracked.length > 0) {
       const sessionTicketPath = ctx.state.ticket?.id
@@ -488,6 +524,7 @@ export class FinalizeStage implements WorkflowStage {
       if (overlap.length > 0) {
         if (report.overrideOverlap) {
           // Override accepted; proceed with staging
+          overrideAccepted = true;
         } else {
           return {
             action: "retry",
@@ -497,33 +534,15 @@ export class FinalizeStage implements WorkflowStage {
       }
     }
 
-    // ISS-047: Validate ticket file is in staged set
-    const ticketId = ctx.state.ticket?.id;
-    if (ticketId) {
-      const ticketPath = `.story/tickets/${ticketId}.json`;
-      if (!stagedResult.data.includes(ticketPath)) {
-        return {
-          action: "retry",
-          instruction: `Ticket file ${ticketPath} is not staged. Run \`git add ${ticketPath}\` and call me again with completedAction: "files_staged".`,
-        };
-      }
-    }
+    // ISS-047 + T-153: the ticket or issue file must be in the staged set
+    const notStaged = itemFileNotStaged(ctx, stagedResult.data);
+    if (notStaged) return { action: "retry", instruction: notStaged };
 
-    // T-153: Validate issue file is in staged set (issue-fix mode)
-    const issueId = ctx.state.currentIssue?.id;
-    if (issueId) {
-      const issuePath = `.story/issues/${issueId}.json`;
-      if (!stagedResult.data.includes(issuePath)) {
-        return {
-          action: "retry",
-          instruction: `Issue file ${issuePath} is not staged. Run \`git add ${issuePath}\` and call me again with completedAction: "files_staged".`,
-        };
-      }
-    }
-
-    // ISS-099: Skip precommit round-trip -- go straight to commit instruction
+    // ISS-099: Skip precommit round-trip -- go straight to commit instruction.
+    // ISS-1363: an accepted override is remembered as "staged_override" so a
+    // later files_staged or legacy precommit_passed report does not discard it.
     ctx.writeState({
-      finalizeCheckpoint: "precommit_passed",
+      finalizeCheckpoint: overrideAccepted ? "staged_override" : "precommit_passed",
     });
 
     return {
@@ -591,7 +610,8 @@ export class FinalizeStage implements WorkflowStage {
       }
     }
 
-    ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
+    // ISS-1363: keep an accepted override across a legacy precommit_passed report.
+    ctx.writeState({ finalizeCheckpoint: checkpoint === "staged_override" ? "staged_override" : "precommit_passed" });
 
     return {
       action: "retry",
@@ -610,7 +630,9 @@ export class FinalizeStage implements WorkflowStage {
     if (!checkpoint || checkpoint === null) {
       return { action: "retry", instruction: 'You must stage files first. Call me with completedAction: "files_staged" after staging.' };
     }
-    if (checkpoint === "staged" || checkpoint === "staged_override") {
+    // ISS-1363: "staged_override" is written after a passed staging check
+    // (ISS-099 folded precommit into it), so only the legacy "staged" refuses.
+    if (checkpoint === "staged") {
       return { action: "retry", instruction: 'You must pass pre-commit checks first. Call me with completedAction: "precommit_passed".' };
     }
     // checkpoint === "committed" is handled by the top-level guard in report()

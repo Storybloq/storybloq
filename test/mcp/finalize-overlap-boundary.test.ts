@@ -7,6 +7,10 @@
  * through the registered tool (schema parse, then handler), never the stage.
  *
  * B4-B6 also record ISS-063's documented mechanisms as they behave today.
+ *
+ * ISS-1363: an accepted override is remembered as "staged_override", so a
+ * re-sent files_staged (B4) and a legacy precommit_passed report (B6) keep it,
+ * and commit_done still accepts it (B8). B9-B12 pin what must stay refused.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -71,10 +75,22 @@ interface Fixture {
  * A FINALIZE session with one ledger item, a work change and, unless `stray` is
  * false, a pre-existing untracked `stray.txt` that is staged and in the baseline.
  * `ownInBaseline` also lists the item's own ledger file in the baseline.
+ * ISS-1363: `strayStaged: false` writes stray.txt and lists it in the baseline
+ * but leaves it unstaged; `itemStaged: false` leaves the item's own ledger file
+ * unstaged; `checkpoint` is the finalizeCheckpoint the session starts at.
  */
-async function fixture(opts: { kind?: "issue" | "ticket"; stray?: boolean; ownInBaseline?: boolean } = {}): Promise<Fixture> {
+async function fixture(opts: {
+  kind?: "issue" | "ticket";
+  stray?: boolean;
+  strayStaged?: boolean;
+  itemStaged?: boolean;
+  ownInBaseline?: boolean;
+  checkpoint?: FullSessionState["finalizeCheckpoint"];
+} = {}): Promise<Fixture> {
   const kind = opts.kind ?? "issue";
   const stray = opts.stray ?? true;
+  const strayStaged = stray && (opts.strayStaged ?? true);
+  const itemStaged = opts.itemStaged ?? true;
   const root = mkdtempSync(join(tmpdir(), "iss988-mcp-"));
   roots.push(root);
   await initProject(root, { name: "iss988" });
@@ -112,7 +128,7 @@ async function fixture(opts: { kind?: "issue" | "ticket"; stray?: boolean; ownIn
     untracked.push("stray.txt");
   }
   if (opts.ownInBaseline) untracked.push(ledgerPath);
-  git(root, ["add", "work.txt", ledgerPath, ...(stray ? ["stray.txt"] : [])]);
+  git(root, ["add", "work.txt", ...(itemStaged ? [ledgerPath] : []), ...(strayStaged ? ["stray.txt"] : [])]);
 
   const base = createSession(root, "coding", deriveWorkspaceId(root));
   const dir = sessionDir(root, base.sessionId);
@@ -120,7 +136,7 @@ async function fixture(opts: { kind?: "issue" | "ticket"; stray?: boolean; ownIn
   const state: FullSessionState = {
     ...base,
     state: "FINALIZE",
-    finalizeCheckpoint: null,
+    finalizeCheckpoint: opts.checkpoint ?? null,
     ...(kind === "issue"
       ? { currentIssue: { id, displayId: id, title: "ISS-988 fixture", severity: "medium" }, ticket: undefined }
       : { ticket: { id, displayId: id, title: "ISS-988 fixture", claimed: false } as FullSessionState["ticket"], currentIssue: null }),
@@ -170,7 +186,8 @@ describe("ISS-988: overrideOverlap crosses the MCP boundary", () => {
     expect(call.isError).toBe(false);
     expect(call.instruction).not.toContain(REFUSAL);
     expect(call.instruction).toContain("Now commit");
-    expect(call.checkpoint).toBe("precommit_passed");
+    // ISS-1363: the accepted override is remembered, not folded into precommit_passed.
+    expect(call.checkpoint).toBe("staged_override");
   });
 
   it.each([
@@ -183,7 +200,7 @@ describe("ISS-988: overrideOverlap crosses the MCP boundary", () => {
     expect(call.checkpoint).toBeNull();
   });
 
-  it("B4: two consecutive override reports do not loop on the refusal (ISS-988 stripping reproduction)", async () => {
+  it("B4: a re-sent files_staged after an accepted override returns the commit instruction and keeps the override (ISS-1363 F2)", async () => {
     const fx = await fixture();
     const record: CallRecord[] = [];
     record.push(await report(fx, { completedAction: "files_staged", overrideOverlap: true }));
@@ -192,10 +209,11 @@ describe("ISS-988: overrideOverlap crosses the MCP boundary", () => {
     const seen = JSON.stringify(record, null, 2);
     expect(record[0]!.instruction, seen).not.toContain(REFUSAL);
     expect(record[0]!.instruction, seen).toContain("Now commit");
-    expect(record[0]!.checkpoint, seen).toBe("precommit_passed");
+    expect(record[0]!.checkpoint, seen).toBe("staged_override");
     expect(record[1]!.instruction, seen).not.toContain(REFUSAL);
-    expect(record[1]!.instruction, seen).toContain("Unexpected action at FINALIZE");
-    expect(record[1]!.checkpoint, seen).toBe("precommit_passed");
+    expect(record[1]!.instruction, seen).not.toContain("Unexpected action");
+    expect(record[1]!.instruction, seen).toContain("Now commit");
+    expect(record[1]!.checkpoint, seen).toBe("staged_override");
   });
 
   it.each([["issue"], ["ticket"]] as const)(
@@ -211,14 +229,15 @@ describe("ISS-988: overrideOverlap crosses the MCP boundary", () => {
     },
   );
 
-  it("B6: a legacy precommit_passed report after an accepted override re-runs the overlap check (ISS-063 mechanism 1, F1)", async () => {
+  it("B6: a legacy precommit_passed report after an accepted override keeps the override (ISS-1363 F1)", async () => {
     const fx = await fixture();
     const staged = await report(fx, { completedAction: "files_staged", overrideOverlap: true });
-    expect(staged.checkpoint).toBe("precommit_passed");
+    expect(staged.checkpoint).toBe("staged_override");
     const legacy = await report(fx, { completedAction: "precommit_passed" });
     const seen = JSON.stringify({ staged, legacy }, null, 2);
-    expect(legacy.instruction, seen).toContain("Pre-commit hooks staged pre-existing untracked files: stray.txt");
-    expect(legacy.checkpoint, seen).toBeNull();
+    expect(legacy.instruction, seen).not.toContain("Pre-commit hooks staged pre-existing untracked files");
+    expect(legacy.instruction, seen).toContain("Pre-commit passed. Now commit.");
+    expect(legacy.checkpoint, seen).toBe("staged_override");
   });
 
   it("B7: the schema parses overrideOverlap as an optional boolean", () => {
@@ -234,5 +253,64 @@ describe("ISS-988: overrideOverlap crosses the MCP boundary", () => {
     expect(parsed(false).overrideOverlap).toBe(false);
     expect("overrideOverlap" in parsed()).toBe(false);
     expect(() => parsed("yes")).toThrow();
+  });
+
+  it("B8: commit_done after an accepted override is accepted and reaches committed (ISS-1363)", async () => {
+    const fx = await fixture();
+    const staged = await report(fx, { completedAction: "files_staged", overrideOverlap: true });
+    expect(staged.checkpoint).toBe("staged_override");
+    git(fx.root, ["commit", "-qm", "work"]);
+    const commitHash = git(fx.root, ["rev-parse", "HEAD"]);
+    const commit = await report(fx, { completedAction: "commit_done", commitHash });
+    const seen = JSON.stringify({ staged, commit }, null, 2);
+    expect(commit.instruction, seen).not.toContain("You must pass pre-commit checks first");
+    expect(commit.checkpoint, seen).toBe("committed");
+  });
+
+  it("B9: without an accepted override, a legacy precommit_passed with a pre-existing file staged still refuses and resets", async () => {
+    const fx = await fixture({ checkpoint: "precommit_passed" });
+    const call = await report(fx, { completedAction: "precommit_passed" });
+    expect(call.instruction, JSON.stringify(call, null, 2)).toContain("Pre-commit hooks staged pre-existing untracked files: stray.txt");
+    expect(call.checkpoint).toBeNull();
+  });
+
+  it("B10a: a re-sent files_staged at precommit_passed with a clean staged set returns the commit instruction", async () => {
+    const fx = await fixture({ checkpoint: "precommit_passed", stray: false });
+    const call = await report(fx, { completedAction: "files_staged" });
+    const seen = JSON.stringify(call, null, 2);
+    expect(call.instruction, seen).not.toContain("Unexpected action");
+    expect(call.instruction, seen).toContain("Now commit");
+    expect(call.checkpoint, seen).toBe("precommit_passed");
+  });
+
+  it("B10b: a re-sent files_staged at precommit_passed with a pre-existing file staged and no override is refused", async () => {
+    const fx = await fixture({ checkpoint: "precommit_passed" });
+    const call = await report(fx, { completedAction: "files_staged" });
+    const seen = JSON.stringify(call, null, 2);
+    expect(call.instruction, seen).toContain(`${REFUSAL}: stray.txt`);
+    expect(call.checkpoint, seen).toBe("precommit_passed");
+  });
+
+  it.each([["issue", "Issue"], ["ticket", "Ticket"]] as const)(
+    "B11 (%s): a re-sent files_staged at staged_override still requires the item's own file to be staged",
+    async (kind, label) => {
+      const fx = await fixture({ kind, checkpoint: "staged_override", itemStaged: false });
+      const call = await report(fx, { completedAction: "files_staged" });
+      const seen = JSON.stringify({ builtPath: fx.builtPath, call }, null, 2);
+      expect(call.instruction, seen).toContain(`${label} file ${fx.builtPath} is not staged`);
+      expect(call.checkpoint, seen).toBe("staged_override");
+    },
+  );
+
+  it("B12: overrideOverlap with nothing to override is not remembered, so a file staged later is still refused", async () => {
+    const fx = await fixture({ strayStaged: false });
+    const first = await report(fx, { completedAction: "files_staged", overrideOverlap: true });
+    expect(first.instruction, JSON.stringify(first, null, 2)).toContain("Now commit");
+    expect(first.checkpoint).toBe("precommit_passed");
+    git(fx.root, ["add", "stray.txt"]);
+    const second = await report(fx, { completedAction: "files_staged" });
+    const seen = JSON.stringify({ first, second }, null, 2);
+    expect(second.instruction, seen).toContain(`${REFUSAL}: stray.txt`);
+    expect(second.checkpoint, seen).toBe("precommit_passed");
   });
 });

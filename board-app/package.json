@@ -1,0 +1,34 @@
+{
+  "name": "@storybloq/chatgpt-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test --test-concurrency=1 dist/test/*.test.js test/writer-api.test.mjs test/stdio-notes.test.mjs test/stdio-sessions.test.mjs test/brand-assets.test.mjs",
+    "start": "node dist/server.js",
+    "typecheck": "node writer-api.mjs && tsc --noEmit",
+    "preview": "node test/preview.mjs",
+    "performance": "node dist/test/performance.js",
+    "format": "prettier --write src test build.mjs brand-assets.mjs tsconfig.json package.json"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@openai/mcp-extensions": "0.1.0",
+    "canonicalize": "3.0.0",
+    "proper-lockfile": "4.1.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/jsdom": "21.1.7",
+    "@types/node": "22.18.6",
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3"
+  }
+}

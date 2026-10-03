@@ -49,16 +49,17 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node board-app/build.mjs --package",
     "test": "vitest run --maxWorkers=4",
     "test:watch": "vitest",
     "labels:export": "tsx scripts/export-labels.ts",
     "projection:fixtures": "tsx scripts/projection-fixtures.ts",
     "dev": "tsup --watch",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "test:board-package": "node --test scripts/test-local-board.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@storybloq/lenses": "^0.6.0",
     "canonicalize": "^3.0.0",
     "proper-lockfile": "^4.1.2",
@@ -75,6 +76,9 @@
     "tsup": "^8",
     "tsx": "^4.21.0",
     "typescript": "^5",
-    "vitest": "^3"
+    "vitest": "^3",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@openai/mcp-extensions": "0.1.0",
+    "esbuild": "0.25.12"
   }
 }

@@ -6,7 +6,22 @@ export {};
 
 // --mcp flag: start MCP server instead of CLI.
 // Enables one-line registration: claude mcp add storybloq -- npx -y @storybloq/storybloq --mcp
-if (!process.argv.includes("--mcp")) {
+if (process.argv.includes("--board-mcp")) {
+  // Keep the board SDK out of ordinary CLI startup and preserve the task cwd.
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const board = spawn(process.execPath, [fileURLToPath(new URL("./board/server.js", import.meta.url)), "--local"], {
+    stdio: "inherit",
+  });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => board.kill(signal));
+  }
+  board.on("error", () => {
+    process.stderr.write("Storybloq board could not start. Reinstall Storybloq and retry.\n");
+    process.exitCode = 1;
+  });
+  board.on("exit", (code) => { process.exitCode = code ?? 1; });
+} else if (!process.argv.includes("--mcp")) {
   await runCli();
 } else {
   await import("../mcp/index.js");

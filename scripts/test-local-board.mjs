@@ -4,7 +4,7 @@ import { access, mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promise
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
@@ -157,5 +157,148 @@ test("installed board saves through canonical handlers into its own project", as
   } finally {
     await Promise.all(clients.map((client) => client.close()));
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("installed board isolates Git worktrees, rejects stale edits and survives restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "storybloq-worktree-matrix-"));
+  const main = join(dir, "main"),
+    tree = join(dir, "worktree");
+  const clients = [];
+  const env = {
+    PATH: process.env.PATH ?? "",
+    STORYBLOQ_PROJECT_ROOT: main,
+    CLAUDESTORY_PROJECT_ROOT: main,
+  };
+  const cli = join(packageRoot, "dist/cli.js");
+  const git = (args, cwd = main) =>
+    execFileSync("git", args, {
+      cwd,
+      env: { PATH: process.env.PATH ?? "" },
+      stdio: "pipe",
+    });
+  const file = (root) => join(root, ".story/tickets/T-001.json");
+  async function connect(root) {
+    const client = new Client({
+      name: "worktree-isolation-proof",
+      version: "1",
+    });
+    clients.push(client);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [cli, "--board-mcp"],
+      cwd: join(root, "nested"),
+      env,
+      stderr: "pipe",
+    });
+    transport.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    await client.connect(transport);
+    return client;
+  }
+  async function call(client, name, args = {}) {
+    return client.callTool({ name, arguments: args });
+  }
+  try {
+    await mkdir(main);
+    git(["init"]);
+    git(["config", "user.name", "Storybloq probe"]);
+    git(["config", "user.email", "probe@example.invalid"]);
+    execFileSync(
+      process.execPath,
+      [cli, "--local-cli", "init", "--name", "Main"],
+      { cwd: main, env, stdio: "pipe" },
+    );
+    const ticket = {
+      id: "T-001",
+      title: "Seed",
+      description: "Preserve this body",
+      type: "task",
+      status: "open",
+      phase: null,
+      order: 1,
+      createdDate: "2026-10-02",
+      completedDate: null,
+      blockedBy: [],
+    };
+    await writeFile(file(main), JSON.stringify(ticket));
+    git(["add", ".story"]);
+    git(["commit", "-m", "Disposable fixture"]);
+    git(["worktree", "add", "-b", "probe-worktree", tree]);
+    for (const root of [main, tree]) await mkdir(join(root, "nested"));
+    const config = JSON.parse(
+      await readFile(join(tree, ".story/config.json"), "utf8"),
+    );
+    config.project = "Worktree";
+    await writeFile(join(tree, ".story/config.json"), JSON.stringify(config));
+    const [a, b] = await Promise.all([connect(main), connect(tree)]);
+    assert.equal(
+      (await call(a, "storybloq_board")).structuredContent.project,
+      "Main",
+    );
+    assert.equal(
+      (await call(b, "storybloq_board")).structuredContent.project,
+      "Worktree",
+    );
+    const before = await readFile(file(main));
+    const editor = await call(b, "storybloq_item_editor", {
+      kind: "tickets",
+      id: "T-001",
+    });
+    const save = await call(b, "storybloq_item_save", {
+      kind: "tickets",
+      id: "T-001",
+      revision: editor._meta.editor.revision,
+      patch: { title: "Worktree saved" },
+    });
+    assert.notEqual(save.isError, true);
+    assert.equal(
+      JSON.parse(await readFile(file(tree), "utf8")).title,
+      "Worktree saved",
+    );
+    assert.deepEqual(await readFile(file(main)), before);
+    const stale = await call(b, "storybloq_item_editor", {
+      kind: "tickets",
+      id: "T-001",
+    });
+    const external = JSON.parse(await readFile(file(tree), "utf8"));
+    external.title = "Concurrent canonical file edit";
+    await writeFile(file(tree), JSON.stringify(external));
+    const concurrent = await readFile(file(tree));
+    const rejected = await call(b, "storybloq_item_save", {
+      kind: "tickets",
+      id: "T-001",
+      revision: stale._meta.editor.revision,
+      patch: { title: "Stale draft" },
+    });
+    assert.equal(rejected.isError, true);
+    assert.deepEqual(await readFile(file(tree)), concurrent);
+    assert.deepEqual(await readFile(file(main)), before);
+    assert.equal(rejected._meta.editError.code, "conflict");
+    const fresh = await call(b, "storybloq_item_editor", {
+      kind: "tickets",
+      id: "T-001",
+    });
+    const retry = await call(b, "storybloq_item_save", {
+      kind: "tickets",
+      id: "T-001",
+      revision: fresh._meta.editor.revision,
+      patch: { title: "Reviewed retry" },
+    });
+    assert.notEqual(retry.isError, true);
+    await b.close();
+    const restarted = await connect(tree);
+    assert.equal(
+      (await call(restarted, "storybloq_board")).structuredContent.project,
+      "Worktree",
+    );
+    const restartedEditor = await call(restarted, "storybloq_item_editor", {
+      kind: "tickets",
+      id: "T-001",
+    });
+    assert.equal(restartedEditor._meta.editor.fields.title, "Reviewed retry");
+    assert.deepEqual(await readFile(file(main)), before);
+  } finally {
+    await Promise.all(clients.map((c) => c.close().catch(() => {})));
+    await rm(dir, { recursive: true, force: true });
   }
 });

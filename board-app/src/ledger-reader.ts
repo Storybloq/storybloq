@@ -147,7 +147,7 @@ export async function readLedgerSnapshot<T>(
     async function items<T>(
       dir: string,
       schema: { parse: (v: unknown) => T },
-      optional = false,
+      optional = true,
     ): Promise<T[]> {
       const path = join(base, dir);
       try {

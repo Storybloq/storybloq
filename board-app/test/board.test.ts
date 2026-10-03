@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile, symlink, readdir } from "node:fs/promises";
+import {
+  readFile,
+  writeFile,
+  symlink,
+  readdir,
+  rm,
+  mkdir,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { readLedgerSnapshot } from "../src/ledger-reader.js";
 import { readBoard, page, detail } from "../src/board.js";
 import { createServer, RESOURCE_URI } from "../src/server.js";
 import { fixture, ticket, issue } from "./fixture.js";
@@ -54,6 +62,59 @@ test("canonical derivations, lifecycle, mixed IDs, projection and pagination", a
     assert.ok(!JSON.stringify(b).includes(f.root));
   } finally {
     await f.cleanup();
+  }
+});
+test("Git-omitted empty ticket and issue collections load without creating directories", async () => {
+  for (const absent of [["tickets"], ["issues"], ["tickets", "issues"]]) {
+    const f = await fixture();
+    try {
+      for (const dir of absent)
+        await rm(join(f.root, ".story", dir), { recursive: true });
+      const before = await readdir(join(f.root, ".story"));
+      const b = await readBoard(f.root);
+      assert.equal(b.tickets.length, absent.includes("tickets") ? 0 : 1);
+      assert.equal(b.issues.length, absent.includes("issues") ? 0 : 1);
+      assert.deepEqual(await readdir(join(f.root, ".story")), before);
+      const proof = await readLedgerSnapshot(f.root, () => null);
+      await proof.revalidate();
+      const restored = absent[0]!;
+      await mkdir(join(f.root, ".story", restored));
+      await assert.rejects(
+        proof.revalidate(),
+        /project changed while loading/i,
+      );
+      await f.put(
+        `${restored}/${restored === "tickets" ? "T-002" : "ISS-002"}.json`,
+        restored === "tickets" ? ticket("T-002") : issue("ISS-002"),
+      );
+      const after = await readBoard(f.root);
+      assert.equal(
+        restored === "tickets" ? after.tickets.length : after.issues.length,
+        1,
+      );
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+test("collection paths that exist as links or files still fail closed", async () => {
+  for (const dir of ["tickets", "issues"]) {
+    for (const shape of ["file", "link", "dangling"]) {
+      const f = await fixture();
+      try {
+        const path = join(f.root, ".story", dir);
+        await rm(path, { recursive: true });
+        if (shape === "file") await writeFile(path, "not a directory");
+        else
+          await symlink(
+            shape === "link" ? f.root : join(f.root, "missing"),
+            path,
+          );
+        await assert.rejects(readBoard(f.root));
+      } finally {
+        await f.cleanup();
+      }
+    }
   }
 });
 test("malformed, pending transaction, symlink and oversize data fail closed", async () => {

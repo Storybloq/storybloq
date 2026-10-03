@@ -7,7 +7,7 @@ import { CLIENT_TASK_ID_PATTERN, normalizeClientTaskId } from "../autonomous/cli
 import { hashWithoutKey } from "./canonical.js";
 import { BusError } from "./errors.js";
 import { BUS_MAX_ENTRY_BYTES, DEFAULT_BUS_MAX_HOPS, type BusSummary } from "./schemas.js";
-import { durableCreate, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow } from "./io.js";
+import { durableCreate, durableTempTarget, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow } from "./io.js";
 import { acquireHardenedLock, inspectProcessIdentity, releaseHardenedLock, withHardenedLock, type HardenedLockHandle } from "./lock.js";
 import { busRuntimeExists, resolveBusPaths } from "./paths.js";
 import { evidenceKeys, normalizeBusText } from "./security.js";
@@ -498,7 +498,13 @@ export interface V1EndpointScan {
   readonly findings: string[];
 }
 
-export async function listV1Endpoints(paths: V1Paths): Promise<V1EndpointScan> {
+function isV1EndpointRecordName(name: string | null): boolean {
+  if (name === null) return false;
+  const match = ENDPOINT_FILENAME.exec(name);
+  return match !== null && UuidSchema.safeParse(match[1]!).success;
+}
+
+export async function listV1Endpoints(paths: V1Paths, opts: { strictTemps?: boolean } = {}): Promise<V1EndpointScan> {
   const endpoints: V1Endpoint[] = [];
   const findings: string[] = [];
   let entries;
@@ -522,6 +528,11 @@ export async function listV1Endpoints(paths: V1Paths): Promise<V1EndpointScan> {
     // than listRegularJsonFiles, which silently drops these) makes a symlinked or
     // renamed live endpoint visible to the migration offline-proof loop and the
     // endpoint-lock enumeration instead of vanishing from the scan.
+    // ISS-1004: a lock-free read tolerates a concurrent endpoint write's staging
+    // file, exactly `<uuid>.json.tmp.<pid>.<uuid>` on a regular file whose target is
+    // a valid record name. Under `strictTemps` (the quiesced migration drain) no
+    // legitimate temp exists, so it falls through to the finding below.
+    if (opts.strictTemps !== true && entry.isFile() && !entry.isSymbolicLink() && isV1EndpointRecordName(durableTempTarget(entry.name))) continue;
     const match = ENDPOINT_FILENAME.exec(entry.name);
     if (!entry.isFile() || entry.isSymbolicLink() || !match) {
       findings.push(`endpoint ${entry.name}: not a regular <uuid>.json file`);
@@ -714,7 +725,7 @@ export async function evaluateV1Drain(paths: V1Paths, opts: { strictTemps?: bool
 
   // A malformed endpoint record can hide an attached peer from the offline proof,
   // so the drain gate must fail closed rather than skip it.
-  const { findings: endpointFindings } = await listV1Endpoints(paths);
+  const { findings: endpointFindings } = await listV1Endpoints(paths, { strictTemps: opts.strictTemps === true });
   corruptRecords.push(...endpointFindings);
 
   // A permission/IO error reading the threads dir, or an unexpected/malformed

@@ -3,7 +3,7 @@ import { lstat, mkdir, open, readFile, readdir, realpath } from "node:fs/promise
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { BusError } from "./errors.js";
-import { syncDirectory } from "./io.js";
+import { durableTempTarget, syncDirectory } from "./io.js";
 
 export interface BusPaths {
   readonly projectRoot: string;
@@ -172,6 +172,12 @@ export async function busRuntimeExists(path: string): Promise<boolean> {
   }
 }
 
+function isEndpointRecordName(name: string | null): boolean {
+  if (name === null) return false;
+  const match = ENDPOINT_FILENAME.exec(name);
+  return match !== null && EndpointIdSchema.safeParse(match[1]!).success;
+}
+
 async function endpointMailboxDirectories(paths: BusPaths): Promise<{ directories: string[]; findings: string[] }> {
   let entries;
   try {
@@ -199,6 +205,11 @@ async function endpointMailboxDirectories(paths: BusPaths): Promise<{ directorie
     // active endpoint record belongs. Silently skipping it (the previous behavior) let
     // a runtime whose active endpoint record was replaced by a symlink or directory
     // pass assertBusLayout; record a finding instead so the layout assertion rejects it.
+    // ISS-1004: the one carve-out is the Bus's own durable-write staging file for an
+    // endpoint record, caught mid-rename by a concurrent write. Only a regular file
+    // with the full `<uuid>.json.tmp.<pid>.<uuid>` shape, whose target is itself a
+    // valid record name, is skipped; anything looser still reports.
+    if (entry.isFile() && !entry.isSymbolicLink() && isEndpointRecordName(durableTempTarget(entry.name))) continue;
     const match = ENDPOINT_FILENAME.exec(entry.name);
     if (!entry.isFile() || entry.isSymbolicLink() || !match ||
         !EndpointIdSchema.safeParse(match[1]!).success) {

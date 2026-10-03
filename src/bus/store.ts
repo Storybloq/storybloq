@@ -23,6 +23,7 @@ import {
   durableRename,
   durableUnlink,
   durableWrite,
+  durableTempTarget,
   listRegularJsonFiles,
   readJsonNoFollow,
   syncDirectory,
@@ -128,6 +129,7 @@ let pollObservedFoldHook: ((threadId: string) => void | Promise<void>) | null = 
 // later one. There is no other deterministic way to construct that interleaving.
 let pollPointerFoldHook: ((threadId: string) => void | Promise<void>) | null = null;
 const RECEIPT_FILENAME = /^([a-f0-9]{64})\.json$/;
+const REFUSED_ARTIFACT_FILENAME = /^([a-f0-9]{64})\.json$/;
 const ACTIONABLE_KINDS = new Set<BusMessageKind>(["issue_notice", "question", "reply", "patch_request"]);
 
 export interface BusSendInput {
@@ -3493,6 +3495,9 @@ export async function busDoctor(root: string): Promise<BusDoctorResult> {
     const refusedDir = await validatedRefusedDir(paths, { create: false });
     if (refusedDir) {
       for (const entry of await readdir(refusedDir, { withFileTypes: true })) {
+        // ISS-1004: a concurrent durableCreate's staging file for a valid artifact
+        // name is in flight, not malformed; only that exact shape is skipped.
+        if (entry.isFile() && !entry.isSymbolicLink() && REFUSED_ARTIFACT_FILENAME.test(durableTempTarget(entry.name) ?? "")) continue;
         // ISS-953 Codex round 2 finding #15: a non-regular entry (symlink,
         // nested directory, socket, ...) named to LOOK like a valid
         // <hash>.json artifact previously vanished here silently -- the same
@@ -3503,7 +3508,7 @@ export async function busDoctor(root: string): Promise<BusDoctorResult> {
           findings.push(`refused: ${entry.name} is not a regular <hash>.json artifact`);
           continue;
         }
-        const match = /^([a-f0-9]{64})\.json$/.exec(entry.name);
+        const match = REFUSED_ARTIFACT_FILENAME.exec(entry.name);
         if (!match) {
           findings.push(`refused: ${entry.name} is not a regular <hash>.json artifact`);
           continue;
@@ -3722,6 +3727,9 @@ export async function busDoctor(root: string): Promise<BusDoctorResult> {
       // otherwise let a retry republish a duplicate.
       if (dirent.name === "." || dirent.name === "..") continue;
       const filename = dirent.name;
+      // ISS-1004: a concurrent receipt write's staging file for a valid receipt name
+      // is in flight, not malformed; only that exact shape is skipped.
+      if (dirent.isFile() && !dirent.isSymbolicLink() && RECEIPT_FILENAME.test(durableTempTarget(filename) ?? "")) continue;
       // A symlink, a non-regular file, or a name that is not `<keyHash>.json` is an
       // unexpected entry where only receipts belong. Enumerating (rather than
       // listRegularJsonFiles, which silently drops these) makes a receipt renamed

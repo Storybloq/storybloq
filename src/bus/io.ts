@@ -3,7 +3,7 @@ import { link, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promi
 import type { FileHandle } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 import { BusError } from "./errors.js";
 
 const DEFAULT_MAX_BYTES = 64 * 1024;
@@ -38,6 +38,23 @@ export async function syncFile(path: string): Promise<void> {
     await handle?.close().catch(() => undefined);
   }
   await syncDirectory(dirname(path));
+}
+
+// ISS-1004: the exact name `writeDurableTemp` gives a staging file,
+// `<target>.tmp.<pid>.<uuid>`. Enumerations that refuse unknown names use this to
+// recognise the Bus's own in-flight write and nothing else.
+const DURABLE_TEMP_NAME = /^(.+)\.tmp\.(\d+)\.([0-9a-f-]{36})$/;
+const DurableTempUuidSchema = z.string().uuid();
+
+/**
+ * The target basename when `name` has the full durable-write staging shape,
+ * otherwise null. Callers still require a regular non-symlink file and check the
+ * returned target against their own record shape before skipping the entry.
+ */
+export function durableTempTarget(name: string): string | null {
+  const match = DURABLE_TEMP_NAME.exec(name);
+  if (!match || !DurableTempUuidSchema.safeParse(match[3]!).success) return null;
+  return match[1]!;
 }
 
 type DurableTempWriter = (handle: FileHandle, content: string) => Promise<void>;

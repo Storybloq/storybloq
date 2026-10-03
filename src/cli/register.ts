@@ -1251,7 +1251,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 })
                 .option("phase", {
                   type: "string",
-                  describe: "Phase ID",
+                  describe: "Phase ID (default: the current phase when the project has phases; \"\" leaves it unphased)",
                 })
                 .option("description", {
                   type: "string",
@@ -1303,7 +1303,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 {
                   title: argv.title as string,
                   type: argv.type as string,
-                  phase: argv.phase === "" ? null : (argv.phase as string | undefined) ?? null,
+                  // ISS-1112: absent means not chosen (defaulted); "" is an explicit unphased choice.
+                  phase: argv.phase === "" ? null : (argv.phase as string | undefined),
                   description,
                   blockedBy: (
                     argv["blocked-by"] as string[] | undefined ?? []

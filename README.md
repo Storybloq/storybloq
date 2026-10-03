@@ -267,9 +267,9 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 |---------|-------------|
 | `storybloq ticket list [--status] [--phase] [--type]` | List leaf tickets (umbrellas excluded) |
 | `storybloq ticket get <id>` | Full ticket detail |
-| `storybloq ticket next` | Highest-priority unblocked ticket |
+| `storybloq ticket next` | Highest-priority unblocked ticket; unphased leaves are offered after phased work |
 | `storybloq ticket blocked` | All currently blocked tickets |
-| `storybloq ticket create --title --type --phase [--description] [--blocked-by] [--parent-ticket] [--node <name>]` | Create (use `--node` from orchestrator) |
+| `storybloq ticket create --title --type [--phase] [--description] [--blocked-by] [--parent-ticket] [--node <name>]` | Create (use `--node` from orchestrator); `--phase` defaults to the current phase, `--phase ""` leaves it unphased |
 | `storybloq ticket update <id> [--status] [--title] [--phase] [--cross-node-blocked-by] [--node <name>] ...` | Update |
 | `storybloq ticket meta get\|set\|unset <id> [path] [value]` | Manage custom passthrough metadata |
 | `storybloq ticket delete <id> [--force]` | Delete |

@@ -83,13 +83,42 @@ export interface PhaseWithStatus {
 // --- Query Functions ---
 
 /**
+ * ISS-1112: leaf tickets with no phase that are not complete. Shared by
+ * validation, status, recommend and the nextTicket fall-through so the four
+ * cannot disagree on what "unphased" counts. Umbrella parents are excluded by
+ * construction (leaves only): an umbrella may be unphased while its children
+ * are phased.
+ */
+export function openUnphasedLeaves(state: ProjectState): readonly Ticket[] {
+  return state.phaseTickets(null).filter((t) => t.status !== "complete");
+}
+
+/**
+ * ISS-1112: the unphased leaves next-ticket may offer, in rank order, with
+ * the same eligibility the phase loop applies. Offered only after phased work.
+ */
+function eligibleUnphasedLeaves(state: ProjectState, excludeIds: ReadonlySet<string> = new Set()): Ticket[] {
+  return openUnphasedLeaves(state)
+    .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)))
+    .filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
+}
+
+function candidateFor(ticket: Ticket, state: ProjectState): NextTicketCandidate {
+  return {
+    ticket,
+    unblockImpact: { ticketId: ticket.id, wouldUnblock: ticketsUnblockedBy(ticket.id, state) },
+    umbrellaProgress: ticket.parentTicket ? umbrellaProgress(ticket.parentTicket, state) : null,
+  };
+}
+
+/**
  * First non-complete, unblocked leaf ticket in the first non-complete phase
  * (roadmap order). Skips phases with zero leaf tickets.
  * Returns discriminated outcome for exhaustive handling.
  */
 export function nextTicket(state: ProjectState): NextTicketOutcome {
   const phases = state.roadmap.phases;
-  if (phases.length === 0 || state.leafTickets.length === 0) {
+  if (state.leafTickets.length === 0) {
     return { kind: "empty_project" };
   }
 
@@ -130,6 +159,18 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
     };
   }
 
+  // ISS-1112: phased work is exhausted, so offer an unphased leaf rather
+  // than report the project finished while unphased work is open.
+  const unphased = eligibleUnphasedLeaves(state);
+  if (unphased.length > 0) {
+    return { kind: "found", ...candidateFor(unphased[0]!, state) };
+  }
+
+  // With zero phases allPhasesComplete is vacuously true; keep base's answer.
+  if (phases.length === 0) {
+    return { kind: "empty_project" };
+  }
+
   if (allPhasesComplete) {
     return { kind: "all_complete" };
   }
@@ -156,7 +197,7 @@ export function nextTickets(
 ): NextTicketsOutcome {
   const effectiveCount = Math.max(1, count);
   const phases = state.roadmap.phases;
-  if (phases.length === 0 || state.leafTickets.length === 0) {
+  if (state.leafTickets.length === 0) {
     return { kind: "empty_project" };
   }
 
@@ -202,12 +243,24 @@ export function nextTickets(
     }
   }
 
+  // ISS-1112: spare capacity after the phase walk goes to unphased leaves.
+  if (candidates.length < effectiveCount) {
+    for (const ticket of eligibleUnphasedLeaves(state, excludeIds).slice(0, effectiveCount - candidates.length)) {
+      candidates.push(candidateFor(ticket, state));
+    }
+  }
+
   if (candidates.length > 0) {
     return { kind: "found", candidates, skippedBlockedPhases };
   }
 
   if (skippedBlockedPhases.length > 0) {
     return { kind: "all_blocked", phases: skippedBlockedPhases };
+  }
+
+  // With zero phases allPhasesComplete is vacuously true; keep base's answer.
+  if (phases.length === 0) {
+    return { kind: "empty_project" };
   }
 
   if (allPhasesComplete) {

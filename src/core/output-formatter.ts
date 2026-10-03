@@ -101,7 +101,7 @@ function busStatusLines(bus: BusStatusInput): string[] {
     ? [`Bus: ${bus.setupState}`]
     : ["Bus: enabled, not set up in this checkout; run `storybloq bus setup`"];
 }
-import { phasesWithStatus, isBlockerCleared } from "./queries.js";
+import { phasesWithStatus, isBlockerCleared, openUnphasedLeaves } from "./queries.js";
 
 function resolveTicketRefDisplay(ref: string, state: ProjectState): string {
   const result = state.resolveTicketRef(ref);
@@ -882,6 +882,10 @@ export function formatStatus(
     );
   }
   const phases = phasesWithStatus(state);
+  // ISS-1112: formatStatus is exported from the package root, and a caller
+  // holding only the counts passes a partial state with no phaseTickets. That
+  // count is unknown, not zero: the key and the line are omitted.
+  const unphasedOpenTickets = typeof state.phaseTickets === "function" ? openUnphasedLeaves(state).length : undefined;
   const data = {
     project: state.config.project,
     totalTickets: state.leafTicketCount,
@@ -954,6 +958,9 @@ export function formatStatus(
     // T-537 S5: always present, zeros when there are none. Not in the compact
     // payload, whose schema T-320 pinned.
     checkpoints: checkpointCounts(state.tickets),
+    // ISS-1112: open unphased leaves, appended last; the compact payload
+    // (T-320's pinned schema) does not gain it.
+    ...(unphasedOpenTickets !== undefined ? { unphasedOpenTickets } : {}),
   };
 
   if (format === "json") {
@@ -980,6 +987,9 @@ export function formatStatus(
     const indicator = p.status === "complete" ? "[x]" : p.status === "inprogress" ? "[~]" : "[ ]";
     const summary = p.phase.summary ?? truncate(p.phase.description, 80);
     lines.push(`${indicator} **${escapeMarkdownInline(p.phase.name)}** (${p.leafCount} tickets) -- ${escapeMarkdownInline(summary)}`);
+  }
+  if (unphasedOpenTickets !== undefined && unphasedOpenTickets > 0) {
+    lines.push(`Unphased (${unphasedOpenTickets}): assign a phase to control roadmap priority`);
   }
 
   const resumableIds = new Set(resumableSessions.map((session) => session.sessionId));

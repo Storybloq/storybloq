@@ -1822,3 +1822,43 @@ describe("recommend: ISS-1154 promotion, partition, and window-incomplete", () =
     expect(recommend(state, 10).unreadableHandoverCount).toBe(0);
   });
 });
+
+// ISS-1112: open unphased leaves get an explicit floor band with the spec's reason text.
+describe("ISS-1112: unphased band", () => {
+  it("R1: an open unphased task is recommended in the unphased band with the exact reason", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "complete" }),
+        makeTicket({ id: "T-002", phase: null, status: "open", type: "task" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const rec = recommend(state, 10).recommendations.find((r) => r.id === "T-002");
+    expect(rec?.category).toBe("unphased_ticket");
+    expect(rec?.reason).toBe("unphased, assign a phase to schedule it");
+    expect(rec!.score).toBeGreaterThan(100);
+    expect(rec!.score).toBeLessThanOrEqual(200);
+  });
+
+  it("R2: an unphased chore keeps its higher quick_win band (the unphased band is a floor)", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-002", phase: null, status: "open", type: "chore" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const rec = recommend(state, 10).recommendations.find((r) => r.id === "T-002");
+    expect(rec?.category).toBe("quick_win");
+  });
+
+  it("R3: a blocked unphased leaf gets no recommendation", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-002", phase: null, status: "open", type: "task", blockedBy: ["T-003"] }),
+        makeTicket({ id: "T-003", phase: null, status: "open", type: "task" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const recs = recommend(state, 10).recommendations;
+    expect(recs.find((r) => r.id === "T-002")).toBeUndefined();
+    expect(recs.find((r) => r.id === "T-003")?.category).not.toBeUndefined();
+  });
+});

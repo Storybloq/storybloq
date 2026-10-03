@@ -666,3 +666,49 @@ describe("stale_earmark (T-475, AM-a/AM-b)", () => {
     expect(silentDefault.findings.some((f) => f.code === "handover_no_carried_forward")).toBe(false);
   });
 });
+
+// ISS-1112: an open unphased leaf is warned; complete, phased and umbrella tickets are not.
+describe("ISS-1112: unphased_ticket warning", () => {
+  const unphased = (state: ProjectState) => validateProject(state).findings.filter((f) => f.code === "unphased_ticket");
+
+  it("V1: fires for an open unphased leaf, as a warning naming the ticket", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: null, status: "open" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(unphased(state)).toEqual([{
+      level: "warning",
+      code: "unphased_ticket",
+      message: "Ticket T-001 has no phase; assign one to control its roadmap priority.",
+      entity: "T-001",
+    }]);
+    expect(validateProject(state).errorCount).toBe(0);
+  });
+
+  it("V2: does not fire for a complete unphased leaf", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: null, status: "complete" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(unphased(state)).toEqual([]);
+  });
+
+  it("V3: does not fire for an unphased umbrella whose children are phased", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open", parentTicket: "T-001" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(unphased(state)).toEqual([]);
+  });
+
+  it("V4: does not fire for a phased leaf", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1", status: "open" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(unphased(state)).toEqual([]);
+  });
+});

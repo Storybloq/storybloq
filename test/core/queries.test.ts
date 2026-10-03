@@ -97,15 +97,17 @@ describe("nextTicket", () => {
     expect(nextTicket(state).kind).toBe("empty_project");
   });
 
-  it("excludes unphased tickets", () => {
+  it("offers an unphased ticket once phases are exhausted (ISS-1112 inverts the old exclusion pin)", () => {
     const state = makeState({
       tickets: [
         makeTicket({ id: "T-001", phase: null, status: "open" }),
       ],
       roadmap: makeRoadmap([makePhase({ id: "p1" })]),
     });
-    // p1 has no tickets → vacuously complete. Unphased T-001 excluded.
-    expect(nextTicket(state).kind).toBe("all_complete");
+    // p1 has no tickets, so phased work is exhausted; the unphased leaf is offered.
+    const result = nextTicket(state);
+    expect(result.kind).toBe("found");
+    if (result.kind === "found") expect(result.ticket.id).toBe("T-001");
   });
 
   it("respects ticket order within phase", () => {
@@ -694,5 +696,184 @@ describe("isCrossNodeBlocked", () => {
   it("returns true for unresolved status", () => {
     const ticket = makeTicket({ id: "T-001", crossNodeBlockedBy: ["core:T-010"] });
     expect(isCrossNodeBlocked(ticket, { "core:T-010": "unresolved" })).toBe(true);
+  });
+});
+
+// ISS-1112: unphased leaves are offered after phased work, never before it.
+describe("ISS-1112: unphased fall-through", () => {
+  const EARMARK = {
+    stage: "assigned" as const,
+    reservedBy: { client: "claude" as const, id: "pen-task-1" },
+    arrangementId: "a-0123456789abcdef",
+    since: "2026-08-28T00:00:00.000Z",
+    holderRole: "worker" as const,
+    holderSession: "11111111-1111-4111-8111-111111111111",
+  };
+  const ids = (outcome: ReturnType<typeof nextTickets>) =>
+    outcome.kind === "found" ? outcome.candidates.map((c) => c.ticket.id) : outcome.kind;
+
+  it("Q1a: nextTicket never returns an unphased leaf while phased work is open", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTicket(state);
+    expect(result.kind === "found" && result.ticket.id).toBe("T-002");
+  });
+
+  it("Q1b: nextTickets fills spare capacity with unphased leaves after the phased candidates", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(ids(nextTickets(state, 1))).toEqual(["T-002"]);
+    expect(ids(nextTickets(state, 5))).toEqual(["T-002", "T-001"]);
+  });
+
+  it("Q2: once every phase is complete, nextTicket returns the unphased leaf", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "complete" }),
+        makeTicket({ id: "T-002", phase: null, status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTicket(state);
+    expect(result.kind === "found" && result.ticket.id).toBe("T-002");
+  });
+
+  it("Q3: a blocked open phase keeps nextTicket's all_blocked contract (D2)", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "open", blockedBy: ["T-009"] }),
+        makeTicket({ id: "T-009", phase: "p2", status: "open" }),
+        makeTicket({ id: "T-002", phase: null, status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p2" })]),
+    });
+    expect(nextTicket(state).kind).toBe("all_blocked");
+  });
+
+  it("Q4: nextTickets fills past a blocked phase and reports it alongside the unphased candidate", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", status: "open", blockedBy: ["T-003"] }),
+        makeTicket({ id: "T-003", phase: null, status: "open", blockedBy: ["T-004"] }),
+        makeTicket({ id: "T-004", phase: "p1", status: "complete" }),
+        makeTicket({ id: "T-002", phase: null, status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = nextTickets(state, 5);
+    expect(result.kind).toBe("found");
+    if (result.kind !== "found") return;
+    expect(result.candidates.map((c) => c.ticket.id)).toEqual(["T-002", "T-003"]);
+    expect(result.skippedBlockedPhases).toEqual([{ phaseId: "p1", blockedCount: 1 }]);
+  });
+
+  it("Q5: a board with only unphased tickets is never empty_project or all_complete", () => {
+    const withPhases = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: null, status: "open" })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const noPhases = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: null, status: "open" })],
+      roadmap: makeRoadmap([]),
+    });
+    for (const state of [withPhases, noPhases]) {
+      const one = nextTicket(state);
+      expect(one.kind === "found" && one.ticket.id).toBe("T-001");
+      expect(ids(nextTickets(state, 3))).toEqual(["T-001"]);
+    }
+  });
+
+  it.each([
+    ["blocked", { blockedBy: ["T-002"] }, new Set<string>()],
+    ["earmark-hidden", { earmark: EARMARK }, new Set<string>()],
+    ["owner checkpoint", { ownerCheckpoint: {} }, new Set<string>()],
+    ["complete", { status: "complete" }, new Set<string>()],
+    ["excluded by id", {}, new Set(["T-001"])],
+    ["excluded by displayId", { displayId: "T-501" }, new Set(["T-501"])],
+  ] as const)("Q6: an unphased leaf that is %s is skipped and its eligible sibling returned", (_label, overrides, exclude) => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "open", order: 10, ...(overrides as object) }),
+        makeTicket({ id: "T-002", phase: null, status: "open", order: 20 }),
+        makeTicket({ id: "T-008", phase: "p1", status: "open", blockedBy: ["T-009"] }),
+        makeTicket({ id: "T-009", phase: "p1", status: "open", blockedBy: ["T-008"] }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const found = nextTickets(state, 5, exclude);
+    expect(found.kind === "found" && found.candidates.map((c) => c.ticket.id)).toEqual(["T-002"]);
+    if (exclude.size === 0) {
+      // nextTicket stops at the blocked phase (D2); with that phase gone it must still skip T-001.
+      const unblockedPhase = makeState({
+        tickets: [
+          makeTicket({ id: "T-001", phase: null, status: "open", order: 10, ...(overrides as object) }),
+          makeTicket({ id: "T-002", phase: null, status: "open", order: 20 }),
+          makeTicket({ id: "T-008", phase: "p1", status: "complete" }),
+        ],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+      const one = nextTicket(unblockedPhase);
+      expect(one.kind === "found" && one.ticket.id).toBe("T-002");
+    }
+  });
+
+  it("Q7: an unphased umbrella parent is never a candidate", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "open" }),
+        makeTicket({ id: "T-002", phase: "p1", status: "complete", parentTicket: "T-001" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(nextTicket(state).kind).toBe("all_complete");
+    expect(nextTickets(state, 5).kind).toBe("all_complete");
+  });
+
+  it("Q8: zero phases with no eligible unphased leaf stays empty_project in both functions", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: null, status: "complete" }),
+        makeTicket({ id: "T-002", phase: null, status: "open", blockedBy: ["T-003"] }),
+        makeTicket({ id: "T-003", phase: null, status: "open", blockedBy: ["T-002"] }),
+      ],
+      roadmap: makeRoadmap([]),
+    });
+    expect(nextTicket(state).kind).toBe("empty_project");
+    expect(nextTickets(state, 5).kind).toBe("empty_project");
+  });
+
+  it("Q9: unphased candidates come in rank order, truncate at count, and carry unblock and umbrella fields", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-010", phase: null, status: "open", rank: "b" }),
+        makeTicket({ id: "T-002", phase: null, status: "open", order: 5 }),
+        makeTicket({ id: "T-001", phase: null, status: "open", rank: "a", parentTicket: "T-020" }),
+        makeTicket({ id: "T-003", phase: null, status: "open", order: 1 }),
+        makeTicket({ id: "T-020", phase: null, status: "open" }),
+        makeTicket({ id: "T-021", phase: "p1", status: "complete", parentTicket: "T-020" }),
+        makeTicket({ id: "T-030", phase: "p1", status: "complete" }),
+        makeTicket({ id: "T-031", phase: null, status: "open", blockedBy: ["T-001"], order: 99 }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(ids(nextTickets(state, 10))).toEqual(["T-001", "T-010", "T-003", "T-002"]);
+    expect(ids(nextTickets(state, 2))).toEqual(["T-001", "T-010"]);
+    const one = nextTicket(state);
+    expect(one.kind).toBe("found");
+    if (one.kind !== "found") return;
+    expect(one.ticket.id).toBe("T-001");
+    expect(one.unblockImpact.ticketId).toBe("T-001");
+    expect(one.unblockImpact.wouldUnblock.map((t) => t.id)).toEqual(["T-031"]);
+    expect(one.umbrellaProgress).toEqual({ total: 2, complete: 1, status: "inprogress" });
   });
 });

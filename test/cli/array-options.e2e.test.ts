@@ -310,10 +310,13 @@ describe("ISS-886 regression guards: behavior that must NOT change", () => {
       expect(res.out, `dispatch "${arg}"`).toContain("**Agents:** 0");
     }
     // An ABSENT positional must not be reported as an invalid ID: yargs fires
-    // coerce with [] there, which is why the spec cannot demand a value.
+    // coerce with [] there, which is why the spec cannot demand a value. It takes
+    // the no-ID branch instead, which dispatches the open ticket (ISS-1112: a new
+    // ticket is no longer invisible to recommendations).
     const absent = run(dir, "dispatch", "--dry-run");
     expect(absent.out).not.toMatch(/\*\*Skipped:\*\*/);
-    expect(absent.out).toContain("**Agents:** 0");
+    expect(absent.out).toContain("**Agents:** 1");
+    expect(absent.out).toContain("| 1 | T-001 | ticket |");
   });
 });
 

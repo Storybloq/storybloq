@@ -971,7 +971,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     inputSchema: {
       title: z.string(),
       type: z.enum(TICKET_TYPES),
-      phase: z.string().optional(),
+      phase: z.string().nullable().optional().describe("Omit to default to the current phase when the project has phases; null leaves the ticket unphased."),
       description: z.string().optional(),
       blockedBy: z.array(TicketRefSchema).optional(),
       parentTicket: TicketRefSchema.optional().describe("Makes this a sub-ticket"),
@@ -986,7 +986,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       {
         title: args.title,
         type: args.type,
-        phase: args.phase ?? null,
+        phase: args.phase,
         description: args.description ?? "",
         blockedBy: args.blockedBy ?? [],
         parentTicket: args.parentTicket ?? null,

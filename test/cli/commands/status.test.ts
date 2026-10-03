@@ -1184,3 +1184,53 @@ describe("handleStatus: compact mode (T-320 commit 3)", () => {
     expect(parsed.data.deprecatedLessons).toBeUndefined();
   });
 });
+
+// ISS-1112: status counts open unphased leaves beside the phase table.
+describe("ISS-1112: Unphased line", () => {
+  const board = () => makeState({
+    tickets: [
+      makeTicket({ id: "T-001", phase: null, status: "open" }),
+      makeTicket({ id: "T-002", phase: null, status: "inprogress" }),
+      makeTicket({ id: "T-003", phase: null, status: "complete" }),
+      makeTicket({ id: "T-004", phase: "p1", status: "open" }),
+    ],
+    roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+  });
+
+  it("S1: prints the Unphased line with the open unphased leaf count", () => {
+    const output = formatStatus(board(), "md", []);
+    expect(output).toContain("Unphased (2): assign a phase to control roadmap priority");
+  });
+
+  it("S2: prints no Unphased line when every unphased leaf is complete", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-003", phase: null, status: "complete" }),
+        makeTicket({ id: "T-004", phase: "p1", status: "open" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(formatStatus(state, "md", [])).not.toContain("Unphased (");
+  });
+
+  it("S3: JSON carries unphasedOpenTickets and the compact payload does not", () => {
+    const full = JSON.parse(formatStatus(board(), "json", [])) as { data: Record<string, unknown> };
+    expect(full.data.unphasedOpenTickets).toBe(2);
+    const compact = JSON.parse(
+      formatStatus(board(), "json", [], [], undefined, [], undefined, [], { items: [], warnings: [] }, true),
+    ) as { data: Record<string, unknown> };
+    expect("unphasedOpenTickets" in compact.data).toBe(false);
+  });
+  it("S4: a counts-only partial state (package-root caller) omits the key and the line rather than throwing", () => {
+    const partial = {
+      config: { project: "p" },
+      completeLeafTicketCount: 0, leafTicketCount: 0, blockedCount: 0, activeIssueCount: 0,
+      activeNoteCount: 0, archivedNoteCount: 0, activeLessonCount: 0, deprecatedLessonCount: 0,
+      handoverFilenames: [], phases: [], tickets: [], roadmap: { phases: [] },
+    } as never;
+    const md = formatStatus(partial, "md", [], [], undefined, [], []);
+    expect(md).not.toContain("Unphased (");
+    const json = JSON.parse(formatStatus(partial, "json", [], [], undefined, [], [])) as { data: Record<string, unknown> };
+    expect("unphasedOpenTickets" in json.data).toBe(false);
+  });
+});

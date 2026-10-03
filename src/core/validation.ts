@@ -3,6 +3,7 @@ import type { LoadWarning } from "./errors.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
 import { hasConflicts, type ConflictedItem } from "./conflicts.js";
 import { displayIdOf } from "./resolver.js";
+import { openUnphasedLeaves } from "./queries.js";
 import { isTeamModeConfig } from "./team-capabilities.js";
 import { isTicketEarmarkStale, isIssueEarmarkStale } from "./earmarks.js";
 import type { Ruling } from "../models/ruling.js";
@@ -295,6 +296,18 @@ export function validateProject(
         entity: id,
       });
     }
+  }
+
+  // ISS-1112: an open unphased leaf is legal but never ranked by roadmap
+  // order, so it is warned rather than blessed. Leaves only: an umbrella may
+  // be unphased while its children are phased.
+  for (const t of openUnphasedLeaves(state)) {
+    findings.push({
+      level: "warning",
+      code: "unphased_ticket",
+      message: `Ticket ${displayIdOf(t)} has no phase; assign one to control its roadmap priority.`,
+      entity: t.id,
+    });
   }
 
   // Ticket reference checks

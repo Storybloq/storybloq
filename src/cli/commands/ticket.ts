@@ -1,5 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
-import { nextTicket, nextTickets, blockedTickets } from "../../core/queries.js";
+import { nextTicket, nextTickets, blockedTickets, currentPhase } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -374,11 +374,27 @@ export async function prepareNewTicketUnlocked(
   };
 }
 
+/**
+ * ISS-1112: the phase a ticket gets when its creator did not choose one. The
+ * current phase, else (a fresh roadmap, where no phase has leaves yet) the
+ * first phase with no leaf tickets, else null.
+ */
+export function defaultTicketPhase(state: ProjectState): string | null {
+  const current = currentPhase(state);
+  if (current) return current.id;
+  const empty = state.roadmap.phases.find((p) => state.phaseTickets(p.id).length === 0);
+  return empty ? empty.id : null;
+}
+
 export async function handleTicketCreate(
   args: {
     title: string;
     type: string;
-    phase: string | null;
+    /**
+     * ISS-1112: undefined = not chosen (defaults to the current phase when the
+     * project has phases); null = deliberately unphased; a string = that phase.
+     */
+    phase: string | null | undefined;
     description: string;
     blockedBy: string[];
     parentTicket: string | null;
@@ -400,10 +416,18 @@ export async function handleTicketCreate(
 
   let createdTicket: Ticket | undefined;
   let createdInState: ProjectState | undefined;
+  let phaseNote = "";
 
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     createdInState = state;
-    const ticket = await prepareNewTicketUnlocked({ ...args, citesRulings: citesRulingsResolution.citesRulings }, state, root);
+    let phase = args.phase ?? null;
+    if (args.phase === undefined && state.roadmap.phases.length > 0) {
+      phase = defaultTicketPhase(state);
+      phaseNote = phase !== null
+        ? ` (phase ${phase}: defaulted to the current phase; pass phase null / --phase "" to leave it unphased)`
+        : " (no current phase: ticket left unphased; assign a phase to schedule it)";
+    }
+    const ticket = await prepareNewTicketUnlocked({ ...args, phase, citesRulings: citesRulingsResolution.citesRulings }, state, root);
     validatePostWriteState(ticket, state, true);
     await writeTicketUnlocked(ticket, root, { createOnly: true });
     createdTicket = ticket;
@@ -417,7 +441,7 @@ export async function handleTicketCreate(
   if (format === "json") {
     return { output: JSON.stringify(successEnvelope(createdTicket), null, 2), ...(warnings && { warnings }) };
   }
-  return { output: `Created ticket ${displayIdOf(createdTicket)}: ${createdTicket.title}`, ...(warnings && { warnings }) };
+  return { output: `Created ticket ${displayIdOf(createdTicket)}: ${createdTicket.title}${phaseNote}`, ...(warnings && { warnings }) };
 }
 
 /**

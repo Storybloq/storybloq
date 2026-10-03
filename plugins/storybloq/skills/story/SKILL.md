@@ -404,7 +404,7 @@ CLI examples:
 - `storybloq issue create --title "..." --severity high --impact "..." --created-by "reviewer" --dedupe-key "review-42:finding-3" --source-ref '{"path":"src/file.ts","startLine":42,"revision":"<commit-sha>","reviewId":"review-42"}'`
 
 MCP examples:
-- `storybloq_ticket_create` with `title`, `type`, and optional `phase`, `description`, `blockedBy`, `parentTicket`
+- `storybloq_ticket_create` with `title`, `type`, and optional `phase` (omitted: the current phase when the project has phases; null: unphased), `description`, `blockedBy`, `parentTicket`
 - `storybloq_ticket_update` with `id` and optional `status`, `title`, `order`, `description`, `phase`, `parentTicket`
 - `storybloq_issue_create` with `title`, `severity`, `impact`, and optional `components`, `relatedTickets`, `location`, `sourceRefs`, `dedupeKey`, `createdBy`, `phase`
 - `storybloq_issue_update` with `id` and optional `status`, `title`, `severity`, `impact`, `resolution`, `components`, `relatedTickets`, `location`, `sourceRefs`

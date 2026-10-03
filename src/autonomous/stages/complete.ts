@@ -110,7 +110,9 @@ export class CompleteStage implements WorkflowStage {
     } else if (maxTickets > 0 && totalWorkDone >= maxTickets) {
       nextTarget = "HANDOVER";
     } else {
-      const nextResult = nextTickets(projectState, 1);
+      // ISS-1112: the same skipped set PICK_TICKET excludes, or a skipped
+      // unphased leaf would route here and find nothing there.
+      const nextResult = nextTickets(projectState, 1, new Set(ctx.state.skippedTargets ?? []));
       if (nextResult.kind === "found") {
         nextTarget = "PICK_TICKET";
       } else {
@@ -349,7 +351,7 @@ export class CompleteStage implements WorkflowStage {
     ticketsDone: number,
     maxTickets: number,
   ): StageAdvance {
-    const candidates = nextTickets(projectState, 5);
+    const candidates = nextTickets(projectState, 5, new Set(ctx.state.skippedTargets ?? []));
     let candidatesText = "";
     if (candidates.kind === "found") {
       candidatesText = candidates.candidates.map((c: { ticket: { id: string; title: string; type: string } }, i: number) => {

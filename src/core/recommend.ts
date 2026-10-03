@@ -16,6 +16,7 @@ import { parseHandoverMarkdown, buildTrajectory, firstDispositionPerHandover } f
 import {
   nextTicket,
   currentPhase,
+  openUnphasedLeaves,
   ticketsUnblockedBy,
   umbrellaProgress,
   descendantLeaves,
@@ -47,7 +48,8 @@ export type RecommendCategory =
   | "open_issue"
   | "handover_context"
   | "debt_trend"
-  | "checkpoint_reassess";
+  | "checkpoint_reassess"
+  | "unphased_ticket";
 
 export interface RecommendOptions {
   /** Successfully-read handovers, last 10 intended, newest first. Replaces `latestHandoverContent`. */
@@ -293,6 +295,7 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
   quick_win: 14,
   open_issue: 15,
   checkpoint_reassess: 16,
+  unphased_ticket: 17,
 };
 
 /**
@@ -346,6 +349,7 @@ export function recommend(
     () => generateQuickWins(state, phaseIndex, crossNodeStatuses),
     () => generateOpenIssues(state),
     () => generateDebtTrend(state, options),
+    () => generateUnphasedTickets(state, crossNodeStatuses),
   ];
 
   if (options?.federationState && state.config.type === "orchestrator") {
@@ -770,6 +774,29 @@ function generateQuickWins(state: ProjectState, phaseIndex: Map<string, number>,
     category: "quick_win" as const,
     reason: "Chore -- quick win",
     score: 400 - Math.min(index, 99),
+  }));
+}
+
+/**
+ * ISS-1112: the floor band for open unphased leaves. Dedup keeps the highest
+ * score per id, so a ticket another band already recommends keeps that band;
+ * this only guarantees no unphased leaf is absent or anonymously last.
+ */
+function generateUnphasedTickets(state: ProjectState, crossNodeStatuses?: Record<string, string>): Recommendation[] {
+  const tickets = openUnphasedLeaves(state).filter(
+    (t) =>
+      !state.isBlocked(t) &&
+      !isCrossNodeBlocked(t, crossNodeStatuses) &&
+      notHiddenByEarmark(t),
+  );
+  return tickets.map((ticket, index) => ({
+    id: ticket.id,
+    displayId: ticket.displayId ?? undefined,
+    kind: "ticket" as const,
+    title: ticket.title,
+    category: "unphased_ticket" as const,
+    reason: "unphased, assign a phase to schedule it",
+    score: 200 - Math.min(index, 99),
   }));
 }
 

@@ -9,7 +9,7 @@ import { BusError } from "./errors.js";
 import { BUS_MAX_ENTRY_BYTES, DEFAULT_BUS_MAX_HOPS, type BusSummary } from "./schemas.js";
 import { durableCreate, durableTempTarget, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow } from "./io.js";
 import { acquireHardenedLock, inspectProcessIdentity, releaseHardenedLock, withHardenedLock, type HardenedLockHandle } from "./lock.js";
-import { busRuntimeExists, resolveBusPaths } from "./paths.js";
+import { busRuntimeExists, resolveBusPaths, legacyEndpointLockPath, legacyThreadLockPath } from "./paths.js";
 import { evidenceKeys, normalizeBusText } from "./security.js";
 
 // Legacy v1 record surface (D5). 1.8.0 never writes NEW v1 coordination state
@@ -961,7 +961,7 @@ async function withV1EndpointCaller<T>(
   const busRoot = busPaths.busRoot;
   const paths = v1PathsFrom(busRoot);
   const endpointPath = join(paths.endpoints, `${endpointId}.json`);
-  return withHardenedLock(join(locksDirOf(busRoot), `endpoint-${endpointId}.lock`), async () => {
+  return withHardenedLock(legacyEndpointLockPath(busRoot, endpointId), async () => {
     await revalidateV1Live(busRoot);
     const endpoint = await readJsonNoFollow(endpointPath, V1EndpointSchema);
     if (endpoint.retiredAt || endpoint.clientTaskId !== taskId) {
@@ -1121,7 +1121,7 @@ export async function ackV1(root: string, input: {
     // mutation, and pointer removal happens under the mailbox lock regardless.
     const threadId = await findV1MessageThread(paths, endpoint.role, input.messageId);
     if (!threadId) throw new BusError("not_found", "Bus message not found");
-    return withHardenedLock(join(locksDirOf(busRoot), `thread-${threadId}.lock`), async () => {
+    return withHardenedLock(legacyThreadLockPath(busRoot, threadId), async () => {
       return withV1MailboxLocks(busRoot, endpoint.role, async () => {
         await revalidateV1Live(busRoot);
         const folded = await foldV1Thread(paths, threadId);
@@ -1192,7 +1192,7 @@ export async function updateV1Thread(root: string, input: {
   }
   if (!UuidSchema.safeParse(input.threadId).success) throw new BusError("invalid_input", "Invalid Bus thread id");
   return withV1EndpointCaller(root, input.endpointId, input.clientTaskId, async ({ endpoint, paths, busRoot }) => {
-    return withHardenedLock(join(locksDirOf(busRoot), `thread-${input.threadId}.lock`), async () => {
+    return withHardenedLock(legacyThreadLockPath(busRoot, input.threadId), async () => {
       await revalidateV1Live(busRoot);
       const folded = await foldV1Thread(paths, input.threadId);
       if (folded.integrity !== "verified") throw new BusError("corrupt", "Thread is quarantined");

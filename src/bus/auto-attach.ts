@@ -3,7 +3,6 @@
 // outcome record + releases its lock (never leaves a `running` orphan). It never installs
 // global client hooks (bootstrap did that) and never disturbs a live peer.
 
-import { join } from "node:path";
 import { normalizeClientTaskId } from "../autonomous/client-profile.js";
 import { loadProject } from "../core/project-loader.js";
 import { classifyBusRuntime } from "./admin.js";
@@ -16,7 +15,7 @@ import {
 } from "./endpoints.js";
 import { BusError } from "./errors.js";
 import { releaseHardenedLock, tryAcquireHardenedLock } from "./lock.js";
-import { resolveBusPaths } from "./paths.js";
+import { hashKeyLockPath, resolveBusPaths } from "./paths.js";
 import { materializeSuccessorMailbox } from "./store.js";
 import {
   autoAttachDecision,
@@ -207,7 +206,7 @@ export async function attemptAutoAttach(input: AttemptAutoAttachInput): Promise<
   let lockPath: string;
   try {
     const paths = await resolveBusPaths(root, false);
-    lockPath = join(paths.locks, `auto-attach-${autoAttachOutcomeKey(client, clientTaskId)}.lock`);
+    lockPath = hashKeyLockPath(paths, "auto-attach", autoAttachOutcomeKey(client, clientTaskId));
   } catch {
     return { kind: "removed" };
   }

@@ -12,7 +12,7 @@ import { assertBusEnabled } from "./config.js";
 import { BusError } from "./errors.js";
 import { durableCreate, durableUnlink, durableWrite, listRegularJsonFiles, readJsonNoFollow, rejectPathSymlink, syncDirectory } from "./io.js";
 import { acquireHardenedLock, captureProcessSignature, inspectProcessIdentity, releaseHardenedLock, withHardenedLock } from "./lock.js";
-import { assertBusLayout, endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
+import { assertBusLayout, endpointLockPath, endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
 import { normalizeBusText } from "./security.js";
 import {
   BusEndpointSchema,
@@ -585,7 +585,7 @@ export async function joinEndpoint(root: string, input: JoinEndpointInput): Prom
       let handle;
       try {
         handle = await acquireHardenedLock(
-          join(paths.locks, `endpoint-${replaceIncumbent.endpointId}.lock`),
+          endpointLockPath(paths, "endpoint", replaceIncumbent.endpointId),
           { timeoutMs: ENDPOINT_LOCK_TIMEOUT_MS },
         );
       } catch (err) {
@@ -732,7 +732,7 @@ async function withEndpointLock<T>(
   const paths = await resolveInitializedBusPaths(root);
   // Endpoint ownership spans nested thread and mailbox operations whose lock
   // waits can each reach five seconds. The outer acquisition must not expire first.
-  return withHardenedLock(join(paths.locks, `endpoint-${endpointId}.lock`), async () => {
+  return withHardenedLock(endpointLockPath(paths, "endpoint", endpointId), async () => {
     const path = join(paths.endpoints, `${endpointId}.json`);
     let current = await readJsonNoFollow(path, BusEndpointSchema);
     if (afterEndpointReadHook) await afterEndpointReadHook(endpointId);
@@ -799,7 +799,7 @@ export async function mintCompactionSuccession(input: {
   if (!endpoint || !input.transcriptPath) return null;
   const paths = await resolveInitializedBusPaths(input.root);
   const transcriptHash = sha256(input.transcriptPath);
-  return withHardenedLock(join(paths.locks, `endpoint-${endpoint.endpointId}.lock`), async () => {
+  return withHardenedLock(endpointLockPath(paths, "endpoint", endpoint.endpointId), async () => {
     const now = Date.now();
     for (const { record: existing } of await liveSuccessionRecords(paths.succession, now)) {
       if (existing.endpointId === endpoint.endpointId && existing.kind === "compact" &&
@@ -879,7 +879,7 @@ export async function consumeCompactionSuccession(input: {
       }, undefined);
     }
     if (!match) return null;
-    return withHardenedLock(join(paths.locks, `endpoint-${match.record.endpointId}.lock`), async () => {
+    return withHardenedLock(endpointLockPath(paths, "endpoint", match.record.endpointId), async () => {
       const endpointPath = join(paths.endpoints, `${match.record.endpointId}.json`);
       const endpoint = await readJsonNoFollow(endpointPath, BusEndpointSchema);
       const latestRecord = await readJsonNoFollow(match.path, BusSuccessionSchema);

@@ -24,13 +24,12 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import { probeArgvSignature } from "../autonomous/liveness.js";
 import { BusError } from "./errors.js";
 import { durableCreate, durableUnlink, readJsonNoFollow, rejectPathSymlink } from "./io.js";
 import { withHardenedLock } from "./lock.js";
-import { endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
+import { endpointLockPath, endpointMailboxPath, resolveBusPaths, type BusPaths } from "./paths.js";
 import { mailboxHasPointerCandidate, pollBus, type BusPollResult } from "./store.js";
 
 // The identity markers a live `bus poll --wait` process carries in its argv. A
@@ -81,7 +80,7 @@ export class WaiterActiveError extends Error {
 export type ArgvProbe = (pid: number, markers: readonly string[]) => "match" | "absent" | "unknown";
 
 function waiterPath(paths: BusPaths, endpointId: string): string {
-  return join(paths.locks, `waiter-${endpointId}.lock`);
+  return endpointLockPath(paths, "waiter", endpointId);
 }
 
 // A short-lived mutex serializing the read->probe->unlink->create acquisition and the
@@ -91,7 +90,7 @@ function waiterPath(paths: BusPaths, endpointId: string): string {
 // process's read/probe and its unlink. The persistent single-waiter marker is the
 // separate waiter-<id>.lock FILE, not this guard.
 function waiterGuardPath(paths: BusPaths, endpointId: string): string {
-  return join(paths.locks, `waiter-guard-${endpointId}.lock`);
+  return endpointLockPath(paths, "waiter-guard", endpointId);
 }
 
 function sameIdentity(record: WaiterRecord, identity: WaiterIdentity): boolean {

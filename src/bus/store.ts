@@ -42,14 +42,7 @@ import {
 import { readBusEvidence } from "./runtime-evidence.js";
 import { readConsistentRefusedArtifact, validatedRefusedDir, writeRefusedArtifact } from "./refused.js";
 import { ackV1, doctorV1, exportV1Thread, summarizeV1 } from "./legacy-v1.js";
-import {
-  assertBusLayout,
-  busLayoutFindings,
-  endpointMailboxPath,
-  resolveBusPaths,
-  validatedRedeliverMarkerDir,
-  type BusPaths,
-} from "./paths.js";
+import { assertBusLayout, busLayoutFindings, endpointMailboxPath, resolveBusPaths, endpointLockPath, threadLockPath, validatedRedeliverMarkerDir, type BusPaths } from "./paths.js";
 import {
   BUS_MAX_ENTRY_BYTES,
   BusEndpointSchema,
@@ -359,7 +352,7 @@ async function endpointCursorFloor(paths: BusPaths, endpointId: string): Promise
 
 async function allocateMailboxSeq(paths: BusPaths, endpointId: string): Promise<number> {
   const mailbox = endpointMailboxPath(paths, endpointId);
-  return withHardenedLock(join(paths.locks, `mailbox-${endpointId}.lock`), async () => {
+  return withHardenedLock(endpointLockPath(paths, "mailbox", endpointId), async () => {
     const counterPath = join(mailbox, "counter.json");
     let nextSeq = 1;
     try {
@@ -1524,7 +1517,7 @@ export async function appendWakeEntry(
   if (!ThreadIdSchema.safeParse(threadId).success) {
     throw new BusError("invalid_input", "Invalid Bus thread id");
   }
-  await withHardenedLock(join(paths.locks, `thread-${threadId}.lock`), async () => {
+  await withHardenedLock(threadLockPath(paths, threadId), async () => {
     const folded = await foldBusThread(paths.projectRoot, threadId);
     if (folded.integrity !== "verified") {
       throw new BusError("corrupt", folded.finding ?? "Thread is quarantined");
@@ -1591,7 +1584,7 @@ export async function appendPollObservedEntries(input: {
   if (pollObservedCallHook) await pollObservedCallHook(input.threadId, input.wakeIds);
   const results = new Map<string, PollObservedOutcome>();
   if (input.wakeIds.length === 0) return results;
-  await withHardenedLock(join(paths.locks, `thread-${input.threadId}.lock`), async () => {
+  await withHardenedLock(threadLockPath(paths, input.threadId), async () => {
     let folded = await foldBusThread(paths.projectRoot, input.threadId);
     if (pollObservedFoldHook) await pollObservedFoldHook(input.threadId);
     if (folded.integrity !== "verified") {
@@ -1720,7 +1713,7 @@ async function replyToThread(
   projectState: ProjectState,
 ): Promise<BusSendResult> {
   if (!ThreadIdSchema.safeParse(threadId).success) throw new BusError("invalid_input", "Invalid Bus thread id");
-  return withHardenedLock(join(paths.locks, `thread-${threadId}.lock`), async () => {
+  return withHardenedLock(threadLockPath(paths, threadId), async () => {
     let folded = await foldBusThread(paths.projectRoot, threadId);
     if (folded.integrity !== "verified") throw new BusError("corrupt", folded.finding ?? "Thread is quarantined");
     if (folded.state !== "open") throw new BusError("thread_parked", `Thread is ${folded.state}`);
@@ -1961,7 +1954,7 @@ async function recoverPendingReceipt(
     const active = join(mailbox, filename);
     const pending = join(mailbox, "pending", filename);
     const expectedBytes = serialize(pointer);
-    await withHardenedLock(join(paths.locks, `mailbox-reconcile-${receipt.toEndpoint}.lock`), async () => {
+    await withHardenedLock(endpointLockPath(paths, "mailbox-reconcile", receipt.toEndpoint), async () => {
       if (await pointerFileDelivered(active, expectedBytes)) return;
       if (!(await pointerFileDelivered(pending, expectedBytes))) {
         // The pending pointer is absent OR present-but-invalid (truncated /
@@ -2591,7 +2584,7 @@ export async function readMailboxHighwater(paths: BusPaths, endpointId: string):
 export async function seedMailboxCounterIfAbsent(paths: BusPaths, endpointId: string): Promise<void> {
   const mailbox = endpointMailboxPath(paths, endpointId);
   const counterPath = join(mailbox, "counter.json");
-  await withHardenedLock(join(paths.locks, `mailbox-${endpointId}.lock`), async () => {
+  await withHardenedLock(endpointLockPath(paths, "mailbox", endpointId), async () => {
     try {
       await readJsonNoFollow(counterPath, BusMailboxCounterSchema);
       return; // already allocated/seeded by a racing send -> nothing to do
@@ -2692,7 +2685,7 @@ async function recoverPendingIntent(
   const filename = pointerFilename(pointer);
   const pending = join(mailbox, "pending", filename);
   const lockPath = await pathExists(join(paths.threads, pointer.threadId, "thread.json"))
-    ? join(paths.locks, `thread-${pointer.threadId}.lock`)
+    ? threadLockPath(paths, pointer.threadId)
     : join(paths.locks, "threads.lock");
 
   return withHardenedLock(lockPath, async () => {
@@ -2726,7 +2719,7 @@ async function reconcileEndpointMailbox(
   allEndpoints: readonly BusEndpoint[],
 ): Promise<{ pointers: BusMailboxPointer[]; findings: string[] }> {
   const endpointId = endpoint.endpointId;
-  return withHardenedLock(join(paths.locks, `mailbox-reconcile-${endpointId}.lock`), async () => {
+  return withHardenedLock(endpointLockPath(paths, "mailbox-reconcile", endpointId), async () => {
     const mailbox = endpointMailboxPath(paths, endpointId);
     const findings: string[] = [];
     // ISS-872: this endpoint redelivers mail addressed to itself OR to any ancestor in
@@ -3076,7 +3069,7 @@ export async function acknowledgeBusMessage(root: string, input: {
     const addressees = endpointAddressees(endpoint, allEndpoints).ids;
     const threadId = await findMessageThread(paths, endpoint.endpointId, input.messageId);
     if (!threadId) throw new BusError("not_found", "Bus message not found");
-    return withHardenedLock(join(paths.locks, `thread-${threadId}.lock`), async () => {
+    return withHardenedLock(threadLockPath(paths, threadId), async () => {
       let folded = await foldBusThread(paths.projectRoot, threadId);
       if (folded.integrity !== "verified") throw new BusError("corrupt", folded.finding ?? "Thread is quarantined");
       const message = folded.messages.find((candidate) => candidate.messageId === input.messageId);
@@ -3159,8 +3152,10 @@ export async function updateBusThread(root: string, input: {
   const loaded = await loadProject(root);
   assertBusEnabled(loaded.state.config);
   const paths = await resolveInitializedBusPaths(root);
+  // ISS-865: reject the id before any lock path is built from it.
+  if (!ThreadIdSchema.safeParse(input.threadId).success) throw new BusError("invalid_input", "Invalid Bus thread id");
   return withEndpointCaller(paths.projectRoot, input.endpointId, input.clientTaskId, async (endpoint) =>
-    withHardenedLock(join(paths.locks, `thread-${input.threadId}.lock`), async () => {
+    withHardenedLock(threadLockPath(paths, input.threadId), async () => {
     let folded = await foldBusThread(paths.projectRoot, input.threadId);
     if (folded.integrity !== "verified") throw new BusError("corrupt", folded.finding ?? "Thread is quarantined");
     // ISS-872: a successor inherits participation in its predecessor chain's threads.

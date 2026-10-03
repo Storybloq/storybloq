@@ -27,6 +27,7 @@ export interface BusPaths {
 
 const ENDPOINT_FILENAME = /^([0-9a-f-]{36})\.json$/i;
 const EndpointIdSchema = z.string().uuid();
+const UuidSchema = z.string().uuid();
 
 async function rejectSymlink(path: string, label: string): Promise<void> {
   try {
@@ -269,6 +270,45 @@ export function assertContainedPath(root: string, target: string): void {
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new BusError("invalid_input", `Bus path escapes runtime root: ${target}`);
   }
+}
+
+// ISS-865: every id-bearing lock name is built here, after the id is proven to be
+// a uuid and the result is proven to stay inside the locks dir. The lock primitive
+// mkdirs dirname(lockPath) before anything else, so an unchecked id interpolated
+// into a lock name can create directories and contend on files anywhere on disk.
+// The one validator; the public producers below only delegate to it.
+function uuidLockPathIn(locksDir: string, prefix: string, id: string, message: string): string {
+  if (!UuidSchema.safeParse(id).success) throw new BusError("invalid_input", message);
+  const path = join(locksDir, `${prefix}-${id}.lock`);
+  assertContainedPath(locksDir, path);
+  return path;
+}
+
+export type EndpointLockKind = "endpoint" | "mailbox" | "mailbox-reconcile" | "waiter" | "waiter-guard";
+
+export function threadLockPath(paths: BusPaths, threadId: string): string {
+  return uuidLockPathIn(paths.locks, "thread", threadId, "Invalid Bus thread id");
+}
+
+export function endpointLockPath(paths: BusPaths, kind: EndpointLockKind, endpointId: string): string {
+  return uuidLockPathIn(paths.locks, kind, endpointId, "Invalid endpoint id");
+}
+
+// The v1 drain path holds only busRoot; its lock dir is the same `<busRoot>/locks`.
+export function legacyThreadLockPath(busRoot: string, threadId: string): string {
+  return uuidLockPathIn(join(busRoot, "locks"), "thread", threadId, "Invalid Bus thread id");
+}
+
+export function legacyEndpointLockPath(busRoot: string, endpointId: string): string {
+  return uuidLockPathIn(join(busRoot, "locks"), "endpoint", endpointId, "Invalid endpoint id");
+}
+
+// A lock named by a derived 64-hex canonical hash (auto-attach outcome keys).
+export function hashKeyLockPath(paths: BusPaths, prefix: string, key: string): string {
+  if (!/^[0-9a-f]{64}$/.test(key)) throw new BusError("invalid_input", "Invalid Bus lock key");
+  const path = join(paths.locks, `${prefix}-${key}.lock`);
+  assertContainedPath(paths.locks, path);
+  return path;
 }
 
 export function endpointMailboxPath(paths: BusPaths, endpointId: string): string {

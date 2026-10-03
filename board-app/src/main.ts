@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createServer } from "./server.js";
 import { createLocalServer } from "./local-server.js";
+import { captureLocalCliRuntime } from "./local-runtime.js";
 const local = process.argv.includes("--local");
 const root = process.env.STORYBLOQ_PROJECT_ROOT;
 if (!local && !root) {
@@ -25,7 +26,10 @@ if (!local && !root) {
     )
       throw new Error("Invalid startup roots");
     const server = local
-      ? await createLocalServer(process.cwd(), html)
+      ? await createLocalServer(process.cwd(), html,
+          process.argv.includes("--local-cli-profile-v1")
+            ? await captureLocalCliRuntime(import.meta.url)
+            : undefined)
       : createServer(root!, html, { approvedNodeRoots });
     await server.connect(new StdioServerTransport());
   } catch {

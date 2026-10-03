@@ -13,6 +13,7 @@ import { readFederation, readNode, captureRoots } from "./federation.js";
 import { createEditor, EditError, ticketPatch, issuePatch } from "./editor.js";
 import { createNotes, notePatch } from "./notes.js";
 import { createSessions } from "./sessions.js";
+import type { LocalCliRuntime } from "./local-runtime.js";
 export const RESOURCE_URI = "ui://storybloq/board-v1.html";
 const annotations = {
   readOnlyHint: true,
@@ -60,7 +61,7 @@ export function createBoardHost(html: string) {
 export function createServer(
   root: string,
   html: string,
-  options: { approvedNodeRoots?: string[] } = {},
+  options: { approvedNodeRoots?: string[]; localCli?: LocalCliRuntime } = {},
   existingServer?: McpServer,
 ) {
   const access = captureRoots(root, options.approvedNodeRoots ?? []);
@@ -117,8 +118,9 @@ export function createServer(
       run(async () => {
         const b = await snapshot();
         return {
-          content: [{ type: "text", text: "Storybloq project board opened." }],
+          content: [{ type: "text", text: "Storybloq project board is ready." }],
           structuredContent: {
+            ...(options.localCli ? { localCli: options.localCli } : {}),
             project: b.project,
             tickets: b.tickets.length,
             issues: b.issues.length,

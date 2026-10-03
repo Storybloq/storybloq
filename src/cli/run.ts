@@ -12,6 +12,13 @@ import { transformForRawMode } from "./raw-mode.js";
 // Re-export types so existing test imports that reference run.ts still resolve.
 export type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
 
+let cliNotificationsEnabled = true;
+
+/** Local plugin commands must not sample or update another client's presence. */
+export function configureCliNotifications(enabled: boolean): void {
+  cliNotificationsEnabled = enabled;
+}
+
 // Handle EPIPE on stdout globally (piping to head, etc.)
 process.stdout.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EPIPE") {
@@ -49,6 +56,7 @@ export function writeOutput(text: string): void {
  * Best-effort: any failure leaves the output exactly as written.
  */
 function emitCliBanner(root: string, format: OutputFormat, pushes: ReadCommandPushes = {}): void {
+  if (!cliNotificationsEnabled) return;
   try {
     const cliFormat = format === "json" ? "json" : "md";
     // T-501: the priming call (`storybloq status`) derives BOTH pushes from

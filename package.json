@@ -38,6 +38,8 @@
   "files": [
     "dist",
     "src/skill",
+    ".codex-plugin",
+    "skills/storybloq",
     "plugins/storybloq/.claude-plugin/plugin.json",
     "plugins/storybloq/hooks/hooks.json",
     "plugins/storybloq/hooks/*.ts",

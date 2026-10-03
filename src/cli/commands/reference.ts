@@ -272,8 +272,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "note update",
     description: "Update a note",
-    usage: "storybloq note update <id> [--content <value>] [--title <value>] [--clear-tags] [--status <active|archived>] [--stdin] [--tags <value>] [--commit] [--format <json|md>]",
-    flags: ["--content", "--title", "--clear-tags", "--status", "--stdin", "--tags", "--format", "--commit"],
+    usage: "storybloq note update <id> [--content <value>] [--title <value>] [--clear-tags] [--status <active|archived>] [--stdin] [--mode <replace|append>] [--confirm-replace] [--tags <value>] [--commit] [--format <json|md>]",
+    flags: ["--content", "--title", "--clear-tags", "--status", "--stdin", "--mode", "--confirm-replace", "--tags", "--format", "--commit"],
   },
   {
     name: "note delete",
@@ -1091,7 +1091,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_note_list", description: "List notes", params: ["status?","tag?"] },
   { name: "storybloq_note_get", description: "Get note by ID", params: ["id"] },
   { name: "storybloq_note_create", description: "Create note", params: ["content","title?","tags?","commit?"] },
-  { name: "storybloq_note_update", description: "Update note", params: ["id","content?","title?","tags?","status?","commit?"] },
+  { name: "storybloq_note_update", description: "Update note", params: ["id","content?","mode?","confirmReplace?","title?","tags?","status?","commit?"] },
   { name: "storybloq_ticket_create", description: "Create ticket", params: ["title","type","phase?","description?","blockedBy?","parentTicket?","citesRuling?","node?","commit?"] },
   { name: "storybloq_ticket_update", description: "Update ticket", params: ["id","status?","title?","type?","order?","description?","phase?","parentTicket?","blockedBy?","crossNodeBlockedBy?","force?","citesRuling?","clearCitesRulings?","node?","commit?"] },
   { name: "storybloq_ticket_meta_set", description: "Set custom passthrough metadata on a ticket", params: ["id","path","value?","commit?"] },

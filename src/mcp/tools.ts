@@ -1230,10 +1230,12 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   ));
 
   registerWriteTool(server, "storybloq_note_update", {
-    description: "Update an existing note",
+    description: "Update an existing note. Content replaces unless mode is append",
     inputSchema: {
       id: NoteIdSchema.describe("e.g. N-001 or n-[canonical]"),
       content: z.string().optional(),
+      mode: z.enum(["replace", "append"]).optional().describe("append adds after a blank line"),
+      confirmReplace: z.boolean().optional().describe("Needed to shrink a 1000+ char note below 20%"),
       title: z.string().nullable().optional().describe("null to clear"),
       tags: z.array(z.string()).optional().describe("Replaces existing"),
       status: z.enum(NOTE_STATUSES).optional(),
@@ -1247,6 +1249,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         tags: args.tags,
         clearTags: args.tags !== undefined && args.tags.length === 0,
         status: args.status,
+        mode: args.mode,
+        confirmReplace: args.confirmReplace,
       },
       format,
       root,

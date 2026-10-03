@@ -188,6 +188,24 @@ export async function handleNoteCreate(
   };
 }
 
+// ISS-1092: two seats wiped 28-29 KB notes in one day by sending about 200
+// chars of append-style content to a replace-only update. A replace that
+// shrinks a note of at least the floor to under the ratio of its length is
+// refused unless confirmed. Lengths are of the content field only.
+export const NOTE_REPLACE_GUARD_FLOOR = 1000;
+export const NOTE_REPLACE_GUARD_RATIO = 0.2;
+
+/** How the caller spells the two ways past the guard, for its refusal text. */
+export interface NoteUpdateHatches {
+  confirm: string;
+  append: string;
+}
+
+const MCP_NOTE_UPDATE_HATCHES: NoteUpdateHatches = {
+  confirm: "confirmReplace: true",
+  append: 'mode: "append"',
+};
+
 export async function handleNoteUpdate(
   id: string,
   updates: {
@@ -196,11 +214,24 @@ export async function handleNoteUpdate(
     tags?: string[];
     clearTags?: boolean;
     status?: string;
+    mode?: "replace" | "append";
+    confirmReplace?: boolean;
   },
   format: OutputFormat,
   root: string,
+  hatches: NoteUpdateHatches = MCP_NOTE_UPDATE_HATCHES,
 ): Promise<CommandResult> {
-  assertUpdateHasFields(updates, "note", "content, title, tags, clearTags, status");
+  const { mode, confirmReplace, ...fields } = updates;
+  if (mode !== undefined && mode !== "replace" && mode !== "append") {
+    throw new CliValidationError("invalid_input", `Unknown mode "${String(mode)}": must be replace or append`);
+  }
+  if (mode !== undefined && updates.content === undefined) {
+    throw new CliValidationError("invalid_input", `mode applies to content: pass content with mode "${mode}"`);
+  }
+  if (mode === "append" && confirmReplace === true) {
+    throw new CliValidationError("invalid_input", 'confirmReplace does not apply to mode "append"');
+  }
+  assertUpdateHasFields(fields, "note", "content, title, tags, clearTags, status");
   // ISS-1192: same round-trip-growth fix as ticket.ts's description -- an
   // agent that reads the md-rendered content back and writes it verbatim
   // carries the render fence into storage. Shared by CLI and MCP. Applied
@@ -239,9 +270,30 @@ export async function handleNoteUpdate(
       tagsUpdate.tags = normalizeTags(updates.tags);
     }
 
+    let nextContent = existing.content;
+    if (updates.content !== undefined) {
+      if (mode === "append") {
+        nextContent = existing.content + "\n\n" + updates.content;
+      } else {
+        if (
+          confirmReplace !== true &&
+          existing.content.length >= NOTE_REPLACE_GUARD_FLOOR &&
+          updates.content.length < existing.content.length * NOTE_REPLACE_GUARD_RATIO
+        ) {
+          throw new CliValidationError(
+            "invalid_input",
+            `Refusing to replace note ${displayIdOf(existing)}: the new content is ${updates.content.length} chars ` +
+              `and the existing content is ${existing.content.length} (under ${NOTE_REPLACE_GUARD_RATIO * 100}% of a note of ${NOTE_REPLACE_GUARD_FLOOR}+ chars). ` +
+              `Pass ${hatches.confirm} to replace it anyway, or ${hatches.append} to add to it.`,
+          );
+        }
+        nextContent = updates.content;
+      }
+    }
+
     const note: Note = {
       ...existing,
-      ...(updates.content !== undefined && { content: updates.content }),
+      content: nextContent,
       ...(updates.title !== undefined && {
         title: !updates.title?.trim() ? null : updates.title,
       }),

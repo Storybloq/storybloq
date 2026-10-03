@@ -305,6 +305,145 @@ describe("handleNoteUpdate", () => {
   });
 });
 
+// --- ISS-1092: append mode and the destructive-replace guard ---
+
+describe("handleNoteUpdate append mode and replace guard (ISS-1092)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  const NOTE_FILE = (dir: string) => join(dir, ".story", "notes", "N-001.json");
+
+  async function noteOf(content: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "note-guard-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleNoteCreate({ content, title: "Big", tags: ["alpha"] }, "md", dir);
+    return dir;
+  }
+
+  async function stored(dir: string): Promise<{ content: string; title: string | null; status: string; tags: string[] }> {
+    return JSON.parse(await readFile(NOTE_FILE(dir), "utf-8"));
+  }
+
+  async function refused(dir: string, updates: Parameters<typeof handleNoteUpdate>[1]): Promise<string> {
+    const before = await readFile(NOTE_FILE(dir));
+    const err = await handleNoteUpdate("N-001", updates, "json", dir).then(
+      () => { throw new Error("expected a refusal"); },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(CliValidationError);
+    expect((err as CliValidationError).code).toBe("invalid_input");
+    expect(await readFile(NOTE_FILE(dir))).toEqual(before);
+    return (err as Error).message;
+  }
+
+  const chars = (n: number, fill = "x") => fill.repeat(n);
+
+  it("A1: refuses a replace that shrinks a 5000-char note to 200, naming both lengths and both hatches, writing nothing", async () => {
+    const dir = await noteOf(chars(5000, "o"));
+    const message = await refused(dir, { content: chars(200, "n") });
+    expect(message).toContain("5000");
+    expect(message).toContain("200");
+    expect(message).toContain("confirmReplace: true");
+    expect(message).toContain('mode: "append"');
+    expect(message).not.toContain("ooooo");
+    expect(message).not.toContain("nnnnn");
+  });
+
+  it("A1b: a refused replace that also carries title, tags and status writes none of them", async () => {
+    const dir = await noteOf(chars(5000));
+    await refused(dir, { content: chars(200), title: "New", tags: ["beta"], status: "archived" });
+  });
+
+  it("A2: confirmReplace true replaces", async () => {
+    const dir = await noteOf(chars(5000));
+    await handleNoteUpdate("N-001", { content: chars(200, "n"), confirmReplace: true }, "json", dir);
+    expect((await stored(dir)).content).toBe(chars(200, "n"));
+  });
+
+  it("A3: the floor and the ratio boundaries", async () => {
+    const under = await noteOf(chars(999));
+    await handleNoteUpdate("N-001", { content: "y" }, "json", under);
+    expect((await stored(under)).content).toBe("y");
+
+    const exact = await noteOf(chars(1000));
+    await handleNoteUpdate("N-001", { content: chars(200, "y") }, "json", exact);
+    expect((await stored(exact)).content).toBe(chars(200, "y"));
+
+    const below = await noteOf(chars(1000));
+    expect(await refused(below, { content: chars(199, "y") })).toContain("199");
+  });
+
+  it("A3: the guard measures content after the render fence is stripped", async () => {
+    const dir = await noteOf(chars(1000));
+    const fenced = `\`\`\`\`\n${chars(199, "y")}\n\`\`\`\``;
+    expect(fenced.length).toBeGreaterThanOrEqual(200);
+    expect(await refused(dir, { content: fenced })).toContain("199");
+  });
+
+  it("A4: a growing replace on a large note is unaffected", async () => {
+    const dir = await noteOf(chars(5000));
+    await handleNoteUpdate("N-001", { content: chars(6000, "g") }, "json", dir);
+    expect((await stored(dir)).content).toBe(chars(6000, "g"));
+  });
+
+  it("A5: append stores exactly old, a blank line, then new", async () => {
+    const dir = await noteOf("old body");
+    await handleNoteUpdate("N-001", { content: "new part", mode: "append" }, "json", dir);
+    expect((await stored(dir)).content).toBe("old body\n\nnew part");
+  });
+
+  it("A5: a fenced append is stripped first and carries the fence warning", async () => {
+    const dir = await noteOf("old body");
+    const result = await handleNoteUpdate("N-001", { content: "````\nnew part\n````", mode: "append" }, "json", dir);
+    expect((await stored(dir)).content).toBe("old body\n\nnew part");
+    expect(result.warnings).toEqual(["outer render fence removed; use --format json for round trips"]);
+  });
+
+  it("A5: a small append to a large note is never guarded", async () => {
+    const dir = await noteOf(chars(5000));
+    await handleNoteUpdate("N-001", { content: "z", mode: "append" }, "json", dir);
+    expect((await stored(dir)).content).toBe(chars(5000) + "\n\nz");
+  });
+
+  it("A5: append rejects empty, whitespace-only, missing content and confirmReplace, writing nothing", async () => {
+    const dir = await noteOf("old body");
+    expect(await refused(dir, { content: "", mode: "append" })).toBe("Note content cannot be empty");
+    expect(await refused(dir, { content: "  \n ", mode: "append" })).toBe("Note content cannot be empty");
+    expect(await refused(dir, { mode: "append" })).toBe('mode applies to content: pass content with mode "append"');
+    expect(await refused(dir, { content: "more", mode: "append", confirmReplace: true }))
+      .toBe('confirmReplace does not apply to mode "append"');
+  });
+
+  it("D1: an explicit mode without content is the mode diagnostic, never 'No fields to update'", async () => {
+    const dir = await noteOf("old body");
+    expect(await refused(dir, { mode: "append", title: "x" })).toBe('mode applies to content: pass content with mode "append"');
+    expect(await refused(dir, { mode: "replace", title: "x" })).toBe('mode applies to content: pass content with mode "replace"');
+  });
+
+  it("D2: confirmReplace alone is no update, and with a title only it changes nothing but the title", async () => {
+    const dir = await noteOf(chars(5000));
+    expect(await refused(dir, { confirmReplace: true })).toContain("No fields to update");
+    await handleNoteUpdate("N-001", { title: "Renamed", confirmReplace: true }, "json", dir);
+    const note = await stored(dir);
+    expect(note.title).toBe("Renamed");
+    expect(note.content).toBe(chars(5000));
+  });
+
+  it("A9/F3: title-only and status-only updates on a large note keep its content and never trip the guard", async () => {
+    const dir = await noteOf(chars(5000));
+    await handleNoteUpdate("N-001", { title: "Only title" }, "json", dir);
+    expect((await stored(dir)).content).toBe(chars(5000));
+    await handleNoteUpdate("N-001", { status: "archived" }, "json", dir);
+    const note = await stored(dir);
+    expect(note.status).toBe("archived");
+    expect(note.content).toBe(chars(5000));
+  });
+});
+
 // --- Delete ---
 
 describe("handleNoteDelete", () => {

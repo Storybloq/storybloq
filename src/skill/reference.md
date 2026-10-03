@@ -51,7 +51,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **note list** (--status?, --tag?, --format?) - List notes with optional status/tag filters
 - **note get <id>** (--format?) - Get a note by ID
 - **note create** (--content?, --title?, --stdin?, --tags?, --format?, --commit?) - Create a new note
-- **note update <id>** (--content?, --title?, --clear-tags?, --status?, --stdin?, --tags?, --format?, --commit?) - Update a note
+- **note update <id>** (--content?, --title?, --clear-tags?, --status?, --stdin?, --mode?, --confirm-replace?, --tags?, --format?, --commit?) - Update a note
 - **note delete <id>** (--hard?, --format?, --commit?) - Delete a note
 - **lesson list** (--status?, --tag?, --source?, --format?) - List lessons with optional status/tag/source filters
 - **lesson get <id>** (--format?) - Get a lesson by ID
@@ -216,7 +216,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_note_list** (status?, tag?) - List notes
 - **storybloq_note_get** (id) - Get note by ID
 - **storybloq_note_create** (content, title?, tags?, commit?) - Create note
-- **storybloq_note_update** (id, content?, title?, tags?, status?, commit?) - Update note
+- **storybloq_note_update** (id, content?, mode?, confirmReplace?, title?, tags?, status?, commit?) - Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?, citesRuling?, node?, commit?) - Create ticket
 - **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, node?, commit?) - Update ticket
 - **storybloq_ticket_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on a ticket

@@ -2966,6 +2966,15 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe: "Read content from stdin",
                 })
+                .option("mode", {
+                  type: "string",
+                  choices: ["replace", "append"],
+                  describe: "replace (default) or append after a blank line",
+                })
+                .option("confirm-replace", {
+                  type: "boolean",
+                  describe: "Allow shrinking a 1000+ char note below 20%",
+                })
                 .conflicts("content", "stdin")
                 .conflicts("tags", "clear-tags"),
               {
@@ -3009,9 +3018,12 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   tags: argv.tags as string[] | undefined,
                   clearTags: argv["clear-tags"] as boolean,
                   status: argv.status as string | undefined,
+                  mode: argv.mode as "replace" | "append" | undefined,
+                  confirmReplace: argv["confirm-replace"] as boolean | undefined,
                 },
                 format,
                 root,
+                { confirm: "--confirm-replace", append: "--mode append" },
               ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;

@@ -505,6 +505,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--client-task-id", "--format"],
   },
   {
+    name: "arrangement rebind",
+    description: "Owner-authorized succession: a successor with one party replaced carries the checkpoint and earmarks, never the nonce, receipts or session; the original is closed. An attributed claim; liveness is machine-local",
+    usage: "storybloq arrangement rebind <id> --role pen|worker --to <taskId> [--client claude|codex] --evidence <text> [--client-task-id <id>] [--format json|md]",
+    flags: ["--role", "--to", "--client", "--evidence", "--client-task-id", "--format"],
+  },
+  {
     name: "validate",
     description: "Reference, schema, source-provenance, and loader-independent JSON checks",
     usage: "storybloq validate [--integrity-only] [--format <json|md>]",
@@ -1147,6 +1153,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_arrangement_get", description: "Get a duet/wave arrangement by ID", params: ["id","format?"] },
   { name: "storybloq_arrangement_create", description: "Create a duet/wave charter. identityAnchor must match a client task id (CLAUDE_CODE_SESSION_ID/CODEX_THREAD_ID), never a display name; it is not authentication.", params: ["bounds","parties","onIrreversibleWork","onReversibleWork?"] },
   { name: "storybloq_arrangement_update", description: "Update an arrangement's lifecycle (active/suspended/closed)", params: ["id","lifecycle"] },
+  { name: "storybloq_arrangement_rebind", description: "Owner-authorized succession into a successor with one party replaced; an attributed claim, not authentication; liveness is machine-local", params: ["id","role","to","client?","evidence","clientTaskId?"] },
   { name: "storybloq_gate_ack_get", description: "Get a duet-mode gate-ack record by ID", params: ["id"] },
   { name: "storybloq_gate_ack_create", description: "Pin acceptance of a declared plan-ack or pre-commit-ack gate. Exactly one of planFile/fromStaged is required; ackRole derives from the arrangement gate.", params: ["arrangement","gate","ticket","planFile?","fromStaged?","codexSessionId?","verdict?","rounds?","deltas?"] },
   { name: "storybloq_gate_ack_contest", description: "Record a contested acknowledgment and its reason; does not reopen the workflow.", params: ["id","reason"] },

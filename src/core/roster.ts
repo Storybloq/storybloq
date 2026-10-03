@@ -184,6 +184,21 @@ export interface RosterView {
   readonly scanTruncated: boolean;
   readonly resultTruncated: boolean;
   readonly diagnostics: readonly string[];
+  /**
+   * ISS-1290: what the read could not establish, structured so a caller can
+   * tell "nothing there" from "could not look". Present only when non-empty,
+   * so a clean view keeps its exact historical shape. No printer reads it.
+   */
+  readonly readUncertainty?: readonly RosterReadUncertainty[];
+}
+
+/** ISS-1290: one thing a roster read could not establish. */
+export interface RosterReadUncertainty {
+  readonly source: "roster-directory" | "roster-entry" | "bus-endpoints" | "bus-endpoint" | "bus-probe";
+  readonly cause: string;
+  /** Set for `bus-probe` only: whose liveness is unknown. */
+  readonly identity?: { readonly client: RosterClient; readonly clientTaskId: string };
+  readonly endpointId?: string;
 }
 
 export type UpsertResult =
@@ -453,6 +468,7 @@ interface ScannedRoster {
   readonly seats: RosterSeat[];
   readonly scanTruncated: boolean;
   readonly diagnostics: string[];
+  readonly uncertainty: RosterReadUncertainty[];
 }
 
 /** The bounded, name-sorted scan. */
@@ -461,7 +477,7 @@ function scanRoster(dir: string): ScannedRoster {
   try {
     names = fs.readdirSync(dir).filter((n) => n.endsWith(".json")).sort();
   } catch {
-    return { seats: [], scanTruncated: false, diagnostics: ["roster directory unreadable"] };
+    return { seats: [], scanTruncated: false, diagnostics: ["roster directory unreadable"], uncertainty: [{ source: "roster-directory", cause: "unreadable" }] };
   }
   const scanTruncated = names.length > ROSTER_SCAN_CAP;
   const diagnostics: string[] = [];
@@ -478,8 +494,12 @@ function scanRoster(dir: string): ScannedRoster {
     }
     seats.push(seat);
   }
-  if (unreadable > 0) diagnostics.push(`${unreadable} roster ${unreadable === 1 ? "entry" : "entries"} unreadable or invalid`);
-  return { seats, scanTruncated, diagnostics };
+  const uncertainty: RosterReadUncertainty[] = [];
+  if (unreadable > 0) {
+    diagnostics.push(`${unreadable} roster ${unreadable === 1 ? "entry" : "entries"} unreadable or invalid`);
+    uncertainty.push({ source: "roster-entry", cause: `${unreadable} unreadable or invalid` });
+  }
+  return { seats, scanTruncated, diagnostics, uncertainty };
 }
 
 export function isStaleSeat(seat: RosterSeat, now: number): boolean {
@@ -492,7 +512,7 @@ function toView(seat: RosterSeat, now: number): RosterSeatView {
 
 export function summarizeRoster(
   seats: readonly RosterSeatView[],
-  scan: { scanTruncated: boolean; resultTruncated: boolean; diagnostics: readonly string[] },
+  scan: { scanTruncated: boolean; resultTruncated: boolean; diagnostics: readonly string[]; uncertainty?: readonly RosterReadUncertainty[] },
 ): RosterView {
   let live = 0;
   let stale = 0;
@@ -502,17 +522,47 @@ export function summarizeRoster(
     else if (s.stale) stale++;
     else live++;
   }
-  return { seats, live, stale, terminal, scanTruncated: scan.scanTruncated, resultTruncated: scan.resultTruncated, diagnostics: scan.diagnostics };
+  return {
+    seats, live, stale, terminal, scanTruncated: scan.scanTruncated, resultTruncated: scan.resultTruncated, diagnostics: scan.diagnostics,
+    ...(scan.uncertainty !== undefined && scan.uncertainty.length > 0 && { readUncertainty: scan.uncertainty }),
+  };
+}
+
+/**
+ * ISS-1290: the roster directory chain, classified rather than collapsed.
+ * `rosterDirIfPresent` answers null for a missing level, an unreadable one
+ * and a symlink alike; a caller deciding whether a seat is ABSENT needs to
+ * know which. ENOENT anywhere is genuinely absent; any other failure, or a
+ * level that is a symlink or not a directory, is a read that failed.
+ */
+function inspectRosterDir(root: string): { dir: string } | { absent: true } | { failed: string } {
+  const levels = [".story", join(".story", "telemetry"), join(".story", "telemetry", ROSTER_SUBDIR)];
+  for (const level of levels) {
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(join(root, level));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return { absent: true };
+      return { failed: `${level}: ${code ?? "lstat failed"}` };
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) return { failed: `${level}: not a real directory` };
+  }
+  return { dir: join(root, levels[2]!) };
 }
 
 /** Reads the roster: creates nothing, reaps best-effort, bounds twice. */
 export function readRoster(root: string, now = Date.now()): RosterView {
-  const dir = rosterDirIfPresent(root);
-  if (dir === null) return summarizeRoster([], { scanTruncated: false, resultTruncated: false, diagnostics: [] });
+  const inspected = inspectRosterDir(root);
+  if ("failed" in inspected) {
+    return summarizeRoster([], { scanTruncated: false, resultTruncated: false, diagnostics: [], uncertainty: [{ source: "roster-directory", cause: inspected.failed }] });
+  }
+  if ("absent" in inspected) return summarizeRoster([], { scanTruncated: false, resultTruncated: false, diagnostics: [] });
+  const dir = inspected.dir;
   sweepRoster(dir, now);
   const scan = scanRoster(dir);
   const bounded = boundViews(scan.seats.map((s) => toView(s, now)));
-  return summarizeRoster(bounded.seats, { scanTruncated: scan.scanTruncated, resultTruncated: bounded.resultTruncated, diagnostics: scan.diagnostics });
+  return summarizeRoster(bounded.seats, { scanTruncated: scan.scanTruncated, resultTruncated: bounded.resultTruncated, diagnostics: scan.diagnostics, uncertainty: scan.uncertainty });
 }
 
 /** What the merge needs from a Bus endpoint; the caller resolves liveness (async) and projects. */

@@ -75,6 +75,10 @@ describe("T-478: arrangement field classification", () => {
     expect(rules.unreachability).toEqual({ kind: "hard-conflict" });
   });
 
+  it("ISS-1290: the rebind audit record is hard-conflict, like parties", () => {
+    expect(getMergeRules("arrangement").rebind).toEqual({ kind: "hard-conflict" });
+  });
+
   it("has no coupled groups -- correct, not a degenerate answer (no field pairs analogous to ticket's attribution/ticket-claim groups)", () => {
     expect(getCoupledGroups("arrangement")).toEqual([]);
   });

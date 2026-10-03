@@ -506,6 +506,7 @@ describe("tool description contract (T-460)", () => {
     // resolve, change, reopen, retire. enable, resolve-conflict and list stay
     // CLI-only: enable changes how git merges the ledger, a conflict is the
     // merging person's to settle, and ticket get/list already show checkpoints.
-    expect(result.tools.length).toBe(101);
+    // ISS-1290 adds storybloq_arrangement_rebind (101 -> 102): the successor's new pen is an agent consumer; the spec names an MCP tool.
+    expect(result.tools.length).toBe(102);
   });
 });

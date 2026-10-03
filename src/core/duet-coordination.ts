@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { ArrangementSchema, type Arrangement } from "../models/arrangement.js";
-import { ArrangementIdSchema } from "../models/types.js";
+import { ArrangementSchema, type Arrangement, type ArrangementRebind } from "../models/arrangement.js";
+import { ArrangementIdSchema, CLIENT_TASK_ID_PATTERN } from "../models/types.js";
 import { DuetOperationSchema, DuetStateSchema, assignmentIdOf, isCompactedAssignment, type DuetOperation, type DuetState, type DuetAssignment, type CheckpointAssignment } from "../models/duet.js";
 import { arrangementCapacity, checkpointMatches, compactCheckpoint, type ArrangementCapacity } from "./arrangement-compaction.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
@@ -14,6 +14,7 @@ import { loadArrangementsSafe, ARRANGEMENT_MAX_BYTES } from "./arrangement-loade
 import { isArrangementConflicted } from "./arrangement-authority.js";
 import { readBoundedFile } from "./bounded-read.js";
 import { withProjectLock, runTransactionUnlocked, serializeJSON, prepareTicketWrite, prepareIssueWrite } from "./project-loader.js";
+import { readRosterWithBus, type BusRosterView, type LivenessProbe } from "./roster-view.js";
 
 export const DUET_STATE_MAX_BYTES = 2 * 1024 * 1024;
 const SILENCE_MS = 60 * 60 * 1000;
@@ -333,6 +334,177 @@ export async function rotateArrangement(root: string, id: string, clientTaskId?:
   return output!;
 }
 
+/**
+ * ISS-1290: `storybloq arrangement rebind`, owner-authorized succession.
+ *
+ * The parties of an arrangement are never edited in place. A rebind makes a
+ * successor with exactly one party replaced and closes the original with
+ * `continuedBy`, so the history of who held each role stays in the files.
+ *
+ * What travels is the TRACKED checkpoint, never the runtime: the old pen's
+ * runtime may be on a machine this one cannot see. The nonce, the receipts
+ * and the coordination session never travel, so the new pen must `start`
+ * (which seeds from the carried checkpoint) and prove the return route
+ * before any dispatch.
+ *
+ * Authorization is an attributed claim, not verification. The current pen
+ * may always rebind. Anyone else may only when this machine's roster shows
+ * no live pen seat AND the read is conclusive; liveness is machine-local, and
+ * the audit records how it was judged.
+ */
+export interface ArrangementRebindInput {
+  role: "pen" | "worker";
+  to: string;
+  client?: "claude" | "codex";
+  evidence: string;
+  clientTaskId?: string;
+}
+export interface ArrangementRebindResult {
+  predecessor: Arrangement;
+  successorId: string;
+  successor: Arrangement;
+  role: "pen" | "worker";
+  from: Identity;
+  to: Identity;
+  recordedBy: Identity;
+  evidence: string;
+  penLiveness: ArrangementRebind["penLiveness"];
+  livenessCause: string | null;
+  carriedAssignments: string[];
+  archivedAssignments: string[];
+  carriedEarmarks: string[];
+}
+export const REBIND_EVIDENCE_MAX = 4000;
+
+/**
+ * The first reason this roster view cannot prove the pen is absent, or null.
+ * Structured fields only: a truncated read or any global uncertainty could
+ * hide the pen's seat, and an unknown Bus probe matters only for the pen's
+ * own identity.
+ */
+function rosterReadInconclusive(view: BusRosterView, pen: Identity): string | null {
+  if (view.scanTruncated) return "roster scan cap reached (scanTruncated)";
+  if (view.resultTruncated) return "roster result cap reached (resultTruncated)";
+  if (view.busScanTruncated) return "Bus endpoint scan cap reached (busScanTruncated)";
+  for (const entry of view.readUncertainty ?? []) {
+    if (entry.source !== "bus-probe") return `${entry.source}: ${entry.cause}`;
+    if (entry.identity && entry.identity.client === pen.client && entry.identity.clientTaskId === pen.id) return `bus-probe: ${entry.cause} for the pen's endpoint`;
+  }
+  return null;
+}
+
+export async function rebindArrangement(
+  root: string,
+  id: string,
+  input: ArrangementRebindInput,
+  now = Date.now(),
+  probe?: LivenessProbe,
+): Promise<ArrangementRebindResult> {
+  ArrangementIdSchema.parse(id);
+  let output: ArrangementRebindResult | undefined;
+  await withProjectLock(root, { strict: true }, async ({ state: projectState }) => {
+    const arrangement = loadArrangementsSafe(root).arrangements.find(a => a.id === id);
+    if (!arrangement) throw new CliValidationError("not_found", `Arrangement ${id} not found or unreadable`);
+    if (arrangement.continuedBy) refuse(`Arrangement ${id} was already continued by ${arrangement.continuedBy}; rebind the successor`);
+    if (isArrangementConflicted(arrangement)) refuse(`Arrangement ${id} has unresolved merge conflicts; resolve them before rebinding`);
+    if (arrangement.lifecycle === "closed") refuse(`Arrangement ${id} is closed; a closed arrangement cannot be rebound`);
+    if (arrangement.bounds.some(ref => CROSS_NODE_REF_CAPTURE_REGEX.test(ref))) {
+      refuse(`Arrangement ${id} has node-qualified bounds; rotation cannot carry federated earmarks. Run storybloq arrangement compact ${id}, or close it and create a successor manually`);
+    }
+    if (input.evidence.trim() === "") refuse("Rebind evidence is required: say who authorized the succession and why");
+    if (input.evidence.length > REBIND_EVIDENCE_MAX) refuse(`Rebind evidence exceeds ${REBIND_EVIDENCE_MAX} characters`);
+    if (!CLIENT_TASK_ID_PATTERN.test(input.to)) refuse(`Rebind target "${input.to}" is not a valid client task id`);
+    const pair = parties(arrangement);
+    const from = input.role === "pen" ? pair.pen : pair.worker;
+    const other = input.role === "pen" ? pair.worker : pair.pen;
+    const to: Identity = { client: input.client ?? from.client, id: input.to };
+    if (same(to, from)) refuse(`${to.client}:${to.id} is already bound as the ${input.role}; nothing to rebind`);
+    if (same(to, other)) refuse(`${to.client}:${to.id} is the other party of this arrangement; one task cannot hold both roles`);
+    const actor = ownerTaskForCurrentClient(input.clientTaskId);
+    if (!actor) refuse("Rebind needs a resolved client task id; pass --client-task-id");
+    const recordedBy: Identity = { client: actor.client, id: actor.id };
+
+    // Liveness is read from THIS machine's roster only (machine-local).
+    const view = await readRosterWithBus(root, projectState.config, now, probe);
+    const live = view.seats.some(s => s.client === pair.pen.client && s.clientTaskId === pair.pen.id && s.agentId === null && s.state === "running" && !s.stale);
+    const livenessCause = live ? null : rosterReadInconclusive(view, pair.pen);
+    const penLiveness: ArrangementRebind["penLiveness"] = live ? "live" : livenessCause !== null ? "inconclusive" : "not-observed-locally";
+    if (!same(recordedBy, pair.pen)) {
+      if (live) refuse(`The current pen ${pair.pen.client}:${pair.pen.id} has a live seat on this machine; only the pen may rebind while its seat is live`);
+      if (livenessCause !== null) refuse(`Pen liveness could not be established from this machine's roster (${livenessCause}); only the pen may rebind until the roster reads cleanly`);
+    }
+
+    // The carried state is the tracked checkpoint. A readable local runtime
+    // that disagrees with it means two histories, and neither is chosen here.
+    let state: DuetState | null = null;
+    try { state = loadRuntime(root, id); } catch { state = null; }
+    if (state && !checkpointMatches(arrangement, state)) refuse("Local runtime diverges from the checkpoint; recover or compact first");
+
+    const at = new Date(now).toISOString();
+    const successorId = generateCanonicalId("a");
+    const {
+      id: _oldId, continuedBy: _oldContinuedBy, communicationReceipts: _oldReceipts, currentCoordinationSessionId: _oldSession,
+      coordinationCheckpoint: oldCheckpoint, rebind: _oldRebind, _conflicts: _oldConflicts, createdBy: _oldCreatedBy, ...carriedFields
+    } = arrangement;
+    const successorParties = arrangement.parties.map(p => p.role === input.role ? { role: input.role, client: to.client, identityAnchor: to.id } : p);
+    const newPair = input.role === "pen" ? { pen: to, worker: pair.worker } : { pen: pair.pen, worker: to };
+    const carriedCheckpoint = oldCheckpoint === undefined ? undefined : {
+      ...oldCheckpoint,
+      ...newPair,
+      assignments: oldCheckpoint.assignments.map(a =>
+        input.role === "worker" && !isCompactedAssignment(a) && a.status !== "resolved" ? { ...a, assignee: to } : a),
+    };
+    const audit: ArrangementRebind = { role: input.role, from: { client: from.client, identityAnchor: from.id }, to: { client: to.client, identityAnchor: to.id }, evidence: input.evidence, recordedBy, penLiveness, at };
+    const successor = ArrangementSchema.parse({
+      ...carriedFields,
+      id: successorId,
+      parties: successorParties,
+      createdDate: at.slice(0, 10),
+      updatedAt: at,
+      createdBy: actor.id,
+      rebind: audit,
+      ...(carriedCheckpoint !== undefined && { coordinationCheckpoint: carriedCheckpoint }),
+    });
+    const predecessor = ArrangementSchema.parse({ ...arrangement, lifecycle: "closed", continuedBy: successorId, updatedAt: at });
+    const successorContent = serializeJSON(successor);
+    const predecessorContent = serializeJSON(predecessor);
+    if (Buffer.byteLength(successorContent) > ARRANGEMENT_MAX_BYTES) capacityRefusal(successor, Buffer.byteLength(successorContent));
+    if (Buffer.byteLength(predecessorContent) > ARRANGEMENT_MAX_BYTES) capacityRefusal(predecessor, Buffer.byteLength(predecessorContent));
+
+    const itemWrites: Array<{ op: "write"; target: string; content: string }> = [];
+    const carriedEarmarks: string[] = [];
+    for (const ticket of projectState.tickets) {
+      if (!earmarkMatchesArrangement(ticket.earmark, id)) continue;
+      const { target, content } = await prepareTicketWrite({ ...ticket, earmark: { ...ticket.earmark!, arrangementId: successorId } }, root);
+      itemWrites.push({ op: "write", target, content });
+      carriedEarmarks.push(ticket.id);
+    }
+    for (const issue of projectState.issues) {
+      if (!earmarkMatchesArrangement(issue.earmark, id)) continue;
+      const { target, content } = await prepareIssueWrite({ ...issue, earmark: { ...issue.earmark!, arrangementId: successorId } }, root);
+      itemWrites.push({ op: "write", target, content });
+      carriedEarmarks.push(issue.id);
+    }
+
+    await runTransactionUnlocked(root, [
+      { op: "write", target: checkedPath(root, [".story", "arrangements", `${successorId}.json`], true), content: successorContent },
+      ...itemWrites,
+      { op: "write", target: checkedPath(root, [".story", "arrangements", `${id}.json`], true), content: predecessorContent },
+    ]);
+    const assignments = oldCheckpoint?.assignments ?? [];
+    output = {
+      predecessor, successorId, successor, role: input.role, from, to, recordedBy, evidence: input.evidence, penLiveness, livenessCause,
+      carriedAssignments: assignments.filter(a => !isCompactedAssignment(a) && a.status !== "resolved").map(assignmentIdOf),
+      archivedAssignments: [
+        ...(oldCheckpoint?.compactedAssignments ?? []).map(entry => entry.id),
+        ...assignments.filter(a => isCompactedAssignment(a) || a.status === "resolved").map(assignmentIdOf),
+      ],
+      carriedEarmarks,
+    };
+  });
+  return output!;
+}
+
 /** Operation identity and caller attribution are claims, never credentials. */
 export async function coordinateDuet(root: string, input: DuetOperation): Promise<DuetView> {
   const parsed = DuetOperationSchema.safeParse(input);
@@ -368,7 +540,12 @@ export async function coordinateDuet(root: string, input: DuetOperation): Promis
     }
     if ((arrangement.currentCoordinationSessionId ?? null) !== op.expectedSessionId) refuse("Stale coordination session; reload before writing");
     if (!state && op.action !== "start" && op.action !== "recover") refuse("Duet recovery required: start coordination first");
-    const checkRevision = () => { if ((state?.revision ?? 0) !== op.expectedRevision) refuse("Stale duet revision; reload before writing"); };
+    // ISS-1290: a rebind successor's first start seeds from the carried
+    // checkpoint, so its open work survives the first persist and its
+    // revision continues; every other start is unchanged.
+    const seed = op.action === "start" && !state && !arrangement.currentCoordinationSessionId && arrangement.rebind && arrangement.coordinationCheckpoint
+      ? arrangement.coordinationCheckpoint : undefined;
+    const checkRevision = () => { if ((state?.revision ?? seed?.revision ?? 0) !== op.expectedRevision) refuse("Stale duet revision; reload before writing"); };
     const now = new Date().toISOString();
     if (op.action === "recover") {
       const checkpoint = arrangement.coordinationCheckpoint;
@@ -382,7 +559,7 @@ export async function coordinateDuet(root: string, input: DuetOperation): Promis
       checkRevision();
       if (state && !arrangement.currentCoordinationSessionId) refuse("Duet recovery required: orphan runtime");
       if ((arrangement.communicationReceipts ?? []).some(r => r.coordinationSessionId === op.newSessionId)) refuse("Coordination session id has already been used");
-      state = { schemaVersion: 1, arrangementId: op.id, revision: state?.revision ?? 0, start: { sessionId: op.newSessionId, previousSessionId: op.expectedSessionId, expectedRevision: op.expectedRevision, mode: op.mode }, nonce: randomUUID(), ...pair, assignments: state?.assignments ?? [] };
+      state = { schemaVersion: 1, arrangementId: op.id, revision: state?.revision ?? seed?.revision ?? 0, start: { sessionId: op.newSessionId, previousSessionId: op.expectedSessionId, expectedRevision: op.expectedRevision, mode: op.mode }, nonce: randomUUID(), ...pair, assignments: state?.assignments ?? seed?.assignments ?? [] };
       arrangement.currentCoordinationSessionId = op.newSessionId;
     } else if (op.action === "receipt") {
       const receipt = op.receipt;

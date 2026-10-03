@@ -1,5 +1,5 @@
 import { computeIssueFlow, formatIssueFlow, ISSUE_FLOW_SEMANTICS } from "./issue-flow.js";
-import type { ArrangementCompactResult, ArrangementRotateResult, DuetRoute, DuetView } from "./duet-coordination.js";
+import type { ArrangementCompactResult, ArrangementRebindResult, ArrangementRotateResult, DuetRoute, DuetView } from "./duet-coordination.js";
 import { arrangementCapacity, type ArrangementCapacity } from "./arrangement-compaction.js";
 import { assignmentIdOf, isCompactedAssignment } from "../models/duet.js";
 import { displayIdOf } from "./resolver.js";
@@ -1949,6 +1949,44 @@ export function formatArrangementRotateResult(result: ArrangementRotateResult, f
     `Carried assignments: ${result.carriedAssignments.length === 0 ? "none" : escapeMarkdownInline(result.carriedAssignments.join(", "))}`,
     `Carried earmarks: ${result.carriedEarmarks.length === 0 ? "none" : escapeMarkdownInline(result.carriedEarmarks.join(", "))}`,
     `History stays in the closed arrangement; coordinate against ${successor} from now on.`,
+  ].join("\n");
+}
+
+const REBIND_LIVENESS_NOTE = "Liveness is machine-local: a pen on another machine reads as not live, so this rebind is an attributed claim backed by the evidence above.";
+
+/** ISS-1290: what `storybloq arrangement rebind` reports. */
+export function formatArrangementRebindResult(result: ArrangementRebindResult, format: OutputFormat): string {
+  const who = (i: { client: string; id: string }) => `${i.client}:${i.id}`;
+  if (format === "json") {
+    return JSON.stringify(successEnvelope({
+      id: result.predecessor.id,
+      successor: result.successorId,
+      role: result.role,
+      from: result.from,
+      to: result.to,
+      recordedBy: result.recordedBy,
+      penLiveness: result.penLiveness,
+      liveness: { observed: result.penLiveness, scope: "machine-local", cause: result.livenessCause, note: REBIND_LIVENESS_NOTE },
+      carriedAssignments: result.carriedAssignments,
+      archivedAssignments: result.archivedAssignments,
+      carriedEarmarks: result.carriedEarmarks,
+      coordinationSession: null,
+      next: "start",
+    }), null, 2);
+  }
+  const successor = escapeMarkdownInline(result.successorId);
+  const list = (ids: readonly string[]) => ids.length === 0 ? "none" : escapeMarkdownInline(ids.join(", "));
+  const observed = result.penLiveness === "live" ? "live"
+    : result.penLiveness === "inconclusive" ? `inconclusive (${escapeMarkdownInline(sanitizeDisplayText(result.livenessCause ?? "unknown cause"))})`
+    : "not observed on this machine";
+  return [
+    `Rebound ${result.role} of ${escapeMarkdownInline(result.predecessor.id)} into ${successor}: ${escapeMarkdownInline(who(result.from))} -> ${escapeMarkdownInline(who(result.to))}.`,
+    `Recorded by ${escapeMarkdownInline(who(result.recordedBy))}; evidence: ${escapeMarkdownInline(sanitizeDisplayText(result.evidence, MAX_PROSE_LENGTH))}.`,
+    `Pen liveness: ${observed}. ${REBIND_LIVENESS_NOTE}`,
+    `Carried assignments: ${list(result.carriedAssignments)}`,
+    `Archived ids (still refused): ${list(result.archivedAssignments)}`,
+    `Carried earmarks: ${list(result.carriedEarmarks)}`,
+    `No coordination session was copied. The new pen runs start on ${successor} and proves the return route before dispatch.`,
   ].join("\n");
 }
 

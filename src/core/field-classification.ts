@@ -196,6 +196,8 @@ const ARRANGEMENT_RULES: Record<string, MergeRule> = {
   currentCoordinationSessionId: { kind: "hard-conflict" },
   communicationReceipts: { kind: "hard-conflict" },
   coordinationCheckpoint: { kind: "hard-conflict" },
+  // ISS-1290: the succession audit, like parties: never merged silently.
+  rebind: { kind: "hard-conflict" },
 };
 
 // T-522 (P-3): a ruling's reviewed payload is ONE unit. Every member of the

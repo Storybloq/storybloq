@@ -140,6 +140,7 @@ import {
   handleArrangementGet,
   handleArrangementCreate,
   handleArrangementUpdate,
+  handleArrangementRebind,
 } from "../cli/commands/arrangement.js";
 import { ARRANGEMENT_ROLES, ARRANGEMENT_LIFECYCLE, ArrangementPartySchema, type ArrangementParty } from "../models/arrangement.js";
 import { DuetOperationSchema } from "../models/duet.js";
@@ -1285,6 +1286,21 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
     handleArrangementUpdate(args.id, { lifecycle: args.lifecycle }, format, root),
+  ));
+
+  // ISS-1290: owner-authorized succession. Markdown only, like every write tool.
+  server.registerTool("storybloq_arrangement_rebind", {
+    description: "Rebind one party of an arrangement into a successor: owner-authorized succession, the original is closed with continuedBy. An attributed claim, not authentication; liveness is machine-local. The new pen runs start on the successor and proves the return route before dispatch.",
+    inputSchema: {
+      id: ArrangementIdSchema.describe("e.g. a-[canonical]"),
+      role: z.enum(["pen", "worker"]).describe("Which party to replace"),
+      to: z.string().describe("The new task's client task id"),
+      client: z.enum(["claude", "codex"]).optional().describe("The new task's client (default: the replaced party's client)"),
+      evidence: z.string().min(1).max(4000).describe("Who authorized the succession and why (recorded verbatim)"),
+      clientTaskId: z.string().optional().describe("Caller's client task id (recorded as recordedBy)"),
+    },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) =>
+    handleArrangementRebind(args.id, { role: args.role, to: args.to, client: args.client, evidence: args.evidence, clientTaskId: args.clientTaskId }, format, root),
   ));
 
   // --- Ruling tools (T-476) ---

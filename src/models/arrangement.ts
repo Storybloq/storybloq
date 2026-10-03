@@ -106,6 +106,28 @@ export const ArrangementUnreachabilitySchema = z
   })
   .passthrough();
 
+const RebindAnchorSchema = z.string().min(1).max(128).regex(CLIENT_TASK_ID_PATTERN, IDENTITY_ANCHOR_FORMAT_MESSAGE);
+const RebindClientSchema = z.enum(["claude", "codex"]);
+/**
+ * ISS-1290: the audit `storybloq arrangement rebind` writes on the successor
+ * it creates. Authorization is an attributed claim, never verification:
+ * `recordedBy` is who said so, `evidence` is what they offered, and
+ * `penLiveness` is what this machine's roster showed at the time (a pen on
+ * another machine reads as not live, so the claim says how it was judged).
+ */
+export const ArrangementRebindSchema = z
+  .object({
+    role: z.enum(ARRANGEMENT_ROLES),
+    from: z.object({ client: RebindClientSchema, identityAnchor: RebindAnchorSchema }).strict(),
+    to: z.object({ client: RebindClientSchema, identityAnchor: RebindAnchorSchema }).strict(),
+    evidence: z.string().min(1).max(4000),
+    recordedBy: z.object({ client: RebindClientSchema, id: RebindAnchorSchema }).strict(),
+    penLiveness: z.enum(["live", "not-observed-locally", "inconclusive"]),
+    at: TimestampSchema,
+  })
+  .strict();
+export type ArrangementRebind = z.infer<typeof ArrangementRebindSchema>;
+
 export const ArrangementSchema = z
   .object({
     id: ArrangementIdSchema,
@@ -130,6 +152,8 @@ export const ArrangementSchema = z
     // terminal: a continued arrangement refuses coordination and refuses any
     // lifecycle change, so the same work can never run in two places.
     continuedBy: ArrangementIdSchema.optional(),
+    // ISS-1290: present only on a successor `arrangement rebind` created.
+    rebind: ArrangementRebindSchema.optional(),
     treeProtocol: z
       .object({
         pathScopes: z.array(z.string()).optional(),

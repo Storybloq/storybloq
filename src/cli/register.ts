@@ -126,6 +126,7 @@ import {
   handleArrangementUpdate,
   handleArrangementCompact,
   handleArrangementRotate,
+  handleArrangementRebind,
 } from "./commands/arrangement.js";
 import { ARRANGEMENT_LIFECYCLE, ARRANGEMENT_ROLES, type ArrangementParty } from "../models/arrangement.js";
 import { handleDuetCoordinate, parseDuetOperation } from "./commands/duet.js";
@@ -3542,7 +3543,34 @@ export function registerArrangementCommand(yargs: Argv): Argv {
             );
           },
         )
-        .demandCommand(1, "Specify an arrangement subcommand: list, get, create, update, compact, rotate, coordinate")
+        // ISS-1290: owner-authorized succession; an attributed claim, not
+        // authentication. Liveness is read from this machine's roster only.
+        .command(
+          "rebind <id>",
+          "Rebind one party of an arrangement into a successor (owner-authorized succession; the original is closed)",
+          (y2) =>
+            addFormatOption(
+              y2
+                .positional("id", { type: "string", demandOption: true, describe: "Arrangement ID (e.g. a-[canonical])" })
+                .option("role", { type: "string", choices: ["pen", "worker"] as const, demandOption: true, describe: "Which party to replace" })
+                .option("to", { type: "string", demandOption: true, describe: "The new task's client task id" })
+                .option("client", { type: "string", choices: ["claude", "codex"] as const, describe: "The new task's client (default: the replaced party's client)" })
+                .option("evidence", { type: "string", demandOption: true, describe: "Who authorized the succession and why (recorded verbatim, at most 4000 characters)" })
+                .option("client-task-id", { type: "string", describe: "Caller's client task id (recorded as recordedBy)" }),
+            ),
+          async (argv) => {
+            await runArrangementMaintenance(argv, (format, root) =>
+              handleArrangementRebind(argv.id as string, {
+                role: argv.role as "pen" | "worker",
+                to: argv.to as string,
+                client: argv.client as "claude" | "codex" | undefined,
+                evidence: argv.evidence as string,
+                clientTaskId: argv.clientTaskId as string | undefined,
+              }, format, root),
+            );
+          },
+        )
+        .demandCommand(1, "Specify an arrangement subcommand: list, get, create, update, compact, rotate, rebind, coordinate")
         .strict(),
     () => {},
   );

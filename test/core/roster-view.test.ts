@@ -7,7 +7,7 @@
  * aggregation (root plus every reachable node, each seat labelled).
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import { joinEndpoint } from "../../src/bus/endpoints.js";
 import { initializeBus } from "../../src/bus/admin.js";
 import type { BusEndpoint } from "../../src/bus/schemas.js";
 import type { Config } from "../../src/models/config.js";
+import { handleRosterList, rosterListMarkdown } from "../../src/cli/commands/roster.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -269,3 +270,81 @@ function badConfigNode(tag: string): string {
   writeFileSync(join(nodeDir, ".story", "config.json"), "{not json");
   return nodeDir;
 }
+
+describe("readRosterWithBus: structured read uncertainty (ISS-1290)", () => {
+  it("V1: a probe that throws and a probe that reads unknown are each kept as bus-probe uncertainty with identity; seats are as before", async () => {
+    const { root, config } = await project("probe-unknown", true);
+    await initializeBus(root);
+    const a = (await joinEndpoint(root, { client: "codex", clientTaskId: "task-throws", surface: "codex_cli" })).endpoint;
+    const b = (await joinEndpoint(root, { client: "codex", clientTaskId: "task-unknown", surface: "codex_cli" })).endpoint;
+    const probe: LivenessProbe = async (e) => {
+      if (e.endpointId === a.endpointId) throw new Error("probe failed");
+      return "unknown";
+    };
+    const view = await readRosterWithBus(root, config, Date.now(), probe);
+    expect(view.seats).toEqual([]);
+    expect(view.live).toBe(0);
+    const entries = [...(view.readUncertainty ?? [])].sort((x, y) => (x.endpointId ?? "").localeCompare(y.endpointId ?? ""));
+    const expected = [
+      { source: "bus-probe", cause: "probe threw", identity: { client: "codex", clientTaskId: "task-throws" }, endpointId: a.endpointId },
+      { source: "bus-probe", cause: "unknown", identity: { client: "codex", clientTaskId: "task-unknown" }, endpointId: b.endpointId },
+    ].sort((x, y) => x.endpointId.localeCompare(y.endpointId));
+    expect(entries).toEqual(expected);
+  });
+
+  it("V2: a retired endpoint, the Bus disabled, and an uninitialised Bus add no uncertainty", async () => {
+    const { root, config } = await project("no-uncertainty", true);
+    expect("readUncertainty" in (await readRosterWithBus(root, config, Date.now(), async () => "unknown"))).toBe(false);
+    await initializeBus(root);
+    const live = (await joinEndpoint(root, { client: "claude", clientTaskId: "bus-live", surface: "claude_cli" })).endpoint;
+    cloneEndpoint(root, live, { clientTaskId: "bus-retired", retiredAt: iso(T0) });
+    const probe: LivenessProbe = async () => "attached";
+    expect("readUncertainty" in (await readRosterWithBus(root, config, Date.now(), probe))).toBe(false);
+    const off = { ...config, features: { ...config.features, bus: false } } as Config;
+    expect("readUncertainty" in (await readRosterWithBus(root, off, Date.now(), async () => "unknown"))).toBe(false);
+  });
+
+  it("V3: an unreadable endpoint file is a bus-endpoint uncertainty", async () => {
+    const { root, config } = await project("endpoint-garbage", true);
+    await initializeBus(root);
+    writeFileSync(join(root, ".story", "bus", "endpoints", `${randomUUID()}.json`), "{ not json");
+    const view = await readRosterWithBus(root, config, Date.now(), async () => "attached");
+    expect(view.readUncertainty?.map((u) => u.source)).toEqual(["bus-endpoint"]);
+  });
+
+  it("V5: an endpoint-named symlink is a bus-endpoint uncertainty, never followed; diagnostics are unchanged", async () => {
+    const { root, config } = await project("endpoint-symlink", true);
+    await initializeBus(root);
+    const endpoint = (await joinEndpoint(root, { client: "codex", clientTaskId: "linked-task", surface: "codex_cli" })).endpoint;
+    const probed: string[] = [];
+    const probe: LivenessProbe = async (e) => { probed.push(e.endpointId); return "attached"; };
+    const clean = await readRosterWithBus(root, config, Date.now(), probe);
+    const elsewhere = mkdtempSync(join(tmpdir(), "endpoint-elsewhere-"));
+    roots.push(elsewhere);
+    const file = join(root, ".story", "bus", "endpoints", `${endpoint.endpointId}.json`);
+    renameSync(file, join(elsewhere, "endpoint.json"));
+    symlinkSync(join(elsewhere, "endpoint.json"), file);
+    probed.length = 0;
+    const view = await readRosterWithBus(root, config, Date.now(), probe);
+    expect(view.readUncertainty).toEqual([{ source: "bus-endpoint", cause: `${endpoint.endpointId}.json: not a regular file` }]);
+    expect(view.seats.some((s) => s.clientTaskId === "linked-task")).toBe(false);
+    expect(probed).toEqual([]);
+    expect(view.diagnostics).toEqual(clean.diagnostics);
+  });
+
+  it("V4: roster list prints none of the new field: the JSON key set is exactly the existing one and Markdown does not mention it", async () => {
+    const { root } = await project("printer");
+    upsertSeat(root, seatStart("task-a"), iso(T0));
+    writeFileSync(join(root, ".story", "telemetry", "roster", `${"0".repeat(64)}.json`), "{ not json");
+    const { state } = await loadProject(root);
+    const ctx = (format: "json" | "md") => ({ root, state, warnings: [], handoversDir: join(root, ".story", "handovers"), format }) as never;
+    const json = JSON.parse((await handleRosterList(ctx("json"), {}, T0 + 1)).output).data;
+    expect(Object.keys(json).sort()).toEqual(["busScanTruncated", "diagnostics", "includesTerminal", "live", "resultTruncated", "scanTruncated", "seats", "stale", "terminal"]);
+    const md = (await handleRosterList(ctx("md"), {}, T0 + 1)).output;
+    const view = await readRosterWithBus(root, state.config, T0 + 1);
+    expect(view.readUncertainty?.map(u => u.source)).toEqual(["roster-entry"]);
+    const { readUncertainty: _dropped, ...withoutField } = view;
+    expect(md).toBe(rosterListMarkdown(withoutField, false, withoutField.seats.filter(s => s.state === "running")));
+    expect(md).not.toMatch(/readUncertainty|roster-entry|uncertainty/i);
+  });
+});

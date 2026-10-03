@@ -2,7 +2,7 @@ import { withProjectLock, writeTicketUnlocked, writeIssueUnlocked, loadProject }
 import { loadArrangementsSafe, writeArrangementUnlocked } from "../../core/arrangement-loader.js";
 import { isArrangementConflicted } from "../../core/arrangement-authority.js";
 import { handleDuetGet } from "./duet.js";
-import { compactArrangementCheckpoint, rotateArrangement } from "../../core/duet-coordination.js";
+import { compactArrangementCheckpoint, rebindArrangement, rotateArrangement, type ArrangementRebindInput } from "../../core/duet-coordination.js";
 import { earmarkMatchesArrangement } from "../../core/earmarks.js";
 import { generateCanonicalId } from "../../core/canonical-id.js";
 import { summarizeZodIssues, describeSchemaIssues } from "../../core/zod-issues.js";
@@ -10,6 +10,7 @@ import { resolveNodeRoot } from "../../mcp/node-resolution.js";
 import { withOrchestratorAndItemLocks } from "../../core/orchestrator-item-lock.js";
 import {
   formatArrangementList,
+  formatArrangementRebindResult,
   formatArrangementCreateResult,
   formatArrangementUpdateResult,
   formatArrangementCompactResult,
@@ -171,6 +172,21 @@ export async function handleArrangementRotate(
 ): Promise<CommandResult> {
   const result = await rotateArrangement(root, id, args.clientTaskId);
   return { output: formatArrangementRotateResult(result, format) };
+}
+
+/**
+ * ISS-1290: owner-authorized succession. A successor with one party
+ * replaced; the original is closed with `continuedBy`. Shared by the CLI and
+ * the MCP tool.
+ */
+export async function handleArrangementRebind(
+  id: string,
+  args: ArrangementRebindInput,
+  format: OutputFormat,
+  root: string,
+): Promise<CommandResult> {
+  const result = await rebindArrangement(root, id, args);
+  return { output: formatArrangementRebindResult(result, format) };
 }
 
 // --- Write handlers ---

@@ -180,7 +180,7 @@ export interface RosterListOptions {
   readonly all?: boolean;
 }
 
-function rosterListMarkdown(view: BusRosterView, includesTerminal: boolean, seats: BusRosterView["seats"]): string {
+export function rosterListMarkdown(view: BusRosterView, includesTerminal: boolean, seats: BusRosterView["seats"]): string {
   const lines: string[] = [
     "# Roster",
     "",

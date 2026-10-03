@@ -17,11 +17,13 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 import { isBusEnabled } from "../bus/config.js";
 import { endpointLiveness } from "../bus/endpoints.js";
-import { listRegularJsonFiles, readJsonNoFollow } from "../bus/io.js";
+import { readJsonNoFollow } from "../bus/io.js";
+import { BusError } from "../bus/errors.js";
 import { resolveBusPaths } from "../bus/paths.js";
 import { BusEndpointSchema, type BusEndpoint } from "../bus/schemas.js";
 import { readBoundedNoFollow } from "../presence/io.js";
@@ -36,6 +38,7 @@ import {
   type BusSeatSource,
   type RosterSeatView,
   type RosterView,
+  type RosterReadUncertainty,
 } from "./roster.js";
 
 /** A roster view plus whether the Bus endpoint input itself was cut. */
@@ -71,12 +74,36 @@ const NODE_CONFIG_MAX_BYTES = 256 * 1024;
  * at most `ROSTER_SCAN_CAP` are read (no-follow, byte-capped, schema-checked),
  * and whether more existed is reported. `listEndpoints` reads everything; the
  * roster is a status side-read and must not.
+ *
+ * ISS-1290: every `*.json` name is a candidate, cut at the cap BEFORE any type
+ * check, and each is lstat'd, never followed. A symlink or other non-regular
+ * entry is returned in `unsafe` rather than silently dropped, so a caller can
+ * tell "no endpoint" from "an endpoint it refused to read". `unsafe` is kept
+ * out of `findings`, so the printed diagnostics are unchanged.
  */
-async function listEndpointsBounded(endpointsDir: string): Promise<{ endpoints: BusEndpoint[]; findings: string[]; truncated: boolean }> {
-  const names = await listRegularJsonFiles(endpointsDir);
+async function listEndpointsBounded(endpointsDir: string): Promise<{ endpoints: BusEndpoint[]; findings: string[]; unsafe: string[]; truncated: boolean }> {
+  let entries;
+  try {
+    entries = await readdir(endpointsDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { endpoints: [], findings: [], unsafe: [], truncated: false };
+    throw new BusError("io_error", `Cannot enumerate ${basename(endpointsDir)}`, err);
+  }
+  const candidates = entries.map((entry) => entry.name).filter((name) => name.endsWith(".json")).sort();
   const endpoints: BusEndpoint[] = [];
   const findings: string[] = [];
-  for (const filename of names.slice(0, ROSTER_SCAN_CAP)) {
+  const unsafe: string[] = [];
+  for (const filename of candidates.slice(0, ROSTER_SCAN_CAP)) {
+    try {
+      const st = await lstat(join(endpointsDir, filename));
+      if (!st.isFile()) {
+        unsafe.push(`${filename}: not a regular file`);
+        continue;
+      }
+    } catch (err) {
+      unsafe.push(`${filename}: ${(err as NodeJS.ErrnoException).code ?? "lstat failed"}`);
+      continue;
+    }
     try {
       const endpoint = await readJsonNoFollow(join(endpointsDir, filename), BusEndpointSchema);
       if (filename !== `${endpoint.endpointId}.json`) {
@@ -88,7 +115,7 @@ async function listEndpointsBounded(endpointsDir: string): Promise<{ endpoints: 
       findings.push(`${filename}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  return { endpoints, findings, truncated: names.length > ROSTER_SCAN_CAP };
+  return { endpoints, findings, unsafe, truncated: candidates.length > ROSTER_SCAN_CAP };
 }
 
 function toBusSource(endpoint: BusEndpoint, liveness: "attached" | "offline" | "unknown"): BusSeatSource {
@@ -122,6 +149,7 @@ export async function readRosterWithBus(
   let endpoints: BusEndpoint[];
   let busScanTruncated = false;
   const diagnostics = [...base.diagnostics];
+  const uncertainty: RosterReadUncertainty[] = [...(base.readUncertainty ?? [])];
   try {
     // The feature flag alone is not a runtime: a project that turned the Bus
     // on but never ran `storybloq bus setup` has no endpoints directory, and
@@ -135,16 +163,24 @@ export async function readRosterWithBus(
     endpoints = listed.endpoints;
     busScanTruncated = listed.truncated;
     for (const finding of listed.findings.slice(0, 8)) diagnostics.push(`bus endpoint skipped: ${finding}`);
+    for (const finding of [...listed.findings, ...listed.unsafe]) uncertainty.push({ source: "bus-endpoint", cause: finding });
   } catch (err) {
-    diagnostics.push(`bus endpoints unreadable: ${err instanceof Error ? err.message : String(err)}`);
-    return { ...base, diagnostics, busScanTruncated: false };
+    const cause = err instanceof Error ? err.message : String(err);
+    diagnostics.push(`bus endpoints unreadable: ${cause}`);
+    uncertainty.push({ source: "bus-endpoints", cause });
+    return { ...base, diagnostics, busScanTruncated: false, readUncertainty: uncertainty };
   }
+  const probeUnknown = (endpoint: BusEndpoint, cause: string) =>
+    uncertainty.push({ source: "bus-probe", cause, identity: { client: endpoint.client, clientTaskId: endpoint.clientTaskId }, endpointId: endpoint.endpointId });
   const sources = await Promise.all(
     endpoints.map(async (endpoint) => {
       if (endpoint.retiredAt !== null) return toBusSource(endpoint, "unknown");
       try {
-        return toBusSource(endpoint, await probe(endpoint));
+        const liveness = await probe(endpoint);
+        if (liveness === "unknown") probeUnknown(endpoint, "unknown");
+        return toBusSource(endpoint, liveness);
       } catch {
+        probeUnknown(endpoint, "probe threw");
         return toBusSource(endpoint, "unknown");
       }
     }),
@@ -154,6 +190,7 @@ export async function readRosterWithBus(
     scanTruncated: base.scanTruncated,
     resultTruncated: base.resultTruncated || merged.resultTruncated,
     diagnostics,
+    uncertainty,
   });
   return { ...view, busScanTruncated };
 }

@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -38,14 +38,24 @@ const lockHook = vi.hoisted(() => ({ onAcquired: null as null | ((lock: string, 
 // A seam on directory enumeration so one test can hand the reader its entries
 // in the reverse of whatever order the filesystem chose: a reader that sorts
 // is unmoved, a reader that trusts enumeration order is not.
-const fsHook = vi.hoisted(() => ({ reverseListing: false }));
+// ISS-1290: `lstatFail` makes lstat of exactly one path fail with an errno,
+// delegating every other call, so the directory classification is checked on
+// every platform (a chmod test cannot run as root).
+const fsHook = vi.hoisted(() => ({ reverseListing: false, lstatFail: null as null | { path: string; code: string } }));
 vi.mock("node:fs", async (importOriginal) => {
   const orig = await importOriginal<typeof import("node:fs")>();
   const readdirSync = ((path: unknown, options?: unknown) => {
     const out = (orig.readdirSync as (p: unknown, o?: unknown) => unknown[])(path, options);
     return fsHook.reverseListing && Array.isArray(out) ? [...out].reverse() : out;
   }) as typeof orig.readdirSync;
-  return { ...orig, default: { ...orig, readdirSync }, readdirSync };
+  const lstatSync = ((path: unknown, options?: unknown) => {
+    const fail = fsHook.lstatFail;
+    if (fail !== null && String(path) === fail.path) {
+      throw Object.assign(new Error(`${fail.code}: injected, lstat '${String(path)}'`), { code: fail.code });
+    }
+    return (orig.lstatSync as (p: unknown, o?: unknown) => unknown)(path, options);
+  }) as typeof orig.lstatSync;
+  return { ...orig, default: { ...orig, readdirSync, lstatSync }, readdirSync, lstatSync };
 });
 vi.mock("../../src/presence/io.js", async (importOriginal) => {
   const orig = await importOriginal<typeof import("../../src/presence/io.js")>();
@@ -61,7 +71,11 @@ vi.mock("../../src/presence/io.js", async (importOriginal) => {
 
 const roots: string[] = [];
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  fsHook.lstatFail = null;
+  for (const root of roots.splice(0)) {
+    try { chmodSync(join(root, ".story", "telemetry"), 0o755); } catch { /* absent */ }
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 function makeRoot(): string {
@@ -585,5 +599,57 @@ describe("contacts.json is not read by any code path (ISS-1205 acceptance 4)", (
     };
     walk(srcRoot);
     expect(hits).toEqual([]);
+  });
+});
+
+describe("readRoster: structured read uncertainty (ISS-1290)", () => {
+  it("U0: an lstat failure on the roster level is a roster-directory uncertainty, not absence (runs everywhere)", () => {
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "telemetry", "roster"), { recursive: true });
+    fsHook.lstatFail = { path: join(root, ".story", "telemetry", "roster"), code: "EACCES" };
+    const view = readRoster(root, T0);
+    expect(view.seats).toEqual([]);
+    expect(view.readUncertainty).toHaveLength(1);
+    expect(view.readUncertainty![0]!.source).toBe("roster-directory");
+    expect(view.readUncertainty![0]!.cause).toMatch(/roster.*EACCES/);
+    expect(view.diagnostics).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("U1: a telemetry level that cannot be searched (chmod 000) is a roster-directory uncertainty naming EACCES", () => {
+    const root = makeRoot();
+    mkdirSync(join(root, ".story", "telemetry", "roster"), { recursive: true });
+    chmodSync(join(root, ".story", "telemetry"), 0o000);
+    const view = readRoster(root, T0);
+    expect(view.seats).toEqual([]);
+    expect(view.readUncertainty?.map((u) => u.source)).toEqual(["roster-directory"]);
+    expect(view.readUncertainty![0]!.cause).toMatch(/EACCES/);
+    expect(view.diagnostics).toEqual([]);
+  });
+
+  it("U2: a symlinked roster directory is a roster-directory uncertainty: not a real directory", () => {
+    const root = makeRoot();
+    const elsewhere = mkdtempSync(join(tmpdir(), "roster-elsewhere-"));
+    roots.push(elsewhere);
+    mkdirSync(join(root, ".story", "telemetry"), { recursive: true });
+    symlinkSync(elsewhere, join(root, ".story", "telemetry", "roster"));
+    const view = readRoster(root, T0);
+    expect(view.readUncertainty).toEqual([{ source: "roster-directory", cause: expect.stringMatching(/not a real directory/) }]);
+  });
+
+  it("U3: an absent telemetry directory is genuinely empty: no readUncertainty key at all", () => {
+    const root = makeRoot();
+    const view = readRoster(root, T0);
+    expect("readUncertainty" in view).toBe(false);
+  });
+
+  it("U4: an invalid record is a roster-entry uncertainty; the diagnostics string is unchanged", async () => {
+    const root = makeRoot();
+    const { upsertSeat } = await import("../../src/core/roster.js");
+    expect(upsertSeat(root, start(), iso(T0)).ok).toBe(true);
+    writeFileSync(join(root, ".story", "telemetry", "roster", `${"0".repeat(64)}.json`), "{ not json");
+    const view = readRoster(root, T0);
+    expect(view.diagnostics).toEqual(["1 roster entry unreadable or invalid"]);
+    expect(view.readUncertainty).toEqual([{ source: "roster-entry", cause: "1 unreadable or invalid" }]);
+    expect(view.seats.map((s) => s.clientTaskId)).toEqual(["task-a"]);
   });
 });

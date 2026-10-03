@@ -5,6 +5,7 @@ import { z } from "zod";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerAllTools } from "../../src/mcp/tools.js";
 import { initProject } from "../../src/core/init.js";
+import { writeArrangementUnlocked } from "../../src/core/arrangement-loader.js";
 import { handleTicketCreate } from "../../src/cli/commands/ticket.js";
 import { ArrangementPartySchema } from "../../src/models/arrangement.js";
 import { IDENTITY_ANCHOR_FORMAT_MESSAGE } from "../../src/models/types.js";
@@ -234,5 +235,45 @@ describe("arrangement MCP tools (T-473, amendment A3)", () => {
       expect(result.isError).toBeFalsy();
       expect(result.content[0]!.text).not.toContain("Warning:");
     });
+  });
+});
+
+describe("storybloq_arrangement_rebind (ISS-1290)", () => {
+  const rebindId = "a-0123456789abcdef";
+  async function rebindProject() {
+    const root = await mkdtemp(join(tmpdir(), "mcp-arrangement-rebind-"));
+    tempDirs.push(root);
+    await initProject(root, { name: "test" });
+    await writeArrangementUnlocked({
+      id: rebindId, lifecycle: "active", bounds: ["ISS-1290"], gates: [],
+      parties: PARTIES, unreachability: { onIrreversibleWork: "hold" },
+      createdDate: "2026-09-10", updatedAt: "2026-09-10T00:00:00.000Z",
+    } as never, root);
+    return root;
+  }
+
+  it("M1: the registered tool rebinds through the write pipeline and answers in Markdown only", async () => {
+    const root = await rebindProject();
+    const tool = captureTools(root).get("storybloq_arrangement_rebind")!;
+    expect(tool).toBeDefined();
+    expect(Object.keys(tool.config.inputSchema!.shape)).not.toContain("format");
+    const result = await tool.handler({ id: rebindId, role: "pen", to: "new-pen", evidence: "owner ruled succession", clientTaskId: "new-pen" });
+    expect(result.isError).not.toBe(true);
+    const text = result.content[0]!.text;
+    expect(text).toContain("Rebound pen of");
+    expect(text).toContain("Liveness is machine-local: a pen on another machine reads as not live");
+    expect(text).toContain("No coordination session was copied");
+    const predecessor = JSON.parse(await readFile(join(root, ".story", "arrangements", `${rebindId}.json`), "utf-8"));
+    expect(predecessor.continuedBy).toMatch(/^a-/);
+  });
+
+  it("M2: evidence is required and bounded by the tool schema", async () => {
+    const root = await rebindProject();
+    const schema = captureTools(root).get("storybloq_arrangement_rebind")!.config.inputSchema!;
+    const base = { id: rebindId, role: "pen", to: "new-pen" };
+    expect(schema.safeParse(base).success).toBe(false);
+    expect(schema.safeParse({ ...base, evidence: "" }).success).toBe(false);
+    expect(schema.safeParse({ ...base, evidence: "e".repeat(4001) }).success).toBe(false);
+    expect(schema.safeParse({ ...base, evidence: "e".repeat(4000) }).success).toBe(true);
   });
 });

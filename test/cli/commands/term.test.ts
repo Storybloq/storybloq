@@ -525,7 +525,10 @@ describe("status carries the glossary's SIZE and nothing else", () => {
   it("leaves the markdown rendering and the compact payload alone", async () => {
     const root = await newRepo();
     await handleTermAdd(PEN, "md", root);
-    expect((await handleStatus(ctxFor(root, "md"))).output).not.toContain("glossary");
+    // ISS-1107: the uncommitted-board section may name the glossary file; the
+    // rendering above it carries nothing of the glossary.
+    const markdown = (await handleStatus(ctxFor(root, "md"))).output.split("\n## Board not committed")[0]!;
+    expect(markdown).not.toContain("glossary");
     const compact = JSON.parse((await handleStatus(ctxFor(root, "json"), null, { compact: true })).output);
     expect(compact.data.glossary).toBeUndefined();
     // Compact really did render, so the absence above is about the payload and

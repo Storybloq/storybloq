@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "data": {
+    "project": "fixture",
+    "totalTickets": 1,
+    "completeTickets": 0,
+    "openTickets": 1,
+    "blockedTickets": 0,
+    "openIssues": 1,
+    "issueFlow": {
+      "open": 1,
+      "windowDays": 30,
+      "opened": 1,
+      "resolved": 0,
+      "net": 1,
+      "missingDates": 0,
+      "futureDates": 0,
+      "activeWithResolvedDate": 0
+    },
+    "activeNotes": 0,
+    "activeLessons": 0,
+    "handovers": 0,
+    "isEmptyScaffold": false,
+    "phases": [
+      {
+        "id": "p0",
+        "name": "Setup",
+        "status": "notstarted",
+        "leafCount": 1
+      }
+    ],
+    "activeSessions": [],
+    "resumableSessions": [],
+    "expiredLeaseSessions": [],
+    "sessionDiagnostics": [],
+    "bus": {
+      "enabled": false,
+      "daemonState": "stopped",
+      "deliveryMode": "poll",
+      "pendingMessages": 0,
+      "unacknowledgedCritical": 0,
+      "nextActions": [
+        "run: storybloq bus setup"
+      ]
+    },
+    "arrangements": [],
+    "arrangementWarnings": []
+  }
+}

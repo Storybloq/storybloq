@@ -9,9 +9,10 @@
 import type { Argv } from "yargs";
 import type { CodexReviewKind } from "./commands/codex-review.js";
 import type { SetupClient } from "./commands/setup-skill.js";
-import { runReadCommand, runReadCommandWithRoot, runDeleteCommand, writeOutput, outputFormatOf, applyHandlerWarnings } from "./run.js";
+import { runReadCommand, runReadCommandWithRoot, runDeleteCommand, writeOutput, outputFormatOf, applyHandlerWarnings, runBoardWrite, type BoardWriteArgv } from "./run.js";
 import {
   addFormatOption,
+  addCommitOption,
   parseOutputFormat,
   parseTicketId,
   parseIssueId,
@@ -296,7 +297,7 @@ export function registerProjectionCommand(yargs: Argv): Argv {
         .command(
           "write",
           "Regenerate the decisions projection, with a full freshness check",
-          (y2) => addFormatOption(y2),
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(y2))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -305,7 +306,7 @@ export function registerProjectionCommand(yargs: Argv): Argv {
               process.exitCode = ExitCode.USER_ERROR;
               return;
             }
-            const result = await (await import("./commands/projection.js")).handleProjectionWrite(format, root);
+            const result = await runBoardWrite(argv, format, async () => (await import("./commands/projection.js")).handleProjectionWrite(format, root));
             writeOutput(result.output, format);
             process.exitCode = result.exitCode ?? ExitCode.OK;
           },
@@ -881,7 +882,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a new handover document",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .option("content", {
@@ -906,7 +907,7 @@ export function registerHandoverCommand(yargs: Argv): Argv {
                   }
                   return true;
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -941,12 +942,12 @@ export function registerHandoverCommand(yargs: Argv): Argv {
             }
 
             try {
-              const result = await handleHandoverCreate(
+              const result = await runBoardWrite(argv, format, async () => handleHandoverCreate(
                 content,
                 argv.slug as string,
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1014,7 +1015,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
         .command(
           "add",
           "Add a new blocker",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .option("name", {
@@ -1026,7 +1027,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Optional note",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -1045,14 +1046,14 @@ export function registerBlockerCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleBlockerAdd(
+              const result = await runBoardWrite(argv, format, async () => handleBlockerAdd(
                 {
                   name: argv.name as string,
                   note: argv.note as string | undefined,
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1079,7 +1080,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
         .command(
           "clear",
           "Clear (resolve) a blocker",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .option("name", {
@@ -1091,7 +1092,7 @@ export function registerBlockerCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Optional note",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -1110,12 +1111,12 @@ export function registerBlockerCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleBlockerClear(
+              const result = await runBoardWrite(argv, format, async () => handleBlockerClear(
                 argv.name as string,
                 argv.note as string | undefined,
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1236,7 +1237,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a new ticket",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addNodeOption(addFormatOption(
               arrayOptions(y2
                 .option("title", {
@@ -1270,7 +1271,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
                 "cites-ruling": { ...SPLIT_LIST, describe: "Ruling IDs this ticket cites (e.g. r-[canonical])" },
               },
-            ))),
+            ))))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const orchRoot = (
@@ -1299,7 +1300,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
               if (argv.stdin) {
                 description = await readStdinContent();
               }
-              const result = await handleTicketCreate(
+              const result = await runBoardWrite(argv, format, async () => handleTicketCreate(
                 {
                   title: argv.title as string,
                   type: argv.type as string,
@@ -1315,7 +1316,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 },
                 format,
                 eff.root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1342,7 +1343,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Update a ticket",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("id", {
@@ -1409,7 +1410,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   requireValue: "Use --clear-cites-rulings to clear.",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1447,7 +1448,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 rawCrossNode === undefined
                   ? undefined
                   : rawCrossNode.length > 0 ? rawCrossNode : null;
-              const result = await handleTicketUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleTicketUpdate(
                 id,
                 {
                   status: argv.status as string | undefined,
@@ -1465,7 +1466,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 format,
                 eff.root,
                 argv.force as boolean,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1492,7 +1493,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "meta <operation> <id> [path] [value]",
           "Get, set, or unset custom ticket metadata",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("operation", {
@@ -1514,7 +1515,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "JSON value for set; wrap strings in quotes",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1553,14 +1554,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 throw new CliValidationError("invalid_input", "Metadata value is required for set");
               }
               const result = operation === "set"
-                ? await handleTicketMetaSet(
+                ? await runBoardWrite(argv, format, async () => handleTicketMetaSet(
                   id,
                   path,
                   parseMetadataValue(rawValue!),
                   format,
                   root,
-                )
-                : await handleTicketMetaUnset(id, path, format, root);
+                ))
+                : await runBoardWrite(argv, format, async () => handleTicketMetaUnset(id, path, format, root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1587,13 +1588,13 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "move <id>",
           "Move a ticket relative to another (fractional rank)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Ticket ID to move" })
                 .option("after", { type: "string", describe: "Place after this ticket" })
                 .option("before", { type: "string", describe: "Place before this ticket" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1605,11 +1606,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
             }
             try {
               const { handleTicketMove } = await import("./commands/move.js");
-              const result = await handleTicketMove(id, root, {
+              const result = await runBoardWrite(argv, format, async () => handleTicketMove(id, root, {
                 after: argv.after as string | undefined,
                 before: argv.before as string | undefined,
                 format: format as "md" | "json",
-              });
+              }));
               writeOutput(result.output, format);
               if (result.exitCode) process.exitCode = result.exitCode;
             } catch (err: unknown) {
@@ -1628,7 +1629,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "delete <id>",
           "Delete a ticket",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -1646,14 +1647,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Force physical removal (skip soft delete in team mode)",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
             const force = argv.force as boolean;
             const hard = argv.hard as boolean;
             const { resolveAndNormalizeTicketRef } = await import("../core/ref-normalization.js");
-            await runDeleteCommand(format, force, async (ctx) => {
+            await runDeleteCommand(argv, format, force, async (ctx) => {
               const resolvedId = resolveAndNormalizeTicketRef(ctx.state, id);
               const ticket = ctx.state.ticketByID(resolvedId);
               return handleTicketDelete(resolvedId, force, format, ctx.root, hard, ticket?.displayId ?? resolvedId);
@@ -1663,9 +1664,9 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "unclaim <id>",
           "Remove claim from a ticket",
-          (y2) => addFormatOption(
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(
             y2.positional("id", { type: "string", demandOption: true, describe: "Ticket ID" }),
-          ),
+          ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1691,7 +1692,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleTicketUnclaim(id, format, eff.root);
+              const result = await runBoardWrite(argv, format, async () => handleTicketUnclaim(id, format, eff.root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1718,10 +1719,10 @@ export function registerTicketCommand(yargs: Argv): Argv {
         .command(
           "start <id>",
           "Claim a ticket and set status to inprogress",
-          (y2) => addFormatOption(
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(
             y2.positional("id", { type: "string", demandOption: true, describe: "Ticket ID" })
               .option("force", { type: "boolean", default: false, describe: "Take over a teammate's claim without a warning (claims are advisory; start never hard-blocks)" }),
-          ),
+          ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseTicketId(argv.id as string);
@@ -1748,7 +1749,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleTicketStart(id, format, eff.root, force);
+              const result = await runBoardWrite(argv, format, async () => handleTicketStart(id, format, eff.root, force));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1849,7 +1850,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a new issue",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .option("title", {
@@ -1899,7 +1900,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 },
                 "cites-ruling": { ...SPLIT_LIST, describe: "Ruling IDs this issue cites (e.g. r-[canonical])" },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -1922,7 +1923,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
               if (argv.stdin) {
                 impact = await readStdinContent();
               }
-              const result = await handleIssueCreate(
+              const result = await runBoardWrite(argv, format, async () => handleIssueCreate(
                 {
                   title: argv.title as string,
                   severity: argv.severity as string,
@@ -1938,7 +1939,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -1965,7 +1966,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Update an issue",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("id", {
@@ -2025,7 +2026,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   requireValue: "Use --clear-cites-rulings to clear.",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseIssueId(argv.id as string);
@@ -2049,7 +2050,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
               if (argv.stdin) {
                 impact = await readStdinContent();
               }
-              const result = await handleIssueUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleIssueUpdate(
                 id,
                 {
                   status: argv.status as string | undefined,
@@ -2071,7 +2072,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2098,7 +2099,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
         .command(
           "meta <operation> <id> [path] [value]",
           "Get, set, or unset custom issue metadata",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("operation", {
@@ -2120,7 +2121,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "JSON value for set; wrap strings in quotes",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseIssueId(argv.id as string);
@@ -2159,14 +2160,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 throw new CliValidationError("invalid_input", "Metadata value is required for set");
               }
               const result = operation === "set"
-                ? await handleIssueMetaSet(
+                ? await runBoardWrite(argv, format, async () => handleIssueMetaSet(
                   id,
                   path,
                   parseMetadataValue(rawValue!),
                   format,
                   root,
-                )
-                : await handleIssueMetaUnset(id, path, format, root);
+                ))
+                : await runBoardWrite(argv, format, async () => handleIssueMetaUnset(id, path, format, root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2193,7 +2194,7 @@ export function registerIssueCommand(yargs: Argv): Argv {
         .command(
           "delete <id>",
           "Delete an issue",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -2206,13 +2207,13 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Force physical removal (skip soft delete in team mode)",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseIssueId(argv.id as string);
             const hard = argv.hard as boolean;
             const { resolveAndNormalizeIssueRef } = await import("../core/ref-normalization.js");
-            await runDeleteCommand(format, false, async (ctx) => {
+            await runDeleteCommand(argv, format, false, async (ctx) => {
               const resolvedId = resolveAndNormalizeIssueRef(ctx.state, id);
               const issue = ctx.state.issueByID(resolvedId);
               return handleIssueDelete(resolvedId, format, ctx.root, hard, issue?.displayId ?? resolvedId);
@@ -2287,7 +2288,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a new phase",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .option("id", {
@@ -2327,7 +2328,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Node name (orchestrator only)",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const orchRoot = (
@@ -2352,7 +2353,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handlePhaseCreate(
+              const result = await runBoardWrite(argv, format, async () => handlePhaseCreate(
                 {
                   id: argv.id as string,
                   name: argv.name as string,
@@ -2364,7 +2365,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 },
                 format,
                 eff.root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2391,7 +2392,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
         .command(
           "rename <id>",
           "Rename/update phase metadata",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -2415,7 +2416,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "New summary",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = argv.id as string;
@@ -2435,7 +2436,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handlePhaseRename(
+              const result = await runBoardWrite(argv, format, async () => handlePhaseRename(
                 id,
                 {
                   name: argv.name as string | undefined,
@@ -2445,7 +2446,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2472,7 +2473,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
         .command(
           "move <id>",
           "Move a phase to a new position",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -2489,7 +2490,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Move to the beginning",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = argv.id as string;
@@ -2509,7 +2510,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handlePhaseMove(
+              const result = await runBoardWrite(argv, format, async () => handlePhaseMove(
                 id,
                 {
                   after: argv.after as string | undefined,
@@ -2517,7 +2518,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2544,7 +2545,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
         .command(
           "delete <id>",
           "Delete a phase",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -2556,7 +2557,7 @@ export function registerPhaseCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Move tickets/issues to this phase",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = argv.id as string;
@@ -2576,12 +2577,12 @@ export function registerPhaseCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handlePhaseDelete(
+              const result = await runBoardWrite(argv, format, async () => handlePhaseDelete(
                 id,
                 argv.reassign as string | undefined,
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2622,14 +2623,14 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
   return yargs.command(
     "snapshot",
     "Save current project state for session diffs",
-    (y) =>
+    (y: Argv) => addCommitOption(((y) =>
       addFormatOption(
         y.option("quiet", {
           type: "boolean",
           default: false,
           describe: "Suppress output (for hook usage)",
         }),
-      ),
+      ))(y)),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       const quiet = argv.quiet as boolean;
@@ -2650,7 +2651,7 @@ export function registerSnapshotCommand(yargs: Argv): Argv {
         return;
       }
       try {
-        const result = await handleSnapshot(root, format, { quiet });
+        const result = await runBoardWrite(argv, format, async () => handleSnapshot(root, format, { quiet }));
         if (!quiet && result.output) {
           writeOutput(result.output, format);
         }
@@ -2857,7 +2858,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a note",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .option("content", {
@@ -2882,7 +2883,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   return true;
                 }),
               { tags: { ...SPLIT_LIST, describe: "Tags for the note" } },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -2904,7 +2905,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
               } else {
                 content = argv.content as string;
               }
-              const result = await handleNoteCreate(
+              const result = await runBoardWrite(argv, format, async () => handleNoteCreate(
                 {
                   content,
                   title: argv.title as string | undefined ?? null,
@@ -2912,7 +2913,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -2936,7 +2937,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Update a note",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("id", {
@@ -2974,7 +2975,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   requireValue: "Use --clear-tags to clear tags.",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseNoteId(argv.id as string);
@@ -2998,7 +2999,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
             }
 
             try {
-              const result = await handleNoteUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleNoteUpdate(
                 id,
                 {
                   content,
@@ -3011,7 +3012,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -3035,7 +3036,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
         .command(
           "delete <id>",
           "Delete a note",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -3048,13 +3049,13 @@ export function registerNoteCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Force physical removal (skip soft delete in team mode)",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseNoteId(argv.id as string);
             const hard = argv.hard as boolean;
             const { resolveAndNormalizeNoteRef } = await import("../core/ref-normalization.js");
-            await runDeleteCommand(format, false, async (ctx) => {
+            await runDeleteCommand(argv, format, false, async (ctx) => {
               const resolvedId = resolveAndNormalizeNoteRef(ctx.state, id);
               const note = ctx.state.noteByID(resolvedId);
               return handleNoteDelete(resolvedId, format, ctx.root, hard, note?.displayId ?? resolvedId);
@@ -3080,7 +3081,7 @@ export function registerNoteCommand(yargs: Argv): Argv {
  * subcommand, factored out rather than pasted a third and fourth time.
  */
 async function runArrangementMaintenance(
-  argv: { format?: string },
+  argv: { format?: string } & BoardWriteArgv,
   run: (format: ReturnType<typeof parseOutputFormat>, root: string) => Promise<{ output: string; exitCode?: number }>,
 ): Promise<void> {
   const format = parseOutputFormat(argv.format as string);
@@ -3091,7 +3092,7 @@ async function runArrangementMaintenance(
     return;
   }
   try {
-    const result = await run(format, root);
+    const result = await runBoardWrite(argv, format, () => run(format, root));
     writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {
@@ -3327,17 +3328,17 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "coordinate <id>",
           "Record a pen-owned duet coordination operation",
-          (y2) => addFormatOption(y2
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(y2
             .positional("id", { type: "string", demandOption: true })
             .option("json", { type: "string", demandOption: true, describe: "Typed start/receipt/assign/update/recover operation including expectedSessionId and expectedRevision" })
-            .option("client-task-id", { type: "string", describe: "Explicit caller task identity" })),
+            .option("client-task-id", { type: "string", describe: "Explicit caller task identity" })))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             try {
               const input = parseDuetOperation(argv.id as string, argv.json as string, argv["client-task-id"] as string | undefined);
               const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
               if (!root) throw new CliValidationError("not_found", "No .story/ project found.");
-              const result = await handleDuetCoordinate(input, format, root);
+              const result = await runBoardWrite(argv, format, async () => handleDuetCoordinate(input, format, root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (error) {
@@ -3385,7 +3386,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a new arrangement",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -3419,7 +3420,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                   },
                 },
               ).demandOption(["bounds", "party"]),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3430,7 +3431,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
             }
             try {
               const parties = (argv.party as string[]).map(parsePartySpec);
-              const result = await handleArrangementCreate(
+              const result = await runBoardWrite(argv, format, async () => handleArrangementCreate(
                 {
                   bounds: argv.bounds as string[],
                   parties,
@@ -3439,7 +3440,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -3463,7 +3464,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Update an arrangement",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -3476,7 +3477,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                   choices: ARRANGEMENT_LIFECYCLE,
                   describe: "New lifecycle",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3486,12 +3487,12 @@ export function registerArrangementCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleArrangementUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleArrangementUpdate(
                 argv.id as string,
                 { lifecycle: argv.lifecycle as string | undefined },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -3517,12 +3518,12 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "compact <id>",
           "Compact an arrangement's coordination checkpoint (reduces resolved assignments)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Arrangement ID (e.g. a-[canonical])" })
                 .option("client-task-id", { type: "string", describe: "Caller's client task id; must match the arrangement's pen" }),
-            ),
+            ))(y)),
           async (argv) => {
             await runArrangementMaintenance(argv, (format, root) =>
               handleArrangementCompact(argv.id as string, { clientTaskId: argv.clientTaskId as string | undefined }, format, root),
@@ -3532,12 +3533,12 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "rotate <id>",
           "Close an arrangement and carry its open work forward into a fresh successor",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Arrangement ID (e.g. a-[canonical])" })
                 .option("client-task-id", { type: "string", describe: "Caller's client task id; must match the arrangement's pen" }),
-            ),
+            ))(y)),
           async (argv) => {
             await runArrangementMaintenance(argv, (format, root) =>
               handleArrangementRotate(argv.id as string, { clientTaskId: argv.clientTaskId as string | undefined }, format, root),
@@ -3549,7 +3550,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
         .command(
           "rebind <id>",
           "Rebind one party of an arrangement into a successor (owner-authorized succession; the original is closed)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Arrangement ID (e.g. a-[canonical])" })
@@ -3558,7 +3559,7 @@ export function registerArrangementCommand(yargs: Argv): Argv {
                 .option("client", { type: "string", choices: ["claude", "codex"] as const, describe: "The new task's client (default: the replaced party's client)" })
                 .option("evidence", { type: "string", demandOption: true, describe: "Who authorized the succession and why (recorded verbatim, at most 4000 characters)" })
                 .option("client-task-id", { type: "string", describe: "Caller's client task id (recorded as recordedBy)" }),
-            ),
+            ))(y)),
           async (argv) => {
             await runArrangementMaintenance(argv, (format, root) =>
               handleArrangementRebind(argv.id as string, {
@@ -3599,7 +3600,7 @@ function narrativeArgs(argv: Record<string, unknown>): NarrativeArgs {
 }
 
 /** Root discovery plus the ruling write handlers' shared error rendering. */
-async function runRulingWrite(format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
+async function runRulingWrite(argv: BoardWriteArgv, format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
     writeOutput(formatError("not_found", "No .story/ project found.", format), format);
@@ -3607,7 +3608,7 @@ async function runRulingWrite(format: RulingOutputFormat, fn: (root: string) => 
     return;
   }
   try {
-    const result = await fn(root);
+    const result = await runBoardWrite(argv, format, () => fn(root));
     writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
     // T-528: a ruling write succeeded, so the projection is regenerated once.
@@ -3675,7 +3676,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Record a new ruling. Text is byte-verbatim: no markdown cleanup, no editing inside the quote.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -3701,7 +3702,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
                   },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3711,7 +3712,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleRulingCreate(
+              const result = await runBoardWrite(argv, format, async () => handleRulingCreate(
                 {
                   text: argv.text as string,
                   attribution: argv.attribution as string,
@@ -3723,7 +3724,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
               if (process.exitCode === ExitCode.OK) await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
@@ -3748,7 +3749,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
         .command(
           "supersede <id>",
           "Supersede a ruling -- link an existing ruling with --with, or create a new superseding ruling with --text/--attribution/--date",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -3765,7 +3766,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
                   .conflicts("with", "date"),
                 { "scope-tag": { ...SPLIT_LIST, describe: "Scope tag for a new superseding ruling (repeatable)" } },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3775,7 +3776,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleRulingSupersede(
+              const result = await runBoardWrite(argv, format, async () => handleRulingSupersede(
                 argv.id as string,
                 {
                   withId: argv.with as string | undefined,
@@ -3789,7 +3790,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
               if (process.exitCode === ExitCode.OK) await (await import("./commands/projection.js")).refreshProjectionAfterWrite(root);
@@ -3814,7 +3815,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
         .command(
           "propose",
           "Propose a ruling (T-522). A proposal binds nothing until `ruling accept` records who ruled; drafting a replacement revokes nothing.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -3829,10 +3830,10 @@ export function registerRulingCommand(yargs: Argv): Argv {
                   for: { ...SPLIT_LIST, describe: "Ticket or issue the proposal is for (repeatable). Written on the proposal only; the item gains the citation at accept, never before" },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runRulingWrite(format, (root) =>
+            await runRulingWrite(argv, format, (root) =>
               handleRulingPropose(
                 {
                   text: argv.text as string,
@@ -3853,7 +3854,7 @@ export function registerRulingCommand(yargs: Argv): Argv {
         .command(
           "accept <id>",
           "Accept a proposed ruling (T-522): records a claim of authority and cites it from every item it was proposed for, in one transaction. --revision is the digest of what was reviewed (from `ruling get`), not proof of who approved.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Proposed ruling ID" })
@@ -3862,10 +3863,10 @@ export function registerRulingCommand(yargs: Argv): Argv {
                 .option("date", { type: "string", demandOption: true, describe: "Acceptance date (YYYY-MM-DD)" })
                 .option("branch", { type: "boolean", default: false, describe: "Knowingly accept a second successor for the proposal's target (a branch)" })
                 .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runRulingWrite(format, (root) =>
+            await runRulingWrite(argv, format, (root) =>
               handleRulingAccept(
                 argv.id as string,
                 {
@@ -3884,16 +3885,16 @@ export function registerRulingCommand(yargs: Argv): Argv {
         .command(
           "withdraw <id>",
           "Withdraw a proposed ruling (T-522). Proposed records only; an accepted ruling is superseded, never withdrawn.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Proposed ruling ID" })
                 .option("reason", { type: "string", describe: "Why it is withdrawn (recorded on the record)" })
                 .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runRulingWrite(format, (root) =>
+            await runRulingWrite(argv, format, (root) =>
               handleRulingWithdraw(
                 argv.id as string,
                 { reason: argv.reason as string | undefined, clientTaskId: argv["client-task-id"] as string | undefined },
@@ -3950,7 +3951,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a gate-ack",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .option("arrangement", { type: "string", demandOption: true, describe: "Arrangement ID this gate-ack authorizes against" })
@@ -3968,7 +3969,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
                     "(a note, a follow-up-issue pointer) -- never a condition requiring the staged content to differ, " +
                     "since by the time this ack is checked the commit it applies to has already been made.",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -3978,7 +3979,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleGateAckCreate(
+              const result = await runBoardWrite(argv, format, async () => handleGateAckCreate(
                 {
                   arrangement: argv.arrangement as string,
                   gate: argv.gate as string,
@@ -3992,7 +3993,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4016,12 +4017,12 @@ export function registerGateAckCommand(yargs: Argv): Argv {
         .command(
           "contest <id>",
           "Mark a gate-ack contested (record + surfaced flag only, T-474 acceptance 6)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Gate-ack ID" })
                 .option("reason", { type: "string", demandOption: true, describe: "Why this ack is contested" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -4031,7 +4032,7 @@ export function registerGateAckCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleGateAckContest(argv.id as string, argv.reason as string, format, root);
+              const result = await runBoardWrite(argv, format, async () => handleGateAckContest(argv.id as string, argv.reason as string, format, root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4127,13 +4128,13 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
         .command(
           "reserve <ref>",
           "Reserve a ticket or issue for a role, pending pickup",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
                 .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role this reservation is held for" })
                 .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -4151,12 +4152,12 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
               // single-effective-root pattern (used by ticket/issue commands),
               // which has no way to express "two different roots for two
               // different purposes in the same call."
-              const result = await handleEarmarkReserve(
+              const result = await runBoardWrite(argv, format, async () => handleEarmarkReserve(
                 { ref: argv.ref as string, role: argv.role as (typeof EARMARK_ROLES)[number], arrangement: argv.arrangement as string | undefined },
                 format,
                 root,
                 argv.node as string | undefined,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4180,14 +4181,14 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
         .command(
           "assign <ref>",
           "Assign a ticket or issue's earmark directly to a live session (direct placement, or an explicit reserved -> assigned conversion)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
                 .option("to", { type: "string", demandOption: true, describe: "Target session selector (id or unambiguous prefix)" })
                 .option("role", { type: "string", choices: EARMARK_ROLES, demandOption: true, describe: "Role the target session must hold on the covering arrangement" })
                 .option("arrangement", { type: "string", describe: "Covering arrangement ID; required if more than one active arrangement covers this item" }),
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -4197,7 +4198,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleEarmarkAssign(
+              const result = await runBoardWrite(argv, format, async () => handleEarmarkAssign(
                 {
                   ref: argv.ref as string,
                   to: argv.to as string,
@@ -4207,7 +4208,7 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
                 format,
                 root,
                 argv.node as string | undefined,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4231,12 +4232,12 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
         .command(
           "release <ref>",
           "Release (clear) a ticket or issue's earmark",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addNodeOption(addFormatOption(
               y2
                 .positional("ref", { type: "string", demandOption: true, describe: "Ticket or issue ref" })
                 .option("arrangement", { type: "string", describe: "Sanity check only: must match the earmark's own authorizing arrangement ID if given (release authorizes via that stored ID, not current bounds coverage)" }),
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
@@ -4246,12 +4247,12 @@ export function registerEarmarkCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleEarmarkRelease(
+              const result = await runBoardWrite(argv, format, async () => handleEarmarkRelease(
                 { ref: argv.ref as string, arrangement: argv.arrangement as string | undefined },
                 format,
                 root,
                 argv.node as string | undefined,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4478,7 +4479,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
         .command(
           "create",
           "Create a lesson",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .option("title", {
@@ -4519,7 +4520,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   return true;
                 }),
               { tags: { ...SPLIT_LIST, describe: "Tags for the lesson" } },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -4541,7 +4542,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
               } else {
                 content = argv.content as string;
               }
-              const result = await handleLessonCreate(
+              const result = await runBoardWrite(argv, format, async () => handleLessonCreate(
                 {
                   title: argv.title as string,
                   content,
@@ -4552,7 +4553,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4576,7 +4577,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Update a lesson",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("id", {
@@ -4618,7 +4619,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   requireValue: "Use --clear-tags to clear tags.",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseLessonId(argv.id as string);
@@ -4642,7 +4643,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
             }
 
             try {
-              const result = await handleLessonUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleLessonUpdate(
                 id,
                 {
                   title: argv.title as string | undefined,
@@ -4654,7 +4655,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4678,14 +4679,14 @@ export function registerLessonCommand(yargs: Argv): Argv {
         .command(
           "reinforce <id>",
           "Reinforce a lesson -- increment reinforcement count and update lastValidated",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2.positional("id", {
                 type: "string",
                 demandOption: true,
                 describe: "Lesson ID (e.g. L-001)",
               }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseLessonId(argv.id as string);
@@ -4701,7 +4702,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleLessonReinforce(id, format, root);
+              const result = await runBoardWrite(argv, format, async () => handleLessonReinforce(id, format, root));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4725,7 +4726,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
         .command(
           "delete <id>",
           "Delete a lesson",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", {
@@ -4738,7 +4739,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Force physical removal (skip soft delete in team mode)",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const id = parseLessonId(argv.id as string);
@@ -4760,7 +4761,7 @@ export function registerLessonCommand(yargs: Argv): Argv {
               const { state } = await loadProject(root);
               const resolvedId = resolveAndNormalizeLessonRef(state, id);
               const lesson = state.lessonByID(resolvedId);
-              const result = await handleLessonDelete(resolvedId, format, root, hard, lesson?.displayId ?? resolvedId);
+              const result = await runBoardWrite(argv, format, async () => handleLessonDelete(resolvedId, format, root, hard, lesson?.displayId ?? resolvedId));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4807,7 +4808,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
         .command(
           "add <name>",
           "Add a node to orchestrator config",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("name", {
@@ -4843,7 +4844,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   describe: "Runtime link (node or node:via_desc)",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -4860,7 +4861,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 if (colonIdx === -1) return { to: l };
                 return { to: l.slice(0, colonIdx), via: l.slice(colonIdx + 1) };
               });
-              const result = await handleNodeAdd(
+              const result = await runBoardWrite(argv, format, async () => handleNodeAdd(
                 {
                   name: argv.name as string,
                   path: argv.path as string,
@@ -4873,7 +4874,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4897,13 +4898,13 @@ export function registerNodeCommand(yargs: Argv): Argv {
         .command(
           "link [orchestrator]",
           "Record which orchestrator THIS project belongs to (run from the node)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2.positional("orchestrator", {
                 type: "string",
                 describe: "Path to the orchestrator project (defaults to the recorded one, revalidated)",
               }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -4915,13 +4916,13 @@ export function registerNodeCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleNodeLink(
+              const result = await runBoardWrite(argv, format, async () => handleNodeLink(
                 // T-520: resolved against the SHELL's directory, not the
                 // project root -- see `resolveOrchestratorArg`.
                 { orchestrator: resolveOrchestratorArg(argv.orchestrator, process.cwd()) },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4934,7 +4935,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
         .command(
           "remove <name>",
           "Remove a node from orchestrator config",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("name", {
@@ -4952,7 +4953,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   default: false,
                   describe: "Remove and clean dependsOn references in other nodes",
                 }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -4964,7 +4965,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
               return;
             }
             try {
-              const result = await handleNodeRemove(
+              const result = await runBoardWrite(argv, format, async () => handleNodeRemove(
                 argv.name as string,
                 {
                   force: argv.force as boolean,
@@ -4972,7 +4973,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -4996,7 +4997,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
         .command(
           "update <name>",
           "Update an existing node's metadata",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(y2
                 .positional("name", {
@@ -5041,7 +5042,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                   describe: "Replace links (node or node:via_desc)",
                 },
               },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const root = (
@@ -5058,7 +5059,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 if (colonIdx === -1) return { to: l };
                 return { to: l.slice(0, colonIdx), via: l.slice(colonIdx + 1) };
               });
-              const result = await handleNodeUpdate(
+              const result = await runBoardWrite(argv, format, async () => handleNodeUpdate(
                 argv.name as string,
                 {
                   path: argv.path as string | undefined,
@@ -5073,7 +5074,7 @@ export function registerNodeCommand(yargs: Argv): Argv {
                 },
                 format,
                 root,
-              );
+              ));
               writeOutput(result.output, format);
               process.exitCode = result.exitCode ?? ExitCode.OK;
             } catch (err: unknown) {
@@ -5396,7 +5397,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
       y.command(
         "set-overrides",
         "Set or clear recipe overrides in config.json",
-        (y2) =>
+        (y: Argv) => addCommitOption(((y2) =>
           addFormatOption(y2
             .option("json", {
               type: "string",
@@ -5409,13 +5410,13 @@ export function registerConfigCommand(yargs: Argv): Argv {
             .option("deep", {
               type: "boolean",
               describe: "Deep-merge --json instead of shallow: objects recurse, null deletes at any depth, arrays and scalars replace",
-            })),
+            })))(y)),
         async (argv) => {
           const { handleConfigSetOverrides } = await import("./commands/config-update.js");
           const { writeOutput } = await import("./run.js");
           const format = argv.format as "json" | "md";
           try {
-            const result = await handleConfigSetOverrides(
+            const result = await runBoardWrite(argv, format, async () => handleConfigSetOverrides(
               process.cwd(),
               format,
               {
@@ -5423,7 +5424,7 @@ export function registerConfigCommand(yargs: Argv): Argv {
                 clear: argv.clear === true,
                 deep: argv.deep === true,
               },
-            );
+            ));
             writeOutput(result.output, format);
             if (result.errorCode) process.exitCode = 1;
           } catch (err: unknown) {
@@ -5442,12 +5443,12 @@ export function registerConfigCommand(yargs: Argv): Argv {
       .command(
         "set-federation",
         "Set federation settings (orchestrator only)",
-        (y2) =>
+        (y: Argv) => addCommitOption(((y2) =>
           addFormatOption(y2
             .option("allow-node-writes", {
               type: "boolean",
               describe: "Allow orchestrator MCP tools to write to node .story/ directories",
-            })),
+            })))(y)),
         async (argv) => {
           const { handleConfigSetFederation } = await import("./commands/config-update.js");
           const { writeOutput } = await import("./run.js");
@@ -5461,9 +5462,9 @@ export function registerConfigCommand(yargs: Argv): Argv {
             return;
           }
           try {
-            const result = await handleConfigSetFederation(root, format, {
+            const result = await runBoardWrite(argv, format, async () => handleConfigSetFederation(root, format, {
               allowNodeWrites: argv["allow-node-writes"] as boolean | undefined,
-            });
+            }));
             writeOutput(result.output, format);
             if (result.errorCode) process.exitCode = 1;
           } catch (err: unknown) {
@@ -6341,7 +6342,7 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
         .command(
           "add",
           "Add a capability. Stamps the checkpoint at HEAD, so run it when you have actually read the entry points.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -6368,10 +6369,10 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   term: { ...SPLIT_LIST, describe: "Glossary term ID this defines or uses (repeatable)" },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) =>
+            await runCatalogWrite(argv, format, (root) =>
               handleCapabilityAdd(capabilityWriteInput(argv), format, root), true,
             );
           },
@@ -6379,7 +6380,7 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
         .command(
           "update <id>",
           "Edit a capability. Never touches the checkpoint: an edit is not an inspection.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -6404,10 +6405,10 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
                   term: { ...SPLIT_LIST, describe: "Term IDs, replacing the current list (repeatable)" },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) =>
+            await runCatalogWrite(argv, format, (root) =>
               handleCapabilityUpdate({ ...capabilityWriteInput(argv), id: argv.id as string }, format, root), true,
             );
           },
@@ -6452,24 +6453,24 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
         .command(
           "defer <id>",
           "Record work owed on a capability without doing it: sets a pending note and the review flag, touches nothing else, runs no check",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Capability ID" })
                 .option("note", { type: "string", demandOption: true, describe: "One sentence naming the owed work" })
                 .option("issue", { type: "string", describe: "Follow-up issue that owns the work (must exist)" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             // Through the read pipeline for ctx.state (the --issue lookup); the
             // write happens inside the handler, as `check` does it.
             await runReadCommand(format, async (ctx) => {
-              const result = await handleCapabilityDefer(
+              const result = await runBoardWrite(argv, format, async () => handleCapabilityDefer(
                 { id: argv.id as string, note: argv.note as string, issue: argv.issue as string | undefined },
                 format,
                 ctx.root,
                 ctx,
-              );
+              ));
               if ((result.exitCode ?? ExitCode.OK) === ExitCode.OK) {
                 await (await import("./commands/projection.js")).refreshProjectionAfterWrite(ctx.root);
               }
@@ -6480,10 +6481,10 @@ export function registerCapabilityCommand(yargs: Argv): Argv {
         .command(
           "restore <id>",
           "Restore one capability entry to its projection at --from, refused unless it still matches its projection at --expect",
-          (y2) => addRestoreOptions(y2.positional("id", { type: "string", demandOption: true, describe: "Capability ID" })),
+          (y: Argv) => addCommitOption(((y2) => addRestoreOptions(y2.positional("id", { type: "string", demandOption: true, describe: "Capability ID" })))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) =>
+            await runCatalogWrite(argv, format, (root) =>
               handleCapabilityRestore({ id: argv.id as string, from: argv.from as string, expect: argv.expect as string }, format, root), true,
             );
           },
@@ -6522,6 +6523,7 @@ function capabilityWriteInput(argv: Record<string, unknown>): CapabilityWriteInp
 
 /** Root discovery plus the error mapping every catalog write shares: capabilities and terms both. */
 async function runCatalogWrite(
+  argv: BoardWriteArgv,
   format: ReturnType<typeof parseOutputFormat>,
   run: (root: string) => Promise<{ output: string; exitCode?: number }>,
   /** T-528: the capability and term families regenerate the decisions projection after a successful write. */
@@ -6535,7 +6537,7 @@ async function runCatalogWrite(
     return;
   }
   try {
-    const result = await run(root);
+    const result = await runBoardWrite(argv, format, () => run(root));
     writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
     if (refreshProjection && process.exitCode === ExitCode.OK) {
@@ -6643,7 +6645,7 @@ export function registerTermCommand(yargs: Argv): Argv {
         .command(
           "add",
           "Add a term. One word belongs to one entry, so a name another entry already owns is refused.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -6659,16 +6661,16 @@ export function registerTermCommand(yargs: Argv): Argv {
                   ruling: { ...SPLIT_LIST, describe: "Ruling ID that settled this term (repeatable)" },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) => handleTermAdd(termWriteInput(argv), format, root), true);
+            await runCatalogWrite(argv, format, (root) => handleTermAdd(termWriteInput(argv), format, root), true);
           },
         )
         .command(
           "update <id>",
           "Edit a term. Supplied list flags replace the stored lists.",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               arrayOptions(
                 y2
@@ -6685,10 +6687,10 @@ export function registerTermCommand(yargs: Argv): Argv {
                   ruling: { ...SPLIT_LIST, describe: "Ruling IDs, replacing the current list (repeatable)" },
                 },
               ),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) =>
+            await runCatalogWrite(argv, format, (root) =>
               handleTermUpdate({ ...termWriteInput(argv), id: argv.id as string, clearPending: argv["clear-pending"] as boolean | undefined }, format, root), true,
             );
           },
@@ -6696,24 +6698,24 @@ export function registerTermCommand(yargs: Argv): Argv {
         .command(
           "defer <id>",
           "Record work owed on a term without doing it: sets a pending note, touches nothing else",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Term ID" })
                 .option("note", { type: "string", demandOption: true, describe: "One sentence naming the owed work" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) => handleTermDefer({ id: argv.id as string, note: argv.note as string }, format, root), true);
+            await runCatalogWrite(argv, format, (root) => handleTermDefer({ id: argv.id as string, note: argv.note as string }, format, root), true);
           },
         )
         .command(
           "restore <id>",
           "Restore one term to its projection at --from, refused unless it still matches its projection at --expect",
-          (y2) => addRestoreOptions(y2.positional("id", { type: "string", demandOption: true, describe: "Term ID" })),
+          (y: Argv) => addCommitOption(((y2) => addRestoreOptions(y2.positional("id", { type: "string", demandOption: true, describe: "Term ID" })))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) =>
+            await runCatalogWrite(argv, format, (root) =>
               handleTermRestore({ id: argv.id as string, from: argv.from as string, expect: argv.expect as string }, format, root), true,
             );
           },
@@ -6721,10 +6723,10 @@ export function registerTermCommand(yargs: Argv): Argv {
         .command(
           "remove <id>",
           "Remove a term. Refused while any capability references it: the other file is never edited to make this possible.",
-          (y2) => addFormatOption(y2.positional("id", { type: "string", demandOption: true, describe: "Term ID" })),
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(y2.positional("id", { type: "string", demandOption: true, describe: "Term ID" })))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
-            await runCatalogWrite(format, (root) => handleTermRemove(argv.id as string, format, root), true);
+            await runCatalogWrite(argv, format, (root) => handleTermRemove(argv.id as string, format, root), true);
           },
         ),
   );
@@ -6755,13 +6757,13 @@ export function registerLedgerCommand(yargs: Argv): Argv {
       .command(
         "restore <path>",
         "Restore one ruling, note or issue file to its bytes at --from, refused unless it still matches its projection at --expect",
-        (y2) =>
+        (y: Argv) => addCommitOption(((y2) =>
           addRestoreOptions(
             y2.positional("path", { type: "string", demandOption: true, describe: "Repo-relative path: .story/<rulings|notes|issues>/<id>.json" }),
-          ),
+          ))(y)),
         async (argv) => {
           const format = parseOutputFormat(argv.format);
-          await runCatalogWrite(format, (root) =>
+          await runCatalogWrite(argv, format, (root) =>
             handleLedgerRestore({ path: argv.path as string, from: argv.from as string, expect: argv.expect as string }, format, root),
           );
         },
@@ -6778,7 +6780,7 @@ export function registerBriefCommand(yargs: Argv): Argv {
   return yargs.command(
     "brief <id>",
     "The context brief for a ticket or issue: its binding rulings, suggested rulings, capabilities, terms, and what discovery could not see. Read-only; suggestions bind nothing.",
-    (y) =>
+    (y: Argv) => addCommitOption(((y) =>
       addFormatOption(
         y
           .positional("id", { type: "string", demandOption: true, describe: "Ticket or issue ID (with --rebase, the item whose manifest is rebased)" })
@@ -6786,11 +6788,11 @@ export function registerBriefCommand(yargs: Argv): Argv {
           .option("rebase", { type: "string", describe: "Session ID: adopt that session's latest provisional context manifest for <id> after recovery" })
           .option("reason", { type: "string", describe: "With --rebase: why the provisional context is being adopted (required)" })
           .option("by", { type: "string", describe: "With --rebase: who is adopting it", default: "cli" }),
-      ),
+      ))(y)),
     async (argv) => {
       const format = parseOutputFormat(argv.format);
       if (argv.rebase !== undefined) {
-        await runCatalogWrite(format, (root) =>
+        await runCatalogWrite(argv, format, (root) =>
           handleBriefRebase(
             { sessionId: argv.rebase as string, item: argv.id as string, reason: (argv.reason as string | undefined) ?? "", by: argv.by as string },
             format,
@@ -6808,7 +6810,7 @@ export function registerBriefCommand(yargs: Argv): Argv {
 // checkpoint (T-537)
 // ---------------------------------------------------------------------------
 
-async function runCheckpointCommand(format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
+async function runCheckpointCommand(argv: BoardWriteArgv, format: RulingOutputFormat, fn: (root: string) => Promise<RulingCommandResult>): Promise<void> {
   const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
   if (!root) {
     writeOutput(formatError("not_found", "No .story/ project found.", format), format);
@@ -6816,7 +6818,7 @@ async function runCheckpointCommand(format: RulingOutputFormat, fn: (root: strin
     return;
   }
   try {
-    const result = await fn(root);
+    const result = await runBoardWrite(argv, format, () => fn(root));
     writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {
@@ -6873,15 +6875,15 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
     "Owner checkpoints: decisions and acceptances only the owner answers",
     (y) =>
       y
-        .command("enable", "Turn owner checkpoints on for this project (stamps schemaVersion 4)", (y2) => addFormatOption(y2), async (argv) => {
+        .command("enable", "Turn owner checkpoints on for this project (stamps schemaVersion 4)", (y: Argv) => addCommitOption(((y2) => addFormatOption(y2))(y)), async (argv) => {
           const format = parseOutputFormat(argv.format);
           const { handleCheckpointEnable } = await import("./commands/checkpoint.js");
-          await runCheckpointCommand(format, (root) => handleCheckpointEnable(format, root));
+          await runCheckpointCommand(argv, format, (root) => handleCheckpointEnable(format, root));
         })
         .command(
           "create",
           "Create a ticket that is an owner checkpoint",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(arrayOptions(
               contentOptions(y2, true)
                 .option("title", { type: "string", demandOption: true, describe: "Ticket title" })
@@ -6891,11 +6893,11 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
                 .option("parent-ticket", { type: "string", describe: "Parent ticket ID" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
               { "evidence-ref": EVIDENCE_REF, "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointCreate } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) => handleCheckpointCreate({
+            await runCheckpointCommand(argv, format, (root) => handleCheckpointCreate({
               ...contentOf(argv),
               title: argv.title as string,
               owner: argv.owner as string,
@@ -6910,25 +6912,25 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
         .command(
           "attach <id>",
           "Make an open, unclaimed ticket an owner checkpoint",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(arrayOptions(
               contentOptions(y2, true)
                 .positional("id", { type: "string", demandOption: true, describe: "Ticket ID" })
                 .option("owner", { type: "string", demandOption: true, describe: "Who answers the checkpoint" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
               { "evidence-ref": EVIDENCE_REF },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointAttach } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) =>
+            await runCheckpointCommand(argv, format, (root) =>
               handleCheckpointAttach(argv.id as string, { ...contentOf(argv), owner: argv.owner as string, actor: argv.actor as string | undefined }, format, root));
           },
         )
         .command(
           "resolve <id>",
           "Answer a checkpoint at the state you reviewed",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(arrayOptions(
               expectedOptions(y2)
                 .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
@@ -6937,11 +6939,11 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
                 .option("ruling", { type: "string", choices: ["owner-direct", "owner-via-manager-with-owner-veto", "manager-delegated"], describe: "Also record the response as an accepted ruling with this attribution, in one transaction" })
                 .option("client-task-id", { type: "string", describe: "Caller identity for the ruling, if not inferable from the environment" }),
               { "ruling-scope-tag": { ...SPLIT_LIST, describe: "Scope tags for that ruling" } },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointResolve } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) => handleCheckpointResolve(argv.id as string, {
+            await runCheckpointCommand(argv, format, (root) => handleCheckpointResolve(argv.id as string, {
               ...expectedOf(argv),
               response: argv.response as string,
               artifactRef: argv["artifact-ref"] as string | undefined,
@@ -6954,53 +6956,53 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
         .command(
           "change <id>",
           "Change what a checkpoint asks; an earlier answer no longer counts",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(arrayOptions(
               contentOptions(expectedOptions(y2), true).positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" }),
               { "evidence-ref": EVIDENCE_REF },
-            )),
+            )))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointChange } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) => handleCheckpointChange(argv.id as string, { ...expectedOf(argv), ...contentOf(argv) }, format, root));
+            await runCheckpointCommand(argv, format, (root) => handleCheckpointChange(argv.id as string, { ...expectedOf(argv), ...contentOf(argv) }, format, root));
           },
         )
         .command(
           "reopen <id>",
           "Withdraw a checkpoint's answer; it is kept in history",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               expectedOptions(y2)
                 .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
                 .option("reason", { type: "string", describe: "Why it is reopened" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointReopen } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) =>
+            await runCheckpointCommand(argv, format, (root) =>
               handleCheckpointReopen(argv.id as string, { ...expectedOf(argv), reason: argv.reason as string | undefined }, format, root));
           },
         )
         .command(
           "retire <id>",
           "Retire a checkpoint that is no longer needed; its dependents are released",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               expectedOptions(y2)
                 .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
                 .option("reason", { type: "string", demandOption: true, describe: "Why it is retired" }),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointRetire } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, (root) =>
+            await runCheckpointCommand(argv, format, (root) =>
               handleCheckpointRetire(argv.id as string, { ...expectedOf(argv), reason: argv.reason as string | undefined }, format, root));
           },
         )
         .command(
           "resolve-conflict <id>",
           "Settle a merge conflict on a checkpoint (the selected approval is displaced; the other side is kept in history)",
-          (y2) =>
+          (y: Argv) => addCommitOption(((y2) =>
             addFormatOption(
               y2
                 .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
@@ -7009,11 +7011,11 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
                 .option("value", { type: "string", describe: "A JSON value to use instead of either side" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" })
                 .conflicts("use", "value"),
-            ),
+            ))(y)),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointResolveConflict } = await import("./commands/checkpoint.js");
-            await runCheckpointCommand(format, async (root) => {
+            await runCheckpointCommand(argv, format, async (root) => {
               let value: unknown;
               if (argv.value !== undefined) {
                 try {

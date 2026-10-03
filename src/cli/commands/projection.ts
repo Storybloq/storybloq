@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
+import { recordBoardTarget } from "../../core/board-write-recorder.js";
 import { verifyDirIdentity, type DirIdentity } from "../../core/readdir-safe.js";
 import { checkCapabilities, resolveHead } from "../../core/capability.js";
 import { glossaryCatalog } from "../../core/glossary.js";
@@ -159,6 +160,7 @@ function publish(dir: CacheDir, content: string, deadline: WriteDeadline): strin
     deadline.check("publication");
     verifyCacheDir(dir, "publication");
     renameSync(tempPath, path);
+    recordBoardTarget(path, "write");
     written = false;
     return path;
   } finally {

@@ -9,6 +9,8 @@ import type { OutputFormat } from "../models/types.js";
 import type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
 import { transformForRawMode } from "./raw-mode.js";
 import { sanitizeTerminalDocument } from "../core/display-text.js";
+import { runWithBoardWriteContext } from "../core/board-write-recorder.js";
+import { reportBoardWrite, type BoardWriteReport } from "../core/board-git-state.js";
 
 // Re-export types so existing test imports that reference run.ts still resolve.
 export type { CommandContext, CommandResult, DeleteCommandContext } from "./types.js";
@@ -242,7 +244,65 @@ export async function runReadCommandWithRoot(
  * partially corrupt projects. When integrity warnings present and
  * force is false, errors out.
  */
+/** The parsed argv a board write command needs: `--commit` and its command path. */
+export interface BoardWriteArgv {
+  readonly commit?: unknown;
+  readonly _?: ReadonlyArray<string | number>;
+}
+
+type BoardWriteResult = { readonly output: string; readonly exitCode?: number; readonly errorCode?: string; readonly isError?: boolean };
+
+/**
+ * ISS-1107: the git report on a board write's output. Markdown gets the same
+ * `Git:` lines as the MCP reply; JSON gets additive `data.git`,
+ * `data.gitCommit` and `data.gitUnavailable` keys and never a text line. Any
+ * other output shape is left exactly as it was.
+ */
+export function applyBoardGitReport(output: string, format: OutputFormat, report: BoardWriteReport): string {
+  if (format !== "json") return report.lines.length > 0 ? `${output}\n\n${report.lines.join("\n")}` : output;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    return output;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return output;
+  const envelope = parsed as Record<string, unknown>;
+  const data = envelope.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return output;
+  return JSON.stringify({
+    ...envelope,
+    data: {
+      ...(data as Record<string, unknown>),
+      git: report.git,
+      ...(report.gitCommit ? { gitCommit: report.gitCommit } : {}),
+      ...(report.gitUnavailable ? { gitUnavailable: report.gitUnavailable } : {}),
+    },
+  }, null, 2);
+}
+
+/**
+ * ISS-1107: runs a board write command's handler with a recorder, then reports
+ * the git state of exactly the files it wrote (and commits them for
+ * `--commit`). Only an explicitly successful result is reported. A failed
+ * optional commit never changes the exit status: the write succeeded, and the
+ * outcome is in the output.
+ */
+export async function runBoardWrite<R extends BoardWriteResult>(
+  argv: BoardWriteArgv,
+  format: OutputFormat,
+  fn: () => Promise<R> | R,
+): Promise<R> {
+  const tool = (argv._ ?? []).map(String).join(" ");
+  const { value: result, context } = await runWithBoardWriteContext(tool, argv.commit === true, async () => fn());
+  if (result.errorCode || result.isError || (result.exitCode !== undefined && result.exitCode !== 0)) return result;
+  const report = await reportBoardWrite(context);
+  if (report.git.length === 0 && !report.gitCommit) return result;
+  return { ...result, output: applyBoardGitReport(result.output, format, report) };
+}
+
 export async function runDeleteCommand(
+  argv: BoardWriteArgv,
   format: OutputFormat,
   force: boolean,
   handler: (ctx: DeleteCommandContext) => Promise<CommandResult> | CommandResult,
@@ -275,7 +335,7 @@ export async function runDeleteCommand(
       return;
     }
 
-    const result = await handler({ state, warnings, root, handoversDir, format, force });
+    const result = await runBoardWrite(argv, format, () => handler({ state, warnings, root, handoversDir, format, force }));
     writeOutput(result.output, format);
     process.exitCode = result.exitCode ?? ExitCode.OK;
   } catch (err: unknown) {

@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
+import { recordBoardTarget } from "./board-write-recorder.js";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "./project-lock.js";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
@@ -594,6 +595,7 @@ export async function deleteTicket(
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
       await fencedUnlink(targetPath);
+      recordBoardTarget(targetPath, "delete");
     }
     return { alreadyDeleted: false };
   });
@@ -652,6 +654,7 @@ export async function deleteIssue(
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
       await fencedUnlink(targetPath);
+      recordBoardTarget(targetPath, "delete");
     }
     return { alreadyDeleted: false };
   });
@@ -749,6 +752,7 @@ export async function deleteNote(
       await atomicWrite(targetPath, serializeJSON(raw));
     } else {
       await fencedUnlink(targetPath);
+      recordBoardTarget(targetPath, "delete");
     }
     return { alreadyDeleted: false };
   });
@@ -847,6 +851,7 @@ export async function deleteLessonUnlocked(
     await atomicWrite(targetPath, serializeJSON(raw));
   } else {
     await fencedUnlink(targetPath);
+    recordBoardTarget(targetPath, "delete");
   }
   return { alreadyDeleted: false };
 }
@@ -1015,6 +1020,9 @@ export async function runTransactionUnlocked(
   const journalPath = join(wrapDir, ".txn.json");
   const entries: TxnEntry[] = [];
   let commitStarted = false;
+  // ISS-1107: the logical targets this commit applied, recorded only once the
+  // whole transaction succeeded (an ENOENT delete applied nothing).
+  const applied: Array<{ target: string; kind: "write" | "delete" }> = [];
   const lockHandle = projectLockContext.getStore();
   const owner: TxnOwner | undefined = lockHandle
     ? { pid: lockHandle.pid, processSignature: lockHandle.processSignature, episodeId: randomUUID() }
@@ -1078,9 +1086,11 @@ export async function runTransactionUnlocked(
       checkProjectLockFencing();
       if (entry.op === "write" && entry.tempPath) {
         await rename(entry.tempPath, entry.target);
+        applied.push({ target: entry.target, kind: "write" });
       } else if (entry.op === "delete") {
         try {
           await unlink(entry.target);
+          applied.push({ target: entry.target, kind: "delete" });
         } catch (err) {
           // ISS-942 942.1: only ENOENT ("already gone") is a genuine no-op.
           // Any other failure (EPERM/EISDIR/EACCES/...) must NOT be swallowed
@@ -1108,6 +1118,7 @@ export async function runTransactionUnlocked(
       // Every entry is already applied and durable. Keep the journal for the
       // next holder's idempotent forward recovery instead of reporting failure.
     }
+    for (const { target, kind } of applied) recordBoardTarget(target, kind);
   } catch (err) {
     if (!commitStarted) {
       // Safe to clean up -- no renames have happened
@@ -1574,6 +1585,7 @@ export async function atomicCreate(
     fd = undefined;
     checkProjectLockFencing();
     await link(tempPath, targetPath);
+    recordBoardTarget(targetPath, "write");
     try {
       const parentFd = await open(dirname(targetPath), "r");
       try { await parentFd.sync(); } finally { await parentFd.close(); }
@@ -1617,6 +1629,7 @@ export async function atomicWrite(
     await writeFile(tempPath, content, "utf-8");
     checkProjectLockFencing();
     await rename(tempPath, targetPath);
+    recordBoardTarget(targetPath, "write");
   } catch (err) {
     try {
       await unlink(tempPath);

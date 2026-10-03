@@ -171,7 +171,7 @@ describe("runReadCommand", () => {
     process.chdir(dir);
 
     const spy = vi.spyOn(process.stdout, "write").mockReturnValue(true);
-    await runDeleteCommand("json", true, () => {
+    await runDeleteCommand({}, "json", true, () => {
       throw new RefResolutionError("ambiguous", 'Ref "L-9" is ambiguous (matches: a, b)');
     });
     const output = spy.mock.calls[0]![0] as string;

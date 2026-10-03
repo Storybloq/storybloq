@@ -450,7 +450,18 @@ describe("tool description contract (T-460)", () => {
     // feature costs 4,542. The old ceiling left 1,523 bytes, under one
     // feature's worth, so it is raised to 87,600: the 83,019 floor plus this
     // feature's own cost, rounded up to the hundred, per T-523's rule.
-    expect(bytes).toBeLessThan(87_600);
+    // ISS-1107 adds an optional `commit` argument to the 44 board write
+    // tools. Measured: 84,716 at base (537fbf3c); 104,616 as first written,
+    // when each tool carried the full CLI --help wording (about 410 bytes:
+    // the mechanism, the default, the N-109 citation, the concurrency caveat);
+    // 91,724 after trimming the MCP copy to one shared sentence that keeps
+    // only what a caller cannot infer from the name: this call's files only,
+    // the refusal when one is already staged, and the pen-only seat rule. The
+    // cut was prose (mechanism and rationale, kept in the CLI --help); the
+    // rest is contract, repeated per tool because each schema stands alone.
+    // Floor 91,724; this feature's trimmed cost is 7,008, so the headroom is
+    // that much again per T-523's rule: 98,732, rounded up to 99,000.
+    expect(bytes).toBeLessThan(99_000);
   });
 
   it("still advertises every tool, so the trim cut prose and not surface", async () => {

@@ -253,7 +253,14 @@ describe("MCP storybloq_projection_write", () => {
     const mcp = await tool!({});
     expect(mcp.isError).toBeFalsy();
     const cli = await handleProjectionWrite("md", root);
-    expect(mcp.content[0]!.text).toBe(cli.output);
+    // ISS-1107: the MCP reply then carries the git state of the file it wrote
+    // (this project is not a repository); the handler's own text is identical.
+    const [body, ...gitLines] = mcp.content[0]!.text.split("\n\nGit: ");
+    expect(body).toBe(cli.output);
+    expect(gitLines.length).toBeGreaterThan(0);
+    for (const line of gitLines.join("\n").split("\n")) {
+      expect(line.replace(/^Git: /, "")).toMatch(/^\.story\/cache\/\S+ no git \(not a repository\)$/);
+    }
     expect(publishes).toHaveLength(2);
   });
 });

@@ -2669,7 +2669,12 @@ describe("fixture replay", () => {
     // T-522 commit 2b (2026-09-22): 20,579 measured, the tool_discovery step
     // carrying the 14 tool names T-523, T-524 and T-522 added since 1.15;
     // every step still inside its own ceiling. Pinned at 21,000, same rule.
-    if (report.totals.bytes > 21_000) {
+    // ISS-1107: 20,983 -> 21,089. The whole growth is the status step (3,540
+    // -> 3,646): non-compact status JSON now carries boardUncommitted
+    // {available:false, reason:"not a repository"} on this non-git fixture.
+    // Compact status, which the skill's Step 3 uses, is unchanged. Pinned at
+    // 21,500, same rule.
+    if (report.totals.bytes > 21_500) {
       throw new Error(
         `totals.bytes ${report.totals.bytes} exceeds the pinned 20000 ceiling; ` +
           `per-step: ${JSON.stringify(

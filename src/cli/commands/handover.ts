@@ -11,6 +11,7 @@ import {
 } from "../../core/handover-template.js";
 import type { TrajectoryEntry } from "../../core/markdown-sections.js";
 import { existsSync } from "node:fs";
+import { recordBoardTarget } from "../../core/board-write-recorder.js";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -341,6 +342,7 @@ export async function handleHandoverCreate(
           writeFileSync(tmpPath, content, "utf-8");
           tmpCreated = true;
           await fencedLink(tmpPath, candidatePath);
+          recordBoardTarget(candidatePath, "write");
           filename = candidate;
           try { unlinkSync(tmpPath); } catch {}
           tmpCreated = false;

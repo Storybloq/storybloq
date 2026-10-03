@@ -1,6 +1,7 @@
 import { mkdir, stat, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeConfig, writeRoadmap, loadProject } from "./project-loader.js";
+import { recordBoardTarget } from "./board-write-recorder.js";
 import { ProjectLoaderError, CURRENT_SCHEMA_VERSION, INTEGRITY_WARNING_TYPES } from "./errors.js";
 import type { Config } from "../models/config.js";
 import type { Roadmap, Phase } from "../models/roadmap.js";
@@ -185,4 +186,5 @@ export async function ensureGitignoreEntries(
   if (content.length > 0 && !content.endsWith("\n")) content += "\n";
   content += missing.join("\n") + "\n";
   await writeFile(gitignorePath, content, "utf-8");
+  recordBoardTarget(gitignorePath, "write");
 }

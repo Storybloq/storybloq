@@ -60,6 +60,9 @@ import {
 } from "../autonomous/subprocess-registry.js";
 import { handlePrepare, handleSynthesize, handleJudge, generateIssueKey, generateReviewFilingKey } from "../autonomous/lens-harness/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerWriteTool } from "./board-write-tools.js";
+import { activeBoardWriteContext } from "../core/board-write-recorder.js";
+import { reportBoardWrite } from "../core/board-git-state.js";
 
 import { loadProject } from "../core/project-loader.js";
 import { ProjectLoaderError, INTEGRITY_WARNING_TYPES } from "../core/errors.js";
@@ -380,7 +383,20 @@ export async function runMcpWriteTool(
       };
     }
 
+    // ISS-1107 / node_init: a handler-level error result keeps its own text.
+    if (result.isError) {
+      return { content: [{ type: "text", text: result.output }], isError: true };
+    }
+
     let text = boardLabel ? `${result.output}\n\nBoard: ${boardLabel}` : result.output;
+    // ISS-1107: a board write tool reports the git state of exactly the files
+    // it wrote (and commits them on request), only after an explicit success.
+    // No recorder is active for any other caller, so they never get the lines.
+    const boardContext = activeBoardWriteContext();
+    if (boardContext && !result.errorCode && (result.exitCode === undefined || result.exitCode === 0)) {
+      const report = await reportBoardWrite(boardContext);
+      if (report.lines.length > 0) text = `${text}\n\n${report.lines.join("\n")}`;
+    }
     // ISS-1117: unlike runMcpReadTool, this pipeline never surfaced
     // handler-produced `CommandResult.warnings` to the MCP caller -- a
     // write handler's warning (e.g. arrangement create's identityAnchor
@@ -915,7 +931,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     eff.root, "json");
   });
 
-  server.registerTool("storybloq_snapshot", {
+  registerWriteTool(server, "storybloq_snapshot", {
     description: "Saves project state to .story/snapshots/ for session diffs.",
   }, () => runMcpWriteTool(pinnedRoot, handleSnapshot));
 
@@ -943,7 +959,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     return runMcpReadTool(pinnedRoot, (ctx) => handleExport(ctx, mode as "all" | "phase", phaseId));
   });
 
-  server.registerTool("storybloq_handover_create", {
+  registerWriteTool(server, "storybloq_handover_create", {
     description: "Create a handover document from markdown content",
     inputSchema: {
       content: z.string(),
@@ -966,7 +982,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
 
   // --- Ticket write tools ---
 
-  server.registerTool("storybloq_ticket_create", {
+  registerWriteTool(server, "storybloq_ticket_create", {
     description: "Create a new ticket. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
       title: z.string(),
@@ -997,7 +1013,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ), eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_ticket_update", {
+  registerWriteTool(server, "storybloq_ticket_update", {
     description: "Update an existing ticket",
     inputSchema: {
       id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
@@ -1043,7 +1059,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_ticket_meta_set", {
+  registerWriteTool(server, "storybloq_ticket_meta_set", {
     description: "Set custom passthrough metadata on a ticket. Core ticket fields are protected.",
     inputSchema: {
       id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
@@ -1054,7 +1070,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     handleTicketMetaSet(args.id, args.path, args.value, format, root),
   ));
 
-  server.registerTool("storybloq_ticket_meta_unset", {
+  registerWriteTool(server, "storybloq_ticket_meta_unset", {
     description: "Unset custom passthrough metadata on a ticket. Core ticket fields are protected.",
     inputSchema: {
       id: z.string().refine((v) => TICKET_ID_REGEX.test(v) || TICKET_CANONICAL_ID_REGEX.test(v), "Ticket ID").describe("e.g. T-001, t-[canonical]"),
@@ -1066,7 +1082,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
 
   // --- Issue write tools ---
 
-  server.registerTool("storybloq_issue_create", {
+  registerWriteTool(server, "storybloq_issue_create", {
     description: "Create a new issue. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
       title: z.string(),
@@ -1106,7 +1122,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_issue_update", {
+  registerWriteTool(server, "storybloq_issue_update", {
     description: "Update an existing issue",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
@@ -1154,7 +1170,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     eff.root, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_issue_meta_set", {
+  registerWriteTool(server, "storybloq_issue_meta_set", {
     description: "Set custom passthrough metadata on an issue. Core issue fields are protected.",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
@@ -1165,7 +1181,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     handleIssueMetaSet(args.id, args.path, args.value, format, root),
   ));
 
-  server.registerTool("storybloq_issue_meta_unset", {
+  registerWriteTool(server, "storybloq_issue_meta_unset", {
     description: "Unset custom passthrough metadata on an issue. Core issue fields are protected.",
     inputSchema: {
       id: IssueRefSchema.describe("Issue ID (e.g. ISS-001, i-[canonical])"),
@@ -1194,7 +1210,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleNoteGet(args.id, ctx)));
 
-  server.registerTool("storybloq_note_create", {
+  registerWriteTool(server, "storybloq_note_create", {
     description: "Create a new note. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
       content: z.string(),
@@ -1213,7 +1229,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_note_update", {
+  registerWriteTool(server, "storybloq_note_update", {
     description: "Update an existing note",
     inputSchema: {
       id: NoteIdSchema.describe("e.g. N-001 or n-[canonical]"),
@@ -1238,7 +1254,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   ));
 
   // --- Arrangement tools ---
-  server.registerTool("storybloq_arrangement_coordinate", {
+  registerWriteTool(server, "storybloq_arrangement_coordinate", {
     description: "Persist pen-observed duet state. Requires current session/revision; only the bound pen may write. Receipt evidence is attributed, not authentication.",
     inputSchema: { operation: DuetOperationSchema },
   }, async (args) => ({ ...await runMcpWriteTool(pinnedRoot, (root, format) => handleDuetCoordinate(args.operation, format, root)) }));
@@ -1254,7 +1270,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleArrangementGet(args.id, ctx), undefined, args.format ?? "md"));
 
-  server.registerTool("storybloq_arrangement_create", {
+  registerWriteTool(server, "storybloq_arrangement_create", {
     description: "Create a new arrangement (duet/wave party charter). Authentication is out of scope: identityAnchor is a name to match, not a credential -- it must be the client task id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID), never a display name.",
     inputSchema: {
       bounds: z.array(z.string()).min(1).describe("Ticket/issue refs, display-form or canonical"),
@@ -1278,7 +1294,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_arrangement_update", {
+  registerWriteTool(server, "storybloq_arrangement_update", {
     description: "Update an arrangement's lifecycle (active/suspended/closed)",
     inputSchema: {
       id: ArrangementIdSchema.describe("e.g. a-[canonical]"),
@@ -1289,7 +1305,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   ));
 
   // ISS-1290: owner-authorized succession. Markdown only, like every write tool.
-  server.registerTool("storybloq_arrangement_rebind", {
+  registerWriteTool(server, "storybloq_arrangement_rebind", {
     description: "Rebind one party of an arrangement into a successor: owner-authorized succession, the original is closed with continuedBy. An attributed claim, not authentication; liveness is machine-local. The new pen runs start on the successor and proves the return route before dispatch.",
     inputSchema: {
       id: ArrangementIdSchema.describe("e.g. a-[canonical]"),
@@ -1330,7 +1346,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleRulingList({ scopeTag: args.scopeTag, superseded: args.superseded, status: args.status }, ctx)));
 
-  server.registerTool("storybloq_ruling_create", {
+  registerWriteTool(server, "storybloq_ruling_create", {
     description:
       "Record a new owner ruling: a verbatim, attributed decision quote. Attribution is a CLAIM asserted by the " +
       "recorder, not verified by storybloq -- it makes attribution checkable, it does not replace the second key.",
@@ -1369,7 +1385,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_ruling_supersede", {
+  registerWriteTool(server, "storybloq_ruling_supersede", {
     description:
       "Supersede an existing ruling. Pass `with` to link an already-existing ruling as the successor, or " +
       "text/attribution/date to create a new superseding ruling in one step. Refuses outright while any ruling " +
@@ -1412,7 +1428,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   // T-522: the proposal lifecycle. A proposal binds nothing; accept records a
   // claim of authority; the revision is a digest of what was reviewed, not
   // proof of who approved.
-  server.registerTool("storybloq_ruling_propose", {
+  registerWriteTool(server, "storybloq_ruling_propose", {
     description:
       "Propose a ruling. A proposal binds nothing: no item cites it and no gate enforces it until `storybloq_ruling_accept` " +
       "records who ruled. Drafting a replacement revokes nothing: the ruling it proposes to supersede stays current. " +
@@ -1450,7 +1466,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_ruling_accept", {
+  registerWriteTool(server, "storybloq_ruling_accept", {
     description:
       "Accept a proposed ruling: records a claim of authority and adds the citation to every item it was proposed for, " +
       "in one transaction. `revision` is the payloadDigest of what was reviewed (from storybloq_ruling_get), not proof of " +
@@ -1473,7 +1489,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_ruling_withdraw", {
+  registerWriteTool(server, "storybloq_ruling_withdraw", {
     description: "Withdraw a proposed ruling. Proposed records only: an accepted ruling is superseded, never withdrawn.",
     inputSchema: {
       id: RulingIdSchema.describe("The proposed ruling"),
@@ -1527,7 +1543,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) =>
     handleCapabilityGet(args.id, { skipCheck: args.skipCheck }, ctx)));
 
-  server.registerTool("storybloq_capability_add", {
+  registerWriteTool(server, "storybloq_capability_add", {
     description:
       "Add a capability. Stamps the checkpoint at HEAD, recording that you have READ the entry points: add the " +
       "entry when the reading is done, not when the ticket is filed.",
@@ -1549,7 +1565,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCapabilityAdd(args, format, root)));
 
-  server.registerTool("storybloq_capability_update", {
+  registerWriteTool(server, "storybloq_capability_update", {
     description:
       "Edit a capability. Supplied lists REPLACE the stored ones; omitted fields are left alone. Never touches " +
       "the checkpoint, so an edit cannot clear a freshness finding: use storybloq_capability_check with stamp.",
@@ -1586,7 +1602,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   // --- Decisions projection (T-528) ---
   // The one MCP surface that writes the projection. `storybloq_status` stays
   // read-only: a read tool that wrote would put a write into every /story load.
-  server.registerTool("storybloq_projection_write", {
+  registerWriteTool(server, "storybloq_projection_write", {
     description:
       "Regenerate .story/cache/decisions-projection.json, the file the Mac app reads, with a full freshness " +
       "check. The CLI status and ruling, capability and term CLI writes refresh it structurally; the status tool does not.",
@@ -1639,7 +1655,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleTermGet(args.id, ctx)));
 
-  server.registerTool("storybloq_term_add", {
+  registerWriteTool(server, "storybloq_term_add", {
     description:
       "Add a term. One word belongs to one entry, so a term or alias another entry already owns is refused naming " +
       "that entry.",
@@ -1656,7 +1672,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleTermAdd(args, format, root)));
 
-  server.registerTool("storybloq_term_update", {
+  registerWriteTool(server, "storybloq_term_update", {
     description: "Edit a term. Supplied lists REPLACE the stored ones.",
     inputSchema: {
       id: z.string().describe("Term ID"),
@@ -1682,7 +1698,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleGateAckGet(args.id, ctx)));
 
-  server.registerTool("storybloq_gate_ack_create", {
+  registerWriteTool(server, "storybloq_gate_ack_create", {
     description:
       "Create a gate-ack: a pinned acceptance record for a duet-mode arrangement's declared gate (plan-ack or " +
       "pre-commit-ack). Exactly one of planFile or fromStaged is required to compute the pin. ackRole is derived " +
@@ -1724,7 +1740,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_gate_ack_contest", {
+  registerWriteTool(server, "storybloq_gate_ack_contest", {
     description: "Mark a gate-ack contested (record + surfaced flag only, T-474 acceptance 6 -- not a reopen workflow)",
     inputSchema: {
       id: GateAckIdSchema.describe("e.g. g-[canonical]"),
@@ -1752,7 +1768,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     actor: z.string().max(256).optional(),
   };
 
-  server.registerTool("storybloq_checkpoint_create", {
+  registerWriteTool(server, "storybloq_checkpoint_create", {
     description: "Create an owner checkpoint ticket. Needs `checkpoint enable` first.",
     inputSchema: {
       title: z.string().min(1).max(500),
@@ -1766,12 +1782,12 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointCreate(args, format, root)));
 
-  server.registerTool("storybloq_checkpoint_attach", {
+  registerWriteTool(server, "storybloq_checkpoint_attach", {
     description: "Make an open, unclaimed ticket a checkpoint",
     inputSchema: { id: TicketRefSchema, owner: z.string().min(1).max(256), ...checkpointContent, actor: z.string().max(256).optional() },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointAttach(args.id, args, format, root)));
 
-  server.registerTool("storybloq_checkpoint_resolve", {
+  registerWriteTool(server, "storybloq_checkpoint_resolve", {
     description: "Answer a checkpoint. An acceptance needs artifactRef.",
     inputSchema: {
       ...checkpointExpected,
@@ -1783,17 +1799,17 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointResolve(args.id, args, format, root)));
 
-  server.registerTool("storybloq_checkpoint_change", {
+  registerWriteTool(server, "storybloq_checkpoint_change", {
     description: "Change what a checkpoint asks; voids its answer",
     inputSchema: { ...checkpointExpected, ...checkpointContent },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointChange(args.id, args, format, root)));
 
-  server.registerTool("storybloq_checkpoint_reopen", {
+  registerWriteTool(server, "storybloq_checkpoint_reopen", {
     description: "Withdraw a checkpoint's answer",
     inputSchema: { ...checkpointExpected, reason: z.string().max(4096).optional() },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointReopen(args.id, args, format, root)));
 
-  server.registerTool("storybloq_checkpoint_retire", {
+  registerWriteTool(server, "storybloq_checkpoint_retire", {
     description: "Retire a checkpoint, releasing dependents",
     inputSchema: { ...checkpointExpected, reason: z.string().min(1).max(4096) },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointRetire(args.id, args, format, root)));
@@ -1814,7 +1830,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     return runMcpReadTool(pinnedRoot, (ctx) => handleEarmarkGet(args.ref, ctx), eff.root);
   });
 
-  server.registerTool("storybloq_earmark_reserve", {
+  registerWriteTool(server, "storybloq_earmark_reserve", {
     description:
       "Reserve a ticket or issue for a duet-mode role, pending pickup. Fails as a CAS conflict if already earmarked " +
       "to someone/something else. --arrangement is required only when more than one active arrangement covers the item.",
@@ -1852,7 +1868,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     pinnedRoot, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_earmark_assign", {
+  registerWriteTool(server, "storybloq_earmark_assign", {
     description:
       "Assign a ticket or issue's earmark directly to a live session -- either a fresh placement or an explicit " +
       "reserved -> assigned conversion. The target session must be live and match an arrangement party holding " +
@@ -1881,7 +1897,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     pinnedRoot, boardLabelFor(pinnedRoot, args.node));
   });
 
-  server.registerTool("storybloq_earmark_release", {
+  registerWriteTool(server, "storybloq_earmark_release", {
     description:
       "Release (clear) a ticket or issue's earmark. Authorized for the reserver, or the pen party of the earmark's " +
       "OWN authorizing arrangement (its stored arrangementId, not necessarily whatever arrangement covers the item " +
@@ -1932,7 +1948,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     },
   }, (args) => runMcpReadTool(pinnedRoot, (ctx) => handleLessonDigest(ctx, { limit: args.limit, select: args.select })));
 
-  server.registerTool("storybloq_lesson_create", {
+  registerWriteTool(server, "storybloq_lesson_create", {
     description: "Create a new lesson. Concurrent creates get distinct sequential IDs.",
     inputSchema: {
       title: z.string(),
@@ -1957,7 +1973,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_lesson_update", {
+  registerWriteTool(server, "storybloq_lesson_update", {
     description: "Update an existing lesson",
     inputSchema: {
       id: LessonIdSchema.describe("e.g. L-001 or l-[canonical]"),
@@ -1983,7 +1999,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
     ),
   ));
 
-  server.registerTool("storybloq_lesson_reinforce", {
+  registerWriteTool(server, "storybloq_lesson_reinforce", {
     description: "Reinforce a lesson -- increment reinforcement count and update lastValidated date",
     inputSchema: {
       id: LessonIdSchema.describe("e.g. L-001 or l-[canonical]"),
@@ -1994,7 +2010,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
 
   // --- Phase write tools ---
 
-  server.registerTool("storybloq_phase_create", {
+  registerWriteTool(server, "storybloq_phase_create", {
     description: "Create a new phase in the roadmap. Exactly one of after or atStart is required for positioning.",
     inputSchema: {
       id: z.string().describe("Lowercase alphanumeric with hyphens (e.g. 'my-phase')"),
@@ -2025,7 +2041,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
 
   // --- Federation bootstrap ---
 
-  server.registerTool("storybloq_node_init", {
+  registerWriteTool(server, "storybloq_node_init", {
     description: "Initialize .story/ in a federation child node from the orchestrator. Does not require allowNodeWrites.",
     inputSchema: {
       node: z.string().regex(NODE_NAME_REGEX).describe("Node name from orchestrator config"),
@@ -2033,24 +2049,23 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       language: z.string().optional(),
       force: z.boolean().optional().describe("Overwrite existing config if .story/ already exists"),
     },
-  }, async (args) => {
-    try { touchMcpLiveness(pinnedRoot); } catch { /* best-effort */ }
+  }, (args) => runMcpWriteTool(pinnedRoot, async () => {
     try {
       const config = readOrchestratorConfig(pinnedRoot);
       if (!config) {
-        return { content: [{ type: "text" as const, text: "Cannot read orchestrator config." }], isError: true };
+        return { output: "Cannot read orchestrator config.", isError: true };
       }
       if (config.type !== "orchestrator") {
-        return { content: [{ type: "text" as const, text: "storybloq_node_init is only available on orchestrator projects." }], isError: true };
+        return { output: "storybloq_node_init is only available on orchestrator projects.", isError: true };
       }
       const rawNodes = config.nodes;
       if (!rawNodes || typeof rawNodes !== "object" || Array.isArray(rawNodes) || !(args.node in (rawNodes as Record<string, unknown>))) {
-        return { content: [{ type: "text" as const, text: `Node "${args.node}" not found in orchestrator config.` }], isError: true };
+        return { output: `Node "${args.node}" not found in orchestrator config.`, isError: true };
       }
       const nodeConf = (rawNodes as Record<string, Record<string, unknown>>)[args.node]!;
       const rawPath = typeof nodeConf.path === "string" ? nodeConf.path : "";
       if (!rawPath) {
-        return { content: [{ type: "text" as const, text: `Node "${args.node}" has no path configured.` }], isError: true };
+        return { output: `Node "${args.node}" has no path configured.`, isError: true };
       }
       const resolved = resolveNodePath(rawPath, pinnedRoot);
       if (!resolved.resolved) {
@@ -2062,13 +2077,13 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
             language: args.language,
           });
           const link = await writeOrchestratorPointer(resolved.absolutePath, pinnedRoot);
-          return { content: [{ type: "text" as const, text: `Initialized .story/ in ${args.node} (${resolved.absolutePath}).\nCreated: ${result.created.join(", ")}${orchestratorLinkNote(link)}` }] };
+          return { output: `Initialized .story/ in ${args.node} (${resolved.absolutePath}).\nCreated: ${result.created.join(", ")}${orchestratorLinkNote(link)}` };
         }
-        return { content: [{ type: "text" as const, text: `Cannot resolve node "${args.node}": ${resolved.reason}` }], isError: true };
+        return { output: `Cannot resolve node "${args.node}": ${resolved.reason}`, isError: true };
       }
       // Node already has .story/ -- init with force if requested
       if (!args.force) {
-        return { content: [{ type: "text" as const, text: `Node "${args.node}" already has .story/. Use force: true to reinitialize.` }], isError: true };
+        return { output: `Node "${args.node}" already has .story/. Use force: true to reinitialize.`, isError: true };
       }
       const result = await initProject(resolved.absolutePath, {
         name: args.node,
@@ -2077,15 +2092,15 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         language: args.language,
       });
       const relink = await writeOrchestratorPointer(resolved.absolutePath, pinnedRoot);
-      return { content: [{ type: "text" as const, text: `Reinitialized .story/ in ${args.node} (${resolved.absolutePath}).\nCreated: ${result.created.join(", ")}${orchestratorLinkNote(relink)}` }] };
+      return { output: `Reinitialized .story/ in ${args.node} (${resolved.absolutePath}).\nCreated: ${result.created.join(", ")}${orchestratorLinkNote(relink)}` };
     } catch (err) {
-      return { content: [{ type: "text" as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+      return { output: `Error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
-  });
+  }));
 
   // --- Node add ---
 
-  server.registerTool("storybloq_node_add", {
+  registerWriteTool(server, "storybloq_node_add", {
     description: "Add a federation node to an orchestrator project's config. Absolute paths outside the orchestrator workspace are allowed.",
     inputSchema: {
       name: z.string().regex(NODE_NAME_REGEX).describe("Node name (lowercase alphanumeric, hyphens, underscores)"),
@@ -2128,7 +2143,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
 
   // --- Node update ---
 
-  server.registerTool("storybloq_node_update", {
+  registerWriteTool(server, "storybloq_node_update", {
     description: "Update a federation node's metadata. Shallow-merges provided fields, preserving health and passthrough fields.",
     inputSchema: {
       name: z.string().regex(NODE_NAME_REGEX).describe("Node name to update"),

@@ -1,3 +1,4 @@
+import { COMMIT_PARAM_DESCRIPTION } from "../core/board-git-state.js";
 import { resolve, relative, extname } from "node:path";
 import { lstat } from "node:fs/promises";
 import { ZodError } from "zod";
@@ -154,6 +155,11 @@ function deviantShapeEpilogue(jsonShape: string): string {
  * annotation against each command's ACTUAL output, so an annotation that
  * stops matching reality fails the suite rather than misleading an operator.
  */
+/** ISS-1107: `--commit` on a board write command, with the one shared wording. */
+export function addCommitOption<T>(y: Argv<T>): Argv<T & { commit: boolean | undefined }> {
+  return y.option("commit", { type: "boolean", describe: COMMIT_PARAM_DESCRIPTION }) as Argv<T & { commit: boolean | undefined }>;
+}
+
 export function addFormatOption<T>(y: Argv<T>): Argv<T & { format: string; raw: boolean }>;
 export function addFormatOption<T>(y: Argv<T>, jsonShape: string): Argv<T & { format: string }>;
 export function addFormatOption<T>(

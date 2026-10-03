@@ -3521,7 +3521,7 @@ export function formatReference(
   lines.push("");
   lines.push("## /story orchestrate");
   lines.push("");
-  lines.push("Drive a federation or large backlog with a durable ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.");
+  lines.push("Drive a federation or large backlog with a persistent ledger, lower-tier implementation agents where available, and independent review gates. Read `orchestrator-mode.md` for enrichment, sizing, the six-stage pipeline, workflow scripts, and rules.");
   lines.push("");
   lines.push("`/story orchestrate` requires explicit opt-in via AskUserQuestion before dispatch and refuses to start while any federation node has an active autonomous session. The one-pen-per-repo check reads each node's `.story/sessions/` directly; orchestrator status does not scan node repos. Requires callable background workflows or subagents. Claude also supports Agent View-backed `storybloq dispatch`; product-managed Codex dispatch remains unshipped. `/story` may recommend orchestration for a capable client and substantial actionable backlog; selection still requires opt-in.");
   lines.push("");
@@ -3541,7 +3541,7 @@ export function formatReference(
   lines.push("");
   lines.push("## /story duet");
   lines.push("");
-  lines.push("Coordinate an owner-paired manager and worker with a proved return route and durable assignments. Read `duet-mode.md`. `/story duet` (Codex: `$story duet`) is a skill route, not a CLI command; it does not create tasks or enable Bus.");
+  lines.push("Coordinate an owner-paired manager and worker with a proved return route and persisted assignments. Read `duet-mode.md`. `/story duet` (Codex: `$story duet`) is a skill route, not a CLI command; it does not create tasks or enable Bus.");
   lines.push("");
   lines.push("## Common Workflows");
   lines.push("");

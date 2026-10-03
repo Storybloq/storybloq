@@ -1,10 +1,10 @@
 # Orchestrator Mode
 
-This file is referenced from SKILL.md for `/story orchestrate`. It instructs the main session to act as an **orchestrator/pen**: durable state lives in storybloq, implementation runs in background subagents (pinned to the cheapest tier that does the work well -- often below an expensive session tier), adversarial review gates run at or above the session model, and the main context holds only conclusions.
+This file is referenced from SKILL.md for `/story orchestrate`. It instructs the main session to act as an **orchestrator/pen**: persisted state lives in storybloq, implementation runs in background subagents (pinned to the cheapest tier that does the work well -- often below an expensive session tier), adversarial review gates run at or above the session model, and the main context holds only conclusions.
 
 ## The two planes
 
-Storybloq is the durable STATE plane, background agents are the ephemeral EXECUTION plane, and the main session is the pen. Every storybloq unit maps to an orchestration role:
+Storybloq is the persistent STATE plane, background agents are the ephemeral EXECUTION plane, and the main session is the pen. Every storybloq unit maps to an orchestration role:
 
 | storybloq unit | orchestration role |
 |---|---|
@@ -18,7 +18,7 @@ Storybloq is the durable STATE plane, background agents are the ephemeral EXECUT
 
 Recovery falls out for free: after any disruption, re-entry is "read the ledger, verify against git, continue." The ledger is the program counter.
 
-When a wave establishes a durable cross-session pen/worker charter (`storybloq_arrangement_create`, e.g. a duet spun off from orchestration), each party's `identityAnchor` must be the client task id, not a session display name: for Claude, `CLAUDE_CODE_SESSION_ID`; for Codex, `CODEX_THREAD_ID`. Run `printenv CLAUDE_CODE_SESSION_ID` or `printenv CODEX_THREAD_ID` to read it, or use the value `/story`'s Step 0 already prints. A display name passes the field's format check but can never resolve against a session's `OwnerTask`, so an arrangement anchored to one is silently dead on arrival.
+When a wave establishes a persistent cross-session pen/worker charter (`storybloq_arrangement_create`, e.g. a duet spun off from orchestration), each party's `identityAnchor` must be the client task id, not a session display name: for Claude, `CLAUDE_CODE_SESSION_ID`; for Codex, `CODEX_THREAD_ID`. Run `printenv CLAUDE_CODE_SESSION_ID` or `printenv CODEX_THREAD_ID` to read it, or use the value `/story`'s Step 0 already prints. A display name passes the field's format check but can never resolve against a session's `OwnerTask`, so an arrangement anchored to one is silently dead on arrival.
 
 ## When to use
 
@@ -160,13 +160,13 @@ The wave boundary (step 7) is the FLOOR for handovers, not the whole rule. A sin
 - **Two weights.** Wave-boundary handovers are the full synthesis of step 7 (deltas, evidence, owner-gate register, next wave). Intra-wave checkpoints are light deltas: what shipped, what was decided, the current fragile state (local-only commits, in-flight stage), and the immediate next step.
 - **Decisions land in the ledger the moment they are made, not only in a handover.** A reconstruction-expensive decision -- a plan approved after N rounds, an architecture ruling -- is captured as a note or folded into the item's enriched description immediately, exactly as enrichment and audit output must (step 7). The handover then points at it. This is the primary durability mechanism; checkpoint handovers are the re-entry net. A decision that lives only in session context is one compaction away from gone.
 
-Compaction note: `/story auto` gets an automatic post-compaction resume prompt; an orchestrate/pen session driving directly has no autonomous session, so on compaction the resume hook injects only a lightweight continuity breadcrumb (latest handover + `storybloq recap`). That breadcrumb restores only what is already durable -- which is why decisions must reach the ledger continuously, above.
+Compaction note: `/story auto` gets an automatic post-compaction resume prompt; an orchestrate/pen session driving directly has no autonomous session, so on compaction the resume hook injects only a lightweight continuity breadcrumb (latest handover + `storybloq recap`). That breadcrumb restores only what is already kept in the ledger -- which is why decisions must reach the ledger continuously, above.
 
 Manager priming order on that breadcrumb (field finding: without a stated order, a manager re-derives it from memory every time, inconsistently). Follow this order, not memory:
-1. Read the breadcrumb's named handover and the `storybloq recap` output before anything else -- the only durable state the breadcrumb itself provides.
+1. Read the breadcrumb's named handover and the `storybloq recap` output before anything else -- the only persisted state the breadcrumb itself provides.
 2. If a duet arrangement is in play (not every orchestrator wave has one), call `storybloq_arrangement_get` and compare `currentCoordinationSessionId` and `coordinationCheckpoint` against local runtime before treating any cached coordination state as current (duet-mode.md's own recovery mechanism). A bare orchestrator wave with no arrangement has no comparable identity marker in this codebase today; say so rather than inventing one.
 3. On a federation project, call `storybloq_node_list` for the configured node roster -- topology, not live presence.
-4. Call `ListAgents` (bus-mode.md's own precedent for Claude-side peer discovery) or the harness's equivalent to see which peer sessions are actually live right now. For the durable seat record behind that snapshot -- which sessions started, when each was last seen, which have detached -- call `storybloq_roster_get` (MCP) or `storybloq roster list` (CLI). This machine's session hooks write it, so it is machine-local and gitignored by design. A hand-maintained contacts file is NOT a storybloq artifact: it is wrong for everyone who pulls it and stale the moment a session restarts, so do not create one and never commit one.
+4. Call `ListAgents` (bus-mode.md's own precedent for Claude-side peer discovery) or the harness's equivalent to see which peer sessions are actually live right now. For the persisted seat record behind that snapshot -- which sessions started, when each was last seen, which have detached -- call `storybloq_roster_get` (MCP) or `storybloq roster list` (CLI). This machine's session hooks write it, so it is machine-local and gitignored by design. A hand-maintained contacts file is NOT a storybloq artifact: it is wrong for everyone who pulls it and stale the moment a session restarts, so do not create one and never commit one.
 5. Before re-deriving a decision from memory, check whether it is already recorded: read the relevant item's `citesRulings` and/or call `storybloq_ruling_get`/`storybloq_ruling_list` in your own project root -- `ruling create --cites` is for recording a decision just now received, never for looking one up. Rulings reach agents by citation, never by paste: on a federation node that cannot resolve a citation today (ISS-1108), you may say a ruling exists and name its id for awareness, but that message is not authority the node can act on -- it still needs its own route to read the record.
 
 ## The 6-stage per-item pipeline (inside dynamic workflows)

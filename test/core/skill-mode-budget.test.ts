@@ -161,7 +161,10 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // tools, with resolve's ruling provenance flags; 48,470 at HEAD before the
   // regeneration, 51,057 measured after. Generated file; 52,000 by the same
   // one-step rule.
-  "reference.md": 52000,
+  // ISS-1107: --commit on 68 CLI write routes and commit? on 44 MCP tools;
+  // 51,369 at HEAD before the regeneration, 52,522 measured after. Generated
+  // file; 53,000 by the same one-step rule.
+  "reference.md": 53000,
   "federation-setup.md": 14000,
   // Was 47000 (measured 46,936 before this issue). ISS-1240 adds the roster
   // pointer to the pen priming order: live seats come from

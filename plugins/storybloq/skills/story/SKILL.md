@@ -204,6 +204,9 @@ Using the retained status payload, check in order (`setup-flow.md` sits beside t
 
 After loading context, present a summary with two parts: a conversational intro (2-3 sentences catching the user up), then structured tables showing actionable data.
 
+Written: on disk in .story/, not yet committed. Committed: in a local commit. Pushed: on the remote; only this is durable.
+Status and recap report local commit state, and on a non-default branch the difference from origin/<default>; they do not report push state. When status carries a `Board not committed` section, render it in the summary.
+
 **If Step 0.5 surfaces a foreign live, legacy live, or expired COMPACT session, use the session variant at the end of this section; it replaces the normal summary. A same-owner session does not use that variant.**
 
 **Recovery token definition.** Use a raw Storybloq session token only for ambiguous COMPACT recovery or explicit administrative cancellation. `<T>` is the shortest unique prefix of the full `sessionId`, starting at eight characters and extending until unique. Guide calls always use the full `sessionId`; the token is only for typed confirmation.

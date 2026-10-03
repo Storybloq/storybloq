@@ -15,6 +15,7 @@ import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANON
 import { sanitizeDisplayText } from "../../core/display-text.js";
 import { glossaryCatalog } from "../../core/glossary.js";
 import { withSectionJson } from "./export.js";
+import { boardUncommitted, renderBoardUncommitted } from "../../core/board-git-state.js";
 import type { ProjectState } from "../../core/project-state.js";
 import type { ResolvedNode } from "../../federation/resolver.js";
 import type { StatusRoster } from "../../core/roster-view.js";
@@ -277,7 +278,7 @@ export async function handleStatus(
     }
 
     return {
-      output: formatFederatedStatus(
+      output: await withBoardUncommitted(formatFederatedStatus(
         fedState,
         config,
         ctx.format,
@@ -289,7 +290,7 @@ export async function handleStatus(
         expiredLeaseSessions,
         arrangements,
         roster,
-      ),
+      ), ctx.format, opts.compact === true, ctx.root),
     };
   }
 
@@ -309,7 +310,28 @@ export async function handleStatus(
     opts.compact ?? false,
     roster,
   );
-  return { output: withGlossaryCounts(output, ctx.format, opts.compact === true, ctx.root) };
+  return { output: await withBoardUncommitted(withGlossaryCounts(output, ctx.format, opts.compact === true, ctx.root), ctx.format, opts.compact === true, ctx.root) };
+}
+
+/**
+ * ISS-1107: the board files that are not committed, and on a non-default
+ * branch the board files that differ from origin/<default>. Markdown gets a
+ * "Board not committed" section when there is something to say; non-compact
+ * JSON gets `data.boardUncommitted`. Compact status is untouched and spawns no
+ * git at all (T-320 pinned that payload). The federated payload carries it too,
+ * scoped to the orchestrator root, since this is a fact about that checkout.
+ * Never throws.
+ */
+export async function withBoardUncommitted(output: string, format: string, compact: boolean, root: string): Promise<string> {
+  if (compact) return output;
+  try {
+    const state = await boardUncommitted(root);
+    if (format === "json") return withSectionJson(output, "boardUncommitted", state);
+    const section = renderBoardUncommitted(state);
+    return section ? `${output}\n\n${section}` : output;
+  } catch {
+    return output;
+  }
 }
 
 /**

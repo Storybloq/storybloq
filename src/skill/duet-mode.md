@@ -6,7 +6,7 @@ Use for an owner-paired manager (pen) and worker, after the entry skill's owners
 
 1. Read the arrangement and verify its project, bounds, both task IDs, and your role. Names alone cannot select a worker. The pen owns coordination writes; the worker reports to the pen. Live seats on this machine are read with `storybloq_roster_get` (MCP) or `storybloq roster list` (CLI), never from a checked-in contacts file: the roster is machine-local and gitignored, and a committed contacts list is wrong for everyone who pulls it.
 2. Each participant discovers its own exact callable sender and completion tools. Record identifiers, not a namespace or a description mentioning messaging. Classify native task messaging as **available**, **absent** after complete discovery, or **unknown** if discovery is incomplete. Receiving a message proves no outbound capability.
-3. On manager entry, resume, or compaction recovery, read durable obligations and runtime assignments, then rotate the coordination session. Preserve assignment IDs, dispatch sessions, cursors, pending questions, and processed reports. Collect outstanding results before fresh dispatch. Missing historical runtime requires the recovery procedure below; it never means no work exists.
+3. On manager entry, resume, or compaction recovery, read ledger obligations and runtime assignments, then rotate the coordination session. Preserve assignment IDs, dispatch sessions, cursors, pending questions, and processed reports. Collect outstanding results before fresh dispatch. Missing historical runtime requires the recovery procedure below; it never means no work exists.
 4. Send the worker the project, both identities, coordination session ID, server-returned nonce, and required return route. A sender-capable worker replies to the manager directly; otherwise the manager collects the worker's matching final response. Observe the matching worker return before appending a receipt and announcing readiness. A local acknowledgment or accepted outgoing send alone is insufficient.
 
 | Worker return capability | Reply mode | Required completion backstop |
@@ -37,7 +37,7 @@ Before dispatch, persist an assignment with its ID, scope, allowed actions, acce
 
 **Bridge review gate (ISS-1282).** A commissioned codex-bridge round follows the receipt rules in autonomous-mode.md (Bridge review gate); the guide refuses a round that breaks them.
 
-The manager persists collection cursors and report identities, processes direct and collected copies once, and reviews evidence before resolving an assignment. A worker turn ending without a report triggers collection or a status demand; it does not resolve the assignment. Keep pending questions and owed/owing/resource-hold notes durable. Carry unresolved work through interruptions without redispatching it under a new ID.
+The manager persists collection cursors and report identities, processes direct and collected copies once, and reviews evidence before resolving an assignment. A worker turn ending without a report triggers collection or a status demand; it does not resolve the assignment. Keep pending questions and owed/owing/resource-hold notes in the ledger. Carry unresolved work through interruptions without redispatching it under a new ID.
 
 While the manager is active, 60 minutes without meaningful worker activity calls for one status demand per silent interval. Polling is not worker activity. This procedure has no watchdog or timed recovery promise while the manager is idle.
 

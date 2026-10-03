@@ -52,6 +52,10 @@ describe("local Codex plugin installer", () => {
     await writeFile(join(pkg, "dist/cli.js"), "installed runtime");
     await writeFile(join(pkg, "dist/board/server.js"), "board runtime");
     await writeFile(join(pkg, "dist/board/board.html"), "board UI");
+    await writeFile(
+      join(pkg, "dist/board/local-browser.html"),
+      "local browser host",
+    );
     await cp(join(process.cwd(), ".codex-plugin"), join(pkg, ".codex-plugin"), {
       recursive: true,
     });

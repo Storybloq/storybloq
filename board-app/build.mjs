@@ -33,41 +33,69 @@ await writeFile(
       `<script type="module">${browser.outputFiles[0].text.replaceAll("</script", "<\\/script")}</script>`,
   ),
 );
+const host = await build({
+  ...common,
+  entryPoints: ["src/local-browser-host.ts"],
+  platform: "browser",
+  minify: true,
+  write: false,
+});
+await writeFile(
+  `${output}/local-browser.html`,
+  (await readFile("src/local-browser-host.html", "utf8")).replace(
+    "<!-- HOST -->",
+    () =>
+      `<script type="module">${host.outputFiles[0].text.replaceAll("</script", "<\\/script")}</script>`,
+  ),
+);
 const server = await build({
   ...common,
   entryPoints: ["src/main.ts"],
   platform: "node",
-  ...(packaged ? {
-    external: ["@modelcontextprotocol/sdk", "@modelcontextprotocol/sdk/*", "canonicalize", "proper-lockfile"],
-    banner: { js: 'import { createRequire as storybloqCreateRequire } from "node:module"; const require = storybloqCreateRequire(import.meta.url);' },
-  } : { packages: "external" }),
+  ...(packaged
+    ? {
+        external: [
+          "@modelcontextprotocol/sdk",
+          "@modelcontextprotocol/sdk/*",
+          "canonicalize",
+          "proper-lockfile",
+        ],
+        banner: {
+          js: 'import { createRequire as storybloqCreateRequire } from "node:module"; const require = storybloqCreateRequire(import.meta.url);',
+        },
+      }
+    : { packages: "external" }),
   outfile: `${output}/server.js`,
 });
 if (packaged) {
-  await writeThirdPartyNotices([browser.metafile, server.metafile], `${output}/THIRD_PARTY_NOTICES.txt`);
+  await writeThirdPartyNotices(
+    [browser.metafile, host.metafile, server.metafile],
+    `${output}/THIRD_PARTY_NOTICES.txt`,
+  );
 } else {
-await mkdir("dist/test", { recursive: true });
-await build({
-  ...common,
-  entryPoints: [
-    "test/board.test.ts",
-    "test/local-context.test.ts",
-    "test/ui.test.ts",
-    "test/history.test.ts",
-    "test/federation.test.ts",
-    "test/workspace.test.mjs",
-    "test/editor.test.ts",
-    "test/editor-ui.test.ts",
-    "test/notes.test.ts",
-    "test/notes-ui.test.ts",
-    "test/sessions.test.ts",
-    "test/sessions-ui.test.ts",
-    "test/session-projection.test.mjs",
-    "test/runtime-budget.test.ts",
-    "test/performance.ts",
-  ],
-  platform: "node",
-  packages: "external",
-  outdir: "dist/test",
-});
+  await mkdir("dist/test", { recursive: true });
+  await build({
+    ...common,
+    entryPoints: [
+      "test/board.test.ts",
+      "test/local-browser.test.ts",
+      "test/local-context.test.ts",
+      "test/ui.test.ts",
+      "test/history.test.ts",
+      "test/federation.test.ts",
+      "test/workspace.test.mjs",
+      "test/editor.test.ts",
+      "test/editor-ui.test.ts",
+      "test/notes.test.ts",
+      "test/notes-ui.test.ts",
+      "test/sessions.test.ts",
+      "test/sessions-ui.test.ts",
+      "test/session-projection.test.mjs",
+      "test/runtime-budget.test.ts",
+      "test/performance.ts",
+    ],
+    platform: "node",
+    packages: "external",
+    outdir: "dist/test",
+  });
 }

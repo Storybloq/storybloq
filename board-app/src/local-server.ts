@@ -4,12 +4,17 @@ import { readBoard } from "./board.js";
 import type { LocalCliRuntime } from "./local-runtime.js";
 
 /** One stdio connection belongs to one captured local task context. */
-export async function createLocalServer(startDir: string, html: string, localCli?: LocalCliRuntime) {
+export async function createLocalServer(
+  startDir: string,
+  html: string,
+  localCli?: LocalCliRuntime,
+  openBrowser?: (root: string) => Promise<string>,
+) {
   const context = captureLocalContext(startDir);
   const root = context.resolve();
   if (root) {
     await readBoard(root);
-    return createServer(root, html, { localCli });
+    return createServer(root, html, { localCli, openBrowser });
   }
   const server = createBoardHost(html);
   let activating: Promise<boolean> | undefined;
@@ -21,7 +26,7 @@ export async function createLocalServer(startDir: string, html: string, localCli
         // Do not expose the normal tools while setup is only partially written.
         await readBoard(detected);
         bootstrap.remove();
-        createServer(detected, html, { localCli }, server);
+        createServer(detected, html, { localCli, openBrowser }, server);
         return true;
       })().finally(() => {
         activating = undefined;
@@ -55,7 +60,11 @@ export async function createLocalServer(startDir: string, html: string, localCli
                 : "This task has no Storybloq project. Use the Storybloq skill to set it up, then open Storybloq again.",
             },
           ],
-          structuredContent: { setupRequired: !ready, ready, ...(localCli ? { localCli } : {}) },
+          structuredContent: {
+            setupRequired: !ready,
+            ready,
+            ...(localCli ? { localCli } : {}),
+          },
         };
       } catch {
         return {

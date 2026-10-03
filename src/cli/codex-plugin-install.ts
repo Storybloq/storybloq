@@ -90,6 +90,9 @@ async function preparePlugin(packageRoot: string) {
   const runtime = await regularFile(cli);
   const board = await regularFile(join(pkg, "dist/board/server.js"));
   const html = await regularFile(join(pkg, "dist/board/board.html"));
+  const localBrowser = await regularFile(
+    join(pkg, "dist/board/local-browser.html"),
+  );
   const files = new Map<string, Buffer>();
   for (const name of [
     ".codex-plugin/plugin.json",
@@ -132,7 +135,8 @@ async function preparePlugin(packageRoot: string) {
     .update(cli)
     .update(runtime)
     .update(board)
-    .update(html);
+    .update(html)
+    .update(localBrowser);
   for (const [name, bytes] of files) digest.update(name).update(bytes);
   const id = digest.digest("hex");
   return { files, id };

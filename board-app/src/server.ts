@@ -61,7 +61,11 @@ export function createBoardHost(html: string) {
 export function createServer(
   root: string,
   html: string,
-  options: { approvedNodeRoots?: string[]; localCli?: LocalCliRuntime } = {},
+  options: {
+    approvedNodeRoots?: string[];
+    localCli?: LocalCliRuntime;
+    openBrowser?: (root: string) => Promise<string>;
+  } = {},
   existingServer?: McpServer,
 ) {
   const access = captureRoots(root, options.approvedNodeRoots ?? []);
@@ -117,10 +121,24 @@ export function createServer(
     () =>
       run(async () => {
         const b = await snapshot();
+        let url: string | undefined;
+        try {
+          url = await options.openBrowser?.(root);
+        } catch {
+          /* The native board remains available if the browser cannot start. */
+        }
         return {
-          content: [{ type: "text", text: "Storybloq project board is ready." }],
+          content: [
+            {
+              type: "text",
+              text: url
+                ? `Storybloq project board is ready. [Open Storybloq](${url})`
+                : "Storybloq project board is ready.",
+            },
+          ],
           structuredContent: {
             ...(options.localCli ? { localCli: options.localCli } : {}),
+            ...(url ? { localBrowser: { url } } : {}),
             project: b.project,
             tickets: b.tickets.length,
             issues: b.issues.length,
@@ -342,7 +360,7 @@ export function createServer(
   );
   const writeAnnotations = {
     readOnlyHint: false,
-    destructiveHint: false,
+    destructiveHint: true,
     openWorldHint: false,
     idempotentHint: false,
   };

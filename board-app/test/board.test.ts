@@ -162,7 +162,14 @@ test("MCP exposes read-only UI tools, resource and sanitized failures without wr
           "storybloq_note_save",
         ].includes(t.name),
       );
-      assert.equal(t.annotations?.destructiveHint, false);
+      assert.equal(
+        t.annotations?.destructiveHint,
+        [
+          "storybloq_item_save",
+          "storybloq_ticket_reopen",
+          "storybloq_note_save",
+        ].includes(t.name),
+      );
     }
     for (const t of tools) {
       assert.equal((t._meta?.ui as any)?.resourceUri, RESOURCE_URI);

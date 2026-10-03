@@ -33,7 +33,8 @@
   },
   "bin": {
     "storybloq": "dist/cli.js",
-    "storybloq-presence": "dist/presence.js"
+    "storybloq-presence": "dist/presence.js",
+    "storybloq-codex": "dist/codex-plugin.js"
   },
   "files": [
     "dist",
@@ -45,6 +46,7 @@
     "plugins/storybloq/hooks/*.ts",
     "!plugins/storybloq/hooks/*.test.ts",
     "README.md",
+    "CODEX-PLUGIN.md",
     "NOTICE"
   ],
   "engines": {

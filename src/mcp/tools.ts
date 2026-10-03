@@ -2294,6 +2294,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         issueId: z.string().optional().describe("For issue_picked"),
         commitHash: z.string().optional().describe("For commit_done"),
         overrideAttribution: z.boolean().optional().describe("When true, bypasses FINALIZE's commit-attribution mismatch on a commit_done report; every use is audited (ISS-982)."),
+        overrideOverlap: z.boolean().optional().describe("When true, lets FINALIZE proceed on a files_staged report whose staged set includes files that were already untracked at session start; without it FINALIZE refuses and asks you to unstage them. Not separately recorded (ISS-988)."),
         handoverContent: z.string().optional().describe("Markdown content"),
         verdict: z.string().optional().describe("approve|revise|request_changes|reject"),
         findings: z.array(z.object({

@@ -47,6 +47,7 @@
     "!plugins/storybloq/hooks/*.test.ts",
     "README.md",
     "CODEX-PLUGIN.md",
+    "OPENAI-RELEASE.md",
     "NOTICE"
   ],
   "engines": {

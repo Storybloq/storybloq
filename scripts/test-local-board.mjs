@@ -226,7 +226,13 @@ test("installed board saves through canonical handlers into its own project", as
           stderr: "pipe",
         }),
       );
-      assert.equal((await client.listTools()).tools.length, 17);
+      const tools = (await client.listTools()).tools;
+      assert.equal(tools.length, 17);
+      assert.equal(tools.find(t => t.name === "storybloq_board").annotations.readOnlyHint, false);
+      for (const tool of tools.filter(t => t.name !== "storybloq_board")) {
+        assert.deepEqual(tool._meta.ui.visibility, ["model", "app"]);
+        assert.ok(tool.outputSchema);
+      }
     }
     const original = await readFile(file(roots[0]));
     const opened = await clients[1].callTool({
@@ -244,7 +250,7 @@ test("installed board saves through canonical handlers into its own project", as
       arguments: {
         kind: "tickets",
         id: "T-001",
-        revision: editor._meta.editor.revision,
+        revision: editor.structuredContent.editor.revision,
         patch: { title: "Saved from installed board" },
       },
     });
@@ -372,7 +378,7 @@ test("installed board isolates Git worktrees, rejects stale edits and survives r
     const save = await call(b, "storybloq_item_save", {
       kind: "tickets",
       id: "T-001",
-      revision: editor._meta.editor.revision,
+      revision: editor.structuredContent.editor.revision,
       patch: { title: "Worktree saved" },
     });
     assert.notEqual(save.isError, true);
@@ -392,13 +398,13 @@ test("installed board isolates Git worktrees, rejects stale edits and survives r
     const rejected = await call(b, "storybloq_item_save", {
       kind: "tickets",
       id: "T-001",
-      revision: stale._meta.editor.revision,
+      revision: stale.structuredContent.editor.revision,
       patch: { title: "Stale draft" },
     });
     assert.equal(rejected.isError, true);
     assert.deepEqual(await readFile(file(tree)), concurrent);
     assert.deepEqual(await readFile(file(main)), before);
-    assert.equal(rejected._meta.editError.code, "conflict");
+    assert.equal(rejected.structuredContent.editError.code, "conflict");
     const fresh = await call(b, "storybloq_item_editor", {
       kind: "tickets",
       id: "T-001",

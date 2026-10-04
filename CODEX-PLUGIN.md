@@ -6,7 +6,7 @@ This integration keeps `.story/` in your project as the source of truth. The Mac
 
 This implementation is under verification and has not been published. The currently published package must not be assumed to contain `storybloq-codex`. Use the tested package artifact provided with this implementation for local evaluation.
 
-The verified integration host is Codex CLI 0.153.4's app-server. The installed plugin also renders the existing board in a local browser through its explicit Open Storybloq link. Native Codex panel rendering, automatic opening, and ChatGPT Work's local desktop experience remain unverified. Retrieving an HTML resource alone is not a rendering test.
+The verified integration host is Codex CLI 0.153.4's app-server. The installed plugin also renders the existing board in a local browser through its explicit Open Storybloq link. User-assisted acceptance on October 3, 2026 verified the explicit Open Storybloq action rendering the CPM board in browser panels in both Codex desktop and ChatGPT Work. Native MCP App rendering and automatic opening remain unverified. These runs did not establish fresh installation or full editing acceptance in each desktop mode. Retrieving an HTML resource alone is not a rendering test.
 
 ## Installation and updates
 
@@ -47,16 +47,26 @@ The Nodes view displays configured relationships and cached progress. Live node 
 
 | Capability | Codex app-server | Native Codex desktop | ChatGPT Work |
 | --- | --- | --- | --- |
-| Task directory and local MCP | Verified | Separate verification pending | Separate verification pending |
+| Task directory and local MCP | Verified | CPM explicit-open observed | CPM explicit-open observed |
 | Two projects and canonical edits | Verified | Separate verification pending | Separate verification pending |
 | Fresh Git worktree, stale conflict, restart | Verified using installed stdio runtime | Separate verification pending | Separate verification pending |
 | HTML board resource | Verified | Native panel pending | Native panel pending |
-| Explicit local browser board | Verified from installed package with real browser edits | No native panel claim | Separate Work integration pending |
+| Explicit local browser board | Verified from installed package with real browser edits | Rendered in desktop browser panel | Rendered in Work browser panel |
 | Automatic board opening | Unverified | Unverified | Unverified |
 | Installer and update | Verified against the real Codex CLI, including a changed artifact with the same version | Desktop UI integration pending | Separate verification pending |
 
-OpenAI documents local marketplaces as a desktop authoring and testing path, including Work mode. Local Work depends on the desktop app and the relevant account/device permissions. Web installation does not deploy local command scripts. These documented capabilities do not establish that this plugin has passed a separate Work test. See [building plugins](https://developers.openai.com/plugins/build/plugins) and [Work local security](https://learn.chatgpt.com/docs/enterprise/chatgpt-work-local-security).
+OpenAI documents local marketplaces as a desktop authoring and testing path, including Work mode. Local Work depends on the desktop app and the relevant account/device permissions. Web installation does not deploy local command scripts. The observed Work explicit-open test is narrower than the remaining clean-install, editing and restart acceptance matrix. See [building plugins](https://developers.openai.com/plugins/build/plugins) and [Work local security](https://learn.chatgpt.com/docs/enterprise/chatgpt-work-local-security).
 
 The optional hosted connector is deferred. A developer tunnel is not part of this customer workflow. The browser checks cover both themes, phases, ticket and issue editing, note preview/editing, chronological handovers, recorded sessions, federation links and in-root node details. Two simultaneous project connections were edited independently, with disk readback confirming isolation. Conflict and committed-save response-loss checks preserved drafts. Installed Node 20 tests cover worktrees, setup activation, restart, connection-owned endpoint shutdown, and missing optional browser assets.
 
-Distribution readiness remains false. This is a locally tested candidate, not a published customer release. Codex's local marketplace installation is verified; native Codex UI and ChatGPT Work installation, rendering and local folder binding require their own acceptance runs. Native UI access was unavailable during this run. The browser's cloud Work project dialog did not provide evidence of local directory support, so no conclusion of Work incompatibility is drawn. Automatic opening remains unverified; the explicit action is the delivered workflow.
+Distribution readiness remains false. The explicit browser-panel action is observed in both desktop modes, but fresh desktop installation, two simultaneous native projects, missing-ledger setup, restart and file-confirmed edits still need separate acceptance in each mode. Native self-control is denied to the verification agent by the host; enabling Computer Use does not remove that restriction. Existing user-assisted evidence remains valid. Automatic opening is unverified.
+
+## Data shared with the host
+
+The local plugin exposes bounded board, notes, handover, federation and session projections to both the assistant and the UI. Selected results enter the host conversation context, including results requested by the app. They can include authored bodies, cached federation metadata, branch names, milestone notes and session tool targets containing paths. Allowlisting is not secret redaction. Unknown record extensions, raw session logs and transcripts are excluded. The older private connector keeps its UI-only result contract.
+
+Local storage means `.story/` stays authoritative on disk; it does not mean selected tool results stay off the AI host. The board starts only a task-owned loopback listener, uses embedded assets and has no Storybloq cloud storage service.
+
+## Release and Directory preparation
+
+See [OpenAI release preparation](OPENAI-RELEASE.md) for the local marketplace route, acceptance checklist and separate public Directory requirements. This candidate has not been submitted or published. Core 1.16 release gates and integration with the reviewed main branch must pass before release.

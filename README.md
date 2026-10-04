@@ -106,6 +106,8 @@ Alternative install via the Claude Code plugin system: see [Storybloq/plugin-arc
 
 ## Codex plugin marketplace
 
+For the unpublished local board candidate, use [the dedicated local plugin installer](CODEX-PLUGIN.md). The repository marketplace below installs the older skill integration, not that board candidate.
+
 ```bash
 codex plugin marketplace add https://github.com/Storybloq/storybloq
 codex plugin add storybloq@storybloq

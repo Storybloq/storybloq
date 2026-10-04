@@ -198,6 +198,18 @@ test("missing ledger offers guidance, rejects partial setup and activates after 
     for (const result of ready)
       assert.equal((result.structuredContent as any).ready, true);
     assert.equal((await client.listTools()).tools.length, 17);
+    const overviewTool = (await client.listTools()).tools.find(
+      (t) => t.name === "storybloq_board_overview",
+    )!;
+    assert.deepEqual((overviewTool._meta?.ui as any).visibility, [
+      "model",
+      "app",
+    ]);
+    const overview = await client.callTool({
+      name: "storybloq_board_overview",
+      arguments: {},
+    });
+    assert.deepEqual(overview.structuredContent, overview._meta);
     const board = await client.callTool({
       name: "storybloq_board",
       arguments: {},
@@ -256,5 +268,96 @@ test("simultaneous local servers retain their own project and survive reconnect"
     await Promise.all(clients.map((c) => c.close()));
     await a.cleanup();
     await b.cleanup();
+  }
+});
+
+test("local tools expose conversational results and preserve revision conflicts", async () => {
+  const f = await fixture();
+  await mkdir(join(f.root, ".story/notes"));
+  await f.put("notes/N-001.json", {
+    id: "N-001",
+    title: "Local note",
+    content: "Original",
+    tags: [],
+    status: "active",
+    createdDate: "2026-10-04",
+    updatedDate: "2026-10-04",
+    privateExtension: "NEVER_SHARE_EXTENSION",
+  });
+  const client = await connect(f.root);
+  const call = async (name: string, args = {}) =>
+    (await client.callTool({ name, arguments: args })) as any;
+  try {
+    for (const tool of (await client.listTools()).tools.filter(
+      (t) => t.name !== "storybloq_board",
+    )) {
+      assert.deepEqual(
+        (tool._meta?.ui as any)?.visibility,
+        ["model", "app"],
+        tool.name,
+      );
+      assert.ok(tool.outputSchema, tool.name);
+    }
+    const item = await call("storybloq_board_detail", {
+      kind: "tickets",
+      id: "T-001",
+    });
+    assert.equal(item.structuredContent.item.title, "Ship the board");
+    assert.deepEqual(JSON.parse(item.content[0].text), item.structuredContent);
+    const read = await call("storybloq_note_editor", { id: "N-001" });
+    const editor = read.structuredContent.editor;
+    assert.match(editor.revision, /^[a-f0-9]{64}$/);
+    assert.ok(!JSON.stringify(read).includes("NEVER_SHARE_EXTENSION"));
+    const saved = await call("storybloq_note_save", {
+      id: "N-001",
+      revision: editor.revision,
+      patch: { content: "Saved through model tool" },
+    });
+    assert.equal(saved.isError, undefined);
+    assert.notEqual(saved.structuredContent.editor.revision, editor.revision);
+    const path = join(f.root, ".story/notes/N-001.json");
+    const disk = await readFile(path, "utf8");
+    assert.equal(JSON.parse(disk).content, "Saved through model tool");
+    assert.equal(JSON.parse(disk).privateExtension, "NEVER_SHARE_EXTENSION");
+    const stale = await call("storybloq_note_save", {
+      id: "N-001",
+      revision: editor.revision,
+      patch: { content: "Stale overwrite" },
+    });
+    assert.equal(stale.isError, true);
+    assert.equal(stale.structuredContent.editError.code, "conflict");
+    assert.deepEqual(
+      JSON.parse(stale.content[0].text),
+      stale.structuredContent,
+    );
+    assert.equal(await readFile(path, "utf8"), disk);
+  } finally {
+    await client.close();
+    await f.cleanup();
+  }
+});
+
+test("opening a local browser declares its listener side effect", async () => {
+  const f = await fixture();
+  const server = await createLocalServer(
+    f.root,
+    "<p>Board</p>",
+    undefined,
+    async () => "http://127.0.0.1:1/#test",
+  );
+  const client = new Client({ name: "annotation-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(a);
+    await client.connect(b);
+    const tool = (await client.listTools()).tools.find(
+      (t) => t.name === "storybloq_board",
+    )!;
+    assert.equal(tool.annotations?.readOnlyHint, false);
+    assert.equal(tool.annotations?.destructiveHint, false);
+  } finally {
+    await client.close();
+    await server.close();
+    await f.cleanup();
   }
 });

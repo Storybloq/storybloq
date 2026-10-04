@@ -14,7 +14,11 @@ export async function createLocalServer(
   const root = context.resolve();
   if (root) {
     await readBoard(root);
-    return createServer(root, html, { localCli, openBrowser });
+    return createServer(root, html, {
+      localCli,
+      openBrowser,
+      conversationalTools: true,
+    });
   }
   const server = createBoardHost(html);
   let activating: Promise<boolean> | undefined;
@@ -26,7 +30,12 @@ export async function createLocalServer(
         // Do not expose the normal tools while setup is only partially written.
         await readBoard(detected);
         bootstrap.remove();
-        createServer(detected, html, { localCli, openBrowser }, server);
+        createServer(
+          detected,
+          html,
+          { localCli, openBrowser, conversationalTools: true },
+          server,
+        );
         return true;
       })().finally(() => {
         activating = undefined;

@@ -98,6 +98,16 @@ describe("S3: a disposition is written with its reason and ref, never alone", ()
     await handleIssueUpdate(id, { disposition: "duplicate", dispositionReason: "same bug", dispositionRef: original, duplicateOf: original }, "json", dir);
     expect(raw(dir, id)).toMatchObject({ disposition: "duplicate", duplicateOf: original, dispositionFor: "duplicate" });
   });
+
+  it("duplicate revalidates a stored duplicateOf: a target deleted since it was set is refused", async () => {
+    const dir = await project();
+    const original = await createIssue(dir, "the original");
+    const id = await createIssue(dir, "the copy");
+    await handleIssueUpdate(id, { duplicateOf: original }, "json", dir);
+    expect(raw(dir, id).duplicateOf).toBe(original);
+    tombstone(dir, original);
+    await refused(dir, id, { disposition: "duplicate", dispositionReason: "same bug", dispositionRef: "f800f795" }, "invalid_input", new RegExp(`--duplicate-of ${original} is deleted`));
+  });
 });
 
 describe("S4: the ref names something that exists, and the canonical id is stored", () => {

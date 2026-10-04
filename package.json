@@ -55,7 +55,8 @@
     "labels:export": "tsx scripts/export-labels.ts",
     "projection:fixtures": "tsx scripts/projection-fixtures.ts",
     "dev": "tsup --watch",
-    "prepublishOnly": "npm run build && npm test"
+    "typecheck": "bash scripts/tsc-gate.sh",
+    "prepublishOnly": "bash scripts/tsc-gate.sh && npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

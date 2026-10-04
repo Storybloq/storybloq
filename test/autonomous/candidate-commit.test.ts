@@ -21,7 +21,7 @@
  * discard individually, not only the invalidated-generation race.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, unlinkSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -77,6 +77,7 @@ import {
   writeSessionDurableSync,
   withSessionLock,
   __stateWriteTesting,
+  StateWriteUndurableError,
   LEASE_DURATION_MS,
 } from "../../src/autonomous/session.js";
 import {
@@ -525,6 +526,84 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
     const closed = readCancellationIntent(sessDir);
     if (closed.kind !== "valid" || closed.intent.phase !== "closed") throw new Error("retry did not close");
     expect(closed.intent.outcome).toEqual({ kind: "takeover", committedRevision: after.revision });
+  });
+
+  it("PRE-RENAME failure through the real durable writer: nothing was published, so the generation is DISCARDED and the state is untouched", async () => {
+    // The mirror of the POST-RENAME test above. Before the rename nothing is
+    // visible to any reader, so the failure IS a failed write: the writer
+    // must throw an ordinary error, never StateWriteUndurableError, and the
+    // caller must discard the generation and report nothing published.
+    //
+    // Two modes. A throw at the seam is the plain injection, but it leaves
+    // before the rename AND before the flag, so it cannot tell whether the
+    // flag is set before or after the rename it records. Only a failure of
+    // the rename ITSELF can: the seam unlinks the fsynced temp file, so the
+    // real renameSync fails with ENOENT while state.json is untouched.
+    const modes: Array<{ name: string; at: (statePath: string) => void; check: (err: Error) => void }> = [
+      {
+        name: "throw at state:tmp-fsynced",
+        at: () => { throw new Error("simulated tmp fsync failure"); },
+        check: (err) => expect(err.message).toBe("simulated tmp fsync failure"),
+      },
+      {
+        name: "the rename itself fails",
+        at: (statePath) => unlinkSync(`${statePath}.${process.pid}.durable.tmp`),
+        check: (err) => expect((err as NodeJS.ErrnoException).code).toBe("ENOENT"),
+      },
+    ];
+    for (const mode of modes) {
+      const state = plantLive();
+      writeMarker();
+      const before = readFileSync(join(sessDir, "state.json"), "utf-8");
+      const discard = vi.fn();
+      let caught: unknown = undefined;
+
+      const original = __stateWriteTesting.at;
+      __stateWriteTesting.at = (point) => {
+        if (point === "state:tmp-fsynced") mode.at(join(sessDir, "state.json"));
+      };
+      let result: Awaited<ReturnType<typeof commitCandidateTakeoverLocked>>;
+      try {
+        result = await commitCandidateTakeoverLocked(root, sessDir, {
+          input: inputFor(state), callerTask: CALLER,
+        }, takeoverDeps({
+          discardStaged: discard,
+          writeState: (next) => {
+            try {
+              return writeSessionDurableSync(sessDir, next);
+            } catch (err) {
+              caught = err;
+              throw err;
+            }
+          },
+        }));
+      } finally {
+        __stateWriteTesting.at = original;
+      }
+
+      // The writer reported a FAILED write, not an undurable published one.
+      expect(caught, mode.name).toBeInstanceOf(Error);
+      expect(caught, mode.name).not.toBeInstanceOf(StateWriteUndurableError);
+      mode.check(caught as Error);
+
+      expect(result.kind, mode.name).toBe("refused");
+      if (result.kind !== "refused") return;
+      expect(result.stage, mode.name).toBe("write");
+      expect(result.detail, mode.name).toContain("nothing was published");
+      expect(result.detail, mode.name).not.toContain("published at revision");
+      expect(discard, mode.name).toHaveBeenCalledTimes(1);
+
+      // Nothing moved: the preimage is byte-identical and no temp is left.
+      expect(readFileSync(join(sessDir, "state.json"), "utf-8"), mode.name).toBe(before);
+      expect(currentState().revision, mode.name).toBe(state.revision);
+      expect(readdirSync(sessDir).filter((f) => f.endsWith(".durable.tmp")), mode.name).toEqual([]);
+
+      // The intent this cycle created before the write is NOT closed.
+      const intent = readCancellationIntent(sessDir);
+      expect(intent.kind, mode.name).toBe("valid");
+      if (intent.kind !== "valid") return;
+      expect(intent.intent.phase, mode.name).toBe("authorized");
+    }
   });
 
   it("refuses when staging itself fails, before anything is read or written", async () => {

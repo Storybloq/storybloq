@@ -7,12 +7,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import { loadProject } from "../../src/core/project-loader.js";
-import { MERGE_DRIVER_CMD, MERGE_DRIVER_V5_CMD, MERGE_DRIVER_V5_NAME, resolutionWritesReadiness, teamSetup, type GitRead, gitRead } from "../../src/core/team-setup.js";
+import { MERGE_DRIVER_CMD, MERGE_DRIVER_V5_CMD, MERGE_DRIVER_V5_NAME, gitWorkTreeState, resolutionWritesReadiness, teamSetup, type GitRead, gitRead } from "../../src/core/team-setup.js";
 import { enableCheckpoints } from "../../src/core/checkpoint-enable.js";
 import { mergeDriverCapabilities } from "../../src/cli/commands/merge-driver.js";
 import { handleIssueCreate } from "../../src/cli/commands/issue.js";
@@ -175,6 +175,21 @@ describe("A9-1 work tree rows (G0, G1)", () => {
     expect(rows(findings)).toEqual([["warning", "resolution_kind_fence"], ["error", "resolution_kind_git"]]);
     expect(findings[1]!).toEqual(kind("error", "resolution_kind_git",
       gitMessage(`git could not tell whether ${root} is in a work tree: fatal: bad config line 1 in file ./config`)));
+  });
+
+  // Codex fixup 4: a .git lookup that fails for any reason but absence is an
+  // error. A directory without search permission makes lstat fail with EACCES;
+  // root ignores the permission, so the case cannot be built there.
+  it.skipIf(process.getuid?.() === 0)("G1 (fixup 4): a .git lookup that fails with EACCES is an error naming the cause, never absence", () => {
+    const parent = temp();
+    const locked = join(parent, "locked");
+    mkdirSync(locked);
+    chmodSync(locked, 0o600);
+    try {
+      expect(gitWorkTreeState(locked, {})).toEqual({ kind: "error", detail: `could not inspect ${join(locked, ".git")}: EACCES` });
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 
   it.each([

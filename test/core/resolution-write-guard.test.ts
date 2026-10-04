@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import {
   authoriseIssueBytes,
@@ -526,9 +526,16 @@ describe("the write context is the lock's own (B6: C4-C7)", () => {
       detached = later.then(() => prepareIssueWrite(kindWrite(root, issue), root));
     });
     expect(kept.released).toBe(true);
-    await expect(prepareIssueWrite(kindWrite(root, issue), root, { resolutionContext: kept })).rejects.toBeInstanceOf(ResolutionWriteContextError);
+    const keptErr = await rejection(prepareIssueWrite(kindWrite(root, issue), root, { resolutionContext: kept }));
+    expect(keptErr).toBeInstanceOf(ResolutionWriteContextError);
+    expect(keptErr.message).toMatch(/belongs to a lock that was released/);
     release();
-    await expect(detached).rejects.toBeInstanceOf(ResolutionWriteContextError);
+    // Codex fixup 4: the reader sees why. Detached work finds no held
+    // context at all (the released one is filtered out), so the refusal
+    // names the missing lock rather than a verdict on a stale context.
+    const detachedErr = await rejection(detached as Promise<unknown>);
+    expect(detachedErr).toBeInstanceOf(ResolutionWriteContextError);
+    expect(detachedErr.message).toBe(`no project lock is held for ${resolve(root)}; resolution-metadata writes need the project lock's own write context`);
   });
 
   it("C6: with no lock held, a write is refused with the typed error before anything is read or loaded", async () => {

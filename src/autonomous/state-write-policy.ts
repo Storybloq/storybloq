@@ -230,6 +230,8 @@ export const UNFOLLOWED_SINK_CHAINS: Readonly<Record<string, readonly { readonly
 export const TEST_SEAM_SLOTS: Readonly<Record<string, string>> = {
   "src/autonomous/candidate-recovery.ts#CandidateCancelDeps.apply":
     "test seam: production leaves it unset and the local apply takes applyCancellationTransition",
+  "src/autonomous/candidate-recovery.ts#CandidateTakeoverDeps.writeState":
+    "test seam: production leaves it unset and the local writeState takes the synchronous durable writeSessionAndRefresh",
 };
 
 /** Lock-entry primitives: the scan verifies each awaits its callback once and releases in a finally. */

@@ -105,6 +105,8 @@ function scan(): ScanResult {
     // S9: the durable writer performs its own write, not through writeSessionSync.
     extraRootNames: ["writeSessionDurableSync"],
     lockName: "withSessionLock",
+    // T2: the session lock is taken by proper-lockfile's lock, and by nothing else.
+    lockAcquisitions: { "src/autonomous/session.ts#withSessionLock": { module: "proper-lockfile", name: "lock" } },
     registry: {
       catches: STATE_WRITE_CATCHES,
       edges: STATE_WRITE_EDGES,
@@ -177,7 +179,10 @@ describe("ISS-958 state-write enforcement over src", () => {
       "src/autonomous/review-identity.ts#prepareReviewRound(host)",
       "src/autonomous/review-identity.ts#writeRoundArtifact(host)",
     ]);
-    expect(Object.keys(TEST_SEAM_SLOTS)).toEqual(["src/autonomous/candidate-recovery.ts#CandidateCancelDeps.apply"]);
+    expect(Object.keys(TEST_SEAM_SLOTS)).toEqual([
+      "src/autonomous/candidate-recovery.ts#CandidateCancelDeps.apply",
+      "src/autonomous/candidate-recovery.ts#CandidateTakeoverDeps.writeState",
+    ]);
     expect(UNFOLLOWED_SINK_CHAINS).toEqual({
       "src/cli/register.ts#runCatalogWrite#edge#1": [
         { fn: "src/cli/run.ts#runBoardWrite", param: "fn" },

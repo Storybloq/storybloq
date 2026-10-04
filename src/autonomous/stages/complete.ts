@@ -222,7 +222,8 @@ export class CompleteStage implements WorkflowStage {
     try {
       const { handleHandoverCreate } = await import("../../cli/commands/handover.js");
       const completedIds = ctx.state.completedTickets.map((t) => (t as Record<string, unknown>).displayId as string | undefined ?? t.id).join(", ");
-      const resolvedIds = (ctx.state.resolvedIssues ?? []).map((id) => ctx.state.resolvedIssueDisplayIds?.[id] ?? id).join(", ");
+      const resolvedDisplayIds = ctx.state.resolvedIssueDisplayIds;
+      const resolvedIds = (ctx.state.resolvedIssues ?? []).map((id) => resolvedDisplayIds?.[id] ?? id).join(", ");
       const content = [
         `# Checkpoint -- ${totalWorkDone} items completed`,
         "",

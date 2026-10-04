@@ -92,6 +92,12 @@ export interface ScanOptions {
    * check like rootName.
    */
   readonly extraRootNames?: readonly string[];
+  /**
+   * T2: per lock entry (file#name), the acquisition it must make: the callee's
+   * name and the module (a src file, or a package directory) declaring it.
+   * Unlisted, the entry's single callable-returning call is the acquisition.
+   */
+  readonly lockAcquisitions?: Readonly<Record<string, { readonly module: string; readonly name: string }>>;
   /** Name of the lock helper whose callback holds the session lock. */
   readonly lockName: string;
   readonly registry: ScannerRegistry;
@@ -120,6 +126,10 @@ export interface ScanResult {
   readonly chainMembers: string[];
   /** Report aid: call sites of functions that need a lock holder. */
   readonly holderHints: string[];
+  /** Report aid (T3): each write that withheld synchronous credit from a pinned array method, with its reason. */
+  readonly syncWithheld: string[];
+  /** Report aid (A1): each bodyless interface member called under the lock, with its src providers by `file:line`. */
+  readonly memberProviders: Record<string, string[]>;
 }
 
 type Fn = ts.FunctionLikeDeclaration;
@@ -794,7 +804,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     // try it was returned from, so a catch there sees only a synchronous throw:
     // it is reached, but it cannot contain the rejection. A promise awaited
     // inside the try settles there (the await is then its own site).
-    let rejection = ts.isCallExpression(c) && returnsValue(c) && holdsPromise(checker.getTypeAtLocation(c));
+    let rejection = ts.isCallExpression(c) && inReturnedValue(c) && holdsPromise(checker.getTypeAtLocation(c));
     let sync = true;
     for (let child: ts.Node = c, p = c.parent; p; child = p, p = p.parent) {
       if (sync && ts.isTryStatement(p) && p.tryBlock === child && p.catchClause) {
@@ -820,7 +830,22 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     const c = consumerOf(n);
     return ts.isReturnStatement(c) || (isClosure(c) && c.body === outerOf(n));
   };
-  const returnRefs = refs.filter((id) => returnsValue(id));
+  /**
+   * T1: n sits anywhere in a returned expression (a return operand or an
+   * expression body) with no await and no function between: its promise may
+   * become, or settle, the function's result, so it fails closed as returned.
+   */
+  const returnedOperandParents = (p: ts.Node): boolean => ts.isExpression(p) || ts.isPropertyAssignment(p)
+    || ts.isShorthandPropertyAssignment(p) || ts.isSpreadAssignment(p) || ts.isTemplateSpan(p) || ts.isComputedPropertyName(p);
+  function inReturnedValue(n: ts.Node): boolean {
+    for (let child: ts.Node = n, p = n.parent; p; child = p, p = p.parent) {
+      if (ts.isReturnStatement(p)) return true;
+      if (isClosure(p)) return p.body === child;
+      if (ts.isFunctionLike(p) || ts.isAwaitExpression(p) || !returnedOperandParents(p)) return false;
+    }
+    return false;
+  }
+  const returnRefs = refs.filter((id) => inReturnedValue(id));
 
   let grew = true;
   while (grew) {
@@ -1121,7 +1146,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (uses.length !== 1 || invocations.length !== 1) { errors.push(`lock-lifetime: lock entry ${key} must invoke its callback exactly once and nowhere else use it`); continue; }
     const inv = invocations[0]!.parent as ts.CallExpression;
     if (!ts.isAwaitExpression(consumerOf(inv))) { errors.push(`lock-lifetime: lock entry ${key} does not await its callback at ${where(inv)}`); continue; }
-    const releaseErr = releaseError(decl, inv);
+    const releaseErr = releaseError(decl, inv, opts.lockAcquisitions?.[key]);
     if (releaseErr) errors.push(`lock-lifetime: lock entry ${key} ${releaseErr}`);
   }
 
@@ -1132,16 +1157,43 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
    * finally it is never called or passed on; inside it, beyond the call, it may
    * only be tested for presence.
    */
-  function releaseError(decl: ts.FunctionDeclaration, inv: ts.CallExpression): string | null {
+  function releaseError(decl: ts.FunctionDeclaration, inv: ts.CallExpression, pinned?: { module: string; name: string }): string | null {
     const finals: ts.Block[] = [];
     for (let child: ts.Node = inv, p = inv.parent; p && p !== decl; child = p, p = p.parent) {
       if (ts.isTryStatement(p) && p.tryBlock === child && p.finallyBlock) finals.push(p.finallyBlock);
     }
     const inside = (n: ts.Node, b: ts.Node) => n.pos >= b.pos && n.end <= b.end;
+    // T2: exactly one acquisition, a call in the entry's own body before the
+    // callback whose (awaited) result is callable; the release is its value.
+    const callable = (t: ts.Type): boolean => {
+      const a = checker.getAwaitedType(t) ?? t;
+      return (a.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+        || (a.isUnion() ? a.types : [a]).some((x) => checker.getSignaturesOfType(x, ts.SignatureKind.Call).length > 0);
+    };
+    const acquisitions = calls.filter((c) => c.end <= inv.pos && containingFunction(c) === decl && c.pos >= decl.pos && c.end <= decl.end
+      && callable(checker.getTypeAtLocation(c)));
+    if (acquisitions.length !== 1) return `must make exactly one acquisition before its callback, found ${acquisitions.length}`;
+    const acq = acquisitions[0]!;
+    const ad = calleeDecl(acq);
+    const aFile = ad?.getSourceFile();
+    const aName = ad && (ad as ts.NamedDeclaration).name ? (ad as ts.NamedDeclaration).name!.getText() : "<unresolved>";
+    if (pinned && !(aFile && aName === pinned.name && (rel(aFile) === pinned.module || aFile.fileName.includes(`/${pinned.module}/`)))) {
+      return `acquires by ${aName} at ${where(acq)}, not the pinned ${pinned.module}#${pinned.name}`;
+    }
+    // The lock target: the acquired path derives from the entry's parameters.
+    const fromParams = (e: ts.Node, seen: Set<ts.Node>): boolean => subtreeHas(e, (x) => {
+      if (!ts.isIdentifier(x)) return false;
+      const d = declOf(checker.getSymbolAtLocation(x));
+      if (!d || seen.has(d)) return false;
+      seen.add(d);
+      if (ts.isParameter(d)) return d.parent === decl;
+      return ts.isVariableDeclaration(d) && containingFunction(d) === decl && !!d.initializer && fromParams(d.initializer, seen);
+    });
+    if (!acq.arguments[0] || !fromParams(acq.arguments[0], new Set())) return `acquires a lock target not derived from its parameters at ${where(acq)}`;
     const isAcquisition = (e: ts.Expression): boolean => {
       e = skipOuter(e);
       if (ts.isAwaitExpression(e)) e = skipOuter(e.expression);
-      return ts.isCallExpression(e) && e.end <= inv.pos;
+      return e === acq;
     };
     for (const fin of finals) {
       for (const c of calls) {
@@ -1177,11 +1229,122 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
    * declaration of the called member is the default library's Array or
    * ReadonlyArray. A custom or unresolved implementation gets no credit.
    */
+  /** T3: a value that may be an array, so a write to it may replace an array method. */
+  function mayBeArray(t: ts.Type): boolean {
+    if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive | ts.TypeFlags.TypeParameter)) return true;
+    if (t.isUnion() || t.isIntersection()) return t.types.some(mayBeArray);
+    if (checker.isArrayLikeType(t)) return true;
+    if (!(t.flags & ts.TypeFlags.Object) || t.getCallSignatures().length > 0) return false;
+    // A string index signature accepts an array without a cast only when its value type is any.
+    const index = checker.getIndexTypeOfType(t, ts.IndexKind.String);
+    if (index) return !!(index.flags & ts.TypeFlags.Any);
+    return t.getProperties().length === 0;
+  }
+  /**
+   * T3: e's value may be an array: its own type may be, or an assertion may
+   * have carried one in, on the way here or upstream (a local's or field's
+   * sources, a parameter's arguments, a callee's returned values). A cycle
+   * contributes nothing new.
+   */
+  function mayHoldArray(e: ts.Expression, seen = new Set<ts.Node>()): boolean {
+    let x: ts.Expression = e;
+    for (;;) {
+      // A fresh object literal is no array, whatever its (often empty) type; a cast around it is walked.
+      if (ts.isObjectLiteralExpression(skipParens(x))) return false;
+      if (mayBeArray(checker.getTypeAtLocation(x))) return true;
+      const inner = skipParens(x);
+      if (ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner) || ts.isNonNullExpression(inner) || ts.isSatisfiesExpression(inner)) x = inner.expression;
+      else break;
+    }
+    const ops = operandsOf(x);
+    if (ops.length > 1 || ops[0] !== skipOuter(x)) return ops.some((o) => mayHoldArray(o, seen));
+    x = skipParens(x);
+    if (ts.isBinaryExpression(x) && (x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || x.operatorToken.kind === ts.SyntaxKind.CommaToken)) {
+      return mayHoldArray(x.right, seen);
+    }
+    if (ts.isIdentifier(x) || ts.isPropertyAccessExpression(x)) {
+      const d = declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x));
+      if (!d || seen.has(d)) return false;
+      seen.add(d);
+      if (ts.isParameter(d)) {
+        const fn = d.parent;
+        const i = fn.parameters.indexOf(d);
+        return calls.some((c) => calleeDecl(c) === fn && (d.dotDotDotToken ? c.arguments.slice(i) : c.arguments[i] ? [c.arguments[i]!] : [])
+          .some((a) => mayHoldArray(a, seen)));
+      }
+      const { exprs } = sourcesOf(d);
+      return exprs.some((src) => mayHoldArray(src, seen));
+    }
+    if (ts.isCallExpression(x)) {
+      const d = calleeDecl(x);
+      if (!d || seen.has(d) || !ts.isFunctionLike(d) || !(d as Fn).body) return false;
+      seen.add(d);
+      const body = (d as Fn).body!;
+      if (!ts.isBlock(body)) return mayHoldArray(body, seen);
+      const rets: ts.Expression[] = [];
+      const v = (n: ts.Node): void => {
+        if (ts.isFunctionLike(n)) return;
+        if (ts.isReturnStatement(n) && n.expression) rets.push(n.expression);
+        ts.forEachChild(n, v);
+      };
+      ts.forEachChild(body, v);
+      return rets.some((r) => mayHoldArray(r, seen));
+    }
+    return false;
+  }
+  const REFLECTIVE_WRITES = new Set(["Object.assign", "Object.defineProperty", "Object.defineProperties", "Object.setPrototypeOf",
+    "Reflect.set", "Reflect.defineProperty", "Reflect.setPrototypeOf"]);
+  /**
+   * T3: the pinned method names src may replace on a value that may be an
+   * array: a write to the member by name or by constant key, in an assignment
+   * or a destructuring-assignment target. A write by a key the checker cannot
+   * reduce, or a reflective write to a value that may be an array, may replace
+   * any of them (all).
+   */
+  let replacedSync: { names: Set<string>; all: boolean } | undefined;
+  /** Why credit was withheld, by site (reported in the result). */
+  const syncWithheld: string[] = [];
+  function replacedSyncMethods(): { names: Set<string>; all: boolean } {
+    if (replacedSync) return replacedSync;
+    const r = { names: new Set<string>(), all: false };
+    const note = (what: string, at: ts.Node): void => { syncWithheld.push(`${what} at ${where(at)}`); };
+    const pinned = SYNC_CALLBACK_METHODS as readonly string[];
+    const target = (e: ts.Expression): void => {
+      e = skipOuter(e);
+      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) { target(e.left); return; }
+      if (ts.isPropertyAccessExpression(e)) {
+        if (pinned.includes(e.name.text) && mayHoldArray(e.expression)) { r.names.add(e.name.text); note(e.name.text, e); }
+      } else if (ts.isElementAccessExpression(e)) {
+        if (!mayHoldArray(e.expression)) return;
+        const k = checker.getTypeAtLocation(e.argumentExpression);
+        if (k.isStringLiteral()) { if (pinned.includes(k.value)) { r.names.add(k.value); note(k.value, e); } }
+        else if (!(k.flags & ts.TypeFlags.NumberLike)) { r.all = true; note("all (element key)", e); }
+      } else if (ts.isObjectLiteralExpression(e)) {
+        for (const p of e.properties) {
+          if (ts.isPropertyAssignment(p)) target(p.initializer);
+          else if (ts.isSpreadAssignment(p)) target(p.expression);
+        }
+      } else if (ts.isArrayLiteralExpression(e)) {
+        for (const x of e.elements) if (!ts.isOmittedExpression(x)) target(ts.isSpreadElement(x) ? x.expression : x);
+      }
+    };
+    for (const a of pendingAssigns) target(a.left);
+    for (const c of calls) {
+      const callee = skipOuter(c.expression);
+      if (!ts.isPropertyAccessExpression(callee) || !REFLECTIVE_WRITES.has(callee.getText().replace(/\s+/g, ""))) continue;
+      const t0 = c.arguments[0];
+      // A fresh object literal is no array a callback runs on.
+      if (t0 && !ts.isObjectLiteralExpression(skipOuter(t0)) && mayHoldArray(t0)) { r.all = true; note(`all (${callee.getText()})`, c); }
+    }
+    return (replacedSync = r);
+  }
   const isPinnedSyncCallback = (cl: ts.Node): boolean => {
     const o = outerOf(cl);
     const call = o.parent;
     if (!call || !ts.isCallExpression(call) || call.arguments[0] !== o || !ts.isPropertyAccessExpression(call.expression)) return false;
     if (!(SYNC_CALLBACK_METHODS as readonly string[]).includes(call.expression.name.text)) return false;
+    const replaced = replacedSyncMethods();
+    if (replaced.all || replaced.names.has(call.expression.name.text)) return false;
     const decls = checker.getSymbolAtLocation(call.expression.name)?.declarations ?? [];
     return decls.length > 0 && decls.every((d) => program.isSourceFileDefaultLibrary(d.getSourceFile())
       && ts.isInterfaceDeclaration(d.parent) && (d.parent.name.text === "Array" || d.parent.name.text === "ReadonlyArray"));
@@ -1451,20 +1614,10 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   // A value whose member is the owner's own declaration is a forward of an
   // already checked provider; an untyped value cannot be established (fail closed).
   const guarded: { key: string; label: string; md: ts.Node; member: string }[] = [];
-  for (const [label, keys] of [["injected awaited-callback slot", Object.keys(injected)], ["test-seam slot", Object.keys(testSeams)]] as const) {
-    for (const key of keys) {
-      const m = /^(.*)#([^.#]+)\.([^.#]+)$/.exec(key);
-      const sf = m && files.find((f) => rel(f) === m[1]);
-      let md: ts.Node | undefined;
-      sf?.forEachChild((n) => {
-        const members = ts.isInterfaceDeclaration(n) && n.name.text === m![2] ? n.members
-          : ts.isTypeAliasDeclaration(n) && n.name.text === m![2] && ts.isTypeLiteralNode(n.type) ? n.type.members : undefined;
-        md ??= members?.find((x) => x.name && x.name.getText() === m![3]);
-      });
-      if (md) guarded.push({ key, label, md, member: m![3]! });
-    }
-  }
-  if (guarded.length > 0) {
+  /** Every value flowing anywhere a contextual type can receive it (S6, A1). */
+  let flowsMemo: ts.Expression[] | undefined;
+  function allFlows(): ts.Expression[] {
+    if (flowsMemo) return flowsMemo;
     const flows: ts.Expression[] = [];
     for (const sf of files) {
       const v = (n: ts.Node): void => {
@@ -1480,26 +1633,91 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       };
       v(sf);
     }
-    const typeHolds = (t: ts.Type | undefined, owner: ts.Node): boolean =>
-      !!t && (t.isUnion() || t.isIntersection() ? t.types : [t]).some((x) => (x.getSymbol()?.declarations ?? []).includes(owner as ts.Declaration));
+    return (flowsMemo = flows);
+  }
+  const typeHolds = (t: ts.Type | undefined, owner: ts.Node): boolean =>
+    !!t && (t.isUnion() || t.isIntersection() ? t.types : [t]).some((x) => (x.getSymbol()?.declarations ?? []).includes(owner as ts.Declaration));
+  /** A2: guarded slot members; src never supplies them (S6), so a call through one runs a src default or a test provider. */
+  const guardedMds = new Set<ts.Node>();
+  for (const [label, keys] of [["injected awaited-callback slot", Object.keys(injected)], ["test-seam slot", Object.keys(testSeams)]] as const) {
+    for (const key of keys) {
+      const m = /^(.*)#([^.#]+)\.([^.#]+)$/.exec(key);
+      const sf = m && files.find((f) => rel(f) === m[1]);
+      let md: ts.Node | undefined;
+      sf?.forEachChild((n) => {
+        const members = ts.isInterfaceDeclaration(n) && n.name.text === m![2] ? n.members
+          : ts.isTypeAliasDeclaration(n) && n.name.text === m![2] && ts.isTypeLiteralNode(n.type) ? n.type.members : undefined;
+        md ??= members?.find((x) => x.name && x.name.getText() === m![3]);
+      });
+      if (md) { guarded.push({ key, label, md, member: m![3]! }); guardedMds.add(md); }
+    }
+  }
+  if (guarded.length > 0) {
+    const flows = allFlows();
+    const once = (m: string): void => { if (!errors.includes(m)) errors.push(m); };
+    /** T5: the slot name a computed key may hold: the constant, "*" when the checker cannot reduce it, or null for a number. */
+    const computedKey = (k: ts.Expression): string | null => {
+      const t = checker.getTypeAtLocation(k);
+      if (t.isStringLiteral()) return t.value;
+      if (t.isNumberLiteral() || t.flags & ts.TypeFlags.NumberLike) return null;
+      return "*";
+    };
+    /** T5: an object literal's members, computed, accessor and spread ones included; named ones also meet the contextual check above. */
+    const literalSupplies = (lit: ts.ObjectLiteralExpression, g: (typeof guarded)[number]): void => {
+      for (const p of lit.properties) {
+        if (ts.isSpreadAssignment(p)) {
+          const x = skipOuter(p.expression);
+          if (ts.isObjectLiteralExpression(x)) literalSupplies(x, g);
+          continue;
+        }
+        if (!p.name) continue;
+        const k = ts.isComputedPropertyName(p.name) ? computedKey(p.name.expression) : p.name.getText().replace(/^["']|["']$/g, "");
+        if (k === g.member) once(`${g.label} ${g.key} is supplied in src at ${where(p)}`);
+        else if (k === "*") once(`${g.label} ${g.key} may be supplied in src at ${where(p)} (computed key)`);
+      }
+    };
+    /** T5: a write to the slot through an element access, a destructuring target or a reflective write. */
+    const holdsOwner = (e: ts.Expression, g: (typeof guarded)[number]): boolean => {
+      const t = checker.getTypeAtLocation(e);
+      return !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ? false : typeHolds(t, g.md.parent);
+    };
+    const writeTarget = (e: ts.Expression, g: (typeof guarded)[number], at: ts.Node): void => {
+      e = skipOuter(e);
+      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) { writeTarget(e.left, g, at); return; }
+      if (ts.isPropertyAccessExpression(e)) {
+        if ((checker.getSymbolAtLocation(e.name)?.declarations ?? []).includes(g.md as ts.Declaration)) once(`${g.label} ${g.key} is supplied in src at ${where(at)}`);
+      } else if (ts.isElementAccessExpression(e)) {
+        if (!holdsOwner(e.expression, g)) return;
+        const k = computedKey(e.argumentExpression);
+        if (k === g.member) once(`${g.label} ${g.key} is supplied in src at ${where(at)}`);
+        else if (k === "*") once(`${g.label} ${g.key} may be supplied in src at ${where(at)} (computed key)`);
+      } else if (ts.isObjectLiteralExpression(e)) {
+        for (const p of e.properties) {
+          if (ts.isPropertyAssignment(p)) writeTarget(p.initializer, g, at);
+          else if (ts.isSpreadAssignment(p)) writeTarget(p.expression, g, at);
+        }
+      } else if (ts.isArrayLiteralExpression(e)) {
+        for (const x of e.elements) if (!ts.isOmittedExpression(x)) writeTarget(ts.isSpreadElement(x) ? x.expression : x, g, at);
+      }
+    };
     for (const g of guarded) {
+      for (const c of calls) {
+        const callee = skipOuter(c.expression);
+        if (!ts.isPropertyAccessExpression(callee) || !REFLECTIVE_WRITES.has(callee.getText().replace(/\s+/g, ""))) continue;
+        if (c.arguments[0] && holdsOwner(c.arguments[0], g)) once(`${g.label} ${g.key} may be supplied in src at ${where(c)} (reflective write)`);
+      }
       for (const e0 of flows) {
         const e = skipOuter(e0);
         const spread = ts.isSpreadAssignment(e0.parent);
         const target = spread ? checker.getContextualType(e0.parent.parent as ts.ObjectLiteralExpression) : checker.getContextualType(e0);
         if (!typeHolds(target, g.md.parent)) continue;
-        if (ts.isObjectLiteralExpression(e)) continue; // its members are checked above, its spreads here
+        if (ts.isObjectLiteralExpression(e)) { literalSupplies(e, g); continue; }
         const t = checker.getTypeAtLocation(e);
         if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) { errors.push(`${g.label} ${g.key} may be supplied in src at ${where(e)} (untyped provider)`); continue; }
         const prop = t.getProperty(g.member);
         if (prop && !(prop.declarations ?? []).every((x) => x === g.md)) errors.push(`${g.label} ${g.key} is supplied in src at ${where(e)}`);
       }
-      for (const a of pendingAssigns) {
-        const left = skipOuter(a.left);
-        if (ts.isPropertyAccessExpression(left) && (checker.getSymbolAtLocation(left.name)?.declarations ?? []).includes(g.md as ts.Declaration)) {
-          errors.push(`${g.label} ${g.key} is supplied in src at ${where(a)}`);
-        }
-      }
+      for (const a of pendingAssigns) writeTarget(a.left, g, a);
     }
   }
 
@@ -1929,35 +2147,168 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   }
 
   /**
-   * S3: a call may suspend when its exposed type may hold a promise or when any
-   * implementation it resolves to may: an async or promise-returning function,
-   * or any source of a local or field it calls through. The call-site type
-   * alone is not trusted (an async closure fits a `() => void` local).
+   * S3/T4: a call may suspend when its exposed type may hold a promise or when
+   * any implementation it resolves to may. The call-site type alone is never
+   * trusted (an async closure fits a `() => void` local or cast). A closure
+   * operand of the callee is read directly; an overload resolves to its
+   * implementation bodies. Anything that is not a resolved declaration with a
+   * body fails closed: a bodyless declaration with no implementation, an
+   * accessor, a parameter, an unresolved callee, or a local or field with a
+   * source that is not a closure or a resolvable reference.
    */
+  /**
+   * A1: the src providers of an interface or type member, built on the S6
+   * every-flow walk: classes implementing the owner, and every value flowing
+   * into the owner type (an object literal's member, or the value type's
+   * member declarations), and every assignment to the member. A provider
+   * without a body in src, an asserted or untyped flow, and a computed member
+   * cannot be established: UNRESOLVED (fail closed).
+   */
+  const providerMemo = new Map<ts.Node, { bodies: ts.Node[]; unresolved: number }>();
+  const memberProviders: Record<string, string[]> = {};
+  function providersOf(md: ts.Node): { bodies: ts.Node[]; unresolved: number } {
+    const hit = providerMemo.get(md);
+    if (hit) return hit;
+    const r = { bodies: [] as ts.Node[], unresolved: 0 };
+    providerMemo.set(md, r);
+    const owner = md.parent;
+    const member = (md as ts.NamedDeclaration).name?.getText() ?? "";
+    const holder = owner && (ts.isInterfaceDeclaration(owner) || ts.isTypeAliasDeclaration(owner)) ? owner
+      : owner && ts.isTypeLiteralNode(owner) && ts.isTypeAliasDeclaration(owner.parent) ? owner.parent : undefined;
+    const mkey = `${rel(md.getSourceFile())}#${holder ? holder.name.text : "<anon>"}.${member}`;
+    const sitesOf = (memberProviders[mkey] ??= []);
+    const unresolvedAt = (at: ts.Node, why: string): void => {
+      r.unresolved++;
+      const m = `UNRESOLVED provider ${mkey} at ${where(at)} (${why})`;
+      if (!errors.includes(m)) errors.push(m);
+    };
+    const add = (n: ts.Node): void => { if (!r.bodies.includes(n)) { r.bodies.push(n); sitesOf.push(where(n)); } };
+    const fromValue = (v: ts.Expression, at: ts.Node): void => {
+      const x = skipOuter(v);
+      if (isClosure(x)) { add(x); return; }
+      const d = ts.isIdentifier(x) || ts.isPropertyAccessExpression(x)
+        ? declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x)) : undefined;
+      if (d && ts.isFunctionLike(d) && (d as Fn).body) add(d);
+      else unresolvedAt(at, "provider without a body in src");
+    };
+    const fromDecl = (d: ts.Node, at: ts.Node): void => {
+      if (d === md) return; // a forward of the owner's own member
+      if (ts.isFunctionLike(d) && (d as Fn).body && !ts.isGetAccessor(d) && !ts.isSetAccessor(d)) add(d);
+      else if ((ts.isPropertyDeclaration(d) || ts.isPropertyAssignment(d)) && d.initializer) fromValue(d.initializer, at);
+      else unresolvedAt(at, "provider without a body in src");
+    };
+    const fromLiteral = (lit: ts.ObjectLiteralExpression): void => {
+      for (const p of lit.properties) {
+        if (ts.isSpreadAssignment(p)) {
+          const x = skipOuter(p.expression);
+          if (ts.isObjectLiteralExpression(x)) fromLiteral(x);
+          else fromType(checker.getTypeAtLocation(x), p);
+          continue;
+        }
+        if (!p.name) continue;
+        if (ts.isComputedPropertyName(p.name)) { unresolvedAt(p, "computed member"); continue; }
+        if (p.name.getText().replace(/^["']|["']$/g, "") !== member) continue;
+        if (ts.isPropertyAssignment(p)) fromValue(p.initializer, p);
+        else if (ts.isMethodDeclaration(p) && p.body) add(p);
+        else unresolvedAt(p, "provider without a body in src");
+      }
+    };
+    const fromType = (t: ts.Type, at: ts.Node): void => {
+      if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) { unresolvedAt(at, "untyped provider"); return; }
+      const prop = t.getProperty(member);
+      for (const d of prop?.declarations ?? []) fromDecl(d, at);
+    };
+    if (holder) {
+      for (const sf of files) {
+        sf.forEachChild(function visit(n): void {
+          if ((ts.isClassDeclaration(n) || ts.isClassExpression(n)) && (n.heritageClauses ?? []).some((h) => h.types.some((ht) =>
+            (checker.getTypeAtLocation(ht.expression).getSymbol()?.declarations ?? []).includes(holder as ts.Declaration)
+            || (checker.getTypeAtLocation(ht).getSymbol()?.declarations ?? []).includes(holder as ts.Declaration)))) {
+            for (const m of n.members) {
+              if (m.name && ts.isComputedPropertyName(m.name)) unresolvedAt(m, "computed member");
+              else if (m.name && m.name.getText() === member) fromDecl(m, m);
+            }
+          }
+          ts.forEachChild(n, visit);
+        });
+      }
+    }
+    for (const e0 of allFlows()) {
+      const inner = skipParens(e0);
+      const asserted = ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner);
+      const spread = ts.isSpreadAssignment(e0.parent);
+      const target = spread ? checker.getContextualType(e0.parent.parent as ts.ObjectLiteralExpression) : checker.getContextualType(e0);
+      if (!typeHolds(target, owner) && !(asserted && typeHolds(checker.getTypeAtLocation(inner), owner))) continue;
+      if (asserted) { unresolvedAt(e0, "asserted provider"); continue; }
+      const e = skipOuter(e0);
+      if (ts.isObjectLiteralExpression(e)) fromLiteral(e);
+      else fromType(checker.getTypeAtLocation(e), e);
+    }
+    for (const a of pendingAssigns) {
+      const left = skipOuter(a.left);
+      if (ts.isPropertyAccessExpression(left) && (checker.getSymbolAtLocation(left.name)?.declarations ?? []).includes(md as ts.Declaration)) fromValue(a.right, a);
+      else if (ts.isElementAccessExpression(left) && typeHolds(checker.getTypeAtLocation(left.expression), owner)) unresolvedAt(a, "element-access write");
+    }
+    sitesOf.sort();
+    return r;
+  }
+
   function implMaySuspend(d: ts.Node | undefined, seen = new Set<ts.Node>()): boolean {
-    if (!d || seen.has(d)) return false;
+    if (!d) return true;
+    if (seen.has(d)) return false;
     seen.add(d);
-    if (ts.isFunctionLike(d) && (d as Fn).body) return isAsyncLike(d as Closure);
-    if (!ts.isVariableDeclaration(d) && !ts.isPropertyDeclaration(d)) return false;
-    return sourcesOf(d).exprs.some((src) => operandsOf(src).some((x) => {
+    if (ts.isGetAccessor(d) || ts.isSetAccessor(d) || ts.isParameter(d)) return true;
+    if (guardedMds.has(d)) return false; // A2: never supplied in src (S6); its default is the local's other operand
+    if ((ts.isMethodSignature(d) || ts.isPropertySignature(d)) && (ts.isInterfaceDeclaration(d.parent) || ts.isTypeLiteralNode(d.parent))) {
+      const p = providersOf(d);
+      // No provider in src: whatever supplies it is unseen (fail closed).
+      return p.unresolved > 0 || p.bodies.length === 0 || p.bodies.some((b) => isClosure(b) || ts.isFunctionLike(b) ? isAsyncLike(b as Closure) : true);
+    }
+    if (ts.isFunctionLike(d)) {
+      if ((d as Fn).body) return isAsyncLike(d as Closure);
+      const sym = (d as ts.NamedDeclaration).name ? checker.getSymbolAtLocation((d as ts.NamedDeclaration).name!) : undefined;
+      const impls = (sym?.declarations ?? []).filter((x) => ts.isFunctionLike(x) && (x as Fn).body);
+      return impls.length === 0 || impls.some((x) => isAsyncLike(x as Closure));
+    }
+    if (!ts.isVariableDeclaration(d) && !ts.isPropertyDeclaration(d)) return true;
+    const { exprs, members, iterated } = sourcesOf(d);
+    if (members.length > 0 || iterated.length > 0 || exprs.length === 0) return true;
+    return exprs.some((src) => operandsOf(src).some((x) => {
       x = skipOuter(x);
       if (isClosure(x)) return isAsyncLike(x);
       if (ts.isIdentifier(x) || ts.isPropertyAccessExpression(x)) {
-        return implMaySuspend(declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x)), seen)
-          || holdsCallablePromise(checker.getTypeAtLocation(x));
+        return implMaySuspend(declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x)), seen);
       }
-      return holdsCallablePromise(checker.getTypeAtLocation(x));
+      return true;
     }));
   }
-  /** Some call signature of t may return a promise. */
-  const holdsCallablePromise = (t: ts.Type): boolean =>
-    checker.getSignaturesOfType(checker.getNonNullableType(t), ts.SignatureKind.Call).some((sg) => holdsPromise(checker.getReturnTypeOfSignature(sg)));
-  const maySuspend = (c: ts.CallExpression): boolean => holdsPromise(checker.getTypeAtLocation(c)) || implMaySuspend(calleeDecl(c));
+  const maySuspend = (c: ts.CallExpression): boolean => {
+    if (holdsPromise(checker.getTypeAtLocation(c))) return true;
+    const ops = closureOperands(c.expression);
+    if (ops.length > 0) {
+      return ops.some((cl) => isAsyncLike(cl)) || operandsOf(c.expression).some((x0) => {
+        const x = skipOuter(x0);
+        if (isClosure(x)) return false;
+        const d = ts.isIdentifier(x) || ts.isPropertyAccessExpression(x)
+          ? declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x)) : undefined;
+        return implMaySuspend(d);
+      });
+    }
+    return implMaySuspend(calleeDecl(c));
+  };
+  /** T4: a callee the scan cannot resolve to a declaration or a closure; under the lock it is held to the completion form. */
+  const unresolvedLockCallee = (c: ts.CallExpression): string | null => {
+    const e = skipOuter(c.expression);
+    if (e.kind === ts.SyntaxKind.ImportKeyword || e.kind === ts.SyntaxKind.SuperKeyword) return null;
+    if (closureOperands(e).length > 0 || calleeDecl(c)) return null;
+    return `<unresolved callee ${e.getText().replace(/\s+/g, "")}>`;
+  };
 
   // A3a/A6, scoped by A7 to code under the lock: a contract promise completes there.
   for (const c of calls) {
     if (regionOf(c).how === null) continue;
-    const k = contractCallee(c) ?? (awaitedCallbackIndex(c) !== null ? `awaited-callback ${c.expression.getText()}` : null);
+    const k = contractCallee(c) ?? (awaitedCallbackIndex(c) !== null ? `awaited-callback ${c.expression.getText()}` : null)
+      ?? unresolvedLockCallee(c);
     if (!k || !maySuspend(c)) continue;
     if (!completedForm(c)) errors.push(`lock-lifetime: ${k} called at ${where(c)} is neither awaited nor returned in a contract function`);
   }
@@ -1974,7 +2325,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     }
     const key = edgeKeyOf.get(cl);
     if (!isAsyncLike(cl) && key && key in opts.registry.edges) continue;
-    errors.push(`lock-lifetime: ${isAsyncLike(cl) ? "async " : ""}contract closure at ${where(cl)} is passed or stored, not invoked in place`);
+    errors.push(`lock-lifetime: ${isAsyncLike(cl) ? "async " : ""}contract closure at ${where(cl)} is passed or stored, not invoked in place; hoist the context reads out of the callback, or await the work under the lock`);
   }
 
   // A3b: a context value may only be a parameter, a local, a receiver, an
@@ -1988,7 +2339,9 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     ...thisRefs.filter((t) => isCtxType(checker.getTypeAtLocation(t)))];
     for (const v of ctxValues) {
       const why = retention(v);
-      if (why) errors.push(`lock-lifetime: context ${why} at ${where(v)}`);
+      // The remedy, since this is the rule a context-capturing callback meets.
+      const remedy = why?.startsWith("captured") ? "; hoist the read out of the callback, or await the work under the lock" : "";
+      if (why) errors.push(`lock-lifetime: context ${why} at ${where(v)}${remedy}`);
     }
     for (const p of props) {
       if (p.parent !== ctxClass && isCtxType(checker.getTypeAtLocation(p))) {
@@ -2157,6 +2510,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (!unresolved.has(key)) errors.push(`stale UNRESOLVED key ${key}`);
   }
 
+  // The report aid lists every withholding write, whether or not a pinned callback asked for the credit.
+  replacedSyncMethods();
   const writerNames = [...writers].map((d) => {
     const name = fnName(d) ?? (ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) ? d.name.text : memberName(d) ?? "<anon>");
     return `${rel(d.getSourceFile())}#${name}`;
@@ -2167,6 +2522,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     constructions,
     chainMembers: [...chainMembers].sort(),
     holderHints: [...new Set(holderHints)].sort(),
+    syncWithheld: [...new Set(syncWithheld)].sort(),
+    memberProviders,
   };
 }
 

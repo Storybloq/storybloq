@@ -32,8 +32,9 @@ export class HandoverStage implements WorkflowStage {
     const rotation = ctx.state.contextRotation;
     const knowledgeNote = (ctx.state.knowledgeImpacts ?? []).length > 0 ? KNOWLEDGE_SECTION_NOTE : null;
     if (rotation) {
+      const targetDisplayIds = ctx.state.targetWorkDisplayIds;
       const remaining = rotation.remainingTargets
-        .map((id) => ctx.state.targetWorkDisplayIds[id] ?? id)
+        .map((id) => targetDisplayIds[id] ?? id)
         .join(", ");
       return {
         instruction: [
@@ -190,7 +191,8 @@ export class HandoverStage implements WorkflowStage {
 
     const ticketsDone = ctx.state.completedTickets.length;
     const issuesDone = (ctx.state.resolvedIssues ?? []).length;
-    const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${ctx.state.resolvedIssueDisplayIds?.[id] ?? id} (resolved)`).join("\n");
+    const resolvedDisplayIds = ctx.state.resolvedIssueDisplayIds;
+    const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${resolvedDisplayIds?.[id] ?? id} (resolved)`).join("\n");
     // Terminal -- return advance but the walker will see SESSION_END is terminal
     return {
       action: "advance",

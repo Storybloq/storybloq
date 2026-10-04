@@ -98,6 +98,37 @@ export async function outer(d: string) { try { await inner(d); } catch (e) { thr
     expect(awaited.errors).toEqual([]);
   });
 
+  // T1: a writer promise anywhere in a returned expression, with no await
+  // between, passes every catch it is returned from (fail closed).
+  const t1 = (ret: string) => scan(IMPORTS + `
+async function asyncWriter(d: string): Promise<void> { ${LOCKED}; }
+async function inner(d: string, b: boolean, p?: Promise<void>): Promise<unknown> { try { ${ret}; } catch {} return null; }
+export async function outer(d: string) { try { await inner(d, true); } catch (e) { throw e; } }`);
+  it.each([
+    ["a conditional", "return b ? asyncWriter(d) : Promise.resolve()"],
+    ["??", "return p ?? asyncWriter(d)"],
+    ["||", "return p || asyncWriter(d)"],
+    ["&&", "return b && asyncWriter(d)"],
+    ["a comma", "return (livenessLog(\"x\"), asyncWriter(d))"],
+    ["parentheses", "return (asyncWriter(d))"],
+    ["as", "return asyncWriter(d) as Promise<void>"],
+    ["a non-null assertion", "return asyncWriter(d)!"],
+    ["satisfies", "return asyncWriter(d) satisfies Promise<void>"],
+    ["a local holding the promise", "const q = asyncWriter(d); return b ? q : null"],
+    ["a promise built from it", "return Promise.all([asyncWriter(d)])"],
+  ])("T1: a writer promise returned through %s passes the catch", (_n, ret) => {
+    const r = t1(ret);
+    expect(r.writers).toContain("user.ts#inner");
+    expect(r.errors).toContain("unregistered propagating user.ts#outer#catch#1");
+  });
+
+  it("T1: an awaited returned expression settles in the try", () => {
+    const r = t1("return await (b ? asyncWriter(d) : Promise.resolve())");
+    expect(r.found.get("user.ts#inner#catch#1")).toBe("contained");
+    expect(r.writers).not.toContain("user.ts#inner");
+    expect(r.errors).toEqual([]);
+  });
+
   it.each([["any"], ["unknown"]])("return x where x: %s", (t) => {
     const r = scan(IMPORTS + `
 export async function a(d: string, x: ${t}) { try { ${LOCKED}; } catch { return x; } return null; }`);
@@ -695,6 +726,157 @@ export function guide(d: string) {
     expect(inLock(body("await f();")).errors).toEqual([]);
   });
 
+  // T3: synchronous credit is withheld when src may replace the array method.
+  const SYNC_WRITE = "items.forEach(() => writeSessionSync(d, { revision: 1 }));";
+  const lockedDirect = (r: { errors: string[] }) => r.errors.some((e) => e.startsWith("lock: writeSessionSync at user.ts:"));
+  it.each([
+    ["an override with deferred invocation", "const arr: number[] = [];\narr.forEach = (cb) => { setTimeout(() => cb(1, 0, arr), 0); };\n"],
+    ["a receiver alias", "export function patch(items: number[]) { const a = items; a.forEach = () => {}; }\n"],
+    ["Array.prototype", "Array.prototype.forEach = function () {};\n"],
+    ["a constant element key", "export function patch(items: number[]) { items[\"forEach\"] = () => {}; }\n"],
+    ["an element key the checker cannot reduce", "export function patch(items: number[], k: string) { (items as any)[k] = 1; }\n"],
+    ["a destructuring-assignment target", "export function patch(items: number[], src: { f: number[][\"forEach\"] }) { ({ f: items.forEach } = src); }\n"],
+    ["Object.defineProperty", "export function patch(items: number[]) { Object.defineProperty(items, \"forEach\", { value: () => {} }); }\n"],
+    ["Object.assign", "export function patch(items: number[]) { Object.assign(items, { forEach: () => {} }); }\n"],
+  ])("T3: a forEach src may replace through %s gets no synchronous credit", (_n, top) => {
+    expect(lockedDirect(inLock(SYNC_WRITE, top))).toBe(true);
+  });
+
+  it("T3: a member of that name on a value that is no array keeps the credit", () => {
+    expect(inLock(SYNC_WRITE, "const o = { forEach: 1 };\nexport function patch() { o.forEach = 2; }\n").errors).toEqual([]);
+  });
+
+  // B: a string index signature takes an array without a cast only when its value type is any.
+  const SYNC_MAP = "const out = items.map(() => writeSessionSync(d, { revision: 1 }));";
+  it("B: a reflective write to a Record<string, unknown> or a constant-key write on one keeps the credit", () => {
+    expect(inLock(SYNC_WRITE, "export function merge(r: Record<string, unknown>, ours: object) { Object.assign(r, ours); }\n").errors).toEqual([]);
+    expect(inLock(SYNC_MAP, "export function patch(rec: Record<string, unknown>, f: unknown) { rec[\"map\"] = f; }\n").errors).toEqual([]);
+    expect(inLock(SYNC_MAP).errors).toEqual([]);
+  });
+
+  it("a context read hoisted out of a pinned callback passes with the credit withheld; unhoisted it errors and names the remedy", () => {
+    const PATCH = "export function patch(r: unknown) { Object.assign(r as object, { map: 1 }); }\n";
+    const hoisted = inLock("const names = ctx.dir;\n    const out = items.map((i) => `${names}${i}`).join(\",\");", PATCH);
+    expect(hoisted.syncWithheld.some((w) => w.startsWith("all (Object.assign) at user.ts:"))).toBe(true);
+    expect(hoisted.errors).toEqual([]);
+    const unhoisted = lifetime(inLock("const out = items.map((i) => `${ctx.dir}${i}`).join(\",\");", PATCH).errors);
+    expect(unhoisted).toContainEqual(expect.stringMatching(
+      /^lock-lifetime: context captured by a function that may run outside the lock at user\.ts:\d+; hoist the read out of the callback, or await the work under the lock$/));
+    expect(unhoisted).toContainEqual(expect.stringMatching(
+      /^lock-lifetime: contract closure at user\.ts:\d+ is passed or stored, not invoked in place; hoist the context reads out of the callback, or await the work under the lock$/));
+  });
+
+  it("B: a Record local initialised with a fresh literal keeps the credit; one assigned an array through a cast withholds it", () => {
+    expect(inLock(SYNC_WRITE, "export function merge(ours: object) { const m: Record<string, unknown> = {}; Object.assign(m, ours); }\n").errors).toEqual([]);
+    expect(inLock(SYNC_MAP, "export function put(k: string, v: unknown) { const m: Record<string, unknown> = {}; m[k] = v; }\n").errors).toEqual([]);
+    const cast = inLock(SYNC_WRITE, "export function merge(arr: number[]) { let m: Record<string, unknown> = {}; m = arr as unknown as Record<string, unknown>; Object.assign(m, { forEach: () => {} }); }\n");
+    expect(lockedDirect(cast)).toBe(true);
+  });
+
+  it.each([
+    ["a Record<string, any> holding an array", "const arrs: number[] = [];\nexport function merge(r: Record<string, any>) { Object.assign(r, { forEach: () => {} }); }\nmerge(arrs);\n", "all (Object.assign)"],
+    ["an index signature of any", "export function merge(r: { [k: string]: any }) { Object.assign(r, { forEach: () => {} }); }\n", "all (Object.assign)"],
+    ["an array cast to a Record at the write", "export function patch(arr: number[]) { Object.assign(arr as unknown as Record<string, unknown>, { forEach: () => {} }); }\n", "all (Object.assign)"],
+    ["an array cast to a Record through a local", "export function patch(arr: number[]) { const r = arr as unknown as Record<string, unknown>; Object.assign(r, { forEach: () => {} }); }\n", "all (Object.assign)"],
+    ["an array cast to a Record into a parameter", "function put(r: Record<string, unknown>) { Object.assign(r, { forEach: () => {} }); }\nexport function patch(arr: number[]) { put(arr as unknown as Record<string, unknown>); }\n", "all (Object.assign)"],
+    ["an array cast to a Record by a returning callee", "function asRec(arr: number[]) { return arr as unknown as Record<string, unknown>; }\nexport function patch(arr: number[]) { Object.assign(asRec(arr), { forEach: () => {} }); }\n", "all (Object.assign)"],
+    ["an array cast to a Record and written by key", "export function patch(arr: number[], f: unknown) { (arr as unknown as Record<string, unknown>)[\"forEach\"] = f; }\n", "forEach"],
+  ])("B: %s withholds the credit", (_n, top, why) => {
+    const r = inLock(SYNC_WRITE, top);
+    expect(lockedDirect(r)).toBe(true);
+    expect(r.syncWithheld.some((w) => w.startsWith(`${why} at user.ts:`))).toBe(true);
+  });
+
+  // T4: suspension is not read from an erased signature.
+  const ASYNC_BODY = "{ await pause(); writeSessionSync(d, { revision: 1 }); }";
+  it("T4: a contract callee whose overload is void and whose implementation is async must complete", () => {
+    const top = "function w(ctx: StageContext): void;\nasync function w(ctx: StageContext) { await pause(); ctx.writeState({ revision: 1 }); }\n";
+    expect(lifetime(inLock("w(ctx);", top).errors)).toEqual([
+      expect.stringMatching(/^lock-lifetime: user\.ts#w called at user\.ts:\d+ is neither awaited nor returned in a contract function$/),
+    ]);
+    expect(inLock("await w(ctx);", top).errors).toEqual([]);
+  });
+
+  it("T4: Codex's overload counterexample: a local writer that is no contract function is refused at its write", () => {
+    const r = inLock(`function w(): void;\n    async function w() ${ASYNC_BODY}\n    w();`);
+    expect(r.errors).toEqual([expect.stringMatching(/^lock: writeSessionSync at user\.ts:\d+ is not inside withSessionLock or a lock-held function$/)]);
+  });
+
+  it.each([
+    ["as", `((async () => ${ASYNC_BODY}) as () => void)();`],
+    ["an angle-bracket assertion", `(<() => void>(async () => ${ASYNC_BODY}))();`],
+  ])("T4: an async closure cast to () => void through %s and called must complete", (_n, body) => {
+    expect(lifetime(inLock(body).errors).some((e) => e.includes("called at user.ts:") && e.endsWith("is neither awaited nor returned in a contract function"))).toBe(true);
+  });
+
+  // A1: a bodyless interface member resolves to every src provider, each scanned as an ordinary callee.
+  const TYPES_SKIP = TYPES.replace("export interface WorkflowStage { enter(ctx: StageContext): Promise<void> }",
+    "export interface WorkflowStage { enter(ctx: StageContext): Promise<void>; skip?(ctx: StageContext): void }");
+  const inLockSkip = (body: string, top: string) => lockScan(LOCK_IMPORTS + top + `
+export async function run(d: string, items: number[], stage: WorkflowStage) {
+  await withSessionLock(d, async () => {
+    const ctx = new StageContext(d);
+    ${body}
+  });
+}`, { contextConstructions: ["user.ts#run#new#1"] }, { "/fx/types.ts": TYPES_SKIP });
+  const SKIP_SYNC = "export class A implements WorkflowStage { async enter(ctx: StageContext) {} skip(ctx: StageContext) { ctx.writeState({ revision: 1 }); } }\n"
+    + "export class B implements WorkflowStage { async enter(ctx: StageContext) {} skip(ctx: StageContext): void {} }\n";
+  const skipLifetime = (r: { errors: string[] }) => lifetime(r.errors).filter((e) =>
+    /^lock-lifetime: WorkflowStage\.skip called at user\.ts:\d+ is neither awaited nor returned in a contract function$/.test(e));
+  it("A1: synchronous providers only: the call passes and the providers are listed by file and line", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC);
+    expect(r.errors).toEqual([]);
+    expect(r.memberProviders["types.ts#WorkflowStage.skip"]).toEqual([expect.stringMatching(/^user\.ts:\d+$/), expect.stringMatching(/^user\.ts:\d+$/)]);
+  });
+
+  it.each([
+    ["a class method", "export class C implements WorkflowStage { async enter(ctx: StageContext) {} async skip(ctx: StageContext) { await pause(); ctx.writeState({ revision: 2 }); } }\n"],
+    ["a typed object literal", "export const C: WorkflowStage = { enter: async () => {}, async skip(ctx: StageContext) { await pause(); ctx.writeState({ revision: 2 }); } };\n"],
+    ["a property assignment", "export function patch(s: WorkflowStage) { s.skip = async (ctx: StageContext) => { await pause(); ctx.writeState({ revision: 2 }); }; }\n"],
+  ])("A1: one detaching provider among several, %s, is caught at the call site", (_n, extra) => {
+    expect(skipLifetime(inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + extra))).toHaveLength(1);
+  });
+
+  it("A1: a provider supplied through an assertion is UNRESOLVED and the call may suspend", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export const C = { enter: async (ctx: StageContext) => {}, skip: (ctx: StageContext) => {} } as WorkflowStage;\n");
+    expect(r.errors.some((e) => /^UNRESOLVED provider types\.ts#WorkflowStage\.skip at user\.ts:\d+ \(asserted provider\)$/.test(e))).toBe(true);
+    expect(skipLifetime(r)).toHaveLength(1);
+  });
+
+  it("A1: a member with no provider in src may suspend", () => {
+    expect(skipLifetime(inLockSkip("stage.skip?.(ctx);", ""))).toHaveLength(1);
+  });
+
+  // A2: a guarded test-seam slot behind a local default is credited synchronous; a src supply is refused.
+  const TAKEOVER = `export interface TDeps { readonly writeState?: (s: { revision: number }) => { revision: number } }\n`;
+  const SEAM_BODY = (deps: string) => `const deps: TDeps = ${deps};
+    const writeState = deps.writeState ?? ((s: { revision: number }) => { ctx.writeState(s); return s; });
+    writeState({ revision: 1 });`;
+  const SEAM_REG = { testSeamSlots: { "user.ts#TDeps.writeState": "tests only" }, edges: { "user.ts#x#edge#1": "user.ts#TDeps.writeState" } };
+  it("A2: an unsupplied writeState seam passes as a test-seam slot and fails closed unregistered", () => {
+    const r = inLock(SEAM_BODY("{}"), TAKEOVER, SEAM_REG);
+    expect(lifetime(r.errors)).toEqual([]);
+    expect(r.errors.some((e) => e.includes("test-seam slot"))).toBe(false);
+    expect(lifetime(inLock(SEAM_BODY("{}"), TAKEOVER).errors)).toEqual([
+      expect.stringMatching(/ called at user\.ts:\d+ is neither awaited nor returned in a contract function$/),
+    ]);
+  });
+
+  it("A2: a writeState provider in src that detaches is caught", () => {
+    const r = inLock(SEAM_BODY("{ writeState: (s) => { void (async () => { await pause(); ctx.writeState(s); })(); return s; } }"), TAKEOVER, SEAM_REG);
+    expect(r.errors.some((e) => /^test-seam slot user\.ts#TDeps\.writeState is supplied in src at user\.ts:\d+$/.test(e))).toBe(true);
+  });
+
+  it("T4: an async closure returned by a getter and called under the lock is refused at its write", () => {
+    const r = inLock(`const o = { get w() { return async () => ${ASYNC_BODY}; } };\n    o.w();`);
+    expect(r.errors.some((e) => /^lock: writeSessionSync at user\.ts:\d+ is not inside withSessionLock or a lock-held function$/.test(e))).toBe(true);
+  });
+
+  it("T4: a callee the scan cannot resolve is held to the completion form under the lock", () => {
+    const r = inLock(`const g = async () => ${ASYNC_BODY};\n    (g.bind(null) as () => void)();`);
+    expect(lifetime(r.errors).some((e) => e.startsWith("lock-lifetime: <unresolved callee g.bind(null)> called at user.ts:"))).toBe(true);
+  });
+
   it("A6: return inside a try with a finally is a lock-lifetime error", () => {
     const r = inLock("await stage.enter(ctx);", `
 export class S implements WorkflowStage { async enter(ctx: StageContext) { try { return ctx.drainDeferrals(); } finally { void 0; } } }
@@ -841,6 +1023,34 @@ describe("ISS-958 S7: the lock entry's release is the one tied to its acquisitio
     expect(passed[0]).toContain("uses its release release outside the finally");
   });
 
+  it("T2: a second acquisition, with the session lock released early and the other released in the finally, fails", () => {
+    expect(entryErrors(`  const release = acquire(dir);
+  const cleanup = acquire("other");
+  release();
+  try { return await fn(); } finally { cleanup(); }
+`)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock must make exactly one acquisition before its callback, found 2"]);
+  });
+
+  it("T2: a lock target not derived from the entry's parameters fails", () => {
+    const e = entryErrors(`  const release = acquire("other");
+  try { return await fn(); } finally { release(); }
+`);
+    expect(e).toHaveLength(1);
+    expect(e[0]).toMatch(/^lock-lifetime: lock entry session\.ts#withSessionLock acquires a lock target not derived from its parameters at session\.ts:/);
+  });
+
+  it("T2: a pinned acquisition is taken by that callee only", () => {
+    const pinned = (body: string) => {
+      const program = inMemoryProgram({ "/fx/session.ts": SESSION.replace(BODY, body), "/fx/user.ts": "export {};\n" });
+      return scanStateWrites(program, { base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock", registry: EMPTY,
+        lockAcquisitions: { "session.ts#withSessionLock": { module: "session.ts", name: "acquire" } } }).errors.filter((x) => x.startsWith("lock-lifetime: lock entry"));
+    };
+    expect(pinned(BODY)).toEqual([]);
+    const other = pinned("  const take = (p: string) => acquire(p);\n  const release = take(dir);\n  try { return await fn(); } finally { release(); }\n");
+    expect(other).toHaveLength(1);
+    expect(other[0]).toMatch(/^lock-lifetime: lock entry session\.ts#withSessionLock acquires by take at session\.ts:\d+, not the pinned session\.ts#acquire$/);
+  });
+
   it("a release that is not the acquisition's result fails", () => {
     expect(entryErrors(`  acquire(dir);
   const release = () => {};
@@ -971,6 +1181,34 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     ["a spread", "const extra = { withLockX: async (fn: () => Promise<void>) => { void fn(); } };\n    await take(d, ctx, { ...extra });"],
   ])("%s is a supply", (_n, body) => {
     expect(supplied(add2Scan(body, TOP, LISTED))).toHaveLength(1);
+  });
+
+  // T5: computed, accessor and spread members, element-access, destructuring and reflective writes.
+  const P = "async (fn: () => Promise<void>) => { void fn(); }";
+  const mayBe = (r: { errors: string[] }, why: string) =>
+    r.errors.filter((e) => e.startsWith("injected awaited-callback slot user.ts#Deps.withLockX may be supplied in src at") && e.endsWith(`(${why})`));
+  it.each([
+    ["a constant computed key", `const deps: Deps = { ["withLockX"]: ${P} };\n    await take(d, ctx, deps);`],
+    ["a computed method", "const deps: Deps = { [\"withLockX\"](fn: () => Promise<void>) { void fn(); return Promise.resolve(); } };\n    await take(d, ctx, deps);"],
+    ["a getter", `const deps: Deps = { get withLockX() { return ${P}; } };\n    await take(d, ctx, deps);`],
+    ["a spread literal", `await take(d, ctx, { ...{ withLockX: ${P} } });`],
+    ["a constant element-access write", `const deps: Deps = {};\n    deps["withLockX"] = ${P};\n    await take(d, ctx, deps);`],
+    ["a destructuring-assignment target", `const deps: Deps = {};\n    const src = { p: ${P} };\n    ({ p: deps.withLockX } = src);\n    await take(d, ctx, deps);`],
+    ["a class instance", `class Impl { async withLockX(fn: () => Promise<void>) { void fn(); } }\n    await take(d, ctx, new Impl());`],
+  ])("T5: %s is a supply", (_n, body) => {
+    expect(supplied(add2Scan(body, TOP, LISTED))).toHaveLength(1);
+  });
+
+  it("T5: a computed key the checker cannot reduce may supply the slot", () => {
+    expect(mayBe(add2Scan(`const k: string = "withLockX";\n    const deps: Deps = { [k]: ${P} };\n    await take(d, ctx, deps);`, TOP, LISTED), "computed key")).toHaveLength(1);
+    expect(mayBe(add2Scan(`const deps: Deps = {};\n    const k: string = "withLockX";\n    (deps as Deps & Record<string, unknown>)[k] = 1;\n    await take(d, ctx, deps);`, TOP, LISTED), "computed key")).toHaveLength(1);
+  });
+
+  it.each([
+    ["Object.assign", `const deps: Deps = {};\n    Object.assign(deps, { withLockX: ${P} });\n    await take(d, ctx, deps);`],
+    ["Object.defineProperty", "const deps: Deps = {};\n    Object.defineProperty(deps, \"withLockX\", { value: 1 });\n    await take(d, ctx, deps);"],
+  ])("T5: %s on the dependency may supply the slot", (_n, body) => {
+    expect(mayBe(add2Scan(body, TOP, LISTED), "reflective write")).toHaveLength(1);
   });
 
   it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {

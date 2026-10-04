@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -373,6 +373,38 @@ describe("CompleteStage pressure compaction", () => {
 
     expect(readdirSync(join(root, ".story", "handovers"))).toHaveLength(1);
     expect(ctx.state.lastCheckpointWorkCount).toBe(3);
+  });
+
+  // ISS-958 S6 fixup 2: the display-id tables are read before the .map callbacks (a hoist); the rendered ids are pinned here.
+  it("renders resolved issues by display id in the checkpoint handover", async () => {
+    addOpenWork();
+    const ctx = new StageContext(root, sessionDir, makeState({
+      completedTickets: [{ id: "T-001" }],
+      resolvedIssues: ["i-0123456789abcdef", "ISS-009"],
+      resolvedIssueDisplayIds: { "i-0123456789abcdef": "ISS-042" },
+      guideCallCount: 0,
+      config: { ...makeState().config, handoverInterval: 3 },
+    }), makeRecipe());
+
+    await stage.enter(ctx);
+
+    const files = readdirSync(join(root, ".story", "handovers"));
+    expect(files).toHaveLength(1);
+    expect(readFileSync(join(root, ".story", "handovers", files[0]!), "utf-8")).toContain("**Issues resolved:** ISS-042, ISS-009");
+  });
+
+  it("renders resolved issues by display id when the session ends", async () => {
+    const ctx = new StageContext(root, sessionDir, makeState({
+      state: "HANDOVER",
+      resolvedIssues: ["i-0123456789abcdef", "ISS-009"],
+      resolvedIssueDisplayIds: { "i-0123456789abcdef": "ISS-042" },
+    }), makeRecipe());
+
+    const advance = await new HandoverStage().report(ctx, { completedAction: "handover_written", handoverContent: "# Session Handover\n\nWork done." });
+
+    expect(advance.action).toBe("advance");
+    const instruction = "result" in advance ? advance.result?.instruction ?? "" : "";
+    expect(instruction).toContain("- ISS-042 (resolved)\n- ISS-009 (resolved)");
   });
 
   it("preserves rotation reason and remaining targets in the final handover", async () => {

@@ -73,6 +73,14 @@ function mcp(root: string): Mcp {
 const rowOf = (rows: Record<string, unknown>[], id: string): Record<string, unknown> =>
   rows.find((i) => i.id === id || (i.stored as Record<string, unknown> | undefined)?.id === id)!;
 
+/** Export rows are lean (T-486 ruling): the summary, the T-486 raw keys and `effective`, unless the record collides. */
+const EXPORT_SURFACES = new Set(["exportRow", "phaseExportRow"]);
+const EXPORT_LEAN_KEYS = new Set([
+  "id", "title", "severity", "status",
+  "disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf", "resolutionKind",
+  "effective",
+]);
+
 /** The id of the board's first phase, which phase export reads. */
 const firstPhase = (root: string): string =>
   (JSON.parse(readFileSync(join(root, ".story", "roadmap.json"), "utf-8")) as { phases: Array<{ id: string }> }).phases[0]!.id;
@@ -137,8 +145,11 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     }
   });
 
-  it("every surface returns the whole stored record beside effective, phase export included", async () => {
-    const issue = fixture("evidence effective", "ISS-001", { phase: "PHASE", resolutionKind: { kind: "wontfix", closedOn: "2026-01-01", resolutionDigest: "0000000000000000" } });
+  it("get, list and MCP return the whole stored record beside effective; export rows the lean set with every T-486 raw key", async () => {
+    const issue = fixture("evidence effective", "ISS-001", {
+      phase: "PHASE", duplicateOf: "ISS-009",
+      resolutionKind: { kind: "wontfix", closedOn: "2026-01-01", resolutionDigest: "0000000000000000" },
+    });
     const root = await boardWith([]);
     issue.phase = firstPhase(root);
     writeFileSync(fileOf(root, "ISS-001"), JSON.stringify(issue, null, 2) + "\n");
@@ -147,8 +158,23 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     for (const [surface, body] of Object.entries(all)) {
       const { effective, citedRulings, ...stored } = body;
       void citedRulings;
-      expect(stored, surface).toEqual(issue);
+      const expected = EXPORT_SURFACES.has(surface)
+        ? Object.fromEntries(Object.entries(issue).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))
+        : issue;
+      expect(stored, surface).toEqual(expected);
       expect(effective, surface).toMatchObject({ resolutionKindState: "stale", dispositionEvidenceState: "effective" });
+    }
+    for (const key of ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf", "resolutionKind"]) {
+      expect(all.exportRow![key], key).toEqual(issue[key]);
+    }
+  });
+
+  it("a non-colliding export row carries no key outside the lean set, so a new field cannot re-inflate the export", async () => {
+    const root = await boardWith([fixture("evidence effective", "ISS-001"), fixture("effective wontfix", "ISS-002", { custom: "x" })]);
+    const rows = (data(handleExport(await ctx(root), "all", null).output) as { issues: Record<string, unknown>[] }).issues;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(Object.keys(row).filter((k) => !EXPORT_LEAN_KEYS.has(k)), String(row.id)).toEqual([]);
     }
   });
 });
@@ -163,6 +189,18 @@ describe("T-486 reserved response keys (A6, C1, J6)", () => {
       expect(body.stored, surface).toEqual(issue);
     }
     expect(readFileSync(fileOf(root, "ISS-001"), "utf-8")).toBe(before);
+  });
+
+  it("an open phased colliding issue comes back whole under stored in phase export too, not projected", async () => {
+    const root = await boardWith([]);
+    const issue = fixture("evidence effective", "ISS-001", { phase: firstPhase(root), effective: "custom", impact: "kept in full" });
+    writeFileSync(fileOf(root, "ISS-001"), JSON.stringify(issue, null, 2) + "\n");
+    const all = await surfaces(root, "ISS-001");
+    expect(Object.keys(all)).toContain("phaseExportRow");
+    for (const surface of ["exportRow", "phaseExportRow"]) {
+      expect(all[surface]!.stored, surface).toEqual(issue);
+      expect(all[surface]!.effective, surface).toMatchObject({ dispositionEvidenceState: "effective" });
+    }
   });
 
   it("the update response returns the updated stored record under stored", async () => {

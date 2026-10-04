@@ -3153,7 +3153,7 @@ function formatPhaseExport(
         tickets: leaves.map((t) => ({ id: t.id, title: t.title, status: t.status, type: t.type, order: t.order })),
         umbrellaAncestors: [...umbrellaAncestors.values()].map((t) => ({ id: t.id, title: t.title })),
         crossPhaseDependencies: [...crossPhaseDeps.values()].map((t) => ({ id: t.id, title: t.title, status: t.status, phase: t.phase })),
-        issues: relatedIssues.map((i) => issueJsonBody(i)),
+        issues: relatedIssues.map((i) => exportIssueRow(i)),
         blockers: activeBlockers.map((b) => ({ name: b.name, note: b.note ?? null })),
       }),
       null,
@@ -3206,6 +3206,30 @@ function formatPhaseExport(
   return lines.join("\n");
 }
 
+/** The fields a non-colliding export row keeps: the summary, every T-486 raw key, and `effective`. */
+const EXPORT_ISSUE_KEYS = [
+  "id", "title", "severity", "status",
+  "disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf", "resolutionKind",
+  "effective",
+] as const;
+
+/**
+ * T-486: an export issue row, projected from the one JSON body so export
+ * cannot drift from get and list. A non-colliding row keeps only the lean
+ * set (the whole record would multiply the export several times over); a
+ * row whose stored record uses a reserved name is the collision body
+ * itself, the untouched record under `stored` beside `effective`.
+ */
+function exportIssueRow(issue: Issue): Record<string, unknown> {
+  const body = issueJsonBody(issue);
+  if (Object.prototype.hasOwnProperty.call(body, "stored")) return body;
+  const row: Record<string, unknown> = {};
+  for (const key of EXPORT_ISSUE_KEYS) {
+    if (body[key] !== undefined) row[key] = body[key];
+  }
+  return row;
+}
+
 /**
  * An exported issue line's disposition, as list shows it, with the evidence
  * only while it is bound: ` {owner_gated: reason [ref]}`, or "" when none.
@@ -3241,7 +3265,7 @@ function formatFullExport(
             type: t.type,
           })),
         })),
-        issues: state.activeIssues.map((i) => issueJsonBody(i)),
+        issues: state.activeIssues.map((i) => exportIssueRow(i)),
         notes: state.activeNotes.map((n) => ({
           id: n.id,
           title: n.title,

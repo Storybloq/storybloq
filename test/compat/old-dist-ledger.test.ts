@@ -2,20 +2,21 @@
  * T-486 T0 and CK4 against published CLIs. The kind and evidence keys are
  * plain passthrough keys, so every pinned old dist must load a board that
  * carries them, validate it, and keep them byte-for-byte through a strict
- * write. And once this build's team setup has raised the fence, the newest
- * published CLI, in a clone that never ran it, must refuse to write at all.
+ * write. And once this build's team setup has raised the fence and the ledger
+ * is committed, the pre-capability CLI in a fresh clone of it, which has no
+ * driver registration of its own, must refuse to write at all.
  * Dists come from the prefix `npm run compat:fetch` installs (old-dists.ts).
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { git } from "../helpers/git-fixture.js";
+import { git, gitAllowFailure } from "../helpers/git-fixture.js";
 import { initProject } from "../../src/core/init.js";
-import { teamSetup } from "../../src/core/team-setup.js";
-import { RESOLUTION_KIND_MIN_CLI_VERSION, meetsVersionMinimum } from "../../src/core/team-capabilities.js";
-import { NEWEST_PUBLISHED, OLD_DISTS, requireOldDists } from "./old-dists.js";
+import { MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME, teamSetup } from "../../src/core/team-setup.js";
+import { RESOLUTION_KIND_MIN_CLI_VERSION, TEAM_FENCE_MINIMUMS, meetsVersionMinimum } from "../../src/core/team-capabilities.js";
+import { LATEST_PUBLISHED, OLD_DISTS, PRE_CAPABILITY, requireOldDists } from "./old-dists.js";
 
 const { dists, skip } = requireOldDists(OLD_DISTS.map((d) => d.version));
 
@@ -68,35 +69,62 @@ describe.skipIf(skip !== null)(`published CLIs on a board with resolution kinds$
     for (const key of T486_KEYS) expect(after[key], key).toEqual(ISSUE[key]);
   });
 
-  it(`CK4: once team setup raises the fence, ${NEWEST_PUBLISHED} in a clone that never ran it refuses to write`, async () => {
-    const newest = dists.find((d) => d.version === NEWEST_PUBLISHED)!;
+  it(`CK4: a fresh clone of a ledger whose fence team setup raised refuses ${PRE_CAPABILITY}'s writes`, async () => {
+    const old = dists.find((d) => d.version === PRE_CAPABILITY)!;
     const repo = temp();
     const home = join(repo, ".home");
     mkdirSync(home);
-    git(repo, ["init", "-q", "-b", "main"]);
+    const g = (cwd: string, ...args: string[]) => git(cwd, ["-c", "user.name=t", "-c", "user.email=t@t.t", "-c", "commit.gpgsign=false", ...args]);
+    g(repo, "init", "-q", "-b", "main");
     await initProject(repo, { name: "t486" });
     const configPath = join(repo, ".story", "config.json");
     writeFileSync(configPath, JSON.stringify({ ...JSON.parse(readFileSync(configPath, "utf-8")), team: { enabled: true } }, null, 2) + "\n");
     await teamSetup(repo);
-    expect(JSON.parse(readFileSync(configPath, "utf-8")).team.minCliVersion).toBe(RESOLUTION_KIND_MIN_CLI_VERSION);
+    const fence = JSON.parse(readFileSync(configPath, "utf-8")).team.minCliVersion as string;
+    expect(meetsVersionMinimum(fence, RESOLUTION_KIND_MIN_CLI_VERSION)).toBe(true);
+    writeFileSync(join(repo, ".story", "issues", "ISS-001.json"), JSON.stringify(ISSUE, null, 2) + "\n");
+    writeFileSync(join(repo, ".gitignore"), ".home/\n");
+    g(repo, "add", "-A");
+    g(repo, "commit", "-q", "-m", "configured ledger");
 
-    const path = join(repo, ".story", "issues", "ISS-001.json");
-    writeFileSync(path, JSON.stringify(ISSUE, null, 2) + "\n");
+    const parent = temp();
+    const clone = join(parent, "clone");
+    g(parent, "clone", "-q", repo, clone);
+    // The clone carries the committed fence but none of setup's per-clone state.
+    for (const name of [MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME]) {
+      expect(gitAllowFailure(clone, ["config", "--local", "--get", `merge.${name}.driver`]).status, name).not.toBe(0);
+    }
+    const info = join(clone, git(clone, ["rev-parse", "--git-path", "info/attributes"]));
+    expect(existsSync(info) ? readFileSync(info, "utf-8") : "").not.toContain("storybloq-checkpoint-local-begin");
+    expect(JSON.parse(readFileSync(join(clone, ".story", "config.json"), "utf-8")).team.minCliVersion).toBe(fence);
+
+    const path = join(clone, ".story", "issues", "ISS-001.json");
     const before = readFileSync(path);
-    const update = run(newest.bin, repo, home, "issue", "update", "ISS-001", "--title", "fenced", "--format", "json");
+    const cloneHome = join(parent, "home");
+    mkdirSync(cloneHome);
+    const update = run(old.bin, clone, cloneHome, "issue", "update", "ISS-001", "--title", "fenced", "--format", "json");
     expect(update.status).not.toBe(0);
     expect(JSON.parse(update.stdout).error).toMatchObject({ code: "version_mismatch" });
-    expect(update.stdout).toContain(`requires storybloq CLI ${RESOLUTION_KIND_MIN_CLI_VERSION} or later; current CLI is ${NEWEST_PUBLISHED}`);
+    expect(update.stdout).toContain(`requires storybloq CLI ${fence} or later; current CLI is ${PRE_CAPABILITY}`);
     expect(readFileSync(path).equals(before)).toBe(true);
   });
 });
 
-describe("the resolution-kind minimum is unpublished (Q2b)", () => {
-  // A minimum equal to a published version whose dist lacks the capability
-  // would admit that dist. NEWEST_PUBLISHED is the old-dists.json pin, which
-  // RELEASE.md has the publisher advance, so this is as fresh as that pin.
-  it(`${NEWEST_PUBLISHED} is below ${RESOLUTION_KIND_MIN_CLI_VERSION}`, () => {
-    expect(meetsVersionMinimum(NEWEST_PUBLISHED, RESOLUTION_KIND_MIN_CLI_VERSION)).toBe(false);
-    expect(OLD_DISTS.map((d) => d.version)).toContain(NEWEST_PUBLISHED);
+describe("capability minimums against the published pins (Q2b)", () => {
+  const packageVersion = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8")).version as string;
+
+  it("the pre-capability pin is a pinned dist, no later than the latest published, and every minimum refuses it", () => {
+    expect(OLD_DISTS.map((d) => d.version)).toContain(PRE_CAPABILITY);
+    expect(meetsVersionMinimum(LATEST_PUBLISHED, PRE_CAPABILITY)).toBe(true);
+    expect(TEAM_FENCE_MINIMUMS).toContain(RESOLUTION_KIND_MIN_CLI_VERSION);
+    for (const minimum of TEAM_FENCE_MINIMUMS) expect(meetsVersionMinimum(PRE_CAPABILITY, minimum), minimum).toBe(false);
+  });
+
+  // A minimum above the latest published version is unpublished: it must ship
+  // in this build. One at or below it is established and never moves; the
+  // cell above already holds it above the pre-capability pin.
+  it.each([...new Set(TEAM_FENCE_MINIMUMS)].map((m) => [m]))("minimum %s is unpublished and ships in this build, or established", (minimum) => {
+    if (meetsVersionMinimum(LATEST_PUBLISHED, minimum)) return;
+    expect(meetsVersionMinimum(packageVersion, minimum), `${minimum} is above ${LATEST_PUBLISHED} but not in ${packageVersion}`).toBe(true);
   });
 });

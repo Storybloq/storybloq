@@ -21,11 +21,18 @@ export interface OldDistPin {
   readonly sha256: string;
 }
 
-const PINS = JSON.parse(readFileSync(join(__dirname, "old-dists.json"), "utf-8")) as { newest: string; dists: OldDistPin[] };
+const PINS = JSON.parse(readFileSync(join(__dirname, "old-dists.json"), "utf-8")) as { latestPublished: string; preCapability: string; dists: OldDistPin[] };
 
 export const OLD_DISTS: readonly OldDistPin[] = PINS.dists;
-/** The newest published version when the pins were taken. */
-export const NEWEST_PUBLISHED: string = PINS.newest;
+/** The newest published version. Moves at every publish (RELEASE.md). */
+export const LATEST_PUBLISHED: string = PINS.latestPublished;
+/**
+ * The newest published version without resolution kinds, checkpoints or the
+ * ruling lifecycle: the CLI every capability fence must refuse. A pinned
+ * dist; it never moves, so the fence-refusal tests keep a refusable CLI after
+ * the capabilities ship.
+ */
+export const PRE_CAPABILITY: string = PINS.preCapability;
 
 export function oldDistDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.STORYBLOQ_OLD_DIST_DIR || join(env.HOME || homedir(), ".cache", "storybloq", "old-dists");

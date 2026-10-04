@@ -1,6 +1,7 @@
 {
-  "comment": "T-486: published CLIs the compat tests run. Fetched and installed once per machine by `npm run compat:fetch`; never committed. newest is the newest published version when these were pinned.",
-  "newest": "1.15.9",
+  "comment": "T-486: published CLIs the compat tests run. Fetched and installed once per machine by `npm run compat:fetch`; never committed. latestPublished is the newest published version and moves at every publish (RELEASE.md). preCapability is the newest published version without resolution kinds, checkpoints or the ruling lifecycle; the fence-refusal tests run it, and it never moves.",
+  "latestPublished": "1.15.9",
+  "preCapability": "1.15.9",
   "dists": [
     { "version": "1.15.2", "sha256": "7ab306cdc2fa611c677375c89073a5191468c1d835e238c844df8972caa48f5a" },
     { "version": "1.15.3", "sha256": "7e35ba3ecb736c0398c4eca9230349e1286dd1e9223eb0d2dc37f6477cba4f0d" },

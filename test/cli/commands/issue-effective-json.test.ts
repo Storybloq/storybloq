@@ -179,6 +179,31 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
   });
 });
 
+describe("T-486 export row size (lean ruling)", () => {
+  // A row is the lean keys plus `effective`: a few hundred bytes whatever the
+  // record carries. The full body here is over 60 KB.
+  const ROW_BUDGET_BYTES = 2048;
+
+  it("a non-colliding row with a large impact and unrelated custom fields stays within a fixed UTF-8 budget in full and phase export", async () => {
+    const root = await boardWith([]);
+    const issue = fixture("evidence effective", "ISS-001", {
+      phase: firstPhase(root),
+      impact: "\u00e9".repeat(20_000),
+      customNotes: "n".repeat(20_000),
+      customTable: { rows: Array.from({ length: 200 }, (_, i) => ({ i, label: `row ${i}` })) },
+    });
+    writeFileSync(fileOf(root, "ISS-001"), JSON.stringify(issue, null, 2) + "\n");
+    expect(Buffer.byteLength(JSON.stringify(issue), "utf-8")).toBeGreaterThan(60_000);
+    const all = await surfaces(root, "ISS-001");
+    for (const surface of ["exportRow", "phaseExportRow"]) {
+      const row = all[surface];
+      expect(row, surface).toBeDefined();
+      expect(row!.stored, surface).toBeUndefined();
+      expect(Buffer.byteLength(JSON.stringify(row), "utf-8"), surface).toBeLessThanOrEqual(ROW_BUDGET_BYTES);
+    }
+  });
+});
+
 describe("T-486 reserved response keys (A6, C1, J6)", () => {
   it("a stored effective and stored key both survive, untouched, under stored; the file is not modified by reads", async () => {
     const issue = fixture("effective wontfix", "ISS-001", { effective: "custom value", stored: { mine: true } });

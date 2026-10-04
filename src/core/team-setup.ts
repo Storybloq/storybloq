@@ -238,6 +238,41 @@ export async function installMergeDriver(gitRoot: string): Promise<void> {
   );
 }
 
+/**
+ * T-486: setup writes each registration `--local`, but git reads worktree,
+ * command-line and environment config over local, so an override there
+ * still wins. Each registration is read back in git's own precedence after
+ * install; one git would not run as the contract says names the scope and
+ * origin of the value that wins and the exact command that removes it.
+ * Empty when every registration is effective.
+ */
+export function registrationOverrides(gitRoot: string): string[] {
+  const problems: string[] = [];
+  for (const [name, contract] of MERGE_DRIVER_CONTRACTS) {
+    const key = `merge.${name}.driver`;
+    let out: string;
+    try {
+      out = execFileSync("git", ["config", "--show-scope", "--show-origin", "--get-all", key], { cwd: gitRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+    } catch (err) {
+      const e = err as { status?: number | null; stderr?: unknown; message?: string };
+      const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
+      problems.push(e.status === 1 ? `${key} is not set after setup wrote it` : `git could not read ${key}: ${stderr || e.message || String(err)}`);
+      continue;
+    }
+    // One `<scope>\t<origin>\t<value>` line per value, in precedence order:
+    // git runs the last one.
+    const last = out.replace(/\n$/, "").split("\n").at(-1)!;
+    const [scope = "", origin = "", ...rest] = last.split("\t");
+    const value = rest.join("\t");
+    if (value.trim() === contract.command) continue;
+    const removal = scope === "command"
+      ? "remove it from the command line or the GIT_CONFIG_* environment that sets it"
+      : `remove it with: git config --${scope} --unset-all ${key}`;
+    problems.push(`${key} = "${value}" from ${scope} config (${origin}) overrides the registration setup wrote; ${removal}`);
+  }
+  return problems;
+}
+
 export async function writeGitattributes(storyDir: string): Promise<void> {
   const filePath = join(storyDir, ".gitattributes");
   let existing = "";
@@ -290,7 +325,10 @@ export async function raiseTeamFence(
     let fence = typeof config.team.minCliVersion === "string" ? config.team.minCliVersion : null;
     const current = currentCliVersion();
     let blocked = false;
-    for (const minimum of minimums) {
+    // Capabilities may share a minimum (both are 1.16.0 today): each minimum
+    // is decided once, so a later duplicate cannot overwrite "raised" with
+    // the "already" its own raise just made true.
+    for (const minimum of new Set(minimums)) {
       if (fence !== null && meetsVersionMinimum(fence, minimum)) {
         outcomes.set(minimum, "already");
       } else if (!blocked && current !== null && meetsVersionMinimum(current, minimum)) {
@@ -364,6 +402,10 @@ export async function teamSetup(root: string): Promise<SetupResult> {
   // a ledger that has one keeps it last.
   if (mentionsCheckpointBlock(storyDir)) writeCheckpointGitattributes(storyDir);
   await writeLocalCheckpointAttributes(gitRoot, storyDir);
+  const overrides = registrationOverrides(gitRoot);
+  if (overrides.length > 0) {
+    throw new Error(`team setup wrote the merge driver registrations, but git would not run them: ${overrides.join("; ")}. Then run storybloq team setup again.`);
+  }
   const fences = await raiseTeamFence(root);
   const rulingFence = fences.get(RULING_LIFECYCLE_MIN_CLI_VERSION) ?? "already";
   const resolutionKindFence = fences.get(RESOLUTION_KIND_MIN_CLI_VERSION) ?? "already";

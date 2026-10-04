@@ -31,7 +31,7 @@ import {
   rulingLifecycleReadiness,
   teamSetup,
 } from "../../src/core/team-setup.js";
-import { RESOLUTION_KIND_MIN_CLI_VERSION, TEAM_FENCE_MINIMUMS, meetsVersionMinimum } from "../../src/core/team-capabilities.js";
+import { RESOLUTION_KIND_MIN_CLI_VERSION, RULING_LIFECYCLE_MIN_CLI_VERSION, TEAM_FENCE_MINIMUMS, meetsVersionMinimum } from "../../src/core/team-capabilities.js";
 import { checkpointMergeProblems, enableCheckpoints, type CheckpointEnableDeps } from "../../src/core/checkpoint-enable.js";
 import { checkCheckpointMergeAttributes, checkResolutionKindReadiness, checkRulingLifecycleReadiness } from "../../src/core/team-doctor.js";
 import { mergeDriverCapabilities } from "../../src/cli/commands/merge-driver.js";
@@ -381,7 +381,16 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
     expect(await fenceAfter("1.16.5", "1.4.4", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.16.0", outcomes: [["1.16.0", "raised"], ["1.17.0", "deferred"]] });
     expect(await fenceAfter("1.17.2", "1.4.4", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.17.0", outcomes: [["1.16.0", "raised"], ["1.17.0", "raised"]] });
     expect(await fenceAfter("1.15.9", "1.4.4", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.4.4", outcomes: [["1.16.0", "deferred"], ["1.17.0", "deferred"]] });
-    expect(await fenceAfter("1.17.2", "1.18.0", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.18.0", outcomes: [["1.16.0", "already"], ["1.17.0", "already"]] });
+    expect(await fenceAfter("1.17.2", "1.17.0", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.17.0", outcomes: [["1.16.0", "already"], ["1.17.0", "already"]] });
+  });
+
+  it("F4: a CLI below the board's fence is refused by the lock before it raises anything", async () => {
+    process.env.STORYBLOQ_VERSION = "1.17.2";
+    const { root } = await teamProject({ fence: "1.18.0" });
+    const configPath = join(root, ".story", "config.json");
+    const before = readFileSync(configPath, "utf-8");
+    await expect(raiseTeamFence(root, ["1.16.0", "1.17.0"])).rejects.toMatchObject({ code: "version_mismatch" });
+    expect(readFileSync(configPath, "utf-8")).toBe(before);
   });
 
   it("F4: an absent fence takes this CLI's version when it passes the minimums", async () => {
@@ -391,6 +400,33 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
 
   it("setup reports both fences", async () => {
     const { root } = await teamProject({ fence: "1.4.4" });
+    expect(await teamSetup(root)).toMatchObject({ rulingFence: "raised", resolutionKindFence: "raised" });
+  });
+
+  it("F4: capabilities sharing one minimum (the production list) each report the raise", async () => {
+    expect(TEAM_FENCE_MINIMUMS).toEqual([RULING_LIFECYCLE_MIN_CLI_VERSION, RESOLUTION_KIND_MIN_CLI_VERSION]);
+    expect(await fenceAfter("1.16.0", "1.4.4", ["1.16.0", "1.16.0"])).toEqual({ fence: "1.16.0", outcomes: [["1.16.0", "raised"]] });
+    const { root } = await teamProject({ fence: "1.4.4" });
+    process.env.STORYBLOQ_VERSION = RESOLUTION_KIND_MIN_CLI_VERSION;
+    const outcomes = await raiseTeamFence(root);
+    expect(outcomes.get(RULING_LIFECYCLE_MIN_CLI_VERSION)).toBe("raised");
+    expect(outcomes.get(RESOLUTION_KIND_MIN_CLI_VERSION)).toBe("raised");
+  });
+
+  it("F6: a worktree-scoped driver override fails setup, naming its origin and the removal; setup succeeds once it is removed", async () => {
+    const { repo, root } = await teamProject({ fence: "1.4.4" });
+    git(repo, "config", "extensions.worktreeConfig", "true");
+    git(repo, "config", "--worktree", `merge.${MERGE_DRIVER_V5_NAME}.driver`, "custom-merge %O %A %B");
+    const configPath = join(root, ".story", "config.json");
+    const before = readFileSync(configPath, "utf-8");
+    const failed = teamSetup(root);
+    await expect(failed).rejects.toThrow(`merge.${MERGE_DRIVER_V5_NAME}.driver = "custom-merge %O %A %B" from worktree config (file:`);
+    await expect(failed).rejects.toThrow("config.worktree) overrides the registration setup wrote");
+    await expect(failed).rejects.toThrow(`remove it with: git config --worktree --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver`);
+    // The local registration was written; only the fence stays where it was.
+    expect(git(repo, "config", "--local", "--get", `merge.${MERGE_DRIVER_V5_NAME}.driver`)).toBe(MERGE_DRIVER_V5_CMD);
+    expect(readFileSync(configPath, "utf-8")).toBe(before);
+    git(repo, "config", "--worktree", "--unset-all", `merge.${MERGE_DRIVER_V5_NAME}.driver`);
     expect(await teamSetup(root)).toMatchObject({ rulingFence: "raised", resolutionKindFence: "raised" });
   });
 

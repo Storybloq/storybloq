@@ -3,16 +3,40 @@
  * mode turns a missing dist into a failing run that names `compat:fetch`;
  * plain mode skips with the reason; a tarball whose sha does not match the pin
  * is never used; and the publish and preflight paths both set required mode.
- * Needs no dist of its own.
+ * The preflight check reads the workspace's scripts/preflight.sh, which the
+ * public projection does not carry: absent, it skips with the reason, and in
+ * required mode fails. Needs no dist of its own.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OLD_DISTS, findOldDist, requireOldDists, tarballName } from "./old-dists.js";
+import { OLD_DISTS, compatRequired, findOldDist, requireOldDists, tarballName } from "./old-dists.js";
 
 const PKG = join(__dirname, "..", "..");
+const PREFLIGHT = join(PKG, "..", "scripts", "preflight.sh");
+
+/**
+ * The preflight script's compat-required stage line, or why it cannot be
+ * read: absent (the public projection ships storybloq/ only) skips with the
+ * reason, and in required mode throws.
+ */
+function preflightStage(path: string, env: NodeJS.ProcessEnv): { line: string | undefined } | { skip: string } {
+  if (!existsSync(path)) {
+    const reason = `${path} is absent (a projection without the workspace scripts)`;
+    if (compatRequired(env)) throw new Error(`STORYBLOQ_COMPAT_REQUIRED=1: ${reason}`);
+    return { skip: `skipped: ${reason}` };
+  }
+  return { line: readFileSync(path, "utf-8").split("\n").find((l) => l.includes('run_stage "compat-required"')) };
+}
+
+let h5: { line: string | undefined } | { skip: string } | { error: unknown };
+try {
+  h5 = preflightStage(PREFLIGHT, process.env);
+} catch (error) {
+  h5 = { error };
+}
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -61,13 +85,23 @@ describe("old-dist harness", () => {
     expect(scripts["compat:fetch"]).toBe("bash scripts/compat-fetch.sh");
   });
 
-  it("H5: preflight declares compat-required as a gating stage over test/compat", () => {
-    const preflight = readFileSync(join(PKG, "..", "scripts", "preflight.sh"), "utf-8");
-    const line = preflight.split("\n").find((l) => l.includes('run_stage "compat-required"'));
+  it.skipIf("skip" in h5)(`H5: preflight declares compat-required as a gating stage over test/compat${"skip" in h5 ? ` (${h5.skip})` : ""}`, () => {
+    if ("error" in h5) throw h5.error;
+    const line = "line" in h5 ? h5.line : undefined;
     expect(line).toBeDefined();
     expect(line).toMatch(/run_stage "compat-required" runnable /);
     expect(line).toContain("STORYBLOQ_COMPAT_REQUIRED=1");
     expect(line).toMatch(/ test\/compat$/);
+  });
+
+  it("H5: an absent preflight script skips with the reason in plain mode", () => {
+    const absent = join(temp(), "preflight.sh");
+    expect(preflightStage(absent, {})).toEqual({ skip: `skipped: ${absent} is absent (a projection without the workspace scripts)` });
+  });
+
+  it("H5: an absent preflight script fails in required mode", () => {
+    const absent = join(temp(), "preflight.sh");
+    expect(() => preflightStage(absent, { STORYBLOQ_COMPAT_REQUIRED: "1" })).toThrow(`STORYBLOQ_COMPAT_REQUIRED=1: ${absent} is absent`);
   });
 
   it("compat:fetch reads the same pins this harness checks", () => {

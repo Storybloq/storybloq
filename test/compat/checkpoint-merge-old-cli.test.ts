@@ -4,9 +4,10 @@
  * refuse: a nonzero exit (git records a conflict) naming the option, and ours
  * byte-identical. The same CLI first merges the same valid tickets through
  * the v3 command, so the refusal is the option's and not the input's. The CLI
- * is the published 1.15.9, the last release without checkpoints or
- * resolution kinds, read from the prefix `npm run compat:fetch` installs
- * (old-dists.ts): skipped without it, a failure in required mode.
+ * is the pre-capability pin (old-dists.json `preCapability`, 1.15.9), the
+ * last release without checkpoints or resolution kinds, read from the prefix
+ * `npm run compat:fetch` installs (old-dists.ts): skipped without it, a
+ * failure in required mode.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -14,10 +15,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MERGE_DRIVER_CMD, MERGE_DRIVER_V4_CMD, MERGE_DRIVER_V5_CMD } from "../../src/core/team-setup.js";
-import { requireOldDists } from "./old-dists.js";
+import { PRE_CAPABILITY, requireOldDists } from "./old-dists.js";
 
-const PRE_CHECKPOINT = "1.15.9";
-const { dists, skip } = requireOldDists([PRE_CHECKPOINT]);
+const { dists, skip } = requireOldDists([PRE_CAPABILITY]);
 const bin = dists[0] ? dirname(dists[0].bin) : "";
 
 let scratch: string;
@@ -69,7 +69,7 @@ describe.skipIf(skip !== null)(`a pre-checkpoint CLI behind the checkpoint drive
   }
 
   it("is the pinned version", () => {
-    expect(execFileSync(join(bin, "storybloq"), ["--version"], { encoding: "utf-8", env: env() }).trim()).toBe(PRE_CHECKPOINT);
+    expect(execFileSync(join(bin, "storybloq"), ["--version"], { encoding: "utf-8", env: env() }).trim()).toBe(PRE_CAPABILITY);
   });
 
   it("merges valid tickets through the v3 command", () => {

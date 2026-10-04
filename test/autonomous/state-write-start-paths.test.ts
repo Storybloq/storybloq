@@ -264,6 +264,13 @@ describe("ISS-958 S3: TP7 stale-supersede loop completes its tail (policy TC)", 
     expect(textOf(result)).toContain("durability");
     expect(readSession(dir)!.status).toBe("superseded");
     expect(shutdownMarked(dir)).toBe(true);
+
+    // ISS-958 5a: a retry selects only active sessions, so it writes nothing here.
+    disarm();
+    const published = readSession(dir)!.revision;
+    await handleAutonomousGuide(root, { action: "start", sessionId: null });
+    expect(readSession(dir)!.status).toBe("superseded");
+    expect(readSession(dir)!.revision).toBe(published);
   });
 
   it("a pre-rename failure is unchanged: no marker, the session stays active", async () => {

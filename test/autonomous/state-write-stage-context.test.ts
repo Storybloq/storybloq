@@ -26,6 +26,7 @@ import { StateWriteUndurableError, readSession, writeSessionSync } from "../../s
 import { deriveWorkspaceId, type FullSessionState } from "../../src/autonomous/session-types.js";
 import { StageContext } from "../../src/autonomous/stages/types.js";
 import { HandoverStage } from "../../src/autonomous/stages/handover.js";
+import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
 import type { ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import { armFail, armUndurable, disarm, faultFired } from "./_state-write-fault.js";
 
@@ -217,6 +218,40 @@ describe("ISS-958 S2: the HANDOVER stage completes its own tail (TP1)", () => {
       .rejects.toThrow(/injected rename failure/);
     expect(lines(join(dir, "events.log")).filter((e) => e.type === "session_end")).toHaveLength(0);
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+describe("ISS-958 5a: no TC site re-enters a terminal state (TP1-TP4)", () => {
+  const terminal: Array<[string, (ctx: StageContext) => Promise<unknown>]> = [
+    ["HANDOVER", (ctx) => new HandoverStage().report(ctx, { completedAction: "handover_written", handoverContent: "# done\n" } as never)],
+    ["PLAN_REVIEW", async (ctx) => ctx.finalizeSession({ status: "completed", terminationReason: "normal" } as Partial<FullSessionState>)],
+    ["CODE_REVIEW", async (ctx) => ctx.finalizeSession({ status: "completed", terminationReason: "normal" } as Partial<FullSessionState>)],
+  ];
+
+  it.each(terminal)("%s: report and resume on the published terminal state refuse and repeat no effect", async (stateName, finish) => {
+    const { root, dir, state } = setup(stateName);
+    armTyped(dir);
+    await expect(finish(new StageContext(root, dir, state, recipe()))).rejects.toBeInstanceOf(StateWriteUndurableError);
+    disarm();
+    const published = readSession(dir)!;
+    const counts = () => ({
+      telemetry: lines(join(tDir(dir), "events.jsonl")).filter((e) => e.type === "session_end").length,
+      log: lines(join(dir, "events.log")).filter((e) => e.type === "session_end").length,
+      sigterms: sigterms(),
+      ended: readFileSync(join(tDir(dir), "ended"), "utf-8"),
+    });
+    const before = counts();
+
+    const reported = await handleAutonomousGuide(root, {
+      action: "report", sessionId: published.sessionId, report: { completedAction: "noop" },
+    } as never);
+    expect(reported.isError).toBe(true);
+    expect((reported.content[0] as { text: string }).text).toContain("Cannot report progress");
+    const resumed = await handleAutonomousGuide(root, { action: "resume", sessionId: published.sessionId } as never);
+    expect(resumed.isError).toBe(true);
+
+    expect(counts()).toEqual(before);
+    expect(readSession(dir)!.revision).toBe(published.revision);
   });
 });
 

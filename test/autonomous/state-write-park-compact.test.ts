@@ -48,6 +48,8 @@ import {
   handleSessionStop,
 } from "../../src/cli/commands/session-compact.js";
 import { armFail, armUndurable, disarm, faultFired } from "./_state-write-fault.js";
+import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
+import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 
 const head = vi.mocked(gitHead);
 const tree = vi.mocked(gitDiffTreeNames);
@@ -268,6 +270,31 @@ describe.each(tails)("ISS-958 S4: $name (policy TC)", ({ event, fields, run }) =
     expect(shutdownMarked(dir)).toBe(false);
     expect(events(dir, event)).toEqual([]);
     expect(existsSync(markerPath(root))).toBe(true);
+  });
+});
+
+describe.each(tails)("ISS-958 5a: $name is not re-entered after its undurable tail", ({ event, fields, run }) => {
+  it("re-running the operation refuses, and the start and resume entries add no event and no revision", async () => {
+    const root = project();
+    const { id, dir } = plant(root, fields);
+    armTyped(dir);
+    await expect(run(root, id)).rejects.toBeInstanceOf(StateWriteUndurableError);
+    disarm();
+    const published = readSession(dir)!;
+    expect(events(dir, event)).toHaveLength(1);
+
+    try {
+      await expect(run(root, id)).rejects.toThrow(/not in compact-pending state|is not active/);
+      await handleAutonomousGuide(root, { action: "start", sessionId: null });
+      const resumed = await handleAutonomousGuide(root, { action: "resume", sessionId: id });
+      expect(resumed.isError).toBe(true);
+    } finally {
+      killSidecarsInRoot(root);
+    }
+    expect(events(dir, event)).toHaveLength(1);
+    expect(readSession(dir)!.revision).toBe(published.revision);
+    expect(readSession(dir)!.status).toBe("completed");
+    expect(shutdownMarked(dir)).toBe(true);
   });
 });
 

@@ -376,10 +376,31 @@
         outline: 2px solid var(--ink);
         outline-offset: 3px;
       }
+      main:has(#board-screen:not([hidden])) {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        height: 100dvh;
+        min-height: 640px;
+        padding-bottom: var(--space-lg);
+      }
+      main:has(#board-screen:not([hidden])) > :not(#board-screen),
+      #board-screen > :not(#board-layout),
+      .column > :not(ul) {
+        flex-shrink: 0;
+      }
+      #board-screen {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+      }
       #board-layout {
+        flex: 1;
+        min-height: 0;
         display: grid;
         grid-template-columns: minmax(0, 1fr);
-        align-items: start;
+        align-items: stretch;
         gap: var(--space-lg);
       }
       #board-layout.detail-open {
@@ -389,10 +410,14 @@
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: var(--space-md);
-        align-items: start;
+        align-items: stretch;
+        min-height: 0;
         width: 100%;
       }
       .column {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
         border: 1px solid var(--line);
         border-radius: var(--radius-card);
         background: var(--panel);
@@ -450,6 +475,11 @@
         max-height: 520px;
         overflow-y: auto;
         scrollbar-width: thin;
+      }
+      .column > ul {
+        flex: 1;
+        min-height: 0;
+        max-height: none;
       }
       li + li {
         margin-top: 8px;
@@ -643,14 +673,31 @@
       @media (max-width: 1050px) {
         #board-layout.detail-open {
           grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: minmax(300px, 1fr) auto;
+          overflow-y: auto;
         }
         #detail {
           align-self: start;
           contain: none;
-          max-height: 650px;
+          max-height: min(650px, 60dvh);
         }
       }
       @media (max-width: 700px) {
+        main:has(#board-screen:not([hidden])) {
+          display: block;
+          height: auto;
+          min-height: 100dvh;
+        }
+        #board-screen {
+          display: block;
+        }
+        #board-layout.detail-open {
+          grid-template-rows: auto auto;
+          overflow: visible;
+        }
+        .column {
+          height: max(320px, 65dvh);
+        }
         main {
           padding: 16px;
         }

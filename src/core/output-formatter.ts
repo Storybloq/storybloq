@@ -1618,6 +1618,17 @@ export function formatIssueList(
   return lines.join("\n");
 }
 
+/**
+ * T-486 U2: a blocker ref's release, additive to its stored status. A missing
+ * or ambiguous ref does not release and carries no withdrawal reason.
+ */
+function blockerRelease(state: ProjectState, ref: string): { releases: boolean; reason: "withdrawn" | "withheld" | null; detail: string[] } {
+  const resolved = state.resolveTicketRef(ref);
+  if (resolved.kind !== "found") return { releases: false, reason: null, detail: [] };
+  const release = state.dependencyRelease(resolved.item);
+  return { releases: release.releases, reason: release.reason, detail: [...release.detail] };
+}
+
 export function formatBlockedTickets(
   tickets: readonly Ticket[],
   state: ProjectState,
@@ -1632,6 +1643,7 @@ export function formatBlockedTickets(
           blockers: t.blockedBy.map((bid) => ({
             id: bid,
             status: state.ticketByID(bid)?.status ?? "unknown",
+            ...blockerRelease(state, bid),
           })),
           citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []),
         })),
@@ -1647,6 +1659,15 @@ export function formatBlockedTickets(
       .map((bid) => {
         const resolved = state.resolveTicketRef(bid);
         if (resolved.kind === "found") {
+          const release = state.dependencyRelease(resolved.item);
+          if (release.reason === "withdrawn") return `${displayIdOf(resolved.item)} (withdrawn)`;
+          if (release.reason === "withheld") {
+            const under = release.detail.map((id) => {
+              const leaf = state.ticketByID(id);
+              return leaf ? displayIdOf(leaf) : id;
+            });
+            return `${displayIdOf(resolved.item)} (umbrella, withdrawn work under it: ${under.join(", ")})`;
+          }
           return `${displayIdOf(resolved.item)} (${resolved.item.status})`;
         }
         return `${bid} (unknown)`;

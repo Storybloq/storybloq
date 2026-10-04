@@ -9,8 +9,22 @@ import { resolveRef, buildPrevDisplayIndex, type ResolveResult } from "./resolve
 import { compareByRank } from "./fractional-index.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { isEffectivelyWithdrawn } from "./resolution-kind.js";
 
 export type PhaseStatus = "notstarted" | "inprogress" | "complete";
+
+/**
+ * T-486 U2: whether a ticket, as a blocker, releases the tickets that wait on
+ * it. `reason` names a withdrawal that holds it: the ticket itself
+ * ("withdrawn") or withdrawn leaf work under an umbrella ("withheld"), and
+ * `detail` lists the withdrawn ticket ids either way. The cross-node resolver
+ * uses the same vocabulary (plan V3A 5c).
+ */
+export interface DependencyRelease {
+  readonly releases: boolean;
+  readonly reason: "withdrawn" | "withheld" | null;
+  readonly detail: readonly string[];
+}
 
 /**
  * Pure derived-data container. All derivation happens eagerly in the constructor.
@@ -348,13 +362,9 @@ export class ProjectState {
   }
 
   /**
-   * A ticket is blocked if any blockedBy reference points to a non-complete, non-deleted ticket.
-   * Unknown blocker IDs treated as blocked (conservative). Deleted blockers treated as resolved.
-   *
-   * T-537: an owner checkpoint blocker blocks until it releases (approved or
-   * retired), whatever its status says: a retired checkpoint stays open and
-   * releases, and a complete one whose approval no longer matches its content
-   * blocks. An unrecognized, archived or deleted checkpoint never releases.
+   * A ticket is blocked if any blockedBy reference does not release (see
+   * `dependencyRelease`). Unknown or ambiguous blocker refs are treated as
+   * blocked (conservative).
    */
   isBlocked(ticket: Ticket): boolean {
     if (ticket.blockedBy.length === 0) return false;
@@ -362,13 +372,39 @@ export class ProjectState {
       const resolved = this.resolveTicketRef(ref);
       if (resolved.kind === "missing" || resolved.kind === "ambiguous") return true;
       if (resolved.kind !== "found") continue;
-      if (hasOwnerCheckpoint(resolved.item)) {
-        if (!checkpointReleases(resolved.item)) return true;
-        continue;
-      }
-      if (!isDeleted(resolved.item) && resolved.item.status !== "complete") return true;
+      if (!this.releasesDependency(resolved.item)) return true;
     }
     return false;
+  }
+
+  /** True when `blocker` releases the tickets that wait on it. */
+  releasesDependency(blocker: Ticket): boolean {
+    return this.dependencyRelease(blocker).releases;
+  }
+
+  /**
+   * T-486 U2: dependency release, distinct from `derivesComplete` (phase and
+   * umbrella status stay terminal). In order:
+   * 1. an owner checkpoint releases by approval or retirement, whatever its
+   *    status says (T-537); an unrecognized, archived or deleted one never does;
+   * 2. a deleted ordinary ticket releases, withdrawn or not;
+   * 3. a ticket's own effective withdrawal never releases, so a withdrawn
+   *    umbrella blocks even with delivered children;
+   * 4. an umbrella releases when stored complete with no effectively withdrawn
+   *    live leaf under it, and never when its parent chain loops;
+   * 5. a leaf releases when stored complete.
+   */
+  dependencyRelease(blocker: Ticket): DependencyRelease {
+    const plain = (releases: boolean): DependencyRelease => ({ releases, reason: null, detail: [] });
+    if (hasOwnerCheckpoint(blocker)) return plain(checkpointReleases(blocker));
+    if (isDeleted(blocker)) return plain(true);
+    if (isEffectivelyWithdrawn(blocker)) return { releases: false, reason: "withdrawn", detail: [blocker.id] };
+    if (this.isUmbrella(blocker)) {
+      const under = this.withdrawnUnder(blocker.id);
+      if (under.withdrawn.length > 0) return { releases: false, reason: "withheld", detail: under.withdrawn };
+      if (under.cycle) return plain(false);
+    }
+    return plain(blocker.status === "complete");
   }
 
   get blockedCount(): number {
@@ -471,6 +507,29 @@ export class ProjectState {
   }
 
   // --- Private ---
+
+  /**
+   * T-486 U2: the effectively withdrawn live leaves under an umbrella, walked
+   * through every descendant umbrella. A ticket has one parent, so a walk that
+   * meets an id twice has found a parent cycle through the umbrella itself (or
+   * two records claiming one id); it stops there and reports it, and the
+   * umbrella does not release.
+   */
+  private withdrawnUnder(umbrellaId: string): { withdrawn: string[]; cycle: boolean } {
+    const withdrawn: string[] = [];
+    const seen = new Set<string>([umbrellaId]);
+    let cycle = false;
+    const walk = (id: string): void => {
+      for (const child of this.childrenByParent.get(id) ?? []) {
+        if (seen.has(child.id)) { cycle = true; continue; }
+        seen.add(child.id);
+        if (this.umbrellaIDs.has(child.id)) walk(child.id);
+        else if (!isDeleted(child) && isEffectivelyWithdrawn(child)) withdrawn.push(child.id);
+      }
+    };
+    walk(umbrellaId);
+    return { withdrawn, cycle };
+  }
 
   /**
    * Recursively collects all descendant leaf tickets of an umbrella.

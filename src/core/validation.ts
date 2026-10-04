@@ -364,6 +364,31 @@ export function validateProject(
           entity: t.id,
         });
       }
+      // T-486 U2: an edge an old writer, a hand edit or a merge left on
+      // withdrawn work keeps its dependent blocked; name it so it gets
+      // retargeted. Beside, not instead of, the umbrella error above.
+      if (resolved.kind === "found" && resolved.item.id !== t.id && t.status !== "complete" && (t as Record<string, unknown>).lifecycle !== "deleted") {
+        const release = state.dependencyRelease(resolved.item);
+        if (release.reason === "withdrawn") {
+          findings.push({
+            level: "warning",
+            code: "blocked_by_withdrawn",
+            message: `Ticket ${t.id} is blocked by ${bid}, which was withdrawn; retarget or remove the edge.`,
+            entity: t.id,
+          });
+        } else if (release.reason === "withheld") {
+          const under = release.detail.map((id) => {
+            const leaf = state.ticketByID(id);
+            return leaf ? displayIdOf(leaf) : id;
+          });
+          findings.push({
+            level: "warning",
+            code: "blocked_by_withheld_umbrella",
+            message: `Ticket ${t.id} is blocked by ${bid}, which has withdrawn work under it (${under.join(", ")}); retarget or remove the edge.`,
+            entity: t.id,
+          });
+        }
+      }
     }
 
     // parentTicket ref

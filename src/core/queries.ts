@@ -2,7 +2,7 @@ import type { Ticket } from "../models/ticket.js";
 import type { Phase, Blocker } from "../models/roadmap.js";
 import type { ProjectState, PhaseStatus } from "./project-state.js";
 import { notHiddenByEarmark } from "./earmarks.js";
-import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 
 // --- Result Types ---
 
@@ -290,13 +290,14 @@ export function ticketsUnblockedBy(
   const blocked = state.reverseBlocks(ticketId);
   return blocked.filter((t) => {
     if (t.status === "complete") return false;
-    // Check if ALL other blockers (excluding ticketId) are complete
+    // T-486 U2: every OTHER blocker must release, resolved and judged exactly
+    // as isBlocked does: a missing or ambiguous ref stays blocked, and a ref
+    // naming ticketId by any alias is the one simulated as delivered.
     return t.blockedBy.every((bid) => {
-      if (bid === ticketId) return true; // skip the ticket we're simulating as complete
-      const blocker = state.ticketByID(bid);
-      if (!blocker) return false; // unknown = still blocked
-      // T-537: an owner checkpoint releases by approval or retirement, not status.
-      return hasOwnerCheckpoint(blocker) ? checkpointReleases(blocker) : blocker.status === "complete";
+      const resolved = state.resolveTicketRef(bid);
+      if (resolved.kind !== "found") return false;
+      if (resolved.item.id === ticketId) return true;
+      return state.releasesDependency(resolved.item);
     });
   });
 }

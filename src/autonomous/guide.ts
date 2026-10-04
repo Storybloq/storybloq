@@ -4916,21 +4916,6 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Validate transition + write state atomically. Returns the written state with updated revision. */
-function transitionAndWrite(
-  root: string,
-  dir: string,
-  state: FullSessionState,
-  to: WorkflowState,
-): FullSessionState {
-  const from = state.state as WorkflowState;
-  if (from !== to) {
-    assertTransition(from, to);
-  }
-  const updated = { ...state, state: to, previousState: from };
-  return writeSessionAndRefresh(root, dir, updated, "always");
-}
-
 function guideResult(
   state: FullSessionState,
   currentState: WorkflowState | string,

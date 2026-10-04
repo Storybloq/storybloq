@@ -43,25 +43,27 @@ function scan(code: string, registry: Partial<ScannerRegistry> = {}, extra: Reco
 const IMPORTS = `import { writeSessionSync, withSessionLock, livenessLog, failed } from "./session.js";\n`;
 
 describe("ISS-958 state-write scanner: each plan fixture is refused", () => {
-  const LOCKED = `withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
+  // S10: every writer promise is awaited inside the try under test, so each
+  // catch below is one a write failure reaches at runtime.
+  const LOCKED = `await withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
 
   it("an aliased import", () => {
     const r = scan(`import { writeSessionSync as wss, withSessionLock } from "./session.js";
-export function a(d: string) { try { withSessionLock(d, () => wss(d, { revision: 1 })); } catch (e) { throw e; } }`);
+export async function a(d: string) { try { await withSessionLock(d, () => wss(d, { revision: 1 })); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
 
   it("a rethrowing wrapper", () => {
     const r = scan(IMPORTS + `
-function wrap(d: string) { try { ${LOCKED}; } catch (e) { throw e; } }
-export function b(d: string) { wrap(d); }`, { catches: {} });
+async function wrap(d: string) { try { ${LOCKED}; } catch (e) { throw e; } }
+export async function b(d: string) { await wrap(d); }`, { catches: {} });
     expect(r.errors).toContain("unregistered propagating user.ts#wrap#catch#1");
     expect(r.writers).toContain("user.ts#b");
   });
 
   it("a catch that swallows in one branch and rethrows in another", () => {
     const r = scan(IMPORTS + `
-export function a(d: string, soft: boolean) { try { ${LOCKED}; } catch (e) { if (soft) { livenessLog("x"); } else { throw e; } } }`);
+export async function a(d: string, soft: boolean) { try { ${LOCKED}; } catch (e) { if (soft) { livenessLog("x"); } else { throw e; } } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
 
@@ -81,9 +83,24 @@ export async function outer(d: string) { try { await inner(d); } catch (e) { thr
     expect(r.errors).toEqual(["unregistered propagating user.ts#outer#catch#1"]);
   });
 
+  it("S1: a returned writer promise passes the catch it is returned from; an awaited one settles there", () => {
+    const code = (ret: string) => IMPORTS + `
+async function asyncWriter(d: string): Promise<void> { ${LOCKED}; }
+async function inner(d: string): Promise<void> { try { ${ret}; } catch {} }
+export async function outer(d: string) { try { await inner(d); } catch (e) { throw e; } }`;
+    const returned = scan(code("return asyncWriter(d)"));
+    expect(returned.found.get("user.ts#inner#catch#1")).toBe("contained");
+    expect(returned.writers).toContain("user.ts#inner");
+    expect(returned.errors).toEqual(["unregistered propagating user.ts#outer#catch#1"]);
+    const awaited = scan(code("return await asyncWriter(d)"));
+    expect(awaited.found.get("user.ts#inner#catch#1")).toBe("contained");
+    expect(awaited.writers).not.toContain("user.ts#inner");
+    expect(awaited.errors).toEqual([]);
+  });
+
   it.each([["any"], ["unknown"]])("return x where x: %s", (t) => {
     const r = scan(IMPORTS + `
-export function a(d: string, x: ${t}) { try { ${LOCKED}; } catch { return x; } return null; }`);
+export async function a(d: string, x: ${t}) { try { ${LOCKED}; } catch { return x; } return null; }`);
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
 
@@ -97,23 +114,23 @@ export async function asyncFailed(why: string): Promise<{ kind: "failed"; why: s
   it("a catch calling a helper that throws err", () => {
     const r = scan(IMPORTS + `
 function rethrow(e: unknown): never { throw e; }
-export function a(d: string) { try { ${LOCKED}; } catch (e) { rethrow(e); } }`);
+export async function a(d: string) { try { ${LOCKED}; } catch (e) { rethrow(e); } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
 
   it("the writer assigned to a (...a: unknown[]) => void slot", () => {
     const r = scan(IMPORTS + `
-function w(d: string) { ${LOCKED}; }
+async function w(d: string) { ${LOCKED}; }
 export const slot: (...a: unknown[]) => void = w as (...a: unknown[]) => void;`);
     expect(r.errors.some((e) => e.startsWith("unregistered value escape user.ts#<module>#edge#1"))).toBe(true);
   });
 
   it("an injected deps writer: the catch around the sink's call site needs a policy", () => {
     const r = scan(IMPORTS + `
-export interface Deps { apply(d: string): void }
-function w(d: string) { ${LOCKED}; }
+export interface Deps { apply(d: string): Promise<void> }
+async function w(d: string) { ${LOCKED}; }
 export const deps: Deps = { apply: w };
-export function use(x: Deps, d: string) { try { x.apply(d); } catch (e) { throw e; } }`,
+export async function use(x: Deps, d: string) { try { await x.apply(d); } catch (e) { throw e; } }`,
     { edges: { "user.ts#<module>#edge#1": "user.ts#Deps.apply" } });
     expect(r.errors).toEqual(["unregistered propagating user.ts#use#catch#1"]);
   });
@@ -127,9 +144,9 @@ export function h(d: string) { void w(d).catch(() => undefined); }`);
 
   it("a new wrapper function makes its callers' catches reachable", () => {
     const r = scan(IMPORTS + `
-function w(d: string) { ${LOCKED}; }
+async function w(d: string) { ${LOCKED}; }
 function newWrapper(d: string) { return w(d); }
-export function a(d: string) { try { newWrapper(d); } catch (e) { throw e; } }`);
+export async function a(d: string) { try { await newWrapper(d); } catch (e) { throw e; } }`);
     expect(r.writers).toContain("user.ts#newWrapper");
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
@@ -142,27 +159,57 @@ export function bare(d: string) { writeSessionSync(d, { revision: 1 }); }`);
 
   it("a stale key and an unknown policy both fail", () => {
     const r = scan(IMPORTS + `
-export function a(d: string) { try { ${LOCKED}; } catch (e) { throw e; } }`,
+export async function a(d: string) { try { ${LOCKED}; } catch (e) { throw e; } }`,
     { catches: { "user.ts#a#catch#1": "Z", "user.ts#gone#catch#1": "P" } });
     expect(r.errors).toContain("unknown policy Z for user.ts#a#catch#1");
     expect(r.errors).toContain("stale registry key user.ts#gone#catch#1");
   });
 });
 
+describe("ISS-958 S6 fixup: a writer constructor (the CTOR mutant survived at 9387b32c)", () => {
+  it("a writer constructor reached by new is refused", () => {
+    const r = scan(IMPORTS + `
+export class Boot { constructor(d: string) { writeSessionSync(d, { revision: 1 }); } }
+export async function make(d: string) { await withSessionLock(d, () => new Boot(d)); }`);
+    expect(r.errors.some((e) => e.startsWith("writer constructor reached by new at user.ts:"))).toBe(true);
+  });
+});
+
+describe("ISS-958 S9: a second primitive that writes on its own seeds discovery and the lock check", () => {
+  const DURABLE = SESSION + `export function writeSessionDurableSync(dir: string, s: { revision: number }): { revision: number } { return s; }\n`;
+  const durableScan = (code: string) => scanStateWrites(inMemoryProgram({ "/fx/session.ts": DURABLE, "/fx/user.ts": code }), {
+    base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", extraRootNames: ["writeSessionDurableSync"],
+    lockName: "withSessionLock", registry: EMPTY,
+  });
+  const D_IMPORTS = `import { writeSessionDurableSync, withSessionLock } from "./session.js";\n`;
+
+  it("a durable-only write under a catch is an unregistered catch", () => {
+    const r = durableScan(D_IMPORTS + `
+export async function a(d: string) { try { await withSessionLock(d, () => writeSessionDurableSync(d, { revision: 1 })); } catch (e) { throw e; } }`);
+    expect(r.errors).toEqual(["unregistered propagating user.ts#a#catch#1"]);
+    expect(r.writers).toContain("user.ts#a");
+  });
+
+  it("an unlocked durable-only write is a lock error", () => {
+    const r = durableScan(D_IMPORTS + `export function bare(d: string) { writeSessionDurableSync(d, { revision: 1 }); }`);
+    expect(r.errors.some((e) => e.startsWith("lock: writeSessionDurableSync at user.ts:"))).toBe(true);
+  });
+});
+
 describe("ISS-958 state-write scanner: a clean program passes", () => {
   it("registered catches, a contained swallow, a registered edge, and locked writes", () => {
     const r = scan(IMPORTS + `
-export interface Deps { apply(d: string): void }
-function w(d: string) { withSessionLock(d, () => writeSessionSync(d, { revision: 1 })); }
+export interface Deps { apply(d: string): Promise<void> }
+async function w(d: string) { await withSessionLock(d, () => writeSessionSync(d, { revision: 1 })); }
 export const deps: Deps = { apply: w };
-export function a(d: string) { try { w(d); } catch (e) { throw e; } }
-export function quiet(d: string) {
+export async function a(d: string) { try { await w(d); } catch (e) { throw e; } }
+export async function quiet(d: string) {
   let ok = true;
-  try { w(d); } catch { ok = false; livenessLog("write failed"); }
+  try { await w(d); } catch { ok = false; livenessLog("write failed"); }
   return ok;
 }
-export function soft(d: string) { try { w(d); } catch { return failed("write failed"); } return null; }
-export function use(x: Deps, d: string) { try { x.apply(d); } catch (e) { throw e; } }`, {
+export async function soft(d: string) { try { await w(d); } catch { return failed("write failed"); } return null; }
+export async function use(x: Deps, d: string) { try { await x.apply(d); } catch (e) { throw e; } }`, {
       catches: { "user.ts#a#catch#1": "P", "user.ts#use#catch#1": "R" },
       edges: { "user.ts#<module>#edge#1": "user.ts#Deps.apply" },
     });
@@ -174,10 +221,10 @@ export function use(x: Deps, d: string) { try { x.apply(d); } catch (e) { throw 
 
 describe("ISS-958 state-write scanner: test-only exports (guide.ts __recoveryTesting)", () => {
   const SEAM = IMPORTS + `
-function w(d: string) { withSessionLock(d, () => writeSessionSync(d, { revision: 1 })); }
-export function a(d: string) { try { w(d); } catch (e) { throw e; } }
+async function w(d: string) { await withSessionLock(d, () => writeSessionSync(d, { revision: 1 })); }
+export async function a(d: string) { try { await w(d); } catch (e) { throw e; } }
 export const __seamTesting = {
-  run: (d: string) => { try { w(d); } catch (e) { throw e; } },
+  run: async (d: string) => { try { await w(d); } catch (e) { throw e; } },
   ref: w,
 };`;
   const REG = { catches: { "user.ts#a#catch#1": "P" }, testOnlyExports: ["user.ts#__seamTesting"] };
@@ -209,7 +256,7 @@ export const __seamTesting = {
 });
 
 describe("ISS-958 state-write scanner: constructs the draft missed on real src", () => {
-  const LOCKED = `withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
+  const LOCKED = `await withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
 
   it("a class member reached from another module through its instance type (a transient symbol)", () => {
     const r = scan(`import type { Ctx } from "./ctx.js";
@@ -222,26 +269,26 @@ export class Ctx { writeState(s: { revision: number }) { return writeSessionSync
 
   it("an overloaded writer: the overload signature and the implementation are one writer", () => {
     const r = scan(`import { ow } from "./ow.js";
-export function f(d: string) { try { ow(d); } catch (e) { throw e; } }`, {}, {
-      "/fx/ow.ts": IMPORTS + `export function ow(d: string): void;
-export function ow(d: string, n?: number): void { ${LOCKED}; }\n`,
+export async function f(d: string) { try { await ow(d); } catch (e) { throw e; } }`, {}, {
+      "/fx/ow.ts": IMPORTS + `export function ow(d: string): Promise<void>;
+export async function ow(d: string, n?: number): Promise<void> { ${LOCKED}; }\n`,
     });
     expect(r.errors).toContain("unregistered propagating user.ts#f#catch#1");
   });
 
   it("a writer destructured from a dynamic import", () => {
     const r = scan(`export async function h(d: string) {
-  try { const { stop } = await import("./cmd.js"); stop(d); } catch (e) { throw e; }
-}`, {}, { "/fx/cmd.ts": IMPORTS + `export function stop(d: string) { ${LOCKED}; }\n` });
+  try { const { stop } = await import("./cmd.js"); await stop(d); } catch (e) { throw e; }
+}`, {}, { "/fx/cmd.ts": IMPORTS + `export async function stop(d: string) { ${LOCKED}; }\n` });
     expect(r.errors).toContain("unregistered propagating user.ts#h#catch#1");
   });
 
   it("a local bound to an injected writer or its default (deps.w ?? w)", () => {
     const r = scan(IMPORTS + `
-function w(d: string) { ${LOCKED}; }
-export function g(d: string, deps: { w?: (d: string) => void }) {
+async function w(d: string) { ${LOCKED}; }
+export async function g(d: string, deps: { w?: (d: string) => Promise<void> }) {
   const write = deps.w ?? w;
-  try { write(d); } catch (e) { throw e; }
+  try { await write(d); } catch (e) { throw e; }
 }`);
     expect(r.errors).toContain("unregistered propagating user.ts#g#catch#1");
     expect(r.errors).toContain("unregistered value escape user.ts#g#edge#1 (edge:w)");
@@ -249,16 +296,16 @@ export function g(d: string, deps: { w?: (d: string) => void }) {
 
   it("a local bound to an inline writer arrow behind ??", () => {
     const r = scan(IMPORTS + `
-export function g(d: string, deps: { w?: (d: string) => void }) {
+export async function g(d: string, deps: { w?: (d: string) => Promise<unknown> }) {
   const write = deps.w ?? ((x: string) => withSessionLock(x, () => writeSessionSync(x, { revision: 1 })));
-  try { write(d); } catch (e) { throw e; }
+  try { await write(d); } catch (e) { throw e; }
 }`);
     expect(r.errors).toContain("unregistered propagating user.ts#g#catch#1");
   });
 
   it("a writer defined inline as a deps-object member is a value escape, and its slot's call sites are reached once registered", () => {
-    const core = { "/fx/core.ts": `export interface Deps { readonly norm: (d: string) => void }
-export function core(d: string, deps: Deps) { try { deps.norm(d); } catch (e) { throw e; } }\n` };
+    const core = { "/fx/core.ts": `export interface Deps { readonly norm: (d: string) => Promise<unknown> }
+export async function core(d: string, deps: Deps) { try { await deps.norm(d); } catch (e) { throw e; } }\n` };
     const code = IMPORTS + `import { core } from "./core.js";
 export function entry(d: string) { core(d, { norm: (x) => withSessionLock(x, () => writeSessionSync(x, { revision: 1 })) }); }`;
     const unregistered = scan(code, {}, core);
@@ -320,12 +367,12 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
 const lifetime = (errors: string[]) => errors.filter((e) => e.startsWith("lock-lifetime"));
 
 describe("ISS-958 S6 addendum: unresolved callees and the name rule (U1 to U3)", () => {
-  const LOCKED = `withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
+  const LOCKED = `await withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
 
   it("U1a: a writer closure passed to an unregistered callee is a value escape", () => {
     const r = scan(IMPORTS + `
-function run(f: () => void) { f(); }
-function w(d: string) { ${LOCKED}; }
+function run(f: () => unknown) { f(); }
+async function w(d: string) { ${LOCKED}; }
 export function a(d: string) { run(() => w(d)); }`);
     expect(r.errors).toContain("unregistered value escape user.ts#a#edge#1 (edge:<closure>)");
   });
@@ -338,11 +385,11 @@ export function a(f: () => void) { try { f(); } catch (e) { throw e; } }`);
 
   it("U1b: a let with no initializer resolves through its assignments", () => {
     const r = scan(IMPORTS + `
-function w(d: string) { ${LOCKED}; }
-export function a(d: string, soft: boolean) {
-  let f: (d: string) => void;
-  if (soft) f = () => {}; else f = w;
-  try { f(d); } catch (e) { throw e; }
+async function w(d: string) { ${LOCKED}; }
+export async function a(d: string, soft: boolean) {
+  let f: (d: string) => Promise<void>;
+  if (soft) f = async () => {}; else f = w;
+  try { await f(d); } catch (e) { throw e; }
 }`);
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
@@ -370,10 +417,10 @@ export function a(d: string, fs: Array<(d: string) => void>) {
 
   it("U2: an interface member call whose name is a writer's is a writer call; another name is not", () => {
     const r = scan(IMPORTS + `
-interface I { m(): void; n(): void }
-function w(d: string) { ${LOCKED}; }
-export class W implements I { m() { w("d"); } n() {} }
-export function run(x: I) { try { x.m(); } catch (e) { throw e; } }
+interface I { m(): Promise<void>; n(): void }
+async function w(d: string) { ${LOCKED}; }
+export class W implements I { async m() { await w("d"); } n() {} }
+export async function run(x: I) { try { await x.m(); } catch (e) { throw e; } }
 export function other(x: I) { try { x.n(); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
     expect(r.errors.filter((e) => e.includes("#other#"))).toEqual([]);
@@ -381,10 +428,10 @@ export function other(x: I) { try { x.n(); } catch (e) { throw e; } }`);
 
   it("U2: an object-literal key whose value is a writer puts its name in N", () => {
     const r = scan(IMPORTS + `
-interface I { k(d: string): void }
-function w(d: string) { ${LOCKED}; }
+interface I { k(d: string): Promise<void> }
+async function w(d: string) { ${LOCKED}; }
 export const o = { k: w };
-export function run(x: I) { try { x.k("d"); } catch (e) { throw e; } }`);
+export async function run(x: I) { try { await x.k("d"); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
 
@@ -403,45 +450,120 @@ export function run(x: any) { try { x.m(); } catch (e) { throw e; } }`);
 
   it("rule 3: Object.defineProperty with a writer value is a value escape", () => {
     const r = scan(IMPORTS + `
-function w(d: string) { ${LOCKED}; }
+async function w(d: string) { ${LOCKED}; }
 export function a(o: object) { Object.defineProperty(o, "m", { value: w }); }`);
     expect(r.errors).toContain("unregistered value escape user.ts#a#edge#1 (edge:w)");
   });
 });
 
 describe("ISS-958 S6 addendum: member reads (A1) and accessors (A2)", () => {
-  const LOCKED = `withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
+  const LOCKED = `await withSessionLock(d, () => writeSessionSync(d, { revision: 1 }))`;
   const W = IMPORTS + `
-interface I { m(): void }
-function w(d: string) { ${LOCKED}; }
-class W implements I { m() { w("d"); } }
+interface I { m(): Promise<void> }
+async function w(d: string) { ${LOCKED}; }
+class W implements I { async m() { await w("d"); } }
 `;
 
   it("A1: a parameter binding pattern reaches the catch", () => {
-    const r = scan(W + `function run({ m }: I) { try { m(); } catch {} }
+    const r = scan(W + `async function run({ m }: I) { try { await m(); } catch {} }
 export function go() { run(new W()); }`);
     expect(r.found.get("user.ts#run#catch#1")).toBe("contained");
   });
 
   it("A1: an alias of a destructured member reaches the catch", () => {
-    const r = scan(W + `function run({ m }: I) { const g = m; try { g(); } catch (e) { throw e; } }
+    const r = scan(W + `async function run({ m }: I) { const g = m; try { await g(); } catch (e) { throw e; } }
 export function go() { run(new W()); }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
 
   it("A1: a non-call property read reaches the catch", () => {
-    const r = scan(W + `export function run(x: I) { const f = x.m; try { f(); } catch (e) { throw e; } }`);
+    const r = scan(W + `export async function run(x: I) { const f = x.m; try { await f(); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
 
   it("A1: an assignment pattern reaches the catch", () => {
-    const r = scan(W + `export function run(x: I) { let m: () => void; ({ m } = x); try { m(); } catch (e) { throw e; } }`);
+    const r = scan(W + `export async function run(x: I) { let m: () => Promise<void>; ({ m } = x); try { await m(); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
 
   it("A1: a for-of pattern reaches the catch", () => {
-    const r = scan(W + `export function run(xs: I[]) { for (const { m } of xs) { try { m(); } catch (e) { throw e; } } }`);
+    const r = scan(W + `export async function run(xs: I[]) { for (const { m } of xs) { try { await m(); } catch (e) { throw e; } } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
+  });
+
+  it("S2: an assignment-form for-of pattern reaches the catch", () => {
+    const r = scan(W + `export async function run(xs: I[]) { let f = async () => {}; for ({ m: f } of xs) { try { await f(); } catch (e) { throw e; } } }`);
+    expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
+  });
+
+  it.each([
+    ["a nested assignment pattern", "export async function run(x: { inner: I }) { let f = async () => {}; ({ inner: { m: f } } = x); try { await f(); } catch (e) { throw e; } }"],
+    ["a for-of identifier target", `export async function run() { let f: (d: string) => Promise<void> = async () => {}; for (f of [w]) { try { await f("d"); } catch (e) { throw e; } } }`],
+    ["an array assignment pattern", `export async function run() { let f: (d: string) => Promise<void> = async () => {}; [f] = [w]; try { await f("d"); } catch (e) { throw e; } }`],
+  ])("S2: %s reaches the catch", (_n, code) => {
+    expect(scan(W + code).errors).toContain("unregistered propagating user.ts#run#catch#1");
+  });
+
+  it("S2: a computed key in an assignment pattern is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m") { let f = async () => {}; ({ [k]: f } = x); try { await f(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#f#1 (pattern-member)");
+  });
+
+  // S2: a rebind the scan cannot name fails closed through every route the
+  // callee check follows, even when the callee's declared signature is concrete.
+  it("S2: a local alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = f; try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a ?? alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = h ?? f; try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a || alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = h || f; try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a && alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = (h && f)!; try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a ?: alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = k === "m" ? h! : f; try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a bound alias of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const g = f.bind(null); try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: an object property of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const o = { m: f }; try { await o.m(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#o.m#1 (pattern-member)");
+  });
+
+  it("S2: a shorthand object property of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const o = { f }; try { await o.f(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#o.f#1 (pattern-member)");
+  });
+
+  it("S2: an iterated array element of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); for (const g of [h!, f]) { try { await g(); } catch (e) { throw e; } } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a named member of a rebound source of a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export async function run(x: I, k: "m", h?: () => Promise<void>) { let f = async () => {}; ({ [k]: f } = x); const src = { m: f }; let g = h!; ({ m: g } = src); try { await g(); } catch (e) { throw e; } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#run#g#1 (pattern-member)");
+  });
+
+  it("S2: a field holding a computed-key rebind is UNRESOLVED", () => {
+    const r = scan(W + `export class C { f = async () => {}; async run(x: I, k: "m") { ({ [k]: this.f } = x); try { await this.f(); } catch (e) { throw e; } } }`);
+    expect(r.errors).toContain("UNRESOLVED user.ts#C.run#this.f#1 (pattern-member)");
   });
 
   it("A1: a rest element over a type with a member in N is UNRESOLVED", () => {
@@ -458,8 +580,8 @@ export function pass(x: D, k: (v: unknown) => void) { k(x.m); }`);
   });
 
   it("A1: a function-typed property named in N is still a writer read", () => {
-    const r = scan(W + `interface P { m: () => void }
-export function run(x: P) { const f = x.m; try { f(); } catch (e) { throw e; } }`);
+    const r = scan(W + `interface P { m: () => Promise<void> }
+export async function run(x: P) { const f = x.m; try { await f(); } catch (e) { throw e; } }`);
     expect(r.errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
 
@@ -494,20 +616,20 @@ export function run(x: D, k: (v: unknown) => void) { k(x.m as unknown as () => v
   });
 
   it("A2: a getter that writes and returns a function is refused", () => {
-    const r = scan(IMPORTS + `function w(d: string) { ${LOCKED}; }
+    const r = scan(IMPORTS + `async function w(d: string) { ${LOCKED}; }
 export class A { get g() { w("d"); return () => {}; } }`);
     expect(r.errors.some((e) => e.startsWith("writer-bearing accessor user.ts#A.g"))).toBe(true);
   });
 
   it("A2: a standalone getter read is refused", () => {
-    const r = scan(IMPORTS + `function w(d: string) { ${LOCKED}; }
+    const r = scan(IMPORTS + `async function w(d: string) { ${LOCKED}; }
 export const o = { get v() { w("d"); return 1; } };
 export function read() { return o.v; }`);
     expect(r.errors.some((e) => e.startsWith("writer-bearing accessor user.ts#v"))).toBe(true);
   });
 
   it("A2: a setter assignment is refused", () => {
-    const r = scan(IMPORTS + `function w(d: string) { ${LOCKED}; }
+    const r = scan(IMPORTS + `async function w(d: string) { ${LOCKED}; }
 export class B { set s(x: number) { w("d"); } }
 export function put(b: B) { b.s = 1; }`);
     expect(r.errors.some((e) => e.startsWith("writer-bearing accessor user.ts#B.s"))).toBe(true);
@@ -554,6 +676,23 @@ export function guide(d: string) {
     ["an un-awaited IIFE", "(async () => { await pause(); ctx.writeState({ revision: 1 }); })();"],
   ])("A6: %s under the lock is a lock-lifetime error", (_n, body) => {
     expect(lifetime(inLock(body).errors).length).toBeGreaterThan(0);
+  });
+
+  it("S5: a custom forEach is not credited as the synchronous array method", () => {
+    const FAKE = "const fake = { forEach(cb: () => void) { setTimeout(cb, 0); } };\n";
+    const viaCtx = inLock("fake.forEach(() => ctx.writeState({ revision: 1 }));", FAKE);
+    expect(lifetime(viaCtx.errors).some((e) => e.startsWith("lock-lifetime: context captured by a function that may run outside the lock"))).toBe(true);
+    const direct = inLock("fake.forEach(() => writeSessionSync(d, { revision: 1 }));", FAKE);
+    expect(direct.errors.some((e) => e.startsWith("lock: writeSessionSync at user.ts:"))).toBe(true);
+    expect(inLock("items.forEach(() => writeSessionSync(d, { revision: 1 }));").errors).toEqual([]);
+  });
+
+  it("S3: an async closure behind a () => void local must still complete", () => {
+    const body = (call: string) => `const f: () => void = async () => { await pause(); writeSessionSync(d, { revision: 1 }); };\n    ${call}`;
+    const bare = lifetime(inLock(body("f();")).errors);
+    expect(bare).toHaveLength(1);
+    expect(bare[0]).toMatch(/^lock-lifetime: user\.ts#f called at user\.ts:\d+ is neither awaited nor returned in a contract function$/);
+    expect(inLock(body("await f();")).errors).toEqual([]);
   });
 
   it("A6: return inside a try with a finally is a lock-lifetime error", () => {
@@ -618,6 +757,19 @@ export class S implements WorkflowStage { saved?: StageContext; async enter(ctx:
     expect(wrongHolder.errors).toContain("via-caller user.ts#helper names user.ts#elsewhere, which does not call it");
   });
 
+  it("S4: a context returned out of the lock callback, and a context-holding function called outside the lock, are refused", () => {
+    const r = lockScan(LOCK_IMPORTS + `
+function helper(ctx: StageContext) { ctx.writeState({ revision: 1 }); }
+export async function run(d: string, stage: WorkflowStage) {
+  const ctx = await withSessionLock(d, () => new StageContext(d));
+  helper(ctx);
+  await stage.enter(ctx);
+}`, { contextConstructions: ["user.ts#run#new#1"] });
+    expect(lifetime(r.errors).some((e) => e.includes("returned across the lock-entry boundary"))).toBe(true);
+    expect(r.errors.some((e) => e.startsWith("lock: context-holding function user.ts#helper called at user.ts:") && e.includes("from user.ts#run,"))).toBe(true);
+    expect(r.errors.some((e) => e.startsWith("lock: context-holding function WorkflowStage.enter called at user.ts:"))).toBe(true);
+  });
+
   it("L1: a tier 1 function called through a local alias is checked like a direct call", () => {
     const top = `function helper(d: string) { new StageContext(d).writeState({ revision: 1 }); }
 `;
@@ -644,6 +796,56 @@ export function writeSessionSync(dir: string, s: { revision: number }) { return 
     const program = inMemoryProgram({ "/fx/session.ts": bad, "/fx/user.ts": "export {};\n" });
     const r = scanStateWrites(program, { base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock", registry: EMPTY });
     expect(r.errors).toContain("lock-lifetime: lock entry session.ts#withSessionLock does not await its callback at session.ts:1");
+  });
+});
+
+describe("ISS-958 S7: the lock entry's release is the one tied to its acquisition", () => {
+  const BODY = "  const release = acquire(dir);\n  try { return await fn(); } finally { release(); }\n";
+  const entryScan = (body: string) => {
+    expect(SESSION).toContain(BODY);
+    const program = inMemoryProgram({ "/fx/session.ts": SESSION.replace(BODY, body), "/fx/user.ts": "export {};\n" });
+    return scanStateWrites(program, { base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock", registry: EMPTY });
+  };
+  const entryErrors = (body: string) => entryScan(body).errors.filter((e) => e.startsWith("lock-lifetime: lock entry"));
+
+  it("the fixture shape and the production shape (a let acquired inside the try, released under a presence test) pass", () => {
+    expect(entryErrors(BODY)).toEqual([]);
+    expect(entryErrors(`  let release: (() => void) | undefined;
+  try { release = acquire(dir); return await fn(); } finally { if (release) { try { release(); } catch { /* ignore */ } } }
+`)).toEqual([]);
+  });
+
+  it("a release called before the callback, with an unrelated call in the finally, fails", () => {
+    expect(entryErrors(`  const release = acquire(dir);
+  try { release(); return await fn(); } finally { livenessLog("done"); }
+`)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock does not release in the finally of the try that awaits its callback"]);
+  });
+
+  it("the finally release replaced by an unrelated call fails", () => {
+    expect(entryErrors(`  const release = acquire(dir);
+  try { return await fn(); } finally { livenessLog("released"); }
+`)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock does not release in the finally of the try that awaits its callback"]);
+  });
+
+  it("a release also called early, or passed on, fails", () => {
+    const early = entryErrors(`  const release = acquire(dir);
+  try { release(); return await fn(); } finally { release(); }
+`);
+    expect(early).toHaveLength(1);
+    expect(early[0]).toMatch(/^lock-lifetime: lock entry session\.ts#withSessionLock uses its release release outside the finally at session\.ts:/);
+    const passed = entryErrors(`  const release = acquire(dir);
+  setTimeout(release, 0);
+  try { return await fn(); } finally { release(); }
+`);
+    expect(passed).toHaveLength(1);
+    expect(passed[0]).toContain("uses its release release outside the finally");
+  });
+
+  it("a release that is not the acquisition's result fails", () => {
+    expect(entryErrors(`  acquire(dir);
+  const release = () => {};
+  try { return await fn(); } finally { release(); }
+`)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock does not release in the finally of the try that awaits its callback"]);
   });
 });
 
@@ -752,6 +954,34 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
   });
 });
 
+describe("ISS-958 S6 fixup: a guarded slot's provider is checked wherever it flows", () => {
+  const TOP = `export interface Deps { withLockX?: (fn: () => Promise<void>) => Promise<void> }
+export async function take(d: string, ctx: StageContext, deps: Deps) {
+  const under = deps.withLockX ?? (async (fn: () => Promise<void>) => { await withProjectLock(d, async () => fn()); });
+  await under(async () => { ctx.writeState({ revision: 1 }); });
+}
+`;
+  const LISTED = { ...PRIM, injectedCallbackSlots: { "user.ts#Deps.withLockX": "tests only" } };
+  const supplied = (r: { errors: string[] }) =>
+    r.errors.filter((e) => e.startsWith("injected awaited-callback slot user.ts#Deps.withLockX is supplied in src at"));
+
+  it.each([
+    ["an inferred provider passed as the dependency", "const provider = { withLockX: async (fn: () => Promise<void>) => { void fn(); } };\n    await take(d, ctx, provider);"],
+    ["a property assignment", "const deps: Deps = {};\n    deps.withLockX = async (fn) => { void fn(); };\n    await take(d, ctx, deps);"],
+    ["a spread", "const extra = { withLockX: async (fn: () => Promise<void>) => { void fn(); } };\n    await take(d, ctx, { ...extra });"],
+  ])("%s is a supply", (_n, body) => {
+    expect(supplied(add2Scan(body, TOP, LISTED))).toHaveLength(1);
+  });
+
+  it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {
+    const fwd = TOP + "export async function relay(d: string, ctx: StageContext, deps: Deps) { await take(d, ctx, deps); }\n";
+    expect(add2Scan("await relay(d, ctx, {});", fwd, LISTED).errors).toEqual([]);
+    const untyped = add2Scan(`await take(d, ctx, JSON.parse("{}"));`, TOP, LISTED);
+    expect(untyped.errors.some((e) => e.startsWith("injected awaited-callback slot user.ts#Deps.withLockX may be supplied in src at")
+      && e.endsWith("(untyped provider)"))).toBe(true);
+  });
+});
+
 describe("ISS-958 S6 addendum 2: local functions (R-b), edge callbacks (R-c), in-place ?? (R-d), context params (R-e)", () => {
   it("R-b: a const closure called directly under the lock inherits it", () => {
     const r = add2Scan(`const publish = (n: number) => ctx.writeState({ revision: n });
@@ -763,6 +993,13 @@ describe("ISS-958 S6 addendum 2: local functions (R-b), edge callbacks (R-c), in
 
   it("R-b: a non-call reference is the stored error", () => {
     const r = add2Scan(`const publish = (n: number) => { ctx.writeState({ revision: n }); };
+    items.forEach(publish);`);
+    expect(lifetime(r.errors).some((e) => e.includes("contract closure publish") && e.includes("other than by a direct call"))).toBe(true);
+  });
+
+  it("R-b: a direct call does not license another, non-call reference (the RB mutant survived at 9387b32c)", () => {
+    const r = add2Scan(`const publish = (n: number) => { ctx.writeState({ revision: n }); };
+    publish(1);
     items.forEach(publish);`);
     expect(lifetime(r.errors).some((e) => e.includes("contract closure publish") && e.includes("other than by a direct call"))).toBe(true);
   });
@@ -884,20 +1121,24 @@ export function a(d: string) { relay(() => writeSessionSync(d, { revision: 1 }))
     expect(r.errors).toContain("unregistered value escape user.ts#relay#edge#1 (edge:cb)");
   });
 
-  const chainCode = (outerBody: string) => IMPORTS + `import { AsyncLocalStorage } from "node:async_hooks";
+  const LEAF = "async () => { await withSessionLock(d, () => writeSessionSync(d, { revision: 1 })); return 1; }";
+  const chainCode = (outerBody: string, innerBody = "return await als.run(1, fn);", entry = `await outer(${LEAF});`) => IMPORTS + `import { AsyncLocalStorage } from "node:async_hooks";
 const als = new AsyncLocalStorage<number>();
-async function inner(fn: () => Promise<number>): Promise<number> { return await als.run(1, fn); }
+const alsFn = new AsyncLocalStorage<() => Promise<number>>();
+async function inner(fn: () => Promise<number>): Promise<number> { ${innerBody} }
 async function outer(fn: () => Promise<number>): Promise<number> { ${outerBody} }
-export async function go(d: string) { await outer(async () => { writeSessionSync(d, { revision: 1 }); return 1; }); }`;
+async function other(fn: () => Promise<number>): Promise<number> { return await outer(fn); }
+export async function go(d: string) { ${entry} }`;
   const CHAIN = {
     edges: { "user.ts#go#edge#1": "outer -> inner -> AsyncLocalStorage.run(callback)" },
     unfollowedSinkChains: { "user.ts#go#edge#1": [{ fn: "user.ts#outer", param: "fn" }, { fn: "user.ts#inner", param: "fn" }] },
   };
   const ALS = { "/fx/als.d.ts": NODE_ALS };
   const chainErrors = (r: { errors: string[] }) => r.errors.filter((e) => e.startsWith("unfollowed sink chain"));
+  const GOOD_OUTER = "const v = await inner(async () => fn()); return v;";
 
-  it("a verified chain passes", () => {
-    expect(chainErrors(scan(chainCode("const v = await inner(async () => fn()); return v;"), CHAIN, ALS))).toEqual([]);
+  it("a verified chain passes, its leaf writing under the awaited session lock", () => {
+    expect(scan(chainCode(GOOD_OUTER), CHAIN, ALS).errors).toEqual([]);
   });
 
   it("a catch around the forward fails", () => {
@@ -909,6 +1150,23 @@ export async function go(d: string) { await outer(async () => { writeSessionSync
     const voided = scan(chainCode("void inner(async () => fn()); return 0;"), CHAIN, ALS);
     expect(chainErrors(voided).some((e) => e.includes("does not await or return"))).toBe(true);
     const elsewhere = scan(chainCode("return await fn();"), CHAIN, ALS);
-    expect(chainErrors(elsewhere).some((e) => e.includes("forwards fn to fn, not user.ts#inner"))).toBe(true);
+    expect(chainErrors(elsewhere).some((e) => e.includes("forwards fn to fn, not user.ts#inner(fn)"))).toBe(true);
+  });
+
+  it("S8: a return overridden by a finally is not completion", () => {
+    const r = scan(chainCode("try { return inner(async () => fn()); } finally { void 0; }"), CHAIN, ALS);
+    expect(chainErrors(r)).toEqual([expect.stringMatching(/^unfollowed sink chain user\.ts#go#edge#1: user\.ts#outer does not await or return the call that uses fn at user\.ts:/)]);
+  });
+
+  it("S8: the terminal hop must hand the callback to AsyncLocalStorage.run in its callback slot", () => {
+    const scheduler = scan(chainCode(GOOD_OUTER, "return await Promise.resolve().then(fn);"), CHAIN, ALS);
+    expect(chainErrors(scheduler)).toEqual(["unfollowed sink chain user.ts#go#edge#1: user.ts#inner forwards fn to Promise.resolve().then, not AsyncLocalStorage.run(callback)"]);
+    const storeSlot = scan(chainCode(GOOD_OUTER, "return await alsFn.run(fn, async () => 1);"), CHAIN, ALS);
+    expect(chainErrors(storeSlot)).toEqual(["unfollowed sink chain user.ts#go#edge#1: user.ts#inner forwards fn to alsFn.run, not AsyncLocalStorage.run(callback)"]);
+  });
+
+  it("S8: the registered edge must enter the first pinned hop", () => {
+    const r = scan(chainCode(GOOD_OUTER, undefined, `await other(${LEAF});`), CHAIN, ALS);
+    expect(chainErrors(r)).toContain("unfollowed sink chain user.ts#go#edge#1: the edge does not enter user.ts#outer(fn)");
   });
 });

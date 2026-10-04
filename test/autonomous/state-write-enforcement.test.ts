@@ -102,6 +102,8 @@ function scan(): ScanResult {
     base: PKG,
     rootFile: "src/autonomous/session.ts",
     rootName: "writeSessionSync",
+    // S9: the durable writer performs its own write, not through writeSessionSync.
+    extraRootNames: ["writeSessionDurableSync"],
     lockName: "withSessionLock",
     registry: {
       catches: STATE_WRITE_CATCHES,

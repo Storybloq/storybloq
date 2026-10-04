@@ -27,6 +27,7 @@ import {
   effectiveMergeDriver,
   mergeDriverRegistration,
   raiseTeamFence,
+  registeredMergeDriverCommand,
   resolutionWritesReadiness,
   rulingLifecycleReadiness,
   teamSetup,
@@ -382,6 +383,15 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
     expect(await fenceAfter("1.17.2", "1.4.4", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.17.0", outcomes: [["1.16.0", "raised"], ["1.17.0", "raised"]] });
     expect(await fenceAfter("1.15.9", "1.4.4", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.4.4", outcomes: [["1.16.0", "deferred"], ["1.17.0", "deferred"]] });
     expect(await fenceAfter("1.17.2", "1.17.0", ["1.16.0", "1.17.0"])).toEqual({ fence: "1.17.0", outcomes: [["1.16.0", "already"], ["1.17.0", "already"]] });
+    // The fence never skips a capability: once one minimum is deferred, a later one this CLI passes is deferred too.
+    expect(await fenceAfter("1.16.5", "1.4.4", ["1.17.0", "1.16.0"])).toEqual({ fence: "1.4.4", outcomes: [["1.17.0", "deferred"], ["1.16.0", "deferred"]] });
+  });
+
+  it("R6: a git failure reading a registration is reported as git, not as an absent registration", async () => {
+    const { repo } = await teamProject();
+    writeFileSync(join(repo, ".git", "config"), readFileSync(join(repo, ".git", "config"), "utf-8") + "\n[broken\n");
+    const read = registeredMergeDriverCommand(repo, MERGE_DRIVER_V5_NAME);
+    expect(read.kind).toBe("git");
   });
 
   it("F4: a CLI below the board's fence is refused by the lock before it raises anything", async () => {

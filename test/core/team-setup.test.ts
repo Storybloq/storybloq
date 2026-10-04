@@ -356,9 +356,13 @@ describe("T-522 commit 3 (byte-review round 2): the fence is SemVer-aware and th
   });
 
   it("the file setup itself writes is active", async () => {
-    const storyDir = createStoryDir(createTempGitRepo());
+    const root = createTempGitRepo();
+    const storyDir = createStoryDir(root);
     await writeGitattributes(storyDir);
-    expect(rulingLifecycleReadiness(storyDir, "1.16.0")).toEqual({ fenceOk: true, attributeOk: true });
+    // T-486 A2: the attribute counts only beside the registration setup also writes.
+    expect(rulingLifecycleReadiness(storyDir, "1.16.0")).toMatchObject({ fenceOk: true, attributeOk: true, registration: { ok: false, reason: "unregistered" } });
+    await installMergeDriver(root);
+    expect(rulingLifecycleReadiness(storyDir, "1.16.0")).toEqual({ fenceOk: true, attributeOk: true, registration: { ok: true, name: MERGE_DRIVER_NAME, protocol: null } });
   });
 });
 

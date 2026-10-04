@@ -342,6 +342,10 @@ describe("T-522 commit 3: team doctor advises on the 1.16 rulings gaps", () => {
     }
     writeFileSync(join(root, ".story", ".gitattributes"), "# storybloq-merge-begin\nrulings/*.json merge=storybloq-json\n# storybloq-merge-end\n");
     const ok = state({ config: { ...teamConfig, team: { enabled: true, minCliVersion: "1.16.0" } } as Config });
+    // T-486 A2: the attribute counts only beside the registration setup also writes.
+    expect((await checkRulingLifecycleReadiness(ok, teamCtx({ root, cliVersion: "1.16.0" }))).map((f) => f.code)).toEqual(["ruling_merge_driver_registration"]);
+    const { installMergeDriver } = await import("../../src/core/team-setup.js");
+    await installMergeDriver(root);
     expect(await checkRulingLifecycleReadiness(ok, teamCtx({ root, cliVersion: "1.16.0" }))).toEqual([]);
   });
 

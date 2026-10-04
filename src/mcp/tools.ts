@@ -94,6 +94,7 @@ import {
 } from "../models/types.js";
 import type { CommandContext, CommandResult } from "../cli/types.js";
 import {
+  ISSUE_DISPOSITIONS,
   IssueDedupeKeySchema,
   IssueSourceRefInputSchema,
 } from "../models/issue.js";
@@ -1146,6 +1147,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
       resolutionKind: z.enum(ISSUE_RESOLUTION_KINDS).optional().describe("Why the issue was closed; needs a resolved issue with a resolution"),
       duplicateOf: z.string().optional().describe("Ticket or issue this one duplicates"),
+      disposition: z.enum(ISSUE_DISPOSITIONS).nullable().optional().describe("Why this issue is not work; needs dispositionReason and dispositionRef. null clears all three"),
+      dispositionReason: z.string().optional().describe("Why the disposition holds"),
+      dispositionRef: z.string().optional().describe("Where it was decided: an item id, git sha or https URL"),
       node: nodeParam,
     },
   }, async (args) => {
@@ -1172,6 +1176,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           clearCitesRulings: args.clearCitesRulings,
           resolutionKind: args.resolutionKind,
           duplicateOf: args.duplicateOf,
+          disposition: args.disposition,
+          dispositionReason: args.dispositionReason,
+          dispositionRef: args.dispositionRef,
         },
         format,
         root,

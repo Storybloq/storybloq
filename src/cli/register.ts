@@ -2041,7 +2041,24 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Ticket or issue this one duplicates",
                 })
+                .option("disposition", {
+                  type: "string",
+                  describe: "Why this issue is not work; needs --reason and --ref",
+                })
+                .option("reason", {
+                  type: "string",
+                  describe: "Why the disposition holds",
+                })
+                .option("ref", {
+                  type: "string",
+                  describe: "Where it was decided: an item id, git sha or https URL",
+                })
+                .option("clear-disposition", {
+                  type: "boolean",
+                  describe: "Remove the disposition, its reason and ref",
+                })
                 .conflicts("impact", "stdin")
+                .conflicts("disposition", "clear-disposition")
                 .conflicts("cites-ruling", "clear-cites-rulings"),
               {
                 components: { ...SPLIT_LIST, describe: "Affected components" },
@@ -2102,6 +2119,9 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
                   resolutionKind: argv["resolution-kind"] as string | undefined,
                   duplicateOf: argv["duplicate-of"] as string | undefined,
+                  disposition: argv["clear-disposition"] ? null : (argv.disposition as string | undefined),
+                  dispositionReason: argv.reason as string | undefined,
+                  dispositionRef: argv.ref as string | undefined,
                 },
                 format,
                 root,

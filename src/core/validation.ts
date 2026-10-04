@@ -10,7 +10,8 @@ import type { Ruling } from "../models/ruling.js";
 import type { RulingScanCompleteness } from "./ruling-loader.js";
 import { buildSuccessorIndex, buildCitationResolutionContext, lifecycleMapFor, resolveCitation, type UpwardBoard } from "./ruling.js";
 import { classifyLifecycle, isEffectivelyAccepted } from "./ruling-lifecycle.js";
-import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, resolutionKindView } from "./resolution-kind.js";
+import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, dispositionRefForm, effectiveResolutionKind, resolutionKindView } from "./resolution-kind.js";
+import { RULING_CANONICAL_ID_REGEX } from "../models/types.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
 
@@ -498,6 +499,43 @@ export function validateProject(
         message: `Issue ${displayIdOf(i)} has dispositionReason, dispositionRef or dispositionFor values that do not form valid evidence. They are ignored.`,
         entity: i.id,
       });
+    } else if (evidence.state === "effective" && evidence.ref !== null) {
+      const unresolved = unresolvedDispositionRef(state, evidence.ref, aux.rulings);
+      if (unresolved !== null) {
+        findings.push({
+          level: "warning",
+          code: "disposition_ref_unresolved",
+          message: `Issue ${displayIdOf(i)} has a disposition ref "${evidence.ref}" that ${unresolved}.`,
+          entity: i.id,
+        });
+      }
+    }
+    // T-486 5b (assigned to U1-5 by pen ruling): duplicateOf integrity.
+    const duplicateOf = typeof rec.duplicateOf === "string" && rec.duplicateOf !== "" ? rec.duplicateOf : null;
+    if (duplicateOf === null && (rec.disposition === "duplicate" || effectiveResolutionKind(rec) === "duplicate")) {
+      findings.push({
+        level: "warning",
+        code: "duplicate_without_target",
+        message: `Issue ${displayIdOf(i)} is marked a duplicate but has no duplicateOf naming what it duplicates.`,
+        entity: i.id,
+      });
+    } else if (duplicateOf !== null) {
+      const target = duplicateTargetProblem(state, duplicateOf, i.id);
+      if (target === "self") {
+        findings.push({
+          level: "warning",
+          code: "duplicate_of_self",
+          message: `Issue ${displayIdOf(i)} has duplicateOf naming the issue itself.`,
+          entity: i.id,
+        });
+      } else if (target !== null) {
+        findings.push({
+          level: "warning",
+          code: "duplicate_of_dangling",
+          message: `Issue ${displayIdOf(i)} has duplicateOf "${duplicateOf}" that ${target}.`,
+          entity: i.id,
+        });
+      }
     }
     for (const key of RESERVED_RESPONSE_KEYS) {
       if (Object.prototype.hasOwnProperty.call(rec, key)) {
@@ -659,6 +697,42 @@ export function validateProject(
  * Merges LoadResult.warnings into a ValidationResult.
  * parse_error/schema_error → error level. naming_convention → info level.
  */
+/**
+ * T-486 5b: why `duplicateOf` does not name another live ticket or issue
+ * ("self", or a reason clause), or null when it does. Mirrors the setter.
+ */
+function duplicateTargetProblem(state: ProjectState, ref: string, selfId: string): string | null {
+  const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref)];
+  if (results.some((r) => r.kind === "ambiguous")) return "is ambiguous";
+  const found = results.flatMap((r) => (r.kind === "found" ? [r.item] : []));
+  if (found.length === 0) return "names no ticket or issue";
+  if (found.length > 1) return "is ambiguous";
+  if ((found[0] as { lifecycle?: unknown }).lifecycle === "deleted") return "names a deleted item";
+  return found[0]!.id === selfId ? "self" : null;
+}
+
+/**
+ * T-486 5b: why an effective disposition ref does not resolve, or null when
+ * it does. A ruling id is checked only when the caller loaded the rulings.
+ */
+function unresolvedDispositionRef(state: ProjectState, ref: string, rulings: readonly Ruling[] | undefined): string | null {
+  const form = dispositionRefForm(ref);
+  if (form === "sha" || form === "url") return null;
+  if (form === "bad-url") return "is not a valid https URL";
+  const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref), state.resolveNoteRef(ref), state.resolveLessonRef(ref)];
+  if (results.some((r) => r.kind === "ambiguous")) return "is ambiguous";
+  const found: Array<{ id: string; lifecycle?: unknown }> = results.flatMap((r) => (r.kind === "found" ? [r.item] : []));
+  if (RULING_CANONICAL_ID_REGEX.test(ref)) {
+    // Rulings not loaded: a ruling-shaped ref cannot be checked here.
+    if (rulings === undefined) return null;
+    found.push(...rulings.filter((r) => r.id === ref));
+  }
+  if (found.length === 0) return "names no ticket, issue, note, lesson or ruling, and is not a git sha or an https URL";
+  if (found.length > 1) return "is ambiguous";
+  if (found[0]!.lifecycle === "deleted") return "names a deleted item";
+  return null;
+}
+
 export function mergeValidation(
   result: ValidationResult,
   loaderWarnings: readonly LoadWarning[],

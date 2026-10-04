@@ -18,11 +18,11 @@ import {
 } from "../../core/project-loader.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
-import { ISSUE_RESOLUTION_KINDS, effectiveResolutionKind, issueJsonBody, resolutionDigest, type IssueResolutionKind } from "../../core/resolution-kind.js";
+import { ISSUE_RESOLUTION_KINDS, dispositionRefForm, effectiveResolutionKind, issueJsonBody, resolutionDigest, type IssueResolutionKind } from "../../core/resolution-kind.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
-import { loadCitationContext } from "../../core/ruling-loader.js";
+import { loadCitationContext, loadRulingsSafe } from "../../core/ruling-loader.js";
 import { computeTargetedActionability } from "../../core/classification-context.js";
 import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
 import {
@@ -473,6 +473,10 @@ export async function handleIssueUpdate(
     clearCitesRulings?: boolean;
     resolutionKind?: string;
     duplicateOf?: string;
+    /** A disposition value, or null to clear it with its evidence. */
+    disposition?: string | null;
+    dispositionReason?: string;
+    dispositionRef?: string;
   },
   format: string,
   root: string,
@@ -481,8 +485,9 @@ export async function handleIssueUpdate(
   assertUpdateHasFields(
     updates,
     "issue",
-    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings, resolutionKind, duplicateOf",
+    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings, resolutionKind, duplicateOf, disposition, dispositionReason, dispositionRef",
   );
+  assertDispositionInput(updates);
   if (updates.resolutionKind !== undefined && !(ISSUE_RESOLUTION_KINDS as readonly string[]).includes(updates.resolutionKind)) {
     throw new CliValidationError(
       "invalid_input",
@@ -581,6 +586,7 @@ export async function handleIssueUpdate(
       issue = { ...issue, duplicateOf: resolveDuplicateTarget(state, updates.duplicateOf, existing.id) };
     }
     issue = applyResolutionKind(issue, existing, updates.resolutionKind as IssueResolutionKind | undefined, state);
+    issue = applyDisposition(issue, updates, state, root);
 
     if (opts?.clearEarmarkForSession) {
       const { item: next } = clearSameSessionEarmark(issue, opts.clearEarmarkForSession);
@@ -619,6 +625,92 @@ function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string
   if (isDeleted(target)) throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is deleted`);
   if (target.id === selfId) throw new CliValidationError("invalid_input", "--duplicate-of cannot name the issue itself");
   return target.id;
+}
+
+/**
+ * T-486 4 (R2-12): a disposition is written with its reason and ref, never
+ * alone, and clearing takes the evidence with it. Checked before the lock so
+ * a refused input writes nothing.
+ */
+function assertDispositionInput(updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string }): void {
+  const { disposition, dispositionReason: reason, dispositionRef: ref } = updates;
+  if (disposition === undefined) {
+    if (reason !== undefined || ref !== undefined) {
+      throw new CliValidationError("invalid_input", "--reason and --ref are written with --disposition; pass the disposition too");
+    }
+    return;
+  }
+  if (disposition === null) {
+    if (reason !== undefined || ref !== undefined) {
+      throw new CliValidationError("invalid_input", "--clear-disposition removes the reason and ref; do not pass --reason or --ref with it");
+    }
+    return;
+  }
+  if (!(ISSUE_DISPOSITIONS as readonly string[]).includes(disposition)) {
+    throw new CliValidationError("invalid_input", `Unknown disposition "${disposition}": must be one of ${ISSUE_DISPOSITIONS.join(", ")}`);
+  }
+  const missing = [reason === undefined || reason.trim() === "" ? "--reason" : null, ref === undefined || ref.trim() === "" ? "--ref" : null].filter(Boolean);
+  if (missing.length > 0) {
+    throw new CliValidationError("invalid_input", `--disposition ${disposition} needs ${missing.join(" and ")}: a disposition is recorded with why and where it was decided`);
+  }
+}
+
+/**
+ * T-486 4: sets or clears the disposition. A set writes the evidence bound to
+ * it (`dispositionFor`); a clear deletes all four keys, and `duplicateOf`
+ * too unless the issue is resolved as a duplicate.
+ */
+function applyDisposition(
+  issue: Issue,
+  updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string; duplicateOf?: string },
+  state: ProjectState,
+  root: string,
+): Issue {
+  if (updates.disposition === undefined) return issue;
+  const { disposition: _d, dispositionReason: _r, dispositionRef: _f, dispositionFor: _b, ...rest } = issue as Issue & Record<string, unknown>;
+  if (updates.disposition === null) {
+    if (effectiveResolutionKind(issue as unknown as Record<string, unknown>) === "duplicate") return rest as Issue;
+    if (updates.duplicateOf !== undefined) {
+      throw new CliValidationError("invalid_input", "--clear-disposition removes duplicateOf unless the issue is resolved as a duplicate; do not pass --duplicate-of with it");
+    }
+    const { duplicateOf: _dup, ...cleared } = rest as Record<string, unknown>;
+    return cleared as Issue;
+  }
+  const disposition = updates.disposition as IssueDisposition;
+  if (disposition === "duplicate") {
+    if (!issue.duplicateOf) throw new CliValidationError("invalid_input", "--disposition duplicate needs --duplicate-of");
+    resolveDuplicateTarget(state, issue.duplicateOf, issue.id);
+  }
+  return {
+    ...rest,
+    disposition,
+    dispositionReason: updates.dispositionReason!,
+    dispositionRef: resolveDispositionRef(state, root, updates.dispositionRef!.trim()),
+    dispositionFor: disposition,
+  } as Issue;
+}
+
+/**
+ * T-486 R2-12: a ref names a ticket, issue, note, lesson or ruling that
+ * exists and is not deleted, and the canonical id is stored. A git sha (7 to
+ * 40 hex characters) or an https URL is checked by its syntax only.
+ */
+function resolveDispositionRef(state: ProjectState, root: string, ref: string): string {
+  const form = dispositionRefForm(ref);
+  if (form === "sha" || form === "url") return ref;
+  if (form === "bad-url") throw new CliValidationError("invalid_input", `--ref ${ref} is not a valid https URL`);
+  const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref), state.resolveNoteRef(ref), state.resolveLessonRef(ref)];
+  if (results.some((r) => r.kind === "ambiguous")) {
+    throw new CliValidationError("invalid_input", `--ref ${ref} is ambiguous; use the canonical id`);
+  }
+  const found: Array<{ id: string; lifecycle?: unknown }> = results.flatMap((r) => (r.kind === "found" ? [r.item] : []));
+  found.push(...loadRulingsSafe(root).rulings.filter((r) => r.id === ref));
+  if (found.length === 0) {
+    throw new CliValidationError("not_found", `--ref ${ref} names no ticket, issue, note, lesson or ruling, and is not a git sha or an https URL`);
+  }
+  if (found.length > 1) throw new CliValidationError("invalid_input", `--ref ${ref} is ambiguous; use the canonical id`);
+  if (isDeleted(found[0]!)) throw new CliValidationError("invalid_input", `--ref ${ref} is deleted`);
+  return found[0]!.id;
 }
 
 /**

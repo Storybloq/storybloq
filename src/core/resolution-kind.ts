@@ -112,6 +112,25 @@ export function effectiveResolutionKind(issue: Loose): IssueResolutionKind | nul
 
 const EVIDENCE_KEYS = ["dispositionReason", "dispositionRef", "dispositionFor"] as const;
 
+const GIT_SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * T-486 R2-12: how a disposition ref is checked. A git sha (7 to 40 hex
+ * characters) or an https URL is judged by its syntax alone ("sha", "url",
+ * or "bad-url" for an https string that does not parse); anything else
+ * ("item") must name a ticket, issue, note, lesson or ruling.
+ */
+export function dispositionRefForm(ref: string): "sha" | "url" | "bad-url" | "item" {
+  if (GIT_SHA.test(ref)) return "sha";
+  if (!ref.startsWith("https://")) return "item";
+  try {
+    new URL(ref);
+    return "url";
+  } catch {
+    return "bad-url";
+  }
+}
+
 export function dispositionEvidenceView(issue: Loose): DispositionEvidenceView {
   const present = EVIDENCE_KEYS.some((k) => Object.prototype.hasOwnProperty.call(issue, k));
   if (!present) return { reason: null, ref: null, state: "absent" };

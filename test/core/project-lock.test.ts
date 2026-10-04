@@ -776,9 +776,13 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
 
     let firstEpisode: string | undefined;
     let secondEpisode: string | undefined;
+    await mkdir(join(wrapDir, "notes"), { recursive: true });
     await withProjectLock(testRoot, { strict: false }, async () => {
-      firstEpisode = await forceFailureAndCaptureEpisode(join(wrapDir, "tickets", "T-010.json"), JSON.stringify(ticket("T-010")));
-      secondEpisode = await forceFailureAndCaptureEpisode(join(wrapDir, "tickets", "T-011.json"), JSON.stringify(ticket("T-011")));
+      // T-486 U2: notes, not tickets: a ticket write's own commit check
+      // refuses a lost lock before anything is journaled, and the journal is
+      // what this test reads.
+      firstEpisode = await forceFailureAndCaptureEpisode(join(wrapDir, "notes", "N-010.json"), "{}\n");
+      secondEpisode = await forceFailureAndCaptureEpisode(join(wrapDir, "notes", "N-011.json"), "{}\n");
     });
 
     expect(firstEpisode).toBeTruthy();
@@ -849,8 +853,11 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
   it("treats fence loss at journal removal as success and leaves an idempotent recovery journal", async () => {
     testRoot = await createProject();
     const wrapDir = join(testRoot, ".story");
-    const target = join(wrapDir, "tickets", "T-024.json");
-    const content = JSON.stringify(ticket("T-024"));
+    // T-486 U2: a note, so the fencing calls counted are the transaction's
+    // own (a ticket write adds the resolution context's ownership checks).
+    const target = join(wrapDir, "notes", "N-024.json");
+    const content = "{}\n";
+    await mkdir(join(wrapDir, "notes"), { recursive: true });
 
     await withProjectLock(testRoot, { strict: false }, async () => {
       fencingOverride.calls = 0;
@@ -912,19 +919,64 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
   // (module-mocked verifyProjectLockOwnership) fails the NEXT fencing check
   // from inside the call site's own lock hold instead. ----
 
+  // T-486 U2: a ticket write checks lock ownership in its resolution context
+  // (prepare and commit) before atomicWrite's fencing does, so the routing
+  // tests count the checks a passing write makes and fail only the last one,
+  // which is the fencing check, and pin its message.
+  async function fencingChecksOf(run: () => Promise<void>): Promise<number> {
+    fencingOverride.calls = 0;
+    await run();
+    return fencingOverride.calls;
+  }
+
   it("real call site: writeTicket aborts on ownership loss (fencingOverride drives atomicWrite's routing)", async () => {
     testRoot = await createProject();
-    fencingOverride.failNextN = 1;
-    await expect(writeTicket(ticket("T-050"), testRoot)).rejects.toThrow(ProjectLoaderError);
+    const checks = await fencingChecksOf(() => writeTicket(ticket("T-049") as never, testRoot));
+    fencingOverride.calls = 0;
+    fencingOverride.failAfterCalls = checks - 1;
+    try {
+      await expect(writeTicket(ticket("T-050"), testRoot)).rejects.toThrow(/Lock ownership lost before commit/);
+    } finally {
+      fencingOverride.failAfterCalls = null;
+    }
     expect(existsSync(join(testRoot, ".story", "tickets", "T-050.json"))).toBe(false);
+  });
+
+  it("T-486 U2: a ticket write under a lost lock is refused by its resolution context first", async () => {
+    testRoot = await createProject();
+    fencingOverride.failNextN = 1;
+    await expect(writeTicket(ticket("T-048") as never, testRoot)).rejects.toThrow(
+      "the project lock this write context belongs to no longer owns .story/.lock; resolution-metadata writes need the project lock's own write context",
+    );
+    expect(existsSync(join(testRoot, ".story", "tickets", "T-048.json"))).toBe(false);
+  });
+
+  it("T-486 U2: a lock lost between a ticket's prepare and its commit is refused by the commit check, before fencing", async () => {
+    testRoot = await createProject();
+    // The last check is atomicWrite's fencing; the one before it is the
+    // commit check's ownership verdict.
+    const checks = await fencingChecksOf(() => writeTicket(ticket("T-047") as never, testRoot));
+    fencingOverride.calls = 0;
+    fencingOverride.failAfterCalls = checks - 2;
+    try {
+      await expect(writeTicket(ticket("T-046") as never, testRoot)).rejects.toThrow(/the lock it was prepared under was released or no longer owns \.story\/\.lock; prepare it again/);
+    } finally {
+      fencingOverride.failAfterCalls = null;
+    }
+    expect(existsSync(join(testRoot, ".story", "tickets", "T-046.json"))).toBe(false);
   });
 
   it("real call site: ticket creation with createOnly aborts on ownership loss (fencingOverride drives atomicCreate's routing)", async () => {
     testRoot = await createProject();
-    const err = await forceOwnershipLossDuring(testRoot, () =>
-      writeTicketUnlocked(ticket("T-051"), testRoot, { createOnly: true }),
-    );
-    expect(err).toBeInstanceOf(ProjectLoaderError);
+    const create = (id: string) => withProjectLock(testRoot, { strict: false }, () => writeTicketUnlocked(ticket(id), testRoot, { createOnly: true }));
+    const checks = await fencingChecksOf(() => create("T-053"));
+    fencingOverride.calls = 0;
+    fencingOverride.failAfterCalls = checks - 1;
+    try {
+      await expect(create("T-051")).rejects.toThrow(/Lock ownership lost before commit/);
+    } finally {
+      fencingOverride.failAfterCalls = null;
+    }
     expect(existsSync(join(testRoot, ".story", "tickets", "T-051.json"))).toBe(false);
   });
 

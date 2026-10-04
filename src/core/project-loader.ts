@@ -44,7 +44,7 @@ import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabiliti
 import { validateProject } from "./validation.js";
 import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
-import { assertResolutionMetadataWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
+import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
 import type { ZodType } from "zod";
 
 // --- Public Types ---
@@ -304,11 +304,15 @@ export async function loadProject(
  * being replaced and refuses a checkpoint or evidence change the caller holds
  * no authority for (core/checkpoint-guard.ts). The caller holds the project
  * lock, so what it reads is what the write replaces.
+ *
+ * T-486 U2: also the withdrawal write boundary (core/resolution-write-guard.ts,
+ * `assertTicketResolutionWrite`), on the same prior record and the lock
+ * holder's context, with a token recorded for exactly the bytes returned.
  */
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
-  options?: { authority?: CheckpointWriteAuthority },
+  options?: { authority?: CheckpointWriteAuthority; resolutionContext?: ResolutionWriteContext },
 ): Promise<{ target: string; content: string }> {
   const parsed = TicketSchema.parse(ticket);
   if (!TICKET_ID_REGEX.test(parsed.id) && !TICKET_CANONICAL_ID_REGEX.test(parsed.id)) {
@@ -320,10 +324,20 @@ export async function prepareTicketWrite(
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "tickets", `${parsed.id}.json`);
   await guardPath(target, wrapDir);
-  const prior = priorForGuard(await readIfExists(target), `tickets/${parsed.id}.json`);
+  const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${parsed.id}.json`);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
-  return { target, content: serializeJSON(parsed) };
+  // As for issues (Codex F1): nothing awaits between obtaining the context
+  // and the decision.
+  const ctx = heldResolutionContext(root, options?.resolutionContext);
+  const content = serializeJSON(parsed);
+  ctx.recordPrepared(target, content, assertTicketResolutionWrite(ctx, `.story/tickets/${parsed.id}.json`, prior ?? {}, parsed));
+  return { target, content };
 }
+
+/** Test seam: how `prepareTicketWrite` reads the record a write replaces. */
+export const prepareTicketWriteSeams: { readPrior: (path: string) => Promise<string | null> } = {
+  readPrior: (path) => readIfExists(path),
+};
 
 /** Test seam (T-486 Codex F1): how `prepareIssueWrite` reads the record a write replaces. */
 export const prepareIssueWriteSeams: { readPrior: (path: string) => Promise<string | null> } = {
@@ -345,6 +359,7 @@ export async function writeTicketUnlocked(
   options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority },
 ): Promise<void> {
   const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
+  assertPreparedWritesCurrent(root, [{ target, content }]);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -425,6 +440,26 @@ export function authoriseIssueBytes(
 }
 
 /**
+ * T-486 U2: the ticket counterpart of `authoriseIssueBytes`, for the same
+ * writers (reconcile, repair, ledger restore, the tombstone): the withdrawal
+ * check against the record these bytes replace, and a token for exactly them.
+ */
+export function authoriseTicketBytes(
+  root: string,
+  target: string,
+  prior: Readonly<Record<string, unknown>> | "unknown",
+  content: string,
+): void {
+  const record = priorRecord(content);
+  if (record === "unknown") {
+    throw new ProjectLoaderError("invalid_input", `Refusing the write to ${relative(resolve(root), resolve(target))}: its bytes are not a JSON object`);
+  }
+  const ctx = heldResolutionContext(root, undefined);
+  const rel = relative(resolve(root), resolve(target)).split(sep).join("/");
+  ctx.recordPrepared(target, content, assertTicketResolutionWrite(ctx, rel, prior, record));
+}
+
+/**
  * T-486 Codex F2: issue bytes commit only under a current token. Called at
  * every commit of issue bytes (writeIssueUnlocked, runTransactionUnlocked,
  * ledger restore), before anything is journaled or written. The bytes must be
@@ -447,7 +482,7 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
       ? "it was checked against config or git state that changed before it was committed"
       : verdict === "changed"
         ? "the bytes being committed are not the bytes that were prepared for it"
-        : "nothing prepared it under this lock (issue writes go through prepareIssueWrite)";
+        : "nothing prepared it under this lock (ticket and issue writes go through prepareTicketWrite and prepareIssueWrite)";
     throw new ProjectLoaderError("conflict", `Refusing the write to ${relative(absRoot, resolve(target))}: ${why}; prepare it again`);
   }
 }
@@ -713,10 +748,16 @@ export async function deleteTicket(
       if (raw.lifecycle === "deleted") {
         return { alreadyDeleted: true };
       }
+      const prior = { ...raw };
       raw.lifecycle = "deleted";
       raw.deletedAt = new Date().toISOString();
       raw.deletedBy = await resolveActor(root, options?.actor);
-      await atomicWrite(targetPath, serializeJSON(raw));
+      // T-486 U2: the ticket tombstone takes the ticket boundary, as the
+      // issue tombstone takes the issue one.
+      const content = serializeJSON(raw);
+      authoriseTicketBytes(root, targetPath, prior, content);
+      assertPreparedWritesCurrent(root, [{ target: targetPath, content }]);
+      await atomicWrite(targetPath, content);
     } else {
       await fencedUnlink(targetPath);
       recordBoardTarget(targetPath, "delete");
@@ -1182,18 +1223,18 @@ export async function runTransactionUnlocked(
   // T-486 A7: each issue's boundary check compared its write against the file
   // on disk, so a batch naming the same issue twice would let the second
   // write skip a check the first one changed the basis of. Refused before
-  // anything is journaled.
-  const issueTargets = new Set<string>();
-  const issuesDir = join(wrapDir, "issues") + sep;
+  // anything is journaled. T-486 U2: tickets carry the same boundary.
+  const guardedTargets = new Set<string>();
+  const guardedDirs = [join(wrapDir, "issues") + sep, join(wrapDir, "tickets") + sep];
   for (const op of operations) {
     const target = resolve(op.target);
-    if (!target.startsWith(issuesDir)) continue;
-    if (issueTargets.has(target)) {
-      throw new ProjectLoaderError("invalid_input", `Transaction names ${relative(wrapDir, target)} more than once; each issue may be written once per transaction`);
+    if (!guardedDirs.some((dir) => target.startsWith(dir))) continue;
+    if (guardedTargets.has(target)) {
+      throw new ProjectLoaderError("invalid_input", `Transaction names ${relative(wrapDir, target)} more than once; each ticket or issue may be written once per transaction`);
     }
-    issueTargets.add(target);
+    guardedTargets.add(target);
   }
-  assertPreparedWritesCurrent(root, operations.flatMap((op) => op.op === "write" && issueTargets.has(resolve(op.target)) ? [{ target: op.target, content: op.content }] : []));
+  assertPreparedWritesCurrent(root, operations.flatMap((op) => op.op === "write" && guardedTargets.has(resolve(op.target)) ? [{ target: op.target, content: op.content }] : []));
 
   try {
     // 1. Build entries

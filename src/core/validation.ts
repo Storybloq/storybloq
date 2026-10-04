@@ -10,7 +10,8 @@ import type { Ruling } from "../models/ruling.js";
 import type { RulingScanCompleteness } from "./ruling-loader.js";
 import { buildSuccessorIndex, buildCitationResolutionContext, lifecycleMapFor, resolveCitation, type UpwardBoard } from "./ruling.js";
 import { classifyLifecycle, isEffectivelyAccepted } from "./ruling-lifecycle.js";
-import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, dispositionRefForm, effectiveResolutionKind, resolutionKindView } from "./resolution-kind.js";
+import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, dispositionRefForm, effectiveResolutionKind, resolutionKindView, ticketResolutionKindView } from "./resolution-kind.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { RULING_CANONICAL_ID_REGEX } from "../models/types.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
@@ -544,6 +545,49 @@ export function validateProject(
           code: "reserved_key_collision",
           message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which collides with a reserved JSON response name. JSON responses return the untouched loaded record (the stored fields plus the loader-derived displayId on a legacy display-id file) under one explicit raw container, "stored", beside the derived "effective".`,
           entity: i.id,
+        });
+      }
+    }
+  }
+
+  // T-486 U2: ticket withdrawals that no longer count, and the reserved
+  // response keys. Readers already ignore them; this says why.
+  for (const t of state.tickets) {
+    if ((t as Record<string, unknown>).lifecycle === "deleted") continue;
+    const rec = t as Record<string, unknown>;
+    const kind = ticketResolutionKindView(rec);
+    if (kind.state === "stale") {
+      const why = hasOwnerCheckpoint(rec)
+        ? "the ticket is an owner checkpoint, which releases by its own resolution"
+        : "its status or completed date changed after it was written, for example by a client that does not know the field";
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_stale",
+        message: `Ticket ${displayIdOf(t)} has a withdrawal that no longer matches its completion: ${why}. It is ignored.`,
+        entity: t.id,
+      });
+    } else if (kind.state === "malformed") {
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_malformed",
+        message: `Ticket ${displayIdOf(t)} has a resolutionKind value that is not a valid withdrawal record. It is ignored.`,
+        entity: t.id,
+      });
+    } else if (kind.state === "wrong-entity") {
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_wrong_entity",
+        message: `Ticket ${displayIdOf(t)} carries the issue-only resolution kind "${String((rec.resolutionKind as Record<string, unknown>).kind)}". It is ignored.`,
+        entity: t.id,
+      });
+    }
+    for (const key of RESERVED_RESPONSE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(rec, key)) {
+        findings.push({
+          level: "warning",
+          code: "reserved_key_collision",
+          message: `Ticket ${displayIdOf(t)} stores a custom "${key}" key, which collides with a reserved JSON response name.`,
+          entity: t.id,
         });
       }
     }

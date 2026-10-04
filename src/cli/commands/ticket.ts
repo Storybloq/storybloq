@@ -91,6 +91,10 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   // T-537: protected; written only by the checkpoint lifecycle and evidence writers.
   "ownerCheckpoint",
   "checkpointEvidence",
+  // T-486 U2: the withdrawal kind, and the response keys the JSON surfaces derive.
+  "resolutionKind",
+  "effective",
+  "stored",
 ]);
 
 // --- Read Handlers ---

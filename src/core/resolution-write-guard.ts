@@ -37,10 +37,14 @@ import type { Config } from "../models/config.js";
 import { ProjectLoaderError } from "./errors.js";
 import {
   DispositionEvidenceShape,
+  ISSUE_RESOLUTION_KINDS,
   IssueResolutionKindShape,
+  TicketResolutionKindShape,
   resolutionDigest,
   resolutionKindView,
+  ticketResolutionKindView,
 } from "./resolution-kind.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { RESOLUTION_KIND_MIN_CLI_VERSION, isTeamModeConfig } from "./team-capabilities.js";
 import { gitRead, resolutionWritesReadiness, type GitRead } from "./team-setup.js";
 
@@ -284,4 +288,49 @@ export function assertResolutionMetadataWrite(
     throw new ProjectLoaderError("conflict", `Refusing the write to ${relPath}: ${gaps.join("; ")}.${setup}`);
   }
   return boardDependent;
+}
+
+/** The refusal every newly effective withdrawal gets until the setter slice (U2-6) ships. */
+export const TICKET_WITHDRAWAL_DISABLED = "ticket withdrawal is not enabled in this build";
+
+/**
+ * T-486 U2 section 2: the ticket counterpart, for the withdrawal kind. Same
+ * context rules as the issue boundary. Removal, preserved metadata and a
+ * deactivation pass; an added or changed slot must be a valid withdrawal
+ * bound to the proposed completion on a ticket that is not an owner
+ * checkpoint; and any write that makes a withdrawal effective is refused in
+ * this build, whatever the writer. Returns whether the decision read board
+ * state (never, until the setter slice adds readiness).
+ */
+export function assertTicketResolutionWrite(
+  ctx: ResolutionWriteContext,
+  relPath: string,
+  prior: Loose | "unknown",
+  proposed: Loose,
+): boolean {
+  if (ctx.released) throw new ResolutionWriteContextError("the write context belongs to a lock that was released");
+  if (!ctx.ownsLock()) throw new ResolutionWriteContextError("the project lock this write context belongs to no longer owns .story/.lock");
+  if (!has(proposed, "resolutionKind")) return false;
+  const rawChanged = prior === "unknown" || !slotEqual(prior, proposed, ["resolutionKind"]);
+  const gaps: string[] = [];
+  if (rawChanged) {
+    const raw = proposed.resolutionKind;
+    const shape = TicketResolutionKindShape.safeParse(raw);
+    const rawKind = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Loose).kind : undefined;
+    if (typeof rawKind === "string" && (ISSUE_RESOLUTION_KINDS as readonly string[]).includes(rawKind)) {
+      gaps.push(`resolutionKind.kind "${rawKind}" is an issue kind; a ticket can only be withdrawn`);
+    } else if (!shape.success) {
+      gaps.push(`resolutionKind is not a valid withdrawal (${shape.error.issues.map((i) => `${["resolutionKind", ...i.path].join(".")}: ${i.message}`).join("; ")})`);
+    } else {
+      if (proposed.status !== "complete") gaps.push(`resolutionKind is written on a ticket whose status is ${String(proposed.status)}, not complete`);
+      else if (shape.data.closedOn !== proposed.completedDate) gaps.push(`resolutionKind.closedOn ${shape.data.closedOn} is not the completedDate ${String(proposed.completedDate ?? "unset")}`);
+      if (hasOwnerCheckpoint(proposed)) gaps.push("resolutionKind is written on an owner checkpoint, which releases by its own resolution");
+    }
+  }
+  if (gaps.length === 0) {
+    const before = prior === "unknown" ? null : ticketResolutionKindView(prior).state;
+    if (ticketResolutionKindView(proposed).state === "effective" && before !== "effective") gaps.push(TICKET_WITHDRAWAL_DISABLED);
+  }
+  if (gaps.length > 0) throw new ProjectLoaderError("conflict", `Refusing the write to ${relPath}: ${gaps.join("; ")}.`);
+  return false;
 }

@@ -63,6 +63,9 @@ export const TicketSchema = z
     // JSON null counts as present, not absent.
     ownerCheckpoint: z.unknown().optional(),
     checkpointEvidence: z.unknown().optional(),
+    // T-486 U2: why a complete ticket was not delivered. Any value loads, as
+    // on issues; core/resolution-kind.ts reads it through its view only.
+    resolutionKind: z.unknown().optional(),
   })
   .passthrough();
 

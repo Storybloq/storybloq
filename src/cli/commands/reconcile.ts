@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { computeReconcilePlan, computeRebalancePlan, type EntityType, type ReconcileContext, type ReconcileRename } from "../../core/reconcile.js";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { formatReconcileResult, ExitCode, successEnvelope, type ExitCodeValue } from "../../core/output-formatter.js";
-import { authoriseIssueBytes, withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
+import { authoriseIssueBytes, authoriseTicketBytes, withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
 import { nextNoteID, allocateTeamNoteId, NOTE_NUMERIC_REGEX } from "../../core/id-allocation.js";
 import { listReservations } from "../../core/remote-refs.js";
 import { ENABLE_GIT_REFS_REMEDY } from "../../core/branch-allocation-warning.js";
@@ -140,7 +140,9 @@ async function applyChanges(
     const content = JSON.stringify(entity, null, 2) + "\n";
     // T-486 Codex F2: reconcile edits the raw issue JSON outside
     // prepareIssueWrite, so it authorises exactly these bytes itself.
+    // T-486 U2: tickets likewise, through the withdrawal boundary.
     if (dir === "issues") authoriseIssueBytes(root, filePath, prior, content);
+    if (dir === "tickets") authoriseTicketBytes(root, filePath, prior, content);
     operations.push({ op: "write", target: filePath, content });
     handled.add(rename.id);
   }
@@ -156,6 +158,7 @@ async function applyChanges(
     entity.rank = change.newRank;
     const content = JSON.stringify(entity, null, 2) + "\n";
     if (dir === "issues") authoriseIssueBytes(root, filePath, prior, content);
+    if (dir === "tickets") authoriseTicketBytes(root, filePath, prior, content);
     operations.push({ op: "write", target: filePath, content });
   }
 

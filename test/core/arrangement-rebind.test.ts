@@ -468,7 +468,7 @@ describe("rebind: refusals and side effects", () => {
   it("R10: earmarks on a bound ticket and issue are re-pointed to the successor", async () => {
     await coordinated();
     const earmark = { reservedBy: pen, arrangementId: id, since: new Date().toISOString(), stage: "reserved", holderRole: "worker", holderSession: null };
-    await writeTicketUnlocked({ id: "T-001", title: "Carried", description: "", type: "feature", status: "open", phase: null, order: 1, createdDate: "2026-09-10", completedDate: null, blockedBy: [], earmark } as any, root);
+    await withProjectLock(root, { strict: false }, () => writeTicketUnlocked({ id: "T-001", title: "Carried", description: "", type: "feature", status: "open", phase: null, order: 1, createdDate: "2026-09-10", completedDate: null, blockedBy: [], earmark } as any, root));
     await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ id: "ISS-001", title: "Carried issue", status: "open", severity: "low", components: [], impact: "", resolution: null, location: [], discoveredDate: "2026-09-10", resolvedDate: null, relatedTickets: [], updatedAt: "2026-09-10T00:00:00.000Z", earmark } as any, root));
     const result = await rebind();
     const { state } = await loadProject(root);

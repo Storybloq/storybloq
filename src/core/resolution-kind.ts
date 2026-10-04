@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DateSchema } from "../models/types.js";
 import { IssueDispositionSchema } from "../models/issue.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 
 /** Every resolution kind. `withdrawn` is the one ticket kind (T-486 U2). */
 export const RESOLUTION_KINDS = [
@@ -103,6 +104,52 @@ export function resolutionKindView(issue: Loose): ResolutionKindView {
     parsed.data.closedOn === issue.resolvedDate &&
     parsed.data.resolutionDigest === resolutionDigest(resolution);
   return bound ? { kind: parsed.data.kind, state: "effective" } : { kind: null, state: "stale" };
+}
+
+/**
+ * T-486 U2: the one ticket kind. A ticket has no resolution text to digest,
+ * so the binding is the closure date alone: `closedOn` must equal
+ * `completedDate` on a complete ticket that is not an owner checkpoint.
+ */
+export const TicketResolutionKindShape = z
+  .object({
+    kind: z.literal("withdrawn"),
+    closedOn: DateSchema,
+    reason: z.string().min(1),
+  })
+  .passthrough();
+
+export interface TicketResolutionKindView {
+  readonly kind: "withdrawn" | null;
+  readonly reason: string | null;
+  readonly state: ResolutionKindState;
+}
+
+export function ticketResolutionKindView(ticket: Loose): TicketResolutionKindView {
+  if (!Object.prototype.hasOwnProperty.call(ticket, "resolutionKind")) {
+    return { kind: null, reason: null, state: "absent" };
+  }
+  const raw = ticket.resolutionKind;
+  const parsed = TicketResolutionKindShape.safeParse(raw);
+  if (!parsed.success) {
+    const isRecord = typeof raw === "object" && raw !== null && !Array.isArray(raw);
+    const kind = isRecord ? (raw as Loose).kind : undefined;
+    const wrongEntity = typeof kind === "string" && (ISSUE_RESOLUTION_KINDS as readonly string[]).includes(kind);
+    return { kind: null, reason: null, state: wrongEntity ? "wrong-entity" : "malformed" };
+  }
+  // An owner checkpoint releases by its own resolution, never by withdrawal.
+  const bound =
+    !hasOwnerCheckpoint(ticket) &&
+    ticket.status === "complete" &&
+    parsed.data.closedOn === ticket.completedDate;
+  return bound
+    ? { kind: "withdrawn", reason: parsed.data.reason, state: "effective" }
+    : { kind: null, reason: null, state: "stale" };
+}
+
+/** True only when the ticket's withdrawal is effective. Behaviour reads this, never the raw key. */
+export function isEffectivelyWithdrawn(ticket: Loose): boolean {
+  return ticketResolutionKindView(ticket).state === "effective";
 }
 
 /** The effective kind, or null. */

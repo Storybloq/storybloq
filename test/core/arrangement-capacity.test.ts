@@ -112,7 +112,7 @@ async function padArrangement(targetBytes: number) {
 /** A ticket earmarked against this arrangement, for the carry-forward. */
 async function earmarkedTicket(): Promise<string> {
   const ticketId = "T-001";
-  await writeTicketUnlocked({
+  await withProjectLock(root, { strict: false }, () => writeTicketUnlocked({
     id: ticketId,
     title: "Carried work",
     description: "Earmarked against the arrangement under test",
@@ -124,7 +124,7 @@ async function earmarkedTicket(): Promise<string> {
     completedDate: null,
     blockedBy: [],
     earmark: { reservedBy: pen, arrangementId: id, since: new Date().toISOString(), stage: "reserved", holderRole: "worker", holderSession: null },
-  } as any, root);
+  } as any, root));
   return ticketId;
 }
 async function ctxFor(format: "json" | "md"): Promise<CommandContext> {
@@ -636,7 +636,7 @@ describe("checkpoint compaction under the arrangement cap", () => {
     // reason, never a fabricated number.
     const { state: projectState } = await loadProject(root);
     const ticket = projectState.tickets.find(t => t.id === ticketId)!;
-    await writeTicketUnlocked({ ...ticket, earmark: { ...ticket.earmark!, arrangementId: "a-ffffffffffffffff" } }, root);
+    await withProjectLock(root, { strict: false }, () => writeTicketUnlocked({ ...ticket, earmark: { ...ticket.earmark!, arrangementId: "a-ffffffffffffffff" } }, root));
     const orphanJson = JSON.parse(handleEarmarkGet(ticketId, await ctxFor("json")).output);
     expect(orphanJson.data.capacity).toBeNull();
     expect(orphanJson.data.capacityReason).toContain("a-ffffffffffffffff");

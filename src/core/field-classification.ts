@@ -48,11 +48,13 @@ const TICKET_RULES: Record<string, MergeRule> = {
 
   // T-537: a checkpoint's record and a dependent's evidence travel with the
   // status they justify, so a divergence never merges one without the other.
-  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
-  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
-  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
-  ownerCheckpoint: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
-  checkpointEvidence: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence"] },
+  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  ownerCheckpoint: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  checkpointEvidence: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  // T-486 U2: a withdrawal binds to the completion it explains.
+  resolutionKind: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
 
   // T-475: earmark is a single self-contained discriminated-union field, so
   // it is hard-conflict rather than "coupled" -- "coupled" groups in this

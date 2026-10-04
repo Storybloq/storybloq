@@ -4,7 +4,7 @@ import type { CommandContext, CommandResult } from "../run.js";
 import { validateProject } from "../../core/validation.js";
 import { INTEGRITY_WARNING_TYPES, type LoadWarning } from "../../core/errors.js";
 import type { ProjectState } from "../../core/project-state.js";
-import { authoriseIssueBytes, serializeJSON, runTransactionUnlocked } from "../../core/project-loader.js";
+import { authoriseIssueBytes, authoriseTicketBytes, serializeJSON, runTransactionUnlocked } from "../../core/project-loader.js";
 import { assertCheckpointWriteAllowed } from "../../core/checkpoint-guard.js";
 import { CANONICAL_ID_REGEX } from "../../core/canonical-id.js";
 import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../../models/types.js";
@@ -272,6 +272,8 @@ export async function applyRepairPatches(root: string, patches: RepairPatch[]): 
     // T-486 Codex F2: likewise for issues, through the resolution-metadata
     // boundary, with a token for exactly these bytes.
     if (group.target.includes(`${sep}issues${sep}`)) authoriseIssueBytes(root, group.target, prior, content);
+    // T-486 U2: and for tickets, through the withdrawal boundary.
+    if (group.target.includes(`${sep}tickets${sep}`)) authoriseTicketBytes(root, group.target, prior, content);
     ops.push({ op: "write", target: group.target, content });
   }
   await runTransactionUnlocked(root, ops);

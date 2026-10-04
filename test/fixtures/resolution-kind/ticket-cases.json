@@ -1,0 +1,539 @@
+[
+  {
+    "name": "effective",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": "withdrawn",
+      "reason": "Superseded by the redesign; no longer needed.",
+      "state": "effective"
+    }
+  },
+  {
+    "name": "absent",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": []
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "reopened open",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "open",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": null,
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "stale"
+    }
+  },
+  {
+    "name": "reopened inprogress",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "inprogress",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": null,
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "stale"
+    }
+  },
+  {
+    "name": "open with a still-matching date",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "open",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "stale"
+    }
+  },
+  {
+    "name": "stale date",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-03-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "stale"
+    }
+  },
+  {
+    "name": "same day re-completion (W5 residual)",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "lastModifiedBy": "an older client",
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": "withdrawn",
+      "reason": "Superseded by the redesign; no longer needed.",
+      "state": "effective"
+    }
+  },
+  {
+    "name": "malformed missing reason",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed empty reason",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": ""
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed bad closedOn",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "Feb 1",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed unknown kind",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "abandoned",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed string",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": "withdrawn"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed array",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": [
+        "withdrawn"
+      ]
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "malformed null",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": null
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "wrong entity fixed",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "wrong-entity"
+    }
+  },
+  {
+    "name": "wrong entity wontfix",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "wrong-entity"
+    }
+  },
+  {
+    "name": "wrong entity duplicate",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "duplicate",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "wrong-entity"
+    }
+  },
+  {
+    "name": "wrong entity superseded",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "superseded",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "wrong-entity"
+    }
+  },
+  {
+    "name": "wrong entity not_reproducible",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "not_reproducible",
+        "closedOn": "2026-02-01",
+        "reason": "x"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "wrong-entity"
+    }
+  },
+  {
+    "name": "owner checkpoint carrying a withdrawal",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "ownerCheckpoint": {
+        "kind": "decision",
+        "owner": "owner",
+        "question": "Ship it?",
+        "evidenceRefs": [],
+        "lifecycle": "active",
+        "revision": 1,
+        "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "generation": 1,
+        "history": [
+          {
+            "event": "created",
+            "kind": "decision",
+            "at": "2026-01-01T00:00:00.000Z",
+            "by": "owner",
+            "generation": 1,
+            "revision": 1,
+            "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "question": "Ship it?",
+            "evidenceRefs": []
+          }
+        ]
+      },
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "reason": null,
+      "state": "stale"
+    }
+  },
+  {
+    "name": "reserved key collision",
+    "ticket": {
+      "id": "T-001",
+      "title": "Synthetic ticket",
+      "description": "",
+      "type": "task",
+      "status": "complete",
+      "phase": null,
+      "order": 10,
+      "createdDate": "2026-01-01",
+      "completedDate": "2026-02-01",
+      "blockedBy": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "reason": "Superseded by the redesign; no longer needed."
+      },
+      "effective": "mine",
+      "stored": {
+        "note": "also mine"
+      }
+    },
+    "expectedKindView": {
+      "kind": "withdrawn",
+      "reason": "Superseded by the redesign; no longer needed.",
+      "state": "effective"
+    }
+  }
+]

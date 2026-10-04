@@ -3206,9 +3206,14 @@ function formatPhaseExport(
   return lines.join("\n");
 }
 
-/** The fields a non-colliding export row keeps: the summary, every T-486 raw key, and `effective`. */
+/**
+ * The fields a non-colliding export row keeps: the summary, every T-486 raw
+ * key, and `effective`. `displayId` comes from the loaded record (stored on a
+ * hash file, derived on a legacy one), so both filename forms give a row a
+ * person can read and match.
+ */
 const EXPORT_ISSUE_KEYS = [
-  "id", "title", "severity", "status",
+  "id", "displayId", "title", "severity", "status",
   "disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf", "resolutionKind",
   "effective",
 ] as const;
@@ -3217,8 +3222,8 @@ const EXPORT_ISSUE_KEYS = [
  * T-486: an export issue row, projected from the one JSON body so export
  * cannot drift from get and list. A non-colliding row keeps only the lean
  * set (the whole record would multiply the export several times over); a
- * row whose stored record uses a reserved name is the collision body
- * itself, the untouched record under `stored` beside `effective`.
+ * row whose record uses a reserved name is the collision body itself, the
+ * untouched loaded record under `stored` beside `effective`.
  */
 function exportIssueRow(issue: Issue): Record<string, unknown> {
   const body = issueJsonBody(issue);

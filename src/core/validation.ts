@@ -504,7 +504,7 @@ export function validateProject(
         findings.push({
           level: "warning",
           code: "reserved_key_collision",
-          message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which collides with a reserved JSON response name. JSON responses return the untouched stored record under one explicit raw container, "stored", beside the derived "effective".`,
+          message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which collides with a reserved JSON response name. JSON responses return the untouched loaded record (the stored fields plus the loader-derived displayId on a legacy display-id file) under one explicit raw container, "stored", beside the derived "effective".`,
           entity: i.id,
         });
       }

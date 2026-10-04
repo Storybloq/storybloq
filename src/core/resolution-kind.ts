@@ -127,9 +127,10 @@ export function dispositionEvidenceView(issue: Loose): DispositionEvidenceView {
 
 /**
  * Keys reserved for JSON output (T-486 A6). `effective` carries the derived
- * views beside the stored record. When a stored record already uses either
- * name, the response returns the untouched record under `stored` instead of
- * spreading it, so no stored value is overwritten or hidden.
+ * views beside the loaded record: the stored fields plus the loader-derived
+ * `displayId` on a legacy display-id file. When a record already uses either
+ * name, the response returns the untouched loaded record under `stored`
+ * instead of spreading it, so no stored value is overwritten or hidden.
  */
 export const RESERVED_RESPONSE_KEYS = ["effective", "stored"] as const;
 
@@ -140,7 +141,7 @@ export interface IssueEffectiveJson {
   readonly dispositionEvidenceState: DispositionEvidenceState;
 }
 
-/** The derived values every JSON surface reports beside the stored record. */
+/** The derived values every JSON surface reports beside the loaded record. */
 export function issueEffectiveJson(issue: Loose): IssueEffectiveJson {
   const kind = resolutionKindView(issue);
   const evidence = dispositionEvidenceView(issue);
@@ -153,10 +154,11 @@ export function issueEffectiveJson(issue: Loose): IssueEffectiveJson {
 }
 
 /**
- * One issue as a JSON response body: the stored record, any caller extras,
- * and `effective`. A stored record that already uses a reserved name is
- * returned untouched under `stored` rather than spread, so neither its value
- * nor the derived one is lost.
+ * One issue as a JSON response body: the loaded record (the stored fields
+ * plus the loader-derived `displayId` on a legacy display-id file), any
+ * caller extras, and `effective`. A record that already uses a reserved name
+ * is returned untouched under `stored` rather than spread, so neither its
+ * value nor the derived one is lost.
  */
 export function issueJsonBody(issue: Loose, extras: Record<string, unknown> = {}): Record<string, unknown> {
   const effective = issueEffectiveJson(issue);

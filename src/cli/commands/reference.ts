@@ -128,8 +128,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue list",
     description: "List issues with optional filters",
-    usage: "storybloq issue list [--status <value>] [--severity <value>] [--component <value>] [--phase <value>] [--format <json|md>]",
-    flags: ["--status", "--severity", "--component", "--phase", "--format"],
+    usage: "storybloq issue list [--status <value>] [--severity <value>] [--component <value>] [--phase <value>] [--disposition <value|none>] [--actionable] [--non-actionable] [--resolution-kind <kind>] [--format <json|md>]",
+    flags: ["--status", "--severity", "--component", "--phase", "--disposition", "--actionable", "--non-actionable", "--resolution-kind", "--format"],
   },
   {
     name: "issue get",
@@ -1075,7 +1075,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_ticket_meta_get", description: "Get custom passthrough metadata from a ticket", params: ["id","path?"] },
   { name: "storybloq_ticket_next", description: "Highest-priority unblocked ticket(s)", params: ["count?","node?"] },
   { name: "storybloq_ticket_blocked", description: "All blocked tickets with dependencies", params: ["node?"] },
-  { name: "storybloq_issue_list", description: "List issues with optional filters", params: ["status?","severity?","component?","phase?","node?"] },
+  { name: "storybloq_issue_list", description: "List issues with optional filters", params: ["status?","severity?","component?","phase?","disposition?","actionable?","resolutionKind?","format?","node?"] },
   { name: "storybloq_issue_get", description: "Get an issue by ID", params: ["id","format?","withActionability?","node?"] },
   { name: "storybloq_issue_meta_get", description: "Get custom passthrough metadata from an issue", params: ["id","path?"] },
   { name: "storybloq_handover_list", description: "List handover filenames (newest first)", params: [] },

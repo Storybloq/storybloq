@@ -841,6 +841,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       disposition: z.string().optional().describe("Disposition value, or none"),
       actionable: z.boolean().optional().describe("true: actionable only; false: non-actionable only"),
       resolutionKind: z.string().optional().describe("Effective resolution kind"),
+      format: z.enum(["md", "json"]).optional().describe("default: md"),
       node: nodeParam,
     },
   }, (args) => {
@@ -863,7 +864,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         { status: args.status, severity: args.severity, component: args.component, phase: args.phase, disposition: args.disposition, actionable: args.actionable, resolutionKind: args.resolutionKind },
         ctx,
       );
-    }, eff.root);
+    }, eff.root, args.format ?? "md");
   });
 
   server.registerTool("storybloq_issue_get", {

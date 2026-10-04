@@ -2,10 +2,11 @@
  * T-486 U1-2: the JSON contract (R3-5, A6, C1), the markdown render, the list
  * filters and the export rows.
  *
- * Every JSON surface keeps the stored record (round trips need it) and adds
- * `effective` beside it. A stored record that already uses `effective` or
- * `stored` comes back untouched under `stored`, so nothing stored is
- * overwritten or hidden. Fixtures are written raw, so no setter is needed.
+ * Every JSON surface keeps the loaded record (round trips need it): the
+ * stored fields plus the loader-derived `displayId` on a legacy display-id
+ * file. It adds `effective` beside it. A record that already uses
+ * `effective` or `stored` comes back untouched under `stored`, so nothing
+ * stored is overwritten or hidden. Fixtures are written raw, so no setter is needed.
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -54,6 +55,8 @@ async function ctx(root: string, format: "json" | "md" = "json"): Promise<Comman
 }
 
 const fileOf = (root: string, id: string) => join(root, ".story", "issues", `${id}.json`);
+/** The loaded record: the stored fields plus the loader-derived `displayId` on a legacy display-id file (project-loader.ts:1535). */
+const loaded = (issue: Record<string, unknown>): Record<string, unknown> => ({ ...issue, displayId: issue.id });
 const data = (output: string): unknown => (JSON.parse(output) as { data: unknown }).data;
 
 type Mcp = (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -76,7 +79,7 @@ const rowOf = (rows: Record<string, unknown>[], id: string): Record<string, unkn
 /** Export rows are lean (T-486 ruling): the summary, the T-486 raw keys and `effective`, unless the record collides. */
 const EXPORT_SURFACES = new Set(["exportRow", "phaseExportRow"]);
 const EXPORT_LEAN_KEYS = new Set([
-  "id", "title", "severity", "status",
+  "id", "displayId", "title", "severity", "status",
   "disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf", "resolutionKind",
   "effective",
 ]);
@@ -98,7 +101,7 @@ async function surfaces(root: string, id: string): Promise<Record<string, Record
   const mcpList = rowOf((await call("storybloq_issue_list", {})) as Record<string, unknown>[], id);
   const exportRow = rowOf((data(handleExport(await ctx(root), "all", null).output) as { issues: Record<string, unknown>[] }).issues, id);
   const all: Record<string, Record<string, unknown>> = { get, list, mcpGet, mcpList, exportRow };
-  const phaseRows = (data(handleExport(await ctx(root), null, firstPhase(root)).output) as { issues: Record<string, unknown>[] }).issues;
+  const phaseRows = (data(handleExport(await ctx(root), "phase", firstPhase(root)).output) as { issues: Record<string, unknown>[] }).issues;
   const phaseRow = rowOf(phaseRows, id);
   if (phaseRow) all.phaseExportRow = phaseRow;
   return all;
@@ -145,7 +148,7 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     }
   });
 
-  it("get, list and MCP return the whole stored record beside effective; export rows the lean set with every T-486 raw key", async () => {
+  it("get, list and MCP return the loaded record beside effective; export rows the lean set with every T-486 raw key", async () => {
     const issue = fixture("evidence effective", "ISS-001", {
       phase: "PHASE", duplicateOf: "ISS-009",
       resolutionKind: { kind: "wontfix", closedOn: "2026-01-01", resolutionDigest: "0000000000000000" },
@@ -159,8 +162,8 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
       const { effective, citedRulings, ...stored } = body;
       void citedRulings;
       const expected = EXPORT_SURFACES.has(surface)
-        ? Object.fromEntries(Object.entries(issue).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))
-        : issue;
+        ? Object.fromEntries(Object.entries(loaded(issue)).filter(([k]) => EXPORT_LEAN_KEYS.has(k)))
+        : loaded(issue);
       expect(stored, surface).toEqual(expected);
       expect(effective, surface).toMatchObject({ resolutionKindState: "stale", dispositionEvidenceState: "effective" });
     }
@@ -175,6 +178,7 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(Object.keys(row).filter((k) => !EXPORT_LEAN_KEYS.has(k)), String(row.id)).toEqual([]);
+      expect(row.displayId, String(row.id)).toBe(row.id);
     }
   });
 });
@@ -184,21 +188,26 @@ describe("T-486 export row size (lean ruling)", () => {
   // record carries. The full body here is over 60 KB.
   const ROW_BUDGET_BYTES = 2048;
 
-  it("a non-colliding row with a large impact and unrelated custom fields stays within a fixed UTF-8 budget in full and phase export", async () => {
+  it.each([
+    ["legacy", "ISS-001", {}],
+    ["hash", "i-0000000000000001", { displayId: "ISS-001" }],
+  ] as const)("a non-colliding %s-file row with a large impact and unrelated custom fields stays within a fixed UTF-8 budget in full and phase export, displayId included", async (_form, id, extra) => {
     const root = await boardWith([]);
-    const issue = fixture("evidence effective", "ISS-001", {
+    const issue = fixture("evidence effective", id, {
+      ...extra,
       phase: firstPhase(root),
       impact: "\u00e9".repeat(20_000),
       customNotes: "n".repeat(20_000),
       customTable: { rows: Array.from({ length: 200 }, (_, i) => ({ i, label: `row ${i}` })) },
     });
-    writeFileSync(fileOf(root, "ISS-001"), JSON.stringify(issue, null, 2) + "\n");
+    writeFileSync(fileOf(root, id), JSON.stringify(issue, null, 2) + "\n");
     expect(Buffer.byteLength(JSON.stringify(issue), "utf-8")).toBeGreaterThan(60_000);
-    const all = await surfaces(root, "ISS-001");
+    const all = await surfaces(root, id);
     for (const surface of ["exportRow", "phaseExportRow"]) {
       const row = all[surface];
       expect(row, surface).toBeDefined();
       expect(row!.stored, surface).toBeUndefined();
+      expect(row!.displayId, surface).toBe("ISS-001");
       expect(Buffer.byteLength(JSON.stringify(row), "utf-8"), surface).toBeLessThanOrEqual(ROW_BUDGET_BYTES);
     }
   });
@@ -211,9 +220,31 @@ describe("T-486 reserved response keys (A6, C1, J6)", () => {
     const before = readFileSync(fileOf(root, "ISS-001"), "utf-8");
     for (const [surface, body] of Object.entries(await surfaces(root, "ISS-001"))) {
       expect(body.effective, surface).toMatchObject({ resolutionKind: "wontfix" });
-      expect(body.stored, surface).toEqual(issue);
+      expect(body.stored, surface).toEqual(loaded(issue));
     }
     expect(readFileSync(fileOf(root, "ISS-001"), "utf-8")).toBe(before);
+  });
+
+  it("the loaded record on both filename forms: a legacy file gains the derived displayId, a hash file keeps its stored one, under stored and spread", async () => {
+    const root = await boardWith([]);
+    const phase = firstPhase(root);
+    const legacy = fixture("evidence effective", "ISS-001", { phase, effective: "custom" });
+    const hashed = fixture("evidence effective", "i-0000000000000002", { phase, displayId: "ISS-002", effective: "custom" });
+    const plainLegacy = fixture("evidence effective", "ISS-003", { phase });
+    const plainHashed = fixture("evidence effective", "i-0000000000000004", { phase, displayId: "ISS-004" });
+    for (const issue of [legacy, hashed, plainLegacy, plainHashed]) {
+      writeFileSync(fileOf(root, String(issue.id)), JSON.stringify(issue, null, 2) + "\n");
+    }
+    const collide = { legacy: await surfaces(root, "ISS-001"), hashed: await surfaces(root, "i-0000000000000002") };
+    for (const surface of Object.keys(collide.legacy)) {
+      expect(collide.legacy[surface]!.stored, surface).toEqual({ ...legacy, displayId: "ISS-001" });
+      expect(collide.hashed[surface]!.stored, surface).toEqual(hashed);
+    }
+    const spread = { legacy: await surfaces(root, "ISS-003"), hashed: await surfaces(root, "i-0000000000000004") };
+    for (const surface of Object.keys(spread.legacy)) {
+      expect(spread.legacy[surface]!.displayId, surface).toBe("ISS-003");
+      expect(spread.hashed[surface]!.displayId, surface).toBe("ISS-004");
+    }
   });
 
   it("an open phased colliding issue comes back whole under stored in phase export too, not projected", async () => {
@@ -223,7 +254,7 @@ describe("T-486 reserved response keys (A6, C1, J6)", () => {
     const all = await surfaces(root, "ISS-001");
     expect(Object.keys(all)).toContain("phaseExportRow");
     for (const surface of ["exportRow", "phaseExportRow"]) {
-      expect(all[surface]!.stored, surface).toEqual(issue);
+      expect(all[surface]!.stored, surface).toEqual(loaded(issue));
       expect(all[surface]!.effective, surface).toMatchObject({ dispositionEvidenceState: "effective" });
     }
   });
@@ -337,7 +368,7 @@ describe("T-486 export rows (E1)", () => {
       writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf-8")), phase: firstPhase(root) }, null, 2) + "\n");
     }
     const c = await ctx(root, "md");
-    for (const md of [handleExport(c, "all", null).output, handleExport(c, null, firstPhase(root)).output]) {
+    for (const md of [handleExport(c, "all", null).output, handleExport(c, "phase", firstPhase(root)).output]) {
       expect(md).toContain("{owner_gated: pricing \\*is\\* the owner's call [ISS\\_002]}");
       const unbound = md.split("\n").find((l) => l.includes("ISS-002"))!;
       expect(unbound).toMatch(/\{\w+\}$/);
@@ -351,5 +382,44 @@ describe("T-486 export rows (E1)", () => {
     const md = handleExport(await ctx(root, "md"), "all", null).output;
     expect(md).toMatch(/ISS-001.*\(wontfix\)/);
     expect(md).not.toMatch(/ISS-002.*\(wontfix\)/);
+  });
+});
+
+describe("T-486 MCP issue list format (named deviation)", () => {
+  /** The raw text an MCP tool returns, with the given arguments only. */
+  async function mcpText(root: string, name: string, args: Record<string, unknown>): Promise<string> {
+    const tools = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>>();
+    const server = {
+      registerTool: (n: string, _c: unknown, h: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>) => tools.set(n, h),
+    } as unknown as Parameters<typeof registerAllTools>[0];
+    registerAllTools(server, root);
+    return (await tools.get(name)!(args)).content[0]!.text;
+  }
+  const board = () => boardWith([
+    fixture("effective wontfix", "ISS-001"),
+    fixture("effective wontfix", "ISS-002", { effective: "custom value", stored: { mine: true } }),
+  ]);
+
+  it("with no format the MCP list is markdown, byte-identical to the CLI markdown list", async () => {
+    const root = await board();
+    const md = await mcpText(root, "storybloq_issue_list", {});
+    expect(md).toBe(handleIssueList({}, await ctx(root, "md")).output);
+    expect(() => JSON.parse(md)).toThrow();
+  });
+
+  it("the markdown list names the effective resolution kind, so a caller that never passes format sees it", async () => {
+    const root = await board();
+    const md = await mcpText(root, "storybloq_issue_list", {});
+    expect(md).toMatch(/ISS-001[^\n]*\(wontfix\)/);
+  });
+
+  it("format json returns the CLI's own envelope and rows, collision path included", async () => {
+    const root = await board();
+    const mcpJson = JSON.parse(await mcpText(root, "storybloq_issue_list", { format: "json" }));
+    const cliJson = JSON.parse(handleIssueList({}, await ctx(root, "json")).output);
+    expect(mcpJson).toEqual(cliJson);
+    const colliding = rowOf(mcpJson.data as Record<string, unknown>[], "ISS-002");
+    expect(colliding.stored).toMatchObject({ id: "ISS-002", effective: "custom value" });
+    expect(colliding.effective).toMatchObject({ resolutionKind: "wontfix" });
   });
 });

@@ -9,6 +9,7 @@ import type { FederationState, FederationNodeEntry } from "../federation/state.j
 import type { Config } from "../models/config.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
+import { dispositionEvidenceView, issueJsonBody, issueStatusLabel, effectiveResolutionKind } from "./resolution-kind.js";
 import type { Note } from "../models/note.js";
 import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
@@ -1542,7 +1543,7 @@ export function formatIssue(
 ): string {
   if (format === "json") {
     return JSON.stringify(
-      successEnvelope({ ...issue, citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields }),
+      successEnvelope(issueJsonBody(issue, { citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields })),
       null,
       2,
     );
@@ -1551,10 +1552,20 @@ export function formatIssue(
   const lines: string[] = [
     `# ${escapeMarkdownInline(displayIdOf(issue))}: ${escapeMarkdownInline(issue.title)}`,
     "",
-    `Status: ${issue.status} | Severity: ${issue.severity} | Phase: ${issue.phase ?? "none"} | Order: ${issue.order ?? "none"}`,
+    `Status: ${issueStatusLabel(issue)} | Severity: ${issue.severity} | Phase: ${issue.phase ?? "none"} | Order: ${issue.order ?? "none"}`,
     `Components: ${issue.components.join(", ") || "none"}`,
     `Discovered: ${issue.discoveredDate}${issue.resolvedDate ? ` | Resolved: ${issue.resolvedDate}` : ""}`,
   ];
+  if (issue.disposition) {
+    const evidence = dispositionEvidenceView(issue);
+    const detail = evidence.state === "effective"
+      ? `: ${escapeMarkdownInline(evidence.reason!)} [${escapeMarkdownInline(evidence.ref!)}]`
+      : "";
+    lines.push(`Disposition: ${issue.disposition}${detail}`);
+  }
+  if (issue.duplicateOf) {
+    lines.push(`Duplicate of: ${issue.duplicateOf}`);
+  }
   if (issue.location.length > 0) {
     lines.push(`Location: ${issue.location.join(", ")}`);
   }
@@ -1588,7 +1599,7 @@ export function formatIssueList(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        issues.map((i) => ({ ...i, citedRulings: citedRulingsForJson(citedRulingsByIssueId.get(i.id) ?? []) })),
+        issues.map((i) => issueJsonBody(i, { citedRulings: citedRulingsForJson(citedRulingsByIssueId.get(i.id) ?? []) })),
       ),
       null,
       2,
@@ -1598,7 +1609,9 @@ export function formatIssueList(
   const lines: string[] = [];
   for (const i of issues) {
     const status = i.status === "resolved" ? "[x]" : "[ ]";
-    lines.push(`${status} ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownInline(i.title)} (${i.phase ?? "none"})`);
+    const kind = effectiveResolutionKind(i);
+    const tags = `${kind ? ` (${kind})` : ""}${i.disposition ? ` {${i.disposition}}` : ""}`;
+    lines.push(`${status} ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownInline(i.title)} (${i.phase ?? "none"})${tags}`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByIssueId.get(i.id) ?? []);
     if (rulingsSection) lines.push(rulingsSection);
   }
@@ -3220,6 +3233,8 @@ function formatFullExport(
           title: i.title,
           severity: i.severity,
           status: i.status,
+          ...(i.disposition !== undefined && { disposition: i.disposition }),
+          effective: issueJsonBody(i).effective,
         })),
         notes: state.activeNotes.map((n) => ({
           id: n.id,
@@ -3276,7 +3291,8 @@ function formatFullExport(
     lines.push("");
     lines.push("## Issues");
     for (const i of state.activeIssues) {
-      const resolved = i.status === "resolved" ? " ✓" : "";
+      const kind = effectiveResolutionKind(i);
+      const resolved = i.status === "resolved" ? ` ✓${kind ? ` (${kind})` : ""}` : "";
       lines.push(`- ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownDocument(i.title)}${resolved}`);
     }
   }

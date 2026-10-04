@@ -17,6 +17,8 @@ import {
   deleteIssue,
 } from "../../core/project-loader.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
+import { isNonActionableDisposition } from "../../core/issue-disposition.js";
+import { ISSUE_RESOLUTION_KINDS, effectiveResolutionKind, issueJsonBody } from "../../core/resolution-kind.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -37,7 +39,7 @@ import {
   type IssueStatus,
   type IssueSeverity,
 } from "../../models/types.js";
-import {
+import { ISSUE_DISPOSITIONS,
   type Issue,
   type IssueDisposition,
   type IssueSourceRefInput,
@@ -99,6 +101,9 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   "dispositionFor",
   "duplicateOf",
   "resolutionKind",
+  // T-486 A6: reserved for derived values in JSON output.
+  "effective",
+  "stored",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
@@ -112,10 +117,46 @@ function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
 // --- Read Handlers ---
 
 export function handleIssueList(
-  filters: { status?: string; severity?: string; component?: string; phase?: string },
+  filters: {
+    status?: string;
+    severity?: string;
+    component?: string;
+    phase?: string;
+    /** T-486: a disposition value, or "none" for issues with no disposition. */
+    disposition?: string;
+    /** T-486: true keeps actionable issues, false keeps non-actionable ones. */
+    actionable?: boolean;
+    /** T-486: keeps issues whose resolution kind is effective and equal. */
+    resolutionKind?: string;
+  },
   ctx: CommandContext,
 ): CommandResult {
   let issues = [...ctx.state.activeIssues];
+
+  if (filters.disposition !== undefined) {
+    const wanted = filters.disposition;
+    if (wanted !== "none" && !(ISSUE_DISPOSITIONS as readonly string[]).includes(wanted)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Unknown disposition "${wanted}": must be one of ${ISSUE_DISPOSITIONS.join(", ")}, or none`,
+      );
+    }
+    issues = issues.filter((i) => (wanted === "none" ? i.disposition === undefined : i.disposition === wanted));
+  }
+  if (filters.actionable !== undefined) {
+    const wantActionable = filters.actionable;
+    issues = issues.filter((i) => isNonActionableDisposition(i.disposition) !== wantActionable);
+  }
+  if (filters.resolutionKind !== undefined) {
+    const wanted = filters.resolutionKind;
+    if (!(ISSUE_RESOLUTION_KINDS as readonly string[]).includes(wanted)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `Unknown resolution kind "${wanted}": must be one of ${ISSUE_RESOLUTION_KINDS.join(", ")}`,
+      );
+    }
+    issues = issues.filter((i) => effectiveResolutionKind(i) === wanted);
+  }
 
   if (filters.status) {
     if (!ISSUE_STATUSES.includes(filters.status as IssueStatus)) {
@@ -398,7 +439,7 @@ export async function handleIssueCreate(
     : null;
   const warnings = branchWarning ? [branchWarning] : undefined;
   if (format === "json") {
-    const envelope = successEnvelope(createdIssue) as unknown as Record<string, unknown>;
+    const envelope = successEnvelope(issueJsonBody(createdIssue)) as unknown as Record<string, unknown>;
     return {
       output: JSON.stringify(
         deduplicated ? { ...envelope, meta: { deduplicated: true } } : envelope,
@@ -543,7 +584,7 @@ export async function handleIssueUpdate(
     ? ["outer render fence removed; use --format json for round trips"]
     : undefined;
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedIssue), null, 2), ...(warnings && { warnings }) };
+    return { output: JSON.stringify(successEnvelope(issueJsonBody(updatedIssue)), null, 2), ...(warnings && { warnings }) };
   }
   return { output: `Updated issue ${displayIdOf(updatedIssue)}: ${updatedIssue.title}`, ...(warnings && { warnings }) };
 }
@@ -581,7 +622,7 @@ export async function handleIssueMetaSet(
 
   if (!updatedIssue) throw new Error("Issue metadata not updated");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedIssue), null, 2) };
+    return { output: JSON.stringify(successEnvelope(issueJsonBody(updatedIssue)), null, 2) };
   }
   return { output: `Updated metadata ${path} on issue ${displayIdOf(updatedIssue)}` };
 }
@@ -617,7 +658,7 @@ export async function handleIssueMetaUnset(
 
   if (!updatedIssue) throw new Error("Issue metadata not updated");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedIssue), null, 2) };
+    return { output: JSON.stringify(successEnvelope(issueJsonBody(updatedIssue)), null, 2) };
   }
   return { output: `Unset metadata ${path} on issue ${displayIdOf(updatedIssue)}` };
 }

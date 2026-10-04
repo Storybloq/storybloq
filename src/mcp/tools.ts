@@ -838,6 +838,9 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       severity: z.enum(ISSUE_SEVERITIES).optional(),
       component: z.string().optional(),
       phase: z.string().optional().describe("Phase ID"),
+      disposition: z.string().optional().describe("Disposition value, or none"),
+      actionable: z.boolean().optional().describe("true: actionable only; false: non-actionable only"),
+      resolutionKind: z.string().optional().describe("Effective resolution kind"),
       node: nodeParam,
     },
   }, (args) => {
@@ -857,7 +860,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         }
       }
       return handleIssueList(
-        { status: args.status, severity: args.severity, component: args.component, phase: args.phase },
+        { status: args.status, severity: args.severity, component: args.component, phase: args.phase, disposition: args.disposition, actionable: args.actionable, resolutionKind: args.resolutionKind },
         ctx,
       );
     }, eff.root);

@@ -1813,10 +1813,28 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 .option("phase", {
                   type: "string",
                   describe: "Filter by phase",
+                })
+                .option("disposition", {
+                  type: "string",
+                  describe: "Filter by disposition, or none",
+                })
+                .option("actionable", {
+                  type: "boolean",
+                  describe: "Only issues with no non-actionable disposition",
+                  conflicts: "non-actionable",
+                })
+                .option("non-actionable", {
+                  type: "boolean",
+                  describe: "Only issues with a non-actionable disposition",
+                })
+                .option("resolution-kind", {
+                  type: "string",
+                  describe: "Filter by effective resolution kind",
                 }),
             ),
           async (argv) => {
             const format = parseOutputFormat(argv.format);
+            const actionable = argv.actionable === true ? true : argv["non-actionable"] === true ? false : undefined;
             await runReadCommand(format, (ctx) =>
               handleIssueList(
                 {
@@ -1824,6 +1842,9 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   severity: argv.severity as string | undefined,
                   component: argv.component as string | undefined,
                   phase: argv.phase as string | undefined,
+                  disposition: argv.disposition as string | undefined,
+                  actionable,
+                  resolutionKind: argv["resolution-kind"] as string | undefined,
                 },
                 ctx,
               ),

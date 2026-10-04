@@ -132,3 +132,40 @@ export function dispositionEvidenceView(issue: Loose): DispositionEvidenceView {
  * spreading it, so no stored value is overwritten or hidden.
  */
 export const RESERVED_RESPONSE_KEYS = ["effective", "stored"] as const;
+
+export interface IssueEffectiveJson {
+  readonly resolutionKind: IssueResolutionKind | null;
+  readonly resolutionKindState: ResolutionKindState;
+  readonly dispositionEvidence: { readonly reason: string; readonly ref: string } | null;
+  readonly dispositionEvidenceState: DispositionEvidenceState;
+}
+
+/** The derived values every JSON surface reports beside the stored record. */
+export function issueEffectiveJson(issue: Loose): IssueEffectiveJson {
+  const kind = resolutionKindView(issue);
+  const evidence = dispositionEvidenceView(issue);
+  return {
+    resolutionKind: kind.kind,
+    resolutionKindState: kind.state,
+    dispositionEvidence: evidence.state === "effective" ? { reason: evidence.reason!, ref: evidence.ref! } : null,
+    dispositionEvidenceState: evidence.state,
+  };
+}
+
+/**
+ * One issue as a JSON response body: the stored record, any caller extras,
+ * and `effective`. A stored record that already uses a reserved name is
+ * returned untouched under `stored` rather than spread, so neither its value
+ * nor the derived one is lost.
+ */
+export function issueJsonBody(issue: Loose, extras: Record<string, unknown> = {}): Record<string, unknown> {
+  const effective = issueEffectiveJson(issue);
+  const collides = RESERVED_RESPONSE_KEYS.some((k) => Object.prototype.hasOwnProperty.call(issue, k));
+  return collides ? { stored: issue, ...extras, effective } : { ...issue, ...extras, effective };
+}
+
+/** `resolved (wontfix)` when the kind is effective, else the bare status. */
+export function issueStatusLabel(issue: Loose): string {
+  const kind = effectiveResolutionKind(issue);
+  return kind ? `${String(issue.status)} (${kind})` : String(issue.status);
+}

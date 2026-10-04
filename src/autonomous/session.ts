@@ -636,9 +636,13 @@ export function appendEvent(dir: string, event: EventEntry): void {
 
 /**
  * Append an event to events.log, then write session state atomically.
- * If the state write throws, the events.log is truncated back to its
- * pre-append size so audit log and state remain consistent (all-or-nothing).
- * Throws if either step fails.
+ * If the state write throws BEFORE publishing, the events.log is truncated
+ * back to its pre-append size so audit log and state remain consistent
+ * (all-or-nothing). Throws if either step fails.
+ *
+ * ISS-958 R1 exception (i): a StateWriteUndurableError means the rename
+ * already published the state this event describes, so the line is KEPT.
+ * Truncating it would leave a published state whose audit event is missing.
  */
 export function writeSessionWithEvent(
   dir: string,
@@ -659,10 +663,12 @@ export function writeSessionWithEvent(
   try {
     return writeSessionSync(dir, nextState);
   } catch (err) {
-    try {
-      truncateSync(path, sizeBefore);
-    } catch {
-      // best-effort -- events.log may have been deleted or is unwritable
+    if (!(err instanceof StateWriteUndurableError)) {
+      try {
+        truncateSync(path, sizeBefore);
+      } catch {
+        // best-effort -- events.log may have been deleted or is unwritable
+      }
     }
     throw err;
   }

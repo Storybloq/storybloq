@@ -69,15 +69,31 @@ function mcp(root: string): Mcp {
   };
 }
 
-/** Every JSON surface for one issue id, as returned objects. */
+/** A row by its id, or by its stored record's id on the collision path. */
+const rowOf = (rows: Record<string, unknown>[], id: string): Record<string, unknown> =>
+  rows.find((i) => i.id === id || (i.stored as Record<string, unknown> | undefined)?.id === id)!;
+
+/** The id of the board's first phase, which phase export reads. */
+const firstPhase = (root: string): string =>
+  (JSON.parse(readFileSync(join(root, ".story", "roadmap.json"), "utf-8")) as { phases: Array<{ id: string }> }).phases[0]!.id;
+
+/**
+ * Every JSON surface for one issue id, as returned objects. Phase export
+ * lists only unresolved issues of the phase, so it joins when the issue is
+ * one.
+ */
 async function surfaces(root: string, id: string): Promise<Record<string, Record<string, unknown>>> {
   const call = mcp(root);
   const get = data(handleIssueGet(id, await ctx(root)).output) as Record<string, unknown>;
-  const list = (data(handleIssueList({}, await ctx(root)).output) as Record<string, unknown>[]).find((i) => i.id === id || (i.stored as Record<string, unknown> | undefined)?.id === id)!;
+  const list = rowOf(data(handleIssueList({}, await ctx(root)).output) as Record<string, unknown>[], id);
   const mcpGet = (await call("storybloq_issue_get", { id })) as Record<string, unknown>;
-  const mcpList = ((await call("storybloq_issue_list", {})) as Record<string, unknown>[]).find((i) => i.id === id || (i.stored as Record<string, unknown> | undefined)?.id === id)!;
-  const exportRow = ((data(handleExport(await ctx(root), "all", null).output) as { issues: Record<string, unknown>[] }).issues).find((i) => i.id === id)!;
-  return { get, list, mcpGet, mcpList, exportRow };
+  const mcpList = rowOf((await call("storybloq_issue_list", {})) as Record<string, unknown>[], id);
+  const exportRow = rowOf((data(handleExport(await ctx(root), "all", null).output) as { issues: Record<string, unknown>[] }).issues, id);
+  const all: Record<string, Record<string, unknown>> = { get, list, mcpGet, mcpList, exportRow };
+  const phaseRows = (data(handleExport(await ctx(root), null, firstPhase(root)).output) as { issues: Record<string, unknown>[] }).issues;
+  const phaseRow = rowOf(phaseRows, id);
+  if (phaseRow) all.phaseExportRow = phaseRow;
+  return all;
 }
 
 describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () => {
@@ -94,7 +110,7 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
       const all = await surfaces(root, "ISS-001");
       for (const [surface, body] of Object.entries(all)) {
         expect(body.effective, surface).toMatchObject({ resolutionKind: null, resolutionKindState: state });
-        if (surface !== "exportRow") expect(body.resolutionKind, surface).toBeDefined();
+        expect(body.resolutionKind, surface).toEqual(fixture(name, "ISS-001").resolutionKind);
       }
     });
   }
@@ -111,10 +127,29 @@ describe("T-486 JSON contract: effective beside the stored record (J1-J5)", () =
       fixture("evidence effective", "ISS-001"),
       fixture("evidence unbound after a disposition change", "ISS-002"),
     ]);
-    const bound = (await surfaces(root, "ISS-001")).get!.effective as Record<string, unknown>;
-    expect(bound).toMatchObject({ dispositionEvidence: { reason: "pricing is the owner's call", ref: "ISS-002" }, dispositionEvidenceState: "effective" });
-    const unbound = (await surfaces(root, "ISS-002")).get!.effective as Record<string, unknown>;
-    expect(unbound).toMatchObject({ dispositionEvidence: null, dispositionEvidenceState: "unbound" });
+    for (const [surface, body] of Object.entries(await surfaces(root, "ISS-001"))) {
+      expect(body.effective, surface).toMatchObject({ dispositionEvidence: { reason: "pricing is the owner's call", ref: "ISS-002" }, dispositionEvidenceState: "effective" });
+      expect(body.dispositionReason, surface).toBe("pricing is the owner's call");
+    }
+    for (const [surface, body] of Object.entries(await surfaces(root, "ISS-002"))) {
+      expect(body.effective, surface).toMatchObject({ dispositionEvidence: null, dispositionEvidenceState: "unbound" });
+      expect(body.dispositionFor, surface).toBe(fixture("evidence unbound after a disposition change", "ISS-002").dispositionFor);
+    }
+  });
+
+  it("every surface returns the whole stored record beside effective, phase export included", async () => {
+    const issue = fixture("evidence effective", "ISS-001", { phase: "PHASE", resolutionKind: { kind: "wontfix", closedOn: "2026-01-01", resolutionDigest: "0000000000000000" } });
+    const root = await boardWith([]);
+    issue.phase = firstPhase(root);
+    writeFileSync(fileOf(root, "ISS-001"), JSON.stringify(issue, null, 2) + "\n");
+    const all = await surfaces(root, "ISS-001");
+    expect(Object.keys(all)).toContain("phaseExportRow");
+    for (const [surface, body] of Object.entries(all)) {
+      const { effective, citedRulings, ...stored } = body;
+      void citedRulings;
+      expect(stored, surface).toEqual(issue);
+      expect(effective, surface).toMatchObject({ resolutionKindState: "stale", dispositionEvidenceState: "effective" });
+    }
   });
 });
 
@@ -125,7 +160,6 @@ describe("T-486 reserved response keys (A6, C1, J6)", () => {
     const before = readFileSync(fileOf(root, "ISS-001"), "utf-8");
     for (const [surface, body] of Object.entries(await surfaces(root, "ISS-001"))) {
       expect(body.effective, surface).toMatchObject({ resolutionKind: "wontfix" });
-      if (surface === "exportRow") continue;
       expect(body.stored, surface).toEqual(issue);
     }
     expect(readFileSync(fileOf(root, "ISS-001"), "utf-8")).toBe(before);
@@ -227,6 +261,26 @@ describe("T-486 export rows (E1)", () => {
     const rows = (data(handleExport(await ctx(root), "all", null).output) as { issues: Record<string, unknown>[] }).issues;
     expect(rows.find((r) => r.id === "ISS-001")!.disposition).toBe("owner_gated");
     expect("disposition" in rows.find((r) => r.id === "ISS-002")!).toBe(false);
+  });
+
+  it("the markdown export tags a disposition, with evidence only while bound, escaped", async () => {
+    const root = await boardWith([
+      fixture("evidence effective", "ISS-001", { dispositionReason: "pricing *is* the owner's call", dispositionRef: "ISS_002" }),
+      fixture("evidence unbound after a disposition change", "ISS-002"),
+      fixture("absent", "ISS-003", { status: "open", resolvedDate: null, resolution: null }),
+    ]);
+    for (const id of ["ISS-001", "ISS-002", "ISS-003"]) {
+      const p = fileOf(root, id);
+      writeFileSync(p, JSON.stringify({ ...JSON.parse(readFileSync(p, "utf-8")), phase: firstPhase(root) }, null, 2) + "\n");
+    }
+    const c = await ctx(root, "md");
+    for (const md of [handleExport(c, "all", null).output, handleExport(c, null, firstPhase(root)).output]) {
+      expect(md).toContain("{owner_gated: pricing \\*is\\* the owner's call [ISS\\_002]}");
+      const unbound = md.split("\n").find((l) => l.includes("ISS-002"))!;
+      expect(unbound).toMatch(/\{\w+\}$/);
+      expect(unbound).not.toContain("pricing");
+      expect(md.split("\n").find((l) => l.includes("ISS-003"))).not.toContain("{");
+    }
   });
 
   it("the markdown export names an effective kind", async () => {

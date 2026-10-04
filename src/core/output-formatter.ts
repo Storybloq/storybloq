@@ -3153,7 +3153,7 @@ function formatPhaseExport(
         tickets: leaves.map((t) => ({ id: t.id, title: t.title, status: t.status, type: t.type, order: t.order })),
         umbrellaAncestors: [...umbrellaAncestors.values()].map((t) => ({ id: t.id, title: t.title })),
         crossPhaseDependencies: [...crossPhaseDeps.values()].map((t) => ({ id: t.id, title: t.title, status: t.status, phase: t.phase })),
-        issues: relatedIssues.map((i) => ({ id: i.id, title: i.title, severity: i.severity, status: i.status })),
+        issues: relatedIssues.map((i) => issueJsonBody(i)),
         blockers: activeBlockers.map((b) => ({ name: b.name, note: b.note ?? null })),
       }),
       null,
@@ -3191,7 +3191,7 @@ function formatPhaseExport(
     lines.push("");
     lines.push("## Open Issues");
     for (const i of relatedIssues) {
-      lines.push(`- ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownDocument(i.title)}`);
+      lines.push(`- ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownDocument(i.title)}${exportDispositionTag(i)}`);
     }
   }
 
@@ -3204,6 +3204,19 @@ function formatPhaseExport(
   }
 
   return lines.join("\n");
+}
+
+/**
+ * An exported issue line's disposition, as list shows it, with the evidence
+ * only while it is bound: ` {owner_gated: reason [ref]}`, or "" when none.
+ */
+function exportDispositionTag(issue: Issue): string {
+  if (!issue.disposition) return "";
+  const evidence = dispositionEvidenceView(issue);
+  const detail = evidence.state === "effective"
+    ? `: ${escapeMarkdownDocument(evidence.reason!)} [${escapeMarkdownDocument(evidence.ref!)}]`
+    : "";
+  return ` {${issue.disposition}${detail}}`;
 }
 
 function formatFullExport(
@@ -3228,14 +3241,7 @@ function formatFullExport(
             type: t.type,
           })),
         })),
-        issues: state.activeIssues.map((i) => ({
-          id: i.id,
-          title: i.title,
-          severity: i.severity,
-          status: i.status,
-          ...(i.disposition !== undefined && { disposition: i.disposition }),
-          effective: issueJsonBody(i).effective,
-        })),
+        issues: state.activeIssues.map((i) => issueJsonBody(i)),
         notes: state.activeNotes.map((n) => ({
           id: n.id,
           title: n.title,
@@ -3293,7 +3299,7 @@ function formatFullExport(
     for (const i of state.activeIssues) {
       const kind = effectiveResolutionKind(i);
       const resolved = i.status === "resolved" ? ` ✓${kind ? ` (${kind})` : ""}` : "";
-      lines.push(`- ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownDocument(i.title)}${resolved}`);
+      lines.push(`- ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownDocument(i.title)}${resolved}${exportDispositionTag(i)}`);
     }
   }
 

@@ -8,6 +8,7 @@ import { resolutionKindView } from "./resolution-kind.js";
 import {
   catalogsWithoutMergeDriver,
   gitRead,
+  gitReadWith,
   gitWorkTreeState,
   mergeAttribute,
   registeredMergeDriverRecord,
@@ -625,7 +626,9 @@ export function registrationRows(
   accept: readonly string[],
   deps: ResolutionReadinessDeps = {},
 ): { row: "G0" | "G1" | "M1" | "M2" | "M3" | "M4" | "M5" | "M6"; message: string } {
-  const git = deps.git ?? gitRead;
+  // One environment for every read, so the work-tree answer and the
+  // registration answer describe the same git.
+  const git = deps.git ?? (deps.env ? gitReadWith(deps.env) : gitRead);
   const tree = gitWorkTreeState(root, deps.env);
   if (tree.kind === "none") return { row: "G0", message: "" };
   if (tree.kind === "error") return { row: "G1", message: `git could not report how this clone merges ${relPath}: ${tree.detail}.` };

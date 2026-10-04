@@ -7,12 +7,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import { loadProject } from "../../src/core/project-loader.js";
-import { MERGE_DRIVER_CMD, MERGE_DRIVER_V5_CMD, MERGE_DRIVER_V5_NAME, teamSetup, type GitRead, gitRead } from "../../src/core/team-setup.js";
+import { MERGE_DRIVER_CMD, MERGE_DRIVER_V5_CMD, MERGE_DRIVER_V5_NAME, resolutionWritesReadiness, teamSetup, type GitRead, gitRead } from "../../src/core/team-setup.js";
 import { enableCheckpoints } from "../../src/core/checkpoint-enable.js";
 import { mergeDriverCapabilities } from "../../src/cli/commands/merge-driver.js";
 import { handleIssueCreate } from "../../src/cli/commands/issue.js";
@@ -106,6 +106,12 @@ async function doctor(root: string, deps: ResolutionReadinessDeps = {}): Promise
   return checkResolutionKindReadiness((await loadProject(root)).state, ctx(root), deps);
 }
 const rows = (findings: DoctorFinding[]) => findings.map((f) => [f.severity, f.code]);
+/** A whole resolution-kind finding: every one carries the team setup repair. */
+const kind = (severity: string, code: string, message: string): DoctorFinding =>
+  ({ severity, code, message, entity: null, repair: { command: ["storybloq", "team", "setup"] } }) as DoctorFinding;
+/** G3: what the write guard decides for the same clone, at a fence that admits kinds. */
+const guard = (root: string, git?: GitRead) => resolutionWritesReadiness(root, "1.16.0", RESOLUTION_PROBE_PATH, git).driver;
+const gitMessage = (detail: string) => `git could not report how this clone merges ${RESOLUTION_PROBE_PATH}: ${detail}.`;
 
 const FENCE_WARNING = (v: string) =>
   `team.minCliVersion is ${v}; resolution-kind writes are refused on this board until someone runs storybloq team setup on a 1.16.0+ CLI and commits the config.`;
@@ -147,7 +153,46 @@ describe("A9-1 work tree rows (G0, G1)", () => {
     await teamBoard(root);
     const findings = await doctor(root);
     expect(rows(findings)).toEqual([["warning", "resolution_kind_fence"], ["warning", "resolution_kind_no_git"]]);
-    expect(findings[1]!.message).toBe("This board is not in a git work tree, so resolution-kind writes are refused here; run storybloq team setup inside the clone.");
+    expect(findings[1]!).toEqual(kind("warning", "resolution_kind_no_git", "This board is not in a git work tree, so resolution-kind writes are refused here; run storybloq team setup inside the clone."));
+  });
+
+  it("G1 (Codex G1): a dangling .git symlink is an error, never an ordinary directory", async () => {
+    const root = temp();
+    await teamBoard(root);
+    symlinkSync(join(root, "nowhere"), join(root, ".git"));
+    const findings = await doctor(root);
+    expect(rows(findings)).toEqual([["warning", "resolution_kind_fence"], ["error", "resolution_kind_git"]]);
+    expect(findings[1]!).toEqual(kind("error", "resolution_kind_git",
+      gitMessage(`git rejects the repository at ${join(root, ".git")}: fatal: not a git repository (or any of the parent directories): .git`)));
+  });
+
+  it("G1 (Codex G1): inside a bare repository whose config git cannot parse is an error, never absence", async () => {
+    const root = temp();
+    git(root, "init", "-q", "--bare");
+    await teamBoard(root);
+    writeFileSync(join(root, "config"), "[[[\n");
+    const findings = await doctor(root);
+    expect(rows(findings)).toEqual([["warning", "resolution_kind_fence"], ["error", "resolution_kind_git"]]);
+    expect(findings[1]!).toEqual(kind("error", "resolution_kind_git",
+      gitMessage(`git could not tell whether ${root} is in a work tree: fatal: bad config line 1 in file ./config`)));
+  });
+
+  it.each([
+    ["GIT_DIR", "fatal: not a git repository: ''"],
+    ["GIT_WORK_TREE", "fatal: The empty string is not a valid path"],
+    ["GIT_COMMON_DIR", "fatal: not a git repository (or any of the parent directories): .git"],
+  ])("G1 (Codex G2): %s set to the empty string is present, and git's refusal is an error naming it", async (name, stderr) => {
+    const root = await ready();
+    const findings = await doctor(root, { env: { ...process.env, [name]: "" } });
+    expect(findings).toEqual([kind("error", "resolution_kind_git", gitMessage(`git rejects the repository named by ${name}: ${stderr}`))]);
+  });
+
+  it("G2: the registration reads use the environment the work-tree read used", async () => {
+    const root = await ready();
+    const env = { ...process.env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `merge.${MERGE_DRIVER_V5_NAME}.driver`, GIT_CONFIG_VALUE_0: "cat %A" };
+    expect(await doctor(root, { env })).toEqual([kind("error", "resolution_kind_merge_driver",
+      `merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from command config (command line:) is not the command team setup generates; remove it from the command line or GIT_CONFIG_* environment and run storybloq team setup.`)]);
+    expect(await doctor(root)).toEqual([]);
   });
 
   it("G1: a bare repository is an error", async () => {
@@ -197,7 +242,9 @@ describe("A9-1 work tree rows (G0, G1)", () => {
 
 describe("A9 registration rows (M1 to M6)", () => {
   it("M3: a set-up clone has no resolution-kind finding", async () => {
-    expect(await doctor(await ready())).toEqual([]);
+    const root = await ready();
+    expect(await doctor(root)).toEqual([]);
+    expect(guard(root)).toMatchObject({ ok: true, name: MERGE_DRIVER_V5_NAME });
   });
 
   it("M1: a local mismatch is an error naming scope, origin and the removal", async () => {
@@ -208,22 +255,23 @@ describe("A9 registration rows (M1 to M6)", () => {
     expect(findings[0]!.message).toBe(
       `merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from local config (file:.git/config) is not the command team setup generates; remove it (git config --local --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver) and run storybloq team setup.`,
     );
+    expect(guard(root)).toMatchObject({ ok: false, reason: "unsupported" });
   });
 
   it("M1: a global mismatch wins over no local value and is named global", async () => {
     const root = await ready();
     git(root, "config", "--local", "--unset", `merge.${MERGE_DRIVER_V5_NAME}.driver`);
     writeFileSync(globalConfig, `[merge "${MERGE_DRIVER_V5_NAME}"]\n\tdriver = cat %A\n`);
-    const findings = await doctor(root);
-    expect(rows(findings)).toEqual([["error", "resolution_kind_merge_driver"]]);
-    expect(findings[0]!.message).toContain(`from global config (file:${globalConfig})`);
-    expect(findings[0]!.message).toContain(`git config --global --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver`);
+    expect(await doctor(root)).toEqual([kind("error", "resolution_kind_merge_driver",
+      `merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from global config (file:${globalConfig}) is not the command team setup generates; remove it (git config --global --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver) and run storybloq team setup.`)]);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "unsupported" });
   });
 
   it("M3: a global mismatch shadowed by the local registration git runs is ready (the last record wins)", async () => {
     const root = await ready();
     writeFileSync(globalConfig, `[merge "${MERGE_DRIVER_V5_NAME}"]\n\tdriver = cat %A\n`);
     expect(await doctor(root)).toEqual([]);
+    expect(guard(root)).toMatchObject({ ok: true });
   });
 
   it("G1: a registration read that fails is an error, never absence", async () => {
@@ -235,6 +283,17 @@ describe("A9 registration rows (M1 to M6)", () => {
     const findings = await doctor(root, { git: failing });
     expect(rows(findings)).toEqual([["error", "resolution_kind_git"]]);
     expect(findings[0]!.message).toBe(`git could not report how this clone merges ${RESOLUTION_PROBE_PATH}: fatal: bad config.`);
+    expect(guard(root, failing)).toMatchObject({ ok: false, reason: "git" });
+  });
+
+  it("G1: a malformed registration record is an error, never a match", async () => {
+    const root = await ready();
+    const truncated: GitRead = (args, cwd) => {
+      if (args[0] === "config") return gitRead(args, cwd).replace(/\0$/, "");
+      return gitRead(args, cwd);
+    };
+    expect(await doctor(root, { git: truncated })).toEqual([kind("error", "resolution_kind_git",
+      gitMessage(`unreadable git config record for merge.${MERGE_DRIVER_V5_NAME}.driver: the git config output does not end with a NUL`))]);
   });
 
   it("M1: a command-scope mismatch names the command line or environment", async () => {
@@ -242,10 +301,9 @@ describe("A9 registration rows (M1 to M6)", () => {
     process.env.GIT_CONFIG_COUNT = "1";
     process.env.GIT_CONFIG_KEY_0 = `merge.${MERGE_DRIVER_V5_NAME}.driver`;
     process.env.GIT_CONFIG_VALUE_0 = "cat %A";
-    const findings = await doctor(root);
-    expect(rows(findings)).toEqual([["error", "resolution_kind_merge_driver"]]);
-    expect(findings[0]!.message).toContain("from command config");
-    expect(findings[0]!.message).toContain("remove it from the command line or GIT_CONFIG_* environment and run storybloq team setup.");
+    expect(await doctor(root)).toEqual([kind("error", "resolution_kind_merge_driver",
+      `merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from command config (command line:) is not the command team setup generates; remove it from the command line or GIT_CONFIG_* environment and run storybloq team setup.`)]);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "unsupported" });
   });
 
   it("M2: an attribute naming a driver setup never generates is an error", async () => {
@@ -254,6 +312,7 @@ describe("A9 registration rows (M1 to M6)", () => {
     const findings = await doctor(root);
     expect(rows(findings)).toEqual([["error", "resolution_kind_merge_driver"]]);
     expect(findings[0]!.message).toBe(`git merges ${RESOLUTION_PROBE_PATH} with foreign-merge, a driver team setup never generates; remove that attribute and run storybloq team setup.`);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "attribute" });
   });
 
   it.each([["storybloq-json-v4"], ["storybloq-json"]])("M4: a clone selecting %s, registered as setup generates it, is a warning", async (name) => {
@@ -262,6 +321,7 @@ describe("A9 registration rows (M1 to M6)", () => {
     const findings = await doctor(root);
     expect(rows(findings)).toEqual([["warning", "resolution_kind_clone_setup"]]);
     expect(findings[0]!.message).toBe(`This clone merges issues with ${name}, not ${MERGE_DRIVER_V5_NAME}, so resolution-kind writes are refused here until storybloq team setup runs in this clone.`);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "attribute" });
   });
 
   it("M5: the selected driver unregistered is a warning", async () => {
@@ -270,6 +330,7 @@ describe("A9 registration rows (M1 to M6)", () => {
     const findings = await doctor(root);
     expect(rows(findings)).toEqual([["warning", "resolution_kind_clone_setup"]]);
     expect(findings[0]!.message).toBe(`git would merge ${RESOLUTION_PROBE_PATH} with ${MERGE_DRIVER_V5_NAME}, which is not registered in this clone (issue merges fall back to text, and resolution-kind writes are refused) until storybloq team setup runs in this clone.`);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "unregistered" });
   });
 
   it.each([["unspecified", "!merge"], ["unset", "-merge"]])("M6 (A9-2): merge attribute %s is a warning naming it", async (value, attr) => {
@@ -278,6 +339,7 @@ describe("A9 registration rows (M1 to M6)", () => {
     const findings = await doctor(root);
     expect(rows(findings)).toEqual([["warning", "resolution_kind_clone_setup"]]);
     expect(findings[0]!.message).toBe(`no supported storybloq merge driver is selected for ${RESOLUTION_PROBE_PATH} (merge attribute: ${value}), so resolution-kind writes are refused in this clone; run storybloq team setup.`);
+    expect(guard(root)).toMatchObject({ ok: false, reason: "attribute" });
   });
 });
 
@@ -296,6 +358,7 @@ describe("A9 clones that never ran setup", () => {
   it("a fresh clone of a set-up board is warning-only and doctor --ci exits 0", async () => {
     const { clone } = await committedClone();
     expect(rows(await doctor(clone))).toEqual([["warning", "resolution_kind_clone_setup"]]);
+    expect(guard(clone)).toMatchObject({ ok: false, reason: "attribute" });
     expect((await handleTeamDoctor(clone, { ci: true, format: "json" })).exitCode).toBe(0);
   });
 
@@ -305,10 +368,11 @@ describe("A9 clones that never ran setup", () => {
     const findings = await doctor(clone);
     expect(rows(findings)).toEqual([["warning", "resolution_kind_clone_setup"]]);
     expect(findings[0]!.message).toContain("merges issues with storybloq-json, not storybloq-json-v5");
+    expect(guard(clone)).toMatchObject({ ok: false, reason: "attribute" });
     writeFileSync(globalConfig, `[merge "storybloq-json"]\n\tdriver = cat %A\n`);
-    const wrong = await doctor(clone);
-    expect(rows(wrong)).toEqual([["error", "resolution_kind_merge_driver"]]);
-    expect(wrong[0]!.message).toContain("from global config");
+    expect(await doctor(clone)).toEqual([kind("error", "resolution_kind_merge_driver",
+      `merge.storybloq-json.driver = "cat %A" from global config (file:${globalConfig}) is not the command team setup generates; remove it (git config --global --unset-all merge.storybloq-json.driver) and run storybloq team setup.`)]);
+    expect(guard(clone)).toMatchObject({ ok: false, reason: "attribute" });
     expect((await handleTeamDoctor(clone, { ci: true, format: "json" })).exitCode).toBe(1);
   });
 
@@ -317,13 +381,15 @@ describe("A9 clones that never ran setup", () => {
     const wt = join(temp(), "wt");
     git(origin, "worktree", "add", "-q", wt);
     expect(await doctor(wt)).toEqual([]);
+    expect(guard(wt)).toMatchObject({ ok: true });
     git(origin, "config", "extensions.worktreeConfig", "true");
     git(wt, "config", "--worktree", `merge.${MERGE_DRIVER_V5_NAME}.driver`, "cat %A");
-    const findings = await doctor(wt);
-    expect(rows(findings)).toEqual([["error", "resolution_kind_merge_driver"]]);
-    expect(findings[0]!.message).toContain("from worktree config");
-    expect(findings[0]!.message).toContain(`git config --worktree --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver`);
+    const worktreeConfig = git(wt, "rev-parse", "--path-format=absolute", "--git-path", "config.worktree");
+    expect(await doctor(wt)).toEqual([kind("error", "resolution_kind_merge_driver",
+      `merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from worktree config (file:${worktreeConfig}) is not the command team setup generates; remove it (git config --worktree --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver) and run storybloq team setup.`)]);
+    expect(guard(wt)).toMatchObject({ ok: false, reason: "unsupported" });
     expect(rows(await doctor(origin))).toEqual([]);
+    expect(guard(origin)).toMatchObject({ ok: true });
   });
 
   it("checkpoint control: a fresh clone of a checkpoint-enabled board still errors on checkpoint merges", async () => {
@@ -332,18 +398,19 @@ describe("A9 clones that never ran setup", () => {
     });
     const out = await handleTeamDoctor(clone, { ci: true, format: "json" });
     expect(out.exitCode).toBe(1);
-    const codes = (JSON.parse(out.output).data.findings as DoctorFinding[]).filter((f) => f.severity === "error").map((f) => f.code);
-    expect(codes).toEqual(["checkpoint_merge_driver"]);
+    const errors = (JSON.parse(out.output).data.findings as DoctorFinding[]).filter((f) => f.severity === "error");
+    expect(errors).toEqual([kind("error", "checkpoint_merge_driver",
+      "This clone does not merge owner checkpoints with storybloq-json-v4 or storybloq-json-v5: .story/tickets/t-checkpointprobe.json -> unset, .story/issues/i-checkpointprobe.json -> unset, .story/config.json -> unset, the storybloq-json-v5 merge driver is not registered in this clone. Run storybloq team setup before merging branches here.")]);
   });
 });
 
 describe("A9 ruling registration follows the same rows", () => {
-  async function rulingCodes(root: string): Promise<[string, string][]> {
+  async function rulingCodes(root: string): Promise<[string, string, string][]> {
     const state = (await loadProject(root)).state;
     mkdirSync(join(root, ".story", "rulings"), { recursive: true });
     writeFileSync(join(root, ".story", "rulings", "r-0000000000000001.json"), "{}");
     try {
-      return checkRulingLifecycleReadiness(state, ctx(root)).map((f) => [f.severity, f.code]);
+      return checkRulingLifecycleReadiness(state, ctx(root)).map((f) => [f.severity, f.code, f.message]);
     } finally {
       rmSync(join(root, ".story", "rulings", "r-0000000000000001.json"));
     }
@@ -361,9 +428,11 @@ describe("A9 ruling registration follows the same rows", () => {
   it("an absent registration is a warning and a mismatch is an error", async () => {
     const root = await ready();
     git(root, "config", "--local", "--unset", `merge.${MERGE_DRIVER_V5_NAME}.driver`);
-    expect(await rulingCodes(root)).toEqual([["warning", "ruling_merge_driver_registration"]]);
+    expect(await rulingCodes(root)).toEqual([["warning", "ruling_merge_driver_registration",
+      `Ruling writes refuse until the merge driver is registered as team setup generates it: the ${MERGE_DRIVER_V5_NAME} merge driver is not registered; run storybloq team setup.`]]);
     git(root, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, "cat %A");
-    expect(await rulingCodes(root)).toEqual([["error", "ruling_merge_driver_registration"]]);
+    expect(await rulingCodes(root)).toEqual([["error", "ruling_merge_driver_registration",
+      `Ruling writes refuse in this clone: merge.${MERGE_DRIVER_V5_NAME}.driver = "cat %A" from local config (file:.git/config) is not the command team setup generates; remove it (git config --local --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver) and run storybloq team setup.`]]);
     git(root, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, MERGE_DRIVER_V5_CMD);
     expect(await rulingCodes(root)).toEqual([]);
   });

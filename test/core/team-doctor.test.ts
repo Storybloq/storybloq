@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync as makeTempDir, rmSync as removeDir } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 import { runDoctor, registerDoctorCheck, defaultChecks, checkStaleClaims, checkLocalIdAllocator, isClaimBranchGone, listRemoteBranchNames, parseRemoteBranches, type DoctorContext, type DoctorCheck } from "../../src/core/team-doctor.js";
 import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase, minimalConfig } from "./test-factories.js";
 import type { Config } from "../../src/models/config.js";
@@ -283,7 +286,15 @@ describe("checkLocalIdAllocator (ISS-734)", () => {
       config: { ...teamConfig, team: { enabled: true, idAllocator: "local" } },
       tickets: [makeTicket({ id: "t-aaa0000000000001", displayId: "T-001", createdDate: "2026-01-01" })],
     });
-    const result = await runDoctor(s, teamCtx());
+    // Codex G5: a real directory outside any repository, so git answers "not
+    // a git repository" for it rather than failing to start in a missing cwd.
+    const root = makeTempDir(joinPath(osTmpdir(), "doctor-iss734-"));
+    let result: Awaited<ReturnType<typeof runDoctor>>;
+    try {
+      result = await runDoctor(s, teamCtx({ root }));
+    } finally {
+      removeDir(root, { recursive: true, force: true });
+    }
     const finding = result.findings.find((f) => f.code === "local_id_allocator");
     expect(finding).toBeDefined();
     expect(finding!.severity).toBe("info");

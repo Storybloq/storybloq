@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
 import { MAX_SUPPORTED_SCHEMA_VERSION } from "./errors.js";
 import { ConfigSchema } from "../models/config.js";
@@ -614,6 +614,11 @@ export type GitRead = (args: readonly string[], cwd: string) => string;
 export const gitRead: GitRead = (args, cwd) =>
   execFileSync("git", [...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
 
+/** T-486 A9: gitRead under an explicit environment, so every read of one check sees the same git. */
+export function gitReadWith(env: NodeJS.ProcessEnv): GitRead {
+  return (args, cwd) => execFileSync("git", [...args], { cwd, env, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+}
+
 /** The `merge` attribute git resolves for `relPath` under `root`, or null when unset or unknowable. */
 export function effectiveMergeDriver(root: string, relPath: string, git: GitRead = gitRead): string | null {
   let out: string;
@@ -691,43 +696,53 @@ export const GIT_LOCATION_ENV = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] a
 
 /**
  * T-486 A9-1: whether `root` is in a git work tree. "none" only for a
- * verified ordinary directory: no `.git` entry (directory or gitfile) at
- * the root or any ancestor, and none of GIT_LOCATION_ENV set. Everything
- * else git cannot read as a work tree (a bare repository, metadata git
- * rejects, an environment git rejects) is "error" with the cause. A git
- * exit status alone never makes "none".
+ * verified ordinary directory: no `.git` entry of any type (directory,
+ * gitfile, or a symlink, dangling or not) at the root or any ancestor, none
+ * of GIT_LOCATION_ENV present (an empty value counts: git reads it), and git
+ * itself exiting 128 with "not a git repository" (asked under LC_ALL=C).
+ * Everything else (a bare repository, metadata git rejects, an environment
+ * git rejects, a `.git` lookup that fails, any other git failure) is
+ * "error" with the cause.
  */
 export function gitWorkTreeState(
   root: string,
   env: NodeJS.ProcessEnv = process.env,
 ): { kind: "tree" } | { kind: "none" } | { kind: "error"; detail: string } {
-  const explicit = GIT_LOCATION_ENV.filter((k) => typeof env[k] === "string" && env[k] !== "");
-  const childEnv: NodeJS.ProcessEnv = { ...env };
-  if (explicit.length === 0) for (const k of GIT_LOCATION_ENV) delete childEnv[k];
+  const explicit = GIT_LOCATION_ENV.filter((k) => env[k] !== undefined);
   let out: string | null = null;
   let failure = "";
+  let status: number | null = null;
   try {
-    out = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, env: childEnv, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 }).trim();
+    out = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, env: { ...env, LC_ALL: "C" }, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 }).trim();
   } catch (err) {
     failure = gitErrorDetail(err);
+    status = (err as { status?: number | null }).status ?? null;
   }
   if (out === "true") return { kind: "tree" };
   if (explicit.length > 0) {
     return { kind: "error", detail: `git rejects the repository named by ${explicit.join(", ")}: ${out === null ? failure : "not a work tree"}` };
   }
-  const dotGit = nearestDotGit(root);
   if (out !== null) return { kind: "error", detail: `${root} is in a git repository without a work tree (bare, or inside a .git directory)` };
-  if (dotGit === null) return { kind: "none" };
-  return { kind: "error", detail: `git rejects the repository at ${dotGit}: ${failure}` };
+  const dotGit = nearestDotGit(root);
+  if (dotGit.kind === "error") return dotGit;
+  if (dotGit.kind === "found") return { kind: "error", detail: `git rejects the repository at ${dotGit.path}: ${failure}` };
+  if (status === 128 && /not a git repository/.test(failure)) return { kind: "none" };
+  return { kind: "error", detail: `git could not tell whether ${root} is in a work tree: ${failure}` };
 }
 
-function nearestDotGit(start: string): string | null {
+function nearestDotGit(start: string): { kind: "found"; path: string } | { kind: "none" } | { kind: "error"; detail: string } {
   let dir = resolve(start);
   for (;;) {
     const candidate = join(dir, ".git");
-    if (existsSync(candidate)) return candidate;
+    try {
+      lstatSync(candidate);
+      return { kind: "found", path: candidate };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return { kind: "error", detail: `could not inspect ${candidate}: ${code ?? String(err)}` };
+    }
     const parent = dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) return { kind: "none" };
     dir = parent;
   }
 }

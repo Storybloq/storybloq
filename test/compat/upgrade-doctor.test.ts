@@ -69,6 +69,9 @@ describe.skipIf(skip !== null)(`team doctor --ci on a board ${PRE_CAPABILITY} se
     expect(findings.find((f) => f.code === "resolution_kind_fence")!.message).toBe(
       "team.minCliVersion is unset; resolution-kind writes are refused on this board until someone runs storybloq team setup on a 1.16.0+ CLI and commits the config.",
     );
+    expect(findings.find((f) => f.code === "resolution_kind_clone_setup")!.message).toBe(
+      "This clone merges issues with storybloq-json, not storybloq-json-v5, so resolution-kind writes are refused here until storybloq team setup runs in this clone.",
+    );
   });
 
   it("after setup in that clone: exit 0 with no resolution-kind finding; a fresh clone of the result: exit 0 with the clone warning", () => {
@@ -84,6 +87,9 @@ describe.skipIf(skip !== null)(`team doctor --ci on a board ${PRE_CAPABILITY} se
     const fresh = doctor(img, clone);
     expect(fresh.status).toBe(0);
     expect(kindRows(fresh.findings)).toEqual([["warning", "resolution_kind_clone_setup"]]);
+    expect(fresh.findings.find((f) => f.code === "resolution_kind_clone_setup")!.message).toBe(
+      "git would merge .story/issues/i-resolutionprobe.json with storybloq-json, which is not registered in this clone (issue merges fall back to text, and resolution-kind writes are refused) until storybloq team setup runs in this clone.",
+    );
   });
 
   it("a configured-wrong clone exits 1", () => {

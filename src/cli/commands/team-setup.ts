@@ -1,4 +1,5 @@
 import { teamSetup, LOCAL_ALLOCATOR_NOTE, type SetupResult } from "../../core/team-setup.js";
+import { RESOLUTION_KIND_MIN_CLI_VERSION } from "../../core/team-capabilities.js";
 
 export interface TeamSetupOutput {
   output: string;
@@ -20,6 +21,10 @@ export async function handleTeamSetup(root: string, opts: { format?: "md" | "jso
       `  Config version: ${result.versionUpdated ? "updated" : "skipped"}`,
       `  Git root: ${result.gitRoot}`,
     ];
+    // T-486: kind writes refuse until the fence admits them; say so where it was decided.
+    if (result.resolutionKindFence === "deferred") {
+      lines.push(`  Resolution kinds: fence not raised (this CLI is below ${RESOLUTION_KIND_MIN_CLI_VERSION}); kind writes refuse until team setup runs on a current CLI`);
+    }
     // ISS-734: local-allocator collision guidance. Every teammate runs team
     // setup on their own clone, so this is the output the whole team sees.
     if (result.idAllocator === "local") {

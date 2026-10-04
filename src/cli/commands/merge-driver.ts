@@ -26,12 +26,28 @@ import { MAX_SUPPORTED_SCHEMA_VERSION } from "../../core/errors.js";
  * setup registers `storybloq-json-v4` as `merge-driver --protocol 4 ...`; a
  * CLI that predates it rejects the unknown flag, exits nonzero, and git
  * records a conflict instead of a merge that could not honour checkpoints.
+ *
+ * T-486: protocol 5 (`storybloq-json-v5`) is the same contract plus the
+ * resolution-kind and disposition-evidence merge groups. A CLI that knows
+ * only 4 refuses `--protocol 5`, so git records a conflict instead of merging
+ * those keys field by field. This build serves both; the newest is current.
  */
-export const MERGE_DRIVER_PROTOCOL = 4;
+export const MERGE_DRIVER_PROTOCOL = 5;
+export const SUPPORTED_MERGE_DRIVER_PROTOCOLS: readonly number[] = [4, 5];
 
-/** What `merge-driver --protocol 4 --capabilities` reports, one JSON line. */
-export function mergeDriverCapabilities(): { protocol: number; maxSchemaVersion: number; checkpoints: boolean } {
-  return { protocol: MERGE_DRIVER_PROTOCOL, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true };
+/** The one test for capability dispatch and merge refusal alike. */
+export function isSupportedMergeDriverProtocol(protocol: unknown): protocol is number {
+  return typeof protocol === "number" && SUPPORTED_MERGE_DRIVER_PROTOCOLS.includes(protocol);
+}
+
+/** What `merge-driver --protocol <n> --capabilities` reports for a supported `n`, one JSON line. */
+export function mergeDriverCapabilities(protocol: number = MERGE_DRIVER_PROTOCOL): { protocol: number; maxSchemaVersion: number; checkpoints: boolean } {
+  return { protocol, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true };
+}
+
+/** The refusal for a protocol this build does not serve: an older binary than the registration. */
+export function unsupportedProtocolMessage(protocol: unknown): string {
+  return `merge-driver protocol ${String(protocol)} is not supported by this build (supports ${SUPPORTED_MERGE_DRIVER_PROTOCOLS.join(" and ")}); update storybloq, then run storybloq team setup`;
 }
 
 /**
@@ -50,14 +66,12 @@ export function ledgerRootOf(pathname: string, cwd: string = process.cwd()): str
 }
 
 /**
- * A v4 run refuses a ledger it cannot honour: config.json unreadable, not an
+ * A v4 or v5 run refuses a ledger it cannot honour: config.json unreadable, not an
  * object, or a schemaVersion above what this build supports. Null when the
  * merge may proceed, else the reason.
  */
 export function protocolRefusal(protocol: number, pathname: string, cwd: string = process.cwd()): string | null {
-  if (!Number.isInteger(protocol) || protocol !== MERGE_DRIVER_PROTOCOL) {
-    return `merge-driver protocol ${protocol} is not supported by this build (supports ${MERGE_DRIVER_PROTOCOL}); update storybloq`;
-  }
+  if (!isSupportedMergeDriverProtocol(protocol)) return unsupportedProtocolMessage(protocol);
   const root = ledgerRootOf(pathname, cwd);
   if (root === null) return `"${pathname}" is not under a .story directory`;
   let version: unknown;

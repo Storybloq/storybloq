@@ -56,7 +56,8 @@
     "projection:fixtures": "tsx scripts/projection-fixtures.ts",
     "dev": "tsup --watch",
     "typecheck": "bash scripts/tsc-gate.sh",
-    "prepublishOnly": "bash scripts/tsc-gate.sh && npm run build && npm test"
+    "prepublishOnly": "bash scripts/tsc-gate.sh && npm run build && STORYBLOQ_COMPAT_REQUIRED=1 npm test",
+    "compat:fetch": "bash scripts/compat-fetch.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

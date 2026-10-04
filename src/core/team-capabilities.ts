@@ -46,6 +46,18 @@ export function currentCliVersion(): string | null {
 export const RULING_LIFECYCLE_MIN_CLI_VERSION = "1.16.0";
 
 /**
+ * T-486: the first CLI that writes resolution kinds and reads them through
+ * the binding projection. A team-mode ledger admits kind writes only behind
+ * a fence of at least this. 1.16.0 was never published without them; if that
+ * ever stops being true, this must move to the version being published
+ * (RELEASE.md, and the old-dist check in test/compat).
+ */
+export const RESOLUTION_KIND_MIN_CLI_VERSION = "1.16.0";
+
+/** Every capability minimum, in the order `team setup` raises the fence through them. */
+export const TEAM_FENCE_MINIMUMS: readonly string[] = [RULING_LIFECYCLE_MIN_CLI_VERSION, RESOLUTION_KIND_MIN_CLI_VERSION];
+
+/**
  * T-522: SemVer-aware "at least" for the rulings fence. `compareVersionStrings`
  * folds a prerelease tag into 0, so `1.16.0-rc` would pass as `1.16.0`; here a
  * prerelease of the minimum's own core is BELOW the minimum (SemVer 11.4), a

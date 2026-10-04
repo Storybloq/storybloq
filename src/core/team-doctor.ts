@@ -3,9 +3,15 @@ import { execFileSync } from "node:child_process";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
 import { isClaimStale } from "./claims.js";
-import { compareVersionStrings, RULING_LIFECYCLE_MIN_CLI_VERSION } from "./team-capabilities.js";
-import { rulingLifecycleReadiness, catalogsWithoutMergeDriver, hasCheckpointGitattributes, MERGE_DRIVER_V4_NAME } from "./team-setup.js";
-import { checkpointMergeDrivers } from "./checkpoint-enable.js";
+import { compareVersionStrings, RESOLUTION_KIND_MIN_CLI_VERSION, RULING_LIFECYCLE_MIN_CLI_VERSION } from "./team-capabilities.js";
+import {
+  rulingLifecycleReadiness,
+  resolutionWritesReadiness,
+  catalogsWithoutMergeDriver,
+  hasCheckpointGitattributes,
+  CHECKPOINT_MERGE_DRIVERS,
+} from "./team-setup.js";
+import { checkpointDriverProblems } from "./checkpoint-enable.js";
 import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
@@ -561,6 +567,47 @@ export function checkRulingLifecycleReadiness(state: ProjectState, ctx: DoctorCo
       entity: null,
       repair: { command: ["storybloq", "team", "setup"] },
     });
+  } else if (!readiness.registration.ok) {
+    // T-486 A2: the attribute names a driver that runs nothing, or a command setup never generated.
+    findings.push({
+      severity: "warning",
+      code: "ruling_merge_driver_registration",
+      message: `Ruling writes refuse until the merge driver is registered as team setup generates it: ${readiness.registration.message}.`,
+      entity: null,
+      repair: { command: ["storybloq", "team", "setup"] },
+    });
+  }
+  return findings;
+}
+
+/**
+ * T-486 2a: in a team-mode ledger, a resolution-kind write needs the fence at
+ * RESOLUTION_KIND_MIN_CLI_VERSION and issue files merging with the v5
+ * driver, registered exactly as setup generates it. Either gap refuses every
+ * kind write until `team setup` runs on a current CLI, so both are errors
+ * and `--ci` fails on them.
+ */
+export function checkResolutionKindReadiness(state: ProjectState, ctx: DoctorContext): DoctorFinding[] {
+  if (state.config.team?.enabled !== true) return [];
+  const readiness = resolutionWritesReadiness(ctx.root, state.config.team?.minCliVersion, ".story/issues/i-resolutionprobe.json");
+  const findings: DoctorFinding[] = [];
+  if (!readiness.fenceOk) {
+    findings.push({
+      severity: "error",
+      code: "resolution_kind_fence",
+      message: `team.minCliVersion is ${state.config.team?.minCliVersion ?? "unset"}; resolution-kind writes need at least ${RESOLUTION_KIND_MIN_CLI_VERSION}. Run storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI.`,
+      entity: null,
+      repair: { command: ["storybloq", "team", "setup"] },
+    });
+  }
+  if (!readiness.driver.ok) {
+    findings.push({
+      severity: "error",
+      code: "resolution_kind_merge_driver",
+      message: `Resolution-kind writes refuse in this clone: ${readiness.driver.message}.`,
+      entity: null,
+      repair: { command: ["storybloq", "team", "setup"] },
+    });
   }
   return findings;
 }
@@ -604,13 +651,13 @@ export function checkCheckpointMergeAttributes(state: ProjectState, ctx: DoctorC
   if (version === undefined || version < CHECKPOINT_SCHEMA_VERSION) return [];
   const storyDir = join(ctx.root, ".story");
   const findings: DoctorFinding[] = [];
-  const drivers = checkpointMergeDrivers(storyDir);
-  const wrong = drivers.filter((d) => d.driver !== MERGE_DRIVER_V4_NAME);
-  if (wrong.length > 0) {
+  const { wrongAttributes, registrationProblems } = checkpointDriverProblems(storyDir, ctx.root);
+  if (wrongAttributes.length > 0 || registrationProblems.length > 0) {
+    const gaps = [...wrongAttributes.map((d) => `${d.path} -> ${d.driver ?? "unset"}`), ...registrationProblems];
     findings.push({
       severity: "error",
       code: "checkpoint_merge_driver",
-      message: `This clone does not merge owner checkpoints with ${MERGE_DRIVER_V4_NAME}: ${wrong.map((d) => `${d.path} -> ${d.driver ?? "unset"}`).join(", ")}. Run storybloq team setup before merging branches here.`,
+      message: `This clone does not merge owner checkpoints with ${CHECKPOINT_MERGE_DRIVERS.join(" or ")}: ${gaps.join(", ")}. Run storybloq team setup before merging branches here.`,
       entity: null,
       repair: { command: ["storybloq", "team", "setup"] },
     });
@@ -674,4 +721,5 @@ registerDoctorCheck(checkLocalIdAllocator);
 registerDoctorCheck(checkRulingLifecycleReadiness);
 registerDoctorCheck(checkCatalogMergeAttributes);
 registerDoctorCheck(checkCheckpointMergeAttributes);
+registerDoctorCheck(checkResolutionKindReadiness);
 registerDoctorCheck(checkHandoverFilenamePolicy);

@@ -4,7 +4,8 @@
  * builds open read-only, so nothing a pre-checkpoint build writes can drop a
  * checkpoint. Any project can enable: non-team and non-git ledgers are only
  * stamped. A team ledger merges through git, so there enable first proves
- * this clone merges checkpoints with the v4 driver, then writes the tracked
+ * this clone merges checkpoints with a checkpoint driver (v4, or T-486's v5),
+ * registered exactly as setup generates it, then writes the tracked
  * `-merge` block that makes every unconfigured clone conflict instead of
  * merging, and only then stamps. Each step is idempotent and the progress is
  * recorded in config, so an interrupted enable is finished by running it
@@ -17,11 +18,14 @@ import { CliValidationError } from "../cli/helpers.js";
 import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
 import { withProjectLock, writeConfigUnlocked } from "./project-loader.js";
 import {
-  MERGE_DRIVER_V4_CMD,
-  MERGE_DRIVER_V4_NAME,
+  CHECKPOINT_MERGE_DRIVERS,
+  MERGE_DRIVER_CONTRACTS,
+  MERGE_DRIVER_V5_NAME,
   effectiveMergeDriver,
+  registeredMergeDriverCommand,
   writeCheckpointGitattributes,
 } from "./team-setup.js";
+import { MERGE_DRIVER_PROTOCOL } from "../cli/commands/merge-driver.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,16 +43,16 @@ export interface CheckpointEnableResult {
 
 /** What enable asks of the world, injectable so the refusal paths are testable without a real binary. */
 export interface CheckpointEnableDeps {
-  /** The JSON `storybloq merge-driver --protocol 4 --capabilities` prints for the binary git would run, or null. */
-  capabilities(gitRoot: string): Promise<unknown>;
+  /** The JSON `storybloq merge-driver --protocol <protocol> --capabilities` prints for the binary git would run, or null. */
+  capabilities(gitRoot: string, protocol: number): Promise<unknown>;
   /** Test seam: runs after the unlocked decision and before the final lock that re-checks it. */
   afterDecision?(root: string): Promise<void>;
 }
 
 export const defaultEnableDeps: CheckpointEnableDeps = {
-  async capabilities(gitRoot) {
+  async capabilities(gitRoot, protocol) {
     try {
-      const { stdout } = await execFileAsync("storybloq", ["merge-driver", "--protocol", "4", "--capabilities"], { cwd: gitRoot, timeout: 10_000 });
+      const { stdout } = await execFileAsync("storybloq", ["merge-driver", "--protocol", String(protocol), "--capabilities"], { cwd: gitRoot, timeout: 10_000 });
       return JSON.parse(stdout.trim()) as unknown;
     } catch {
       return null;
@@ -99,28 +103,66 @@ export function checkpointMergeDrivers(storyDir: string): { path: string; driver
   });
 }
 
+/**
+ * What stands between this clone and merging checkpoints, short of asking
+ * the binary: probe paths git merges with a non-checkpoint driver, and each
+ * checkpoint driver in use whose registration is not exactly the contract.
+ * The registration must hold both in the clone's local config (where setup
+ * writes it) and in git's effective view, so a worktree or other override
+ * cannot run something else (T-486 A8-1). Shared by enable and `team doctor`.
+ */
+export function checkpointDriverProblems(storyDir: string, gitRoot: string): {
+  wrongAttributes: { path: string; driver: string | null }[];
+  registrationProblems: string[];
+  protocols: number[];
+} {
+  const wrongAttributes: { path: string; driver: string | null }[] = [];
+  const names = new Set<string>();
+  for (const probe of checkpointMergeDrivers(storyDir)) {
+    if (probe.driver !== null && CHECKPOINT_MERGE_DRIVERS.includes(probe.driver)) names.add(probe.driver);
+    else wrongAttributes.push(probe);
+  }
+  // With no checkpoint driver in use yet, the one setup would select is the one to check.
+  if (names.size === 0) names.add(MERGE_DRIVER_V5_NAME);
+  const registrationProblems: string[] = [];
+  const protocols: number[] = [];
+  for (const name of names) {
+    const contract = MERGE_DRIVER_CONTRACTS.get(name)!;
+    const local = registeredMergeDriverCommand(gitRoot, name, "local");
+    if (local.kind !== "present") {
+      registrationProblems.push(`the ${name} merge driver is not registered in this clone`);
+      continue;
+    }
+    if (local.command.trim() !== contract.command) {
+      registrationProblems.push(`the ${name} merge driver runs "${local.command.trim()}", expected "${contract.command}"`);
+      continue;
+    }
+    const effective = registeredMergeDriverCommand(gitRoot, name);
+    if (effective.kind !== "present" || effective.command.trim() !== contract.command) {
+      const runs = effective.kind === "present" ? `"${effective.command.trim()}"` : "nothing readable";
+      registrationProblems.push(`git runs ${runs} for the ${name} merge driver here, overriding this clone's registration (expected "${contract.command}")`);
+      continue;
+    }
+    protocols.push(contract.protocol!);
+  }
+  return { wrongAttributes, registrationProblems, protocols };
+}
+
 /** Every reason this clone cannot merge checkpoints yet; empty when it can. Reads only. */
 export async function checkpointMergeProblems(root: string, gitRoot: string, deps: CheckpointEnableDeps): Promise<string[]> {
-  const problems: string[] = [];
-  let registered: string | null = null;
-  try {
-    registered = execFileSync("git", ["config", "--local", "--get", `merge.${MERGE_DRIVER_V4_NAME}.driver`], { cwd: gitRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 }).trim();
-  } catch {
-    registered = null;
+  const { wrongAttributes, registrationProblems, protocols } = checkpointDriverProblems(join(root, ".story"), gitRoot);
+  const problems = [...registrationProblems];
+  // Ask the binary once per protocol a registration in use requires; with
+  // none registered, ask for the current one, so an old binary is named too.
+  for (const protocol of protocols.length > 0 ? protocols : [MERGE_DRIVER_PROTOCOL]) {
+    const caps = await deps.capabilities(gitRoot, protocol);
+    const record = typeof caps === "object" && caps !== null ? (caps as Record<string, unknown>) : {};
+    if (record.protocol !== protocol || record.checkpoints !== true || typeof record.maxSchemaVersion !== "number" || record.maxSchemaVersion < CHECKPOINT_SCHEMA_VERSION) {
+      problems.push(`the storybloq binary git would run does not answer \`merge-driver --protocol ${protocol} --capabilities\` with owner checkpoints (it predates them, or is not on PATH)`);
+    }
   }
-  if (registered !== MERGE_DRIVER_V4_CMD) {
-    problems.push(registered === null
-      ? `the ${MERGE_DRIVER_V4_NAME} merge driver is not registered in this clone`
-      : `the ${MERGE_DRIVER_V4_NAME} merge driver runs "${registered}", expected "${MERGE_DRIVER_V4_CMD}"`);
-  }
-  const caps = await deps.capabilities(gitRoot);
-  const protocol = typeof caps === "object" && caps !== null ? (caps as Record<string, unknown>).protocol : undefined;
-  const maxSchema = typeof caps === "object" && caps !== null ? (caps as Record<string, unknown>).maxSchemaVersion : undefined;
-  if (protocol !== 4 || typeof maxSchema !== "number" || maxSchema < CHECKPOINT_SCHEMA_VERSION) {
-    problems.push("the storybloq binary git would run does not answer `merge-driver --protocol 4 --capabilities` (it predates owner checkpoints, or is not on PATH)");
-  }
-  for (const { path, driver } of checkpointMergeDrivers(join(root, ".story"))) {
-    if (driver !== MERGE_DRIVER_V4_NAME) problems.push(`git merges ${path} with ${driver ?? "no driver"}, not ${MERGE_DRIVER_V4_NAME}`);
+  for (const { path, driver } of wrongAttributes) {
+    problems.push(`git merges ${path} with ${driver ?? "no driver"}, not ${CHECKPOINT_MERGE_DRIVERS.join(" or ")}`);
   }
   return problems;
 }

@@ -1,6 +1,6 @@
 /**
  * T-537 S4: the schema fence and the merge driver. A checkpoint-enabled team
- * ledger merges only through `storybloq-json-v4`, which a pre-checkpoint CLI
+ * ledger merges only through `storybloq-json-v4` or (T-486) `-v5`, which a pre-checkpoint CLI
  * cannot run; every clone that has not rerun `team setup` sees the tracked
  * `-merge` and conflicts instead of merging. `checkpoint enable` stamps any
  * project, and a team project only after proving its own clone is ready.
@@ -19,6 +19,8 @@ import {
   CHECKPOINT_BLOCK_END,
   MERGE_DRIVER_V4_CMD,
   MERGE_DRIVER_V4_NAME,
+  MERGE_DRIVER_V5_CMD,
+  MERGE_DRIVER_V5_NAME,
   effectiveMergeDriver,
   hasCheckpointGitattributes,
   rulingLifecycleReadiness,
@@ -30,6 +32,7 @@ import { checkpointMergeProblems, enableCheckpoints, type CheckpointEnableDeps }
 import { checkCheckpointMergeAttributes } from "../../src/core/team-doctor.js";
 import {
   MERGE_DRIVER_PROTOCOL,
+  SUPPORTED_MERGE_DRIVER_PROTOCOLS,
   handleMergeDriver,
   ledgerRootOf,
   mergeDriverCapabilities,
@@ -86,12 +89,15 @@ async function project(opts: { git: boolean; team: boolean; nested?: string }): 
 }
 
 const config = (root: string): Record<string, unknown> => JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf-8"));
-const READY: CheckpointEnableDeps = { capabilities: async () => mergeDriverCapabilities() };
+const READY: CheckpointEnableDeps = { capabilities: async (_root, protocol) => mergeDriverCapabilities(protocol) };
 const OLD_BINARY: CheckpointEnableDeps = { capabilities: async () => null };
 
-describe("merge-driver protocol 4", () => {
-  it("reports its capabilities", () => {
-    expect(mergeDriverCapabilities()).toEqual({ protocol: MERGE_DRIVER_PROTOCOL, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
+describe("merge-driver protocols 4 and 5", () => {
+  it("serves 4 and 5, 5 current, and reports each protocol's capabilities", () => {
+    expect(SUPPORTED_MERGE_DRIVER_PROTOCOLS).toEqual([4, 5]);
+    expect(MERGE_DRIVER_PROTOCOL).toBe(5);
+    expect(mergeDriverCapabilities()).toEqual({ protocol: 5, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
+    expect(mergeDriverCapabilities(4)).toEqual({ protocol: 4, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
   });
 
   it("finds the ledger from %P, nested or not", () => {
@@ -100,16 +106,22 @@ describe("merge-driver protocol 4", () => {
     expect(ledgerRootOf("src/x.json", "/r")).toBeNull();
   });
 
-  it("merges a ledger it supports and refuses one it does not, an unreadable one, or another protocol", async () => {
+  it.each([4, 5])("protocol %i merges a ledger it supports and refuses one it does not or an unreadable one", async (protocol) => {
     const { root } = await project({ git: false, team: false });
-    expect(protocolRefusal(4, ".story/tickets/t-1.json", root)).toBeNull();
-    expect(protocolRefusal(5, ".story/tickets/t-1.json", root)).toMatch(/protocol 5 is not supported/);
+    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toBeNull();
     const path = join(root, ".story", "config.json");
     const c = config(root);
     writeFileSync(path, JSON.stringify({ ...c, schemaVersion: 5 }));
-    expect(protocolRefusal(4, ".story/tickets/t-1.json", root)).toMatch(/schemaVersion 5.*supports up to 4/);
+    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(/schemaVersion 5.*supports up to 4/);
     writeFileSync(path, "<<<<<<< ours\n");
-    expect(protocolRefusal(4, ".story/tickets/t-1.json", root)).toMatch(/cannot read the ledger config/);
+    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(/cannot read the ledger config/);
+  });
+
+  it("refuses an unsupported protocol, naming the protocols it serves and team setup", async () => {
+    const { root } = await project({ git: false, team: false });
+    for (const protocol of [3, 6, 4.5]) {
+      expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(new RegExp(`protocol ${protocol} is not supported by this build \\(supports 4 and 5\\); update storybloq, then run storybloq team setup`));
+    }
   });
 
   it("reads %P on forward slashes only, so a backslash stays part of a directory name", async () => {
@@ -127,7 +139,7 @@ describe("merge-driver protocol 4", () => {
     expect(protocolRefusal(4, "app\\name/.story/tickets/t-1.json", repo)).toBeNull();
   });
 
-  it("a refused v4 run exits 2 and leaves ours untouched", async () => {
+  it.each([4, 5])("a refused protocol %i run exits 2 and leaves ours untouched", async (protocol) => {
     const { root } = await project({ git: false, team: false });
     const path = join(root, ".story", "config.json");
     writeFileSync(path, JSON.stringify({ ...config(root), schemaVersion: 5 }));
@@ -141,7 +153,7 @@ describe("merge-driver protocol 4", () => {
     const cwd = process.cwd();
     process.chdir(root);
     try {
-      expect(handleMergeDriver(side("base.json", "base"), ours, side("theirs.json", "theirs"), ".story/tickets/T-001.json", 4)).toBe(2);
+      expect(handleMergeDriver(side("base.json", "base"), ours, side("theirs.json", "theirs"), ".story/tickets/T-001.json", protocol)).toBe(2);
     } finally {
       process.chdir(cwd);
     }
@@ -149,29 +161,32 @@ describe("merge-driver protocol 4", () => {
   });
 });
 
-describe("team setup registers v4 for this clone", () => {
-  it("configures the v4 driver and a root-qualified override git honours over .gitattributes", async () => {
+describe("team setup registers v4 and v5 for this clone and selects v5", () => {
+  it("configures both checkpoint drivers and a root-qualified v5 override git honours over .gitattributes", async () => {
     const { repo, root } = await project({ git: true, team: true });
     await teamSetup(root);
     expect(git(repo, "config", "--local", "--get", `merge.${MERGE_DRIVER_V4_NAME}.driver`)).toBe(MERGE_DRIVER_V4_CMD);
+    expect(git(repo, "config", "--local", "--get", `merge.${MERGE_DRIVER_V5_NAME}.driver`)).toBe(MERGE_DRIVER_V5_CMD);
     const local = readFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "utf-8");
-    expect(local).toContain(`.story/tickets/*.json merge=${MERGE_DRIVER_V4_NAME}`);
-    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
-    expect(effectiveMergeDriver(repo, ".story/config.json")).toBe(MERGE_DRIVER_V4_NAME);
+    expect(local).toContain(`.story/tickets/*.json merge=${MERGE_DRIVER_V5_NAME}`);
+    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
+    expect(effectiveMergeDriver(repo, ".story/config.json")).toBe(MERGE_DRIVER_V5_NAME);
     // The tracked block does not outrank the clone's own override.
     writeCheckpointGitattributes(join(root, ".story"));
-    expect(effectiveMergeDriver(repo, ".story/issues/i-1.json")).toBe(MERGE_DRIVER_V4_NAME);
-    // Readiness checks accept the v4 name.
-    expect(rulingLifecycleReadiness(join(root, ".story"), "1.16.0").attributeOk).toBe(true);
+    expect(effectiveMergeDriver(repo, ".story/issues/i-1.json")).toBe(MERGE_DRIVER_V5_NAME);
+    // Readiness checks accept the v5 name and its registration.
+    const readiness = rulingLifecycleReadiness(join(root, ".story"), "1.16.0");
+    expect(readiness.attributeOk).toBe(true);
+    expect(readiness.registration).toEqual({ ok: true, name: MERGE_DRIVER_V5_NAME, protocol: 5 });
   });
 
   it("qualifies a nested ledger from the repository root", async () => {
     const { repo, root } = await project({ git: true, team: true, nested: "app" });
     await teamSetup(root);
     const local = readFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "utf-8");
-    expect(local).toContain(`app/.story/tickets/*.json merge=${MERGE_DRIVER_V4_NAME}`);
-    expect(effectiveMergeDriver(repo, "app/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
-    expect(effectiveMergeDriver(repo, "other/.story/tickets/t-1.json")).not.toBe(MERGE_DRIVER_V4_NAME);
+    expect(local).toContain(`app/.story/tickets/*.json merge=${MERGE_DRIVER_V5_NAME}`);
+    expect(effectiveMergeDriver(repo, "app/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
+    expect(effectiveMergeDriver(repo, "other/.story/tickets/t-1.json")).not.toBe(MERGE_DRIVER_V5_NAME);
   });
 
   it("matches a nested ledger whose path has spaces or glob characters literally, and nothing else", async () => {
@@ -188,16 +203,16 @@ describe("team setup registers v4 for this clone", () => {
     }
     for (const app of apps) {
       for (const p of [".story/tickets/t-1.json", ".story/issues/i-1.json", ".story/config.json"]) {
-        expect(effectiveMergeDriver(repo, `${app}/${p}`), `${app}/${p}`).toBe(MERGE_DRIVER_V4_NAME);
+        expect(effectiveMergeDriver(repo, `${app}/${p}`), `${app}/${p}`).toBe(MERGE_DRIVER_V5_NAME);
       }
       expect(await checkpointMergeProblems(join(repo, app), repo, READY), app).toEqual([]);
     }
     for (const other of ["a", "p", "xzy", "my"]) {
-      expect(effectiveMergeDriver(repo, `${other}/.story/tickets/t-1.json`), other).not.toBe(MERGE_DRIVER_V4_NAME);
+      expect(effectiveMergeDriver(repo, `${other}/.story/tickets/t-1.json`), other).not.toBe(MERGE_DRIVER_V5_NAME);
     }
     // Setting one up again keeps the others' blocks whole.
     await teamSetup(join(repo, "[app]"));
-    expect(effectiveMergeDriver(repo, "my app/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
+    expect(effectiveMergeDriver(repo, "my app/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
     const local = readFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "utf-8");
     expect(local.split("\\[app\\]/.story/tickets/*.json merge=").length - 1).toBe(1);
   });
@@ -214,7 +229,7 @@ describe("team setup registers v4 for this clone", () => {
     const local = readFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "utf-8");
     // An unquoted name would split its block marker, leaving the rest of the
     // name as a pattern line of its own and the block unfindable next time.
-    const stray = local.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#") && !l.includes(` merge=${MERGE_DRIVER_V4_NAME}`));
+    const stray = local.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("#") && !l.includes(` merge=${MERGE_DRIVER_V5_NAME}`));
     expect(stray, local).toEqual([]);
     expect(local.split("# storybloq-checkpoint-local-begin").length - 1, local).toBe(1);
   });
@@ -224,7 +239,7 @@ describe("team setup registers v4 for this clone", () => {
     await teamSetup(root);
     await teamSetup(root);
     const local = readFileSync(join(repo, git(repo, "rev-parse", "--git-path", "info/attributes")), "utf-8");
-    expect(local.split(`.story/tickets/*.json merge=${MERGE_DRIVER_V4_NAME}`).length - 1).toBe(1);
+    expect(local.split(`.story/tickets/*.json merge=${MERGE_DRIVER_V5_NAME}`).length - 1).toBe(1);
   });
 
   it("refuses a ledger this build cannot read before touching anything", async () => {
@@ -240,6 +255,7 @@ describe("team setup registers v4 for this clone", () => {
       writeFileSync(join(root, ".story", "config.json"), JSON.stringify(bad));
       await expect(teamSetup(root), name).rejects.toThrow(why);
       expect(() => git(repo, "config", "--local", "--get", `merge.${MERGE_DRIVER_V4_NAME}.driver`), name).toThrow();
+      expect(() => git(repo, "config", "--local", "--get", `merge.${MERGE_DRIVER_V5_NAME}.driver`), name).toThrow();
       expect(() => git(repo, "config", "--local", "--get", "merge.storybloq-json.driver"), name).toThrow();
       expect(existsSync(join(root, ".story", ".gitattributes")), name).toBe(false);
       expect(existsSync(infoAttributes), name).toBe(false);
@@ -257,12 +273,12 @@ describe("team setup registers v4 for this clone", () => {
       await teamSetup(root);
     }
     for (const app of ["app-a", "app-b"]) {
-      expect(effectiveMergeDriver(repo, `${app}/.story/tickets/t-1.json`), app).toBe(MERGE_DRIVER_V4_NAME);
+      expect(effectiveMergeDriver(repo, `${app}/.story/tickets/t-1.json`), app).toBe(MERGE_DRIVER_V5_NAME);
       expect(await checkpointMergeProblems(join(repo, app), repo, READY), app).toEqual([]);
     }
     // Setting up the first again keeps the second.
     await teamSetup(join(repo, "app-a"));
-    expect(effectiveMergeDriver(repo, "app-b/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
+    expect(effectiveMergeDriver(repo, "app-b/.story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
   });
 
   it("repairs an override a later conflicting rule defeats", async () => {
@@ -271,9 +287,9 @@ describe("team setup registers v4 for this clone", () => {
     const infoAttributes = join(repo, git(repo, "rev-parse", "--git-path", "info/attributes"));
     writeFileSync(infoAttributes, readFileSync(infoAttributes, "utf-8") + ".story/tickets/*.json merge=storybloq-json\n");
     expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe("storybloq-json");
-    expect(await checkpointMergeProblems(root, repo, READY)).toEqual([`git merges .story/tickets/t-checkpointprobe.json with storybloq-json, not ${MERGE_DRIVER_V4_NAME}`]);
+    expect(await checkpointMergeProblems(root, repo, READY)).toEqual([`git merges .story/tickets/t-checkpointprobe.json with storybloq-json, not ${MERGE_DRIVER_V4_NAME} or ${MERGE_DRIVER_V5_NAME}`]);
     await teamSetup(root);
-    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
+    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
     expect(await checkpointMergeProblems(root, repo, READY)).toEqual([]);
   });
 });
@@ -366,11 +382,11 @@ describe("checkpoint enable", () => {
     expect(existsSync(join(root, ".story", ".gitattributes"))).toBe(false);
   });
 
-  it("refuses when the binary git would run predates protocol 4, even after setup", async () => {
+  it("refuses when the binary git would run predates protocol 5, even after setup", async () => {
     const { root } = await project({ git: true, team: true });
     await teamSetup(root);
     const before = readFileSync(join(root, ".story", "config.json"), "utf-8");
-    await expect(enableCheckpoints(root, OLD_BINARY)).rejects.toThrow(/--protocol 4 --capabilities/);
+    await expect(enableCheckpoints(root, OLD_BINARY)).rejects.toThrow(/--protocol 5 --capabilities/);
     expect(readFileSync(join(root, ".story", "config.json"), "utf-8")).toBe(before);
   });
 
@@ -380,7 +396,7 @@ describe("checkpoint enable", () => {
     expect(await enableCheckpoints(root, READY)).toEqual({ status: "enabled", team: true });
     expect(readFileSync(join(root, ".story", ".gitattributes"), "utf-8")).toContain(CHECKPOINT_BLOCK_BEGIN);
     expect(config(root).schemaVersion).toBe(CHECKPOINT_SCHEMA_VERSION);
-    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V4_NAME);
+    expect(effectiveMergeDriver(repo, ".story/tickets/t-1.json")).toBe(MERGE_DRIVER_V5_NAME);
   });
 
   it("re-decides when team mode is enabled while it runs: validation is never skipped", async () => {

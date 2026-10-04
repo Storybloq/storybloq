@@ -1,0 +1,9 @@
+{
+  "comment": "T-486: published CLIs the compat tests run. Fetched and installed once per machine by `npm run compat:fetch`; never committed. newest is the newest published version when these were pinned.",
+  "newest": "1.15.9",
+  "dists": [
+    { "version": "1.15.2", "sha256": "7ab306cdc2fa611c677375c89073a5191468c1d835e238c844df8972caa48f5a" },
+    { "version": "1.15.3", "sha256": "7e35ba3ecb736c0398c4eca9230349e1286dd1e9223eb0d2dc37f6477cba4f0d" },
+    { "version": "1.15.9", "sha256": "10a960b919f63ec57b5b30d10ed13d32a7e188fdeec0cd962057b6c1821ac804" }
+  ]
+}

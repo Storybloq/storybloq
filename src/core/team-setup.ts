@@ -6,7 +6,13 @@ import { ensureGitignoreEntries, STORY_GITIGNORE_ENTRIES } from "./init.js";
 import { withProjectLock, writeConfigUnlocked } from "./project-loader.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { RULING_LIFECYCLE_MIN_CLI_VERSION, currentCliVersion, meetsVersionMinimum } from "./team-capabilities.js";
+import {
+  RESOLUTION_KIND_MIN_CLI_VERSION,
+  RULING_LIFECYCLE_MIN_CLI_VERSION,
+  TEAM_FENCE_MINIMUMS,
+  currentCliVersion,
+  meetsVersionMinimum,
+} from "./team-capabilities.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,8 +31,38 @@ export const MERGE_DRIVER_DISPLAY_NAME = "Storybloq JSON three-way merge";
 export const MERGE_DRIVER_V4_NAME = "storybloq-json-v4";
 export const MERGE_DRIVER_V4_CMD = "storybloq merge-driver --protocol 4 %O %A %B %P";
 export const MERGE_DRIVER_V4_DISPLAY_NAME = "Storybloq JSON three-way merge (owner checkpoints)";
-/** Both registrations merge structurally; readiness checks accept either. */
-export const STRUCTURAL_MERGE_DRIVERS: ReadonlySet<string> = new Set([MERGE_DRIVER_NAME, MERGE_DRIVER_V4_NAME]);
+/**
+ * T-486: the resolution-kind registration. Its command passes `--protocol 5`,
+ * which a pre-T-486 CLI rejects, so an older binary records a conflict
+ * instead of merging resolution metadata without the two merge groups. Like
+ * v4, selected per clone by the local override, never by the tracked file.
+ */
+export const MERGE_DRIVER_V5_NAME = "storybloq-json-v5";
+export const MERGE_DRIVER_V5_CMD = "storybloq merge-driver --protocol 5 %O %A %B %P";
+export const MERGE_DRIVER_V5_DISPLAY_NAME = "Storybloq JSON three-way merge (resolution kinds)";
+/** Every registration merges structurally. */
+export const STRUCTURAL_MERGE_DRIVERS: ReadonlySet<string> = new Set([MERGE_DRIVER_NAME, MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME]);
+
+/**
+ * T-486 A2/A5: each supported driver name and the exact command setup
+ * generates for it, the only registration readiness accepts (compared after
+ * trimming). A quoted path, a wrapper, npx or a node launcher is
+ * "unsupported", never "foreign": setup replaces it. Setup generates the
+ * same strings on every platform and has no Windows-specific form.
+ */
+export const MERGE_DRIVER_CONTRACTS: ReadonlyMap<string, { readonly command: string; readonly protocol: number | null }> = new Map([
+  // 43655d9d (T-388): the original registration.
+  [MERGE_DRIVER_NAME, { command: MERGE_DRIVER_CMD, protocol: null }],
+  // 8b961ee3 (T-537): owner checkpoints.
+  [MERGE_DRIVER_V4_NAME, { command: MERGE_DRIVER_V4_CMD, protocol: 4 }],
+  // T-486: resolution kinds.
+  [MERGE_DRIVER_V5_NAME, { command: MERGE_DRIVER_V5_CMD, protocol: 5 }],
+]);
+
+/** The drivers that honour owner checkpoints. */
+export const CHECKPOINT_MERGE_DRIVERS: readonly string[] = [MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME];
+
+export const UNSUPPORTED_REGISTRATION_MESSAGE = "unsupported merge driver registration; run storybloq team setup";
 
 /**
  * ISS-734: inline collision guidance printed by `team init` and `team setup`
@@ -144,7 +180,8 @@ function attributePattern(pattern: string): string {
 }
 
 /**
- * T-537: selects the v4 driver in THIS clone, in the file git names for
+ * T-537: selects the checkpoint driver in THIS clone (T-486: v5, which also
+ * honours checkpoints; an existing v4 block is rewritten to v5), in the file git names for
  * `info/attributes` (correct in a linked worktree too), which outranks every
  * `.gitattributes`. Patterns are qualified from the repository root, so a
  * nested ledger (`app/.story/`) is matched where it is, and each ledger owns
@@ -154,7 +191,7 @@ export async function writeLocalCheckpointAttributes(gitRoot: string, storyDir: 
   const { stdout } = await execFileAsync("git", ["rev-parse", "--git-path", "info/attributes"], { cwd: gitRoot, timeout: 5000 });
   const filePath = resolve(gitRoot, stdout.trim());
   const prefix = relative(realpathSync(gitRoot), realpathSync(storyDir)).split(sep).join("/");
-  const lines = LEDGER_PATTERNS.map((p) => `${attributePattern(`${escapeGlob(prefix)}/${p}`)} merge=${MERGE_DRIVER_V4_NAME}`);
+  const lines = LEDGER_PATTERNS.map((p) => `${attributePattern(`${escapeGlob(prefix)}/${p}`)} merge=${MERGE_DRIVER_V5_NAME}`);
   const key = attributePattern(prefix);
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : "";
   const next = withBlockLast(existing, localBlockBegin(key), localBlockEnd(key), lines);
@@ -189,6 +226,14 @@ export async function installMergeDriver(gitRoot: string): Promise<void> {
   );
   await execFileAsync(
     "git", ["config", "--local", `merge.${MERGE_DRIVER_V4_NAME}.name`, MERGE_DRIVER_V4_DISPLAY_NAME],
+    { cwd: gitRoot, timeout: 5000 },
+  );
+  await execFileAsync(
+    "git", ["config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, MERGE_DRIVER_V5_CMD],
+    { cwd: gitRoot, timeout: 5000 },
+  );
+  await execFileAsync(
+    "git", ["config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.name`, MERGE_DRIVER_V5_DISPLAY_NAME],
     { cwd: gitRoot, timeout: 5000 },
   );
 }
@@ -228,32 +273,43 @@ export async function writeGitattributes(storyDir: string): Promise<void> {
 /** T-522: what `team setup` did about the 1.16 rulings fence. */
 export type RulingFenceOutcome = "raised" | "already" | "deferred";
 
-export async function updateConfigVersion(root: string): Promise<RulingFenceOutcome> {
-  let outcome: RulingFenceOutcome = "already";
+/**
+ * T-486: the fence raise for every capability minimum, in order, under the
+ * T-522 rule (never past what this CLI itself passes). A minimum this CLI
+ * cannot pass is deferred, and so is every later one: the fence never skips
+ * a capability. Returns the outcome per minimum.
+ */
+export async function raiseTeamFence(
+  root: string,
+  minimums: readonly string[] = TEAM_FENCE_MINIMUMS,
+): Promise<Map<string, RulingFenceOutcome>> {
+  const outcomes = new Map<string, RulingFenceOutcome>();
   await withProjectLock(root, { strict: false }, async ({ state }) => {
     const config = { ...state.config, team: { ...(state.config.team ?? {}) } };
     config.team.mergeDriverVersion = MERGE_DRIVER_VERSION;
-    // T-522: raise the write fence to the first rulings-lifecycle CLI, but
-    // ONLY when this CLI itself passes it. Writing a fence this binary cannot
-    // pass would brick its own next write (the ISS-748 class of failure); a
-    // pre-1.16 build reports the raise as deferred and the ruling write
-    // precondition keeps refusing until a 1.16 build reruns setup.
-    // An existing lower fence is raised to exactly the minimum (never past
-    // a teammate's 1.16.x); an ABSENT fence takes this CLI's own version,
-    // which is `team init`'s convention for a fresh team.
-    const fence = typeof config.team.minCliVersion === "string" ? config.team.minCliVersion : null;
-    if (fence === null || !meetsVersionMinimum(fence, RULING_LIFECYCLE_MIN_CLI_VERSION)) {
-      const current = currentCliVersion();
-      if (current !== null && meetsVersionMinimum(current, RULING_LIFECYCLE_MIN_CLI_VERSION)) {
-        config.team.minCliVersion = fence === null ? current : RULING_LIFECYCLE_MIN_CLI_VERSION;
-        outcome = "raised";
+    let fence = typeof config.team.minCliVersion === "string" ? config.team.minCliVersion : null;
+    const current = currentCliVersion();
+    let blocked = false;
+    for (const minimum of minimums) {
+      if (fence !== null && meetsVersionMinimum(fence, minimum)) {
+        outcomes.set(minimum, "already");
+      } else if (!blocked && current !== null && meetsVersionMinimum(current, minimum)) {
+        fence = fence === null ? current : minimum;
+        outcomes.set(minimum, "raised");
       } else {
-        outcome = "deferred";
+        blocked = true;
+        outcomes.set(minimum, "deferred");
       }
     }
+    if (fence !== null) config.team.minCliVersion = fence;
     await writeConfigUnlocked(config, root);
   });
-  return outcome;
+  return outcomes;
+}
+
+/** T-522: the rulings fence alone (kept for callers that ask only about it). */
+export async function updateConfigVersion(root: string): Promise<RulingFenceOutcome> {
+  return (await raiseTeamFence(root, [RULING_LIFECYCLE_MIN_CLI_VERSION])).get(RULING_LIFECYCLE_MIN_CLI_VERSION)!;
 }
 
 export interface SetupResult {
@@ -266,6 +322,8 @@ export interface SetupResult {
   idAllocator: "local" | "git-refs";
   /** T-522: whether `team.minCliVersion` now admits 1.16 ruling records. */
   rulingFence: RulingFenceOutcome;
+  /** T-486: whether it now admits resolution-kind writes. */
+  resolutionKindFence: RulingFenceOutcome;
 }
 
 export async function teamSetup(root: string): Promise<SetupResult> {
@@ -306,7 +364,9 @@ export async function teamSetup(root: string): Promise<SetupResult> {
   // a ledger that has one keeps it last.
   if (mentionsCheckpointBlock(storyDir)) writeCheckpointGitattributes(storyDir);
   await writeLocalCheckpointAttributes(gitRoot, storyDir);
-  const rulingFence = await updateConfigVersion(root);
+  const fences = await raiseTeamFence(root);
+  const rulingFence = fences.get(RULING_LIFECYCLE_MIN_CLI_VERSION) ?? "already";
+  const resolutionKindFence = fences.get(RESOLUTION_KIND_MIN_CLI_VERSION) ?? "already";
   // ISS-754: legacy projects upgraded to team mode predate init's gitignore
   // writing; without this, sessions/, snapshots/, status.json (absolute paths
   // including the username) become committed to the shared team repo.
@@ -334,6 +394,7 @@ export async function teamSetup(root: string): Promise<SetupResult> {
     gitRoot,
     idAllocator,
     rulingFence,
+    resolutionKindFence,
   };
 }
 
@@ -353,12 +414,90 @@ export function rulingLifecycleReadiness(
   storyDir: string,
   minCliVersion: string | undefined,
   rulingId: string = "r-0000000000000000",
-): { fenceOk: boolean; attributeOk: boolean } {
+): { fenceOk: boolean; attributeOk: boolean; registration: MergeDriverRegistration } {
   const fenceOk = meetsVersionMinimum(minCliVersion, RULING_LIFECYCLE_MIN_CLI_VERSION);
   const root = dirname(storyDir);
-  const driver = effectiveMergeDriver(root, `${basename(storyDir)}/rulings/${rulingId}.json`);
+  const relPath = `${basename(storyDir)}/rulings/${rulingId}.json`;
+  const driver = effectiveMergeDriver(root, relPath);
   const attributeOk = driver !== null && STRUCTURAL_MERGE_DRIVERS.has(driver);
-  return { fenceOk, attributeOk };
+  // T-486 A2: the attribute alone proves nothing if the name runs no
+  // command, or a command setup never generated. Any supported registration
+  // whose command matches its own contract is accepted.
+  const registration = mergeDriverRegistration(root, relPath);
+  return { fenceOk, attributeOk, registration };
+}
+
+/**
+ * T-486 R3-1: whether git would merge `relPath` (under `root`) with a driver
+ * whose registration is exactly what setup generates. Three facts, all asked
+ * of git and all failing closed: the `merge` attribute git resolves names a
+ * supported driver (one of `accept`, when given); `git config --get` for its
+ * command, with no scope flag so git's own precedence applies (worktree
+ * config, local, global, system); and that command, trimmed, equals the
+ * contract. Pure read.
+ */
+export type MergeDriverRegistration =
+  | { readonly ok: true; readonly name: string; readonly protocol: number | null }
+  | { readonly ok: false; readonly reason: "attribute" | "unregistered" | "unsupported" | "git"; readonly message: string };
+
+export function mergeDriverRegistration(
+  root: string,
+  relPath: string,
+  accept: readonly string[] = [...MERGE_DRIVER_CONTRACTS.keys()],
+): MergeDriverRegistration {
+  const name = effectiveMergeDriver(root, relPath);
+  if (name === null || !accept.includes(name)) {
+    return {
+      ok: false,
+      reason: "attribute",
+      message: `git merges ${relPath} with ${name ?? "no driver"}, not ${accept.join(" or ")}; run storybloq team setup`,
+    };
+  }
+  const contract = MERGE_DRIVER_CONTRACTS.get(name)!;
+  const registered = registeredMergeDriverCommand(root, name);
+  if (registered.kind === "git") return { ok: false, reason: "git", message: `git could not read merge.${name}.driver: ${registered.detail}` };
+  if (registered.kind === "absent") {
+    return { ok: false, reason: "unregistered", message: `the ${name} merge driver is not registered; run storybloq team setup` };
+  }
+  if (registered.command.trim() !== contract.command) {
+    return { ok: false, reason: "unsupported", message: `${UNSUPPORTED_REGISTRATION_MESSAGE} (merge.${name}.driver)` };
+  }
+  return { ok: true, name, protocol: contract.protocol };
+}
+
+/** The command git would run for driver `name`, in git's own scope precedence, or why it cannot say. */
+export function registeredMergeDriverCommand(
+  root: string,
+  name: string,
+  scope: "effective" | "local" = "effective",
+): { kind: "present"; command: string } | { kind: "absent" } | { kind: "git"; detail: string } {
+  const args = ["config", ...(scope === "local" ? ["--local"] : []), "--get", `merge.${name}.driver`];
+  try {
+    const out = execFileSync("git", args, { cwd: root, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+    return { kind: "present", command: out.replace(/\n$/, "") };
+  } catch (err) {
+    const e = err as { status?: number | null; stderr?: unknown; message?: string };
+    // `git config --get` exits 1 for a key that is not set, and only then.
+    if (e.status === 1) return { kind: "absent" };
+    const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
+    return { kind: "git", detail: stderr || e.message || String(err) };
+  }
+}
+
+/**
+ * T-486 2b: the two facts a team ledger needs before a resolution-kind
+ * write: the fence admits only kind-aware writers, and `relPath` merges with
+ * the v5 driver registered exactly as setup generates it.
+ */
+export function resolutionWritesReadiness(
+  root: string,
+  minCliVersion: string | undefined,
+  relPath: string,
+): { fenceOk: boolean; driver: MergeDriverRegistration } {
+  return {
+    fenceOk: meetsVersionMinimum(minCliVersion, RESOLUTION_KIND_MIN_CLI_VERSION),
+    driver: mergeDriverRegistration(root, relPath, [MERGE_DRIVER_V5_NAME]),
+  };
 }
 
 /** T-529: the catalog files whose merges must run the structural driver. */

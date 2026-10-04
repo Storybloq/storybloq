@@ -601,18 +601,20 @@ export function registerMergeDriverCommand(yargs: Argv): Argv {
         .positional("ours", { type: "string", describe: "Our (HEAD) file path" })
         .positional("theirs", { type: "string", describe: "Their (incoming) file path" })
         .positional("pathname", { type: "string", describe: "Logical file path (%P)" })
-        .option("protocol", { type: "number", describe: "Driver protocol the registration requires (T-537: 4)" })
+        .option("protocol", { type: "number", describe: "Driver protocol the registration requires (4: owner checkpoints; 5: resolution kinds)" })
         .option("capabilities", { type: "boolean", default: false, describe: "Print the driver's capabilities as JSON and exit" }),
     async (argv) => {
-      const { handleMergeDriver, mergeDriverCapabilities, MERGE_DRIVER_PROTOCOL } = await import("./commands/merge-driver.js");
+      const { handleMergeDriver, mergeDriverCapabilities, isSupportedMergeDriverProtocol, unsupportedProtocolMessage } = await import("./commands/merge-driver.js");
       const protocol = argv.protocol as number | undefined;
       if (argv.capabilities) {
-        if (protocol !== undefined && protocol !== MERGE_DRIVER_PROTOCOL) {
-          process.stderr.write(`storybloq merge-driver: protocol ${protocol} is not supported by this build (supports ${MERGE_DRIVER_PROTOCOL})\n`);
+        // The same predicate the merge path refuses with; an omitted
+        // protocol answers for the current one.
+        if (protocol !== undefined && !isSupportedMergeDriverProtocol(protocol)) {
+          process.stderr.write(`storybloq merge-driver: ${unsupportedProtocolMessage(protocol)}\n`);
           process.exitCode = 2;
           return;
         }
-        process.stdout.write(JSON.stringify(mergeDriverCapabilities()) + "\n");
+        process.stdout.write(JSON.stringify(mergeDriverCapabilities(protocol)) + "\n");
         process.exitCode = 0;
         return;
       }

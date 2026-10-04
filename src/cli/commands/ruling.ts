@@ -107,10 +107,11 @@ export const RULING_LIFECYCLES: readonly RulingLifecycle[] = ["proposed", "accep
 function assertRulingWritesEnabled(config: Config, root: string, rulingId: string): void {
   if (!isTeamModeConfig(config)) return;
   const readiness = rulingLifecycleReadiness(join(root, ".story"), config.team?.minCliVersion, rulingId);
-  if (readiness.fenceOk && readiness.attributeOk) return;
+  if (readiness.fenceOk && readiness.attributeOk && readiness.registration.ok) return;
   const gaps: string[] = [];
   if (!readiness.fenceOk) gaps.push(`team.minCliVersion is ${config.team?.minCliVersion ?? "unset"}, below ${RULING_LIFECYCLE_MIN_CLI_VERSION}`);
   if (!readiness.attributeOk) gaps.push(`git does not resolve \`merge=storybloq-json\` for .story/rulings/${rulingId}.json (\`.story/.gitattributes\` needs the \`rulings/*.json merge=storybloq-json\` line, unoverridden)`);
+  else if (!readiness.registration.ok) gaps.push(readiness.registration.message);
   throw new CliValidationError(
     "conflict",
     `Ruling writes are disabled in this team project until \`storybloq team setup\` enables 1.16 rulings (${gaps.join("; ")}). Run it on a ${RULING_LIFECYCLE_MIN_CLI_VERSION}+ CLI; reads are unaffected.`,

@@ -1,0 +1,758 @@
+[
+  {
+    "name": "effective fixed",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "fixed",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "effective wontfix",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "wontfix",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "effective duplicate",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "duplicate",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "duplicate",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "effective superseded",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "superseded",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "superseded",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "effective not_reproducible",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "not_reproducible",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "not_reproducible",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "absent",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": []
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "reopened",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "stale date",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-03-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "stale digest",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Fixed in a later commit.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "same day unchanged resolution (W4 residual)",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": "wontfix",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "null resolution digest",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "e3b0c44298fc1c14"
+      }
+    },
+    "expectedKindView": {
+      "kind": "fixed",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed missing field",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed non-string kind",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": 7,
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed unknown kind",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "abandoned",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed bad closedOn",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "Feb 1",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed short digest",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "abc"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed string",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": "wontfix"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed array",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": [
+        "wontfix"
+      ]
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "malformed null",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": null
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "malformed"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "wrong entity withdrawn",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "withdrawn",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "wrong-entity"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "evidence effective",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "disposition": "owner_gated",
+      "dispositionReason": "pricing is the owner's call",
+      "dispositionRef": "ISS-002",
+      "dispositionFor": "owner_gated"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": "pricing is the owner's call",
+      "ref": "ISS-002",
+      "state": "effective"
+    }
+  },
+  {
+    "name": "evidence unbound after a disposition change",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "disposition": "owner_gated",
+      "dispositionReason": "pricing is the owner's call",
+      "dispositionRef": "ISS-002",
+      "dispositionFor": "accepted_out_of_scope"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "unbound"
+    }
+  },
+  {
+    "name": "evidence unbound after a clear",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "dispositionReason": "pricing is the owner's call",
+      "dispositionRef": "ISS-002",
+      "dispositionFor": "owner_gated"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "unbound"
+    }
+  },
+  {
+    "name": "evidence malformed reason",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "disposition": "owner_gated",
+      "dispositionReason": "",
+      "dispositionRef": "ISS-002",
+      "dispositionFor": "owner_gated"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "evidence malformed dispositionFor",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "disposition": "owner_gated",
+      "dispositionReason": "pricing is the owner's call",
+      "dispositionRef": "ISS-002",
+      "dispositionFor": "later"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "malformed"
+    }
+  },
+  {
+    "name": "evidence missing dispositionFor",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": null,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": null,
+      "relatedTickets": [],
+      "disposition": "owner_gated",
+      "dispositionReason": "pricing is the owner's call",
+      "dispositionRef": "ISS-002"
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "absent"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "malformed"
+    }
+  }
+]

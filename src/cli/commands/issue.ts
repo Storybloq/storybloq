@@ -92,6 +92,13 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   "deletedAt",
   "deletedBy",
   "citesRulings",
+  // T-486: set through `issue update`, which checks them together.
+  "disposition",
+  "dispositionReason",
+  "dispositionRef",
+  "dispositionFor",
+  "duplicateOf",
+  "resolutionKind",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {

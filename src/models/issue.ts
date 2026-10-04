@@ -153,6 +153,16 @@ export const IssueSchema = z
     // src/core/issue-disposition.ts.
     disposition: IssueDispositionSchema.optional(),
     duplicateOf: z.union([TicketIdSchema, IssueIdSchema]).optional(),
+    // T-486: why the issue was closed, and the evidence behind its
+    // disposition. Any value loads: a shape refused here would drop the issue
+    // from state and refuse every strict write on the board. Readers go
+    // through src/core/resolution-kind.ts, which checks the shape and the
+    // facts each value was written against; writes are checked at the write
+    // boundary.
+    resolutionKind: z.unknown().optional(),
+    dispositionReason: z.unknown().optional(),
+    dispositionRef: z.unknown().optional(),
+    dispositionFor: z.unknown().optional(),
   })
   .passthrough();
 

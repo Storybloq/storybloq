@@ -10,6 +10,7 @@ import type { Ruling } from "../models/ruling.js";
 import type { RulingScanCompleteness } from "./ruling-loader.js";
 import { buildSuccessorIndex, buildCitationResolutionContext, lifecycleMapFor, resolveCitation, type UpwardBoard } from "./ruling.js";
 import { classifyLifecycle, isEffectivelyAccepted } from "./ruling-lifecycle.js";
+import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, resolutionKindView } from "./resolution-kind.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
 
@@ -450,6 +451,63 @@ export function validateProject(
         message: `Issue ${i.id} is open with no related tickets.`,
         entity: i.id,
       });
+    }
+  }
+
+  // T-486: resolution kinds and disposition evidence that no longer count.
+  // Readers already ignore them (src/core/resolution-kind.ts); this says why.
+  for (const i of state.issues) {
+    if ((i as Record<string, unknown>).lifecycle === "deleted") continue;
+    const rec = i as Record<string, unknown>;
+    const kind = resolutionKindView(rec);
+    if (kind.state === "stale") {
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_stale",
+        message: `Issue ${displayIdOf(i)} has a resolution kind that no longer matches its closure (status, resolved date or resolution text changed after it was written, for example by a client that does not know the field). It is ignored until set again.`,
+        entity: i.id,
+      });
+    } else if (kind.state === "malformed") {
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_malformed",
+        message: `Issue ${displayIdOf(i)} has a resolutionKind value that is not a valid resolution kind record. It is ignored.`,
+        entity: i.id,
+      });
+    } else if (kind.state === "wrong-entity") {
+      findings.push({
+        level: "warning",
+        code: "resolution_kind_wrong_entity",
+        message: `Issue ${displayIdOf(i)} carries the ticket-only resolution kind "withdrawn". It is ignored.`,
+        entity: i.id,
+      });
+    }
+    const evidence = dispositionEvidenceView(rec);
+    if (evidence.state === "unbound") {
+      const now = typeof rec.disposition === "string" ? `the disposition is now ${rec.disposition}` : "the disposition has been cleared";
+      findings.push({
+        level: "warning",
+        code: "disposition_evidence_unbound",
+        message: `Issue ${displayIdOf(i)} has disposition evidence written for ${String(rec.dispositionFor)}, but ${now}. The evidence is ignored until set again.`,
+        entity: i.id,
+      });
+    } else if (evidence.state === "malformed") {
+      findings.push({
+        level: "warning",
+        code: "disposition_evidence_malformed",
+        message: `Issue ${displayIdOf(i)} has dispositionReason, dispositionRef or dispositionFor values that do not form valid evidence. They are ignored.`,
+        entity: i.id,
+      });
+    }
+    for (const key of RESERVED_RESPONSE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(rec, key)) {
+        findings.push({
+          level: "warning",
+          code: "reserved_key_collision",
+          message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which is reserved for derived values in JSON output. The stored record is returned unchanged under "stored" in JSON responses.`,
+          entity: i.id,
+        });
+      }
     }
   }
 

@@ -97,10 +97,21 @@ const ISSUE_RULES: Record<string, MergeRule> = {
   updatedAt: { kind: "coupled", group: "attribution", members: ["lastModifiedBy", "updatedAt", "updatedDate"], latestWinsField: "updatedAt", onAmbiguous: "conflict" },
   updatedDate: { kind: "coupled", group: "attribution", members: ["lastModifiedBy", "updatedAt", "updatedDate"], latestWinsField: "updatedAt", onAmbiguous: "conflict" },
 
-  status: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle"] },
-  resolvedDate: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle"] },
+  status: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+  resolvedDate: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
 
-  lifecycle: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle"] },
+  lifecycle: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+  // T-486: the kind binds to the closure (src/core/resolution-kind.ts), so a
+  // reopen on one side and a kind on the other is one divergence, never two
+  // independent edits merged into a kind on a reopened issue.
+  resolutionKind: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+
+  // T-486: a disposition and the evidence written for it move together.
+  disposition: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
+  dispositionReason: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
+  dispositionRef: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
+  dispositionFor: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
+  duplicateOf: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
 
   // T-475: see the ticket rule of the same name -- identical treatment.
   earmark: { kind: "hard-conflict" },

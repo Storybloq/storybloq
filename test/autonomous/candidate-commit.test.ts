@@ -1685,6 +1685,29 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(closed.intent.ticketPreimage).toBeNull();
   });
 
+  it("ISS-958 exception (iii): a published-but-undurable transition is refused truthfully, naming the published revision", async () => {
+    const state = plantLive();
+    writeMarker();
+    const publishedRevision = state.revision + 4;
+    const result = await commitCandidateCancelLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, cancelDeps({
+      apply: async () => {
+        throw new StateWriteUndurableError(
+          { ...currentState(), revision: publishedRevision } as FullSessionState,
+          new Error("EIO: injected dir fsync failure"),
+        );
+      },
+    }));
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.stage).toBe("transition");
+    expect(result.detail).toContain(`state published at revision ${publishedRevision}, durability unproven`);
+    expect(result.detail).toContain("the intent stays open and a retry resumes the published record");
+    expect(result.detail).not.toContain("refused or failed");
+    expect(readCancellationIntent(sessDir).kind).toBe("valid");
+  });
+
   it("CRASH AFTER THE CLAIM CLEARED: the retry publishes `released`, not the denial a fresh count would give", async () => {
     // The window between the transaction clearing and write 1 landing. On the
     // retry the intent is durably `claim_cleared`, so neither the opener nor

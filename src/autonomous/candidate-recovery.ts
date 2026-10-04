@@ -3252,6 +3252,13 @@ export async function commitCandidateCancelLocked(
       authority,
     });
   } catch (err) {
+    // ISS-958 exception (iii): an undurable write PUBLISHED the transition, so
+    // "refused or failed" would be false; say what was published instead.
+    if (err instanceof StateWriteUndurableError) {
+      return { kind: "refused", stage: "transition", detail:
+        `state published at revision ${err.published.revision}, durability unproven (${err.message}); ` +
+        "the intent stays open and a retry resumes the published record" };
+    }
     return { kind: "refused", stage: "transition", detail:
       `the transition refused or failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
       "durable intent is unchanged, so re-authorization and retry remain available" };

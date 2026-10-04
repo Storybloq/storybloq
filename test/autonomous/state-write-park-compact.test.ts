@@ -153,6 +153,69 @@ function shutdownMarked(dir: string): boolean {
 const markerPath = (root: string) => join(root, ".claude", "rules", "autonomous-resume.md");
 
 // ---------------------------------------------------------------------------
+// Retired park, TR (section 1d)
+// ---------------------------------------------------------------------------
+
+const parkCases: Array<[string, Record<string, unknown>, () => void]> = [
+  ["stripped", { state: "IMPLEMENT", interruptionKind: null, limitStopPending: false, limitPermissionMode: null }, () => {}],
+  ["compact-park", park(), () => {}],
+  ["finalize-kept", finalize({ finalizeCheckpoint: "committed" }), () => {}],
+  ["finalize-recovered", finalize({ finalizeCheckpoint: "precommit_passed" }), () => {
+    head.mockResolvedValue({ ok: true, data: { hash: MOVED } } as never);
+    tree.mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json"] } as never);
+    ancestor.mockResolvedValue({ ok: true, data: false } as never);
+  }],
+];
+
+describe.each(parkCases)("ISS-958 S4: retired park %s (policy TR)", (transition, fields, arrange) => {
+  it("records the published normalization once, refuses truthfully, and a retry records nothing", async () => {
+    // The success path on a twin fixture fixes the exact record to expect.
+    const twinRoot = project();
+    const twin = plant(twinRoot, fields);
+    arrange();
+    const ok = await normalizeRetiredLimitPark(twinRoot, twin.id, { globalDir });
+    expect(ok).toMatchObject({ kind: "normalized", transition });
+    const [expected] = events(twin.dir, "limit_park_retired");
+
+    const root = project();
+    const { id, dir } = plant(root, fields);
+    arrange();
+    armTyped(dir);
+    const r = await normalizeRetiredLimitPark(root, id, { globalDir });
+    expect(faultFired()).toBe(true);
+    expect(r.kind).toBe("failed");
+    const published = readSession(dir)!;
+    if (r.kind === "failed") {
+      expect(r.reason).toContain(`normalization published at revision ${published.revision}`);
+      expect(r.reason).toContain("retry is safe");
+    }
+    expect(limitKeysOf(dir)).toEqual([]);
+    const recorded = events(dir, "limit_park_retired");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]!.rev).toBe(published.revision);
+    expect(recorded[0]!.data).toEqual(expected!.data);
+
+    disarm();
+    const retry = await normalizeRetiredLimitPark(root, id, { globalDir });
+    expect(retry.kind).toBe("unchanged");
+    expect(events(dir, "limit_park_retired")).toHaveLength(1);
+  });
+
+  it("a pre-rename failure records nothing and keeps the generic refusal", async () => {
+    const root = project();
+    const { id, dir } = plant(root, fields);
+    arrange();
+    armFail({ dir });
+    const r = await normalizeRetiredLimitPark(root, id, { globalDir });
+    expect(faultFired()).toBe(true);
+    expect(r.kind).toBe("failed");
+    if (r.kind === "failed") expect(r.reason).toContain("write failed");
+    expect(events(dir, "limit_park_retired")).toEqual([]);
+    expect(limitKeysOf(dir).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TP8 clear-compact invalid branch and TP9 session stop (TC)
 // ---------------------------------------------------------------------------
 

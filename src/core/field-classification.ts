@@ -48,13 +48,16 @@ const TICKET_RULES: Record<string, MergeRule> = {
 
   // T-537: a checkpoint's record and a dependent's evidence travel with the
   // status they justify, so a divergence never merges one without the other.
-  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
-  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
-  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
-  ownerCheckpoint: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
-  checkpointEvidence: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
-  // T-486 U2: a withdrawal binds to the completion it explains.
-  resolutionKind: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"] },
+  status: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
+  completedDate: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
+  lifecycle: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
+  ownerCheckpoint: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
+  checkpointEvidence: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
+  // T-486 U2: a withdrawal binds to the completion it explains. On a
+  // divergence the body keeps OUR side whole: a per-member fallback to base
+  // could pair base's completion with a side's withdrawal, an effective state
+  // neither side wrote and no write guard saw.
+  resolutionKind: { kind: "coupled", group: "ticket-status", members: ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"], onDivergence: "keep-ours" },
 
   // T-475: earmark is a single self-contained discriminated-union field, so
   // it is hard-conflict rather than "coupled" -- "coupled" groups in this
@@ -99,21 +102,25 @@ const ISSUE_RULES: Record<string, MergeRule> = {
   updatedAt: { kind: "coupled", group: "attribution", members: ["lastModifiedBy", "updatedAt", "updatedDate"], latestWinsField: "updatedAt", onAmbiguous: "conflict" },
   updatedDate: { kind: "coupled", group: "attribution", members: ["lastModifiedBy", "updatedAt", "updatedDate"], latestWinsField: "updatedAt", onAmbiguous: "conflict" },
 
-  status: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
-  resolvedDate: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+  status: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"], onDivergence: "keep-ours" },
+  resolvedDate: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"], onDivergence: "keep-ours" },
 
-  lifecycle: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+  lifecycle: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"], onDivergence: "keep-ours" },
   // T-486: the kind binds to the closure (src/core/resolution-kind.ts), so a
   // reopen on one side and a kind on the other is one divergence, never two
   // independent edits merged into a kind on a reopened issue.
-  resolutionKind: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"] },
+  // keep-ours for the same reason as ticket-status: base's closure plus a
+  // side's kind would be effective on neither side.
+  resolutionKind: { kind: "coupled", group: "issue-status", members: ["status", "resolvedDate", "lifecycle", "resolutionKind"], onDivergence: "keep-ours" },
 
   // T-486: a disposition and the evidence written for it move together.
-  disposition: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
-  dispositionReason: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
-  dispositionRef: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
-  dispositionFor: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
-  duplicateOf: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"] },
+  // keep-ours: a base lacking an optional member would otherwise merge into
+  // base's reason plus a side's added ref, a disposition no side wrote.
+  disposition: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"], onDivergence: "keep-ours" },
+  dispositionReason: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"], onDivergence: "keep-ours" },
+  dispositionRef: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"], onDivergence: "keep-ours" },
+  dispositionFor: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"], onDivergence: "keep-ours" },
+  duplicateOf: { kind: "coupled", group: "issue-disposition", members: ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"], onDivergence: "keep-ours" },
 
   // T-475: see the ticket rule of the same name -- identical treatment.
   earmark: { kind: "hard-conflict" },

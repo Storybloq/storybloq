@@ -289,19 +289,62 @@ describe("T-486 U2 collision fixture: stored keys are preserved byte for byte", 
 // --- merge group and protected keys ----------------------------------------
 
 describe("T-486 U2 merge: resolutionKind is in ticket-status (G1)", () => {
-  it("group membership is exactly as specified, on every member", () => {
+  const MEMBERS = ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"];
+
+  /** The merged group is our side member for member; a member ours lacks stays absent. */
+  const groupIsOurs = (merged: Record<string, unknown>, ours: Record<string, unknown>) => {
+    for (const m of MEMBERS) {
+      expect(Object.hasOwn(merged, m), m).toBe(Object.hasOwn(ours, m));
+      if (Object.hasOwn(ours, m)) expect(merged[m], m).toStrictEqual(ours[m]);
+    }
+  };
+
+  it("group membership is exactly as specified, on every member, and a divergence keeps ours whole", () => {
     const rules = getMergeRules("ticket");
-    const members = ["status", "completedDate", "lifecycle", "ownerCheckpoint", "checkpointEvidence", "resolutionKind"];
-    for (const key of members) expect(rules[key], key).toEqual({ kind: "coupled", group: "ticket-status", members });
+    for (const key of MEMBERS) expect(rules[key], key).toEqual({ kind: "coupled", group: "ticket-status", members: MEMBERS, onDivergence: "keep-ours" });
   });
 
-  it("X reopens while Y withdraws: one coupled conflict, never a merged withdrawal", () => {
+  it("X reopens while Y withdraws: one coupled conflict, the body keeps ours whole, never a merged withdrawal", () => {
+    // Theirs is effective as a whole side; ours is not. Before keep-ours the
+    // body took base's completion plus theirs' withdrawal.
     const base = { ...byName("absent").ticket };
     const ours = { ...base, status: "open", completedDate: null };
     const theirs = { ...base, resolutionKind: WITHDRAWAL };
+    expect(isEffectivelyWithdrawn(theirs)).toBe(true);
     const r = threeWayMerge(base, ours, theirs, "ticket");
     expect(r.clean).toBe(false);
-    expect(r.conflicts.some((c) => c.group === "ticket-status")).toBe(true);
+    expect(isEffectivelyWithdrawn(r.merged)).toBe(false);
+    groupIsOurs(r.merged, ours);
+    // The entries carry theirs whole, so `resolve --use theirs` still restores
+    // their side as one unit (and before U2-6 the boundary refuses it: W8).
+    const entries = r.conflicts.filter((c) => c.group === "ticket-status");
+    expect(entries.map((c) => c.field).sort()).toEqual([...MEMBERS].sort());
+    for (const c of entries) expect(c.theirs, c.field).toStrictEqual((theirs as Record<string, unknown>)[String(c.field)]);
+  });
+
+  it("a stale withdrawal on ours and a re-completion on theirs never merge into an effective withdrawal", () => {
+    // Neither side is effective. Before keep-ours the body took base's
+    // completion on D and ours' withdrawal bound to D.
+    const base = { ...byName("absent").ticket, completedDate: "2026-02-01" };
+    const ours = { ...base, status: "open", completedDate: null, resolutionKind: { ...WITHDRAWAL, closedOn: "2026-02-01" } };
+    const theirs = { ...base, completedDate: "2026-03-01" };
+    expect(isEffectivelyWithdrawn(ours)).toBe(false);
+    expect(isEffectivelyWithdrawn(theirs)).toBe(false);
+    const r = threeWayMerge(base, ours, theirs, "ticket");
+    expect(r.clean).toBe(false);
+    expect(isEffectivelyWithdrawn(r.merged)).toBe(false);
+    groupIsOurs(r.merged, ours);
+  });
+
+  it("theirs-only withdrawal with ours lacking the key keeps the key absent in the body", () => {
+    const base = { ...byName("absent").ticket };
+    const ours = { ...base, completedDate: "2026-03-01" };
+    const theirs = { ...base, resolutionKind: WITHDRAWAL };
+    const r = threeWayMerge(base, ours, theirs, "ticket");
+    expect(r.clean).toBe(false);
+    expect(Object.hasOwn(r.merged, "resolutionKind")).toBe(false);
+    expect(isEffectivelyWithdrawn(r.merged)).toBe(false);
+    groupIsOurs(r.merged, ours);
   });
 });
 

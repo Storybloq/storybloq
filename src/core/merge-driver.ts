@@ -265,9 +265,13 @@ export function threeWayMerge(
       } else {
         // Audit metadata (attribution): surface the ambiguity rather than resolving arbitrarily.
         for (const m of group.members) {
-          // ISS-747/R6: never write undefined into the body when base lacks the
-          // member (add/add) -- fall back to ours, then theirs.
-          merged[m] = base[m] !== undefined ? base[m] : ours[m] !== undefined ? ours[m] : theirs[m];
+          // T-486: a tie on recency makes either side as good as the other, so
+          // the body keeps OUR side whole (the modifier stays matched to its
+          // time; an absent member stays absent, never an undefined own key)
+          // and the entries below carry theirs whole. A per-member base
+          // fallback could pair base's time with a side's modifier.
+          if (ours[m] !== undefined) merged[m] = ours[m];
+          else delete merged[m];
           handledByCoupled.add(m);
           conflicts.push({
             fieldPath: toPointer(m),
@@ -289,8 +293,11 @@ export function threeWayMerge(
           if (ours[m] !== undefined) merged[m] = ours[m];
           else delete merged[m];
         } else {
-          // ISS-747/R6: same undefined-base fallback as the ambiguous branch.
-          merged[m] = base[m] !== undefined ? base[m] : ours[m] !== undefined ? ours[m] : theirs[m];
+          // ISS-747/R6: undefined-base fallback. No production group reaches
+          // it: merge-coupled-inventory.test.ts requires keep-ours or recency.
+          const value = base[m] !== undefined ? base[m] : ours[m] !== undefined ? ours[m] : theirs[m];
+          if (value !== undefined) merged[m] = value;
+          else delete merged[m];
         }
         handledByCoupled.add(m);
         conflicts.push({

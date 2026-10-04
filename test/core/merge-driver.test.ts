@@ -494,7 +494,8 @@ describe("T-385: threeWayMerge", () => {
       const theirs = ticket({ lastModifiedBy: "carol@test.com" });
       const result = threeWayMerge(base, ours, theirs, "ticket");
       expect(result.clean).toBe(false);
-      expect(result.merged.lastModifiedBy).toBe("alice@test.com"); // base preserved, not silently picked
+      // T-486: ours whole in the body, theirs whole in the entries for resolve.
+      expect(result.merged.lastModifiedBy).toBe("bob@test.com");
       expect(result.conflicts.some((c) => c.field === "lastModifiedBy" && c.group === "attribution")).toBe(true);
     });
 

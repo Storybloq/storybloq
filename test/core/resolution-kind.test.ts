@@ -246,6 +246,44 @@ describe("T-486 merge groups (R3-6)", () => {
     expect(r.conflicts.some((c) => c.group === "issue-status")).toBe(true);
   });
 
+  const STATUS = ["status", "resolvedDate", "lifecycle", "resolutionKind"];
+  const groupIsOurs = (merged: Record<string, unknown>, ours: Record<string, unknown>) => {
+    for (const m of STATUS) {
+      expect(Object.hasOwn(merged, m), m).toBe(Object.hasOwn(ours, m));
+      if (Object.hasOwn(ours, m)) expect(merged[m], m).toStrictEqual(ours[m]);
+    }
+  };
+
+  it("issue-status: a stale kind on ours and a re-resolution on theirs never merge into an effective kind", () => {
+    // Neither side is effective. Before keep-ours the body took base's
+    // closure on D and ours' kind bound to D.
+    const { resolutionKind: kind, ...unkinded } = RESOLVED;
+    const base = { ...unkinded };
+    const ours = { ...unkinded, status: "open", resolvedDate: null, resolutionKind: kind };
+    const theirs = { ...unkinded, resolvedDate: "2026-03-01" };
+    expect(resolutionKindView(ours).state).not.toBe("effective");
+    expect(resolutionKindView(theirs).state).toBe("absent");
+    const r = threeWayMerge(base, ours, theirs, "issue");
+    expect(r.clean).toBe(false);
+    expect(resolutionKindView(r.merged).state).not.toBe("effective");
+    groupIsOurs(r.merged, ours);
+  });
+
+  it("issue-status: theirs effective as a whole side and ours not keeps ours in the body and theirs whole in the entries", () => {
+    const { resolutionKind: kind, ...unkinded } = RESOLVED;
+    const base = { ...unkinded };
+    const ours = { ...unkinded, status: "open", resolvedDate: null };
+    const theirs = { ...unkinded, resolutionKind: kind };
+    expect(resolutionKindView(theirs).state).toBe("effective");
+    const r = threeWayMerge(base, ours, theirs, "issue");
+    expect(r.clean).toBe(false);
+    expect(resolutionKindView(r.merged).state).toBe("absent");
+    groupIsOurs(r.merged, ours);
+    const entries = r.conflicts.filter((c) => c.group === "issue-status");
+    expect(entries.map((c) => c.field).sort()).toEqual([...STATUS].sort());
+    for (const c of entries) expect(c.theirs, c.field).toStrictEqual((theirs as Record<string, unknown>)[String(c.field)]);
+  });
+
   const OPEN = byName("evidence effective").issue;
 
   it("issue-disposition: a reason change on one side and a disposition change on the other is one divergence", () => {
@@ -264,12 +302,45 @@ describe("T-486 merge groups (R3-6)", () => {
     expect(r.conflicts.some((c) => c.group === "issue-disposition")).toBe(true);
   });
 
+  // Fixup 1: a base lacking an optional member, each side changing the group
+  // differently and theirs adding that member. Before keep-ours the body took
+  // base's reason plus theirs' added member, a disposition no side wrote.
+  const DISPOSITION = ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"];
+  const added: Record<string, unknown> = { dispositionRef: "ISS-009", dispositionFor: "owner_gated", duplicateOf: "ISS-003" };
+
+  it.each(["dispositionRef", "dispositionFor", "duplicateOf"])("issue-disposition: a base lacking %s keeps ours whole in the body and theirs whole in the entries", (member) => {
+    const { [member]: _dropped, ...base } = OPEN as Record<string, unknown>;
+    const ours: Record<string, unknown> = { ...base, dispositionReason: "ours changed the reason" };
+    const theirs = { ...base, dispositionReason: "theirs changed the reason", [member]: added[member] };
+    const r = threeWayMerge(base, ours, theirs, "issue");
+    expect(r.clean).toBe(false);
+    for (const m of DISPOSITION) {
+      expect(Object.hasOwn(r.merged, m), m).toBe(Object.hasOwn(ours, m));
+      if (Object.hasOwn(ours, m)) expect(r.merged[m], m).toStrictEqual(ours[m]);
+    }
+    expect(Object.hasOwn(r.merged, member)).toBe(false);
+    const entries = r.conflicts.filter((c) => c.group === "issue-disposition");
+    expect(entries.map((c) => c.field).sort()).toEqual([...DISPOSITION].sort());
+    for (const c of entries) expect(c.theirs, c.field).toStrictEqual((theirs as Record<string, unknown>)[String(c.field)]);
+  });
+
+  it("issue-disposition: a member absent on every side stays absent, never an undefined own key", () => {
+    const { duplicateOf: _d, ...base } = OPEN as Record<string, unknown>;
+    const ours = { ...base, dispositionReason: "ours changed the reason" };
+    const theirs = { ...base, dispositionReason: "theirs changed the reason" };
+    const r = threeWayMerge(base, ours, theirs, "issue");
+    expect(r.clean).toBe(false);
+    expect("duplicateOf" in r.merged).toBe(false);
+    // The serialised body has no such key (its conflict entry may still name it).
+    expect(Object.keys(JSON.parse(JSON.stringify(r.merged)))).not.toContain("duplicateOf");
+  });
+
   it("group membership is exactly as specified, on every member", () => {
     const rules = getMergeRules("issue");
     const status = ["status", "resolvedDate", "lifecycle", "resolutionKind"];
     const disposition = ["disposition", "dispositionReason", "dispositionRef", "dispositionFor", "duplicateOf"];
-    for (const key of status) expect(rules[key], key).toEqual({ kind: "coupled", group: "issue-status", members: status });
-    for (const key of disposition) expect(rules[key], key).toEqual({ kind: "coupled", group: "issue-disposition", members: disposition });
+    for (const key of status) expect(rules[key], key).toEqual({ kind: "coupled", group: "issue-status", members: status, onDivergence: "keep-ours" });
+    for (const key of disposition) expect(rules[key], key).toEqual({ kind: "coupled", group: "issue-disposition", members: disposition, onDivergence: "keep-ours" });
   });
 });
 

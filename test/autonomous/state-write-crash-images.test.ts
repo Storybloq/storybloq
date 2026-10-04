@@ -281,7 +281,8 @@ async function preflight(root: string, dir: string): Promise<ClaimPreflightResul
 async function releasedImage(
   ticketFields: Record<string, unknown>,
   sessionFields: Record<string, unknown>,
-): Promise<{ root: string; dir: string }> {
+  epochBeforeStop: boolean = false,
+): Promise<{ root: string; id: string; dir: string }> {
   const root = project();
   const { id, dir } = plant(root, {
     state: "IMPLEMENT",
@@ -291,13 +292,16 @@ async function releasedImage(
   writeTicket(root, typeof ticketFields.claimedBySession === "function"
     ? { ...ticketFields, claimedBySession: (ticketFields.claimedBySession as (s: string) => string)(id) }
     : ticketFields);
+  if (epochBeforeStop) {
+    writeSessionSync(dir, { ...readSession(dir)!, claimEpoch: epochFor(dir) } as FullSessionState);
+  }
   await effectAsync(dir, () => handleSessionStop(root, id));
   expect(readSession(dir)!.status).toBe("active");
   const ticket = ticketOnDisk(root);
   expect(ticket.status).toBe("open");
   expect("claimedBySession" in ticket).toBe(false);
   expect("claim" in ticket).toBe(false);
-  return { root, dir };
+  return { root, id, dir };
 }
 
 const ownStamp = (id: string) => id;
@@ -307,18 +311,39 @@ const epochFor = (dir: string, over: Record<string, unknown> = {}) => ({
 });
 
 describe("ISS-958 5d: the released ticket beside a reverted active session (TP9, D5)", () => {
-  it("row 1, epoch-bearing, reconciled state, ticket matching the epoch: the preflight reports the release", async () => {
-    const { root, dir } = await releasedImage(
+  it("row 1, epoch-bearing, reconciled state, ticket matching the epoch: the preflight reports the release and report refuses", async () => {
+    const { root, id, dir } = await releasedImage(
       { claimedBySession: ownStamp, claim: { user: "me@example.com", branch: "story/T-001", since: SINCE } },
       {},
+      true,
     );
-    writeSessionSync(dir, { ...readSession(dir)!, claimEpoch: epochFor(dir) } as FullSessionState);
+    expect(readSession(dir)!.claimEpoch).toBeTruthy();
     const r = await preflight(root, dir);
     expect(r.checked).toBe(true);
     expect(r.reconciliation).toEqual({
       status: "conflicted",
       detail: { kind: "released", sessionHolder: null, userHolder: null, since: null },
     });
+
+    // The consequence: the owner's report is refused by the claim preflight and
+    // the workflow does not advance on the released ticket.
+    try {
+      const reported = await handleAutonomousGuide(root, {
+        action: "report", sessionId: id, clientTaskId: OWNER.id,
+        report: { completedAction: "implementation_done" },
+      } as never);
+      expect(reported.isError).toBe(true);
+      expect(textOf(reported)).toContain("Claim lost on T-001");
+    } finally {
+      killSidecarsInRoot(root);
+    }
+    const after = readSession(dir)!;
+    expect(after.status).toBe("active");
+    expect(after.state).toBe("IMPLEMENT");
+    const ticket = ticketOnDisk(root);
+    expect(ticket.status).toBe("open");
+    expect("claimedBySession" in ticket).toBe(false);
+    expect("claim" in ticket).toBe(false);
   });
 
   it("row 2, epochless: not checked, the session drives an open, unclaimed ticket", async () => {

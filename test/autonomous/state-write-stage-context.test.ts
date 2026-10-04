@@ -18,7 +18,7 @@ vi.mock("node:fs", async () => {
   return wrapFs(actual);
 });
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -27,6 +27,7 @@ import { deriveWorkspaceId, type FullSessionState } from "../../src/autonomous/s
 import { StageContext } from "../../src/autonomous/stages/types.js";
 import { HandoverStage } from "../../src/autonomous/stages/handover.js";
 import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
+import { killSidecar } from "../../src/autonomous/liveness.js";
 import type { ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import { armFail, armUndurable, disarm, faultFired } from "./_state-write-fault.js";
 
@@ -228,7 +229,7 @@ describe("ISS-958 5a: no TC site re-enters a terminal state (TP1-TP4)", () => {
     ["CODE_REVIEW", async (ctx) => ctx.finalizeSession({ status: "completed", terminationReason: "normal" } as Partial<FullSessionState>)],
   ];
 
-  it.each(terminal)("%s: report and resume on the published terminal state refuse and repeat no effect", async (stateName, finish) => {
+  it.each(terminal)("%s: report, resume and start on the published terminal state repeat no effect", async (stateName, finish) => {
     const { root, dir, state } = setup(stateName);
     armTyped(dir);
     await expect(finish(new StageContext(root, dir, state, recipe()))).rejects.toBeInstanceOf(StateWriteUndurableError);
@@ -250,8 +251,27 @@ describe("ISS-958 5a: no TC site re-enters a terminal state (TP1-TP4)", () => {
     const resumed = await handleAutonomousGuide(root, { action: "resume", sessionId: published.sessionId } as never);
     expect(resumed.isError).toBe(true);
 
-    expect(counts()).toEqual(before);
+    // A start selects only active sessions, so the terminal one is not revisited.
+    let afterStart: ReturnType<typeof counts> | null = null;
+    try {
+      await handleAutonomousGuide(root, { action: "start", sessionId: null } as never);
+      afterStart = counts();
+    } finally {
+      // process.kill is mocked here, and the original session records a fake
+      // pid: signal only sidecars a new session spawned, through the real kill.
+      killSpy.mockRestore();
+      for (const name of readdirSync(join(root, ".story", "sessions"))) {
+        if (name === published.sessionId) continue;
+        try {
+          const pid = (JSON.parse(readFileSync(join(root, ".story", "sessions", name, "state.json"), "utf-8")) as { sidecarPid?: number | null }).sidecarPid;
+          if (typeof pid === "number" && pid > 0) killSidecar(pid);
+        } catch { /* best-effort */ }
+      }
+    }
+
+    expect(afterStart).toEqual(before);
     expect(readSession(dir)!.revision).toBe(published.revision);
+    expect(readSession(dir)!.status).toBe(published.status);
   });
 });
 

@@ -338,7 +338,12 @@ describe("T-486 list filters (L1)", () => {
   });
 
   it("the MCP list tool takes the same filters", async () => {
-    const call = mcp(await board());
+    const root = await board();
+    const call = mcp(root);
+    for (const actionable of [true, false]) {
+      const rows = (await call("storybloq_issue_list", { actionable })) as Array<{ id: string }>;
+      expect(rows.map((i) => i.id).sort(), String(actionable)).toEqual(ids(handleIssueList({ actionable }, await ctx(root)).output));
+    }
     const got = (await call("storybloq_issue_list", { actionable: false, disposition: "duplicate" })) as Array<{ id: string }>;
     expect(got.map((i) => i.id)).toEqual(["ISS-003"]);
     const kinds = (await call("storybloq_issue_list", { resolutionKind: "wontfix" })) as Array<{ id: string }>;

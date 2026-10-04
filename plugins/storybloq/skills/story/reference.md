@@ -27,7 +27,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **checkpoint retire <id>** (--generation, --revision, --digest, --actor?, --reason, --format?, --commit?) - Retire a checkpoint, releasing dependents; needs a reason
 - **checkpoint resolve-conflict <id>** (--use?, --field?, --value?, --actor?, --format?, --commit?) - Settle a merge conflict on a checkpoint; a selected approval returns to pending (CLI-only)
 - **checkpoint list** (--state?, --format?) - Owner checkpoints with the state a change must name (CLI-only)
-- **issue list** (--status?, --severity?, --component?, --phase?, --format?) - List issues with optional filters
+- **issue list** (--status?, --severity?, --component?, --phase?, --disposition?, --actionable?, --non-actionable?, --resolution-kind?, --format?) - List issues with optional filters
 - **issue get <id>** (--format?) - Get issue details by ID
 - **issue create** (--title, --severity, --impact?, --stdin?, --phase?, --dedupe-key?, --created-by?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?, --commit?) - Create a new issue
 - **issue update <id>** (--status?, --title?, --severity?, --impact?, --stdin?, --resolution?, --order?, --phase?, --clear-cites-rulings?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?, --commit?) - Update an issue
@@ -200,7 +200,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_ticket_meta_get** (id, path?) - Get custom passthrough metadata from a ticket
 - **storybloq_ticket_next** (count?, node?) - Highest-priority unblocked ticket(s)
 - **storybloq_ticket_blocked** (node?) - All blocked tickets with dependencies
-- **storybloq_issue_list** (status?, severity?, component?, phase?, node?) - List issues with optional filters
+- **storybloq_issue_list** (status?, severity?, component?, phase?, disposition?, actionable?, resolutionKind?, format?, node?) - List issues with optional filters
 - **storybloq_issue_get** (id, format?, withActionability?, node?) - Get an issue by ID
 - **storybloq_issue_meta_get** (id, path?) - Get custom passthrough metadata from an issue
 - **storybloq_handover_list** - List handover filenames (newest first)

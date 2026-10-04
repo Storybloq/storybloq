@@ -86,7 +86,7 @@ import {
   type CancellationIntent,
   type FullSessionState,
 } from "../../src/autonomous/session-types.js";
-import { classifyCompletionMarker } from "../../src/autonomous/cancellation-transition.js";
+import { classifyCompletionMarker, readShutdownArtifact } from "../../src/autonomous/cancellation-transition.js";
 import { gitStashPop } from "../../src/autonomous/git-inspector.js";
 import type { SuccessorServers } from "../../src/autonomous/mcp-registry.js";
 import type { OwnerTask } from "../../src/autonomous/client-profile.js";
@@ -1709,6 +1709,35 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(readCancellationIntent(sessDir).kind).toBe("valid");
   });
 
+  it("ISS-958 5b CHARACTERISATION (F1, owned by ISS-1364): a stale id-free `ended` beside an active canonical leaves the cancel unfinished", async () => {
+    // The reverted crash image: finalize's tail wrote `ended` (reason
+    // "normal", no transition id), then state.json reverted to the active
+    // preimage. The cancellation's first-pass markEnded refuses a marker it
+    // cannot prove it owns, so the tail reports the postcondition unmet and
+    // never writes the completion marker. ISS-1364 flips this RED.
+    const state = plantLive();
+    writeMarker();
+    const tDir = telemetryDirPath(sessDir);
+    writeFileSync(join(tDir, "ended"), JSON.stringify({ reason: "normal", timestamp: STALE_AT }));
+
+    const result = await commitCandidateCancelLocked(root, sessDir, {
+      input: inputFor(state), callerTask: CALLER,
+    }, cancelDeps());
+
+    expect(result.kind).toBe("published");
+    if (result.kind !== "published") return;
+    expect(result.tail.completed).toBe(false);
+    expect(result.tail.unmet).toContain("ended-marker: refused-unowned");
+    const t = CancellationTransitionSchema.safeParse(
+      (currentState() as unknown as Record<string, unknown>).cancellationTransition,
+    );
+    expect(t.success).toBe(true);
+    if (!t.success) return;
+    expect(classifyCompletionMarker(sessDir, t.data.transitionId).kind).not.toBe("matching");
+    expect(JSON.stringify(readShutdownArtifact(sessDir))).toContain("ended-marker: refused-unowned");
+    expect(JSON.parse(readFileSync(join(tDir, "ended"), "utf-8"))).toEqual({ reason: "normal", timestamp: STALE_AT });
+  });
+
   it("CRASH AFTER THE CLAIM CLEARED: the retry publishes `released`, not the denial a fresh count would give", async () => {
     // The window between the transaction clearing and write 1 landing. On the
     // retry the intent is durably `claim_cleared`, so neither the opener nor
@@ -2036,6 +2065,7 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
       (published as unknown as Record<string, unknown>).cancellationTransition,
     );
     expect(t.success).toBe(true);
+    expect(t.success && t.data.phase).toBe("published");
     if (!t.success || t.data.phase !== "published") return;
     expect(t.data.terminalRevision).toBe(published.revision);
     expect(t.data.stash).toEqual({ outcome: "popped" });

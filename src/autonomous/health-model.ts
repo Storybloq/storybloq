@@ -174,7 +174,16 @@ function probeAlive(sessionDir: string, now: number, state: Record<string, unkno
   return { value: age <= ALIVE_THRESHOLD, age };
 }
 
-function probeNotEnded(sessionDir: string): ProbeValue {
+/**
+ * ISS-958 (5c.1): the `ended` marker is a tail effect written AFTER the
+ * terminal state. If the state write is then lost (a failed directory fsync
+ * followed by power loss, or power loss alone before ISS-958), a stale
+ * `ended` sits beside an active canonical session. The canonical state wins:
+ * an active, non-terminal session is not ended, whatever the marker says. An
+ * unreadable canonical keeps the existence check.
+ */
+function probeNotEnded(sessionDir: string, state: Record<string, unknown> | null): ProbeValue {
+  if (state && state.status === "active" && state.state !== "SESSION_END") return true;
   const tDir = telemetryDirPath(sessionDir);
   try {
     return !existsSync(join(tDir, "ended"));
@@ -263,7 +272,7 @@ export function collectProbes(sessionDir: string, now?: number, preReadState?: R
 
   return {
     alive: aliveResult.value,
-    notEnded: probeNotEnded(sessionDir),
+    notEnded: probeNotEnded(sessionDir, state),
     mcpResponsive: mcpResult.value,
     guideAdvancing: guideResult.value,
     agentActive: null,

@@ -504,7 +504,7 @@ export function validateProject(
         findings.push({
           level: "warning",
           code: "reserved_key_collision",
-          message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which is reserved for derived values in JSON output. The stored record is returned unchanged under "stored" in JSON responses.`,
+          message: `Issue ${displayIdOf(i)} stores a custom "${key}" key, which collides with a reserved JSON response name.`,
           entity: i.id,
         });
       }

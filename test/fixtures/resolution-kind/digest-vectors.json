@@ -1,0 +1,34 @@
+[
+  {
+    "text": "",
+    "digest": "e3b0c44298fc1c14"
+  },
+  {
+    "text": "Closed after review: the behaviour is intended.",
+    "digest": "11beec98374d1fd3"
+  },
+  {
+    "text": "Fermé: 修正済み ✓",
+    "digest": "6003077a17377979"
+  },
+  {
+    "text": "Résolu: café",
+    "note": "composed (NFC)",
+    "digest": "cae8c6ee2bfa7541"
+  },
+  {
+    "text": "Résolu: café",
+    "note": "decomposed (NFD)",
+    "digest": "e6de38ddd8dbcd8c"
+  },
+  {
+    "text": "line one\nline two",
+    "note": "LF",
+    "digest": "b6858b03a6cae635"
+  },
+  {
+    "text": "line one\r\nline two",
+    "note": "CRLF",
+    "digest": "8ec4c37982ffc5a8"
+  }
+]

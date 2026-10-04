@@ -205,6 +205,66 @@
     }
   },
   {
+    "name": "open with a still-matching binding",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "open",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "inprogress with a still-matching binding",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "inprogress",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Closed after review: the behaviour is intended.",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
     "name": "stale date",
     "issue": {
       "id": "ISS-001",
@@ -317,6 +377,127 @@
     "expectedKindView": {
       "kind": "fixed",
       "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "non-string resolution",
+    "loadable": false,
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": 42,
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "wontfix",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "11beec98374d1fd3"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "non-ascii resolution",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Fermé: 修正済み ✓",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "6003077a17377979"
+      }
+    },
+    "expectedKindView": {
+      "kind": "fixed",
+      "state": "effective"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "composed text against a decomposed digest (no normalisation)",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "Résolu: café",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "e6de38ddd8dbcd8c"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
+    },
+    "expectedEvidenceView": {
+      "reason": null,
+      "ref": null,
+      "state": "absent"
+    }
+  },
+  {
+    "name": "CRLF text against an LF digest (no normalisation)",
+    "issue": {
+      "id": "ISS-001",
+      "title": "Synthetic issue",
+      "status": "resolved",
+      "severity": "medium",
+      "components": [],
+      "impact": "synthetic",
+      "resolution": "line one\r\nline two",
+      "location": [],
+      "discoveredDate": "2026-01-01",
+      "resolvedDate": "2026-02-01",
+      "relatedTickets": [],
+      "resolutionKind": {
+        "kind": "fixed",
+        "closedOn": "2026-02-01",
+        "resolutionDigest": "b6858b03a6cae635"
+      }
+    },
+    "expectedKindView": {
+      "kind": null,
+      "state": "stale"
     },
     "expectedEvidenceView": {
       "reason": null,

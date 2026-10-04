@@ -27,6 +27,8 @@ import { handleIssueMetaSet, handleIssueUpdate } from "../../src/cli/commands/is
 
 interface Case {
   name: string;
+  /** False only for an issue the load schema refuses for a reason unrelated to T-486. */
+  loadable?: boolean;
   issue: Record<string, unknown>;
   expectedKindView: unknown;
   expectedEvidenceView: unknown;
@@ -52,10 +54,16 @@ describe("T-486 corpus: the projections", () => {
       "effective not_reproducible",
       "absent",
       "reopened",
+      "open with a still-matching binding",
+      "inprogress with a still-matching binding",
       "stale date",
       "stale digest",
       "same day unchanged resolution (W4 residual)",
       "null resolution digest",
+      "non-string resolution",
+      "non-ascii resolution",
+      "composed text against a decomposed digest (no normalisation)",
+      "CRLF text against an LF digest (no normalisation)",
       "malformed missing field",
       "malformed non-string kind",
       "malformed unknown kind",
@@ -87,8 +95,26 @@ describe("T-486 corpus: the projections", () => {
     expect(resolutionDigest("x")).not.toBe(resolutionDigest("y"));
   });
 
+  it("the digest matches the fixed vectors byte for byte, with no normalisation", () => {
+    const vectors = JSON.parse(
+      readFileSync(join(__dirname, "../fixtures/resolution-kind/digest-vectors.json"), "utf-8"),
+    ) as { text: string; digest: string }[];
+    expect(vectors.length).toBe(7);
+    for (const v of vectors) expect(resolutionDigest(v.text), JSON.stringify(v.text)).toBe(v.digest);
+    const nfc = "R\u00e9solu: caf\u00e9";
+    const lf = "line one\nline two";
+    expect(resolutionDigest(nfc)).not.toBe(resolutionDigest(nfc.normalize("NFD")));
+    expect(resolutionDigest(lf)).not.toBe(resolutionDigest(lf.replace("\n", "\r\n")));
+  });
+
+  it("a non-string resolution never throws and never counts", () => {
+    const issue = { ...byName("effective wontfix").issue, resolution: { text: "x" } };
+    expect(() => resolutionKindView(issue)).not.toThrow();
+    expect(resolutionKindView(issue)).toEqual({ kind: null, state: "stale" });
+  });
+
   it("every corpus issue parses under the load schema, whatever its resolution metadata", () => {
-    for (const c of CORPUS) expect(IssueSchema.safeParse(c.issue).success, c.name).toBe(true);
+    for (const c of CORPUS) expect(IssueSchema.safeParse(c.issue).success, c.name).toBe(c.loadable !== false);
   });
 });
 
@@ -136,14 +162,42 @@ describe("T-486 load: malformed resolution metadata never drops an issue (R3-2)"
 });
 
 describe("T-486 validate: why a kind or evidence does not count", () => {
+  const T486_CODES = new Set([
+    "resolution_kind_stale",
+    "resolution_kind_malformed",
+    "resolution_kind_wrong_entity",
+    "disposition_evidence_unbound",
+    "disposition_evidence_malformed",
+    "reserved_key_collision",
+  ]);
+
+  // Every T-486 finding is a warning, and no case introduces an error-level
+  // finding: metadata that does not count must never fail validation.
   async function codesFor(c: Case): Promise<string[]> {
     const root = await boardWith([withId(c, "ISS-001")]);
     const { state } = await loadProject(root);
-    return validateProject(state).findings.filter((f) => f.entity === "ISS-001").map((f) => f.code);
+    const findings = validateProject(state).findings.filter((f) => f.entity === "ISS-001");
+    for (const f of findings) {
+      if (T486_CODES.has(f.code)) expect(f.level, `${c.name}: ${f.code}`).toBe("warning");
+    }
+    expect(findings.filter((f) => f.level === "error"), c.name).toEqual([]);
+    return findings.map((f) => f.code);
   }
 
+  it("no loadable corpus case raises an error-level finding", async () => {
+    for (const c of CORPUS.filter((x) => x.loadable !== false)) await codesFor(c);
+  });
+
   it("stale kinds warn", async () => {
-    for (const name of ["reopened", "stale date", "stale digest"]) {
+    for (const name of [
+      "reopened",
+      "open with a still-matching binding",
+      "inprogress with a still-matching binding",
+      "stale date",
+      "stale digest",
+      "composed text against a decomposed digest (no normalisation)",
+      "CRLF text against an LF digest (no normalisation)",
+    ]) {
       expect(await codesFor(byName(name)), name).toContain("resolution_kind_stale");
     }
   });

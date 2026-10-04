@@ -92,10 +92,16 @@ export function resolutionKindView(issue: Loose): ResolutionKindView {
     const wrongEntity = isRecord && (raw as Loose).kind === "withdrawn";
     return { kind: null, state: wrongEntity ? "wrong-entity" : "malformed" };
   }
+  // A hand-edited file can carry a non-string resolution. It cannot match any
+  // digest, so the kind does not count; hashing it would throw.
+  const resolution = issue.resolution;
+  if (resolution !== null && resolution !== undefined && typeof resolution !== "string") {
+    return { kind: null, state: "stale" };
+  }
   const bound =
     issue.status === "resolved" &&
     parsed.data.closedOn === issue.resolvedDate &&
-    parsed.data.resolutionDigest === resolutionDigest(issue.resolution as string | null | undefined);
+    parsed.data.resolutionDigest === resolutionDigest(resolution);
   return bound ? { kind: parsed.data.kind, state: "effective" } : { kind: null, state: "stale" };
 }
 

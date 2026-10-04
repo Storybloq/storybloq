@@ -411,12 +411,17 @@ export function authoriseIssueBytes(
   root: string,
   target: string,
   prior: Readonly<Record<string, unknown>> | "unknown",
-  proposed: Readonly<Record<string, unknown>>,
   content: string,
 ): void {
+  // Codex H2: the check runs on the record these bytes ARE, never on a
+  // record the caller describes them as.
+  const record = priorRecord(content);
+  if (record === "unknown") {
+    throw new ProjectLoaderError("invalid_input", `Refusing the write to ${relative(resolve(root), resolve(target))}: its bytes are not a JSON object`);
+  }
   const ctx = heldResolutionContext(root, undefined);
   const rel = relative(resolve(root), resolve(target)).split(sep).join("/");
-  ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, rel, prior, proposed));
+  ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, rel, prior, record));
 }
 
 /**
@@ -436,8 +441,10 @@ export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<
     const verdicts = contexts.map((c) => c.preparedVerdict(target, content));
     if (verdicts.includes("current")) continue;
     const verdict = verdicts.find((v) => v !== "missing") ?? "missing";
-    const why = verdict === "stale"
-      ? "it was checked against config or git state that changed (or a lock that was released) before it was committed"
+    const why = verdict === "released"
+      ? "the lock it was prepared under was released or no longer owns .story/.lock"
+      : verdict === "stale"
+      ? "it was checked against config or git state that changed before it was committed"
       : verdict === "changed"
         ? "the bytes being committed are not the bytes that were prepared for it"
         : "nothing prepared it under this lock (issue writes go through prepareIssueWrite)";
@@ -772,7 +779,7 @@ export async function deleteIssue(
       // T-486 Codex F2: the tombstone edits the raw record outside
       // prepareIssueWrite, so it takes the same boundary and commit check.
       const content = serializeJSON(raw);
-      authoriseIssueBytes(root, targetPath, prior, raw, content);
+      authoriseIssueBytes(root, targetPath, prior, content);
       assertPreparedWritesCurrent(root, [{ target: targetPath, content }]);
       await atomicWrite(targetPath, content);
     } else {

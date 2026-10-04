@@ -140,7 +140,7 @@ async function applyChanges(
     const content = JSON.stringify(entity, null, 2) + "\n";
     // T-486 Codex F2: reconcile edits the raw issue JSON outside
     // prepareIssueWrite, so it authorises exactly these bytes itself.
-    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, entity, content);
+    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, content);
     operations.push({ op: "write", target: filePath, content });
     handled.add(rename.id);
   }
@@ -155,7 +155,7 @@ async function applyChanges(
     const prior = { ...entity };
     entity.rank = change.newRank;
     const content = JSON.stringify(entity, null, 2) + "\n";
-    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, entity, content);
+    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, content);
     operations.push({ op: "write", target: filePath, content });
   }
 

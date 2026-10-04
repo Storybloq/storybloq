@@ -271,7 +271,7 @@ export async function applyRepairPatches(root: string, patches: RepairPatch[]): 
     const content = serializeJSON(raw);
     // T-486 Codex F2: likewise for issues, through the resolution-metadata
     // boundary, with a token for exactly these bytes.
-    if (group.target.includes(`${sep}issues${sep}`)) authoriseIssueBytes(root, group.target, prior, raw, content);
+    if (group.target.includes(`${sep}issues${sep}`)) authoriseIssueBytes(root, group.target, prior, content);
     ops.push({ op: "write", target: group.target, content });
   }
   await runTransactionUnlocked(root, ops);

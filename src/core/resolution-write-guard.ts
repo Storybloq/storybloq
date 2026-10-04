@@ -81,10 +81,11 @@ export interface ResolutionWriteContext {
 /**
  * `current`: this context prepared exactly these bytes and the answers they
  * depended on still hold. `missing`: this context prepared nothing for the
- * target. `changed`: it prepared other bytes. `stale`: the answers the
- * decision read were dropped by `invalidate` or `release`.
+ * target. `changed`: it prepared other bytes. `released`: the context's lock
+ * was released or no longer owns `.story/.lock`. `stale`: the answers the
+ * decision read were dropped by `invalidate`.
  */
-export type PreparedVerdict = "current" | "missing" | "changed" | "stale";
+export type PreparedVerdict = "current" | "missing" | "released" | "changed" | "stale";
 
 interface PreparedToken {
   readonly owner: SharedState;
@@ -160,8 +161,11 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     preparedVerdict(target, content) {
       const token = preparedTokens.get(resolve(target));
       if (token === undefined || token.owner !== shared) return "missing";
+      // Codex H1: a released context, or one whose lock no longer owns
+      // .story/.lock, authorises nothing at commit, whatever the write was.
+      if (shared.released || !shared.ownsLock()) return "released";
       if (token.hash !== contentHash(content)) return "changed";
-      if (token.generation !== null && (shared.released || token.generation !== shared.generation)) return "stale";
+      if (token.generation !== null && token.generation !== shared.generation) return "stale";
       return "current";
     },
     config() {

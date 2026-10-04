@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import {
+  authoriseIssueBytes,
   prepareIssueWrite,
   prepareIssueWriteSeams,
   resolutionWriteContextFor,
@@ -420,8 +421,17 @@ describe("recovery and the write context (B5, C1-C3, X1, X2)", () => {
 
   it("C2: a 50-item prepared batch reads the driver command once and each path's attribute once", async () => {
     const root = await board("ready");
-    const issues: Record<string, unknown>[] = [];
-    for (let i = 0; i < 50; i++) issues.push(readIssue(root, (await createIssue(root, `bug ${i}`)).id));
+    // One issue through the handler, 49 written beside it as raw copies: the
+    // assertions count git reads during the batch, and 50 handler creates
+    // (each loading the growing project) put this near the 5 s timeout.
+    const template = readIssue(root, (await createIssue(root, "bug 0")).id);
+    const issues: Record<string, unknown>[] = [template];
+    for (let i = 1; i < 50; i++) {
+      const id = `i-${String(i).padStart(16, "0")}`;
+      const record = { ...template, id, displayId: `ISS-${100 + i}`, title: `bug ${i}` };
+      writeRaw(root, id, record);
+      issues.push(record);
+    }
     const calls: string[] = [];
     const counting: GitRead = (args, cwd) => {
       calls.push(args[0] === "config" ? "config" : `attr:${args.at(-1)}`);
@@ -673,7 +683,7 @@ describe("the U1-4 Codex round (F1 to F3)", () => {
       const prepared = await prepareIssueWrite(kindWrite(root, issue), root);
       await writeConfigUnlocked({ ...state.config, team: { ...state.config.team, enabled: true, minCliVersion: "1.15.0" } }, root);
       const err = await rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared }]));
-      expect(err.message).toMatch(/changed .* before it was committed; prepare it again/);
+      expect(err.message).toMatch(/state that changed before it was committed; prepare it again/);
     });
     expect(bytes(root, issue.id as string)).toBe(before);
     expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
@@ -731,6 +741,59 @@ describe("the U1-4 Codex round (F1 to F3)", () => {
     });
     expect(bytes(root, issue.id as string)).toBe(before);
     expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("H1 (fixup 3): an ordinary edit committed from detached work after its lock is released is refused, nothing written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let detached!: Promise<Error>;
+    await withProjectLock(root, { strict: true }, async () => {
+      const prepared = await prepareIssueWrite({ ...issue, title: "detached" } as unknown as Issue, root);
+      detached = gate.then(() => rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared }])));
+    });
+    release();
+    expect((await detached).message).toMatch(/was released or no longer owns \.story\/\.lock; prepare it again/);
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("H1 (fixup 3): an ordinary edit committed after the lock was replaced is refused, nothing written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    const lock = join(root, ".story", ".lock");
+    await withProjectLock(root, { strict: true }, async () => {
+      const prepared = await prepareIssueWrite({ ...issue, title: "after replacement" } as unknown as Issue, root);
+      const held = readFileSync(lock, "utf-8");
+      writeFileSync(lock, JSON.stringify({ ...JSON.parse(held), token: "another-holder" }));
+      try {
+        const err = await rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared }]));
+        expect(err.message).toMatch(/was released or no longer owns \.story\/\.lock; prepare it again/);
+      } finally {
+        writeFileSync(lock, held);
+      }
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("H2 (fixup 3): authoriseIssueBytes checks the bytes themselves, so kind-bearing content is refused on a low-fence board", async () => {
+    const root = await board("low-fence");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const target = issuePath(root, issue.id as string);
+    const before = bytes(root, issue.id as string);
+    const kindBearing = JSON.stringify(kindWrite(root, issue), null, 2) + "\n";
+    await withProjectLock(root, { strict: true }, async () => {
+      expect(() => authoriseIssueBytes(root, target, issue, kindBearing)).toThrow(/below 1\.16\.0/);
+      expect(() => authoriseIssueBytes(root, target, issue, "[1, 2]")).toThrow(/not a JSON object/);
+      expect(() => authoriseIssueBytes(root, target, issue, "{ not json")).toThrow(/not a JSON object/);
+      const err = await rejection(runTransactionUnlocked(root, [{ op: "write", target, content: kindBearing }]));
+      expect(err.message).toMatch(/nothing prepared it under this lock/);
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
   });
 
   describe("F3: git config records", () => {

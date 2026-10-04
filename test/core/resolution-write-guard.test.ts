@@ -14,13 +14,30 @@ import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import {
   prepareIssueWrite,
+  prepareIssueWriteSeams,
   resolutionWriteContextFor,
   runTransactionUnlocked,
   withProjectLock,
+  writeConfigUnlocked,
   writeIssue,
 } from "../../src/core/project-loader.js";
-import { MERGE_DRIVER_V5_NAME, UNSUPPORTED_REGISTRATION_MESSAGE, teamSetup, type GitRead, gitRead } from "../../src/core/team-setup.js";
-import { ResolutionWriteContextError, createResolutionWriteContext, type ResolutionWriteContext } from "../../src/core/resolution-write-guard.js";
+import {
+  MERGE_DRIVER_CONTRACTS,
+  MERGE_DRIVER_V5_CMD,
+  MERGE_DRIVER_V5_NAME,
+  lastConfigRecord,
+  registeredMergeDriverRecord,
+  registrationOverrides,
+  teamSetup,
+  type GitRead,
+  gitRead,
+} from "../../src/core/team-setup.js";
+import {
+  ResolutionWriteContextError,
+  assertResolutionMetadataWrite,
+  createResolutionWriteContext,
+  type ResolutionWriteContext,
+} from "../../src/core/resolution-write-guard.js";
 import { resolutionDigest } from "../../src/core/resolution-kind.js";
 import { handleIssueCreate, handleIssueUpdate } from "../../src/cli/commands/issue.js";
 import { handleResolve } from "../../src/cli/commands/conflicts.js";
@@ -310,6 +327,17 @@ describe("activation is a write (A3: B7 restore, B8 conflict resolution)", () =>
     expect(readIssue(root, id).status).toBe("resolved");
   });
 
+  it("B7 (Codex F2): a restore checked on a ready board is refused when the fence drops before its write", async () => {
+    const { root, id, fromOid, expectOid, reopened } = await restoreFixture("ready");
+    const lowerFence = async () => {
+      const config = JSON.parse(readFileSync(join(root, ".story", "config.json"), "utf-8"));
+      await writeConfigUnlocked({ ...config, team: { ...config.team, minCliVersion: "1.15.0" } }, root);
+    };
+    const err = await rejection(restoreRecord(root, { kind: "record", path: `.story/issues/${id}.json` }, fromOid, expectOid, { capabilityCatalog, beforeWrite: lowerFence }));
+    expect(err.message).toMatch(/prepare it again/);
+    expect(bytes(root, id)).toBe(reopened);
+  });
+
   async function conflictFixture(kind: Board) {
     const root = await board(kind);
     const { id, closed } = await reopenedWithOldKind(root);
@@ -575,10 +603,133 @@ describe("the U1-3 integration killers, gated kind-write stage (C2 of round 5)",
     git(root, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, `"/usr/local/bin/storybloq" merge-driver --protocol 5 %O %A %B %P`);
     const issue = await createIssue(root);
     const err = await rejection(handleIssueUpdate(issue.id, { status: "resolved", resolution: "r", resolutionKind: "fixed" }, "json", root));
-    expect(err.message).toContain(UNSUPPORTED_REGISTRATION_MESSAGE);
+    expect(err.message).toContain("unsupported merge driver registration");
+    expect(err.message).toContain("storybloq team setup");
     await teamSetup(root);
     await handleIssueUpdate(issue.id, { status: "resolved", resolution: "r", resolutionKind: "fixed" }, "json", root);
     expect((readIssue(root, issue.id).resolutionKind as { kind: string }).kind).toBe("fixed");
   });
 });
 
+
+describe("the U1-4 Codex round (F1 to F3)", () => {
+  const kindWrite = (root: string, issue: Record<string, unknown>) =>
+    ({ ...issue, status: "resolved", resolvedDate: "2026-09-01", resolution: "r", resolutionKind: boundKind("fixed", "2026-09-01", "r") }) as unknown as Issue;
+
+  it("F1: a context released while the replaced record is read is refused, held or supplied", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    const read = prepareIssueWriteSeams.readPrior;
+    try {
+      for (const supplied of [false, true]) {
+        await withProjectLock(root, { strict: true }, async () => {
+          const ctx = resolutionWriteContextFor(root);
+          prepareIssueWriteSeams.readPrior = async (path) => {
+            ctx.release();
+            return read(path);
+          };
+          const err = await rejection(prepareIssueWrite(kindWrite(root, issue), root, supplied ? { resolutionContext: ctx } : undefined));
+          expect(err, `supplied=${supplied}`).toBeInstanceOf(ResolutionWriteContextError);
+          prepareIssueWriteSeams.readPrior = read;
+        });
+      }
+    } finally {
+      prepareIssueWriteSeams.readPrior = read;
+    }
+    expect(bytes(root, issue.id as string)).toBe(before);
+  });
+
+  it("F1: the guard itself refuses a released context, even for a write with no resolution metadata", async () => {
+    const root = await board("non-team");
+    const ctx = createResolutionWriteContext(root);
+    ctx.release();
+    expect(() => assertResolutionMetadataWrite(ctx, ".story/issues/ISS-001.json", {}, { id: "ISS-001", title: "plain" })).toThrow(ResolutionWriteContextError);
+    expect(() => assertResolutionMetadataWrite(ctx, ".story/issues/ISS-001.json", {}, { id: "ISS-001", title: "plain" })).toThrow(/lock that was released/);
+  });
+
+  it("F1: a context whose lock no longer owns .story/.lock is refused", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const lock = join(root, ".story", ".lock");
+    await withProjectLock(root, { strict: true }, async () => {
+      const held = readFileSync(lock, "utf-8");
+      writeFileSync(lock, JSON.stringify({ ...JSON.parse(held), token: "another-holder" }));
+      try {
+        const err = await rejection(prepareIssueWrite(kindWrite(root, issue), root));
+        expect(err).toBeInstanceOf(ResolutionWriteContextError);
+        expect(err.message).toMatch(/no longer owns \.story\/\.lock/);
+      } finally {
+        writeFileSync(lock, held);
+      }
+    });
+  });
+
+  it("F2: a kind write prepared before the fence drops in the same operation is refused at commit, and nothing is written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    await withProjectLock(root, { strict: true }, async ({ state }) => {
+      const prepared = await prepareIssueWrite(kindWrite(root, issue), root);
+      await writeConfigUnlocked({ ...state.config, team: { ...state.config.team, enabled: true, minCliVersion: "1.15.0" } }, root);
+      const err = await rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared }]));
+      expect(err.message).toMatch(/changed .* before it was committed; prepare it again/);
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("F2: a write whose check did not read the board still commits after a config write", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    await withProjectLock(root, { strict: true }, async ({ state }) => {
+      const prepared = await prepareIssueWrite({ ...issue, title: "retitled" } as unknown as Issue, root);
+      await writeConfigUnlocked({ ...state.config, team: { ...state.config.team, enabled: true, minCliVersion: "1.15.0" } }, root);
+      await runTransactionUnlocked(root, [{ op: "write", ...prepared }]);
+    });
+    expect(readIssue(root, issue.id as string).title).toBe("retitled");
+  });
+
+  describe("F3: git config records", () => {
+    const local = ["local", "file:.git/config"];
+
+    it("bare output equal to the contract command is malformed, not a registration", () => {
+      expect(lastConfigRecord(`${MERGE_DRIVER_V5_CMD}\n`)).toMatchObject({ kind: "malformed" });
+      expect(lastConfigRecord(MERGE_DRIVER_V5_CMD)).toMatchObject({ kind: "malformed" });
+    });
+
+    it("a record without its final NUL, or an incomplete triple, is malformed", () => {
+      expect(lastConfigRecord([...local, MERGE_DRIVER_V5_CMD].join("\0"))).toMatchObject({ kind: "malformed" });
+      expect(lastConfigRecord([...local].join("\0") + "\0")).toMatchObject({ kind: "malformed" });
+      expect(lastConfigRecord(["nowhere", "file:x", "v"].join("\0") + "\0")).toMatchObject({ kind: "malformed" });
+      expect(lastConfigRecord(["local", "", "v"].join("\0") + "\0")).toMatchObject({ kind: "malformed" });
+    });
+
+    it("whole records parse, and the last one wins", () => {
+      const out = ["global", "file:/home/.gitconfig", "a\nb", ...local, MERGE_DRIVER_V5_CMD].join("\0") + "\0";
+      expect(lastConfigRecord(out)).toEqual({ kind: "ok", scope: "local", origin: "file:.git/config", value: MERGE_DRIVER_V5_CMD });
+    });
+
+    const bare: GitRead = (args) => {
+      const key = args.at(-1)!;
+      const name = key.slice("merge.".length, -".driver".length);
+      return `${MERGE_DRIVER_CONTRACTS.get(name)!.command}\n`;
+    };
+
+    it("registrationOverrides reports malformed output as a git read failure for every driver", async () => {
+      const root = await board("non-team");
+      const problems = registrationOverrides(root, bare);
+      expect(problems).toEqual(
+        [...MERGE_DRIVER_CONTRACTS.keys()].map((name) => `git could not read merge.${name}.driver: the git config output does not end with a NUL`),
+      );
+    });
+
+    it("the doctor's scope-carrying read reports malformed output as a git failure, never present", async () => {
+      const root = await board("non-team");
+      expect(registeredMergeDriverRecord(root, MERGE_DRIVER_V5_NAME, bare)).toEqual({
+        kind: "git",
+        detail: `unreadable git config record for merge.${MERGE_DRIVER_V5_NAME}.driver: the git config output does not end with a NUL`,
+      });
+    });
+  });
+});

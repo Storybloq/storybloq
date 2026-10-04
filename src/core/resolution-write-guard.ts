@@ -48,6 +48,14 @@ export interface ResolutionWriteContext {
   readonly token: object;
   /** True once the lock it belongs to was released; a released context refuses every use. */
   readonly released: boolean;
+  /** Bumped by `invalidate`: a decision taken under an older generation no longer holds. */
+  readonly generation: number;
+  /** Whether the lock this context belongs to still owns `.story/.lock` (a stolen or replaced lock does not). */
+  ownsLock(): boolean;
+  /** Records whether the write prepared for `target` was authorised from this generation's config and git answers. */
+  recordAuthorisation(target: string, dependsOnBoard: boolean): void;
+  /** True when the write prepared for `target` depended on answers `invalidate` or `release` has since dropped. */
+  authorisationStale(target: string): boolean;
   /** The config, or null when it could not be read (a kind write then fails closed). */
   config(): Pick<Config, "team"> | null;
   readiness(relPath: string): ReturnType<typeof resolutionWritesReadiness>;
@@ -70,6 +78,9 @@ export class ResolutionWriteContextError extends ProjectLoaderError {
 
 interface SharedState {
   released: boolean;
+  generation: number;
+  authorised: Map<string, number>;
+  ownsLock: () => boolean;
   config: { value: Pick<Config, "team"> | null } | null;
   memo: Map<string, { out: string } | { err: unknown }>;
 }
@@ -80,8 +91,8 @@ interface SharedState {
  * the holder binds its loaded config (C3: the exported writers hold only
  * `withLock`). Nothing is read unless a kind actually changes.
  */
-export function createResolutionWriteContext(root: string, git: GitRead = gitRead): ResolutionWriteContext {
-  return contextOver(resolve(root), { released: false, config: null, memo: new Map() }, git);
+export function createResolutionWriteContext(root: string, git: GitRead = gitRead, ownsLock: () => boolean = () => true): ResolutionWriteContext {
+  return contextOver(resolve(root), { released: false, generation: 0, authorised: new Map(), ownsLock, config: null, memo: new Map() }, git);
 }
 
 function contextOver(root: string, shared: SharedState, git: GitRead): ResolutionWriteContext {
@@ -105,6 +116,20 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     get released() {
       return shared.released;
     },
+    get generation() {
+      return shared.generation;
+    },
+    ownsLock() {
+      return shared.ownsLock();
+    },
+    recordAuthorisation(target, dependsOnBoard) {
+      if (dependsOnBoard) shared.authorised.set(resolve(target), shared.generation);
+      else shared.authorised.delete(resolve(target));
+    },
+    authorisationStale(target) {
+      const at = shared.authorised.get(resolve(target));
+      return at !== undefined && (shared.released || at !== shared.generation);
+    },
     config() {
       if (shared.config === null) shared.config = { value: readConfigForGuard(root) };
       return shared.config.value;
@@ -118,6 +143,7 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     invalidate() {
       shared.config = null;
       shared.memo.clear();
+      shared.generation += 1;
     },
     release() {
       shared.released = true;
@@ -151,16 +177,24 @@ function slotEqual(prior: Loose, proposed: Loose, keys: readonly string[]): bool
  * Refuses a write whose resolution metadata the board cannot carry safely.
  * `prior` is the record being replaced (`{}` when the file is new, "unknown"
  * when it could not be read or parsed, which treats any present metadata as
- * changed). `relPath` is the target relative to the project root.
+ * changed). `relPath` is the target relative to the project root. Returns
+ * true when the decision read the board's config and git answers, so the
+ * write holds only while they do (see `authorisationStale`).
  */
 export function assertResolutionMetadataWrite(
   ctx: ResolutionWriteContext,
   relPath: string,
   prior: Loose | "unknown",
   proposed: Loose,
-): void {
+): boolean {
+  // B6 / Codex F1: the context is checked here, at the decision, so a
+  // context released or a lock replaced since it was obtained never
+  // authorises anything, whoever supplied it.
+  if (ctx.released) throw new ResolutionWriteContextError("the write context belongs to a lock that was released");
+  if (!ctx.ownsLock()) throw new ResolutionWriteContextError("the project lock this write context belongs to no longer owns .story/.lock");
   const gaps: string[] = [];
   let readinessGap = false;
+  let boardDependent = false;
 
   const proposedHasKind = has(proposed, "resolutionKind");
   const kindRawChanged = prior === "unknown" ? proposedHasKind : !slotEqual(prior, proposed, ["resolutionKind"]);
@@ -180,6 +214,7 @@ export function assertResolutionMetadataWrite(
       } else gaps.push("resolutionKind is written on an issue whose resolution is not text");
     }
     if (gaps.length === 0) {
+      boardDependent = true;
       const config = ctx.config();
       if (config === null) {
         gaps.push("the project config could not be read, so the board's readiness for resolution kinds is unknown");
@@ -210,4 +245,5 @@ export function assertResolutionMetadataWrite(
     const setup = readinessGap ? ` Run storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI.` : "";
     throw new ProjectLoaderError("conflict", `Refusing the write to ${relPath}: ${gaps.join("; ")}.${setup}`);
   }
+  return boardDependent;
 }

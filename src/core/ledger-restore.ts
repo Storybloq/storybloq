@@ -47,7 +47,7 @@ import { sanitizeDisplayText } from "./display-text.js";
 import { ProjectLoaderError } from "./errors.js";
 import { buildTermReferenceIndex, checkTerms, glossaryCatalog, type CapabilityScan } from "./glossary.js";
 import { CAPABILITIES_PATH, GLOSSARY_PATH, readLedgerSnapshot, type LedgerSnapshot, type SnapshotGitRunner } from "./ledger-snapshot.js";
-import { atomicWrite, guardPath, resolutionWriteContextFor, withProjectLock } from "./project-loader.js";
+import { assertPreparedWritesCurrent, atomicWrite, guardPath, resolutionWriteContextFor, withProjectLock } from "./project-loader.js";
 import { assertResolutionMetadataWrite } from "./resolution-write-guard.js";
 import { claimsAcceptance, isEffectivelyAccepted } from "./ruling-lifecycle.js";
 import { loadRulingsSafe } from "./ruling-loader.js";
@@ -421,7 +421,8 @@ async function restoreSingleRecord(
           ? (current.value as Record<string, unknown>)
           : current.present ? "unknown" : {};
         try {
-          assertResolutionMetadataWrite(resolutionWriteContextFor(root), record.path, prior, parsed.data as Record<string, unknown>);
+          const ctx = resolutionWriteContextFor(root);
+          ctx.recordAuthorisation(abs, assertResolutionMetadataWrite(ctx, record.path, prior, parsed.data as Record<string, unknown>));
         } catch (err) {
           if (err instanceof ProjectLoaderError && err.code === "conflict") {
             throw new RestoreUnsafe(label, "invariant", "resolution-metadata", err.message);
@@ -433,6 +434,7 @@ async function restoreSingleRecord(
       mkdirSync(dirname(abs), { recursive: true });
       await guardPath(abs, wrapDir);
       await beforeWrite(deps);
+      if (record.family === "issues") assertPreparedWritesCurrent(root, [abs]);
       await atomicWrite(abs, text);
       result = { outcome: "restored", target: label };
     });

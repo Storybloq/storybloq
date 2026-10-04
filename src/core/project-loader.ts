@@ -325,6 +325,11 @@ export async function prepareTicketWrite(
   return { target, content: serializeJSON(parsed) };
 }
 
+/** Test seam (T-486 Codex F1): how `prepareIssueWrite` reads the record a write replaces. */
+export const prepareIssueWriteSeams: { readPrior: (path: string) => Promise<string | null> } = {
+  readPrior: (path) => readIfExists(path),
+};
+
 async function readIfExists(path: string): Promise<string | null> {
   try {
     return await readFile(path, "utf-8");
@@ -384,9 +389,32 @@ export async function prepareIssueWrite(
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "issues", `${parsed.id}.json`);
   await guardPath(target, wrapDir);
+  // Codex F1: the read comes first, and nothing awaits between obtaining the
+  // context and the decision, so the lock cannot be released in between.
+  const prior = priorRecord(await prepareIssueWriteSeams.readPrior(target));
   const ctx = heldResolutionContext(root, options?.resolutionContext);
-  assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, priorRecord(await readIfExists(target)), parsed);
+  ctx.recordAuthorisation(target, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
   return { target, content: serializeJSON(parsed) };
+}
+
+/**
+ * T-486 Codex F2: a prepared issue write whose decision read the config or
+ * git answers holds only while they do. Called at every commit of a prepared
+ * write, before anything is journaled or written: a write authorised before a
+ * config change in the same operation, or under a context since released, is
+ * refused rather than committed unchecked.
+ */
+export function assertPreparedWritesCurrent(root: string, targets: readonly string[]): void {
+  const absRoot = resolve(root);
+  const contexts = (resolutionContextChain.getStore() ?? []).filter((c) => c.root === absRoot);
+  for (const target of targets) {
+    if (contexts.some((c) => c.authorisationStale(target))) {
+      throw new ProjectLoaderError(
+        "conflict",
+        `Refusing the write to ${relative(absRoot, resolve(target))}: it was checked against config or git state that changed (or a lock that was released) before it was committed; prepare it again`,
+      );
+    }
+  }
 }
 
 /** The record a write replaces: `{}` when absent, "unknown" when unparseable. */
@@ -436,6 +464,7 @@ export async function writeIssueUnlocked(
   options?: { createOnly?: boolean },
 ): Promise<void> {
   const { target, content } = await prepareIssueWrite(issue, root);
+  assertPreparedWritesCurrent(root, [target]);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -1123,6 +1152,7 @@ export async function runTransactionUnlocked(
     }
     issueTargets.add(target);
   }
+  assertPreparedWritesCurrent(root, [...issueTargets]);
 
   try {
     // 1. Build entries
@@ -1861,7 +1891,7 @@ async function withLock<T>(
   const handle = await acquireProjectLockAsync(lockPath);
   // T-486 B6: the context exists only after the lock is acquired and is
   // released before the lock is, so detached work cannot outlive it.
-  const ctx = createResolutionWriteContext(dirname(resolve(wrapDir)));
+  const ctx = createResolutionWriteContext(dirname(resolve(wrapDir)), undefined, () => verifyProjectLockOwnership(handle));
   const chain = resolutionContextChain.getStore() ?? [];
   try {
     return await projectLockContext.run(handle, () => resolutionContextChain.run([...chain, ctx], fn));

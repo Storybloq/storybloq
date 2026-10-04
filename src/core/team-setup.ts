@@ -246,20 +246,25 @@ export async function installMergeDriver(gitRoot: string): Promise<void> {
  * origin of the value that wins and the exact command that removes it.
  * Empty when every registration is effective.
  */
-export function registrationOverrides(gitRoot: string): string[] {
+export function registrationOverrides(gitRoot: string, git: GitRead = gitRead): string[] {
   const problems: string[] = [];
   for (const [name, contract] of MERGE_DRIVER_CONTRACTS) {
     const key = `merge.${name}.driver`;
     let out: string;
     try {
-      out = execFileSync("git", ["config", "--show-scope", "--show-origin", "-z", "--get-all", key], { cwd: gitRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+      out = git(["config", "--show-scope", "--show-origin", "-z", "--get-all", key], gitRoot);
     } catch (err) {
       const e = err as { status?: number | null; stderr?: unknown; message?: string };
       const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
       problems.push(e.status === 1 ? `${key} is not set after setup wrote it` : `git could not read ${key}: ${stderr || e.message || String(err)}`);
       continue;
     }
-    const { scope, origin, value } = lastConfigRecord(out);
+    const record = lastConfigRecord(out);
+    if (record.kind === "malformed") {
+      problems.push(`git could not read ${key}: ${record.detail}`);
+      continue;
+    }
+    const { scope, origin, value } = record;
     if (value.trim() === contract.command) continue;
     const removal = scope === "command"
       ? "remove it from the command line or the GIT_CONFIG_* environment that sets it"
@@ -269,18 +274,28 @@ export function registrationOverrides(gitRoot: string): string[] {
   return problems;
 }
 
+const CONFIG_SCOPES: ReadonlySet<string> = new Set(["system", "global", "local", "worktree", "command"]);
+
+export type ConfigRecord = { kind: "ok"; scope: string; origin: string; value: string } | { kind: "malformed"; detail: string };
+
 /**
  * The last record of `git config --show-scope --show-origin -z --get-all`:
  * each record is scope, origin and value, each NUL-terminated, in precedence
  * order, and git runs the last. A value may hold newlines, so only NUL
- * separates records.
+ * separates records. Output that is not whole records (no final NUL, an
+ * incomplete triple, an unknown scope, an empty origin) is malformed, which
+ * every caller reports as a git read failure, never as a registration.
  */
-export function lastConfigRecord(out: string): { scope: string; origin: string; value: string } {
-  const fields = out.split("\0");
-  if (fields.at(-1) === "") fields.pop();
+export function lastConfigRecord(out: string): ConfigRecord {
+  if (!out.endsWith("\0")) return { kind: "malformed", detail: "the git config output does not end with a NUL" };
+  const fields = out.slice(0, -1).split("\0");
+  if (fields.length % 3 !== 0) return { kind: "malformed", detail: `the git config output has ${fields.length} fields, not whole scope, origin and value records` };
+  for (let i = 0; i < fields.length; i += 3) {
+    if (!CONFIG_SCOPES.has(fields[i]!)) return { kind: "malformed", detail: `the git config output names an unknown scope "${fields[i]}"` };
+    if (fields[i + 1] === "") return { kind: "malformed", detail: "the git config output has a record with no origin" };
+  }
   const start = fields.length - 3;
-  if (start < 0 || fields.length % 3 !== 0) return { scope: "", origin: "", value: out };
-  return { scope: fields[start]!, origin: fields[start + 1]!, value: fields[start + 2]! };
+  return { kind: "ok", scope: fields[start]!, origin: fields[start + 1]!, value: fields[start + 2]! };
 }
 
 export async function writeGitattributes(storyDir: string): Promise<void> {
@@ -661,8 +676,8 @@ export function registeredMergeDriverRecord(
     return { kind: "git", detail: gitErrorDetail(err) };
   }
   const record = lastConfigRecord(out);
-  if (record.scope === "") return { kind: "git", detail: `unreadable git config record for merge.${name}.driver` };
-  return { kind: "present", ...record };
+  if (record.kind === "malformed") return { kind: "git", detail: `unreadable git config record for merge.${name}.driver: ${record.detail}` };
+  return { kind: "present", scope: record.scope, origin: record.origin, value: record.value };
 }
 
 function gitErrorDetail(err: unknown): string {

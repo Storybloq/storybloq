@@ -23,7 +23,6 @@ import {
   MERGE_DRIVER_V5_CMD,
   MERGE_DRIVER_V5_NAME,
   MERGE_DRIVER_CONTRACTS,
-  UNSUPPORTED_REGISTRATION_MESSAGE,
   effectiveMergeDriver,
   mergeDriverRegistration,
   raiseTeamFence,
@@ -140,7 +139,7 @@ describe("registration: attribute, command and exact contract (R1-R5, R7)", () =
     git(repo, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, command);
     const r = mergeDriverRegistration(repo, ISSUE, V5_ONLY);
     expect(r).toMatchObject({ ok: false, reason: "unsupported" });
-    expect(!r.ok && r.message).toContain(UNSUPPORTED_REGISTRATION_MESSAGE);
+    expect(!r.ok && r.message).toContain("unsupported merge driver registration; run storybloq team setup");
   });
 
   it("surrounding whitespace is trimmed before the comparison", async () => {
@@ -182,7 +181,7 @@ describe("registration: attribute, command and exact contract (R1-R5, R7)", () =
     await teamSetup(root);
     git(repo, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, `"/usr/local/bin/storybloq" merge-driver --protocol 5 %O %A %B %P`);
     const r = mergeDriverRegistration(repo, ISSUE, V5_ONLY);
-    expect(!r.ok && r.message).toBe(`${UNSUPPORTED_REGISTRATION_MESSAGE} (merge.${MERGE_DRIVER_V5_NAME}.driver)`);
+    expect(!r.ok && r.message).toBe("unsupported merge driver registration; run storybloq team setup (merge.storybloq-json-v5.driver)");
     await teamSetup(root);
     expect(mergeDriverRegistration(repo, ISSUE, V5_ONLY).ok).toBe(true);
   });

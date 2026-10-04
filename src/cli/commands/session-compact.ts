@@ -20,9 +20,10 @@ import {
   withoutLimitKeys,
   isCompactParkStale,
   LIMIT_KEYS,
+  StateWriteUndurableError,
   type ActiveSessionInfo,
 } from "../../autonomous/session.js";
-import { WORKFLOW_STATES } from "../../autonomous/session-types.js";
+import { WORKFLOW_STATES, type FullSessionState } from "../../autonomous/session-types.js";
 import {
   checkSurvivingWakeAttempts,
   normalizeRetiredLimitPark,
@@ -184,7 +185,9 @@ export async function handleSessionCompactPrepare(
         prepareForCompact(active.dir, refreshLease(active.state));
       } catch (err) {
         process.stderr.write(`[storybloq] compact-prepare: ${err instanceof Error ? err.message : String(err)}\n`);
-        return;
+        // ISS-958 (T/A): an undurable write still PUBLISHED compactPending, so
+        // the session is parked and needs its resume marker like any other.
+        if (!(err instanceof StateWriteUndurableError)) return;
       }
 
       // T-183: Write resume marker for 100% compaction survival
@@ -702,7 +705,16 @@ export async function handleSessionResumePrompt(
           if (!current || current.state.state !== "COMPACT" || !current.state.compactPending) {
             return null;
           }
-          const written = markCompactionObserved(current.dir, current.state);
+          let written: FullSessionState;
+          try {
+            written = markCompactionObserved(current.dir, current.state);
+          } catch (err) {
+            // ISS-958 (A): the observation WAS published; record it against
+            // the published revision instead of dropping the event.
+            if (!(err instanceof StateWriteUndurableError)) throw err;
+            process.stderr.write(`[storybloq] compaction observed: ${err.message}\n`);
+            written = err.published;
+          }
           appendEvent(current.dir, {
             rev: written.revision,
             type: "client_compaction_observed",
@@ -868,18 +880,28 @@ export async function handleSessionClearCompact(
         `storybloq_autonomous_guide {"sessionId": "${info.state.sessionId}", "action": "resume"}` + finalizeNote;
     }
 
-    // Invalid: end session
-    const written = writeSessionSync(info.dir, withoutLimitKeys({
-      ...info.state,
-      state: "SESSION_END",
-      previousState: info.state.state,
-      status: "completed" as const,
-      terminationReason: "admin_recovery",
-      compactPending: false,
-      compactPreparedAt: null,
-      compactObservedAt: null,
-      resumeBlocked: false,
-    }));
+    // Invalid: end session. ISS-958 (TC): an undurable write still PUBLISHED
+    // the ended session, and nothing revisits it, so the tail runs against
+    // the published state before the error propagates.
+    let written: FullSessionState;
+    let undurable: StateWriteUndurableError | null = null;
+    try {
+      written = writeSessionSync(info.dir, withoutLimitKeys({
+        ...info.state,
+        state: "SESSION_END",
+        previousState: info.state.state,
+        status: "completed" as const,
+        terminationReason: "admin_recovery",
+        compactPending: false,
+        compactPreparedAt: null,
+        compactObservedAt: null,
+        resumeBlocked: false,
+      }));
+    } catch (err) {
+      if (!(err instanceof StateWriteUndurableError)) throw err;
+      written = err.published;
+      undurable = err;
+    }
     writeShutdownMarker(info.dir);
 
     appendEvent(info.dir, {
@@ -895,6 +917,7 @@ export async function handleSessionClearCompact(
 
     // T-183: Clean resume marker (session is terminal)
     removeResumeMarker(root);
+    if (undurable) throw undurable;
 
     return `Session ${info.state.sessionId} ended (unrecoverable -- invalid preCompactState: ${preCompactState ?? "null"}). Run "start" for a new session.`;
   });
@@ -967,22 +990,32 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
     // The deferralsUnfiled flag signals that manual issue filing is needed
     const hasUnfiledDeferrals = (info.state.pendingDeferrals ?? []).length > 0;
 
-    // Write SESSION_END
-    const written = writeSessionSync(info.dir, withoutLimitKeys({
-      ...info.state,
-      state: "SESSION_END",
-      previousState: info.state.state,
-      status: "completed" as const,
-      terminationReason: "admin_recovery",
-      deferralsUnfiled: hasUnfiledDeferrals,
-      compactPending: false,
-      compactPreparedAt: null,
-      compactObservedAt: null,
-      resumeBlocked: false,
-      preCompactState: null,
-      resumeFromRevision: null,
-      ticket: undefined,
-    }));
+    // Write SESSION_END. ISS-958 (TC): an undurable write still PUBLISHED
+    // the stop, so the tail runs against the published state before the
+    // error propagates.
+    let written: FullSessionState;
+    let undurable: StateWriteUndurableError | null = null;
+    try {
+      written = writeSessionSync(info.dir, withoutLimitKeys({
+        ...info.state,
+        state: "SESSION_END",
+        previousState: info.state.state,
+        status: "completed" as const,
+        terminationReason: "admin_recovery",
+        deferralsUnfiled: hasUnfiledDeferrals,
+        compactPending: false,
+        compactPreparedAt: null,
+        compactObservedAt: null,
+        resumeBlocked: false,
+        preCompactState: null,
+        resumeFromRevision: null,
+        ticket: undefined,
+      }));
+    } catch (err) {
+      if (!(err instanceof StateWriteUndurableError)) throw err;
+      written = err.published;
+      undurable = err;
+    }
     // T-260: Cross-process finalization (marker only, no PID kill)
     writeShutdownMarker(info.dir);
 
@@ -995,6 +1028,7 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
 
     // T-183: Clean resume marker
     removeResumeMarker(root);
+    if (undurable) throw undurable;
 
     return `Session ${info.state.sessionId} stopped.${ticketReleased ? ` Ticket ${ticketId} released to open.` : ticketId ? ` Ticket ${ticketId} may need manual cleanup.` : ""}`;
   });

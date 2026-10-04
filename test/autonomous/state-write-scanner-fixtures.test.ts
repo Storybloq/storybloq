@@ -811,6 +811,21 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
 }`, { contextConstructions: ["user.ts#run#new#1"] }, { "/fx/types.ts": TYPES_SKIP });
   const SKIP_SYNC = "export class A implements WorkflowStage { async enter(ctx: StageContext) {} skip(ctx: StageContext) { ctx.writeState({ revision: 1 }); } }\n"
     + "export class B implements WorkflowStage { async enter(ctx: StageContext) {} skip(ctx: StageContext): void {} }\n";
+
+  // R4-3 / R4-2 pen ruling: a type is A1-sensitive only as an owner whose providers the scan enumerated.
+  const R4_ASSERTED = /^UNRESOLVED assertion at user\.ts:\d+ \(asserted into a sensitive type\)$/;
+  const PLAIN = "export interface Plain { f(): void }\nexport const p = JSON.parse(\"{}\") as Plain;\n";
+  it("R4-3: an assertion into an interface the scan resolves no provider for passes, though it has a callable member", () => {
+    expect(inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + PLAIN).errors.filter((e) => R4_ASSERTED.test(e))).toEqual([]);
+  });
+  it("R4-3: an assertion into a resolved owner (WorkflowStage) is UNRESOLVED", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export const forged = JSON.parse(\"{}\") as WorkflowStage;\n");
+    expect(r.errors.filter((e) => R4_ASSERTED.test(e))).toHaveLength(1);
+  });
+  it("R4-2: a Proxy over a type the scan resolves no provider for, with a get trap, passes", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + PLAIN + "export const q = new Proxy(p, { get() { return () => {}; } });\n");
+    expect(r.errors.filter((e) => e.startsWith("UNRESOLVED Proxy at"))).toEqual([]);
+  });
   const skipLifetime = (r: { errors: string[] }) => lifetime(r.errors).filter((e) =>
     /^lock-lifetime: WorkflowStage\.skip called at user\.ts:\d+ is neither awaited nor returned in a contract function$/.test(e));
   it("A1: synchronous providers only: the call passes and the providers are listed by file and line", () => {
@@ -1316,6 +1331,69 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     expect(unresolvedRef(add2Scan(stmt), fn).length).toBeGreaterThan(0);
   });
 
+  // R4-1 (Codex round 4, W1): a prototype write supplies the slot in every form, judged by its target.
+  const TOP_PROTO = TOP.replace("withLockX?:", "__proto__?: object; withLockX?:");
+  const PROTO = `{ withLockX: ${P} }`;
+  it.each([
+    ["a literal element key (W1 verbatim)", `deps["__proto__"] = ${PROTO};`],
+    ["a destructuring target (W1 verbatim)", `({ p: deps.__proto__ } = { p: ${PROTO} });`],
+    ["a loop target", `for (deps.__proto__ of [${PROTO}]) {}`],
+    ["a constant key", `const k = "__proto__";\n    deps[k] = ${PROTO};`],
+    ["a ??= write", `deps.__proto__ ??= ${PROTO};`],
+    ["Reflect.set with the key", `Reflect.set(deps, "__proto__", ${PROTO});`],
+  ])("R4-1: a prototype write through %s may supply the slot", (_n, write) => {
+    expect(mayBe(add2Scan(`const deps: Deps = {};\n    ${write}\n    await take(d, ctx, deps);`, TOP_PROTO, LISTED), "reflective write")).toHaveLength(1);
+  });
+
+  const protoUnknown = (r: { errors: string[] }) =>
+    r.errors.filter((e) => /^UNRESOLVED prototype mutation at user\.ts:\d+ \(computed key on a sensitive type\)$/.test(e));
+  it("R4-1: a computed key the checker cannot reduce is UNRESOLVED on a sensitive receiver and silent on another", () => {
+    expect(protoUnknown(add2Scan(`const deps: Deps = {};\n    const k: string = JSON.parse("\\"__proto__\\"");\n    deps[k] = ${PROTO};\n    await take(d, ctx, deps);`, TOP, LISTED))).toHaveLength(1);
+    expect(protoUnknown(add2Scan("const m: Record<string, number> = {};\n    const k: string = JSON.parse(\"\\\"a\\\"\");\n    m[k] = 1;", TOP, LISTED))).toEqual([]);
+  });
+
+  it("R4-1: a literal-typed key is reduced: a union is read member by member and a symbol is never __proto__", () => {
+    const at = (write: string) => add2Scan(`const deps: Deps = {};\n    ${write}\n    await take(d, ctx, deps);`, TOP_PROTO, LISTED);
+    const without = at("const put = (k: \"a\" | \"b\") => { deps[k] = 1; };\n    put(\"a\");");
+    expect(protoUnknown(without)).toEqual([]);
+    expect(mayBe(without, "reflective write")).toEqual([]);
+    expect(mayBe(at(`const put = (k: "a" | "__proto__") => { deps[k] = ${PROTO}; };\n    put("a");`), "reflective write")).toHaveLength(1);
+    const sym = at("const K = Symbol(\"k\");\n    deps[K] = 1;");
+    expect(protoUnknown(sym)).toEqual([]);
+    expect(mayBe(sym, "reflective write")).toEqual([]);
+  });
+
+  // R4-2 (W2): a proxy is judged by its own static result type, so a later flow into Deps is caught where it is built.
+  const proxyWhy = (r: { errors: string[] }) =>
+    r.errors.filter((e) => /^UNRESOLVED Proxy at user\.ts:\d+ \(target, flow or result type owns a guarded, provider, contract or lock member, or is untyped\)$/.test(e));
+  const DETACH_PROXY = `new Proxy({}, { get() { return detach; } })`;
+  it.each([
+    ["assigned to a typed local (W2 verbatim)", `const detach = ${P};\n    const proxy = ${DETACH_PROXY};\n    const deps: Deps = proxy;\n    await take(d, ctx, deps);`],
+    ["assigned later", `const detach = ${P};\n    let deps: Deps = {};\n    const proxy = ${DETACH_PROXY};\n    deps = proxy;\n    await take(d, ctx, deps);`],
+    ["returned from a function", `const detach = ${P};\n    const mk = () => ${DETACH_PROXY};\n    await take(d, ctx, mk());`],
+  ])("R4-2: a proxy %s is UNRESOLVED at its construction", (_n, body) => {
+    expect(proxyWhy(add2Scan(body, TOP, LISTED))).toHaveLength(1);
+  });
+
+  // R4-3: an assertion into a sensitive type, from another type, is the same hole by another route.
+  const asserted = (r: { errors: string[] }) =>
+    r.errors.filter((e) => /^UNRESOLVED assertion at user\.ts:\d+ \(asserted into a sensitive type\)$/.test(e));
+  it.each([
+    ["JSON.parse as Deps", "const deps = JSON.parse(\"{}\") as Deps;\n    await take(d, ctx, deps);"],
+    ["a double as", "const x: object = {};\n    const deps = x as unknown as Deps;\n    await take(d, ctx, deps);"],
+    ["an angle-bracket assertion", "const x: object = {};\n    const deps = <Deps>x;\n    await take(d, ctx, deps);"],
+    ["an assertion inside a return", "const mk = (x: object) => { return x as Deps; };\n    await take(d, ctx, mk({}));"],
+    ["an assertion into Deps[]", "const x: object[] = [];\n    const all = x as Deps[];\n    await take(d, ctx, all[0]!);"],
+    ["an assertion into a union holding Deps", "const x: object = {};\n    const one = x as Deps | undefined;\n    if (one) await take(d, ctx, one);"],
+  ])("R4-3: %s is UNRESOLVED", (_n, body) => {
+    expect(asserted(add2Scan(body, TOP, LISTED))).toHaveLength(1);
+  });
+
+  it("R4-3: a same-type assertion, as const, a non-null assertion and satisfies are not assertions into a sensitive type", () => {
+    const r = add2Scan("const a: Deps = {};\n    const b = a as Deps;\n    const c = { n: 1 } as const;\n    const e: Deps | undefined = a;\n    const f = e!;\n    const s = {} satisfies Deps;\n    await take(d, ctx, b);\n    void c; void f; void s;", TOP, LISTED);
+    expect(asserted(r)).toEqual([]);
+  });
+
   it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {
     const fwd = TOP + "export async function relay(d: string, ctx: StageContext, deps: Deps) { await take(d, ctx, deps); }\n";
     expect(add2Scan("await relay(d, ctx, {});", fwd, LISTED).errors).toEqual([]);
@@ -1542,15 +1620,31 @@ describe("ISS-958 S6 fixup 3: code and objects the scan cannot see are UNRESOLVE
     expect(proxyErrors(inLock("", top + PROXY("Server", GET, "Server")))).toEqual([]);
   });
 
+  // R4 pen ruling: WorkflowStage is sensitive as an owner whose providers the scan enumerates (A1), so the owned
+  // rows call its bodyless member under the lock, as the A1 fixtures do.
+  const OWNED = TYPES.replace("export interface WorkflowStage { enter(ctx: StageContext): Promise<void> }",
+    "export interface WorkflowStage { enter(ctx: StageContext): Promise<void>; skip?(ctx: StageContext): void }");
+  const ENTER = "stage.skip?.(ctx);";
+  const inLockOwned = (body: string, top: string) => lockScan(LOCK_IMPORTS + top + `
+export async function run(d: string, items: number[], stage: WorkflowStage) {
+  await withSessionLock(d, async () => {
+    const ctx = new StageContext(d);
+    ${body}
+  });
+}`, { contextConstructions: ["user.ts#run#new#1"] }, { "/fx/types.ts": OWNED });
+  it("a get-trap Proxy over a WorkflowStage the scan resolves no provider for passes", () => {
+    expect(proxyErrors(inLock("", PROXY("WorkflowStage", GET, "WorkflowStage")))).toEqual([]);
+  });
+
   it.each([
-    ["a get trap over a WorkflowStage", PROXY("WorkflowStage", GET, "WorkflowStage"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
-    ["a get trap over the context", PROXY("StageContext", GET, "StageContext"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
-    ["a get trap flowing into a WorkflowStage", "export class Impl { async enter(): Promise<void> {} }\n" + PROXY("Impl", GET, "WorkflowStage"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
-    ["an untyped target", PROXY("any", GET, "unknown"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["a get trap over a WorkflowStage", PROXY("WorkflowStage", GET, "WorkflowStage"), "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped", ENTER],
+    ["a get trap over the context", PROXY("StageContext", GET, "StageContext"), "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["a get trap flowing into a WorkflowStage", "export class Impl { async enter(): Promise<void> {} }\n" + PROXY("Impl", GET, "WorkflowStage"), "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped", ENTER],
+    ["an untyped target", PROXY("any", GET, "unknown"), "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped"],
     ["a set trap", PROXY("{ a: number }", "{ set(t, p, v): boolean { return Reflect.set(t, p, v); } }", "{ a: number }"), "handler member set may write"],
     ["a defineProperty trap", PROXY("{ a: number }", "{ defineProperty(): boolean { return false; } }", "{ a: number }"), "handler member defineProperty may write"],
     ["a non-literal handler", "const h: ProxyHandler<{ a: number }> = {};\n" + PROXY("{ a: number }", "h", "{ a: number }"), "handler is not an object literal"],
-  ])("a Proxy with %s is UNRESOLVED", (_n, top, why) => {
-    expect(proxyErrors(inLock("", top))).toEqual([expect.stringMatching(new RegExp(`^UNRESOLVED Proxy at user\\.ts:\\d+ \\(${why}\\)$`))]);
+  ])("a Proxy with %s is UNRESOLVED", (_n, top, why, body = "") => {
+    expect(proxyErrors(body ? inLockOwned(body, top) : inLock("", top))).toEqual([expect.stringMatching(new RegExp(`^UNRESOLVED Proxy at user\\.ts:\\d+ \\(${why}\\)$`))]);
   });
 });

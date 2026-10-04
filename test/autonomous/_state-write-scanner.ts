@@ -666,10 +666,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         continue;
       }
       writeSites.push({ target: left, from: assignOps.has(op) ? { kind: "value", expr: n.right } : { kind: "opaque" }, form: ts.tokenToString(op)!, at: n });
-      // `x.__proto__ = p` replaces x's prototype: every member of p is inherited.
-      if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(left) && left.name.text === "__proto__") {
-        reflectiveWrites.push({ at: n, fn: "__proto__", receiver: left.expression, sources: [n.right] });
-      }
     } else if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
       // S2: `for (f of xs)` and `for ({ m: f } of xs)` receive an element of xs, or its members; `for (k in o)` binds a key string.
       const target = skipOuter(n.initializer as ts.Expression);
@@ -686,6 +682,37 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     } else if (ts.isDeleteExpression(n)) {
       writeSites.push({ target: skipOuter(n.expression), from: { kind: "opaque" }, form: "delete", at: n });
     }
+  }
+  /**
+   * Whether an element access may write `__proto__`, judged by its key's type (so a constant counts): "__proto__"
+   * when the key is, or is a union holding, that literal; null when every member is another string literal, a
+   * number literal or a symbol (a symbol is never the string "__proto__"); "*" when the checker cannot reduce it.
+   */
+  const elementKey = (k: ts.Expression): string | null => {
+    const t = checker.getTypeAtLocation(k);
+    const parts = t.isUnion() ? t.types : [t];
+    if (parts.some((p) => p.isStringLiteral() && p.value === "__proto__")) return "__proto__";
+    return parts.every((p) => p.isStringLiteral() || p.isNumberLiteral() || (p.flags & ts.TypeFlags.ESSymbolLike)) ? null : "*";
+  };
+  /**
+   * R4-1: prototype mutation is a property of the write target, not of the
+   * syntax. Every enumerated write whose target names `__proto__` (a dot or a
+   * literal element key, under any operator, pattern or loop) replaces the
+   * receiver's prototype; its value, when it has one, supplies the members.
+   * A computed key the checker cannot reduce is held for the sensitive-type
+   * test below.
+   */
+  const protoUnknownKeys: ts.ElementAccessExpression[] = [];
+  for (const s of writeSites) {
+    const t = s.target;
+    let receiver: ts.Expression | undefined;
+    if (ts.isPropertyAccessExpression(t) && t.name.text === "__proto__") receiver = t.expression;
+    else if (ts.isElementAccessExpression(t)) {
+      const k = elementKey(t.argumentExpression);
+      if (k === "__proto__") receiver = t.expression;
+      else if (k === "*") protoUnknownKeys.push(t);
+    }
+    if (receiver) reflectiveWrites.push({ at: s.at, fn: "__proto__", receiver, sources: s.from.kind === "value" ? [s.from.expr] : [] });
   }
   /**
    * The default-library identity of what an expression evaluates to, by the
@@ -1859,10 +1886,16 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
    * Pen ruling on Proxy: a trap can supply a member by another route (a get
    * trap returning a different function is a provider). A `new Proxy` is
    * UNRESOLVED when its handler is no object literal, when the literal has a
-   * write trap, a computed or spread member, or when its target type or the
-   * type it flows into owns a guarded slot, a src interface member a call can
-   * go through, a lock entry or contract function, the context or a stage, or
-   * is untyped. Any other reference to Proxy was refused with the library refs.
+   * write trap, a computed or spread member, or when its target type, the
+   * type it flows into, or its own static result type is sensitive: it owns a
+   * guarded or seam slot, an interface member whose src providers this run
+   * enumerated (A1), a lock entry or contract function, is the context or a
+   * stage, or is untyped (R4-2: the result type is tested by assignability to
+   * every sensitive src type, so a proxy assigned later is caught where it is
+   * built). Any other reference to Proxy was refused with the library refs.
+   * Credit is given only through those slots and A1 provider enumeration, so
+   * a type owning none of them cannot launder a provider; the A1 set is taken
+   * from use and grows when a new member enters a writer chain.
    */
   const WRITE_TRAPS = new Set(["set", "defineProperty", "deleteProperty", "setPrototypeOf"]);
   const proxySensitive = (t: ts.Type | undefined): boolean => {
@@ -1873,26 +1906,11 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       (x.getSymbol()?.declarations ?? []).some((d) => implementsStage(d))
       || checker.getPropertiesOfType(x).some((m) => (m.declarations ?? []).some((d) => {
         if (guardedMds.has(d)) return true;
-        if (typeOnlyMember(d) && mayBeCallable(checker.getTypeOfSymbolAtLocation(m, d))) return true;
+        if (typeOnlyMember(d) && providerMemo.has(d)) return true;
         const k = ts.isFunctionLike(d) ? fnKey(d) : null;
         return !!k && (contract.has(k) || lockEntries.has(k));
       })));
   };
-  for (const nx of news) {
-    if (libIdentity(nx.expression) !== "ProxyConstructor") continue;
-    const [target, handler] = nx.arguments ?? [];
-    const h = handler && skipOuter(handler);
-    let why: string | null = null;
-    if (!h || !ts.isObjectLiteralExpression(h)) why = "handler is not an object literal";
-    else {
-      const bad = h.properties.find((p) => !p.name || ts.isComputedPropertyName(p.name) || WRITE_TRAPS.has(p.name.getText().replace(/^["']|["']$/g, "")));
-      if (bad) why = `handler member ${bad.name ? bad.name.getText() : "spread"} may write`;
-      else if (!target || proxySensitive(checker.getTypeAtLocation(target)) || proxySensitive(checker.getContextualType(nx))) {
-        why = "target or flow type owns a guarded, provider, contract or lock member, or is untyped";
-      }
-    }
-    if (why) errors.push(`UNRESOLVED Proxy at ${where(nx)} (${why})`);
-  }
   const contextParams = new Set(opts.registry.contextParams ?? []);
   const seenContextParams = new Set<string>();
   /** R-e: a pinned context-carrying parameter. */
@@ -2577,6 +2595,78 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   for (const key of contextParams) {
     if (!seenContextParams.has(key)) errors.push(`stale context-carrying parameter ${key}`);
   }
+  /**
+   * The checks that need the A1 owner set, run once every provider lookup has been made: R4-1's computed keys,
+   * R4-3's assertions and the Proxy ruling.
+   */
+  function launderingChecks(): void {
+    /** Every named src type that is itself sensitive (any and unknown aliases aside): the targets R4-2 and R4-3 test against. */
+    const sensitiveTypes: ts.Type[] = [];
+    const sensitiveDecls = new Set<ts.Node>();
+    for (const sf of files) {
+      sf.forEachChild(function visit(n): void {
+        if ((ts.isInterfaceDeclaration(n) || ts.isTypeAliasDeclaration(n) || ts.isClassDeclaration(n)) && n.name) {
+          const t = checker.getTypeAtLocation(n.name);
+          if (!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) && proxySensitive(t)) {
+            sensitiveTypes.push(t);
+            for (const d of t.getSymbol()?.declarations ?? []) sensitiveDecls.add(d);
+          }
+        }
+        ts.forEachChild(n, visit);
+      });
+    }
+    const assignableToSensitive = (t: ts.Type): boolean =>
+      !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) || sensitiveTypes.some((s) => checker.isTypeAssignableTo(t, s));
+    /** R4-3: a type that is, or holds as a union arm, an intersection part, a type argument or an anonymous object's member, a sensitive type. */
+    function containsSensitive(t: ts.Type, seen = new Set<ts.Type>()): boolean {
+      if (seen.has(t)) return false;
+      seen.add(t);
+      if (isCtxType(t)) return true;
+      if ([...(t.getSymbol()?.declarations ?? []), ...(t.aliasSymbol?.declarations ?? [])].some((d) => sensitiveDecls.has(d))) return true;
+      if (t.isUnion() || t.isIntersection()) return t.types.some((x) => containsSensitive(x, seen));
+      const args = [...(t.aliasTypeArguments ?? []), ...((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference ? checker.getTypeArguments(t as ts.TypeReference) : [])];
+      if (args.some((x) => containsSensitive(x, seen))) return true;
+      if ((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) {
+        return checker.getPropertiesOfType(t).some((m) => (m.declarations ?? []).some((d) => containsSensitive(checker.getTypeOfSymbolAtLocation(m, d), seen)));
+      }
+      return false;
+    }
+    // R4-3: an `as` or angle-bracket assertion into a type holding a sensitive type, from any other type, is UNRESOLVED
+    // wherever it appears. `as const`, `!` and `satisfies` assert nothing new; satisfies stays a contextual flow.
+    for (const sf of files) {
+      sf.forEachChild(function visit(n): void {
+        if (testOnlyInits.has(n)) return;
+        if ((ts.isAsExpression(n) || ts.isTypeAssertionExpression(n)) && !ts.isConstTypeReference(n.type)) {
+          const asserted = checker.getTypeFromTypeNode(n.type);
+          if (asserted !== checker.getTypeAtLocation(n.expression) && containsSensitive(asserted)) {
+            errors.push(`UNRESOLVED assertion at ${where(n)} (asserted into a sensitive type)`);
+          }
+        }
+        ts.forEachChild(n, visit);
+      });
+    }
+    // R4-1: a write with a key the checker cannot reduce may name __proto__; on a sensitive receiver that is UNRESOLVED.
+    for (const e of protoUnknownKeys) {
+      if (proxySensitive(checker.getTypeAtLocation(e.expression))) errors.push(`UNRESOLVED prototype mutation at ${where(e)} (computed key on a sensitive type)`);
+    }
+    for (const nx of news) {
+      if (libIdentity(nx.expression) !== "ProxyConstructor") continue;
+      const [target, handler] = nx.arguments ?? [];
+      const h = handler && skipOuter(handler);
+      let why: string | null = null;
+      if (!h || !ts.isObjectLiteralExpression(h)) why = "handler is not an object literal";
+      else {
+        const bad = h.properties.find((p) => !p.name || ts.isComputedPropertyName(p.name) || WRITE_TRAPS.has(p.name.getText().replace(/^["']|["']$/g, "")));
+        if (bad) why = `handler member ${bad.name ? bad.name.getText() : "spread"} may write`;
+        else if (!target || proxySensitive(checker.getTypeAtLocation(target)) || proxySensitive(checker.getContextualType(nx))
+          || assignableToSensitive(checker.getTypeAtLocation(nx))) {
+          why = "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped";
+        }
+      }
+      if (why) errors.push(`UNRESOLVED Proxy at ${where(nx)} (${why})`);
+    }
+  }
+  launderingChecks();
   const reviewed = opts.registry.unresolved ?? {};
   for (const [key, construct] of unresolved) {
     if (!(key in reviewed)) errors.push(`UNRESOLVED ${key} (${construct})`);

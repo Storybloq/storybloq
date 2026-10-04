@@ -2033,6 +2033,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe: "Clear all cited rulings",
                 })
+                .option("resolution-kind", {
+                  type: "string",
+                  describe: "Why the issue was closed (fixed, wontfix, duplicate, superseded, not_reproducible)",
+                })
+                .option("duplicate-of", {
+                  type: "string",
+                  describe: "Ticket or issue this one duplicates",
+                })
                 .conflicts("impact", "stdin")
                 .conflicts("cites-ruling", "clear-cites-rulings"),
               {
@@ -2092,6 +2100,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   phase: argv.phase === "" ? null : argv.phase as string | undefined,
                   citesRuling: argv["cites-ruling"] as string[] | undefined,
                   clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
+                  resolutionKind: argv["resolution-kind"] as string | undefined,
+                  duplicateOf: argv["duplicate-of"] as string | undefined,
                 },
                 format,
                 root,

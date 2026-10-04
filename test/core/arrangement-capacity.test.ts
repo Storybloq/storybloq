@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { initProject } from "../../src/core/init.js";
 import { writeArrangementUnlocked, loadArrangementsSafe, ARRANGEMENT_MAX_BYTES } from "../../src/core/arrangement-loader.js";
 import { coordinateDuet, readDuetCoordination, compactArrangementCheckpoint, rotateArrangement } from "../../src/core/duet-coordination.js";
-import { loadProject, writeTicketUnlocked } from "../../src/core/project-loader.js";
+import { loadProject, withProjectLock, writeIssueUnlocked, writeTicketUnlocked } from "../../src/core/project-loader.js";
 import { handleDuetGet } from "../../src/cli/commands/duet.js";
 import { handleEarmarkGet } from "../../src/cli/commands/earmark.js";
 import { handleArrangementUpdate } from "../../src/cli/commands/arrangement.js";
@@ -469,6 +469,20 @@ describe("checkpoint compaction under the arrangement cap", () => {
       id, clientTaskId: pen.id, expectedSessionId: state.start.sessionId, expectedRevision: before,
       action: "recover", newSessionId: randomUUID(), mode: "native-return", recoveryEvidence: "stale revision",
     } as DuetOperation)).rejects.toThrow(/revision|checkpoint/i);
+  });
+
+  it("T-486 B6: rotation re-points an earmarked issue with the write guard active", async () => {
+    await resolveAssignments(2);
+    await call({ action: "assign", assignment: bigAssignment(50) });
+    const earmark = { reservedBy: pen, arrangementId: id, since: new Date().toISOString(), stage: "reserved", holderRole: "worker", holderSession: null };
+    await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({
+      id: "ISS-001", title: "Carried issue", status: "open", severity: "low", components: [], impact: "", resolution: null,
+      location: [], discoveredDate: "2026-09-10", resolvedDate: null, relatedTickets: [], earmark,
+    } as any, root));
+    const rotated = await rotateArrangement(root, id, pen.id);
+    expect(rotated.carriedEarmarks).toEqual(["ISS-001"]);
+    const { state } = await loadProject(root);
+    expect(state.issues.find((i) => i.id === "ISS-001")!.earmark!.arrangementId).toBe(rotated.successorId);
   });
 
   it("rotates open work into a successor and makes the predecessor terminal", async () => {

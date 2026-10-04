@@ -44,6 +44,7 @@ import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabiliti
 import { validateProject } from "./validation.js";
 import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { assertResolutionMetadataWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
 import type { ZodType } from "zod";
 
 // --- Public Types ---
@@ -361,10 +362,17 @@ export async function writeTicket(
  * Writes an issue file WITHOUT acquiring the project lock.
  * Use inside withProjectLock when the lock is already held.
  */
-/** Issue counterpart of `prepareTicketWrite`; same T-494 rationale. */
+/**
+ * Issue counterpart of `prepareTicketWrite`; same T-494 rationale.
+ *
+ * T-486 2c: also the resolution-metadata write boundary. It reads the file
+ * being replaced and refuses a kind or evidence write the board cannot carry
+ * (core/resolution-write-guard.ts), using the lock holder's context.
+ */
 export async function prepareIssueWrite(
   issue: Issue,
   root: string,
+  options?: { resolutionContext?: ResolutionWriteContext },
 ): Promise<{ target: string; content: string }> {
   const parsed = IssueSchema.parse(issue);
   if (!ISSUE_ID_REGEX.test(parsed.id) && !ISSUE_CANONICAL_ID_REGEX.test(parsed.id)) {
@@ -376,7 +384,50 @@ export async function prepareIssueWrite(
   const wrapDir = resolve(root, ".story");
   const target = join(wrapDir, "issues", `${parsed.id}.json`);
   await guardPath(target, wrapDir);
+  const ctx = heldResolutionContext(root, options?.resolutionContext);
+  assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, priorRecord(await readIfExists(target)), parsed);
   return { target, content: serializeJSON(parsed) };
+}
+
+/** The record a write replaces: `{}` when absent, "unknown" when unparseable. */
+function priorRecord(raw: string | null): Readonly<Record<string, unknown>> | "unknown" {
+  if (raw === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * T-486 A4/B6: the resolution-write context of the lock operation holding
+ * `root`. Every lock acquisition creates one after it acquires, and releases
+ * it in its finally before the lock itself is released (`withLock`), so a
+ * context exists exactly while its lock is held, by this async flow. Nested
+ * locks (an orchestrator lock around an item lock) each have their own, found
+ * by root.
+ *
+ * Fails closed with `ResolutionWriteContextError` when there is none, or the
+ * given one is released, belongs to another project, or is not held by this
+ * operation. Never loads the project and never skips the guard.
+ */
+export function resolutionWriteContextFor(root: string): ResolutionWriteContext {
+  return heldResolutionContext(root, undefined);
+}
+
+function heldResolutionContext(root: string, given: ResolutionWriteContext | undefined): ResolutionWriteContext {
+  const absRoot = resolve(root);
+  const chain = resolutionContextChain.getStore() ?? [];
+  if (given !== undefined) {
+    if (given.released) throw new ResolutionWriteContextError("the given write context belongs to a lock that was released");
+    if (given.root !== absRoot) throw new ResolutionWriteContextError(`the given write context is for ${given.root}, not ${absRoot}`);
+    if (!chain.some((held) => held.token === given.token)) throw new ResolutionWriteContextError("the given write context is not held by this operation");
+    return given;
+  }
+  const held = [...chain].reverse().find((c) => c.root === absRoot && !c.released);
+  if (!held) throw new ResolutionWriteContextError(`no project lock is held for ${absRoot}`);
+  return held;
 }
 
 export async function writeIssueUnlocked(
@@ -441,6 +492,15 @@ export async function writeConfigUnlocked(
   await guardPath(targetPath, wrapDir);
   const json = serializeJSON(parsed);
   await atomicWrite(targetPath, json);
+  // T-486 B6: decisions derived from the old config (the fence) must not
+  // outlive it within this operation.
+  invalidateResolutionWriteContext(root);
+}
+
+/** T-486 B6: drops the config and git answers the held context for `root` derived, if one is held. */
+export function invalidateResolutionWriteContext(root: string): void {
+  const absRoot = resolve(root);
+  for (const ctx of resolutionContextChain.getStore() ?? []) if (ctx.root === absRoot) ctx.invalidate();
 }
 
 export async function writeConfig(
@@ -907,6 +967,7 @@ async function withProjectLockInternal(
       );
     }
     assertTeamWriteCapabilities(config);
+    heldResolutionContext(absRoot, undefined).bindConfig(config);
 
     if (options.strict) {
       const integrityWarning = result.warnings.find((w) =>
@@ -1046,6 +1107,21 @@ export async function runTransactionUnlocked(
       if (code === "ENOENT") return;
       throw err;
     }
+  }
+
+  // T-486 A7: each issue's boundary check compared its write against the file
+  // on disk, so a batch naming the same issue twice would let the second
+  // write skip a check the first one changed the basis of. Refused before
+  // anything is journaled.
+  const issueTargets = new Set<string>();
+  const issuesDir = join(wrapDir, "issues") + sep;
+  for (const op of operations) {
+    const target = resolve(op.target);
+    if (!target.startsWith(issuesDir)) continue;
+    if (issueTargets.has(target)) {
+      throw new ProjectLoaderError("invalid_input", `Transaction names ${relative(wrapDir, target)} more than once; each issue may be written once per transaction`);
+    }
+    issueTargets.add(target);
   }
 
   try {
@@ -1744,6 +1820,8 @@ export async function guardPath(
 // can fence their commit syscall without changing withLock's ~13 internal call
 // sites or withProjectLock/runTransactionUnlocked's external ones.
 const projectLockContext = new AsyncLocalStorage<ProjectLockHandle>();
+/** T-486 A4/B6: the resolution-write contexts of the locks this async flow holds, innermost last. */
+const resolutionContextChain = new AsyncLocalStorage<readonly ResolutionWriteContext[]>();
 /**
  * Marker carried as the `cause` of every fencing error, so a caller can tell
  * "the lock was lost before this commit syscall" from any other io_error
@@ -1781,9 +1859,14 @@ async function withLock<T>(
 ): Promise<T> {
   const lockPath = join(wrapDir, ".lock");
   const handle = await acquireProjectLockAsync(lockPath);
+  // T-486 B6: the context exists only after the lock is acquired and is
+  // released before the lock is, so detached work cannot outlive it.
+  const ctx = createResolutionWriteContext(dirname(resolve(wrapDir)));
+  const chain = resolutionContextChain.getStore() ?? [];
   try {
-    return await projectLockContext.run(handle, fn);
+    return await projectLockContext.run(handle, () => resolutionContextChain.run([...chain, ctx], fn));
   } finally {
+    ctx.release();
     releaseProjectLock(handle);
   }
 }

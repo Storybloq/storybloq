@@ -10,7 +10,7 @@ import {
 import { inferIssuePhase } from "../../autonomous/issue-create-preparation.js";
 import { validateProject } from "../../core/validation.js";
 import { resolveAndNormalizeTicketRef, resolveAndNormalizeIssueRef, RefResolutionError } from "../../core/ref-normalization.js";
-import { ProjectState } from "../../core/project-state.js";
+import { ProjectState, isDeleted } from "../../core/project-state.js";
 import {
   withProjectLock,
   writeIssueUnlocked,
@@ -18,7 +18,7 @@ import {
 } from "../../core/project-loader.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
-import { ISSUE_RESOLUTION_KINDS, effectiveResolutionKind, issueJsonBody } from "../../core/resolution-kind.js";
+import { ISSUE_RESOLUTION_KINDS, effectiveResolutionKind, issueJsonBody, resolutionDigest, type IssueResolutionKind } from "../../core/resolution-kind.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -471,6 +471,8 @@ export async function handleIssueUpdate(
     phase?: string | null;
     citesRuling?: string[];
     clearCitesRulings?: boolean;
+    resolutionKind?: string;
+    duplicateOf?: string;
   },
   format: string,
   root: string,
@@ -479,8 +481,14 @@ export async function handleIssueUpdate(
   assertUpdateHasFields(
     updates,
     "issue",
-    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings",
+    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings, resolutionKind, duplicateOf",
   );
+  if (updates.resolutionKind !== undefined && !(ISSUE_RESOLUTION_KINDS as readonly string[]).includes(updates.resolutionKind)) {
+    throw new CliValidationError(
+      "invalid_input",
+      `Unknown resolution kind "${updates.resolutionKind}": must be one of ${ISSUE_RESOLUTION_KINDS.join(", ")}`,
+    );
+  }
   // ISS-1192: same round-trip-growth fix as ticket.ts's description -- an
   // agent that reads the md-rendered impact back and writes it verbatim
   // carries the render fence into storage. Shared by CLI and MCP.
@@ -569,6 +577,11 @@ export async function handleIssueUpdate(
       ...statusChanges,
     };
 
+    if (updates.duplicateOf !== undefined) {
+      issue = { ...issue, duplicateOf: resolveDuplicateTarget(state, updates.duplicateOf, existing.id) };
+    }
+    issue = applyResolutionKind(issue, existing, updates.resolutionKind as IssueResolutionKind | undefined, state);
+
     if (opts?.clearEarmarkForSession) {
       const { item: next } = clearSameSessionEarmark(issue, opts.clearEarmarkForSession);
       issue = next;
@@ -587,6 +600,57 @@ export async function handleIssueUpdate(
     return { output: JSON.stringify(successEnvelope(issueJsonBody(updatedIssue)), null, 2), ...(warnings && { warnings }) };
   }
   return { output: `Updated issue ${displayIdOf(updatedIssue)}: ${updatedIssue.title}`, ...(warnings && { warnings }) };
+}
+
+/**
+ * T-486 4: `--duplicate-of` stores the canonical id of an existing ticket or
+ * issue. A missing, ambiguous or deleted target, or the issue itself, is
+ * refused.
+ */
+function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string): string {
+  const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref)];
+  if (results.some((r) => r.kind === "ambiguous")) {
+    throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is ambiguous; use the canonical id`);
+  }
+  const found = results.flatMap((r) => (r.kind === "found" ? [r.item] : []));
+  if (found.length === 0) throw new CliValidationError("not_found", `--duplicate-of ${ref} names no ticket or issue`);
+  if (found.length > 1) throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is ambiguous; use the canonical id`);
+  const target = found[0]!;
+  if (isDeleted(target)) throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is deleted`);
+  if (target.id === selfId) throw new CliValidationError("invalid_input", "--duplicate-of cannot name the issue itself");
+  return target.id;
+}
+
+/**
+ * T-486 4: the kind setter. A kind is written from the post-update issue,
+ * bound to its resolvedDate and resolution text. Without a kind, an update
+ * that changes the status or the resolution text deletes any stored kind:
+ * the closure it described is gone, and leaving it would only be stale.
+ */
+function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutionKind | undefined, state: ProjectState): Issue {
+  if (kind === undefined) {
+    const closureChanged = issue.status !== existing.status || (issue.resolution ?? null) !== (existing.resolution ?? null);
+    if (!closureChanged || !Object.prototype.hasOwnProperty.call(issue, "resolutionKind")) return issue;
+    const { resolutionKind: _dropped, ...rest } = issue as Issue & { resolutionKind?: unknown };
+    return rest as Issue;
+  }
+  if (issue.status !== "resolved") {
+    throw new CliValidationError("invalid_input", `--resolution-kind needs a resolved issue; this one is ${issue.status} after the update`);
+  }
+  if (!issue.resolution) {
+    throw new CliValidationError("invalid_input", "--resolution-kind needs a resolution; pass --resolution");
+  }
+  if (!issue.resolvedDate) {
+    throw new CliValidationError("invalid_input", "--resolution-kind needs a resolvedDate; reopen and resolve the issue again");
+  }
+  if (kind === "duplicate") {
+    if (!issue.duplicateOf) throw new CliValidationError("invalid_input", "--resolution-kind duplicate needs --duplicate-of");
+    resolveDuplicateTarget(state, issue.duplicateOf, issue.id);
+  }
+  return {
+    ...issue,
+    resolutionKind: { kind, closedOn: issue.resolvedDate, resolutionDigest: resolutionDigest(issue.resolution) },
+  } as Issue;
 }
 
 export async function handleIssueMetaSet(

@@ -30,7 +30,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **issue list** (--status?, --severity?, --component?, --phase?, --disposition?, --actionable?, --non-actionable?, --resolution-kind?, --format?) - List issues with optional filters
 - **issue get <id>** (--format?) - Get issue details by ID
 - **issue create** (--title, --severity, --impact?, --stdin?, --phase?, --dedupe-key?, --created-by?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?, --commit?) - Create a new issue
-- **issue update <id>** (--status?, --title?, --severity?, --impact?, --stdin?, --resolution?, --order?, --phase?, --clear-cites-rulings?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?, --commit?) - Update an issue
+- **issue update <id>** (--status?, --title?, --severity?, --impact?, --stdin?, --resolution?, --order?, --phase?, --clear-cites-rulings?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --resolution-kind?, --duplicate-of?, --format?, --commit?) - Update an issue
 - **issue meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on an issue
 - **issue delete <id>** (--hard?, --format?, --commit?) - Delete an issue
 - **phase list** (--format?, --node?) - List all phases with derived status
@@ -222,7 +222,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_ticket_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, sourceRefs?, dedupeKey?, createdBy?, phase?, citesRuling?, node?, commit?) - Create issue with optional persisted review provenance and retry deduplication
-- **storybloq_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, sourceRefs?, order?, phase?, citesRuling?, clearCitesRulings?, node?, commit?) - Update issue
+- **storybloq_issue_update** (id, status?, title?, severity?, impact?, resolution?, components?, relatedTickets?, location?, sourceRefs?, order?, phase?, citesRuling?, clearCitesRulings?, resolutionKind?, duplicateOf?, node?, commit?) - Update issue
 - **storybloq_issue_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on an issue
 - **storybloq_issue_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from an issue
 - **storybloq_phase_create** (id, name, label, description, summary?, after?, atStart?, commit?) - Create phase in roadmap

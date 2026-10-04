@@ -47,7 +47,8 @@ import { sanitizeDisplayText } from "./display-text.js";
 import { ProjectLoaderError } from "./errors.js";
 import { buildTermReferenceIndex, checkTerms, glossaryCatalog, type CapabilityScan } from "./glossary.js";
 import { CAPABILITIES_PATH, GLOSSARY_PATH, readLedgerSnapshot, type LedgerSnapshot, type SnapshotGitRunner } from "./ledger-snapshot.js";
-import { atomicWrite, guardPath, withProjectLock } from "./project-loader.js";
+import { atomicWrite, guardPath, resolutionWriteContextFor, withProjectLock } from "./project-loader.js";
+import { assertResolutionMetadataWrite } from "./resolution-write-guard.js";
 import { claimsAcceptance, isEffectivelyAccepted } from "./ruling-lifecycle.js";
 import { loadRulingsSafe } from "./ruling-loader.js";
 
@@ -412,6 +413,21 @@ async function restoreSingleRecord(
       if (projectionOf(current) === projectionOf(sourceJson)) {
         result = { outcome: "unchanged", target: label };
         return;
+      }
+      // T-486 2c: restore writes outside prepareIssueWrite, so it runs the
+      // same resolution-metadata boundary, against the record it replaces.
+      if (record.family === "issues") {
+        const prior = current.present && typeof current.value === "object" && current.value !== null && !Array.isArray(current.value)
+          ? (current.value as Record<string, unknown>)
+          : current.present ? "unknown" : {};
+        try {
+          assertResolutionMetadataWrite(resolutionWriteContextFor(root), record.path, prior, parsed.data as Record<string, unknown>);
+        } catch (err) {
+          if (err instanceof ProjectLoaderError && err.code === "conflict") {
+            throw new RestoreUnsafe(label, "invariant", "resolution-metadata", err.message);
+          }
+          throw err;
+        }
       }
       const wrapDir = resolve(root, ".story");
       mkdirSync(dirname(abs), { recursive: true });

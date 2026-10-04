@@ -146,8 +146,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue update",
     description: "Update an issue",
-    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--format", "--commit"],
+    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--commit] [--format <json|md>]",
+    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--format", "--commit"],
   },
   {
     name: "issue meta",
@@ -1097,7 +1097,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_ticket_meta_set", description: "Set custom passthrough metadata on a ticket", params: ["id","path","value?","commit?"] },
   { name: "storybloq_ticket_meta_unset", description: "Unset custom passthrough metadata from a ticket", params: ["id","path","commit?"] },
   { name: "storybloq_issue_create", description: "Create issue with optional persisted review provenance and retry deduplication", params: ["title","severity","impact","components?","relatedTickets?","location?","sourceRefs?","dedupeKey?","createdBy?","phase?","citesRuling?","node?","commit?"] },
-  { name: "storybloq_issue_update", description: "Update issue", params: ["id","status?","title?","severity?","impact?","resolution?","components?","relatedTickets?","location?","sourceRefs?","order?","phase?","citesRuling?","clearCitesRulings?","node?","commit?"] },
+  { name: "storybloq_issue_update", description: "Update issue", params: ["id","status?","title?","severity?","impact?","resolution?","components?","relatedTickets?","location?","sourceRefs?","order?","phase?","citesRuling?","clearCitesRulings?","resolutionKind?","duplicateOf?","node?","commit?"] },
   { name: "storybloq_issue_meta_set", description: "Set custom passthrough metadata on an issue", params: ["id","path","value?","commit?"] },
   { name: "storybloq_issue_meta_unset", description: "Unset custom passthrough metadata from an issue", params: ["id","path","commit?"] },
   { name: "storybloq_phase_create", description: "Create phase in roadmap", params: ["id","name","label","description","summary?","after?","atStart?","commit?"] },

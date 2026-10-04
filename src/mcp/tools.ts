@@ -6,6 +6,7 @@
  */
 import { BRIEF_BUDGET_MAX, BRIEF_BUDGET_MIN, handleBrief } from "../cli/commands/brief.js";
 import { z } from "zod";
+import { ISSUE_RESOLUTION_KINDS } from "../core/resolution-kind.js";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { NODE_NAME_REGEX } from "../models/federation-config.js";
@@ -1143,6 +1144,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       phase: z.string().nullable().optional().describe("Phase ID; null clears the phase"),
       citesRuling: z.array(RulingIdSchema).optional().describe("Replaces existing cited rulings. Mutually exclusive with clearCitesRulings."),
       clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
+      resolutionKind: z.enum(ISSUE_RESOLUTION_KINDS).optional().describe("Why the issue was closed; needs a resolved issue with a resolution"),
+      duplicateOf: z.string().optional().describe("Ticket or issue this one duplicates"),
       node: nodeParam,
     },
   }, async (args) => {
@@ -1167,6 +1170,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           phase: args.phase,
           citesRuling: args.citesRuling,
           clearCitesRulings: args.clearCitesRulings,
+          resolutionKind: args.resolutionKind,
+          duplicateOf: args.duplicateOf,
         },
         format,
         root,

@@ -252,18 +252,14 @@ export function registrationOverrides(gitRoot: string): string[] {
     const key = `merge.${name}.driver`;
     let out: string;
     try {
-      out = execFileSync("git", ["config", "--show-scope", "--show-origin", "--get-all", key], { cwd: gitRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+      out = execFileSync("git", ["config", "--show-scope", "--show-origin", "-z", "--get-all", key], { cwd: gitRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
     } catch (err) {
       const e = err as { status?: number | null; stderr?: unknown; message?: string };
       const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
       problems.push(e.status === 1 ? `${key} is not set after setup wrote it` : `git could not read ${key}: ${stderr || e.message || String(err)}`);
       continue;
     }
-    // One `<scope>\t<origin>\t<value>` line per value, in precedence order:
-    // git runs the last one.
-    const last = out.replace(/\n$/, "").split("\n").at(-1)!;
-    const [scope = "", origin = "", ...rest] = last.split("\t");
-    const value = rest.join("\t");
+    const { scope, origin, value } = lastConfigRecord(out);
     if (value.trim() === contract.command) continue;
     const removal = scope === "command"
       ? "remove it from the command line or the GIT_CONFIG_* environment that sets it"
@@ -271,6 +267,20 @@ export function registrationOverrides(gitRoot: string): string[] {
     problems.push(`${key} = "${value}" from ${scope} config (${origin}) overrides the registration setup wrote; ${removal}`);
   }
   return problems;
+}
+
+/**
+ * The last record of `git config --show-scope --show-origin -z --get-all`:
+ * each record is scope, origin and value, each NUL-terminated, in precedence
+ * order, and git runs the last. A value may hold newlines, so only NUL
+ * separates records.
+ */
+export function lastConfigRecord(out: string): { scope: string; origin: string; value: string } {
+  const fields = out.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const start = fields.length - 3;
+  if (start < 0 || fields.length % 3 !== 0) return { scope: "", origin: "", value: out };
+  return { scope: fields[start]!, origin: fields[start + 1]!, value: fields[start + 2]! };
 }
 
 export async function writeGitattributes(storyDir: string): Promise<void> {
@@ -486,8 +496,9 @@ export function mergeDriverRegistration(
   root: string,
   relPath: string,
   accept: readonly string[] = [...MERGE_DRIVER_CONTRACTS.keys()],
+  git: GitRead = gitRead,
 ): MergeDriverRegistration {
-  const name = effectiveMergeDriver(root, relPath);
+  const name = effectiveMergeDriver(root, relPath, git);
   if (name === null || !accept.includes(name)) {
     return {
       ok: false,
@@ -496,7 +507,7 @@ export function mergeDriverRegistration(
     };
   }
   const contract = MERGE_DRIVER_CONTRACTS.get(name)!;
-  const registered = registeredMergeDriverCommand(root, name);
+  const registered = registeredMergeDriverCommand(root, name, "effective", git);
   if (registered.kind === "git") return { ok: false, reason: "git", message: `git could not read merge.${name}.driver: ${registered.detail}` };
   if (registered.kind === "absent") {
     return { ok: false, reason: "unregistered", message: `the ${name} merge driver is not registered; run storybloq team setup` };
@@ -512,10 +523,11 @@ export function registeredMergeDriverCommand(
   root: string,
   name: string,
   scope: "effective" | "local" = "effective",
+  git: GitRead = gitRead,
 ): { kind: "present"; command: string } | { kind: "absent" } | { kind: "git"; detail: string } {
   const args = ["config", ...(scope === "local" ? ["--local"] : []), "--get", `merge.${name}.driver`];
   try {
-    const out = execFileSync("git", args, { cwd: root, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+    const out = git(args, root);
     return { kind: "present", command: out.replace(/\n$/, "") };
   } catch (err) {
     const e = err as { status?: number | null; stderr?: unknown; message?: string };
@@ -535,10 +547,11 @@ export function resolutionWritesReadiness(
   root: string,
   minCliVersion: string | undefined,
   relPath: string,
+  git: GitRead = gitRead,
 ): { fenceOk: boolean; driver: MergeDriverRegistration } {
   return {
     fenceOk: meetsVersionMinimum(minCliVersion, RESOLUTION_KIND_MIN_CLI_VERSION),
-    driver: mergeDriverRegistration(root, relPath, [MERGE_DRIVER_V5_NAME]),
+    driver: mergeDriverRegistration(root, relPath, [MERGE_DRIVER_V5_NAME], git),
   };
 }
 
@@ -576,16 +589,21 @@ function insideGitWorkTree(root: string): boolean {
   }
 }
 
+/**
+ * T-486 A4: a read-only git call: stdout, or a throw shaped like
+ * `execFileSync`'s (`status`, `stderr`). Injectable so a write context can
+ * memoise the lookups of one operation and a test can count them.
+ */
+export type GitRead = (args: readonly string[], cwd: string) => string;
+
+export const gitRead: GitRead = (args, cwd) =>
+  execFileSync("git", [...args], { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+
 /** The `merge` attribute git resolves for `relPath` under `root`, or null when unset or unknowable. */
-export function effectiveMergeDriver(root: string, relPath: string): string | null {
+export function effectiveMergeDriver(root: string, relPath: string, git: GitRead = gitRead): string | null {
   let out: string;
   try {
-    out = execFileSync("git", ["check-attr", "merge", "--", relPath], {
-      cwd: root,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 10_000,
-    });
+    out = git(["check-attr", "merge", "--", relPath], root);
   } catch {
     return null;
   }

@@ -440,6 +440,25 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
     expect(await teamSetup(root)).toMatchObject({ rulingFence: "raised", resolutionKindFence: "raised" });
   });
 
+  it("F6: a winning driver value wrapped in newlines is the supported command, so setup accepts it (git -z records)", async () => {
+    const { repo, root } = await teamProject({ fence: "1.4.4" });
+    git(repo, "config", "extensions.worktreeConfig", "true");
+    git(repo, "config", "--worktree", `merge.${MERGE_DRIVER_V5_NAME}.driver`, `\n${MERGE_DRIVER_V5_CMD}\n`);
+    expect(await teamSetup(root)).toMatchObject({ rulingFence: "raised", resolutionKindFence: "raised" });
+  });
+
+  it("F6: an unsupported multiline override is refused and named whole, with its scope and origin", async () => {
+    const { repo, root } = await teamProject({ fence: "1.4.4" });
+    git(repo, "config", "extensions.worktreeConfig", "true");
+    git(repo, "config", "--worktree", `merge.${MERGE_DRIVER_V5_NAME}.driver`, `custom-merge\n%O %A %B`);
+    const configPath = join(root, ".story", "config.json");
+    const before = readFileSync(configPath, "utf-8");
+    const failed = teamSetup(root);
+    await expect(failed).rejects.toThrow(`merge.${MERGE_DRIVER_V5_NAME}.driver = "custom-merge\n%O %A %B" from worktree config (file:`);
+    await expect(failed).rejects.toThrow(`remove it with: git config --worktree --unset-all merge.${MERGE_DRIVER_V5_NAME}.driver`);
+    expect(readFileSync(configPath, "utf-8")).toBe(before);
+  });
+
   it("every capability minimum is at most this package's version (Q2a)", () => {
     const version = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8")).version as string;
     expect(TEAM_FENCE_MINIMUMS).toContain(RESOLUTION_KIND_MIN_CLI_VERSION);

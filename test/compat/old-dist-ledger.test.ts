@@ -9,11 +9,12 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { git, gitAllowFailure } from "../helpers/git-fixture.js";
 import { initProject } from "../../src/core/init.js";
+import { handleIssueCreate, handleIssueUpdate } from "../../src/cli/commands/issue.js";
 import { MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME, teamSetup } from "../../src/core/team-setup.js";
 import { RESOLUTION_KIND_MIN_CLI_VERSION, TEAM_FENCE_MINIMUMS, meetsVersionMinimum } from "../../src/core/team-capabilities.js";
 import { LATEST_PUBLISHED, OLD_DISTS, PRE_CAPABILITY, requireOldDists } from "./old-dists.js";
@@ -67,6 +68,47 @@ describe.skipIf(skip !== null)(`published CLIs on a board with resolution kinds$
     const after = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
     expect(after.title).toBe(`retitled by ${version}`);
     for (const key of T486_KEYS) expect(after[key], key).toEqual(ISSUE[key]);
+  });
+
+  /** A board whose one issue the current handler closed with a kind, as a 1.16 user would. */
+  async function handlerBoard(): Promise<{ root: string; home: string; path: string; ref: string }> {
+    const root = temp();
+    const home = join(root, "home");
+    mkdirSync(home);
+    await initProject(root, { name: "t486" });
+    const created = JSON.parse(
+      (await handleIssueCreate({ title: "a bug", severity: "medium", impact: "it breaks", components: [], relatedTickets: [], location: [] }, "json", root)).output,
+    ).data as { id: string; displayId?: string };
+    await handleIssueUpdate(created.id, { status: "resolved", resolution: "Closed as wontfix.", resolutionKind: "wontfix" }, "json", root);
+    const files = readdirSync(join(root, ".story", "issues")).filter((f) => f.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    return { root, home, path: join(root, ".story", "issues", files[0]!), ref: created.displayId ?? created.id };
+  }
+
+  it.each(dists.map((d) => [d.version, d.bin]))("T1: %s validates and keeps a kind the current handler wrote", async (version, bin) => {
+    const { root, home, path, ref } = await handlerBoard();
+    const written = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    expect(written.resolutionKind).toMatchObject({ kind: "wontfix", closedOn: written.resolvedDate });
+
+    const validate = run(bin, root, home, "validate", "--format", "json");
+    expect(validate.status, validate.stdout + validate.stderr).toBe(0);
+    expect(JSON.parse(validate.stdout).data).toMatchObject({ valid: true, errorCount: 0 });
+    const update = run(bin, root, home, "issue", "update", ref, "--title", `retitled by ${version}`, "--format", "json");
+    expect(update.status, update.stdout + update.stderr).toBe(0);
+    const after = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    expect(after.title).toBe(`retitled by ${version}`);
+    expect(after.resolutionKind).toEqual(written.resolutionKind);
+  });
+
+  it.each(dists.map((d) => [d.version, d.bin]))("T1b: clearing a kind writes no null, and %s still validates the cleared record", async (_version, bin) => {
+    const { root, home, path, ref } = await handlerBoard();
+    await handleIssueUpdate(ref, { status: "open" }, "json", root);
+    const raw = readFileSync(path, "utf-8");
+    expect(Object.prototype.hasOwnProperty.call(JSON.parse(raw), "resolutionKind")).toBe(false);
+    expect(raw).not.toMatch(/"resolutionKind"/);
+    const validate = run(bin, root, home, "validate", "--format", "json");
+    expect(validate.status, validate.stdout + validate.stderr).toBe(0);
+    expect(JSON.parse(validate.stdout).data).toMatchObject({ valid: true, errorCount: 0 });
   });
 
   it(`CK4: a fresh clone of a ledger whose fence team setup raised refuses ${PRE_CAPABILITY}'s writes`, async () => {

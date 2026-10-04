@@ -13,7 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { initProject } from "../../src/core/init.js";
 import { writeArrangementUnlocked, loadArrangementsSafe } from "../../src/core/arrangement-loader.js";
 import { coordinateDuet, readDuetCoordination, rebindArrangement } from "../../src/core/duet-coordination.js";
-import { loadProject, writeConfig, writeTicketUnlocked, writeIssueUnlocked } from "../../src/core/project-loader.js";
+import { loadProject, withProjectLock, writeConfig, writeTicketUnlocked, writeIssueUnlocked } from "../../src/core/project-loader.js";
 import { upsertSeat, ROSTER_STALE_MS, ROSTER_RESULT_CAP } from "../../src/core/roster.js";
 import type { LivenessProbe } from "../../src/core/roster-view.js";
 import { initializeBus } from "../../src/bus/admin.js";
@@ -469,7 +469,7 @@ describe("rebind: refusals and side effects", () => {
     await coordinated();
     const earmark = { reservedBy: pen, arrangementId: id, since: new Date().toISOString(), stage: "reserved", holderRole: "worker", holderSession: null };
     await writeTicketUnlocked({ id: "T-001", title: "Carried", description: "", type: "feature", status: "open", phase: null, order: 1, createdDate: "2026-09-10", completedDate: null, blockedBy: [], earmark } as any, root);
-    await writeIssueUnlocked({ id: "ISS-001", title: "Carried issue", status: "open", severity: "low", components: [], impact: "", resolution: null, location: [], discoveredDate: "2026-09-10", resolvedDate: null, relatedTickets: [], updatedAt: "2026-09-10T00:00:00.000Z", earmark } as any, root);
+    await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ id: "ISS-001", title: "Carried issue", status: "open", severity: "low", components: [], impact: "", resolution: null, location: [], discoveredDate: "2026-09-10", resolvedDate: null, relatedTickets: [], updatedAt: "2026-09-10T00:00:00.000Z", earmark } as any, root));
     const result = await rebind();
     const { state } = await loadProject(root);
     expect(state.tickets.find(t => t.id === "T-001")!.earmark!.arrangementId).toBe(result.successorId);

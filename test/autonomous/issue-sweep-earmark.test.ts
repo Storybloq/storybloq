@@ -12,7 +12,7 @@ import { IssueSweepStage } from "../../src/autonomous/stages/issue-sweep.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { initProject } from "../../src/core/init.js";
 import { handleIssueCreate } from "../../src/cli/commands/issue.js";
-import { writeIssueUnlocked } from "../../src/core/project-loader.js";
+import { withProjectLock, writeIssueUnlocked } from "../../src/core/project-loader.js";
 import type { Earmark } from "../../src/models/types.js";
 
 const SESSION_ID = "00000000-0000-0000-0000-000000000475";
@@ -48,7 +48,7 @@ function assignedEarmark(holderSession: string): Earmark {
 async function setIssueEarmark(root: string, issueId: string, earmark: Earmark | null): Promise<void> {
   const path = join(root, ".story", "issues", `${issueId}.json`);
   const raw = JSON.parse(await readFile(path, "utf-8"));
-  await writeIssueUnlocked({ ...raw, earmark }, root);
+  await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...raw, earmark }, root));
 }
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
@@ -191,7 +191,7 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
       await stage.enter(ctx);
 
       const raw = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
-      await writeIssueUnlocked({ ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root);
+      await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root));
 
       const result = await stage.report(ctx, { completedAction: "issue_fixed" });
       expect(result).toEqual({ action: "goto", target: "HANDOVER" });
@@ -211,7 +211,7 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
       expect(ctx.state.issueSweepState?.current).toBe(first);
 
       const firstRaw = JSON.parse(await readFile(join(root, ".story", "issues", `${first}.json`), "utf-8"));
-      await writeIssueUnlocked({ ...firstRaw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root);
+      await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...firstRaw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root));
 
       const result = await stage.report(ctx, { completedAction: "issue_fixed" });
       expect(result.action).toBe("retry");
@@ -242,7 +242,7 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
       const acquired = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
       expect(acquired.earmark.holderSession).toBe(SESSION_ID);
 
-      await writeIssueUnlocked({ ...acquired, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root);
+      await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...acquired, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }, root));
 
       const result = await stage.report(ctx, { completedAction: "issue_fixed" });
       expect(result).toEqual({ action: "goto", target: "HANDOVER" });
@@ -262,10 +262,7 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
 
       const raw = JSON.parse(await readFile(join(root, ".story", "issues", `${issueId}.json`), "utf-8"));
       const foreignEarmark = assignedEarmark(OTHER_SESSION);
-      await writeIssueUnlocked(
-        { ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed", earmark: foreignEarmark },
-        root,
-      );
+      await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed", earmark: foreignEarmark }, root));
 
       await stage.report(ctx, { completedAction: "issue_fixed" });
 

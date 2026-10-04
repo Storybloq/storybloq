@@ -690,6 +690,49 @@ describe("the U1-4 Codex round (F1 to F3)", () => {
     expect(readIssue(root, issue.id as string).title).toBe("retitled");
   });
 
+  it("F2 (fixup 2): preparing the same issue again after the fence drops leaves the first bytes refused, nothing written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    await withProjectLock(root, { strict: true }, async ({ state }) => {
+      const prepared = await prepareIssueWrite(kindWrite(root, issue), root);
+      await writeConfigUnlocked({ ...state.config, team: { ...state.config.team, enabled: true, minCliVersion: "1.15.0" } }, root);
+      await prepareIssueWrite({ ...issue, title: "an ordinary edit" } as unknown as Issue, root);
+      const err = await rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared }]));
+      expect(err.message).toMatch(/not the bytes that were prepared for it; prepare it again/);
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("F2 (fixup 2): bytes prepared under one lock are refused under the next, nothing written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    let prepared: { target: string; content: string } | undefined;
+    await withProjectLock(root, { strict: true }, async () => {
+      prepared = await prepareIssueWrite(kindWrite(root, issue), root);
+    });
+    await withProjectLock(root, { strict: true }, async () => {
+      const err = await rejection(runTransactionUnlocked(root, [{ op: "write", ...prepared! }]));
+      expect(err.message).toMatch(/nothing prepared it under this lock/);
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
+  it("F2 (fixup 2): issue bytes nobody prepared are refused, nothing written", async () => {
+    const root = await board("ready");
+    const issue = readIssue(root, (await createIssue(root)).id);
+    const before = bytes(root, issue.id as string);
+    await withProjectLock(root, { strict: true }, async () => {
+      const err = await rejection(runTransactionUnlocked(root, [{ op: "write", target: issuePath(root, issue.id as string), content: before.replace("a bug", "unprepared") }]));
+      expect(err.message).toMatch(/nothing prepared it under this lock/);
+    });
+    expect(bytes(root, issue.id as string)).toBe(before);
+    expect(existsSync(join(root, ".story", ".txn.json"))).toBe(false);
+  });
+
   describe("F3: git config records", () => {
     const local = ["local", "file:.git/config"];
 

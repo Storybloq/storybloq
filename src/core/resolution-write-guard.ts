@@ -1,8 +1,12 @@
 /**
  * T-486 2c: the one write boundary for issue resolution metadata.
  *
- * Every issue write passes through `prepareIssueWrite`, and ledger restore,
- * which writes outside it, calls the same check. The rule compares what the
+ * Every issue write passes through `prepareIssueWrite`. The few writers that
+ * commit issue bytes they built themselves (ledger restore, reconcile, repair)
+ * run the same check through `authoriseIssueBytes`. Either way the decision is
+ * recorded as a token bound to the exact bytes, the lock's context and the
+ * generation of its answers, and every commit refuses issue bytes without a
+ * current token (Codex F2). The rule compares what the
  * write replaces with what it writes, both as raw slots and as the effective
  * views of resolution-kind.ts:
  *
@@ -25,6 +29,7 @@
  * context below carries the config and memoises git per operation: one
  * `git config` read per driver name and one `git check-attr` per path.
  */
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -52,10 +57,14 @@ export interface ResolutionWriteContext {
   readonly generation: number;
   /** Whether the lock this context belongs to still owns `.story/.lock` (a stolen or replaced lock does not). */
   ownsLock(): boolean;
-  /** Records whether the write prepared for `target` was authorised from this generation's config and git answers. */
-  recordAuthorisation(target: string, dependsOnBoard: boolean): void;
-  /** True when the write prepared for `target` depended on answers `invalidate` or `release` has since dropped. */
-  authorisationStale(target: string): boolean;
+  /**
+   * Records the token for `content` prepared for `target` under this context:
+   * its hash, this context, and (when the decision read the board's config or
+   * git answers) this generation. It replaces any earlier token for `target`.
+   */
+  recordPrepared(target: string, content: string, dependsOnBoard: boolean): void;
+  /** Whether committing `content` to `target` is covered by a current token of this context. */
+  preparedVerdict(target: string, content: string): PreparedVerdict;
   /** The config, or null when it could not be read (a kind write then fails closed). */
   config(): Pick<Config, "team"> | null;
   readiness(relPath: string): ReturnType<typeof resolutionWritesReadiness>;
@@ -69,6 +78,30 @@ export interface ResolutionWriteContext {
   withGit(git: GitRead): ResolutionWriteContext;
 }
 
+/**
+ * `current`: this context prepared exactly these bytes and the answers they
+ * depended on still hold. `missing`: this context prepared nothing for the
+ * target. `changed`: it prepared other bytes. `stale`: the answers the
+ * decision read were dropped by `invalidate` or `release`.
+ */
+export type PreparedVerdict = "current" | "missing" | "changed" | "stale";
+
+interface PreparedToken {
+  readonly owner: SharedState;
+  readonly hash: string;
+  readonly generation: number | null;
+}
+
+/**
+ * The latest prepared token per issue path. It outlives the lock that wrote
+ * it on purpose: the owner check is what refuses bytes prepared under one
+ * lock and committed under another. One entry per path, so it is bounded by
+ * the issues this process has written.
+ */
+const preparedTokens = new Map<string, PreparedToken>();
+
+const contentHash = (content: string) => createHash("sha256").update(content, "utf-8").digest("hex");
+
 /** A context that cannot be used: missing, released, for another project, or not held by this operation. */
 export class ResolutionWriteContextError extends ProjectLoaderError {
   constructor(message: string) {
@@ -79,7 +112,6 @@ export class ResolutionWriteContextError extends ProjectLoaderError {
 interface SharedState {
   released: boolean;
   generation: number;
-  authorised: Map<string, number>;
   ownsLock: () => boolean;
   config: { value: Pick<Config, "team"> | null } | null;
   memo: Map<string, { out: string } | { err: unknown }>;
@@ -92,7 +124,7 @@ interface SharedState {
  * `withLock`). Nothing is read unless a kind actually changes.
  */
 export function createResolutionWriteContext(root: string, git: GitRead = gitRead, ownsLock: () => boolean = () => true): ResolutionWriteContext {
-  return contextOver(resolve(root), { released: false, generation: 0, authorised: new Map(), ownsLock, config: null, memo: new Map() }, git);
+  return contextOver(resolve(root), { released: false, generation: 0, ownsLock, config: null, memo: new Map() }, git);
 }
 
 function contextOver(root: string, shared: SharedState, git: GitRead): ResolutionWriteContext {
@@ -122,13 +154,15 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     ownsLock() {
       return shared.ownsLock();
     },
-    recordAuthorisation(target, dependsOnBoard) {
-      if (dependsOnBoard) shared.authorised.set(resolve(target), shared.generation);
-      else shared.authorised.delete(resolve(target));
+    recordPrepared(target, content, dependsOnBoard) {
+      preparedTokens.set(resolve(target), { owner: shared, hash: contentHash(content), generation: dependsOnBoard ? shared.generation : null });
     },
-    authorisationStale(target) {
-      const at = shared.authorised.get(resolve(target));
-      return at !== undefined && (shared.released || at !== shared.generation);
+    preparedVerdict(target, content) {
+      const token = preparedTokens.get(resolve(target));
+      if (token === undefined || token.owner !== shared) return "missing";
+      if (token.hash !== contentHash(content)) return "changed";
+      if (token.generation !== null && (shared.released || token.generation !== shared.generation)) return "stale";
+      return "current";
     },
     config() {
       if (shared.config === null) shared.config = { value: readConfigForGuard(root) };
@@ -179,7 +213,7 @@ function slotEqual(prior: Loose, proposed: Loose, keys: readonly string[]): bool
  * when it could not be read or parsed, which treats any present metadata as
  * changed). `relPath` is the target relative to the project root. Returns
  * true when the decision read the board's config and git answers, so the
- * write holds only while they do (see `authorisationStale`).
+ * write holds only while they do (see `preparedVerdict`).
  */
 export function assertResolutionMetadataWrite(
   ctx: ResolutionWriteContext,

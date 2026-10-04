@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 import { computeReconcilePlan, computeRebalancePlan, type EntityType, type ReconcileContext, type ReconcileRename } from "../../core/reconcile.js";
 import { loadArrangementsSafe } from "../../core/arrangement-loader.js";
 import { formatReconcileResult, ExitCode, successEnvelope, type ExitCodeValue } from "../../core/output-formatter.js";
-import { withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
+import { authoriseIssueBytes, withProjectLock, runTransactionUnlocked } from "../../core/project-loader.js";
 import { nextNoteID, allocateTeamNoteId, NOTE_NUMERIC_REGEX } from "../../core/id-allocation.js";
 import { listReservations } from "../../core/remote-refs.js";
 import { ENABLE_GIT_REFS_REMEDY } from "../../core/branch-allocation-warning.js";
@@ -130,13 +130,18 @@ async function applyChanges(
     if (!existsSync(filePath)) continue;
     const raw = await readFile(filePath, "utf-8");
     const entity = JSON.parse(raw) as Record<string, unknown>;
+    const prior = { ...entity };
     entity.displayId = rename.newDisplayId;
     const prev = Array.isArray(entity.previousDisplayIds) ? [...entity.previousDisplayIds] : [];
     if (!prev.includes(rename.oldDisplayId)) prev.push(rename.oldDisplayId);
     entity.previousDisplayIds = prev;
     const newRank = rankById.get(rename.id);
     if (newRank !== undefined) entity.rank = newRank;
-    operations.push({ op: "write", target: filePath, content: JSON.stringify(entity, null, 2) + "\n" });
+    const content = JSON.stringify(entity, null, 2) + "\n";
+    // T-486 Codex F2: reconcile edits the raw issue JSON outside
+    // prepareIssueWrite, so it authorises exactly these bytes itself.
+    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, entity, content);
+    operations.push({ op: "write", target: filePath, content });
     handled.add(rename.id);
   }
 
@@ -147,8 +152,11 @@ async function applyChanges(
     const filePath = join(storyDir, dir, `${change.id}.json`);
     const raw = await readFile(filePath, "utf-8");
     const entity = JSON.parse(raw) as Record<string, unknown>;
+    const prior = { ...entity };
     entity.rank = change.newRank;
-    operations.push({ op: "write", target: filePath, content: JSON.stringify(entity, null, 2) + "\n" });
+    const content = JSON.stringify(entity, null, 2) + "\n";
+    if (dir === "issues") authoriseIssueBytes(root, filePath, prior, entity, content);
+    operations.push({ op: "write", target: filePath, content });
   }
 
   if (extraOps) operations.push(...extraOps);

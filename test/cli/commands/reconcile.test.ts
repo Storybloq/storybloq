@@ -96,6 +96,25 @@ describe("handleReconcile", () => {
     expect(dependent.parentTicket).toBe("T-001");
   });
 
+  it("T-486 Codex F2: renumbers a colliding issue through the issue write boundary", async () => {
+    const root = createProject();
+    const issues = join(root, ".story", "issues");
+    mkdirSync(issues, { recursive: true });
+    const issue = (id: string, title: string, discoveredDate: string) => ({
+      id, displayId: "ISS-001", title, status: "open", severity: "medium", components: [], impact: "x",
+      resolution: null, location: [], discoveredDate, resolvedDate: null, relatedTickets: [], order: 10, phase: null,
+    });
+    writeJson(join(issues, "i-0000000000000001.json"), issue("i-0000000000000001", "Winner", "2026-01-01"));
+    writeJson(join(issues, "i-0000000000000002.json"), issue("i-0000000000000002", "Loser", "2026-02-01"));
+
+    const result = await handleReconcile(root, { dryRun: false, ci: false, format: "md" });
+
+    expect(result.exitCode).toBe(0);
+    const loser = JSON.parse(readFileSync(join(issues, "i-0000000000000002.json"), "utf-8"));
+    expect(loser.displayId).toBe("ISS-002");
+    expect(loser.previousDisplayIds).toEqual(["ISS-001"]);
+  });
+
   it("includes the git-refs remedy in the json envelope's remedy field when a collision is found (ISS-1190)", async () => {
     const root = createProject();
     const tickets = join(root, ".story", "tickets");

@@ -393,27 +393,55 @@ export async function prepareIssueWrite(
   // context and the decision, so the lock cannot be released in between.
   const prior = priorRecord(await prepareIssueWriteSeams.readPrior(target));
   const ctx = heldResolutionContext(root, options?.resolutionContext);
-  ctx.recordAuthorisation(target, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
-  return { target, content: serializeJSON(parsed) };
+  const content = serializeJSON(parsed);
+  ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
+  return { target, content };
 }
 
 /**
- * T-486 Codex F2: a prepared issue write whose decision read the config or
- * git answers holds only while they do. Called at every commit of a prepared
- * write, before anything is journaled or written: a write authorised before a
- * config change in the same operation, or under a context since released, is
- * refused rather than committed unchecked.
+ * T-486 Codex F2: the boundary for a writer that commits issue bytes it built
+ * itself rather than through `prepareIssueWrite`: reconcile (display id and
+ * rank renames) and repair (stale-reference patches) edit the raw on-disk
+ * JSON, and ledger restore writes a recorded blob byte for byte. Each runs the
+ * same resolution-metadata check against the record it replaces and records a
+ * token for exactly `content`, so the commit check covers it like any other.
+ * Needs the project lock's context, as `prepareIssueWrite` does.
  */
-export function assertPreparedWritesCurrent(root: string, targets: readonly string[]): void {
+export function authoriseIssueBytes(
+  root: string,
+  target: string,
+  prior: Readonly<Record<string, unknown>> | "unknown",
+  proposed: Readonly<Record<string, unknown>>,
+  content: string,
+): void {
+  const ctx = heldResolutionContext(root, undefined);
+  const rel = relative(resolve(root), resolve(target)).split(sep).join("/");
+  ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, rel, prior, proposed));
+}
+
+/**
+ * T-486 Codex F2: issue bytes commit only under a current token. Called at
+ * every commit of issue bytes (writeIssueUnlocked, runTransactionUnlocked,
+ * ledger restore), before anything is journaled or written. The bytes must be
+ * exactly the bytes a context held by this operation prepared for the target,
+ * and the config and git answers that decision read must still hold. A
+ * missing token fails closed: bytes nobody prepared, bytes prepared under
+ * another lock, or bytes other than the latest prepared for the target are
+ * refused, never committed unchecked.
+ */
+export function assertPreparedWritesCurrent(root: string, writes: ReadonlyArray<{ target: string; content: string }>): void {
   const absRoot = resolve(root);
   const contexts = (resolutionContextChain.getStore() ?? []).filter((c) => c.root === absRoot);
-  for (const target of targets) {
-    if (contexts.some((c) => c.authorisationStale(target))) {
-      throw new ProjectLoaderError(
-        "conflict",
-        `Refusing the write to ${relative(absRoot, resolve(target))}: it was checked against config or git state that changed (or a lock that was released) before it was committed; prepare it again`,
-      );
-    }
+  for (const { target, content } of writes) {
+    const verdicts = contexts.map((c) => c.preparedVerdict(target, content));
+    if (verdicts.includes("current")) continue;
+    const verdict = verdicts.find((v) => v !== "missing") ?? "missing";
+    const why = verdict === "stale"
+      ? "it was checked against config or git state that changed (or a lock that was released) before it was committed"
+      : verdict === "changed"
+        ? "the bytes being committed are not the bytes that were prepared for it"
+        : "nothing prepared it under this lock (issue writes go through prepareIssueWrite)";
+    throw new ProjectLoaderError("conflict", `Refusing the write to ${relative(absRoot, resolve(target))}: ${why}; prepare it again`);
   }
 }
 
@@ -464,7 +492,7 @@ export async function writeIssueUnlocked(
   options?: { createOnly?: boolean },
 ): Promise<void> {
   const { target, content } = await prepareIssueWrite(issue, root);
-  assertPreparedWritesCurrent(root, [target]);
+  assertPreparedWritesCurrent(root, [{ target, content }]);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -737,10 +765,16 @@ export async function deleteIssue(
       if (raw.lifecycle === "deleted") {
         return { alreadyDeleted: true };
       }
+      const prior = { ...raw };
       raw.lifecycle = "deleted";
       raw.deletedAt = new Date().toISOString();
       raw.deletedBy = await resolveActor(root, options?.actor);
-      await atomicWrite(targetPath, serializeJSON(raw));
+      // T-486 Codex F2: the tombstone edits the raw record outside
+      // prepareIssueWrite, so it takes the same boundary and commit check.
+      const content = serializeJSON(raw);
+      authoriseIssueBytes(root, targetPath, prior, raw, content);
+      assertPreparedWritesCurrent(root, [{ target: targetPath, content }]);
+      await atomicWrite(targetPath, content);
     } else {
       await fencedUnlink(targetPath);
       recordBoardTarget(targetPath, "delete");
@@ -1152,7 +1186,7 @@ export async function runTransactionUnlocked(
     }
     issueTargets.add(target);
   }
-  assertPreparedWritesCurrent(root, [...issueTargets]);
+  assertPreparedWritesCurrent(root, operations.flatMap((op) => op.op === "write" && issueTargets.has(resolve(op.target)) ? [{ target: op.target, content: op.content }] : []));
 
   try {
     // 1. Build entries

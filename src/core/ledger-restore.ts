@@ -415,14 +415,15 @@ async function restoreSingleRecord(
         return;
       }
       // T-486 2c: restore writes outside prepareIssueWrite, so it runs the
-      // same resolution-metadata boundary, against the record it replaces.
+      // same resolution-metadata boundary, against the record it replaces,
+      // and records the token for exactly the bytes it writes (Codex F2).
       if (record.family === "issues") {
         const prior = current.present && typeof current.value === "object" && current.value !== null && !Array.isArray(current.value)
           ? (current.value as Record<string, unknown>)
           : current.present ? "unknown" : {};
         try {
           const ctx = resolutionWriteContextFor(root);
-          ctx.recordAuthorisation(abs, assertResolutionMetadataWrite(ctx, record.path, prior, parsed.data as Record<string, unknown>));
+          ctx.recordPrepared(abs, text, assertResolutionMetadataWrite(ctx, record.path, prior, parsed.data as Record<string, unknown>));
         } catch (err) {
           if (err instanceof ProjectLoaderError && err.code === "conflict") {
             throw new RestoreUnsafe(label, "invariant", "resolution-metadata", err.message);
@@ -434,7 +435,7 @@ async function restoreSingleRecord(
       mkdirSync(dirname(abs), { recursive: true });
       await guardPath(abs, wrapDir);
       await beforeWrite(deps);
-      if (record.family === "issues") assertPreparedWritesCurrent(root, [abs]);
+      if (record.family === "issues") assertPreparedWritesCurrent(root, [{ target: abs, content: text }]);
       await atomicWrite(abs, text);
       result = { outcome: "restored", target: label };
     });

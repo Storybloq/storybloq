@@ -6,8 +6,8 @@ import {
   runTransactionUnlocked,
   serializeJSON,
   prepareTicketWrite,
+  prepareIssueWrite,
 } from "../../core/project-loader.js";
-import { IssueSchema } from "../../models/issue.js";
 import { RoadmapSchema } from "../../models/roadmap.js";
 import type { Roadmap, Phase } from "../../models/roadmap.js";
 import {
@@ -298,10 +298,9 @@ export async function handlePhaseDelete(
       }
 
       for (const issue of affectedIssues) {
-        const updated = { ...issue, phase: reassign };
-        const parsed = IssueSchema.parse(updated);
-        const content = serializeJSON(parsed);
-        const target = join(wrapDir, "issues", `${parsed.id}.json`);
+        // T-486 Codex F2: through the issue choke point too, so the commit
+        // carries a prepared token (a reassignment changes no resolution key).
+        const { target, content } = await prepareIssueWrite({ ...issue, phase: reassign }, root);
         operations.push({ op: "write", target, content });
       }
 

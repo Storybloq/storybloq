@@ -90,7 +90,15 @@ export interface SessionConfig {
   branchStrategy?: string;
 }
 
-/** Create a new session directory and write initial state.json. */
+/**
+ * Create a new session directory and write initial state.json.
+ *
+ * ISS-958 (policy OC): this call owns the directory it creates. On
+ * StateWriteUndurableError the initial state WAS published, but the caller
+ * never learns the session exists, so a published-but-unowned session would
+ * hold the workspace slot. The directory is removed before the error
+ * propagates, and the message says whether the removal succeeded.
+ */
 export function createSession(
   root: string,
   recipe: string,
@@ -153,7 +161,22 @@ export function createSession(
     },
   };
 
-  writeSessionSync(dir, state);
+  try {
+    writeSessionSync(dir, state);
+  } catch (err) {
+    if (err instanceof StateWriteUndurableError) {
+      let removed = true;
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        removed = false;
+      }
+      err.message += removed
+        ? `; created session ${id} removed; nothing to resume`
+        : `; created session ${id} could NOT be removed: ${dir}`;
+    }
+    throw err;
+  }
   return state;
 }
 

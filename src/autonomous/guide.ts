@@ -1475,7 +1475,13 @@ async function trySupersedeFinishedOrphan(
     );
     // T-260: Cross-process finalization (marker only, no PID kill)
     writeShutdownMarker(info.dir);
-  } catch {
+  } catch (err) {
+    // ISS-958 (policy TC): the superseded state WAS published, and nothing
+    // revisits a superseded session, so its marker is written now.
+    if (err instanceof StateWriteUndurableError) {
+      writeShutdownMarker(info.dir);
+      throw err;
+    }
     return null;
   }
 
@@ -1768,7 +1774,13 @@ async function handleStartAfterNormalization(
   // blockers is empty, so every probed entry is kind:"checked" with liveness:"dead".
   for (const p of probed) {
     if (p.kind !== "checked") continue; // unreachable given the guard above; keeps the compiler honest
-    writeSessionAndRefresh(root, p.dir, { ...p.current, status: "superseded" as const } as FullSessionState, "always");
+    try {
+      writeSessionAndRefresh(root, p.dir, { ...p.current, status: "superseded" as const } as FullSessionState, "always");
+    } catch (err) {
+      // ISS-958 (policy TC): published as superseded; finish its tail first.
+      if (err instanceof StateWriteUndurableError) writeShutdownMarker(p.dir);
+      throw err;
+    }
     writeShutdownMarker(p.dir);
   }
 
@@ -3753,6 +3765,23 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     resumeSidecarPid = spawn.kind === "spawned" ? spawn.pid : null;
   } catch { /* best-effort */ }
 
+  // ISS-958 exception (iv): once a resume write has published sidecarPid,
+  // the session owns that sidecar, and a later failure must not kill it
+  // (a published-but-undurable write counts when it published this pid).
+  let sidecarPublished = false;
+  const publishResume = (next: FullSessionState): FullSessionState => {
+    try {
+      const w = writeSessionAndRefresh(root, info.dir, next, "always");
+      sidecarPublished = true;
+      return w;
+    } catch (err) {
+      if (err instanceof StateWriteUndurableError && err.published.sidecarPid === resumeSidecarPid) {
+        sidecarPublished = true;
+      }
+      throw err;
+    }
+  };
+
   try {
 
   if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
@@ -3783,7 +3812,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       mapping = { state: "HANDOVER", resetPlan: false, resetCode: false };
     }
 
-    let driftWritten = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
+    let driftWritten = publishResume(withoutLimitKeys({
       ...refreshedResumeState,
       state: mapping.state,
       previousState: "COMPACT",
@@ -3804,7 +3833,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       sidecarPid: resumeSidecarPid,
       ownerTask: reboundOwnerTask,
       claudeCodeSessionId: reboundClaudeCodeSessionId,
-    } as FullSessionState), "always");
+    } as FullSessionState));
 
     appendEvent(info.dir, {
       rev: driftWritten.revision,
@@ -4019,7 +4048,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // Branch A: HEAD matches -- normal resume (or own-commit drift from T-184)
   // Reset pressure only when SessionStart confirmed that client compaction occurred.
   // T-534: the limit keys are omitted, never written back.
-  const written = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
+  const written = publishResume(withoutLimitKeys({
     ...refreshedResumeState,
     state: resumeState,
     preCompactState: null,
@@ -4038,7 +4067,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     sidecarPid: resumeSidecarPid,
     ownerTask: reboundOwnerTask,
     claudeCodeSessionId: reboundClaudeCodeSessionId,
-  } as FullSessionState), "always");
+  } as FullSessionState));
   appendEvent(info.dir, {
     rev: written.revision,
     type: "resumed",
@@ -4212,8 +4241,11 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   });
 
   } catch (err) {
-    // T-260: Clean up sidecar if resume fails after spawn
-    try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    // T-260: Clean up sidecar if resume fails after spawn, unless a resume
+    // write already published it (ISS-958 exception (iv)).
+    if (!sidecarPublished) {
+      try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    }
     throw err;
   }
 }

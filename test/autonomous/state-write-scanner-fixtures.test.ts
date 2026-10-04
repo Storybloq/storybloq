@@ -73,6 +73,16 @@ export async function a(d: string): Promise<number> { try { ${LOCKED}; } catch (
     expect(r.errors).toContain("unregistered propagating user.ts#a#catch#1");
   });
 
+  // Mutant EN7 (fixup 4 half A): a non-async function's catch returning a thenable propagates; the awaited-type check covers only async ones.
+  it("a non-async catch returning a saved writer promise propagates", () => {
+    const r = scan(IMPORTS + `
+async function asyncWriter(d: string): Promise<void> { ${LOCKED}; }
+function inner(d: string): Promise<void> | null { let p: Promise<void> | null = null; try { p = asyncWriter(d); } catch { return p; } return p; }
+export async function outer(d: string) { try { await inner(d); } catch (e) { throw e; } }`,
+    { catches: { "user.ts#inner#catch#1": "P" } });
+    expect(r.found.get("user.ts#inner#catch#1")).toBe("propagating");
+  });
+
   it("the saved-rejected-promise case reaches the unregistered outer catch", () => {
     const r = scan(IMPORTS + `
 async function asyncWriter(d: string): Promise<void> { ${LOCKED}; }
@@ -1249,6 +1259,8 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     ["a computed method", "const deps: Deps = { [\"withLockX\"](fn: () => Promise<void>) { void fn(); return Promise.resolve(); } };\n    await take(d, ctx, deps);"],
     ["a getter", `const deps: Deps = { get withLockX() { return ${P}; } };\n    await take(d, ctx, deps);`],
     ["a spread literal", `await take(d, ctx, { ...{ withLockX: ${P} } });`],
+    // Mutant FX-T5c (fixup 4 half A): an asserted inner literal has no Deps context, so only the spread rule sees it.
+    ["a spread of an asserted literal", `await take(d, ctx, { ...({ withLockX: ${P} } as {}) });`],
     ["a constant element-access write", `const deps: Deps = {};\n    deps["withLockX"] = ${P};\n    await take(d, ctx, deps);`],
     ["a destructuring-assignment target", `const deps: Deps = {};\n    const src = { p: ${P} };\n    ({ p: deps.withLockX } = src);\n    await take(d, ctx, deps);`],
     ["a class instance", `class Impl { async withLockX(fn: () => Promise<void>) { void fn(); } }\n    await take(d, ctx, new Impl());`],
@@ -1392,6 +1404,59 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
   it("R4-3: a same-type assertion, as const, a non-null assertion and satisfies are not assertions into a sensitive type", () => {
     const r = add2Scan("const a: Deps = {};\n    const b = a as Deps;\n    const c = { n: 1 } as const;\n    const e: Deps | undefined = a;\n    const f = e!;\n    const s = {} satisfies Deps;\n    await take(d, ctx, b);\n    void c; void f; void s;", TOP, LISTED);
     expect(asserted(r)).toEqual([]);
+  });
+
+  // R5-1 (Codex round 5): an assertion is judged by every sensitive type structurally reachable from the asserted type.
+  const BOX = "export interface Box { value: Deps }\n";
+  it.each([
+    ["a call signature's return (X1 verbatim)", `const detach = ${P};\n    const original = () => ({ withLockX: detach });\n    const make = original as () => Deps;\n    const deps = make();\n    await take(d, ctx, deps);`, ""],
+    ["a named object type's property (X2 verbatim)", `const detach = ${P};\n    const original = { value: { withLockX: detach } };\n    const box = original as Box;\n    const deps = box.value;\n    await take(d, ctx, deps);`, BOX],
+    ["a parameter position", "const f = ((x: object) => { void x; }) as (d: Deps) => void;\n    f({});", ""],
+    ["a class wrapper", "const h = JSON.parse(\"{}\") as Holder;\n    await take(d, ctx, h.deps);", "export class Holder { constructor(public deps: Deps) {} }\n"],
+    ["an index signature", "const m = JSON.parse(\"{}\") as { [k: string]: Deps };\n    await take(d, ctx, m.a!);", ""],
+    ["a tuple element", "const t = JSON.parse(\"[]\") as [number, Deps];\n    await take(d, ctx, t[1]);", ""],
+    ["a two-level wrapper", "const o = JSON.parse(\"{}\") as Outer;\n    await take(d, ctx, o.inner.value);", BOX + "export interface Outer { inner: Box }\n"],
+    ["a library generic's type argument", "const p = JSON.parse(\"{}\") as Promise<Deps>;\n    await take(d, ctx, await p);", ""],
+    ["a library map's value type", "const m = JSON.parse(\"{}\") as Map<string, Deps>;\n    await take(d, ctx, m.get(\"a\")!);", ""],
+    ["a recursive type", "const n = JSON.parse(\"{}\") as Link;\n    await take(d, ctx, n.deps);", "export interface Link { next?: Link; deps: Deps }\n"],
+  ])("R5-1: an assertion reaching Deps through %s is UNRESOLVED", (_n, body, extra) => {
+    expect(asserted(add2Scan(body, TOP + extra, LISTED))).toHaveLength(1);
+  });
+
+  it("R5-1: a recursive type that reaches no sensitive type terminates and passes", () => {
+    const r = add2Scan("const c = JSON.parse(\"{}\") as Chain;\n    void c;", TOP + "export interface Chain { next?: Chain; items: Chain[]; f(c: Chain): Chain }\n", LISTED);
+    expect(asserted(r)).toEqual([]);
+  });
+
+  it("R5-1: a query that exhausts the visit budget answers as reaching (fail closed)", () => {
+    const program = inMemoryProgram({
+      "/fx/session.ts": SESSION, "/fx/types.ts": TYPES, "/fx/project.ts": GOOD_CHAIN, "/fx/als.d.ts": NODE_ALS,
+      "/fx/user.ts": LOCK_IMPORTS + PROJECT_IMPORT + TOP + "export interface Wide { a: { b: { c: { d: number } } } }\nexport const w = JSON.parse(\"{}\") as Wide;\n",
+    });
+    const opts = {
+      base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock",
+      registry: { ...EMPTY, ...CTX_REG, ...LISTED },
+      lockContext: { file: "types.ts", className: "StageContext", stageInterface: "WorkflowStage" },
+    };
+    expect(asserted(scanStateWrites(program, opts))).toEqual([]);
+    const r = scanStateWrites(program, { ...opts, reachBudget: 2 });
+    expect(asserted(r)).toHaveLength(1);
+    expect(r.reach.exhausted).toEqual(["Wide"]);
+  });
+
+  it("R5-1: a library type with an untyped member is not walked; what it yields is refused as an untyped provider or a supply", () => {
+    const r = add2Scan("const f = JSON.parse(\"{}\") as Function;\n    await take(d, ctx, f());", TOP, LISTED);
+    expect(asserted(r)).toEqual([]);
+    expect(r.errors.some((e) => e.startsWith("injected awaited-callback slot user.ts#Deps.withLockX may be supplied in src at")
+      && e.endsWith("(untyped provider)"))).toBe(true);
+    const named = add2Scan("const f = JSON.parse(\"{}\") as Function;\n    await take(d, ctx, { withLockX: f() });", TOP, LISTED);
+    expect(asserted(named)).toEqual([]);
+    expect(supplied(named)).toHaveLength(1);
+  });
+
+  it("R5-2: a get-trap Proxy over a Box reaching Deps is UNRESOLVED", () => {
+    const body = `const detach = ${P};\n    const wrap = (b: Box) => new Proxy(b, { get() { return { withLockX: detach }; } });\n    void wrap;`;
+    expect(proxyWhy(add2Scan(body, TOP + BOX, LISTED))).toHaveLength(1);
   });
 
   it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {
@@ -1632,8 +1697,8 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
     ${body}
   });
 }`, { contextConstructions: ["user.ts#run#new#1"] }, { "/fx/types.ts": OWNED });
-  it("a get-trap Proxy over a WorkflowStage the scan resolves no provider for passes", () => {
-    expect(proxyErrors(inLock("", PROXY("WorkflowStage", GET, "WorkflowStage")))).toEqual([]);
+  it("a get-trap Proxy over a WorkflowStage the scan resolves no provider for still reaches the context through enter(ctx) (R5-1)", () => {
+    expect(proxyErrors(inLock("", PROXY("WorkflowStage", GET, "WorkflowStage")))).toHaveLength(1);
   });
 
   it.each([

@@ -104,6 +104,8 @@ export interface ScanOptions {
    * implements the stage interface, or takes a parameter of the context type.
    */
   readonly lockContext?: { readonly file: string; readonly className: string; readonly stageInterface: string };
+  /** R5-1: the most types one reachability query may visit before it answers as reaching (default 5000). */
+  readonly reachBudget?: number;
 }
 
 export interface ScanResult {
@@ -125,6 +127,11 @@ export interface ScanResult {
   readonly holderHints: string[];
   /** Report aid (A1): each bodyless interface member called under the lock, with its src providers by `file:line`. */
   readonly memberProviders: Record<string, string[]>;
+  /**
+   * Report aid (R5-1): the reachability visit budget, the most visits one query used, the queries that exhausted
+   * it (each answered as reaching), and for every flagged assertion and Proxy the path to the sensitive type.
+   */
+  readonly reach: { budget: number; maxVisits: number; exhausted: string[]; paths: Record<string, string> };
 }
 
 type Fn = ts.FunctionLikeDeclaration;
@@ -2597,8 +2604,10 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   }
   /**
    * The checks that need the A1 owner set, run once every provider lookup has been made: R4-1's computed keys,
-   * R4-3's assertions and the Proxy ruling.
+   * R4-3's assertions and the Proxy ruling, the last two through R5-1 reachability.
    */
+  /** R5-1 report aid; the budget bounds one reachability query's visits. */
+  const reach = { budget: opts.reachBudget ?? 5000, maxVisits: 0, exhausted: [] as string[], paths: {} as Record<string, string> };
   function launderingChecks(): void {
     /** Every named src type that is itself sensitive (any and unknown aliases aside): the targets R4-2 and R4-3 test against. */
     const sensitiveTypes: ts.Type[] = [];
@@ -2617,28 +2626,73 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     }
     const assignableToSensitive = (t: ts.Type): boolean =>
       !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) || sensitiveTypes.some((s) => checker.isTypeAssignableTo(t, s));
-    /** R4-3: a type that is, or holds as a union arm, an intersection part, a type argument or an anonymous object's member, a sensitive type. */
-    function containsSensitive(t: ts.Type, seen = new Set<ts.Type>()): boolean {
-      if (seen.has(t)) return false;
-      seen.add(t);
-      if (isCtxType(t)) return true;
-      if ([...(t.getSymbol()?.declarations ?? []), ...(t.aliasSymbol?.declarations ?? [])].some((d) => sensitiveDecls.has(d))) return true;
-      if (t.isUnion() || t.isIntersection()) return t.types.some((x) => containsSensitive(x, seen));
-      const args = [...(t.aliasTypeArguments ?? []), ...((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference ? checker.getTypeArguments(t as ts.TypeReference) : [])];
-      if (args.some((x) => containsSensitive(x, seen))) return true;
-      if ((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) {
-        return checker.getPropertiesOfType(t).some((m) => (m.declarations ?? []).some((d) => containsSensitive(checker.getTypeOfSymbolAtLocation(m, d), seen)));
-      }
-      return false;
+    /**
+     * R5-1: the path by which a sensitive type (the context, or a named src type that owns a guarded or seam slot, an
+     * A1 owner's member, a lock-entry or contract function, or is a stage) is structurally reachable from t, or null.
+     * It goes through union and intersection parts, the constraint of a conditional, indexed-access or other
+     * instantiable type, alias and reference type arguments (so array and tuple elements), and, for a type declared
+     * in src, every property, call and construct signature (return and parameter types) and index signature. A type
+     * declared only in the default library or node_modules is reached only through its type arguments: its members
+     * are written in terms of those. Such a type that is not generic but has an any or unknown member is not walked;
+     * a value read through that member is untyped, and the untyped-provider rule refuses it wherever it supplies.
+     * The visit set ends cycles; a query that exhausts the budget answers as reaching (fail closed).
+     */
+    /** R5-1: a default-library or node_modules file; every other file of the program (a src .d.ts too) is src. */
+    const notSrc = (sf: ts.SourceFile): boolean => program.isSourceFileDefaultLibrary(sf) || sf.fileName.includes("/node_modules/");
+    const reachMemo = new Map<ts.Type, string | null>();
+    function reachesSensitive(t0: ts.Type): string | null {
+      if (reachMemo.has(t0)) return reachMemo.get(t0)!;
+      const seen = new Set<ts.Type>();
+      let visits = 0;
+      /** The path from t to the sensitive type, built only on a hit. */
+      const visit = (t: ts.Type): string | null => {
+        if (seen.has(t)) return null;
+        seen.add(t);
+        if (++visits > reach.budget) return " (visit budget exhausted)";
+        const decls = [...(t.getSymbol()?.declarations ?? []), ...(t.aliasSymbol?.declarations ?? [])];
+        if (isCtxType(t) || decls.some((d) => sensitiveDecls.has(d))) return ` = ${checker.typeToString(t)}`;
+        const step = (x: ts.Type, at: () => string): string | null => {
+          const p = visit(x);
+          return p === null ? null : at() + p;
+        };
+        if (t.isUnionOrIntersection()) {
+          for (const x of t.types) { const p = step(x, () => ` ${t.isUnion() ? "|" : "&"} ${checker.typeToString(x)}`); if (p) return p; }
+          return null;
+        }
+        if (t.flags & ts.TypeFlags.Instantiable) {
+          const c = checker.getBaseConstraintOfType(t);
+          if (c && c !== t) { const p = step(c, () => " (constraint)"); if (p) return p; }
+        }
+        const args = [...(t.aliasTypeArguments ?? []), ...((t as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference ? checker.getTypeArguments(t as ts.TypeReference) : [])];
+        for (const [k, x] of args.entries()) { const p = step(x, () => `<${k}>`); if (p) return p; }
+        if (!(t.flags & ts.TypeFlags.Object)) return null;
+        const own = t.getSymbol()?.declarations ?? [];
+        if (own.length > 0 && own.every((d) => notSrc(d.getSourceFile()))) return null;
+        for (const sig of [...t.getCallSignatures(), ...t.getConstructSignatures()]) {
+          const r = step(sig.getReturnType(), () => "()"); if (r) return r;
+          for (const q of sig.getParameters()) { const p = step(checker.getTypeOfSymbol(q), () => `(${q.name})`); if (p) return p; }
+        }
+        for (const ii of checker.getIndexInfosOfType(t)) { const p = step(ii.type, () => "[index]"); if (p) return p; }
+        for (const m of checker.getPropertiesOfType(t)) { const p = step(checker.getTypeOfSymbol(m), () => `.${m.name}`); if (p) return p; }
+        return null;
+      };
+      const hit = visit(t0);
+      const r = hit === null ? null : checker.typeToString(t0) + hit;
+      reach.maxVisits = Math.max(reach.maxVisits, visits);
+      if (visits > reach.budget) reach.exhausted.push(checker.typeToString(t0));
+      reachMemo.set(t0, r);
+      return r;
     }
-    // R4-3: an `as` or angle-bracket assertion into a type holding a sensitive type, from any other type, is UNRESOLVED
+    // R4-3: an `as` or angle-bracket assertion into a type reaching a sensitive type (R5-1), from any other type, is UNRESOLVED
     // wherever it appears. `as const`, `!` and `satisfies` assert nothing new; satisfies stays a contextual flow.
     for (const sf of files) {
       sf.forEachChild(function visit(n): void {
         if (testOnlyInits.has(n)) return;
         if ((ts.isAsExpression(n) || ts.isTypeAssertionExpression(n)) && !ts.isConstTypeReference(n.type)) {
           const asserted = checker.getTypeFromTypeNode(n.type);
-          if (asserted !== checker.getTypeAtLocation(n.expression) && containsSensitive(asserted)) {
+          const path = asserted !== checker.getTypeAtLocation(n.expression) ? reachesSensitive(asserted) : null;
+          if (path) {
+            reach.paths[where(n)] = path;
             errors.push(`UNRESOLVED assertion at ${where(n)} (asserted into a sensitive type)`);
           }
         }
@@ -2649,6 +2703,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     for (const e of protoUnknownKeys) {
       if (proxySensitive(checker.getTypeAtLocation(e.expression))) errors.push(`UNRESOLVED prototype mutation at ${where(e)} (computed key on a sensitive type)`);
     }
+    /** R5-2: a Proxy's result type reaching a sensitive type forges it as an assertion would. */
+    const reachedBy = (nx: ts.NewExpression): boolean => {
+      const path = reachesSensitive(checker.getTypeAtLocation(nx));
+      if (path) reach.paths[where(nx)] = path;
+      return !!path;
+    };
     for (const nx of news) {
       if (libIdentity(nx.expression) !== "ProxyConstructor") continue;
       const [target, handler] = nx.arguments ?? [];
@@ -2659,7 +2719,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         const bad = h.properties.find((p) => !p.name || ts.isComputedPropertyName(p.name) || WRITE_TRAPS.has(p.name.getText().replace(/^["']|["']$/g, "")));
         if (bad) why = `handler member ${bad.name ? bad.name.getText() : "spread"} may write`;
         else if (!target || proxySensitive(checker.getTypeAtLocation(target)) || proxySensitive(checker.getContextualType(nx))
-          || assignableToSensitive(checker.getTypeAtLocation(nx))) {
+          || assignableToSensitive(checker.getTypeAtLocation(nx)) || reachedBy(nx)) {
           why = "target, flow or result type owns a guarded, provider, contract or lock member, or is untyped";
         }
       }
@@ -2686,6 +2746,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     chainMembers: [...chainMembers].sort(),
     holderHints: [...new Set(holderHints)].sort(),
     memberProviders,
+    reach,
   };
 }
 

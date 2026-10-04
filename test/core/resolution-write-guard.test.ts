@@ -59,7 +59,8 @@ afterEach(() => {
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.t", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
 
-type Board = "ready" | "low-fence" | "unregistered" | "non-team";
+// T-486 A9: "legacy-clone" selects v4 in this clone (doctor row M4), "unset-merge" puts `-merge` on issues (row M6).
+type Board = "ready" | "low-fence" | "unregistered" | "legacy-clone" | "unset-merge" | "non-team";
 
 /** A project at `root` (also the git root), set up by the current handlers and then broken one way. */
 async function board(kind: Board): Promise<string> {
@@ -79,6 +80,12 @@ async function board(kind: Board): Promise<string> {
     writeFileSync(path, JSON.stringify(c, null, 2) + "\n");
   } else if (kind === "unregistered") {
     git(root, "config", "--local", "--unset", `merge.${MERGE_DRIVER_V5_NAME}.driver`);
+  } else if (kind === "legacy-clone") {
+    const info = join(root, git(root, "rev-parse", "--git-path", "info/attributes"));
+    writeFileSync(info, readFileSync(info, "utf-8").replaceAll(`merge=${MERGE_DRIVER_V5_NAME}`, "merge=storybloq-json-v4"));
+  } else if (kind === "unset-merge") {
+    const info = join(root, git(root, "rev-parse", "--git-path", "info/attributes"));
+    writeFileSync(info, readFileSync(info, "utf-8") + ".story/issues/*.json -merge\n");
   }
   return root;
 }
@@ -136,6 +143,8 @@ describe("kind setter (F1, F2, S1, S2)", () => {
   it.each([
     ["F1", "low-fence" as const, /team\.minCliVersion is 1\.15\.0, below 1\.16\.0/],
     ["F2", "unregistered" as const, /storybloq-json-v5 merge driver is not registered/],
+    ["A9 M4", "legacy-clone" as const, /with storybloq-json-v4, not storybloq-json-v5/],
+    ["A9 M6", "unset-merge" as const, /with no driver, not storybloq-json-v5/],
   ])("%s: a %s board refuses the kind, names storybloq team setup and writes nothing", async (_id, kind, gap) => {
     const root = await board(kind);
     const issue = await createIssue(root);
@@ -286,7 +295,7 @@ describe("activation is a write (A3: B7 restore, B8 conflict resolution)", () =>
     return { root, id, fromOid, expectOid, reopened };
   }
 
-  it.each(["low-fence", "unregistered"] as const)("B7: on a %s board, restoring the matching closure under an unchanged raw kind is refused", async (kind) => {
+  it.each(["low-fence", "unregistered", "legacy-clone", "unset-merge"] as const)("B7: on a %s board, restoring the matching closure under an unchanged raw kind is refused", async (kind) => {
     const { root, id, fromOid, expectOid, reopened } = await restoreFixture(kind);
     const err = await restoreRecord(root, { kind: "record", path: `.story/issues/${id}.json` }, fromOid, expectOid, { capabilityCatalog }).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(RestoreUnsafe);
@@ -315,7 +324,7 @@ describe("activation is a write (A3: B7 restore, B8 conflict resolution)", () =>
     return { root, id, before: bytes(root, id) };
   }
 
-  it.each(["low-fence", "unregistered"] as const)("B8: on a %s board, resolve --use theirs to the matching closure is refused", async (kind) => {
+  it.each(["low-fence", "unregistered", "legacy-clone", "unset-merge"] as const)("B8: on a %s board, resolve --use theirs to the matching closure is refused", async (kind) => {
     const { root, id, before } = await conflictFixture(kind);
     const err = await rejection(handleResolve(id, root, { field: "status", use: "theirs", format: "json" }));
     expect(err.message).toMatch(/storybloq team setup/);

@@ -616,6 +616,107 @@ export function effectiveMergeDriver(root: string, relPath: string, git: GitRead
   return value;
 }
 
+/**
+ * T-486 A9: the `merge` attribute git resolves for `relPath`, keeping what
+ * effectiveMergeDriver folds into null apart: no driver selected
+ * (`unspecified`, `unset` for `-merge`, `set`, or empty) versus a git
+ * failure. Pure read.
+ */
+export type MergeAttribute =
+  | { readonly kind: "set"; readonly name: string }
+  | { readonly kind: "none"; readonly value: string }
+  | { readonly kind: "git"; readonly detail: string };
+
+export function mergeAttribute(root: string, relPath: string, git: GitRead = gitRead): MergeAttribute {
+  let out: string;
+  try {
+    out = git(["check-attr", "merge", "--", relPath], root);
+  } catch (err) {
+    return { kind: "git", detail: gitErrorDetail(err) };
+  }
+  const marker = ": merge: ";
+  const at = out.lastIndexOf(marker);
+  if (at < 0) return { kind: "git", detail: `unexpected check-attr output: ${out.trim()}` };
+  const value = out.slice(at + marker.length).trim();
+  if (value === "unspecified" || value === "unset" || value === "set" || value === "") return { kind: "none", value: value || "unspecified" };
+  return { kind: "set", name: value };
+}
+
+/**
+ * T-486 A9: the registration git would run for driver `name`, in git's own
+ * precedence, with the scope and origin of the winning value, for messages
+ * that name what to remove. A malformed record is a git failure, never a
+ * match.
+ */
+export function registeredMergeDriverRecord(
+  root: string,
+  name: string,
+  git: GitRead = gitRead,
+): { kind: "present"; scope: string; origin: string; value: string } | { kind: "absent" } | { kind: "git"; detail: string } {
+  let out: string;
+  try {
+    out = git(["config", "--show-scope", "--show-origin", "-z", "--get-all", `merge.${name}.driver`], root);
+  } catch (err) {
+    if ((err as { status?: number | null }).status === 1) return { kind: "absent" };
+    return { kind: "git", detail: gitErrorDetail(err) };
+  }
+  const record = lastConfigRecord(out);
+  if (record.scope === "") return { kind: "git", detail: `unreadable git config record for merge.${name}.driver` };
+  return { kind: "present", ...record };
+}
+
+function gitErrorDetail(err: unknown): string {
+  const e = err as { stderr?: unknown; message?: string };
+  const stderr = typeof e.stderr === "string" ? e.stderr.trim() : "";
+  return stderr || e.message || String(err);
+}
+
+/** The environment variables that point git somewhere other than discovery from the cwd. */
+export const GIT_LOCATION_ENV = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"] as const;
+
+/**
+ * T-486 A9-1: whether `root` is in a git work tree. "none" only for a
+ * verified ordinary directory: no `.git` entry (directory or gitfile) at
+ * the root or any ancestor, and none of GIT_LOCATION_ENV set. Everything
+ * else git cannot read as a work tree (a bare repository, metadata git
+ * rejects, an environment git rejects) is "error" with the cause. A git
+ * exit status alone never makes "none".
+ */
+export function gitWorkTreeState(
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { kind: "tree" } | { kind: "none" } | { kind: "error"; detail: string } {
+  const explicit = GIT_LOCATION_ENV.filter((k) => typeof env[k] === "string" && env[k] !== "");
+  const childEnv: NodeJS.ProcessEnv = { ...env };
+  if (explicit.length === 0) for (const k of GIT_LOCATION_ENV) delete childEnv[k];
+  let out: string | null = null;
+  let failure = "";
+  try {
+    out = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root, env: childEnv, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 }).trim();
+  } catch (err) {
+    failure = gitErrorDetail(err);
+  }
+  if (out === "true") return { kind: "tree" };
+  if (explicit.length > 0) {
+    return { kind: "error", detail: `git rejects the repository named by ${explicit.join(", ")}: ${out === null ? failure : "not a work tree"}` };
+  }
+  const dotGit = nearestDotGit(root);
+  if (out !== null) return { kind: "error", detail: `${root} is in a git repository without a work tree (bare, or inside a .git directory)` };
+  if (dotGit === null) return { kind: "none" };
+  return { kind: "error", detail: `git rejects the repository at ${dotGit}: ${failure}` };
+}
+
+function nearestDotGit(start: string): string | null {
+  let dir = resolve(start);
+  for (;;) {
+    const candidate = join(dir, ".git");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export interface CheckResult {
   ok: boolean;
   issues: string[];

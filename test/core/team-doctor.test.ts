@@ -293,9 +293,15 @@ describe("checkLocalIdAllocator (ISS-734)", () => {
     expect(finding!.message).toContain(
       "storybloq team init && storybloq team config set idAllocator git-refs",
     );
-    // Nothing is broken: info must not affect error/warning counts.
+    // The info finding affects no count. T-486 A9: this fixture (a team
+    // board with no fence, outside any git repository) lacks resolution-kind
+    // readiness, which is two warnings (F1, G0) and no error.
+    expect(result.findings.filter((f) => f.severity !== "info").map((f) => [f.severity, f.code])).toEqual([
+      ["warning", "resolution_kind_fence"],
+      ["warning", "resolution_kind_no_git"],
+    ]);
     expect(result.errorCount).toBe(0);
-    expect(result.warningCount).toBe(0);
+    expect(result.warningCount).toBe(2);
   });
 
   it("treats an absent idAllocator as local (the runtime default)", () => {

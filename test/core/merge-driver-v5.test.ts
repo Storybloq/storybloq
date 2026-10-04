@@ -365,7 +365,8 @@ describe("A8: checkpoints accept v4 or v5, registered exactly (CK1-CK4)", () => 
     expect(await checkpointMergeProblems(root, repo, recording())).toEqual([]);
     const state = (await loadProject(root)).state;
     expect(checkCheckpointMergeAttributes(state, ctx(root))).toEqual([]);
-    expect(checkResolutionKindReadiness(state, ctx(root)).map((f) => f.code)).toEqual(["resolution_kind_merge_driver"]);
+    // T-486 A9 row M4: a v4 clone lacks the kind capability, a warning.
+    expect(checkResolutionKindReadiness(state, ctx(root)).map((f) => [f.severity, f.code])).toEqual([["warning", "resolution_kind_clone_setup"]]);
     expect(resolutionWritesReadiness(repo, state.config.team?.minCliVersion, ISSUE).driver).toMatchObject({ ok: false, reason: "attribute" });
   });
 });
@@ -465,7 +466,7 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
     for (const minimum of TEAM_FENCE_MINIMUMS) expect(meetsVersionMinimum(version, minimum), minimum).toBe(true);
   });
 
-  it("F5: doctor errors on a low fence and on a missing v5 registration, and is silent when ready", async () => {
+  it("F5 (A9): doctor warns on a low fence and a missing v5 registration, errors on a mismatch, and is silent when ready", async () => {
     const ctx = (root: string) => ({ root, cliVersion: null, isTeamMode: true, loadWarnings: [] });
     const { repo, root } = await teamProject({ fence: "1.4.4" });
     await teamSetup(root);
@@ -475,9 +476,13 @@ describe("2a: the fence rises through every capability minimum (F4) and doctor n
     const path = join(root, ".story", "config.json");
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf-8")), team: { enabled: true, minCliVersion: "1.15.9" } }, null, 2) + "\n");
     const findings = checkResolutionKindReadiness((await loadProject(root)).state, ctx(root));
-    expect(findings.map((f) => [f.code, f.severity])).toEqual([["resolution_kind_fence", "error"], ["resolution_kind_merge_driver", "error"]]);
+    expect(findings.map((f) => [f.code, f.severity])).toEqual([["resolution_kind_fence", "warning"], ["resolution_kind_clone_setup", "warning"]]);
     expect(findings.every((f) => f.message.includes("storybloq team setup"))).toBe(true);
-    expect((await handleTeamDoctor(root, { ci: true, format: "json" })).exitCode).not.toBe(0);
+    expect((await handleTeamDoctor(root, { ci: true, format: "json" })).exitCode).toBe(0);
+
+    git(repo, "config", "--local", `merge.${MERGE_DRIVER_V5_NAME}.driver`, "cat %A");
+    expect(checkResolutionKindReadiness((await loadProject(root)).state, ctx(root)).map((f) => [f.code, f.severity])).toEqual([["resolution_kind_fence", "warning"], ["resolution_kind_merge_driver", "error"]]);
+    expect((await handleTeamDoctor(root, { ci: true, format: "json" })).exitCode).toBe(1);
   });
 
   it("F5: a non-team project has no resolution-kind readiness to report", async () => {

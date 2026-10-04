@@ -3,11 +3,17 @@ import { execFileSync } from "node:child_process";
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
 import { isClaimStale } from "./claims.js";
-import { compareVersionStrings, RESOLUTION_KIND_MIN_CLI_VERSION, RULING_LIFECYCLE_MIN_CLI_VERSION } from "./team-capabilities.js";
+import { compareVersionStrings, meetsVersionMinimum, RESOLUTION_KIND_MIN_CLI_VERSION, RULING_LIFECYCLE_MIN_CLI_VERSION } from "./team-capabilities.js";
+import { resolutionKindView } from "./resolution-kind.js";
 import {
-  rulingLifecycleReadiness,
-  resolutionWritesReadiness,
   catalogsWithoutMergeDriver,
+  gitRead,
+  gitWorkTreeState,
+  mergeAttribute,
+  registeredMergeDriverRecord,
+  MERGE_DRIVER_CONTRACTS,
+  MERGE_DRIVER_V5_NAME,
+  type GitRead,
   hasCheckpointGitattributes,
   CHECKPOINT_MERGE_DRIVERS,
 } from "./team-setup.js";
@@ -538,7 +544,7 @@ async function checkReservationHealth(state: ProjectState, ctx: DoctorContext): 
  * files merging structurally. Both gaps are one `team setup` away; until
  * then every ruling write refuses and says so.
  */
-export function checkRulingLifecycleReadiness(state: ProjectState, ctx: DoctorContext): DoctorFinding[] {
+export function checkRulingLifecycleReadiness(state: ProjectState, ctx: DoctorContext, deps: ResolutionReadinessDeps = {}): DoctorFinding[] {
   // Only a project that records rulings is asked to be ready for them.
   const rulingsDir = join(ctx.root, ".story", "rulings");
   let hasRulings = false;
@@ -548,18 +554,21 @@ export function checkRulingLifecycleReadiness(state: ProjectState, ctx: DoctorCo
     hasRulings = false;
   }
   if (!hasRulings) return [];
-  const readiness = rulingLifecycleReadiness(join(ctx.root, ".story"), state.config.team?.minCliVersion);
+  const fence = state.config.team?.minCliVersion;
   const findings: DoctorFinding[] = [];
-  if (!readiness.fenceOk) {
+  if (!meetsVersionMinimum(fence, RULING_LIFECYCLE_MIN_CLI_VERSION)) {
     findings.push({
       severity: "warning",
       code: "ruling_fence_below_1_16",
-      message: `team.minCliVersion is ${state.config.team?.minCliVersion ?? "unset"}; 1.16 ruling writes (propose, accept, acceptance evidence) need at least ${RULING_LIFECYCLE_MIN_CLI_VERSION}. Run storybloq team setup on a ${RULING_LIFECYCLE_MIN_CLI_VERSION}+ CLI.`,
+      message: `team.minCliVersion is ${fence ?? "unset"}; 1.16 ruling writes (propose, accept, acceptance evidence) need at least ${RULING_LIFECYCLE_MIN_CLI_VERSION}. Run storybloq team setup on a ${RULING_LIFECYCLE_MIN_CLI_VERSION}+ CLI.`,
       entity: null,
       repair: { command: ["storybloq", "team", "setup"] },
     });
   }
-  if (!readiness.attributeOk) {
+  // T-486 A9: the same observable rows as resolution kinds, accepting every
+  // supported registration. Absent is a warning; a wrong state is an error.
+  const { row, message } = registrationRows(ctx.root, RULING_PROBE_PATH, [...MERGE_DRIVER_CONTRACTS.keys()], deps);
+  if (row === "G0" || row === "M6") {
     findings.push({
       severity: "warning",
       code: "gitattributes_no_rulings",
@@ -567,47 +576,112 @@ export function checkRulingLifecycleReadiness(state: ProjectState, ctx: DoctorCo
       entity: null,
       repair: { command: ["storybloq", "team", "setup"] },
     });
-  } else if (!readiness.registration.ok) {
-    // T-486 A2: the attribute names a driver that runs nothing, or a command setup never generated.
-    findings.push({
-      severity: "warning",
-      code: "ruling_merge_driver_registration",
-      message: `Ruling writes refuse until the merge driver is registered as team setup generates it: ${readiness.registration.message}.`,
-      entity: null,
-      repair: { command: ["storybloq", "team", "setup"] },
-    });
+  } else if (row === "M5") {
+    findings.push(finding("warning", "ruling_merge_driver_registration", `Ruling writes refuse until the merge driver is registered as team setup generates it: the ${message} merge driver is not registered; run storybloq team setup.`));
+  } else if (row === "G1" || row === "M1" || row === "M2") {
+    findings.push(finding("error", "ruling_merge_driver_registration", `Ruling writes refuse in this clone: ${message}`));
   }
   return findings;
 }
 
 /**
- * T-486 2a: in a team-mode ledger, a resolution-kind write needs the fence at
- * RESOLUTION_KIND_MIN_CLI_VERSION and issue files merging with the v5
- * driver, registered exactly as setup generates it. Either gap refuses every
- * kind write until `team setup` runs on a current CLI, so both are errors
- * and `--ci` fails on them.
+ * T-486 A9: resolution-kind readiness, decided by observable facts only.
+ * An absent capability is a warning (kind writes refuse here and say so);
+ * a wrong state is an error: a registration git would run that setup never
+ * generates, an attribute naming a driver setup never generates, a git
+ * lookup that fails, or an effective kind on a board whose fence admits
+ * older writers. Nothing infers whether setup ran in this clone, so a fresh
+ * clone of a set-up board is warning-only.
  */
-export function checkResolutionKindReadiness(state: ProjectState, ctx: DoctorContext): DoctorFinding[] {
-  if (state.config.team?.enabled !== true) return [];
-  const readiness = resolutionWritesReadiness(ctx.root, state.config.team?.minCliVersion, ".story/issues/i-resolutionprobe.json");
-  const findings: DoctorFinding[] = [];
-  if (!readiness.fenceOk) {
-    findings.push({
-      severity: "error",
-      code: "resolution_kind_fence",
-      message: `team.minCliVersion is ${state.config.team?.minCliVersion ?? "unset"}; resolution-kind writes need at least ${RESOLUTION_KIND_MIN_CLI_VERSION}. Run storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI.`,
-      entity: null,
-      repair: { command: ["storybloq", "team", "setup"] },
-    });
+export const RESOLUTION_PROBE_PATH = ".story/issues/i-resolutionprobe.json";
+export const RULING_PROBE_PATH = ".story/rulings/r-0000000000000000.json";
+
+export interface ResolutionReadinessDeps {
+  readonly git?: GitRead;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+const SETUP_REPAIR: DoctorRepair = { command: ["storybloq", "team", "setup"] };
+
+function finding(severity: DoctorSeverity, code: string, message: string): DoctorFinding {
+  return { severity, code, message, entity: null, repair: SETUP_REPAIR };
+}
+
+/** M1: the message naming the winning value, its scope and origin, and how to remove it. */
+export function mismatchMessage(name: string, record: { scope: string; origin: string; value: string }): string {
+  const removal = record.scope === "command"
+    ? "remove it from the command line or GIT_CONFIG_* environment"
+    : `remove it (git config --${record.scope} --unset-all merge.${name}.driver)`;
+  return `merge.${name}.driver = "${record.value}" from ${record.scope} config (${record.origin}) is not the command team setup generates; ${removal} and run storybloq team setup.`;
+}
+
+/**
+ * The registration rows (G0 to M6) for `relPath`, shared by the resolution
+ * kind and ruling checks. `accept` is the driver set that counts as ready.
+ */
+export function registrationRows(
+  root: string,
+  relPath: string,
+  accept: readonly string[],
+  deps: ResolutionReadinessDeps = {},
+): { row: "G0" | "G1" | "M1" | "M2" | "M3" | "M4" | "M5" | "M6"; message: string } {
+  const git = deps.git ?? gitRead;
+  const tree = gitWorkTreeState(root, deps.env);
+  if (tree.kind === "none") return { row: "G0", message: "" };
+  if (tree.kind === "error") return { row: "G1", message: `git could not report how this clone merges ${relPath}: ${tree.detail}.` };
+  const attribute = mergeAttribute(root, relPath, git);
+  if (attribute.kind === "git") return { row: "G1", message: `git could not report how this clone merges ${relPath}: ${attribute.detail}.` };
+  if (attribute.kind === "none") {
+    return { row: "M6", message: `no supported storybloq merge driver is selected for ${relPath} (merge attribute: ${attribute.value})` };
   }
-  if (!readiness.driver.ok) {
-    findings.push({
-      severity: "error",
-      code: "resolution_kind_merge_driver",
-      message: `Resolution-kind writes refuse in this clone: ${readiness.driver.message}.`,
-      entity: null,
-      repair: { command: ["storybloq", "team", "setup"] },
-    });
+  const contract = MERGE_DRIVER_CONTRACTS.get(attribute.name);
+  if (!contract) {
+    return { row: "M2", message: `git merges ${relPath} with ${attribute.name}, a driver team setup never generates; remove that attribute and run storybloq team setup.` };
+  }
+  const record = registeredMergeDriverRecord(root, attribute.name, git);
+  if (record.kind === "git") return { row: "G1", message: `git could not report how this clone merges ${relPath}: ${record.detail}.` };
+  if (record.kind === "absent") return { row: "M5", message: attribute.name };
+  if (record.value.trim() !== contract.command) return { row: "M1", message: mismatchMessage(attribute.name, record) };
+  return accept.includes(attribute.name) ? { row: "M3", message: "" } : { row: "M4", message: attribute.name };
+}
+
+export function checkResolutionKindReadiness(state: ProjectState, ctx: DoctorContext, deps: ResolutionReadinessDeps = {}): DoctorFinding[] {
+  if (state.config.team?.enabled !== true) return [];
+  const fence = state.config.team?.minCliVersion;
+  const findings: DoctorFinding[] = [];
+  if (!meetsVersionMinimum(fence, RESOLUTION_KIND_MIN_CLI_VERSION)) {
+    const effective = state.issues.filter((i) => resolutionKindView(i as unknown as Record<string, unknown>).state === "effective");
+    if (effective.length > 0) {
+      findings.push(finding("error", "resolution_kind_unfenced",
+        `${effective.length} issue(s) (${displayIdOf(effective[0]!)}${effective.length > 1 ? "..." : ""}) carry an effective resolution kind but team.minCliVersion is ${fence ?? "unset"}, so a pre-${RESOLUTION_KIND_MIN_CLI_VERSION} client may write this board; run storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI and commit the config.`));
+    } else {
+      findings.push(finding("warning", "resolution_kind_fence",
+        `team.minCliVersion is ${fence ?? "unset"}; resolution-kind writes are refused on this board until someone runs storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI and commits the config.`));
+    }
+  }
+  const { row, message } = registrationRows(ctx.root, RESOLUTION_PROBE_PATH, [MERGE_DRIVER_V5_NAME], deps);
+  switch (row) {
+    case "G0":
+      findings.push(finding("warning", "resolution_kind_no_git", "This board is not in a git work tree, so resolution-kind writes are refused here; run storybloq team setup inside the clone."));
+      break;
+    case "G1":
+      findings.push(finding("error", "resolution_kind_git", message));
+      break;
+    case "M1":
+    case "M2":
+      findings.push(finding("error", "resolution_kind_merge_driver", message));
+      break;
+    case "M4":
+      findings.push(finding("warning", "resolution_kind_clone_setup", `This clone merges issues with ${message}, not ${MERGE_DRIVER_V5_NAME}, so resolution-kind writes are refused here until storybloq team setup runs in this clone.`));
+      break;
+    case "M5":
+      findings.push(finding("warning", "resolution_kind_clone_setup", `git would merge ${RESOLUTION_PROBE_PATH} with ${message}, which is not registered in this clone (issue merges fall back to text, and resolution-kind writes are refused) until storybloq team setup runs in this clone.`));
+      break;
+    case "M6":
+      findings.push(finding("warning", "resolution_kind_clone_setup", `${message}, so resolution-kind writes are refused in this clone; run storybloq team setup.`));
+      break;
+    case "M3":
+      break;
   }
   return findings;
 }

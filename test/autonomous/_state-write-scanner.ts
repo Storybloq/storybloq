@@ -20,9 +20,6 @@ import path from "node:path";
 export const POLICIES = ["P", "A", "R", "K", "T", "TC", "TR", "OC", "B"] as const;
 export type Policy = (typeof POLICIES)[number];
 
-/** Callees known to invoke a callback synchronously, before they return (addendum A5/A6). */
-export const SYNC_CALLBACK_METHODS = ["forEach", "map", "filter", "some", "every", "find", "reduce", "sort", "flatMap"] as const;
-
 export interface ScannerRegistry {
   /** `file#enclosingFn#kind#ordinal` -> policy, for catches and promise handlers. */
   readonly catches: Readonly<Record<string, string>>;
@@ -126,8 +123,6 @@ export interface ScanResult {
   readonly chainMembers: string[];
   /** Report aid: call sites of functions that need a lock holder. */
   readonly holderHints: string[];
-  /** Report aid (T3): each write that withheld synchronous credit from a pinned array method, with its reason. */
-  readonly syncWithheld: string[];
   /** Report aid (A1): each bodyless interface member called under the lock, with its src providers by `file:line`. */
   readonly memberProviders: Record<string, string[]>;
 }
@@ -546,15 +541,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   const closures: Closure[] = [];
   const objMembers: ts.ObjectLiteralElementLike[] = [];
   const thisRefs: ts.Node[] = [];
-  /** decl -> every value assigned to it after its declaration (U1b). */
-  const assigned = new Map<ts.Node, ts.Expression[]>();
-  /** decl -> the source members it receives through an assignment pattern (A1). */
-  const assignedMembers = new Map<ts.Node, ts.Node[]>();
+  /** The assignment operators whose result is the right operand's value: `=` and the logical ones. */
   const assignOps = new Set([ts.SyntaxKind.EqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken,
     ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.AmpersandAmpersandEqualsToken]);
-  const pendingAssigns: ts.BinaryExpression[] = [];
-  /** S2: for-of and for-in statements whose target is an assignment expression, not a declaration. */
-  const pendingLoops: (ts.ForOfStatement | ts.ForInStatement)[] = [];
+  /** R3-2: every syntactic write (an assignment of any operator, an assignment-form loop, `++`, `--`, `delete`), enumerated once below. */
+  const writeNodes: ts.Node[] = [];
+  const decorators: ts.Decorator[] = [];
   for (const sf of files) {
     const v = (n: ts.Node): void => {
       if (testOnlyInits.has(n)) return;
@@ -567,8 +559,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       if (ts.isAwaitExpression(n)) awaits.push(n);
       if (isClosure(n)) closures.push(n);
       if (ts.isObjectLiteralExpression(n)) objMembers.push(...n.properties);
-      if (ts.isBinaryExpression(n) && assignOps.has(n.operatorToken.kind)) pendingAssigns.push(n);
-      if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer)) pendingLoops.push(n);
+      if (ts.isDecorator(n)) decorators.push(n);
+      if ((ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+        || ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && !ts.isVariableDeclarationList(n.initializer))
+        || ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+          && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken))
+        || ts.isDeleteExpression(n)) writeNodes.push(n);
       ts.forEachChild(n, v);
     };
     v(sf);
@@ -580,47 +576,68 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (ts.isPropertyAccessExpression(e)) return declOf(checker.getSymbolAtLocation(e.name));
     return undefined;
   };
-  /** decl -> the expressions whose elements it receives through an array pattern or a for-of target (S2). */
-  const assignedIterated = new Map<ts.Node, ts.Expression[]>();
-  /** Pattern positions whose source member the scan cannot name (a computed key, an unknown type): UNRESOLVED (S2). */
-  const unknownPatternMembers = new Set<ts.Node>();
+
+  // ---- the write-target enumerator (R3-2) ---------------------------------------------
+
   /**
-   * A1/S2: an assignment pattern, at any depth. `src` is the value destructured
-   * when it is an expression in hand (null below the first level), `type` its
-   * type when the checker gives one. A target receives a named member's
-   * declaration; a rest receives every member; a target whose member cannot be
-   * named is marked unknown (fail closed).
+   * What a write's target receives: a value; a member of the destructured
+   * type (undefined when the scan cannot name it); an element of an iterated
+   * value; or something opaque (an arithmetic result, a key string, a deletion).
    */
-  function bindAssignPattern(pat: ts.Expression, src: ts.Expression | null, type: ts.Type | undefined): void {
+  type WriteFrom = { readonly kind: "value"; readonly expr: ts.Expression }
+    | { readonly kind: "member"; readonly member: ts.Symbol | undefined }
+    | { readonly kind: "iterated"; readonly expr: ts.Expression }
+    | { readonly kind: "opaque" };
+  /**
+   * One write. The target is an identifier, a property access or an element
+   * access, outer syntax skipped; `decl` is set where the target expression
+   * cannot name its binding (a shorthand pattern member).
+   */
+  interface WriteSite { readonly target: ts.Expression; readonly decl?: ts.Node; readonly from: WriteFrom; readonly form: string; readonly at: ts.Node }
+  /** A reflective write: its receiver, and the values whose members it copies in (assign and the prototype setters). */
+  interface ReflectiveWrite { readonly at: ts.Node; readonly fn: string; readonly receiver: ts.Expression | undefined; readonly sources: readonly ts.Expression[] }
+  /**
+   * The one place writes are found. Every write-sensitive check (local value
+   * flow, release identity, guarded-slot supply, provider discovery, the
+   * escape and retention tests) reads these lists and walks no assignment of
+   * its own.
+   */
+  const writeSites: WriteSite[] = [];
+  const reflectiveWrites: ReflectiveWrite[] = [];
+  /** The right operand of every `=`, `??=`, `||=` and `&&=`, a pattern's source included: a flow into the target's type. */
+  const assignedValues: ts.Expression[] = [];
+  /** The source of each top-level destructuring assignment, outer syntax skipped. */
+  const patternSources = new Set<ts.Node>();
+  /** An assignment pattern, at any depth. `src` is the value destructured when it is in hand (the top level only). */
+  function patternSites(pat: ts.Expression, src: ts.Expression | null, type: ts.Type | undefined, form: string): void {
     pat = skipOuter(pat);
     const anyType = !type || !!(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown));
-    const receive = (tgt: ts.Node | undefined, member: ts.Symbol | undefined, at: ts.Node): void => {
-      if (!tgt) return;
-      const md = member ? declOf(member) : undefined;
-      if (md) push(assignedMembers, tgt, md);
-      else { push(assignedMembers, tgt, at); unknownPatternMembers.add(at); }
-    };
     const memberType = (m: ts.Symbol | undefined, at: ts.Node) => m ? checker.getTypeOfSymbolAtLocation(m, at) : undefined;
     const leaf = (e: ts.Expression, member: ts.Symbol | undefined, at: ts.Node): void => {
       e = skipOuter(e);
-      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) e = skipOuter(e.left); // the default is its own assignment
-      if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) { bindAssignPattern(e, null, member ? memberType(member, at) : undefined); return; }
-      receive(targetDecl(e), member, at);
+      // `{ m: f = d }`: the default is its own `=` write; the target is its left.
+      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) e = skipOuter(e.left);
+      if (ts.isObjectLiteralExpression(e) || ts.isArrayLiteralExpression(e)) { patternSites(e, null, member ? memberType(member, at) : undefined, form); return; }
+      writeSites.push({ target: e, from: { kind: "member", member }, form, at });
     };
     if (ts.isObjectLiteralExpression(pat)) {
       for (const p of pat.properties) {
         if (ts.isSpreadAssignment(p)) {
-          const tgt = targetDecl(p.expression);
+          // A rest receives every member.
           const all = anyType ? [] : type!.getProperties();
-          if (all.length === 0) receive(tgt, undefined, p);
-          for (const m of all) receive(tgt, m, p);
+          if (all.length === 0) writeSites.push({ target: skipOuter(p.expression), from: { kind: "member", member: undefined }, form, at: p });
+          for (const m of all) writeSites.push({ target: skipOuter(p.expression), from: { kind: "member", member: m }, form, at: p });
           continue;
         }
-        if (!ts.isShorthandPropertyAssignment(p) && !ts.isPropertyAssignment(p)) continue;
+        if (ts.isShorthandPropertyAssignment(p)) {
+          const decl = declOf(checker.getShorthandAssignmentValueSymbol(p));
+          writeSites.push({ target: p.name, decl, from: { kind: "member", member: anyType ? undefined : type!.getProperty(p.name.text) }, form, at: p });
+          if (p.objectAssignmentInitializer) writeSites.push({ target: p.name, decl, from: { kind: "value", expr: p.objectAssignmentInitializer }, form: "default", at: p });
+          continue;
+        }
+        if (!ts.isPropertyAssignment(p)) continue; // a method or an accessor is no pattern member
         const named = !ts.isComputedPropertyName(p.name);
-        const member = named && !anyType ? type!.getProperty(p.name.getText().replace(/^["']|["']$/g, "")) : undefined;
-        if (ts.isShorthandPropertyAssignment(p)) receive(declOf(checker.getShorthandAssignmentValueSymbol(p)), member, p);
-        else leaf(p.initializer, member, p);
+        leaf(p.initializer, named && !anyType ? type!.getProperty(p.name.getText().replace(/^["']|["']$/g, "")) : undefined, p);
       }
       return;
     }
@@ -630,39 +647,164 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         if (ts.isOmittedExpression(x)) continue;
         const e = ts.isSpreadElement(x) ? x.expression : x;
         const inner = skipOuter(ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken ? e.left : e);
-        if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) { bindAssignPattern(inner, null, ts.isSpreadElement(x) ? type : el); continue; }
-        const tgt = targetDecl(inner);
-        if (src) { if (tgt) push(assignedIterated, tgt, src); }
-        else receive(tgt, undefined, x);
+        if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) { patternSites(inner, null, ts.isSpreadElement(x) ? type : el, form); continue; }
+        writeSites.push({ target: inner, from: src ? { kind: "iterated", expr: src } : { kind: "member", member: undefined }, form, at: x });
       }
       return;
     }
-    const tgt = targetDecl(pat);
-    if (tgt && src) push(assigned, tgt, src);
+    writeSites.push({ target: pat, from: src ? { kind: "value", expr: src } : { kind: "member", member: undefined }, form, at: pat });
   }
-  for (const a of pendingAssigns) {
-    const left = skipOuter(a.left);
-    if (ts.isObjectLiteralExpression(left) || ts.isArrayLiteralExpression(left)) {
-      // `({ m } = x)`, `({ m: alias } = x)`, `({ a: { m } } = x)`, `[f] = xs`: the targets receive x's members or xs's elements.
-      bindAssignPattern(left, a.right, checker.getTypeAtLocation(a.right));
+  for (const n of writeNodes) {
+    if (ts.isBinaryExpression(n)) {
+      const op = n.operatorToken.kind;
+      const left = skipOuter(n.left);
+      if (assignOps.has(op)) assignedValues.push(n.right);
+      if (op === ts.SyntaxKind.EqualsToken && (ts.isObjectLiteralExpression(left) || ts.isArrayLiteralExpression(left))) {
+        // `({ m } = x)`, `({ m: alias } = x)`, `({ a: { m } } = x)`, `[f] = xs`: the targets receive x's members or xs's elements.
+        patternSources.add(skipOuter(n.right));
+        patternSites(left, n.right, checker.getTypeAtLocation(n.right), "destructuring");
+        continue;
+      }
+      writeSites.push({ target: left, from: assignOps.has(op) ? { kind: "value", expr: n.right } : { kind: "opaque" }, form: ts.tokenToString(op)!, at: n });
+      // `x.__proto__ = p` replaces x's prototype: every member of p is inherited.
+      if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(left) && left.name.text === "__proto__") {
+        reflectiveWrites.push({ at: n, fn: "__proto__", receiver: left.expression, sources: [n.right] });
+      }
+    } else if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
+      // S2: `for (f of xs)` and `for ({ m: f } of xs)` receive an element of xs, or its members; `for (k in o)` binds a key string.
+      const target = skipOuter(n.initializer as ts.Expression);
+      const form = ts.isForOfStatement(n) ? "for-of" : "for-in";
+      if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target)) {
+        const t = ts.isForOfStatement(n) ? checker.getTypeAtLocation(n.expression) : undefined;
+        const anyT = !t || !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown));
+        patternSites(target, null, anyT ? undefined : checker.getIndexTypeOfType(t, ts.IndexKind.Number), form);
+      } else {
+        writeSites.push({ target, from: ts.isForOfStatement(n) ? { kind: "iterated", expr: n.expression } : { kind: "opaque" }, form, at: n });
+      }
+    } else if (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) {
+      writeSites.push({ target: skipOuter(n.operand), from: { kind: "opaque" }, form: n.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--", at: n });
+    } else if (ts.isDeleteExpression(n)) {
+      writeSites.push({ target: skipOuter(n.expression), from: { kind: "opaque" }, form: "delete", at: n });
+    }
+  }
+  /**
+   * The default-library identity of what an expression evaluates to, by the
+   * symbol of its type: `ObjectConstructor.assign`, `Reflect.set`, `eval`,
+   * `ProxyConstructor`. Aliases, destructured copies and typed copies resolve
+   * like the original; anything outside the default library is null.
+   */
+  function libIdentity(e: ts.Node): string | null {
+    return libTypeIdentity(checker.getTypeAtLocation(e));
+  }
+  function libTypeIdentity(t: ts.Type): string | null {
+    const decls = t.getSymbol()?.declarations ?? [];
+    const d = decls[0];
+    if (!d || !decls.every((x) => program.isSourceFileDefaultLibrary(x.getSourceFile()))) return null;
+    if (!ts.isInterfaceDeclaration(d) && !ts.isFunctionDeclaration(d) && !ts.isMethodSignature(d)) return null;
+    const name = d.name?.getText();
+    if (!name) return null;
+    if (ts.isInterfaceDeclaration(d)) return name;
+    if (ts.isInterfaceDeclaration(d.parent)) return `${d.parent.name.text}.${name}`;
+    if (ts.isModuleBlock(d.parent)) return `${d.parent.parent.name.getText()}.${name}`;
+    return name;
+  }
+  const REFLECTIVE_WRITERS = new Map([["ObjectConstructor.assign", "Object.assign"], ["ObjectConstructor.defineProperty", "Object.defineProperty"],
+    ["ObjectConstructor.defineProperties", "Object.defineProperties"], ["ObjectConstructor.setPrototypeOf", "Object.setPrototypeOf"],
+    ["Reflect.set", "Reflect.set"], ["Reflect.defineProperty", "Reflect.defineProperty"], ["Reflect.setPrototypeOf", "Reflect.setPrototypeOf"]]);
+  /** Default-library values that run code or build objects the scan cannot see: any reference is UNRESOLVED. */
+  const OPAQUE_LIB = new Map([["eval", "eval"], ["FunctionConstructor", "the Function constructor"], ["Reflect.construct", "Reflect.construct"]]);
+  /** The names a reflective writer or an opaque value is reached by; an alias is caught at the reference it copies. */
+  const LIB_NAMES = new Set(["assign", "defineProperty", "defineProperties", "setPrototypeOf", "set", "construct", "eval", "Function", "Proxy", "revocable"]);
+  /** The direct callee (or `new` target) of a call, through parentheses and assertions. */
+  const directCall = (e: ts.Node): ts.CallExpression | ts.NewExpression | undefined => {
+    const o = outerOf(e);
+    const p = o.parent;
+    return p && (ts.isCallExpression(p) || ts.isNewExpression(p)) && p.expression === o ? p : undefined;
+  };
+  const libRefs = new Set<ts.Node>();
+  for (const id of refs) {
+    if (!LIB_NAMES.has(id.text) || inTypePosition(id)) continue;
+    const parent = id.parent;
+    // The member of an access (`Object.assign`, `Reflect.set`) stands for the access; a declaration's own name is no reference.
+    if (ts.isPropertyAccessExpression(parent) && parent.name === id) libRefs.add(parent);
+    else if (!(ts.isPropertyAccessExpression(parent) || ts.isPropertySignature(parent) || ts.isMethodSignature(parent) || ts.isMethodDeclaration(parent)
+      || ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isFunctionDeclaration(parent) || ts.isVariableDeclaration(parent)
+      || ts.isParameter(parent) || ts.isBindingElement(parent) || ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) || (parent as ts.NamedDeclaration).name !== id) libRefs.add(id);
+  }
+  // An element access, a destructured copy and a callee can reach a writer by any name.
+  for (const sf of files) {
+    sf.forEachChild(function visit(n): void {
+      if (testOnlyInits.has(n)) return;
+      if (ts.isElementAccessExpression(n)) libRefs.add(n);
+      if (ts.isBindingElement(n) && !n.dotDotDotToken) libRefs.add(n.name);
+      ts.forEachChild(n, visit);
+    });
+  }
+  for (const c of calls) libRefs.add(c.expression);
+  for (const e of libRefs) {
+    const id = libIdentity(e);
+    if (!id) continue;
+    const fn = REFLECTIVE_WRITERS.get(id);
+    const call = directCall(e);
+    if (fn) {
+      if (call && ts.isCallExpression(call)) {
+        const [receiver, ...rest] = call.arguments;
+        reflectiveWrites.push({ at: call, fn, receiver, sources: fn === "Object.assign" ? rest : fn.endsWith("setPrototypeOf") ? rest.slice(0, 1) : [] });
+      } else errors.push(`UNRESOLVED reflective writer reference ${fn} at ${where(e)}`);
       continue;
     }
-    const d = targetDecl(left);
-    if (d) push(assigned, d, a.right);
+    const opaque = OPAQUE_LIB.get(id);
+    if (opaque) { errors.push(`UNRESOLVED ${opaque} reference at ${where(e)}`); continue; }
+    if (id === "ProxyConstructor" && !(call && ts.isNewExpression(call))) errors.push(`UNRESOLVED Proxy reference at ${where(e)}`);
   }
-  // S2: `for (f of xs)` and `for ({ m: f } of xs)`: the target receives an element of xs, or its members.
-  // `for (k in o)` binds a key string, never a member value.
-  for (const l of pendingLoops) {
-    if (!ts.isForOfStatement(l)) continue;
-    const target = skipOuter(l.initializer as ts.Expression);
-    if (ts.isObjectLiteralExpression(target) || ts.isArrayLiteralExpression(target)) {
-      const t = checker.getTypeAtLocation(l.expression);
-      const anyT = !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown));
-      bindAssignPattern(target, null, anyT ? undefined : checker.getIndexTypeOfType(t, ts.IndexKind.Number));
-      continue;
+  // __defineGetter__ and __defineSetter__ have no library declaration: their name is the only identity.
+  for (const c of calls) {
+    const callee = skipOuter(c.expression);
+    if (ts.isPropertyAccessExpression(callee) && (callee.name.text === "__defineGetter__" || callee.name.text === "__defineSetter__")) {
+      reflectiveWrites.push({ at: c, fn: callee.name.text, receiver: callee.expression, sources: [] });
     }
-    const d = targetDecl(target);
-    if (d) push(assignedIterated, d, l.expression);
+  }
+  // A destructuring assignment that copies a writer out (`({ assign: a } = Object)`) is a reference that is not a call.
+  for (const s of writeSites) {
+    if (s.from.kind !== "member" || !s.from.member) continue;
+    const id = libTypeIdentity(checker.getTypeOfSymbolAtLocation(s.from.member, s.at));
+    const fn = id && REFLECTIVE_WRITERS.get(id);
+    if (fn) errors.push(`UNRESOLVED reflective writer reference ${fn} at ${where(s.at)}`);
+    else if (id && OPAQUE_LIB.has(id)) errors.push(`UNRESOLVED ${OPAQUE_LIB.get(id)} reference at ${where(s.at)}`);
+  }
+  for (const d of decorators) errors.push(`UNRESOLVED decorator at ${where(d)}`);
+  /** Each write site by the node naming its target (the identifier, or the member name of an access), for the escape and release tests. */
+  const writesByName = new Map<ts.Node, WriteSite[]>();
+  for (const s of writeSites) {
+    const t = s.target;
+    push(writesByName, ts.isPropertyAccessExpression(t) ? t.name : t, s);
+  }
+  /** Each value-form write by its value expression, outer syntax skipped (the retention test). */
+  const writeOfValue = new Map<ts.Node, WriteSite>();
+  for (const s of writeSites) if (s.from.kind === "value") writeOfValue.set(skipOuter(s.from.expr), s);
+  const siteDecl = (s: WriteSite): ts.Node | undefined => s.decl ?? targetDecl(s.target);
+
+  /** decl -> every value assigned to it after its declaration (U1b). */
+  const assigned = new Map<ts.Node, ts.Expression[]>();
+  /** decl -> the source members it receives through an assignment pattern (A1). */
+  const assignedMembers = new Map<ts.Node, ts.Node[]>();
+  /** decl -> the expressions whose elements it receives through an array pattern or a for-of target (S2). */
+  const assignedIterated = new Map<ts.Node, ts.Expression[]>();
+  /** Pattern positions whose source member the scan cannot name (a computed key, an unknown type): UNRESOLVED (S2). */
+  const unknownPatternMembers = new Set<ts.Node>();
+  /** decl -> each write whose value is opaque to it (an arithmetic result, a key string, a deletion). */
+  const assignedOpaque = new Map<ts.Node, ts.Node[]>();
+  for (const s of writeSites) {
+    const d = siteDecl(s);
+    if (!d) continue;
+    if (s.from.kind === "value") push(assigned, d, s.from.expr);
+    else if (s.from.kind === "iterated") push(assignedIterated, d, s.from.expr);
+    else if (s.from.kind === "opaque") push(assignedOpaque, d, s.at);
+    else {
+      const md = s.from.member ? declOf(s.from.member) : undefined;
+      if (md) push(assignedMembers, d, md);
+      else { push(assignedMembers, d, s.at); unknownPatternMembers.add(s.at); }
+    }
   }
 
   // A test-only export is referenced by tests alone: any src reference other
@@ -716,7 +858,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     }
     exprs.push(...(assigned.get(d) ?? []));
     iterated.push(...(assignedIterated.get(d) ?? []));
-    return { exprs, members: assignedMembers.get(d) ?? [], iterated };
+    // An opaque write (an arithmetic result, a key string, a deletion) is a source the scan cannot follow (R3-2).
+    return { exprs, members: [...(assignedMembers.get(d) ?? []), ...(assignedOpaque.get(d) ?? [])], iterated };
   }
 
   /** A declaration that stands for a writer: in the set, an interface member named in N, or a registered slot. */
@@ -1200,14 +1343,17 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         if (!inside(c, fin) || containingFunction(c) !== decl || !ts.isIdentifier(c.expression)) continue;
         const d = declOf(checker.getSymbolAtLocation(c.expression));
         if (!d || !ts.isVariableDeclaration(d) || !ts.isIdentifier(d.name) || containingFunction(d) !== decl) continue;
-        const sources = [...(d.initializer ? [d.initializer] : []), ...(assigned.get(d) ?? [])];
+        // Every write to the release counts (R3-2): a loop, pattern or opaque write is never the acquisition.
+        const writes = writeSites.filter((s) => siteDecl(s) === d);
+        const sources = [...(d.initializer ? [d.initializer] : []), ...writes.map((s) => s.from.kind === "value" ? s.from.expr : s.at as ts.Expression)];
         if (sources.length === 0 || !sources.every(isAcquisition)) continue;
         const sym = checker.getSymbolAtLocation(d.name);
         const misuse = refs.find((r) => {
           if (r === d.name || checker.getSymbolAtLocation(r) !== sym) return false;
+          const w = writesByName.get(r);
+          if (w) return !w.every((s) => s.form === "=" && s.from.kind === "value" && isAcquisition(s.from.expr));
           const o = outerOf(r);
           const parent = o.parent;
-          if (ts.isBinaryExpression(parent) && parent.left === o && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken) return !isAcquisition(parent.right);
           if (!inside(r, fin)) return true;
           if (ts.isCallExpression(parent) && parent.expression === o) return containingFunction(parent) !== decl;
           return !(ts.isIfStatement(parent) && parent.expression === o);
@@ -1223,131 +1369,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (ts.getCombinedModifierFlags(cl) & ts.ModifierFlags.Async || cl.asteriskToken) return true;
     const sig = checker.getSignatureFromDeclaration(cl);
     return !sig || !nonThenable(checker.getReturnTypeOfSignature(sig));
-  };
-  /**
-   * S5: a pinned method is credited by provenance, not by name: every
-   * declaration of the called member is the default library's Array or
-   * ReadonlyArray. A custom or unresolved implementation gets no credit.
-   */
-  /** T3: a value that may be an array, so a write to it may replace an array method. */
-  function mayBeArray(t: ts.Type): boolean {
-    if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive | ts.TypeFlags.TypeParameter)) return true;
-    if (t.isUnion() || t.isIntersection()) return t.types.some(mayBeArray);
-    if (checker.isArrayLikeType(t)) return true;
-    if (!(t.flags & ts.TypeFlags.Object) || t.getCallSignatures().length > 0) return false;
-    // A string index signature accepts an array without a cast only when its value type is any.
-    const index = checker.getIndexTypeOfType(t, ts.IndexKind.String);
-    if (index) return !!(index.flags & ts.TypeFlags.Any);
-    return t.getProperties().length === 0;
-  }
-  /**
-   * T3: e's value may be an array: its own type may be, or an assertion may
-   * have carried one in, on the way here or upstream (a local's or field's
-   * sources, a parameter's arguments, a callee's returned values). A cycle
-   * contributes nothing new.
-   */
-  function mayHoldArray(e: ts.Expression, seen = new Set<ts.Node>()): boolean {
-    let x: ts.Expression = e;
-    for (;;) {
-      // A fresh object literal is no array, whatever its (often empty) type; a cast around it is walked.
-      if (ts.isObjectLiteralExpression(skipParens(x))) return false;
-      if (mayBeArray(checker.getTypeAtLocation(x))) return true;
-      const inner = skipParens(x);
-      if (ts.isAsExpression(inner) || ts.isTypeAssertionExpression(inner) || ts.isNonNullExpression(inner) || ts.isSatisfiesExpression(inner)) x = inner.expression;
-      else break;
-    }
-    const ops = operandsOf(x);
-    if (ops.length > 1 || ops[0] !== skipOuter(x)) return ops.some((o) => mayHoldArray(o, seen));
-    x = skipParens(x);
-    if (ts.isBinaryExpression(x) && (x.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || x.operatorToken.kind === ts.SyntaxKind.CommaToken)) {
-      return mayHoldArray(x.right, seen);
-    }
-    if (ts.isIdentifier(x) || ts.isPropertyAccessExpression(x)) {
-      const d = declOf(checker.getSymbolAtLocation(ts.isPropertyAccessExpression(x) ? x.name : x));
-      if (!d || seen.has(d)) return false;
-      seen.add(d);
-      if (ts.isParameter(d)) {
-        const fn = d.parent;
-        const i = fn.parameters.indexOf(d);
-        return calls.some((c) => calleeDecl(c) === fn && (d.dotDotDotToken ? c.arguments.slice(i) : c.arguments[i] ? [c.arguments[i]!] : [])
-          .some((a) => mayHoldArray(a, seen)));
-      }
-      const { exprs } = sourcesOf(d);
-      return exprs.some((src) => mayHoldArray(src, seen));
-    }
-    if (ts.isCallExpression(x)) {
-      const d = calleeDecl(x);
-      if (!d || seen.has(d) || !ts.isFunctionLike(d) || !(d as Fn).body) return false;
-      seen.add(d);
-      const body = (d as Fn).body!;
-      if (!ts.isBlock(body)) return mayHoldArray(body, seen);
-      const rets: ts.Expression[] = [];
-      const v = (n: ts.Node): void => {
-        if (ts.isFunctionLike(n)) return;
-        if (ts.isReturnStatement(n) && n.expression) rets.push(n.expression);
-        ts.forEachChild(n, v);
-      };
-      ts.forEachChild(body, v);
-      return rets.some((r) => mayHoldArray(r, seen));
-    }
-    return false;
-  }
-  const REFLECTIVE_WRITES = new Set(["Object.assign", "Object.defineProperty", "Object.defineProperties", "Object.setPrototypeOf",
-    "Reflect.set", "Reflect.defineProperty", "Reflect.setPrototypeOf"]);
-  /**
-   * T3: the pinned method names src may replace on a value that may be an
-   * array: a write to the member by name or by constant key, in an assignment
-   * or a destructuring-assignment target. A write by a key the checker cannot
-   * reduce, or a reflective write to a value that may be an array, may replace
-   * any of them (all).
-   */
-  let replacedSync: { names: Set<string>; all: boolean } | undefined;
-  /** Why credit was withheld, by site (reported in the result). */
-  const syncWithheld: string[] = [];
-  function replacedSyncMethods(): { names: Set<string>; all: boolean } {
-    if (replacedSync) return replacedSync;
-    const r = { names: new Set<string>(), all: false };
-    const note = (what: string, at: ts.Node): void => { syncWithheld.push(`${what} at ${where(at)}`); };
-    const pinned = SYNC_CALLBACK_METHODS as readonly string[];
-    const target = (e: ts.Expression): void => {
-      e = skipOuter(e);
-      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) { target(e.left); return; }
-      if (ts.isPropertyAccessExpression(e)) {
-        if (pinned.includes(e.name.text) && mayHoldArray(e.expression)) { r.names.add(e.name.text); note(e.name.text, e); }
-      } else if (ts.isElementAccessExpression(e)) {
-        if (!mayHoldArray(e.expression)) return;
-        const k = checker.getTypeAtLocation(e.argumentExpression);
-        if (k.isStringLiteral()) { if (pinned.includes(k.value)) { r.names.add(k.value); note(k.value, e); } }
-        else if (!(k.flags & ts.TypeFlags.NumberLike)) { r.all = true; note("all (element key)", e); }
-      } else if (ts.isObjectLiteralExpression(e)) {
-        for (const p of e.properties) {
-          if (ts.isPropertyAssignment(p)) target(p.initializer);
-          else if (ts.isSpreadAssignment(p)) target(p.expression);
-        }
-      } else if (ts.isArrayLiteralExpression(e)) {
-        for (const x of e.elements) if (!ts.isOmittedExpression(x)) target(ts.isSpreadElement(x) ? x.expression : x);
-      }
-    };
-    for (const a of pendingAssigns) target(a.left);
-    for (const c of calls) {
-      const callee = skipOuter(c.expression);
-      if (!ts.isPropertyAccessExpression(callee) || !REFLECTIVE_WRITES.has(callee.getText().replace(/\s+/g, ""))) continue;
-      const t0 = c.arguments[0];
-      // A fresh object literal is no array a callback runs on.
-      if (t0 && !ts.isObjectLiteralExpression(skipOuter(t0)) && mayHoldArray(t0)) { r.all = true; note(`all (${callee.getText()})`, c); }
-    }
-    return (replacedSync = r);
-  }
-  const isPinnedSyncCallback = (cl: ts.Node): boolean => {
-    const o = outerOf(cl);
-    const call = o.parent;
-    if (!call || !ts.isCallExpression(call) || call.arguments[0] !== o || !ts.isPropertyAccessExpression(call.expression)) return false;
-    if (!(SYNC_CALLBACK_METHODS as readonly string[]).includes(call.expression.name.text)) return false;
-    const replaced = replacedSyncMethods();
-    if (replaced.all || replaced.names.has(call.expression.name.text)) return false;
-    const decls = checker.getSymbolAtLocation(call.expression.name)?.declarations ?? [];
-    return decls.length > 0 && decls.every((d) => program.isSourceFileDefaultLibrary(d.getSourceFile())
-      && ts.isInterfaceDeclaration(d.parent) && (d.parent.name.text === "Array" || d.parent.name.text === "ReadonlyArray"));
   };
   /** A call whose callee is the closure itself, or a parenthesised `??`, `||` or conditional with the closure as an operand (R-d). */
   function inPlaceCall(cl: ts.Node): ts.CallExpression | undefined {
@@ -1624,7 +1645,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         if (testOnlyInits.has(n)) return;
         if ((ts.isCallExpression(n) || ts.isNewExpression(n)) && n.arguments) flows.push(...n.arguments);
         else if (ts.isVariableDeclaration(n) && n.initializer) flows.push(n.initializer);
-        else if (ts.isBinaryExpression(n) && assignOps.has(n.operatorToken.kind)) flows.push(n.right);
         else if (ts.isReturnStatement(n) && n.expression) flows.push(n.expression);
         else if (isClosure(n) && !ts.isBlock(n.body)) flows.push(n.body);
         else if (ts.isPropertyAssignment(n)) flows.push(n.initializer);
@@ -1633,6 +1653,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       };
       v(sf);
     }
+    flows.push(...assignedValues);
     return (flowsMemo = flows);
   }
   const typeHolds = (t: ts.Type | undefined, owner: ts.Node): boolean =>
@@ -1676,35 +1697,26 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         else if (k === "*") once(`${g.label} ${g.key} may be supplied in src at ${where(p)} (computed key)`);
       }
     };
-    /** T5: a write to the slot through an element access, a destructuring target or a reflective write. */
+    /** T5: a write to the slot through an element access or a reflective write needs a receiver of the owner type. */
     const holdsOwner = (e: ts.Expression, g: (typeof guarded)[number]): boolean => {
       const t = checker.getTypeAtLocation(e);
       return !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ? false : typeHolds(t, g.md.parent);
     };
-    const writeTarget = (e: ts.Expression, g: (typeof guarded)[number], at: ts.Node): void => {
-      e = skipOuter(e);
-      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) { writeTarget(e.left, g, at); return; }
-      if (ts.isPropertyAccessExpression(e)) {
-        if ((checker.getSymbolAtLocation(e.name)?.declarations ?? []).includes(g.md as ts.Declaration)) once(`${g.label} ${g.key} is supplied in src at ${where(at)}`);
-      } else if (ts.isElementAccessExpression(e)) {
-        if (!holdsOwner(e.expression, g)) return;
-        const k = computedKey(e.argumentExpression);
-        if (k === g.member) once(`${g.label} ${g.key} is supplied in src at ${where(at)}`);
-        else if (k === "*") once(`${g.label} ${g.key} may be supplied in src at ${where(at)} (computed key)`);
-      } else if (ts.isObjectLiteralExpression(e)) {
-        for (const p of e.properties) {
-          if (ts.isPropertyAssignment(p)) writeTarget(p.initializer, g, at);
-          else if (ts.isSpreadAssignment(p)) writeTarget(p.expression, g, at);
-        }
-      } else if (ts.isArrayLiteralExpression(e)) {
-        for (const x of e.elements) if (!ts.isOmittedExpression(x)) writeTarget(ts.isSpreadElement(x) ? x.expression : x, g, at);
-      }
-    };
     for (const g of guarded) {
-      for (const c of calls) {
-        const callee = skipOuter(c.expression);
-        if (!ts.isPropertyAccessExpression(callee) || !REFLECTIVE_WRITES.has(callee.getText().replace(/\s+/g, ""))) continue;
-        if (c.arguments[0] && holdsOwner(c.arguments[0], g)) once(`${g.label} ${g.key} may be supplied in src at ${where(c)} (reflective write)`);
+      // R3-2: every enumerated write (any operator, a pattern, a loop, `++`, `--`, `delete`) to the member is a supply.
+      for (const w of writeSites) {
+        const e = w.target;
+        if (ts.isPropertyAccessExpression(e)) {
+          if ((checker.getSymbolAtLocation(e.name)?.declarations ?? []).includes(g.md as ts.Declaration)) once(`${g.label} ${g.key} is supplied in src at ${where(w.at)}`);
+        } else if (ts.isElementAccessExpression(e)) {
+          if (!holdsOwner(e.expression, g)) continue;
+          const k = computedKey(e.argumentExpression);
+          if (k === g.member) once(`${g.label} ${g.key} is supplied in src at ${where(w.at)}`);
+          else if (k === "*") once(`${g.label} ${g.key} may be supplied in src at ${where(w.at)} (computed key)`);
+        }
+      }
+      for (const w of reflectiveWrites) {
+        if (w.receiver && holdsOwner(w.receiver, g)) once(`${g.label} ${g.key} may be supplied in src at ${where(w.at)} (reflective write)`);
       }
       for (const e0 of flows) {
         const e = skipOuter(e0);
@@ -1717,13 +1729,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         const prop = t.getProperty(g.member);
         if (prop && !(prop.declarations ?? []).every((x) => x === g.md)) errors.push(`${g.label} ${g.key} is supplied in src at ${where(e)}`);
       }
-      for (const a of pendingAssigns) writeTarget(a.left, g, a);
     }
   }
 
   const isIIFE = (cl: ts.Node): boolean => inPlaceCall(cl) !== undefined;
-  /** A5/A6: a synchronous closure invoked in place runs in its enclosing region. */
-  const inheritsInPlace = (cl: Closure): boolean => !isAsyncLike(cl) && (isIIFE(cl) || isPinnedSyncCallback(cl));
+  /** A5/A6: a synchronous closure invoked in place runs in its enclosing region. No callee is credited with invoking one (R3-1). */
+  const inheritsInPlace = (cl: Closure): boolean => !isAsyncLike(cl) && isIIFE(cl);
 
   // ---- value escapes (rule 3) ---------------------------------------------------
 
@@ -1750,16 +1761,15 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (ts.isPropertyAccessExpression(parent) && parent.name === id) {
       const c = consumerOf(parent);
       if (ts.isCallExpression(c) && outerOf(parent) === c.expression) continue;
-      // The left of an assignment is a write to the member, not a read of it.
-      if (ts.isBinaryExpression(c) && c.left === outerOf(parent) && assignOps.has(c.operatorToken.kind)) continue;
+      // An enumerated write target is a write to the member, not a read of it (R3-2).
+      if (writesByName.has(id)) continue;
     }
     // Declarations and module plumbing are not values flowing anywhere.
     if ((ts.isFunctionDeclaration(parent) || ts.isMethodDeclaration(parent) || ts.isVariableDeclaration(parent)
       || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent) || ts.isPropertySignature(parent)
       || ts.isMethodSignature(parent) || ts.isGetAccessor(parent) || ts.isSetAccessor(parent)
       || ts.isParameter(parent)) && (parent as ts.NamedDeclaration).name === id) continue;
-    if (ts.isBinaryExpression(consumerOf(id)) && (consumerOf(id) as ts.BinaryExpression).left === outerOf(id)
-      && assignOps.has((consumerOf(id) as ts.BinaryExpression).operatorToken.kind)) continue;
+    if (writesByName.has(id)) continue;
     // A returned writer promise makes its function a writer (fixed point), not an escape.
     if (returnsValue(id) && holdsPromise(checker.getTypeAtLocation(id))) continue;
     if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent)) continue;
@@ -1845,6 +1855,44 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
   const implementsStage = (cls: ts.Node): boolean =>
     !!stageIface && ts.isClassLike(cls) && (cls.heritageClauses ?? []).some((h) => h.token === ts.SyntaxKind.ImplementsKeyword
       && h.types.some((t) => (resolve(checker.getSymbolAtLocation(t.expression))?.declarations ?? []).includes(stageIface!)));
+  /**
+   * Pen ruling on Proxy: a trap can supply a member by another route (a get
+   * trap returning a different function is a provider). A `new Proxy` is
+   * UNRESOLVED when its handler is no object literal, when the literal has a
+   * write trap, a computed or spread member, or when its target type or the
+   * type it flows into owns a guarded slot, a src interface member a call can
+   * go through, a lock entry or contract function, the context or a stage, or
+   * is untyped. Any other reference to Proxy was refused with the library refs.
+   */
+  const WRITE_TRAPS = new Set(["set", "defineProperty", "deleteProperty", "setPrototypeOf"]);
+  const proxySensitive = (t: ts.Type | undefined): boolean => {
+    if (!t) return false;
+    if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return true;
+    if (isCtxType(t)) return true;
+    return (t.isUnion() || t.isIntersection() ? t.types : [t]).some((x) =>
+      (x.getSymbol()?.declarations ?? []).some((d) => implementsStage(d))
+      || checker.getPropertiesOfType(x).some((m) => (m.declarations ?? []).some((d) => {
+        if (guardedMds.has(d)) return true;
+        if (typeOnlyMember(d) && mayBeCallable(checker.getTypeOfSymbolAtLocation(m, d))) return true;
+        const k = ts.isFunctionLike(d) ? fnKey(d) : null;
+        return !!k && (contract.has(k) || lockEntries.has(k));
+      })));
+  };
+  for (const nx of news) {
+    if (libIdentity(nx.expression) !== "ProxyConstructor") continue;
+    const [target, handler] = nx.arguments ?? [];
+    const h = handler && skipOuter(handler);
+    let why: string | null = null;
+    if (!h || !ts.isObjectLiteralExpression(h)) why = "handler is not an object literal";
+    else {
+      const bad = h.properties.find((p) => !p.name || ts.isComputedPropertyName(p.name) || WRITE_TRAPS.has(p.name.getText().replace(/^["']|["']$/g, "")));
+      if (bad) why = `handler member ${bad.name ? bad.name.getText() : "spread"} may write`;
+      else if (!target || proxySensitive(checker.getTypeAtLocation(target)) || proxySensitive(checker.getContextualType(nx))) {
+        why = "target or flow type owns a guarded, provider, contract or lock member, or is untyped";
+      }
+    }
+    if (why) errors.push(`UNRESOLVED Proxy at ${where(nx)} (${why})`);
+  }
   const contextParams = new Set(opts.registry.contextParams ?? []);
   const seenContextParams = new Set<string>();
   /** R-e: a pinned context-carrying parameter. */
@@ -2244,10 +2292,35 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       if (ts.isObjectLiteralExpression(e)) fromLiteral(e);
       else fromType(checker.getTypeAtLocation(e), e);
     }
-    for (const a of pendingAssigns) {
-      const left = skipOuter(a.left);
-      if (ts.isPropertyAccessExpression(left) && (checker.getSymbolAtLocation(left.name)?.declarations ?? []).includes(md as ts.Declaration)) fromValue(a.right, a);
-      else if (ts.isElementAccessExpression(left) && typeHolds(checker.getTypeAtLocation(left.expression), owner)) unresolvedAt(a, "element-access write");
+    // R3-2: every enumerated write to the member supplies a provider.
+    for (const w of writeSites) {
+      const left = w.target;
+      if (ts.isElementAccessExpression(left) && typeHolds(checker.getTypeAtLocation(left.expression), owner)) { unresolvedAt(w.at, "element-access write"); continue; }
+      if (!ts.isPropertyAccessExpression(left) || !(checker.getSymbolAtLocation(left.name)?.declarations ?? []).includes(md as ts.Declaration)) continue;
+      const from = w.from;
+      if (from.kind === "value") fromValue(from.expr, w.at);
+      else if (from.kind === "member") {
+        if (!from.member) unresolvedAt(w.at, "destructured member");
+        else for (const d of from.member.declarations ?? []) fromDecl(d, w.at);
+      } else if (from.kind === "iterated") {
+        // `for (s.m of [a, b])`: each element of a literal array; any other iterable fails closed.
+        const it = skipOuter(from.expr);
+        if (!ts.isArrayLiteralExpression(it)) { unresolvedAt(w.at, "loop-assigned member"); continue; }
+        for (const x of it.elements) {
+          if (ts.isSpreadElement(x) || ts.isOmittedExpression(x)) unresolvedAt(w.at, "loop-assigned member");
+          else fromValue(x, w.at);
+        }
+      } else unresolvedAt(w.at, `${w.form} write`);
+    }
+    for (const w of reflectiveWrites) {
+      if (!w.receiver || !typeHolds(checker.getTypeAtLocation(w.receiver), owner)) continue;
+      // Object.assign and the prototype setters copy in their sources' members; any other reflective write fails closed.
+      if (w.sources.length === 0) { unresolvedAt(w.at, "reflective write"); continue; }
+      for (const src of w.sources) {
+        const x = skipOuter(src);
+        if (ts.isObjectLiteralExpression(x)) fromLiteral(x);
+        else fromType(checker.getTypeAtLocation(x), w.at);
+      }
     }
     sitesOf.sort();
     return r;
@@ -2372,10 +2445,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       const top = parent.parent.parent;
       return ts.isVariableStatement(top) && ts.isSourceFile(top.parent) ? "stored to a module-level binding" : null;
     }
-    if (ts.isBinaryExpression(parent) && parent.right === o && assignOps.has(parent.operatorToken.kind)) {
-      const left = skipOuter(parent.left);
+    const stored = ts.isExpression(o) ? writeOfValue.get(skipOuter(o)) : undefined;
+    if (ts.isExpression(o) && patternSources.has(skipOuter(o))) return "stored to a field or a container";
+    if (stored) {
+      const left = stored.target;
       if (ts.isIdentifier(left)) {
-        const d = declOf(checker.getSymbolAtLocation(left));
+        const d = siteDecl(stored);
         if (d && ts.isVariableDeclaration(d) && ts.isVariableStatement(d.parent.parent) && ts.isSourceFile(d.parent.parent.parent)) {
           return "stored to a module-level binding";
         }
@@ -2510,8 +2585,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (!unresolved.has(key)) errors.push(`stale UNRESOLVED key ${key}`);
   }
 
-  // The report aid lists every withholding write, whether or not a pinned callback asked for the credit.
-  replacedSyncMethods();
   const writerNames = [...writers].map((d) => {
     const name = fnName(d) ?? (ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) ? d.name.text : memberName(d) ?? "<anon>");
     return `${rel(d.getSourceFile())}#${name}`;
@@ -2522,7 +2595,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     constructions,
     chainMembers: [...chainMembers].sort(),
     holderHints: [...new Set(holderHints)].sort(),
-    syncWithheld: [...new Set(syncWithheld)].sort(),
     memberProviders,
   };
 }

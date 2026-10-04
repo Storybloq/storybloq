@@ -436,6 +436,19 @@ export function a(d: string) {
     expect(r.errors).toContain("UNRESOLVED user.ts#a#f#1 (call-result)");
   });
 
+  it.each([
+    ["for-in", "for (f in { k: 1 }) {}", "ForInStatement"],
+    ["++", "f++;", "PostfixUnaryExpression"],
+  ])("U1b (R3-2): a %s write makes the use UNRESOLVED", (_n, write, kind) => {
+    const r = scan(IMPORTS + `
+export function a(d: string) {
+  let f: (d: string) => void = () => {};
+  ${write}
+  try { f(d); } catch (e) { throw e; }
+}`);
+    expect(r.errors).toContain(`UNRESOLVED user.ts#a#f#1 (decl:${kind})`);
+  });
+
   it("U1c: a call result and an element access stay UNRESOLVED", () => {
     const r = scan(IMPORTS + `
 declare function getFn(): (d: string) => void;
@@ -531,6 +544,10 @@ export function go() { run(new W()); }`);
     ["a nested assignment pattern", "export async function run(x: { inner: I }) { let f = async () => {}; ({ inner: { m: f } } = x); try { await f(); } catch (e) { throw e; } }"],
     ["a for-of identifier target", `export async function run() { let f: (d: string) => Promise<void> = async () => {}; for (f of [w]) { try { await f("d"); } catch (e) { throw e; } } }`],
     ["an array assignment pattern", `export async function run() { let f: (d: string) => Promise<void> = async () => {}; [f] = [w]; try { await f("d"); } catch (e) { throw e; } }`],
+    ["a ??= write (R3-2)", `export async function run() { let f: ((d: string) => Promise<void>) | undefined; f ??= w; try { await f("d"); } catch (e) { throw e; } }`],
+    ["a ||= write (R3-2)", `export async function run(g: ((d: string) => Promise<void>) | null) { let f = g; f ||= w; try { await f("d"); } catch (e) { throw e; } }`],
+    ["a shorthand default in a pattern (R3-2)", `export async function run(o: { f?: (d: string) => Promise<void> }) { let f: ((d: string) => Promise<void>) | undefined; ({ f = w } = o); try { await f("d"); } catch (e) { throw e; } }`],
+    ["a named default in a pattern (R3-2)", `export async function run(o: { g?: (d: string) => Promise<void> }) { let f: ((d: string) => Promise<void>) | undefined; ({ g: f = w } = o); try { await f("d"); } catch (e) { throw e; } }`],
   ])("S2: %s reaches the catch", (_n, code) => {
     expect(scan(W + code).errors).toContain("unregistered propagating user.ts#run#catch#1");
   });
@@ -668,10 +685,10 @@ export function put(b: B) { b.s = 1; }`);
 });
 
 describe("ISS-958 S6 addendum: the lock contract (L1, A3, A5 to A7)", () => {
-  it("a clean lock program passes: awaited, returned, for-of awaited, sync forEach, awaited IIFE, stage dispatch", () => {
+  it("a clean lock program passes: awaited, returned, for-of awaited, a plain for-of write, awaited IIFE, stage dispatch", () => {
     const r = inLock(`await ctx.drainDeferrals();
     for (const i of items) { await ctx.step(i); }
-    items.forEach((i) => ctx.writeState({ revision: i }));
+    for (const i of items) { ctx.writeState({ revision: i }); }
     await (async () => { await pause(); ctx.writeState({ revision: 1 }); })();
     await stage.enter(ctx);`, `
 export class S implements WorkflowStage { async enter(ctx: StageContext) { return ctx.drainDeferrals(); } }
@@ -709,15 +726,6 @@ export function guide(d: string) {
     expect(lifetime(inLock(body).errors).length).toBeGreaterThan(0);
   });
 
-  it("S5: a custom forEach is not credited as the synchronous array method", () => {
-    const FAKE = "const fake = { forEach(cb: () => void) { setTimeout(cb, 0); } };\n";
-    const viaCtx = inLock("fake.forEach(() => ctx.writeState({ revision: 1 }));", FAKE);
-    expect(lifetime(viaCtx.errors).some((e) => e.startsWith("lock-lifetime: context captured by a function that may run outside the lock"))).toBe(true);
-    const direct = inLock("fake.forEach(() => writeSessionSync(d, { revision: 1 }));", FAKE);
-    expect(direct.errors.some((e) => e.startsWith("lock: writeSessionSync at user.ts:"))).toBe(true);
-    expect(inLock("items.forEach(() => writeSessionSync(d, { revision: 1 }));").errors).toEqual([]);
-  });
-
   it("S3: an async closure behind a () => void local must still complete", () => {
     const body = (call: string) => `const f: () => void = async () => { await pause(); writeSessionSync(d, { revision: 1 }); };\n    ${call}`;
     const bare = lifetime(inLock(body("f();")).errors);
@@ -726,65 +734,47 @@ export function guide(d: string) {
     expect(inLock(body("await f();")).errors).toEqual([]);
   });
 
-  // T3: synchronous credit is withheld when src may replace the array method.
+  // R3-1: no callee is credited with invoking a closure synchronously, the array methods included.
   const SYNC_WRITE = "items.forEach(() => writeSessionSync(d, { revision: 1 }));";
   const lockedDirect = (r: { errors: string[] }) => r.errors.some((e) => e.startsWith("lock: writeSessionSync at user.ts:"));
   it.each([
-    ["an override with deferred invocation", "const arr: number[] = [];\narr.forEach = (cb) => { setTimeout(() => cb(1, 0, arr), 0); };\n"],
-    ["a receiver alias", "export function patch(items: number[]) { const a = items; a.forEach = () => {}; }\n"],
-    ["Array.prototype", "Array.prototype.forEach = function () {};\n"],
-    ["a constant element key", "export function patch(items: number[]) { items[\"forEach\"] = () => {}; }\n"],
-    ["an element key the checker cannot reduce", "export function patch(items: number[], k: string) { (items as any)[k] = 1; }\n"],
-    ["a destructuring-assignment target", "export function patch(items: number[], src: { f: number[][\"forEach\"] }) { ({ f: items.forEach } = src); }\n"],
-    ["Object.defineProperty", "export function patch(items: number[]) { Object.defineProperty(items, \"forEach\", { value: () => {} }); }\n"],
-    ["Object.assign", "export function patch(items: number[]) { Object.assign(items, { forEach: () => {} }); }\n"],
-  ])("T3: a forEach src may replace through %s gets no synchronous credit", (_n, top) => {
-    expect(lockedDirect(inLock(SYNC_WRITE, top))).toBe(true);
+    ["a custom forEach", "fake.forEach"],
+    ["the array forEach", "items.forEach"],
+  ])("R3-1: a closure passed to %s is a closure passed to a callee", (_n, callee) => {
+    const FAKE = "const fake = { forEach(cb: () => void) { setTimeout(cb, 0); } };\n";
+    const viaCtx = inLock(`${callee}(() => ctx.writeState({ revision: 1 }));`, FAKE);
+    expect(lifetime(viaCtx.errors).some((e) => e.startsWith("lock-lifetime: context captured by a function that may run outside the lock"))).toBe(true);
+    expect(lockedDirect(inLock(`${callee}(() => writeSessionSync(d, { revision: 1 }));`, FAKE))).toBe(true);
   });
 
-  it("T3: a member of that name on a value that is no array keeps the credit", () => {
-    expect(inLock(SYNC_WRITE, "const o = { forEach: 1 };\nexport function patch() { o.forEach = 2; }\n").errors).toEqual([]);
+  it.each([
+    ["map", "const out = items.map(() => writeSessionSync(d, { revision: 1 }));"],
+    ["filter", "const out = items.filter(() => writeSessionSync(d, { revision: 1 }).revision > 0);"],
+    ["some", "const out = items.some(() => writeSessionSync(d, { revision: 1 }).revision > 0);"],
+    ["reduce", "const out = items.reduce((a) => a + writeSessionSync(d, { revision: 1 }).revision, 0);"],
+    ["sort", "items.sort(() => writeSessionSync(d, { revision: 1 }).revision);"],
+  ])("R3-1: a writer closure passed to the array method %s with no src patch anywhere is refused", (_n, body) => {
+    expect(lockedDirect(inLock(body))).toBe(true);
   });
 
-  // B: a string index signature takes an array without a cast only when its value type is any.
-  const SYNC_MAP = "const out = items.map(() => writeSessionSync(d, { revision: 1 }));";
-  it("B: a reflective write to a Record<string, unknown> or a constant-key write on one keeps the credit", () => {
-    expect(inLock(SYNC_WRITE, "export function merge(r: Record<string, unknown>, ours: object) { Object.assign(r, ours); }\n").errors).toEqual([]);
-    expect(inLock(SYNC_MAP, "export function patch(rec: Record<string, unknown>, f: unknown) { rec[\"map\"] = f; }\n").errors).toEqual([]);
-    expect(inLock(SYNC_MAP).errors).toEqual([]);
-  });
-
-  it("a context read hoisted out of a pinned callback passes with the credit withheld; unhoisted it errors and names the remedy", () => {
-    const PATCH = "export function patch(r: unknown) { Object.assign(r as object, { map: 1 }); }\n";
-    const hoisted = inLock("const names = ctx.dir;\n    const out = items.map((i) => `${names}${i}`).join(\",\");", PATCH);
-    expect(hoisted.syncWithheld.some((w) => w.startsWith("all (Object.assign) at user.ts:"))).toBe(true);
-    expect(hoisted.errors).toEqual([]);
-    const unhoisted = lifetime(inLock("const out = items.map((i) => `${ctx.dir}${i}`).join(\",\");", PATCH).errors);
+  it("R3-1: a context read hoisted out of the callback passes; unhoisted it errors and names the remedy", () => {
+    expect(inLock("const names = ctx.dir;\n    const out = items.map((i) => `${names}${i}`).join(\",\");").errors).toEqual([]);
+    const unhoisted = lifetime(inLock("const out = items.map((i) => `${ctx.dir}${i}`).join(\",\");").errors);
     expect(unhoisted).toContainEqual(expect.stringMatching(
       /^lock-lifetime: context captured by a function that may run outside the lock at user\.ts:\d+; hoist the read out of the callback, or await the work under the lock$/));
     expect(unhoisted).toContainEqual(expect.stringMatching(
       /^lock-lifetime: contract closure at user\.ts:\d+ is passed or stored, not invoked in place; hoist the context reads out of the callback, or await the work under the lock$/));
   });
 
-  it("B: a Record local initialised with a fresh literal keeps the credit; one assigned an array through a cast withholds it", () => {
-    expect(inLock(SYNC_WRITE, "export function merge(ours: object) { const m: Record<string, unknown> = {}; Object.assign(m, ours); }\n").errors).toEqual([]);
-    expect(inLock(SYNC_MAP, "export function put(k: string, v: unknown) { const m: Record<string, unknown> = {}; m[k] = v; }\n").errors).toEqual([]);
-    const cast = inLock(SYNC_WRITE, "export function merge(arr: number[]) { let m: Record<string, unknown> = {}; m = arr as unknown as Record<string, unknown>; Object.assign(m, { forEach: () => {} }); }\n");
-    expect(lockedDirect(cast)).toBe(true);
-  });
-
+  // Codex round 3, V1 to V3 verbatim: each defeated the withdrawn credit's guard; with no credit the write is refused anyway.
+  const LATER = "type Disguised = { forEach: (cb: () => void) => void };\nconst later = (cb: () => void) => { setTimeout(cb, 0); };\n";
   it.each([
-    ["a Record<string, any> holding an array", "const arrs: number[] = [];\nexport function merge(r: Record<string, any>) { Object.assign(r, { forEach: () => {} }); }\nmerge(arrs);\n", "all (Object.assign)"],
-    ["an index signature of any", "export function merge(r: { [k: string]: any }) { Object.assign(r, { forEach: () => {} }); }\n", "all (Object.assign)"],
-    ["an array cast to a Record at the write", "export function patch(arr: number[]) { Object.assign(arr as unknown as Record<string, unknown>, { forEach: () => {} }); }\n", "all (Object.assign)"],
-    ["an array cast to a Record through a local", "export function patch(arr: number[]) { const r = arr as unknown as Record<string, unknown>; Object.assign(r, { forEach: () => {} }); }\n", "all (Object.assign)"],
-    ["an array cast to a Record into a parameter", "function put(r: Record<string, unknown>) { Object.assign(r, { forEach: () => {} }); }\nexport function patch(arr: number[]) { put(arr as unknown as Record<string, unknown>); }\n", "all (Object.assign)"],
-    ["an array cast to a Record by a returning callee", "function asRec(arr: number[]) { return arr as unknown as Record<string, unknown>; }\nexport function patch(arr: number[]) { Object.assign(asRec(arr), { forEach: () => {} }); }\n", "all (Object.assign)"],
-    ["an array cast to a Record and written by key", "export function patch(arr: number[], f: unknown) { (arr as unknown as Record<string, unknown>)[\"forEach\"] = f; }\n", "forEach"],
-  ])("B: %s withholds the credit", (_n, top, why) => {
-    const r = inLock(SYNC_WRITE, top);
-    expect(lockedDirect(r)).toBe(true);
-    expect(r.syncWithheld.some((w) => w.startsWith(`${why} at user.ts:`))).toBe(true);
+    ["V1 a property holding the array", "export function patch(items: number[]) { const box = { value: items as unknown as Disguised }; box.value.forEach = later; }\n"],
+    ["V1 an arrow returning the array", "export function patch(items: number[]) { const get = () => items as unknown as Disguised; get().forEach = later; }\n"],
+    ["V2 an assignment-form loop", "export function patch(items: number[]) { const delayed: number[][\"forEach\"] = (cb) => { setTimeout(() => cb(1, 0, items), 0); }; for (items.forEach of [delayed]) {} }\n"],
+    ["V3 an aliased Object.assign", "export function patch(items: number[]) { const assign = Object.assign; assign(items, { forEach: later }); }\n"],
+  ])("R3-1: %s that replaces forEach: the forEach write is refused", (_n, top) => {
+    expect(lockedDirect(inLock(SYNC_WRITE, LATER + top))).toBe(true);
   });
 
   // T4: suspension is not read from an erased signature.
@@ -845,6 +835,41 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
 
   it("A1: a member with no provider in src may suspend", () => {
     expect(skipLifetime(inLockSkip("stage.skip?.(ctx);", ""))).toHaveLength(1);
+  });
+
+  // R3-2: provider discovery reads the one write enumerator.
+  const DETACH = "async (ctx: StageContext) => { await pause(); ctx.writeState({ revision: 2 }); }";
+  it.each([
+    ["an assignment-form for-of initializer", `export function patch(s: WorkflowStage) { for (s.skip of [${DETACH}]) {} }\n`],
+    ["a compound ??= write", `export function patch(s: WorkflowStage) { s.skip ??= ${DETACH}; }\n`],
+    ["a destructuring assignment", `export function patch(s: WorkflowStage) { ({ f: s.skip } = { f: ${DETACH} }); }\n`],
+    ["a nested destructuring assignment", `export function patch(s: WorkflowStage) { ({ a: [s.skip] } = { a: [${DETACH}] }); }\n`],
+    ["an aliased Object.assign", `export function patch(s: WorkflowStage) { const assign = Object.assign; assign(s, { skip: ${DETACH} }); }\n`],
+    ["a destructured copy of Object.assign", `export function patch(s: WorkflowStage) { const { assign: put } = Object; put(s, { skip: ${DETACH} }); }\n`],
+  ])("R3-2: a detaching provider supplied through %s is caught at the call site", (_n, extra) => {
+    expect(skipLifetime(inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + extra))).toHaveLength(1);
+  });
+
+  it("R3-2 (Codex V5 verbatim): a provider assigned by a for-of over a named closure is UNRESOLVED and the call may suspend", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + `const later = ${DETACH};\nexport function patch() { const stage: WorkflowStage = new A(); for (stage.skip of [later]) {} }\n`);
+    expect(r.errors.some((e) => /^UNRESOLVED provider types\.ts#WorkflowStage\.skip at user\.ts:\d+ \(provider without a body in src\)$/.test(e))).toBe(true);
+    expect(skipLifetime(r)).toHaveLength(1);
+  });
+
+  it.each([
+    ["++", "s.skip++;"],
+    ["--", "--s.skip;"],
+    ["delete", "delete s.skip;"],
+    ["+=", "s.skip += 1;"],
+  ])("R3-2: a %s write to a provider member is UNRESOLVED", (form, stmt) => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + `export function patch(s: WorkflowStage) { ${stmt} }\n`);
+    expect(r.errors).toContainEqual(expect.stringMatching(new RegExp(`^UNRESOLVED provider types\\.ts#WorkflowStage\\.skip at user\\.ts:\\d+ \\(${form.replace(/[+]/g, "\\+")} write\\)$`)));
+    expect(skipLifetime(r)).toHaveLength(1);
+  });
+
+  it("R3-2: a reflective write on a stage with no literal source is UNRESOLVED", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export function patch(s: WorkflowStage) { Reflect.set(s, \"skip\", 1); }\n");
+    expect(r.errors.some((e) => /^UNRESOLVED provider types\.ts#WorkflowStage\.skip at user\.ts:\d+ \(reflective write\)$/.test(e))).toBe(true);
   });
 
   // A2: a guarded test-seam slot behind a local default is credited synchronous; a src supply is refused.
@@ -910,6 +935,14 @@ export class S implements WorkflowStage { saved?: StageContext; async enter(ctx:
   it("A3b: the context stored to a module binding is refused", () => {
     const r = inLock("saved = ctx;", "let saved: StageContext | undefined;\n");
     expect(lifetime(r.errors).some((e) => e.includes("stored to a module-level binding"))).toBe(true);
+  });
+
+  it.each([
+    ["??= to a module binding", "saved ??= ctx;", "let saved: StageContext | undefined;\n", "stored to a module-level binding"],
+    ["||= to a field", "holder.c ||= ctx;", "const holder: { c?: StageContext } = {};\n", "stored to a field or a container"],
+    ["the source of a destructuring assignment", "let dir = \"\";\n    ({ dir } = ctx);", "", "stored to a field or a container"],
+  ])("A3b (R3-2): the context written by %s is refused", (_n, body, top, why) => {
+    expect(lifetime(inLock(body, top).errors).some((e) => e.includes(why))).toBe(true);
   });
 
   it("A3b: the context returned from a function that does not construct it is refused", () => {
@@ -1056,6 +1089,15 @@ describe("ISS-958 S7: the lock entry's release is the one tied to its acquisitio
   const release = () => {};
   try { return await fn(); } finally { release(); }
 `)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock does not release in the finally of the try that awaits its callback"]);
+  });
+
+  // R3-2, self-found: the release identity read only `=` writes, so a loop or logical write replaced the release unseen.
+  it.each([
+    ["an assignment-form for-of", "  let release = acquire(dir);\n  for (release of [() => {}]) {}\n  try { return await fn(); } finally { release(); }\n"],
+    ["??=", "  let release: (() => void) | undefined = acquire(dir);\n  release ??= () => {};\n  try { return await fn(); } finally { release(); }\n"],
+    ["a destructuring assignment", "  let release = acquire(dir);\n  [release] = [() => {}];\n  try { return await fn(); } finally { release(); }\n"],
+  ])("a release replaced by %s is not the acquisition", (_n, body) => {
+    expect(entryErrors(body)).toEqual(["lock-lifetime: lock entry session.ts#withSessionLock does not release in the finally of the try that awaits its callback"]);
   });
 });
 
@@ -1209,6 +1251,69 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     ["Object.defineProperty", "const deps: Deps = {};\n    Object.defineProperty(deps, \"withLockX\", { value: 1 });\n    await take(d, ctx, deps);"],
   ])("T5: %s on the dependency may supply the slot", (_n, body) => {
     expect(mayBe(add2Scan(body, TOP, LISTED), "reflective write")).toHaveLength(1);
+  });
+
+  // R3-2: one fixture per write form the enumerator covers. Each body writes the slot once and passes the dependency on.
+  const SLOT_FORMS: Array<[string, string]> = [
+    ["=", `deps.withLockX = ${P};`],
+    ["+= (an arithmetic compound)", "deps.withLockX += 1;"],
+    ["??=", `deps.withLockX ??= ${P};`],
+    ["||=", `deps.withLockX ||= ${P};`],
+    ["&&=", `deps.withLockX &&= ${P};`],
+    ["object destructuring", `({ p: deps.withLockX } = { p: ${P} });`],
+    ["array destructuring", `[deps.withLockX] = [${P}];`],
+    ["nested destructuring", `({ a: { p: deps.withLockX } } = { a: { p: ${P} } });`],
+    ["a destructuring default", `({ p: deps.withLockX = ${P} } = {});`],
+    ["an object rest", "({ ...deps.withLockX } = { q: 1 });"],
+    ["an array rest", "[...deps.withLockX] = [1];"],
+    ["an assignment-form for-of (Codex V4 verbatim)", `const detach = ${P};\n    for (deps.withLockX of [detach]) {}`],
+    ["an assignment-form for-of pattern", `for ({ p: deps.withLockX } of [{ p: ${P} }]) {}`],
+    ["an assignment-form for-in", "for (deps.withLockX in { k: 1 }) {}"],
+    ["postfix ++", "deps.withLockX++;"],
+    ["prefix --", "--deps.withLockX;"],
+    ["delete", "delete deps.withLockX;"],
+    ["a whole-object assignment", `deps = { withLockX: ${P} };`],
+    ["a whole-object ??=", `let other: Deps | undefined;\n    other ??= { withLockX: ${P} };\n    deps = other;`],
+  ];
+  it.each(SLOT_FORMS)("R3-2: a %s write is a supply", (_n, write) => {
+    expect(supplied(add2Scan(`let deps: Deps = {};\n    ${write}\n    await take(d, ctx, deps);`, TOP, LISTED))).toHaveLength(1);
+  });
+
+  const unresolvedRef = (r: { errors: string[] }, fn: string) =>
+    r.errors.filter((e) => e.startsWith(`UNRESOLVED reflective writer reference ${fn} at user.ts:`));
+  it.each([
+    ["Object.defineProperties", "Object.defineProperties(deps, { withLockX: { value: 1 } });"],
+    ["Object.setPrototypeOf", `Object.setPrototypeOf(deps, { withLockX: ${P} });`],
+    ["Reflect.set", "Reflect.set(deps, \"withLockX\", 1);"],
+    ["Reflect.defineProperty", "Reflect.defineProperty(deps, \"withLockX\", { value: 1 });"],
+    ["Reflect.setPrototypeOf", `Reflect.setPrototypeOf(deps, { withLockX: ${P} });`],
+    ["__proto__", `deps.__proto__ = { withLockX: ${P} };`],
+    ["__defineGetter__", "deps.__defineGetter__(\"withLockX\", () => 1);"],
+  ])("R3-2: %s on the dependency may supply the slot", (_n, write) => {
+    const r = add2Scan(`const deps: Deps = {};\n    ${write}\n    await take(d, ctx, deps);`, TOP, LISTED);
+    expect(mayBe(r, "reflective write")).toHaveLength(1);
+    expect(r.errors.filter((e) => e.startsWith("UNRESOLVED reflective"))).toEqual([]);
+  });
+
+  it.each([
+    ["an alias", "const assign = Object.assign;\n    assign(deps, { withLockX: 1 });", "Object.assign"],
+    ["a destructured copy", "const { defineProperty: def } = Object;\n    def(deps, \"withLockX\", { value: 1 });", "Object.defineProperty"],
+    ["a destructuring-assignment copy", "let set: typeof Reflect.set;\n    ({ set } = Reflect);\n    set(deps, \"withLockX\", 1);", "Reflect.set"],
+    ["a renamed destructuring-assignment copy", "let put: typeof Object.assign;\n    ({ assign: put } = Object);\n    put(deps, { withLockX: 1 });", "Object.assign"],
+  ])("R3-2: a reflective writer reached through %s is resolved by identity: the call may supply, the copy is UNRESOLVED", (_n, write, fn) => {
+    const r = add2Scan(`const deps: Deps = {};\n    ${write}\n    await take(d, ctx, deps);`, TOP, LISTED);
+    expect(mayBe(r, "reflective write")).toHaveLength(1);
+    expect(unresolvedRef(r, fn).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["stored in an array", "const fns = [Object.assign];", "Object.assign"],
+    ["passed on", "const call = (f: unknown) => f;\n    call(Reflect.defineProperty);", "Reflect.defineProperty"],
+    ["bound", "const b = Object.setPrototypeOf.bind(null);", "Object.setPrototypeOf"],
+    ["returned", "const get = () => Object.defineProperties;", "Object.defineProperties"],
+    ["copied to a local with its own type", "const put: (o: object, ...s: object[]) => object = Object.assign;", "Object.assign"],
+  ])("R3-2: a reflective writer %s, not called, is UNRESOLVED program-wide", (_n, stmt, fn) => {
+    expect(unresolvedRef(add2Scan(stmt), fn).length).toBeGreaterThan(0);
   });
 
   it("forwarding the dependency it was given is not a supply; an untyped provider fails closed", () => {
@@ -1406,5 +1511,46 @@ export async function go(d: string) { ${entry} }`;
   it("S8: the registered edge must enter the first pinned hop", () => {
     const r = scan(chainCode(GOOD_OUTER, undefined, `await other(${LEAF});`), CHAIN, ALS);
     expect(chainErrors(r)).toContain("unfollowed sink chain user.ts#go#edge#1: the edge does not enter user.ts#outer(fn)");
+  });
+});
+
+describe("ISS-958 S6 fixup 3: code and objects the scan cannot see are UNRESOLVED", () => {
+  const unresolved = (r: { errors: string[] }, re: RegExp) => r.errors.filter((e) => re.test(e));
+  it.each([
+    ["eval", "export function run(s: string) { return eval(s); }\n", /^UNRESOLVED eval reference at user\.ts:\d+$/],
+    ["an eval alias", "const ev = eval;\nexport function run(s: string) { return ev(s); }\n", /^UNRESOLVED eval reference at user\.ts:\d+$/],
+    ["new Function", "export const f = new Function(\"return 1\");\n", /^UNRESOLVED the Function constructor reference at user\.ts:\d+$/],
+    ["a Function call", "export const f = Function(\"return 1\");\n", /^UNRESOLVED the Function constructor reference at user\.ts:\d+$/],
+    ["Reflect.construct", "class K {}\nexport const k = Reflect.construct(K, []);\n", /^UNRESOLVED Reflect\.construct reference at user\.ts:\d+$/],
+    ["Proxy.revocable", "export const p = Proxy.revocable({}, {});\n", /^UNRESOLVED Proxy reference at user\.ts:\d+$/],
+    ["a Proxy alias", "const P = Proxy;\nexport const p = new P({}, {});\n", /^UNRESOLVED Proxy reference at user\.ts:\d+$/],
+    ["a class decorator", "const dec = (t: unknown, c: unknown) => {};\n@dec\nclass K {}\nexport { K };\n", /^UNRESOLVED decorator at user\.ts:\d+$/],
+    ["a method decorator", "const dec = (t: unknown, c: unknown) => {};\nexport class K { @dec m() {} }\n", /^UNRESOLVED decorator at user\.ts:\d+$/],
+  ])("%s is UNRESOLVED", (_n, code, re) => {
+    expect(unresolved(scan(IMPORTS + code), re).length).toBeGreaterThan(0);
+  });
+
+  // Pen ruling on Proxy, option (a) with condition (3). The first shape is src/mcp/strict-schemas.ts: a get trap wrapping registerTool.
+  const PROXY = (target: string, handler: string, ret: string) => `export function wrap(s: ${target}): ${ret} {
+  return new Proxy(s, ${handler});
+}
+`;
+  const GET = "{ get(t, p, r): unknown { return Reflect.get(t, p, r); } }";
+  const proxyErrors = (r: { errors: string[] }) => r.errors.filter((e) => e.startsWith("UNRESOLVED Proxy"));
+  it("a get-trap-only Proxy over a type with no guarded, provider, contract or lock member passes (the strict-schemas shape)", () => {
+    const top = "export class Server { registerTool(name: string, config: object): unknown { return name; } }\n";
+    expect(proxyErrors(inLock("", top + PROXY("Server", GET, "Server")))).toEqual([]);
+  });
+
+  it.each([
+    ["a get trap over a WorkflowStage", PROXY("WorkflowStage", GET, "WorkflowStage"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["a get trap over the context", PROXY("StageContext", GET, "StageContext"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["a get trap flowing into a WorkflowStage", "export class Impl { async enter(): Promise<void> {} }\n" + PROXY("Impl", GET, "WorkflowStage"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["an untyped target", PROXY("any", GET, "unknown"), "target or flow type owns a guarded, provider, contract or lock member, or is untyped"],
+    ["a set trap", PROXY("{ a: number }", "{ set(t, p, v): boolean { return Reflect.set(t, p, v); } }", "{ a: number }"), "handler member set may write"],
+    ["a defineProperty trap", PROXY("{ a: number }", "{ defineProperty(): boolean { return false; } }", "{ a: number }"), "handler member defineProperty may write"],
+    ["a non-literal handler", "const h: ProxyHandler<{ a: number }> = {};\n" + PROXY("{ a: number }", "h", "{ a: number }"), "handler is not an object literal"],
+  ])("a Proxy with %s is UNRESOLVED", (_n, top, why) => {
+    expect(proxyErrors(inLock("", top))).toEqual([expect.stringMatching(new RegExp(`^UNRESOLVED Proxy at user\\.ts:\\d+ \\(${why}\\)$`))]);
   });
 });

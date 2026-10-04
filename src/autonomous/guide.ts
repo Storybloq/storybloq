@@ -70,6 +70,7 @@ import {
   readEvents,
   readSession,
   readSessionResilient,
+  StateWriteUndurableError,
   type ActiveSessionInfo,
 } from "./session.js";
 import { RECOVERY_MAPPING, recoveryResets } from "./recovery-state.js";
@@ -735,6 +736,11 @@ type RecoveryResult =
 
 const recovered = (state: FullSessionState): RecoveryResult => ({ kind: "recovered", state });
 
+/** ISS-958: direct access for the published-but-undurable recovery tests. */
+export const __recoveryTesting = {
+  recoverPendingMutation: (dir: string, state: FullSessionState, root: string) => recoverPendingMutation(dir, state, root),
+};
+
 type CheckpointBlock = { readonly ticketId: string; readonly checkpoints: readonly string[] };
 
 /**
@@ -1085,6 +1091,12 @@ async function recoverPendingMutation(
       }
     });
   } catch (err) {
+    // ISS-958 (policy A): the only state write in this body is
+    // recordConflict's marker clear. A StateWriteUndurableError means that
+    // clear WAS published, so "leave the marker for the next attempt" would
+    // be false; adopt the published state, exactly as the conflict branch
+    // below does on success.
+    if (err instanceof StateWriteUndurableError) return recovered(err.published);
     // A completion is refused, marker kept (T-537); any other target keeps
     // the lock/IO rule: leave the marker for the next attempt.
     if (completion) return { kind: "load-failed", ticketId: targetId, reason: failureReason(err), state };

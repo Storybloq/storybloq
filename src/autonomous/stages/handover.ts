@@ -5,6 +5,7 @@ import type { GuideReportInput } from "../session-types.js";
 import { handleHandoverCreate } from "../../cli/commands/handover.js";
 import { gitStashPop } from "../git-inspector.js";
 import { removeResumeMarker } from "../resume-marker.js";
+import { StateWriteUndurableError } from "../session.js";
 import { formatCompactReport } from "../../core/session-report-formatter.js";
 import { loadProject } from "../../core/project-loader.js";
 import { nextTickets } from "../../core/queries.js";
@@ -145,23 +146,32 @@ export class HandoverStage implements WorkflowStage {
     await ctx.drainDeferrals();
     const hasUnfiled = (ctx.state.pendingDeferrals ?? []).length > 0;
 
-    // End session (T-260: finalize kills sidecar + writes shutdown marker)
-    ctx.finalizeSession({
-      state: "SESSION_END",
-      previousState: "HANDOVER",
-      status: "completed" as const,
-      terminationReason: "normal" as const,
-      deferralsUnfiled: hasUnfiled,
-    });
+    const completeTail = (): void => {
+      ctx.appendEvent("session_end", {
+        ticketsCompleted: ctx.state.completedTickets.length,
+        issuesResolved: (ctx.state.resolvedIssues ?? []).length,
+        handoverFailed,
+      });
+      // T-183: Clean resume marker
+      removeResumeMarker(ctx.root);
+    };
 
-    ctx.appendEvent("session_end", {
-      ticketsCompleted: ctx.state.completedTickets.length,
-      issuesResolved: (ctx.state.resolvedIssues ?? []).length,
-      handoverFailed,
-    });
-
-    // T-183: Clean resume marker
-    removeResumeMarker(ctx.root);
+    // End session (T-260: finalize kills sidecar + writes shutdown marker).
+    // ISS-958 (policy TC): an undurable publication still ended the session,
+    // so this stage's own tail completes before the error propagates.
+    try {
+      ctx.finalizeSession({
+        state: "SESSION_END",
+        previousState: "HANDOVER",
+        status: "completed" as const,
+        terminationReason: "normal" as const,
+        deferralsUnfiled: hasUnfiled,
+      });
+    } catch (err) {
+      if (err instanceof StateWriteUndurableError) completeTail();
+      throw err;
+    }
+    completeTail();
 
     // T-185: Build compact session report
     let reportSection = "";

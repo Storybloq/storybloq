@@ -12,13 +12,26 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// One injected EACCES for the rmSync of exactly this path, so the
+// removal-failure case does not depend on file modes (which root ignores).
+const rmFault = vi.hoisted(() => ({ target: null as string | null, fired: false }));
+
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   const { wrapFs } = await import("./_state-write-fault.js");
-  return wrapFs(actual);
+  const wrapped = wrapFs(actual);
+  const rmSync: typeof actual.rmSync = (path, opts) => {
+    if (rmFault.target !== null && String(path) === rmFault.target) {
+      rmFault.target = null;
+      rmFault.fired = true;
+      throw Object.assign(new Error(`EACCES: injected rmSync failure for ${String(path)}`), { code: "EACCES" });
+    }
+    return actual.rmSync(path, opts);
+  };
+  return { ...wrapped, rmSync };
 });
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,18 +53,19 @@ const roots: string[] = [];
 
 afterEach(() => {
   disarm();
+  rmFault.target = null;
+  rmFault.fired = false;
   while (roots.length) {
     const root = roots.pop()!;
-    try { chmodSync(join(root, ".story", "sessions"), 0o755); } catch { /* ignore */ }
     killSidecarsInRoot(root);
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-function armTyped(opts: { dir?: string; onPublish?: () => void } = {}): void {
+function armTyped(opts: { dir?: string; onPublish?: (published: FullSessionState) => void } = {}): void {
   armUndurable(
     (published) => {
-      opts.onPublish?.();
+      opts.onPublish?.(published as FullSessionState);
       return new StateWriteUndurableError(published as FullSessionState, new Error("EIO: injected dir fsync failure"));
     },
     (d) => readSession(d),
@@ -123,6 +137,14 @@ function plantStale(root: string, extra: Partial<FullSessionState>, leaseMinutes
   return dir;
 }
 
+function eventsOf(dir: string, type: string): Array<{ rev: number; type: string }> {
+  const p = join(dir, "events.log");
+  if (!existsSync(p)) return [];
+  return readFileSync(p, "utf-8").split("\n").filter(Boolean)
+    .map((l) => JSON.parse(l) as { rev: number; type: string })
+    .filter((e) => e.type === type);
+}
+
 function textOf(result: { content: unknown[] }): string {
   return (result.content[0] as { text: string }).text;
 }
@@ -148,15 +170,15 @@ describe("ISS-958 S3: createSession owns its creation (policy OC, D1)", () => {
   it("names the directory when the removal itself fails", () => {
     const root = setupRoot();
     const sessions = join(root, ".story", "sessions");
-    // Published first, then the parent goes read-only, so the rmdir fails.
-    armTyped({ onPublish: () => chmodSync(sessions, 0o555) });
+    // Published first, then the removal of exactly that session dir fails.
+    armTyped({ onPublish: (published) => { rmFault.target = join(sessions, published.sessionId); } });
     let caught: unknown;
     try {
       createSession(root, "coding", deriveWorkspaceId(root));
     } catch (err) {
       caught = err;
     }
-    chmodSync(sessions, 0o755);
+    expect(rmFault.fired).toBe(true);
     expect(caught).toBeInstanceOf(StateWriteUndurableError);
     const id = (caught as StateWriteUndurableError).published.sessionId;
     expect((caught as Error).message).toContain(`created session ${id} could NOT be removed: ${join(sessions, id)}`);
@@ -208,6 +230,15 @@ describe("ISS-958 S3: TP6 finished-orphan supersede completes its tail (policy T
     expect(state.status).toBe("superseded");
     expect(state.terminationReason).toBe("auto_superseded_finished_orphan");
     expect(shutdownMarked(dir)).toBe(true);
+    const superseded = eventsOf(dir, "auto_superseded");
+    expect(superseded).toHaveLength(1);
+    expect(superseded[0]!.rev).toBe(state.revision);
+
+    // A retry finds the session already superseded and records nothing more.
+    disarm();
+    await handleAutonomousGuide(root, { action: "start", sessionId: null });
+    expect(readSession(dir)!.status).toBe("superseded");
+    expect(eventsOf(dir, "auto_superseded")).toHaveLength(1);
   });
 
   it("a pre-rename failure is unchanged: no marker, the session stays active", async () => {

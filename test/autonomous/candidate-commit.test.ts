@@ -87,6 +87,7 @@ import {
   type FullSessionState,
 } from "../../src/autonomous/session-types.js";
 import { classifyCompletionMarker } from "../../src/autonomous/cancellation-transition.js";
+import { gitStashPop } from "../../src/autonomous/git-inspector.js";
 import type { SuccessorServers } from "../../src/autonomous/mcp-registry.js";
 import type { OwnerTask } from "../../src/autonomous/client-profile.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
@@ -1994,6 +1995,73 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(classifyCompletionMarker(sessDir, t.transitionId).kind).toBe("matching");
     const intent = readCancellationIntent(sessDir);
     if (intent.kind === "valid") expect(intent.intent.phase).toBe("closed");
+    expect(eventCount("cancelled")).toBe(1);
+  });
+
+  it("ISS-958 exception (iii), REAL write 4: a post-rename barrier failure keeps the intent open, and the retry finishes without repeating the stash or the audit", async () => {
+    // The real durable writer, failing AFTER its rename: write 4 IS published.
+    // (Writes 1 and 3 ride the ordinary writer, which gains post-rename
+    // barriers only with the ISS-958 writer switch; their cases land there.)
+    const pop = vi.mocked(gitStashPop);
+    pop.mockClear();
+    const state = plantLive({
+      git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123",
+        autoStash: { ref: "stash@{0}", stashedAt: STALE_AT } },
+    });
+    writeMarker();
+    const input = inputFor(state);
+
+    const original = __stateWriteTesting.at;
+    __stateWriteTesting.at = (point) => {
+      if (point === "state:renamed") throw new Error("EIO: simulated dir fsync failure");
+    };
+    let first: Awaited<ReturnType<typeof commitCandidateCancelLocked>>;
+    try {
+      first = await commitCandidateCancelLocked(root, sessDir, { input, callerTask: CALLER }, cancelDeps());
+    } finally {
+      __stateWriteTesting.at = original;
+    }
+
+    // The refusal is truthful and names the revision write 4 published.
+    const published = currentState();
+    expect(first.kind).toBe("refused");
+    if (first.kind !== "refused") return;
+    expect(first.stage).toBe("transition");
+    expect(first.detail).toContain(`state published at revision ${published.revision}, durability unproven`);
+    expect(first.detail).toContain("simulated dir fsync failure");
+
+    // The persisted transition is the published one; the intent is still open.
+    expect(published.state).toBe("SESSION_END");
+    const t = CancellationTransitionSchema.safeParse(
+      (published as unknown as Record<string, unknown>).cancellationTransition,
+    );
+    expect(t.success).toBe(true);
+    if (!t.success || t.data.phase !== "published") return;
+    expect(t.data.terminalRevision).toBe(published.revision);
+    expect(t.data.stash).toEqual({ outcome: "popped" });
+    const open = readCancellationIntent(sessDir);
+    expect(open.kind).toBe("valid");
+    if (open.kind === "valid") expect(open.intent.phase).not.toBe("closed");
+    expect(pop).toHaveBeenCalledTimes(1);
+    expect(eventCount("cancelled")).toBe(0);
+
+    // The retry resumes the SAME published transition: tail only, intent closed,
+    // no second stash pop, exactly one audit event, no further state revision.
+    const retry = await commitCandidateCancelLocked(root, sessDir, { input, callerTask: CALLER }, cancelDeps());
+    expect(retry.kind).toBe("published");
+    if (retry.kind !== "published") return;
+    expect(retry.resumed).toBe(true);
+    expect(retry.close.ok).toBe(true);
+    expect(retry.tail.completed).toBe(true);
+    const after = currentState();
+    expect(after.revision).toBe(published.revision);
+    expect((after as unknown as Record<string, { transitionId: string }>).cancellationTransition?.transitionId)
+      .toBe(t.data.transitionId);
+    expect(classifyCompletionMarker(sessDir, t.data.transitionId).kind).toBe("matching");
+    const closed = readCancellationIntent(sessDir);
+    expect(closed.kind).toBe("valid");
+    if (closed.kind === "valid") expect(closed.intent.phase).toBe("closed");
+    expect(pop).toHaveBeenCalledTimes(1);
     expect(eventCount("cancelled")).toBe(1);
   });
 

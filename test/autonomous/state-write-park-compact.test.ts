@@ -287,38 +287,55 @@ function owned(root: string, fields: Record<string, unknown>): { id: string; dir
   });
 }
 
-async function quietly<T>(fn: () => Promise<T>): Promise<T> {
-  const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-  const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+/** Run a hook with both streams captured, so each test can assert on them. */
+async function captured<T>(fn: () => Promise<T>): Promise<{ value: T; stdout: string; stderr: string }> {
+  let stdout = "";
+  let stderr = "";
+  const out = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+    stdout += String(chunk);
+    return true;
+  });
+  const err = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  });
   try {
-    return await fn();
+    const value = await fn();
+    return { value, stdout, stderr };
   } finally {
     out.mockRestore();
     err.mockRestore();
   }
 }
 
+const UNDURABLE_DIAGNOSTIC = "was published by rename but its durability barriers did not complete: EIO: injected dir fsync failure";
+
 describe("ISS-958 S4: compact-prepare keeps the resume marker of a published park (:185)", () => {
   it("undurable: compactPending is published and the resume marker is written", async () => {
     const root = project();
     const { dir } = owned(root, { state: "IMPLEMENT" });
     armTyped(dir);
-    await quietly(() => handleSessionCompactPrepare({ client: "claude", clientTaskId: SID, cwd: root }));
+    const io = await captured(() => handleSessionCompactPrepare({ client: "claude", clientTaskId: SID, cwd: root }));
     expect(faultFired()).toBe(true);
     const s = readSession(dir)!;
     expect(s.state).toBe("COMPACT");
     expect(s.compactPending).toBe(true);
     expect(existsSync(markerPath(root))).toBe(true);
+    // The hook reports the typed error on stderr and writes nothing to stdout.
+    expect(io.stderr).toContain(`[storybloq] compact-prepare: session state revision ${s.revision} ${UNDURABLE_DIAGNOSTIC}`);
+    expect(io.stdout).toBe("");
   });
 
   it("a pre-rename failure writes no marker, as before", async () => {
     const root = project();
     const { dir } = owned(root, { state: "IMPLEMENT" });
     armFail({ dir });
-    await quietly(() => handleSessionCompactPrepare({ client: "claude", clientTaskId: SID, cwd: root }));
+    const io = await captured(() => handleSessionCompactPrepare({ client: "claude", clientTaskId: SID, cwd: root }));
     expect(faultFired()).toBe(true);
     expect(readSession(dir)!.state).toBe("IMPLEMENT");
     expect(existsSync(markerPath(root))).toBe(false);
+    expect(io.stderr).toContain("[storybloq] compact-prepare: EIO: injected rename failure");
+    expect(io.stdout).toBe("");
   });
 });
 
@@ -329,20 +346,37 @@ describe("ISS-958 S4: resume-prompt records a published compaction observation (
     const root = project();
     const { dir } = owned(root, compact);
     armTyped(dir);
-    await quietly(() => handleSessionResumePrompt({ source: "compact", clientTaskId: SID, cwd: root }));
+    const io = await captured(() => handleSessionResumePrompt({ source: "compact", clientTaskId: SID, cwd: root }));
     expect(faultFired()).toBe(true);
     const s = readSession(dir)!;
     expect(s.compactObservedAt).toBeTruthy();
     const recorded = events(dir, "client_compaction_observed");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.rev).toBe(s.revision);
+    // The typed error is reported on stderr; the resume prompt itself still
+    // resolves and keeps its ordinary stdout contract (it names the session).
+    expect(io.value).toBeUndefined();
+    expect(io.stderr).toContain(`[storybloq] compaction observed: session state revision ${s.revision} ${UNDURABLE_DIAGNOSTIC}`);
+    expect(io.stdout).toContain(s.sessionId);
+
+    // CHARACTERISATION, existing behaviour, not an idempotency claim: while
+    // the session stays COMPACT with compactPending set, another
+    // source=compact call marks the observation again and appends a second
+    // event. Base behaves the same; this item does not change it.
+    disarm();
+    await captured(() => handleSessionResumePrompt({ source: "compact", clientTaskId: SID, cwd: root }));
+    const again = readSession(dir)!;
+    expect(again.revision).toBe(s.revision + 1);
+    const after = events(dir, "client_compaction_observed");
+    expect(after).toHaveLength(2);
+    expect(after[1]!.rev).toBe(again.revision);
   });
 
   it("a pre-rename failure appends no event, as before", async () => {
     const root = project();
     const { dir } = owned(root, compact);
     armFail({ dir });
-    await quietly(() => handleSessionResumePrompt({ source: "compact", clientTaskId: SID, cwd: root }));
+    await captured(() => handleSessionResumePrompt({ source: "compact", clientTaskId: SID, cwd: root }));
     expect(faultFired()).toBe(true);
     expect(readSession(dir)!.compactObservedAt ?? null).toBeNull();
     expect(events(dir, "client_compaction_observed")).toEqual([]);

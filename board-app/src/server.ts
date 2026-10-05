@@ -96,7 +96,7 @@ export function createServer(
       : {};
   const ui = {
     ui: {
-      resourceUri: RESOURCE_URI,
+      ...(options.conversationalTools ? {} : { resourceUri: RESOURCE_URI }),
       visibility: options.conversationalTools ? ["model", "app"] : ["app"],
     },
   };

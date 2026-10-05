@@ -205,6 +205,8 @@ test("missing ledger offers guidance, rejects partial setup and activates after 
       "model",
       "app",
     ]);
+    assert.equal((overviewTool._meta?.ui as any).resourceUri, undefined);
+    assert.equal(overviewTool._meta?.["ui/resourceUri"], undefined);
     const overview = await client.callTool({
       name: "storybloq_board_overview",
       arguments: {},
@@ -297,6 +299,8 @@ test("local tools expose conversational results and preserve revision conflicts"
         tool.name,
       );
       assert.ok(tool.outputSchema, tool.name);
+      assert.equal((tool._meta?.ui as any)?.resourceUri, undefined, tool.name);
+      assert.equal(tool._meta?.["ui/resourceUri"], undefined, tool.name);
     }
     const item = await call("storybloq_board_detail", {
       kind: "tickets",
@@ -355,6 +359,10 @@ test("opening a local browser declares its listener side effect", async () => {
     )!;
     assert.equal(tool.annotations?.readOnlyHint, false);
     assert.equal(tool.annotations?.destructiveHint, false);
+    assert.equal(
+      (tool._meta?.ui as any)?.resourceUri,
+      "ui://storybloq/board-v1.html",
+    );
   } finally {
     await client.close();
     await server.close();

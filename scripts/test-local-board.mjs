@@ -232,6 +232,8 @@ test("installed board saves through canonical handlers into its own project", as
       for (const tool of tools.filter(t => t.name !== "storybloq_board")) {
         assert.deepEqual(tool._meta.ui.visibility, ["model", "app"]);
         assert.ok(tool.outputSchema);
+        assert.equal(tool._meta.ui.resourceUri, undefined);
+        assert.equal(tool._meta["ui/resourceUri"], undefined);
       }
     }
     const original = await readFile(file(roots[0]));

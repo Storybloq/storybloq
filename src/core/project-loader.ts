@@ -44,6 +44,7 @@ import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabiliti
 import { validateProject } from "./validation.js";
 import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { applyTicketIdentityPolicy, type TicketIdentityReport } from "./ticket-counts.js";
 import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
 import type { ZodType } from "zod";
 
@@ -86,6 +87,55 @@ export interface LoadResult {
  * Critical files (config, roadmap) throw on failure.
  * Best-effort files (tickets, issues) skip corrupt entries with warnings.
  */
+/**
+ * T-486 U2-3: a ticket file the loader left out, with whatever identity the
+ * raw JSON exposed (B1). `read` is an unreadable file, `parse` invalid JSON,
+ * `schema` a record the ticket schema refused.
+ */
+export interface OmittedTicketRecord {
+  readonly file: string;
+  readonly reason: "read" | "parse" | "schema";
+  readonly id?: string;
+  readonly parentTicket?: string;
+}
+
+export interface TicketRecords {
+  /** Accepted records, loader defaults applied, in sorted filename order. */
+  readonly records: readonly Ticket[];
+  /** `files[i]` is the project-relative file `records[i]` was read from. */
+  readonly files: readonly string[];
+  readonly omitted: readonly OmittedTicketRecord[];
+  readonly warnings: readonly LoadWarning[];
+  /** The identity policy over `records` (ticket-counts.ts, B3). */
+  readonly identity: TicketIdentityReport;
+}
+
+/**
+ * T-486 U2-3: the ticket records exactly as `loadProject` accepts them (the
+ * same `loadDirectory`, so the same parse, defaults and warnings), for a
+ * reader that needs tickets alone, such as the federation scanner. `signal`
+ * is checked before each file, so an abort stops the scan between files.
+ */
+export async function loadTicketRecords(
+  storyDir: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<TicketRecords> {
+  const absStory = resolve(storyDir);
+  const warnings: LoadWarning[] = [];
+  const files: string[] = [];
+  const omitted: OmittedTicketRecord[] = [];
+  const records = await loadDirectory<Ticket>(
+    join(absStory, "tickets"),
+    dirname(absStory),
+    TicketSchema,
+    warnings,
+    "ticket",
+    new Map(),
+    { signal: options.signal, files, omitted },
+  );
+  return { records, files, omitted, warnings, identity: applyTicketIdentityPolicy(records, files) };
+}
+
 export async function loadProject(
   root: string,
   options?: LoadOptions,
@@ -1658,7 +1708,9 @@ async function loadDirectory<T>(
   warnings: LoadWarning[],
   entityType: EntityType,
   classifications: Map<string, "legacy" | "team">,
+  extras: { signal?: AbortSignal; files?: string[]; omitted?: OmittedTicketRecord[] } = {},
 ): Promise<T[]> {
+  extras.signal?.throwIfAborted();
   if (!existsSync(dirPath)) return [];
 
   let entries: string[];
@@ -1680,12 +1732,16 @@ async function loadDirectory<T>(
   for (const entry of entries) {
     if (entry.startsWith(".")) continue;
     if (extname(entry) !== ".json") continue;
+    // T-486 U2-3: outside the try, so an abort is never recorded as a parse error.
+    extras.signal?.throwIfAborted();
 
     const filePath = join(dirPath, entry);
     const relPath = relative(root, filePath);
 
+    let stage: "read" | "parse" = "read";
     try {
       const raw = await readFile(filePath, "utf-8");
+      stage = "parse";
       const parsed = JSON.parse(raw);
       const result = schema.safeParse(parsed);
       if (!result.success) {
@@ -1694,6 +1750,7 @@ async function loadDirectory<T>(
           message: result.error.issues.map((i) => i.message).join("; "),
           type: "schema_error",
         });
+        extras.omitted?.push({ file: relPath, reason: "schema", ...recoverableIdentity(parsed) });
         continue;
       }
       const data = result.data as Record<string, unknown>;
@@ -1727,16 +1784,28 @@ async function loadDirectory<T>(
         }
       }
       results.push(result.data);
+      extras.files?.push(relPath);
     } catch (err) {
       warnings.push({
         file: relPath,
         message: err instanceof Error ? err.message : String(err),
         type: "parse_error",
       });
+      extras.omitted?.push({ file: relPath, reason: stage });
     }
   }
 
   return results;
+}
+
+/** The id and parentTicket a refused record exposes as strings, if any. */
+function recoverableIdentity(parsed: unknown): { id?: string; parentTicket?: string } {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const raw = parsed as Record<string, unknown>;
+  return {
+    ...(typeof raw.id === "string" ? { id: raw.id } : {}),
+    ...(typeof raw.parentTicket === "string" ? { parentTicket: raw.parentTicket } : {}),
+  };
 }
 
 /** Deep-sorts object keys recursively for deterministic JSON output. */

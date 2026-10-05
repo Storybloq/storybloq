@@ -3,12 +3,15 @@ import type { Phase, Blocker } from "../models/roadmap.js";
 import type { ProjectState, PhaseStatus } from "./project-state.js";
 import { notHiddenByEarmark } from "./earmarks.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { isEffectivelyWithdrawn } from "./resolution-kind.js";
 
 // --- Result Types ---
 
 export interface UmbrellaProgress {
   readonly total: number;
   readonly complete: number;
+  /** T-486 U2-3: complete leaves among them that were withdrawn; present only when nonzero. */
+  readonly withdrawn?: number;
   readonly status: PhaseStatus;
 }
 
@@ -313,9 +316,11 @@ export function umbrellaProgress(
   if (!state.umbrellaIDs.has(ticketId)) return null;
   const leaves = collectDescendantLeaves(ticketId, state, new Set());
   const complete = leaves.filter((t) => t.status === "complete").length;
+  const withdrawn = leaves.filter((t) => t.status === "complete" && isEffectivelyWithdrawn(t)).length;
   return {
     total: leaves.length,
     complete,
+    ...(withdrawn > 0 ? { withdrawn } : {}),
     status: state.umbrellaStatus(ticketId),
   };
 }

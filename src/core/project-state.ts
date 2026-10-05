@@ -10,6 +10,7 @@ import { compareByRank } from "./fractional-index.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { isEffectivelyWithdrawn } from "./resolution-kind.js";
+import { applyTicketIdentityPolicy, computeTicketCounts, derivesComplete, umbrellaIdsOf, type TicketIdentityReport } from "./ticket-counts.js";
 
 export type PhaseStatus = "notstarted" | "inprogress" | "complete";
 
@@ -51,6 +52,16 @@ export class ProjectState {
   readonly leafTickets: readonly Ticket[];
   readonly leafTicketCount: number;
   readonly completeLeafTicketCount: number;
+  /** T-486 U2-3: terminal leaves that were not withdrawn. */
+  readonly deliveredLeafTicketCount: number;
+  /** T-486 U2-3: terminal leaves whose withdrawal is effective. */
+  readonly withdrawnLeafTicketCount: number;
+  /**
+   * T-486 U2-3: the identity policy (B3) over every loaded ticket. Records
+   * sharing a canonical id are left out of the counts and never release a
+   * dependency; `tickets` still holds them, so validate can name them.
+   */
+  readonly ticketIdentity: TicketIdentityReport;
 
   // --- Derived (private) ---
   private readonly leafTicketsByPhase: Map<string | null, Ticket[]>;
@@ -152,19 +163,22 @@ export class ProjectState {
       return [ref];
     }
 
-    // Step 1: Umbrella IDs -- only active tickets count as parents
-    const parentIDs = new Set<string>();
-    for (const t of this.activeTickets) {
-      if (t.parentTicket != null) {
-        parentIDs.add(localResolve(t.parentTicket));
-      }
-    }
+    // Step 1: Umbrella IDs -- only active tickets count as parents. T-486 U2-3:
+    // the rule lives in ticket-counts.ts, shared with computeTicketCounts.
+    const parentIDs = umbrellaIdsOf(input.tickets, localResolve);
     this.umbrellaIDs = parentIDs;
 
-    // Step 2: Leaf tickets -- active tickets that are not umbrellas
+    // Step 2: Leaf tickets -- active tickets that are not umbrellas. T-486
+    // U2-3: the counts come from the one counting contract, over the records
+    // the identity policy keeps (equal to this list's when no canonical id is
+    // claimed twice).
     this.leafTickets = this.activeTickets.filter((t) => !parentIDs.has(t.id));
-    this.leafTicketCount = this.leafTickets.length;
-    this.completeLeafTicketCount = this.leafTickets.filter(derivesComplete).length;
+    this.ticketIdentity = applyTicketIdentityPolicy(input.tickets);
+    const counts = computeTicketCounts(this.ticketIdentity.counted);
+    this.leafTicketCount = counts.leaf;
+    this.completeLeafTicketCount = counts.terminal;
+    this.deliveredLeafTicketCount = counts.delivered;
+    this.withdrawnLeafTicketCount = counts.withdrawn;
 
     // Step 3: Leaf tickets by phase, sorted by order
     const byPhase = new Map<string | null, Ticket[]>();
@@ -292,10 +306,10 @@ export class ProjectState {
     this.lessonsByPrevDisplayID = buildPrevDisplayIndex(this.lessons);
 
     // Step 7: Counts
-    this.totalTicketCount = this.leafTickets.length;
+    this.totalTicketCount = counts.leaf;
     // T-537: counted by the same rule as phase status, so the two never disagree.
-    this.openTicketCount = this.leafTickets.filter((t) => !derivesComplete(t)).length;
-    this.completeTicketCount = this.leafTickets.filter(derivesComplete).length;
+    this.openTicketCount = counts.active;
+    this.completeTicketCount = counts.terminal;
     this.activeIssueCount = this.activeIssues.filter(
       (i) => i.status !== "resolved",
     ).length;
@@ -385,6 +399,7 @@ export class ProjectState {
   /**
    * T-486 U2: dependency release, distinct from `derivesComplete` (phase and
    * umbrella status stay terminal). In order:
+   * 0. a canonical id claimed by two or more records never releases (U2-3, B3);
    * 1. an owner checkpoint releases by approval or retirement, whatever its
    *    status says (T-537); an unrecognized, archived or deleted one never does;
    * 2. a deleted ordinary ticket releases, withdrawn or not;
@@ -401,6 +416,9 @@ export class ProjectState {
    */
   dependencyRelease(blocker: Ticket): DependencyRelease {
     const plain = (releases: boolean): DependencyRelease => ({ releases, reason: null, detail: [] });
+    // T-486 U2-3 (B3): two records claiming one canonical id leave the blocker
+    // unresolved, whichever of them a lookup returns.
+    if (this.ticketIdentity.duplicateIds.has(blocker.id)) return plain(false);
     if (hasOwnerCheckpoint(blocker)) return plain(checkpointReleases(blocker));
     if (isDeleted(blocker)) return plain(true);
     if (isEffectivelyWithdrawn(blocker)) return { releases: false, reason: "withdrawn", detail: [blocker.id] };
@@ -596,10 +614,6 @@ export class ProjectState {
  * as not complete. Phase and umbrella status and the leaf counts all use it.
  * Derived only; the stored status is untouched.
  */
-function derivesComplete(t: Ticket): boolean {
-  return hasOwnerCheckpoint(t) ? checkpointReleases(t) : t.status === "complete";
-}
-
 export function isActiveLifecycle(item: { lifecycle?: unknown }): boolean {
   return item.lifecycle == null || item.lifecycle === "active";
 }

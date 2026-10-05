@@ -683,6 +683,17 @@ function statusIssueFlow(state: ProjectState): ReturnType<typeof computeIssueFlo
   return computeIssueFlow(state.activeIssues, 30, new Date());
 }
 
+/**
+ * T-486 U2-3: "N/M complete", splitting off withdrawn work only when there is
+ * some, so a board with none reads exactly as before. A caller holding only
+ * the counts (ISS-1112) may pass a state without the split: read as none.
+ */
+function ticketCompletion(state: ProjectState): string {
+  const base = `${state.completeLeafTicketCount}/${state.leafTicketCount} complete`;
+  const withdrawn = state.withdrawnLeafTicketCount ?? 0;
+  return withdrawn > 0 ? `${base} (${state.deliveredLeafTicketCount} delivered, ${withdrawn} withdrawn)` : base;
+}
+
 /** The md line: the window when we have the records, the plain count when not. */
 function issueLine(state: ProjectState): string {
   const flow = statusIssueFlow(state);
@@ -891,6 +902,9 @@ export function formatStatus(
     project: state.config.project,
     totalTickets: state.leafTicketCount,
     completeTickets: state.completeLeafTicketCount,
+    // T-486 U2-3: completeTickets stays terminal; these split it.
+    deliveredTickets: state.deliveredLeafTicketCount,
+    withdrawnTickets: state.withdrawnLeafTicketCount,
     openTickets: state.leafTicketCount - state.completeLeafTicketCount,
     blockedTickets: state.blockedCount,
     openIssues: state.activeIssueCount,
@@ -971,7 +985,7 @@ export function formatStatus(
   const lines: string[] = [
     `# ${escapeMarkdownInline(state.config.project)}`,
     "",
-    `Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`,
+    `Tickets: ${ticketCompletion(state)}, ${state.blockedCount} blocked`,
     ...checkpointStatusLines(data.checkpoints),
     issueLine(state),
     `Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`,
@@ -1412,7 +1426,7 @@ export function formatNextTicketOutcome(
 
       if (outcome.umbrellaProgress) {
         const p = outcome.umbrellaProgress;
-        lines.push(`Parent progress: ${p.complete}/${p.total} complete (${p.status})`);
+        lines.push(`Parent progress: ${p.complete}/${p.total} complete${p.withdrawn ? `, ${p.withdrawn} withdrawn` : ""} (${p.status})`);
       }
 
       if (t.description) {
@@ -1484,7 +1498,7 @@ export function formatNextTicketsOutcome(
 
         if (c.umbrellaProgress) {
           const p = c.umbrellaProgress;
-          lines.push(`Parent progress: ${p.complete}/${p.total} complete (${p.status})`);
+          lines.push(`Parent progress: ${p.complete}/${p.total} complete${p.withdrawn ? `, ${p.withdrawn} withdrawn` : ""} (${p.status})`);
         }
 
         if (t.description) {
@@ -2899,7 +2913,7 @@ export function formatRecap(
     lines.push("");
     lines.push("No snapshot found. Run `storybloq snapshot` to enable session diffs.");
     lines.push("");
-    lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete, ${state.blockedCount} blocked`);
+    lines.push(`Tickets: ${ticketCompletion(state)}, ${state.blockedCount} blocked`);
     lines.push(issueLine(state));
   } else {
     lines.push(`# ${escapeMarkdownInline(state.config.project)} -- Recap`);
@@ -3319,7 +3333,7 @@ function formatFullExport(
   const lines: string[] = [];
   lines.push(`# ${escapeMarkdownDocument(state.config.project)} -- Full Export`);
   lines.push("");
-  lines.push(`Tickets: ${state.completeLeafTicketCount}/${state.leafTicketCount} complete`);
+  lines.push(`Tickets: ${ticketCompletion(state)}`);
   lines.push(`Issues: ${state.activeIssueCount} open`);
   lines.push(`Notes: ${state.activeNoteCount} active, ${state.archivedNoteCount} archived`);
   lines.push(`Lessons: ${state.activeLessonCount} active, ${state.deprecatedLessonCount} deprecated`);

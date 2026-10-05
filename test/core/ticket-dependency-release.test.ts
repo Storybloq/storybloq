@@ -303,6 +303,52 @@ describe("T-486 U2-2 fixup: archived children count for the release walk (umbrel
     expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(false);
     expect(state.dependencyRelease(state.ticketByID("T-010")!)).toEqual({ releases: true, reason: null, detail: [] });
   });
+
+  describe("fixup 2: the walk descends through deleted intermediates; only a deleted leaf contributes nothing", () => {
+    it("a complete ticket whose only child is deleted, over a withdrawn grandchild, withholds", async () => {
+      const root = await board([
+        delivered("T-010"), ticket("T-011", { parentTicket: "T-010", ...deleted }),
+        withdrawn("T-012", { parentTicket: "T-011" }),
+        ...dependents,
+      ]);
+      const state = await stateOf(root);
+      expect(state.umbrellaIDs.has("T-010")).toBe(false);
+      await expectWithheld(root, false);
+    });
+
+    it("two deleted intermediates in a row still reach the withdrawn leaf", async () => {
+      const root = await board([
+        delivered("T-010"), ticket("T-011", { parentTicket: "T-010", ...deleted }),
+        ticket("T-013", { parentTicket: "T-011", ...deleted }),
+        withdrawn("T-012", { parentTicket: "T-013" }),
+        ...dependents,
+      ]);
+      const state = await stateOf(root);
+      expect(state.umbrellaIDs.has("T-010")).toBe(false);
+      await expectWithheld(root, false);
+    });
+
+    it("a complete ticket whose whole subtree is deleted releases", async () => {
+      const root = await board([
+        delivered("T-010"), ticket("T-011", { parentTicket: "T-010", ...deleted }),
+        withdrawn("T-012", { parentTicket: "T-011", ...deleted }),
+        ...dependents,
+      ]);
+      const state = await stateOf(root);
+      expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(false);
+      expect(ticketsUnblockedBy("T-001", state).map((t) => t.id)).toEqual(["T-021"]);
+      const dependent = [state.ticketByID("T-021")!];
+      expect(formatBlockedTickets(dependent, state, "md")).toBe(
+        "T-021: Ticket T-021 -- blocked by: T-001 (open), T-010 (complete)",
+      );
+      expect(JSON.parse(formatBlockedTickets(dependent, state, "json")).data[0].blockers).toEqual([
+        { id: "T-001", status: "open", releases: false, reason: null, detail: [] },
+        { id: "T-010", status: "complete", releases: true, reason: null, detail: [] },
+      ]);
+      const codes = validateProject(state).findings.filter((f) => (f.entity === "T-020" || f.entity === "T-021") && f.code.startsWith("blocked_by_"));
+      expect(codes).toEqual([]);
+    });
+  });
 });
 
 // --- ticketsUnblockedBy ------------------------------------------------------

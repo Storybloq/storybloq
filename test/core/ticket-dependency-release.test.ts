@@ -244,6 +244,67 @@ describe("T-486 U2-2 umbrellas (R2, R3, R8, R11)", () => {
   });
 });
 
+// --- archived children --------------------------------------------------------
+
+describe("T-486 U2-2 fixup: archived children count for the release walk (umbrellaIDs counts active children only)", () => {
+  const archived = { lifecycle: "archived" };
+
+  /** T-020 waits on T-010 alone; T-021 waits on T-010 and the open T-001. */
+  const dependents = [ticket("T-001"), ticket("T-020", { blockedBy: ["T-010"] }), ticket("T-021", { blockedBy: ["T-001", "T-010"] })];
+
+  async function expectWithheld(root: string, umbrellaError: boolean) {
+    const state = await stateOf(root);
+    expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(true);
+    expect(await recommended(root)).not.toContain("T-020");
+    expect(ticketsUnblockedBy("T-001", state).map((t) => t.id)).toEqual([]);
+    const dependent = [state.ticketByID("T-020")!];
+    expect(formatBlockedTickets(dependent, state, "md")).toBe(
+      "T-020: Ticket T-020 -- blocked by: T-010 (umbrella, withdrawn work under it: T-012)",
+    );
+    expect(JSON.parse(formatBlockedTickets(dependent, state, "json")).data[0].blockers).toEqual([
+      { id: "T-010", status: "complete", releases: false, reason: "withheld", detail: ["T-012"] },
+    ]);
+    const codes = validateProject(state).findings.filter((f) => f.entity === "T-020" && f.code.startsWith("blocked_by_"));
+    expect(codes.map((f) => f.code).sort()).toEqual(umbrellaError ? ["blocked_by_umbrella", "blocked_by_withheld_umbrella"] : ["blocked_by_withheld_umbrella"]);
+    expect(codes.find((f) => f.code === "blocked_by_withheld_umbrella")!.message).toBe(
+      "Ticket T-020 is blocked by T-010, which has withdrawn work under it (T-012); retarget or remove the edge.",
+    );
+  }
+
+  it("an archived withdrawn grandchild under an active child withholds the top umbrella", async () => {
+    // T-011 is active but its only child is archived, so T-011 is not in umbrellaIDs.
+    const root = await board([
+      delivered("T-010"), delivered("T-011", { parentTicket: "T-010" }),
+      withdrawn("T-012", { parentTicket: "T-011", ...archived }),
+      ...dependents,
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-011")).toBe(false);
+    await expectWithheld(root, true);
+  });
+
+  it("a ticket whose only child is archived and withdrawn withholds, though umbrellaIDs does not name it", async () => {
+    const root = await board([delivered("T-010"), withdrawn("T-012", { parentTicket: "T-010", ...archived }), ...dependents]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-010")).toBe(false);
+    await expectWithheld(root, false);
+  });
+
+  it("an archived delivered child under a complete umbrella releases", async () => {
+    const root = await board([delivered("T-010"), delivered("T-012", { parentTicket: "T-010", ...archived }), ...dependents]);
+    const state = await stateOf(root);
+    expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(false);
+    expect(ticketsUnblockedBy("T-001", state).map((t) => t.id)).toEqual(["T-021"]);
+  });
+
+  it("a deleted withdrawn child, the only one, still releases", async () => {
+    const root = await board([delivered("T-010"), withdrawn("T-012", { parentTicket: "T-010", ...deleted }), ...dependents]);
+    const state = await stateOf(root);
+    expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(false);
+    expect(state.dependencyRelease(state.ticketByID("T-010")!)).toEqual({ releases: true, reason: null, detail: [] });
+  });
+});
+
 // --- ticketsUnblockedBy ------------------------------------------------------
 
 describe("T-486 U2-2 ticketsUnblockedBy reads the same projection as isBlocked (R7, R12, R13)", () => {

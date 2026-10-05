@@ -391,7 +391,11 @@ export class ProjectState {
    * 3. a ticket's own effective withdrawal never releases, so a withdrawn
    *    umbrella blocks even with delivered children;
    * 4. an umbrella releases when stored complete with no effectively withdrawn
-   *    live leaf under it, and never when its parent chain loops;
+   *    live leaf under it, and never when its parent chain loops. For this walk
+   *    alone, a ticket is an umbrella when any non-deleted ticket names it as
+   *    parent, archived included: an archived withdrawn child still withholds,
+   *    though `umbrellaIDs` (phase and umbrella status) counts active children
+   *    only;
    * 5. a leaf releases when stored complete.
    */
   dependencyRelease(blocker: Ticket): DependencyRelease {
@@ -399,7 +403,7 @@ export class ProjectState {
     if (hasOwnerCheckpoint(blocker)) return plain(checkpointReleases(blocker));
     if (isDeleted(blocker)) return plain(true);
     if (isEffectivelyWithdrawn(blocker)) return { releases: false, reason: "withdrawn", detail: [blocker.id] };
-    if (this.isUmbrella(blocker)) {
+    if (this.hasReleaseChildren(blocker.id)) {
       const under = this.withdrawnUnder(blocker.id);
       if (under.withdrawn.length > 0) return { releases: false, reason: "withheld", detail: under.withdrawn };
       if (under.cycle) return plain(false);
@@ -509,11 +513,21 @@ export class ProjectState {
   // --- Private ---
 
   /**
-   * T-486 U2: the effectively withdrawn live leaves under an umbrella, walked
-   * through every descendant umbrella. A ticket has one parent, so a walk that
-   * meets an id twice has found a parent cycle through the umbrella itself (or
-   * two records claiming one id); it stops there and reports it, and the
-   * umbrella does not release.
+   * T-486 U2: whether the release walk treats `id` as an umbrella: a
+   * non-deleted ticket, archived or active, names it as parent.
+   * `childrenByParent` holds every referrer, so deleted ones are filtered here.
+   */
+  private hasReleaseChildren(id: string): boolean {
+    return (this.childrenByParent.get(id) ?? []).some((c) => !isDeleted(c));
+  }
+
+  /**
+   * T-486 U2: the effectively withdrawn non-deleted leaves under an umbrella,
+   * archived ones included, walked through every descendant that has
+   * non-deleted children. A ticket has one parent, so a walk that meets an id
+   * twice has found a parent cycle through the umbrella itself (or two records
+   * claiming one id); it stops there and reports it, and the umbrella does not
+   * release.
    */
   private withdrawnUnder(umbrellaId: string): { withdrawn: string[]; cycle: boolean } {
     const withdrawn: string[] = [];
@@ -523,7 +537,7 @@ export class ProjectState {
       for (const child of this.childrenByParent.get(id) ?? []) {
         if (seen.has(child.id)) { cycle = true; continue; }
         seen.add(child.id);
-        if (this.umbrellaIDs.has(child.id)) walk(child.id);
+        if (this.hasReleaseChildren(child.id)) walk(child.id);
         else if (!isDeleted(child) && isEffectivelyWithdrawn(child)) withdrawn.push(child.id);
       }
     };

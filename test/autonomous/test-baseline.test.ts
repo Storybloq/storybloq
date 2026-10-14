@@ -70,6 +70,13 @@ const pidFile = (): string => {
   pidFiles.push(p);
   return p;
 };
+/**
+ * A fixture script that records its pid after the body's handlers are in
+ * place, so the afterEach sweep can SIGKILL it if a test (or a mutant)
+ * leaves it running.
+ */
+const tracked = (body: string): string =>
+  script(`${body}require('fs').writeFileSync(${JSON.stringify(pidFile())}, String(process.pid));\n`);
 const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
@@ -166,24 +173,24 @@ describe.skipIf(!posix)("ISS-1376 captureTestBaseline: causes", () => {
   const cwd = (): string => dir;
 
   it("C1: a run past the timeout records timeout", async () => {
-    const r = await captureTestBaseline(execNode(script(SLEEP)), cwd(), 500, { killGraceMs: 300, cleanupCapMs: 1000 });
+    const r = await captureTestBaseline(execNode(tracked(SLEEP)), cwd(), 500, { killGraceMs: 300, cleanupCapMs: 1000 });
     expect(r.kind === "ran" && r.failure).toBe("timeout");
   });
 
   it("C2: a fixture that exits 0 on SIGTERM still records timeout", async () => {
-    const f = script("process.on('SIGTERM', () => process.exit(0));\n" + SLEEP);
+    const f = tracked("process.on('SIGTERM', () => process.exit(0));\n" + SLEEP);
     const r = await captureTestBaseline(execNode(f), cwd(), 500, { killGraceMs: 300, cleanupCapMs: 1000 });
     expect(r).toMatchObject({ kind: "ran", failure: "timeout", exitCode: 0 });
   });
 
   it("C3: a fixture that exits 3 on SIGTERM records timeout with exit 3", async () => {
-    const f = script("process.on('SIGTERM', () => process.exit(3));\n" + SLEEP);
+    const f = tracked("process.on('SIGTERM', () => process.exit(3));\n" + SLEEP);
     const r = await captureTestBaseline(execNode(f), cwd(), 500, { killGraceMs: 300, cleanupCapMs: 1000 });
     expect(r).toMatchObject({ kind: "ran", failure: "timeout", exitCode: 3 });
   });
 
   it("C4: a fixture that ignores SIGTERM is killed after the grace, and cleanup is confirmed", async () => {
-    const f = script(IGNORE_TERM + SLEEP);
+    const f = tracked(IGNORE_TERM + SLEEP);
     const started = Date.now();
     const r = await captureTestBaseline(execNode(f), cwd(), 300, { killGraceMs: 300, cleanupCapMs: 2000 });
     expect(r).toMatchObject({ kind: "ran", failure: "timeout" });
@@ -382,7 +389,7 @@ describe.skipIf(!posix)("ISS-1376 captureTestBaseline: the whole process tree", 
 
   it("C13: a group that is already gone confirms at once, well under the cap", async () => {
     const started = Date.now();
-    const r = await captureTestBaseline(execNode(script(SLEEP)), dir, 200, { killGraceMs: 200, cleanupCapMs: 5000 });
+    const r = await captureTestBaseline(execNode(tracked(SLEEP)), dir, 200, { killGraceMs: 200, cleanupCapMs: 5000 });
     expect(r).toMatchObject({ kind: "ran", failure: "timeout" });
     expect(r.cleanup).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(2000);

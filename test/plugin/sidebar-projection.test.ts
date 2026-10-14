@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadProject } from "../../src/core/project-loader.js";
 import { buildCompactStatusData } from "../../src/core/output-formatter.js";
+import { ticketRefNormalizer } from "../../src/core/ticket-counts.js";
 import {
+  buildParentResolver,
   extractRecord,
   projectSidebar,
   type SidebarInput,
@@ -103,9 +105,11 @@ const tickets: Record<string, Record<string, unknown>> = {
   "T-022.json": ticket({ id: "T-022", title: "Done newer", status: "complete", phase: "p1", order: 22 }),
   // A displayId collision, which is what `storybloq reconcile` exists for.
   // Two tickets answer to T-010 and a third used to, and a fourth names T-010
-  // as its parent. The CLI's parent resolution falls through the ambiguous
-  // displayId to the unique previous one, so the THIRD is the umbrella; a
-  // resolver that stops at "ambiguous" leaves it counted as a leaf.
+  // as its parent. Since T-486 U2-3a an ambiguous current displayId ends the
+  // search: the parent ref stays unresolved, so nothing is an umbrella by it
+  // and the THIRD stays a leaf. A resolver that falls through to the unique
+  // previous displayId makes the third an umbrella and drops it from the
+  // leaves.
   "t-aa11aa11aa11aa11.json": ticket({ id: "t-aa11aa11aa11aa11", displayId: "T-010", title: "Collides one", status: "open", phase: "p3", order: 10 }),
   "t-bb22bb22bb22bb22.json": ticket({ id: "t-bb22bb22bb22bb22", displayId: "T-010", title: "Collides two", status: "open", phase: "p3", order: 11 }),
   "t-cc33cc33cc33cc33.json": ticket({ id: "t-cc33cc33cc33cc33", displayId: "T-011", previousDisplayIds: ["T-010"], title: "Renamed away from T-010", status: "open", phase: "p3", order: 12 }),
@@ -228,12 +232,15 @@ describe("sidebar projection (T-508)", () => {
       items: [],
       warnings: [],
     });
-    // T-001 is an umbrella, T-007 is deleted, and t-cc33 is an umbrella too
-    // because T-013's parent ref T-010 resolves through the historical
-    // displayId: eight leaves remain.
-    expect(compact.totalTickets).toBe(11);
+    // Thirteen active tickets (T-007 is deleted). T-001 is an umbrella; T-013's
+    // parent ref T-010 is held by two tickets as their current displayId, so
+    // it resolves to nothing and t-cc33 (which used to be T-010) stays a leaf:
+    // twelve leaves, three of them complete (T-002, T-004, T-022). The figure
+    // was eleven before T-486 U2-3a ruling R1-2 (an ambiguous current
+    // displayId never falls through to a historical alias) made t-cc33 a leaf.
+    expect(compact.totalTickets).toBe(12);
     expect(compact.completeTickets).toBe(3);
-    expect(compact.openTickets).toBe(8);
+    expect(compact.openTickets).toBe(9);
     // t-zz11yy22xx33ww44 is blocked by T-003 (in progress), T-006 by a ghost
     // ref, and T-021 by T-003 as well.
     expect(compact.blockedTickets).toBe(3);
@@ -242,18 +249,62 @@ describe("sidebar projection (T-508)", () => {
     expect(compact.phases.map((p) => p.status)).toEqual(["inprogress", "inprogress", "notstarted"]);
   });
 
-  it("resolves a parent through a historical displayId when the current one collides", async () => {
-    // The rule this pins, from ProjectState's localResolve: id, then a
-    // displayId matching exactly one ticket, then a previousDisplayIds
-    // matching exactly one. An ambiguous displayId does not end the search.
-    // M-PARENT-AMBIGUOUS returns ambiguous there and this goes red.
+  it("leaves a parent unresolved when its current displayId collides, so the historical holder is a leaf on both sides", async () => {
+    // The rule this pins, from ticketRefNormalizer (T-486 U2-3a): id, then a
+    // current displayId, resolving only when exactly one ticket holds it and
+    // ending the search when several do, then a previousDisplayIds entry
+    // matching exactly one, consulted only when no ticket holds the ref
+    // currently. M-PARENT-AMBIGUOUS restores the fall-through in the sidebar
+    // and this goes red.
     root = await writeFixture();
     const mine = projectSidebar(await readAsTheModDoes(root));
-    const leafIds = mine.inProgressTickets.map((t) => t.id);
-    expect(leafIds).not.toContain("T-011");
     const { state } = await loadProject(root);
-    expect(state.isUmbrella(state.tickets.find((t) => t.id === "t-cc33cc33cc33cc33")!)).toBe(true);
-    expect(mine.totalTickets).toBe(11);
+    const compact = buildCompactStatusData(state, [], [], undefined, undefined, [], {
+      items: [],
+      warnings: [],
+    });
+    // The CLI: the historical holder is not an umbrella and has no children.
+    const historical = state.tickets.find((t) => t.id === "t-cc33cc33cc33cc33")!;
+    expect(state.isUmbrella(historical)).toBe(false);
+    expect(state.umbrellaChildren("t-cc33cc33cc33cc33")).toEqual([]);
+    // The sidebar: it is a leaf, on the board as an open card under its
+    // current displayId.
+    const openIds = mine.board.open.filter((c) => c.kind === "ticket").map((c) => c.id);
+    expect(openIds).toContain("T-011");
+    // The child's parent ref is unresolved on both sides.
+    expect(ticketRefNormalizer(state.tickets)("T-010")).toBe("T-010");
+    expect(buildParentResolver((await readAsTheModDoes(root)).tickets)("T-010")).toBe("T-010");
+    // And the totals agree: the CLI's status and the sidebar give the same
+    // figures on this fixture, twelve leaves (R1-2), three complete, nine
+    // open, three blocked. M-PARENT-AMBIGUOUS moves the sidebar to eleven and
+    // its CLI twin moves the CLI to eleven, and either one fails here.
+    const figures = (p: { totalTickets: number; completeTickets: number; openTickets: number; blockedTickets: number }) =>
+      [p.totalTickets, p.completeTickets, p.openTickets, p.blockedTickets];
+    expect(figures(compact)).toEqual([12, 3, 9, 3]);
+    expect(figures(mine)).toEqual([12, 3, 9, 3]);
+  });
+
+  it("resolves every parent ref in the fixture exactly as the CLI's normalizer does", async () => {
+    // The sidebar cannot import ticketRefNormalizer, so it carries a copy;
+    // this holds the copy equal, ref by ref, over every id, current displayId
+    // and previous displayId the fixture has, every parent ref, and one that
+    // names nothing. Change the precedence on either side and this goes red.
+    root = await writeFixture();
+    const { state } = await loadProject(root);
+    const theirs = ticketRefNormalizer(state.tickets);
+    const mineTickets = (await readAsTheModDoes(root)).tickets;
+    const mine = buildParentResolver(mineTickets);
+    const refs = new Set<string>(["T-999"]);
+    for (const t of mineTickets) {
+      refs.add(t.id);
+      if (t.displayId) refs.add(t.displayId);
+      for (const prev of t.previousDisplayIds) refs.add(prev);
+      if (t.parentTicket) refs.add(t.parentTicket);
+    }
+    expect(refs.has("T-010")).toBe(true);
+    for (const ref of [...refs].sort()) {
+      expect({ ref, resolved: mine(ref) }).toEqual({ ref, resolved: theirs(ref) });
+    }
   });
 
   it("splits the whole project's leaves into three columns that partition them", async () => {
@@ -337,11 +388,14 @@ describe("sidebar projection (T-508)", () => {
     // M-COLUMN-MIX puts a complete ticket in Open and this fails. Open is in
     // ticket order, Done in reverse: the last thing finished reads first.
     // Tickets first in every column, then the issues, worst severity first.
+    // T-011 (t-cc33, order 12, once T-010) is an open leaf since T-486 U2-3a
+    // ruling R1-2: it is the same card the 12/3/9 totals above count.
     expect(mine.board.open.map((c) => c.id)).toEqual([
       "T-005",
       "T-006",
       "T-010",
       "T-010",
+      "T-011",
       "T-013",
       "T-020",
       "T-021",

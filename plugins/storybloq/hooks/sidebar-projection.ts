@@ -260,31 +260,42 @@ function buildResolver(tickets: readonly SidebarTicket[]): (ref: string) => Reso
 }
 
 /**
- * Parent references, resolved as `ProjectState`'s own `localResolve` does.
+ * Parent references, resolved as `ProjectState` resolves them when it builds
+ * its graph, through `ticketRefNormalizer` in src/core/ticket-counts.ts:
  *
- * This is NOT the blocker resolver above, and the difference is load bearing.
- * `localResolve`'s order, from src/core/project-state.ts:
- *
- *   if (localById.has(ref)) return ref;
- *   const byDisplay = localByDisplay.get(ref);
- *   if (byDisplay?.length === 1) return byDisplay[0];
- *   const byPrev = localByPrev.get(ref);
- *   if (byPrev?.length === 1) return byPrev[0];
+ *   if (byId.has(ref)) return ref;
+ *   const display = byDisplay.get(ref);
+ *   if (display !== undefined) return display.length === 1 ? display[0] : ref;
+ *   const prev = byPrev.get(ref);
+ *   if (prev?.length === 1) return prev[0];
  *   return ref;
  *
- * Two things follow that the blocker resolver does the other way. An
- * AMBIGUOUS displayId does not end the search here: it falls through to the
- * previous displayIds, so a ref that two tickets currently answer to and one
- * ticket used to answer to resolves to that one. And the index is built on
- * the RAW displayId only where a record carries one, with no trimming and no
- * falling back to the id, so a ticket with no displayId is not indexed under
- * its own id here even though `buildDisplayIndex` does index it that way.
+ * This is NOT the blocker resolver above: a missing or ambiguous parent ref
+ * comes back unchanged rather than as a verdict.
+ *
+ * T-486 U2-3a changed the precedence: a ref that any ticket holds as its
+ * CURRENT displayId resolves only when exactly one does, and an ambiguous one
+ * ends the search there. A previous displayId is consulted only
+ * when no ticket currently holds the ref. So a ref that two tickets currently
+ * answer to and one ticket used to answer to stays unresolved, and the one
+ * that used to answer to it is not made an umbrella by it.
+ *
+ * This file cannot import that function (see the top of the file), so this
+ * is a copy, and `test/plugin/sidebar-projection.test.ts` holds the two equal
+ * ref by ref over one fixture (mutant M-PARENT-AMBIGUOUS restores the old
+ * fall-through here and that test goes red).
+ *
+ * One thing still differs from the blocker resolver above: the index is built
+ * on the RAW displayId only where a record carries one, with no trimming and
+ * no falling back to the id, so a ticket with no displayId is not indexed
+ * under its own id here even though `buildDisplayIndex` does index it that
+ * way.
  *
  * A ref that resolves to nothing comes back unchanged, which is what makes an
  * unresolvable parent name an umbrella id nothing matches: no ticket is
  * excluded from the leaves by it, and none should be.
  */
-function buildParentResolver(tickets: readonly SidebarTicket[]): (ref: string) => string {
+export function buildParentResolver(tickets: readonly SidebarTicket[]): (ref: string) => string {
   const byId = new Set<string>();
   const byDisplay = new Map<string, string[]>();
   const byPrev = new Map<string, string[]>();
@@ -304,7 +315,7 @@ function buildParentResolver(tickets: readonly SidebarTicket[]): (ref: string) =
   return (ref: string): string => {
     if (byId.has(ref)) return ref;
     const display = byDisplay.get(ref);
-    if (display && display.length === 1) return display[0]!;
+    if (display !== undefined) return display.length === 1 ? display[0]! : ref;
     const prev = byPrev.get(ref);
     if (prev && prev.length === 1) return prev[0]!;
     return ref;

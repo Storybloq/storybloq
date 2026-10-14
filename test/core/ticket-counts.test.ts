@@ -17,9 +17,10 @@ import { join } from "node:path";
 
 import { initProject } from "../../src/core/init.js";
 import { loadProject, loadTicketRecords, serializeJSON } from "../../src/core/project-loader.js";
-import { applyTicketIdentityPolicy, computeTicketCounts } from "../../src/core/ticket-counts.js";
+import { applyTicketIdentityPolicy, computeTicketCounts, ticketRefNormalizer } from "../../src/core/ticket-counts.js";
+import { validateProject } from "../../src/core/validation.js";
 import { formatExport, formatNextTicketOutcome, formatNextTicketsOutcome, formatRecap, formatStatus } from "../../src/core/output-formatter.js";
-import { nextTicket, nextTickets } from "../../src/core/queries.js";
+import { blockedTickets, nextTicket, nextTickets, phasesWithStatus, umbrellaProgress } from "../../src/core/queries.js";
 import type { RecapResult } from "../../src/core/snapshot.js";
 import type { Ticket } from "../../src/models/ticket.js";
 
@@ -289,5 +290,119 @@ describe("T-486 U2-3a identity policy (B3: N9, N12 to N16)", () => {
     ]);
     const state = await stateOf(after);
     expect(state.isBlocked(state.ticketByID("T-063")!)).toBe(false);
+  });
+});
+
+describe("T-486 U2-3a fixup: one counted population for every count (R1-1)", () => {
+  const ids = (ts: readonly Ticket[]) => ts.map((t) => t.id);
+  /** Phase leaf counts plus unphased leaves give the total. */
+  const sumsToTotal = (state: Awaited<ReturnType<typeof stateOf>>) =>
+    phasesWithStatus(state).reduce((n, p) => n + p.leafCount, 0) + state.countedPhaseTickets(null).length === state.leafTicketCount;
+
+  it("duplicated blocked leaves: totals, blocked, phase leaf count and unphased all agree and all exclude them", async () => {
+    const root = await board([
+      ticket("T-001"), delivered("T-002"), ticket("T-006", { phase: null }),
+      ["T-005-a.json", ticket("T-005", { blockedBy: ["T-099"] })],
+      ["T-005-b.json", ticket("T-005", { blockedBy: ["T-099"], phase: null })],
+    ]);
+    const state = await stateOf(root);
+    const full = JSON.parse(formatStatus(state, "json")).data;
+    expect([full.totalTickets, full.completeTickets, full.openTickets, full.blockedTickets, full.unphasedOpenTickets]).toEqual([3, 1, 2, 0, 1]);
+    expect(full.phases.map((p: { id: string; leafCount: number; status: string }) => [p.id, p.leafCount, p.status])).toEqual([["p0", 2, "inprogress"]]);
+    expect(sumsToTotal(state)).toBe(true);
+    expect(formatStatus(state, "md")).toContain("Tickets: 1/3 complete, 0 blocked");
+    // Listings keep both records.
+    expect(ids(state.leafTickets).filter((id) => id === "T-005")).toHaveLength(2);
+    expect(ids(blockedTickets(state))).toEqual(["T-005", "T-005"]);
+  });
+
+  it("duplicated children under one parent: the parent is a leaf in every surface", async () => {
+    const root = await board([
+      ticket("T-001"), delivered("T-010"),
+      ["T-011-a.json", ticket("T-011", { parentTicket: "T-010" })],
+      ["T-011-b.json", ticket("T-011", { parentTicket: "T-010" })],
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-010")).toBe(false);
+    expect(state.isUmbrella(state.ticketByID("T-010")!)).toBe(false);
+    expect(ids(state.countedLeafTickets)).toEqual(["T-001", "T-010"]);
+    expect([state.leafTicketCount, state.completeLeafTicketCount, state.blockedCount]).toEqual([2, 1, 0]);
+    expect(state.phaseStatus("p0")).toBe("inprogress");
+    expect(umbrellaProgress("T-010", state)).toBeNull();
+    expect(sumsToTotal(state)).toBe(true);
+    const r = await loadTicketRecords(join(root, ".story"));
+    expect(computeTicketCounts(r.identity.counted)).toMatchObject({ leaf: 2, terminal: 1 });
+  });
+
+  it("a duplicated child beside a counted one: progress and umbrella status count only the counted child", async () => {
+    const root = await board([
+      delivered("T-010"), delivered("T-012", { parentTicket: "T-010" }),
+      ["T-011-a.json", ticket("T-011", { parentTicket: "T-010" })],
+      ["T-011-b.json", ticket("T-011", { parentTicket: "T-010" })],
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-010")).toBe(true);
+    expect(umbrellaProgress("T-010", state)).toEqual({ total: 1, complete: 1, status: "complete" });
+    expect(state.umbrellaStatus("T-010")).toBe("complete");
+    expect([state.leafTicketCount, state.completeLeafTicketCount]).toEqual([1, 1]);
+    expect(state.phaseStatus("p0")).toBe("complete");
+  });
+
+  it("a parent whose only children share one canonical id is a leaf, and the release walk still finds the withdrawn record", async () => {
+    const root = await board([
+      delivered("T-010"),
+      ["T-011-a.json", withdrawn("T-011", { parentTicket: "T-010" })],
+      ["T-011-b.json", ticket("T-011", { parentTicket: "T-010" })],
+      ticket("T-020", { blockedBy: ["T-010"] }),
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-010")).toBe(false);
+    expect(ids(state.countedLeafTickets)).toEqual(["T-010", "T-020"]);
+    expect([state.leafTicketCount, state.completeLeafTicketCount]).toEqual([2, 1]);
+    // The walk reads childrenByParent over every record, so it stays conservative.
+    expect(state.dependencyRelease(state.ticketByID("T-010")!)).toEqual({ releases: false, reason: "withheld", detail: ["T-011"] });
+    expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(true);
+    expect(validateProject(state).findings.filter((f) => f.code === "duplicate_ticket_id").map((f) => f.entity)).toEqual(["T-011"]);
+  });
+
+  it("with no duplicated id the counted lists equal the listings", async () => {
+    const state = await stateOf(await board([
+      delivered("T-010"), withdrawn("T-011", { parentTicket: "T-010" }), ticket("T-012", { parentTicket: "T-010", status: "inprogress" }),
+      ticket("T-020", { phase: null }), ticket("T-021", { blockedBy: ["T-020"] }),
+    ]));
+    expect(state.countedLeafTickets).toEqual(state.leafTickets);
+    expect(state.countedPhaseTickets("p0")).toEqual(state.phaseTickets("p0"));
+    expect(state.countedPhaseTickets(null)).toEqual(state.phaseTickets(null));
+    expect(sumsToTotal(state)).toBe(true);
+  });
+});
+
+describe("T-486 U2-3a fixup: an ambiguous current displayId never falls through to a historical alias (R1-2)", () => {
+  const A = "t-0000000000000b01";
+  const B = "t-0000000000000b02";
+  const C = "t-0000000000000b03";
+
+  it("two current holders and one historical holder: the child's parent stays unresolved and the historical holder stays a counted leaf", async () => {
+    const root = await board([
+      ticket(A, { displayId: "T-050" }), ticket(B, { displayId: "T-050" }),
+      delivered(C, { displayId: "T-090", previousDisplayIds: ["T-050"] }),
+      ticket("T-060", { parentTicket: "T-050" }),
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has(C)).toBe(false);
+    expect(state.umbrellaChildren(C)).toEqual([]);
+    expect(state.countedLeafTickets.map((t) => t.id)).toContain(C);
+    expect([state.leafTicketCount, state.completeLeafTicketCount]).toEqual([4, 1]);
+    expect(umbrellaProgress(C, state)).toBeNull();
+    const r = await loadTicketRecords(join(root, ".story"));
+    expect(ticketRefNormalizer(r.records)("T-050")).toBe("T-050");
+    expect(computeTicketCounts(r.identity.counted)).toMatchObject({ leaf: 4, terminal: 1 });
+  });
+
+  it("with no current holder the unique historical holder still resolves", async () => {
+    const root = await board([delivered(C, { displayId: "T-090", previousDisplayIds: ["T-050"] }), ticket("T-060", { parentTicket: "T-050" })]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has(C)).toBe(true);
+    expect(state.umbrellaChildren(C).map((t) => t.id)).toEqual(["T-060"]);
   });
 });

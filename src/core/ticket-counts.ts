@@ -35,9 +35,12 @@ function isActiveTicket(t: Ticket): boolean {
 }
 
 /**
- * Resolves a ticket ref the way ProjectState builds its graph: canonical id,
- * then a unique `displayId`, then a unique `previousDisplayIds` entry; an
- * unmatched or ambiguous ref stays as written.
+ * Resolves a ticket ref the way ProjectState builds its graph: canonical id;
+ * else the current `displayId` holders, resolving only when there is one;
+ * else, only when no ticket holds it as a current `displayId`, a unique
+ * `previousDisplayIds` entry. An unmatched or ambiguous ref stays as written
+ * (B3, D1: a current-display collision is ambiguous and never falls through
+ * to a historical alias).
  */
 export function ticketRefNormalizer(tickets: readonly Ticket[]): (ref: string) => string {
   const byId = new Set<string>();
@@ -54,7 +57,7 @@ export function ticketRefNormalizer(tickets: readonly Ticket[]): (ref: string) =
   return (ref: string): string => {
     if (byId.has(ref)) return ref;
     const display = byDisplay.get(ref);
-    if (display?.length === 1) return display[0]!;
+    if (display !== undefined) return display.length === 1 ? display[0]! : ref;
     const prev = byPrev.get(ref);
     if (prev?.length === 1) return prev[0]!;
     return ref;

@@ -102,7 +102,7 @@ function busStatusLines(bus: BusStatusInput): string[] {
     ? [`Bus: ${bus.setupState}`]
     : ["Bus: enabled, not set up in this checkout; run `storybloq bus setup`"];
 }
-import { phasesWithStatus, isBlockerCleared, openUnphasedLeaves } from "./queries.js";
+import { phasesWithStatus, isBlockerCleared } from "./queries.js";
 
 function resolveTicketRefDisplay(ref: string, state: ProjectState): string {
   const result = state.resolveTicketRef(ref);
@@ -897,7 +897,10 @@ export function formatStatus(
   // ISS-1112: formatStatus is exported from the package root, and a caller
   // holding only the counts passes a partial state with no phaseTickets. That
   // count is unknown, not zero: the key and the line are omitted.
-  const unphasedOpenTickets = typeof state.phaseTickets === "function" ? openUnphasedLeaves(state).length : undefined;
+  // T-486 U2-3a: a count, so it reads the counted leaves; openUnphasedLeaves stays the listing.
+  const unphasedOpenTickets = typeof state.countedPhaseTickets === "function"
+    ? state.countedPhaseTickets(null).filter((t) => t.status !== "complete").length
+    : undefined;
   const data = {
     project: state.config.project,
     totalTickets: state.leafTicketCount,

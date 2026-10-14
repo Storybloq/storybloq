@@ -10,7 +10,7 @@ import { compareByRank } from "./fractional-index.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { isEffectivelyWithdrawn } from "./resolution-kind.js";
-import { applyTicketIdentityPolicy, computeTicketCounts, derivesComplete, umbrellaIdsOf, type TicketIdentityReport } from "./ticket-counts.js";
+import { applyTicketIdentityPolicy, computeTicketCounts, derivesComplete, ticketRefNormalizer, umbrellaIdsOf, type TicketIdentityReport } from "./ticket-counts.js";
 
 export type PhaseStatus = "notstarted" | "inprogress" | "complete";
 
@@ -50,6 +50,8 @@ export class ProjectState {
   // --- Derived (public readonly) ---
   readonly umbrellaIDs: ReadonlySet<string>;
   readonly leafTickets: readonly Ticket[];
+  /** T-486 U2-3a: `leafTickets` without records whose canonical id is claimed twice; every count reads this. */
+  readonly countedLeafTickets: readonly Ticket[];
   readonly leafTicketCount: number;
   readonly completeLeafTicketCount: number;
   /** T-486 U2-3: terminal leaves that were not withdrawn. */
@@ -65,6 +67,7 @@ export class ProjectState {
 
   // --- Derived (private) ---
   private readonly leafTicketsByPhase: Map<string | null, Ticket[]>;
+  private readonly countedLeafTicketsByPhase: Map<string | null, Ticket[]>;
   private readonly childrenByParent: Map<string, Ticket[]>;
   private readonly reverseBlocksMap: Map<string, Ticket[]>;
   private readonly deletionChildrenByParent: Map<string, Ticket[]>;
@@ -134,7 +137,10 @@ export class ProjectState {
     this.activeNotes = input.notes.filter((n) => isActiveLifecycle(n));
     this.activeLessons = this.lessons.filter((l) => isActiveLifecycle(l));
 
-    // Step 0b: Local resolver for ref normalization during graph construction
+    // Step 0b: Local resolver for ref normalization during graph construction.
+    // T-486 U2-3a: the precedence lives in ticket-counts.ts (one rule, shared
+    // with the counts); localResolveAll keeps every holder for deletion safety.
+    const localResolve = ticketRefNormalizer(input.tickets);
     const localById = new Map<string, string>();
     const localByDisplay = new Map<string, string[]>();
     const localByPrev = new Map<string, string[]>();
@@ -146,14 +152,6 @@ export class ProjectState {
         localByPrev.set(prev, [...(localByPrev.get(prev) ?? []), t.id]);
       }
     }
-    function localResolve(ref: string): string {
-      if (localById.has(ref)) return ref;
-      const byDisplay = localByDisplay.get(ref);
-      if (byDisplay?.length === 1) return byDisplay[0]!;
-      const byPrev = localByPrev.get(ref);
-      if (byPrev?.length === 1) return byPrev[0]!;
-      return ref;
-    }
     function localResolveAll(ref: string): string[] {
       if (localById.has(ref)) return [ref];
       const byDisplay = localByDisplay.get(ref);
@@ -164,16 +162,20 @@ export class ProjectState {
     }
 
     // Step 1: Umbrella IDs -- only active tickets count as parents. T-486 U2-3:
-    // the rule lives in ticket-counts.ts, shared with computeTicketCounts.
-    const parentIDs = umbrellaIdsOf(input.tickets, localResolve);
+    // the rule lives in ticket-counts.ts, shared with computeTicketCounts, and
+    // reads the records the identity policy keeps, so a parent's umbrella or
+    // leaf standing is the same for listings and counts.
+    this.ticketIdentity = applyTicketIdentityPolicy(input.tickets);
+    const duplicateIds = this.ticketIdentity.duplicateIds;
+    const parentIDs = umbrellaIdsOf(this.ticketIdentity.counted);
     this.umbrellaIDs = parentIDs;
 
-    // Step 2: Leaf tickets -- active tickets that are not umbrellas. T-486
-    // U2-3: the counts come from the one counting contract, over the records
-    // the identity policy keeps (equal to this list's when no canonical id is
-    // claimed twice).
+    // Step 2: Leaf tickets -- active tickets that are not umbrellas. Listings
+    // and lookups read `leafTickets`, which keeps a record whose canonical id
+    // is claimed twice; every count reads `countedLeafTickets`, which drops it
+    // (equal lists when no id is duplicated).
     this.leafTickets = this.activeTickets.filter((t) => !parentIDs.has(t.id));
-    this.ticketIdentity = applyTicketIdentityPolicy(input.tickets);
+    this.countedLeafTickets = this.leafTickets.filter((t) => !duplicateIds.has(t.id));
     const counts = computeTicketCounts(this.ticketIdentity.counted);
     this.leafTicketCount = counts.leaf;
     this.completeLeafTicketCount = counts.terminal;
@@ -195,6 +197,12 @@ export class ProjectState {
       arr.sort(compareByRank);
     }
     this.leafTicketsByPhase = byPhase;
+    const countedByPhase = new Map<string | null, Ticket[]>();
+    for (const [phase, arr] of byPhase) {
+      const kept = arr.filter((t) => !duplicateIds.has(t.id));
+      if (kept.length > 0) countedByPhase.set(phase, kept);
+    }
+    this.countedLeafTicketsByPhase = countedByPhase;
 
     // Step 4: Children by parent (display/derived: single-resolution)
     const children = new Map<string, Ticket[]>();
@@ -354,9 +362,14 @@ export class ProjectState {
     return this.leafTicketsByPhase.get(phaseId) ?? [];
   }
 
+  /** T-486 U2-3a: a phase's leaves for counting (`phaseTickets` without duplicated canonical ids). */
+  countedPhaseTickets(phaseId: string | null): readonly Ticket[] {
+    return this.countedLeafTicketsByPhase.get(phaseId) ?? [];
+  }
+
   /** Phase status derived from leaf tickets only. Umbrella stored status is ignored. */
   phaseStatus(phaseId: string | null): PhaseStatus {
-    const leaves = this.phaseTickets(phaseId);
+    const leaves = this.countedPhaseTickets(phaseId);
     return ProjectState.aggregateStatus(leaves);
   }
 
@@ -367,7 +380,7 @@ export class ProjectState {
   /** Umbrella status derived from descendant leaf tickets (recursive traversal). */
   umbrellaStatus(ticketId: string): PhaseStatus {
     const visited = new Set<string>();
-    const leaves = this.descendantLeaves(ticketId, visited);
+    const leaves = this.descendantLeaves(ticketId, visited).filter((t) => !this.ticketIdentity.duplicateIds.has(t.id));
     return ProjectState.aggregateStatus(leaves);
   }
 
@@ -431,7 +444,7 @@ export class ProjectState {
   }
 
   get blockedCount(): number {
-    return this.leafTickets.filter((t) => t.status !== "complete" && this.isBlocked(t)).length;
+    return this.countedLeafTickets.filter((t) => t.status !== "complete" && this.isBlocked(t)).length;
   }
 
   /** True when the project has been initialized but not yet populated with tickets/issues/handovers. */

@@ -154,7 +154,9 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
       };
     }
 
-    // Phase has incomplete leaves but all are blocked
+    // Phase has incomplete leaves but all are blocked. T-486 U2-3a: this
+    // number is the pool the picker examined (listing records, duplicated
+    // canonical ids included), not a count to compare with the totals.
     return {
       kind: "all_blocked",
       phaseId: phase.id,
@@ -225,6 +227,8 @@ export function nextTickets(
     const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
 
     if (unblocked.length === 0) {
+      // T-486 U2-3a: the pool the picker examined (listing records), not a
+      // count to compare with the totals.
       skippedBlockedPhases.push({
         phaseId: phase.id,
         blockedCount: incompleteLeaves.length,
@@ -314,7 +318,8 @@ export function umbrellaProgress(
   state: ProjectState,
 ): UmbrellaProgress | null {
   if (!state.umbrellaIDs.has(ticketId)) return null;
-  const leaves = collectDescendantLeaves(ticketId, state, new Set());
+  // T-486 U2-3a: a record whose canonical id is claimed twice is never counted.
+  const leaves = collectDescendantLeaves(ticketId, state, new Set()).filter((t) => !state.ticketIdentity.duplicateIds.has(t.id));
   const complete = leaves.filter((t) => t.status === "complete").length;
   const withdrawn = leaves.filter((t) => t.status === "complete" && isEffectivelyWithdrawn(t)).length;
   return {
@@ -346,7 +351,7 @@ export function phasesWithStatus(
   return state.roadmap.phases.map((phase) => ({
     phase,
     status: state.phaseStatus(phase.id),
-    leafCount: state.phaseTickets(phase.id).length,
+    leafCount: state.countedPhaseTickets(phase.id).length,
   }));
 }
 

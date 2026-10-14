@@ -406,3 +406,30 @@ describe("T-486 U2-3a fixup: an ambiguous current displayId never falls through 
     expect(state.umbrellaChildren(C).map((t) => t.id)).toEqual(["T-060"]);
   });
 });
+
+describe("T-486 U2-3a fixup 2: umbrella counts walk the counted children (R2-1)", () => {
+  const A = "t-0000000000000c01";
+  const B = "t-0000000000000c02";
+  const C = "t-0000000000000c03";
+
+  it("a parent displayId made unique by dropping a duplicated record: the umbrella counts its counted child, the release walk keeps reading every record", async () => {
+    const root = await board([
+      [`${A}-a.json`, ticket(A, { displayId: "T-050" })],
+      [`${A}-b.json`, ticket(A, { displayId: "T-050" })],
+      delivered(B, { displayId: "T-050" }),
+      delivered(C, { displayId: "T-051", parentTicket: "T-050" }),
+      ticket("T-070", { blockedBy: [B] }),
+    ]);
+    const state = await stateOf(root);
+    // Counted population: A is dropped, so T-050 names B alone.
+    expect(state.umbrellaIDs.has(B)).toBe(true);
+    expect(state.umbrellaStatus(B)).toBe("complete");
+    expect(umbrellaProgress(B, state)).toEqual({ total: 1, complete: 1, status: "complete" });
+    expect(state.countedUmbrellaLeaves(B).map((t) => t.id)).toEqual([C]);
+    expect([state.leafTicketCount, state.completeLeafTicketCount]).toEqual([2, 1]);
+    // Every record: T-050 is ambiguous, so the listing and the release walk find no child under B.
+    expect(state.umbrellaChildren(B)).toEqual([]);
+    expect(state.dependencyRelease(state.ticketByID(B)!)).toEqual({ releases: true, reason: null, detail: [] });
+    expect(state.isBlocked(state.ticketByID("T-070")!)).toBe(false);
+  });
+});

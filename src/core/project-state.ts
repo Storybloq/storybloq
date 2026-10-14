@@ -69,6 +69,7 @@ export class ProjectState {
   private readonly leafTicketsByPhase: Map<string | null, Ticket[]>;
   private readonly countedLeafTicketsByPhase: Map<string | null, Ticket[]>;
   private readonly childrenByParent: Map<string, Ticket[]>;
+  private readonly countedChildrenByParent: Map<string, Ticket[]>;
   private readonly reverseBlocksMap: Map<string, Ticket[]>;
   private readonly deletionChildrenByParent: Map<string, Ticket[]>;
   private readonly deletionReverseBlocks: Map<string, Ticket[]>;
@@ -204,7 +205,10 @@ export class ProjectState {
     }
     this.countedLeafTicketsByPhase = countedByPhase;
 
-    // Step 4: Children by parent (display/derived: single-resolution)
+    // Step 4: Children by parent (display/derived: single-resolution). Built
+    // over every record with the all-records normalizer; it serves the
+    // dependency release walk (withdrawnUnder, hasAnyChild) and the
+    // umbrellaChildren listing. Counts read countedChildrenByParent below.
     const children = new Map<string, Ticket[]>();
     const delChildren = new Map<string, Ticket[]>();
     for (const t of input.tickets) {
@@ -226,6 +230,22 @@ export class ProjectState {
     }
     this.childrenByParent = children;
     this.deletionChildrenByParent = delChildren;
+
+    // Step 4b: T-486 U2-3a: children by parent over the counted population,
+    // resolved with that population's normalizer (the one umbrellaIdsOf
+    // uses), so an umbrella's counted descendants are the ones that made it
+    // an umbrella. It serves the counts: umbrellaStatus and umbrellaProgress
+    // (through countedUmbrellaLeaves). Dropping a duplicated record can make
+    // a parent displayId unique here while it stays ambiguous above.
+    const countedResolve = ticketRefNormalizer(this.ticketIdentity.counted);
+    const countedChildren = new Map<string, Ticket[]>();
+    for (const t of this.ticketIdentity.counted) {
+      if (t.parentTicket == null) continue;
+      const resolved = countedResolve(t.parentTicket);
+      const arr = countedChildren.get(resolved);
+      if (arr) { arr.push(t); } else { countedChildren.set(resolved, [t]); }
+    }
+    this.countedChildrenByParent = countedChildren;
 
     // Step 5: Reverse blocks map (display: single-resolution, deletion: all matches)
     const reverseBlocks = new Map<string, Ticket[]>();
@@ -379,9 +399,16 @@ export class ProjectState {
 
   /** Umbrella status derived from descendant leaf tickets (recursive traversal). */
   umbrellaStatus(ticketId: string): PhaseStatus {
-    const visited = new Set<string>();
-    const leaves = this.descendantLeaves(ticketId, visited).filter((t) => !this.ticketIdentity.duplicateIds.has(t.id));
-    return ProjectState.aggregateStatus(leaves);
+    return ProjectState.aggregateStatus(this.countedUmbrellaLeaves(ticketId));
+  }
+
+  /**
+   * T-486 U2-3a: the descendant leaves an umbrella's counts read, walked
+   * through the counted children index (no record whose canonical id is
+   * claimed twice, parents resolved over the counted population).
+   */
+  countedUmbrellaLeaves(ticketId: string): Ticket[] {
+    return this.descendantLeaves(ticketId, new Set<string>());
   }
 
   reverseBlocks(ticketId: string): readonly Ticket[] {
@@ -578,8 +605,9 @@ export class ProjectState {
   }
 
   /**
-   * Recursively collects all descendant leaf tickets of an umbrella.
-   * Uses a visited set to guard against cycles in malformed data.
+   * Recursively collects the counted descendant leaf tickets of an umbrella
+   * (countedChildrenByParent). Uses a visited set to guard against cycles in
+   * malformed data.
    */
   private descendantLeaves(
     ticketId: string,
@@ -588,7 +616,7 @@ export class ProjectState {
     if (visited.has(ticketId)) return [];
     visited.add(ticketId);
 
-    const directChildren = this.childrenByParent.get(ticketId) ?? [];
+    const directChildren = this.countedChildrenByParent.get(ticketId) ?? [];
     const leaves: Ticket[] = [];
     for (const child of directChildren) {
       if (this.umbrellaIDs.has(child.id)) {

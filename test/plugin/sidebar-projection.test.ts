@@ -201,7 +201,7 @@ describe("sidebar projection (T-508)", () => {
   it("counts tickets, issues and phases exactly as status --compact does", async () => {
     root = await writeFixture();
     const { state } = await loadProject(root);
-    const compact = buildCompactStatusData(state, [], [], undefined, [], undefined, [], {
+    const compact = buildCompactStatusData(state, [], [], undefined, undefined, [], {
       items: [],
       warnings: [],
     });
@@ -224,7 +224,7 @@ describe("sidebar projection (T-508)", () => {
     // rules rather than off either implementation.
     root = await writeFixture();
     const { state } = await loadProject(root);
-    const compact = buildCompactStatusData(state, [], [], undefined, [], undefined, [], {
+    const compact = buildCompactStatusData(state, [], [], undefined, undefined, [], {
       items: [],
       warnings: [],
     });
@@ -259,7 +259,7 @@ describe("sidebar projection (T-508)", () => {
   it("splits the whole project's leaves into three columns that partition them", async () => {
     root = await writeFixture();
     const { state } = await loadProject(root);
-    const compact = buildCompactStatusData(state, [], [], undefined, [], undefined, [], {
+    const compact = buildCompactStatusData(state, [], [], undefined, undefined, [], {
       items: [],
       warnings: [],
     });

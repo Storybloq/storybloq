@@ -91,7 +91,9 @@ export class WriteTestsStage implements WorkflowStage {
     const nextRetry = retryCount + 1;
 
     // Strict baseline validation
-    if (baseline === null || baseline === undefined || baselineFailCount < 0) {
+    // ISS-1376: a baseline that did not complete counts as uncaptured (start
+    // refuses it; this guards resumed or hand-edited sessions).
+    if (baseline === null || baseline === undefined || baselineFailCount < 0 || baseline.failure !== undefined) {
       if (nextRetry >= MAX_WRITE_TESTS_RETRIES) {
         return exhaustionAction(ctx);
       }

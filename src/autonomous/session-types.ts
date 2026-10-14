@@ -1539,6 +1539,9 @@ export const SessionStateSchema = z.object({
     passCount: z.number(),
     failCount: z.number(),
     summary: z.string(),
+    // ISS-1376: why the baseline did not complete. Absent on a complete
+    // baseline and on every session written before the field existed.
+    failure: z.enum(["timeout", "maxBuffer", "signal"]).optional(),
   }).nullable().default(null),
   testRetryCount: z.number().default(0),
   writeTestsRetryCount: z.number().default(0),

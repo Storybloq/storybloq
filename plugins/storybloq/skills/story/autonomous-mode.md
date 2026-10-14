@@ -14,6 +14,8 @@ This file is referenced from SKILL.md for `/story auto` / `$story auto`, review,
 4. The guide advances through: PICK_TICKET -> PLAN -> PLAN_REVIEW -> IMPLEMENT -> CODE_REVIEW -> FINALIZE -> KNOWLEDGE_REVIEW -> COMPLETE -> loop
 5. Continue until the guide returns SESSION_END
 
+**Test baseline:** with TEST or WRITE_TESTS on, the start runs the test command once, bounded by `stages.<stage>.testTimeoutMs` (default 120000). A baseline that timed out, passed the 5 MiB output limit or was killed is never used for comparison: WRITE_TESTS refuses the start, TEST alone starts with a warning.
+
 While it runs, the Claude Code ledger dashboard tags its In progress card (`T-001 [Code]`), or the heading if none matches, with no footer line; see the storybloq README.
 
 **Ticket review depth:** Optional ticket metadata `reviewRisk` accepts `low`, `medium`, or `high` and sets the minimum PLAN_REVIEW depth to one, two, or three rounds. Set it with `storybloq ticket meta set T-001 reviewRisk '"high"'` or `storybloq_ticket_meta_set`. Legacy `risk` metadata remains compatible. Malformed explicit values fail closed to high, and risk metadata never skips a review stage.

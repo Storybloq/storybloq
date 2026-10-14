@@ -145,7 +145,10 @@ export class TestStage implements WorkflowStage {
     // Tests failed -- check if failures are pre-existing (baseline also failed)
     // Only auto-advance if the baseline was also failing -- new regressions still block
     const baseline = ctx.state.testBaseline;
-    if (baseline && baseline.exitCode !== 0) {
+    // ISS-1376: a baseline that timed out, overflowed or was killed is not a
+    // comparison; its failures go through the normal retry path. A legacy
+    // baseline without the field behaves as before.
+    if (baseline && baseline.exitCode !== 0 && baseline.failure === undefined) {
       // Try to parse current fail count to compare with baseline
       const failMatch = notes.match(/(\d+)\s*fail/i);
       const currentFails = failMatch ? parseInt(failMatch[1]!, 10) : undefined;

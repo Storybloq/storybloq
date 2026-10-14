@@ -14,6 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { nativeRebuildDir, resolveBundledBridge } from "../bridge-resolve.js";
+import { realTimers, spawnTaskkill, teardownProcessTree } from "../process-tree.js";
 import { readAutoCompactWindowDiagnostic } from "../claude-settings.js";
 import { readBoundedFileDetailed } from "../bounded-read.js";
 import { isHealthCheckGloballyDisabled } from "../global-config.js";
@@ -168,7 +169,16 @@ export function probeMcpServer(launch: McpLaunch, deadlineAt: number, capMs: num
       settled = true;
       if (timer) clearTimeout(timer);
       timer = null;
-      void teardown(child, exited !== null, platform).then(() => {
+      void teardownProcessTree(child, exited !== null, {
+        platform,
+        termGraceMs: TERM_GRACE_MS,
+        pollMs: KILL_POLL_MS,
+        maxWaitMs: KILL_MAX_WAIT_MS,
+        killFn: (pid, signal) => process.kill(pid, signal),
+        runTaskkill: spawnTaskkill(spawn),
+        timers: realTimers,
+        unrefOnUnconfirmed: false,
+      }).then(() => {
         dropScratch();
         resolveProbe(result);
       });
@@ -321,99 +331,6 @@ function judgeResponse(m: Record<string, unknown>, allocatedMs: number, stderr: 
   if (typeof name !== "string") return failed("malformed initialize result (serverInfo.name)");
   if (typeof version !== "string") return failed("malformed initialize result (serverInfo.version)");
   return { kind: "ok", serverName: name, serverVersion: version, protocolVersion: r["protocolVersion"], allocatedMs, stderr };
-}
-
-/**
- * Idempotent: safe to call whether or not the child already exited. The
- * direct child's exit is NOT proof of cleanup: a detached launcher (npx)
- * can die on SIGTERM while a descendant in its process group ignores it.
- * On POSIX the group's liveness is checked independently (signal 0 to the
- * group) and SIGKILL is re-sent to the group on every poll until the group
- * is gone or KILL_MAX_WAIT_MS elapse. On win32 `taskkill /T /F` kills the
- * tree and the direct child's exit is the only observable, so that is what
- * is awaited there. Nothing here blocks the event loop.
- */
-function teardown(child: ReturnType<typeof spawn>, alreadyExited: boolean, platform: NodeJS.Platform): Promise<void> {
-  for (const s of [child.stdin, child.stdout, child.stderr]) {
-    try {
-      s?.removeAllListeners("data");
-      s?.destroy();
-    } catch {
-      // already closed
-    }
-  }
-  if (child.pid === undefined) return Promise.resolve();
-  const pid = child.pid;
-  const childExited = (): boolean => alreadyExited || child.exitCode !== null || child.signalCode !== null;
-  const groupAlive = (): boolean => {
-    if (platform === "win32") return false;
-    try {
-      process.kill(-pid, 0);
-      return true;
-    } catch (err: unknown) {
-      // ESRCH: no such group. EPERM: something in the group still exists.
-      return (err as NodeJS.ErrnoException).code === "EPERM";
-    }
-  };
-  const gone = (): boolean => childExited() && !groupAlive();
-  const kill = (signal: NodeJS.Signals): void => {
-    try {
-      if (platform === "win32") {
-        const tk = spawn("taskkill", ["/T", "/F", "/PID", String(pid)], { stdio: "ignore", windowsHide: true });
-        tk.once("error", () => {
-          try {
-            child.kill(signal);
-          } catch {
-            // gone
-          }
-        });
-      } else {
-        process.kill(-pid, signal);
-      }
-    } catch {
-      try {
-        child.kill(signal);
-      } catch {
-        // gone
-      }
-    }
-  };
-  if (gone()) return Promise.resolve();
-  return new Promise<void>((done) => {
-    let finished = false;
-    // The pending timer stays REFERENCED: once the direct child has exited
-    // it may be the only handle keeping the event loop alive, and a pending
-    // promise alone does not. An unref'd timer here would let the process
-    // exit before the SIGKILL that the group still needs.
-    let timer: NodeJS.Timeout | null = null;
-    const end = (): void => {
-      if (finished) return;
-      finished = true;
-      if (timer) clearTimeout(timer);
-      timer = null;
-      done();
-    };
-    // The direct child's exit alone ends the wait only when nothing else in
-    // the group is left; otherwise the poll below keeps killing the group.
-    child.once("exit", () => {
-      if (!groupAlive()) end();
-    });
-    kill("SIGTERM");
-    const started = Date.now();
-    const poll = (): void => {
-      timer = null;
-      if (finished || gone()) return end();
-      if (Date.now() - started >= KILL_MAX_WAIT_MS) return end();
-      kill("SIGKILL");
-      timer = setTimeout(poll, KILL_POLL_MS);
-    };
-    timer = setTimeout(() => {
-      timer = null;
-      if (finished || gone()) return end();
-      kill("SIGKILL");
-      timer = setTimeout(poll, KILL_POLL_MS);
-    }, TERM_GRACE_MS);
-  });
 }
 
 export function defaultHealthDeps(opts: { ledgerRoot: string | null }): HealthDeps {

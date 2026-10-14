@@ -151,6 +151,14 @@ import { escapeMarkdownDocumentStrict, formatCitedRulingsSection } from "../core
 import { loadCitationContext } from "../core/ruling-loader.js";
 import { resolveEntityCitations } from "../core/ruling.js";
 import { runGoverningGate, withPlanContext } from "./plan-context.js";
+import {
+  baselineFailureMessage,
+  captureTestBaseline,
+  parseBaselineCounts,
+  resolveBaselineTimeout,
+  testOnlyBaselineWarning,
+  unconfirmedCleanupWarning,
+} from "./test-baseline.js";
 
 /**
  * ISS-899: whether this caller is refused, and WHY, which the call sites need
@@ -2024,6 +2032,8 @@ async function handleStartAfterNormalization(
     const writeTestsConfig = resolvedRecipe.stages?.WRITE_TESTS as Record<string, unknown> | undefined;
     const testEnabled = testConfig?.enabled && resolvedRecipe.pipeline.includes("TEST");
     const writeTestsEnabled = writeTestsConfig?.enabled && resolvedRecipe.pipeline.includes("WRITE_TESTS");
+    // ISS-1376: notes and warnings from the baseline, carried into the start output.
+    const baselineNotices: string[] = [];
     // Skip baseline capture for plan mode -- it exits at PLAN_REVIEW and never reaches TEST/WRITE_TESTS
     if ((testEnabled || writeTestsEnabled) && mode !== "plan") {
       // T-139: Use WRITE_TESTS command when it's the requesting stage, else TEST command
@@ -2047,37 +2057,67 @@ async function handleStartAfterNormalization(
         abortSession();
         return guideError(new Error("TEST/WRITE_TESTS stage is enabled but no test command is configured. Set stages.TEST.command or stages.WRITE_TESTS.command in config.json recipeOverrides or the recipe file."));
       }
-      // Capture baseline
+      // ISS-1376: the timeout comes from config, validated before anything runs.
+      const timeoutResolution = resolveBaselineTimeout(
+        resolvedRecipe.stages as Record<string, Record<string, unknown> | undefined> | undefined,
+        Boolean(testEnabled),
+        Boolean(writeTestsEnabled),
+      );
+      if (!timeoutResolution.ok) {
+        abortSession();
+        return guideError(new Error(timeoutResolution.message));
+      }
+      const baselineTimeoutMs = timeoutResolution.timeoutMs;
+      if (timeoutResolution.note) baselineNotices.push(`**Note:** ${timeoutResolution.note}`);
+      // Capture baseline in its own process tree (ISS-1376)
       try {
-        const { exec: execCb } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        const execAsync = promisify(execCb);
-        const result = await execAsync(testCommand, { cwd: root, timeout: 120_000, maxBuffer: 5 * 1024 * 1024 }).catch((err: { code?: number; stdout?: string; stderr?: string }) => ({
-          stdout: err.stdout ?? "",
-          stderr: err.stderr ?? "",
-          exitCode: err.code ?? 1,
-        }));
-        const exitCode = "exitCode" in result ? (result.exitCode as number) : 0;
-        // Parse combined stdout+stderr -- test runners (Jest, Vitest, Mocha) print to stderr on failure
-        const rawOut = "stdout" in result ? String(result.stdout) : "";
-        const rawErr = "stderr" in result ? String((result as Record<string, unknown>).stderr) : "";
-        const combined = rawOut + "\n" + rawErr;
-        const passMatch = combined.match(/(\d+)\s*pass/i);
-        const failMatch = combined.match(/(\d+)\s*fail/i);
-        const passCount = passMatch ? parseInt(passMatch[1]!, 10) : -1;
-        // When all tests pass, vitest omits the fail line entirely. Treat missing fail count as 0
-        // when exit code is 0 and passes were detected (runner succeeded, just no failures to report).
-        const failCount = failMatch ? parseInt(failMatch[1]!, 10) : (exitCode === 0 && passCount > 0 ? 0 : -1);
-        const output = combined.slice(-500);
-        updated = { ...updated, testBaseline: { exitCode, passCount, failCount, summary: output } };
+        const capture = await captureTestBaseline(testCommand, root, baselineTimeoutMs);
+        const cleanupWarning = capture.cleanup === "unconfirmed" ? unconfirmedCleanupWarning(capture.pid) : null;
+        if (cleanupWarning) baselineNotices.push(`**Warning:** ${cleanupWarning}`);
+        const withCleanup = (text: string): string => (cleanupWarning ? `${text} Also: ${cleanupWarning}.` : text);
+        if (capture.kind === "launchError") {
+          const text = `test baseline could not start: ${capture.code ?? "error"} ${capture.message}`;
+          if (writeTestsEnabled) {
+            abortSession();
+            return guideError(new Error(withCleanup(`WRITE_TESTS stage is enabled but ${text}`)));
+          }
+          baselineNotices.push(`**Warning:** ${text}`);
+        } else {
+          // Parse combined stdout+stderr -- test runners (Jest, Vitest, Mocha) print to stderr on failure
+          const combined = capture.stdout + "\n" + capture.stderr;
+          const { passCount, failCount } = parseBaselineCounts(combined, capture.exitCode);
+          const output = combined.slice(-500);
+          updated = {
+            ...updated,
+            testBaseline: {
+              exitCode: capture.exitCode,
+              passCount,
+              failCount,
+              summary: output,
+              ...(capture.failure ? { failure: capture.failure } : {}),
+            },
+          };
 
-        // T-139: WRITE_TESTS requires parseable baseline -- fail fast if not available
-        if (writeTestsEnabled && failCount < 0) {
-          abortSession();
-          return guideError(new Error(
-            "WRITE_TESTS stage is enabled but test baseline could not parse fail counts from test output. " +
-            "Configure a test reporter that outputs pass/fail counts, or disable WRITE_TESTS.",
-          ));
+          if (capture.failure) {
+            // T-139: WRITE_TESTS needs a complete baseline to prove RED, even when counts parsed.
+            if (writeTestsEnabled) {
+              abortSession();
+              return guideError(new Error(withCleanup(
+                `WRITE_TESTS stage is enabled but ${baselineFailureMessage(capture.failure, baselineTimeoutMs, capture.signal)}`,
+              )));
+            }
+            baselineNotices.push(`**Warning:** ${testOnlyBaselineWarning(capture.failure, baselineTimeoutMs, capture.signal)}`);
+          } else if (failCount < 0) {
+            // T-139: WRITE_TESTS requires parseable baseline -- fail fast if not available
+            if (writeTestsEnabled) {
+              abortSession();
+              return guideError(new Error(withCleanup(
+                "WRITE_TESTS stage is enabled but test baseline could not parse fail counts from test output. " +
+                "Configure a test reporter that outputs pass/fail counts, or disable WRITE_TESTS.",
+              )));
+            }
+            baselineNotices.push("**Warning:** test baseline could not parse counts from the test output; the TEST stage has no baseline to compare against.");
+          }
         }
       } catch {
         // Non-blocking for TEST-only. But WRITE_TESTS requires baseline.
@@ -2359,6 +2399,7 @@ async function handleStartAfterNormalization(
             ...stageReminders,
             `This is ${mode} mode -- session ends after ${mode === "review" ? "code review approval" : "plan review approval"}.`,
           ];
+      reminders.push(...baselineNotices);
 
       return guideResult(updated, entryState, {
         instruction,
@@ -2421,6 +2462,7 @@ async function handleStartAfterNormalization(
           "You are in targeted auto mode -- work ONLY on the listed items.",
           "NEVER cancel due to context size. Storybloq's hooks compact context automatically and preserve all session state.",
           ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
+          ...baselineNotices,
         ],
         transitionedFrom: "INIT",
       });
@@ -2520,6 +2562,7 @@ async function handleStartAfterNormalization(
         "You are in autonomous mode -- continue working until done.",
         "NEVER cancel due to context size. Storybloq's hooks compact context automatically and preserve all session state.",
         ...(versionWarning ? [`**Warning:** ${versionWarning}`] : []),
+        ...baselineNotices,
       ],
       transitionedFrom: "INIT",
     });

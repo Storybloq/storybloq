@@ -339,19 +339,29 @@ describe("ISS-1376 captureTestBaseline: cause and timer seams", () => {
 });
 
 describe.skipIf(!posix)("ISS-1376 captureTestBaseline: the whole process tree", () => {
-  /** A shell leader plus a SIGTERM-ignoring grandchild that redirects its streams. */
+  /**
+   * A shell leader plus a SIGTERM-ignoring grandchild that redirects its
+   * streams. The leader runs its tail (the trigger) only once the grandchild
+   * has written its pid file, which it does after installing its SIGTERM
+   * handler, so no trigger can fire against a grandchild still starting up.
+   * The wait is bounded (100 x 50 ms).
+   */
   function treeCommand(pf: string, leaderTail: string): string {
     const g = script(`${IGNORE_TERM}require('fs').writeFileSync(${JSON.stringify(pf)}, String(process.pid));\n${SLEEP}`);
-    return `${NODE} ${JSON.stringify(g)} ${MARKER} >/dev/null 2>&1 & ${leaderTail}`;
+    const ready = `i=0; while [ ! -s ${JSON.stringify(pf)} ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done`;
+    return `${NODE} ${JSON.stringify(g)} ${MARKER} >/dev/null 2>&1 & ${ready}; ${leaderTail}`;
   }
   const grandchild = async (pf: string): Promise<number> => {
     expect(await until(() => existsSync(pf) && readFileSync(pf, "utf-8").trim() !== "")).toBe(true);
     return Number(readFileSync(pf, "utf-8").trim());
   };
 
-  it("C10: a timeout kills the grandchild too, and cleanup is confirmed", async () => {
+  // The timeout covers the leader's readiness wait as well, so it is long
+  // enough for the grandchild to start under load and still well under the
+  // test timeout.
+  it("C10: a timeout kills the grandchild too, and cleanup is confirmed", { timeout: 15000 }, async () => {
     const pf = pidFile();
-    const done = captureTestBaseline(treeCommand(pf, "sleep 30"), dir, 300, { killGraceMs: 300, cleanupCapMs: 2000 });
+    const done = captureTestBaseline(treeCommand(pf, "sleep 30"), dir, 3000, { killGraceMs: 300, cleanupCapMs: 2000 });
     const gpid = await grandchild(pf);
     const r = await done;
     expect(r).toMatchObject({ kind: "ran", failure: "timeout" });
@@ -359,7 +369,7 @@ describe.skipIf(!posix)("ISS-1376 captureTestBaseline: the whole process tree", 
     expect(alive(gpid)).toBe(false);
   });
 
-  it("C11: an overflow kills the grandchild too, and cleanup is confirmed", async () => {
+  it("C11: an overflow kills the grandchild too, and cleanup is confirmed", { timeout: 15000 }, async () => {
     const pf = pidFile();
     const big = script("const b = Buffer.alloc(1024 * 1024, 120); for (let i = 0; i < 6; i++) process.stdout.write(b);\n");
     const done = captureTestBaseline(treeCommand(pf, `${NODE} ${JSON.stringify(big)} ${MARKER}; sleep 30`), dir, 10000, { killGraceMs: 300, cleanupCapMs: 2000 });

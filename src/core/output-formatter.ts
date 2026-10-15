@@ -1201,8 +1201,9 @@ export function formatFederatedStatus(
 
   for (const node of fedState.nodes) {
     if (node.legacy) {
+      // legacy.at is when the rescan failed, not a handover: the activity cell stays empty.
       lines.push(
-        `| ${escapeMarkdownInline(node.name)} | ${escapeMarkdownInline(node.health)} | legacy | -- | ${escapeMarkdownInline(node.legacy.at)} | ${escapeMarkdownInline(node.role)} |`,
+        `| ${escapeMarkdownInline(node.name)} | ${escapeMarkdownInline(node.health)} | legacy | -- | -- | ${escapeMarkdownInline(node.role)} |`,
       );
     } else if (node.reachable && node.scanSummary) {
       const s = node.scanSummary;

@@ -14,7 +14,7 @@ import { initProject } from "../../src/core/init.js";
 import { loadProject } from "../../src/core/project-loader.js";
 import { formatFederatedStatus } from "../../src/core/output-formatter.js";
 import { findLatestHandover } from "../../src/federation/handover-utils.js";
-import { readFederationCache, writeFederationCache, type FederationCache } from "../../src/federation/cache.js";
+import { readFederationCache, writeFederationCache, writeFederationCacheObject, type FederationCache } from "../../src/federation/cache.js";
 import { loadFederationState, summariesForTotals } from "../../src/federation/recommend-loader.js";
 import { resolveAllNodes, type ResolvedNode } from "../../src/federation/resolver.js";
 import {
@@ -281,7 +281,9 @@ describe("T-486 U2-3b: the totals add up, and a legacy summary is in none of the
     expect(md).toContain("Tickets: 3/6 across all nodes, 1 withdrawn (partial: 1 ticket(s) excluded) (1 node(s) on the old counting contract excluded)");
     expect(md).toMatch(/\| work \| [^|]* \| 2\/4, 1 withdrawn \|/);
     expect(md).toMatch(/\| partial \| [^|]* \| 1\/2 \(partial\) \|/);
-    expect(md).toMatch(/\| old \| [^|]* \| legacy \| -- \|/);
+    expect(md).toMatch(/\| old \| [^|]* \| legacy \| -- \| -- \| [^|]* \|/);
+    // The failed rescan's time is not a handover date, so the activity cell never shows it.
+    expect(md).not.toContain(fed.nodes.find((n) => n.name === "old")!.legacy!.at);
   });
 
   it("aggregateTotals never adds a legacy entry's numbers, even when it carries some", () => {
@@ -322,6 +324,20 @@ describe("T-486 U2-3b: a failed cache write on the read path changes nothing", (
     expect([readOnly!.totalTickets, readOnly!.totalCompleteTickets]).toEqual([2, 1]);
     expect(readFileSync(join(storyDir, "federation-cache.json"), "utf8")).toBe(staleText);
     expect(readdirSync(storyDir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("a rename that fails after the temp file is written removes the temp file and leaves the cache path as it was", () => {
+    const storyDir = mkdtempSync(join(tmpdir(), "t486-u23b-rename-"));
+    dirs.push(storyDir);
+    // A non-empty directory where the cache goes: the temp file can be created beside it, but the rename onto it fails.
+    const cachePath = join(storyDir, "federation-cache.json");
+    mkdirSync(cachePath);
+    writeFileSync(join(cachePath, "keep"), "unchanged");
+    const cache: FederationCache = { lastScanTimestamp: new Date().toISOString(), nodes: {} };
+    expect(() => writeFederationCacheObject(storyDir, cache)).toThrow();
+    expect(readdirSync(storyDir)).toEqual(["federation-cache.json"]);
+    expect(readdirSync(cachePath)).toEqual(["keep"]);
+    expect(readFileSync(join(cachePath, "keep"), "utf8")).toBe("unchanged");
   });
 });
 

@@ -53,6 +53,19 @@ function checkAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
 }
 
+/**
+ * T-486 U2-3b: settles only once every branch has settled, then rejects with
+ * the first failure in array order. Promise.all rejects on the first failure
+ * while its siblings still run, so a scan would report done, free its slot and
+ * let the scheduler start another node beside reads it never drained.
+ */
+async function settleAll<T>(branches: readonly Promise<T>[]): Promise<T[]> {
+  const settled = await Promise.allSettled(branches);
+  const failed = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+  if (failed) throw failed.reason;
+  return settled.map((s) => (s as PromiseFulfilledResult<T>).value);
+}
+
 export async function scanNodeSummary(
   storyDir: string,
   signal?: AbortSignal,
@@ -83,7 +96,7 @@ export async function scanNodeSummary(
       const files = await readdir(dir);
       checkAborted(signal);
       const jsonFiles = files.filter((f) => f.endsWith(".json"));
-      const results = await Promise.all(
+      const results = await settleAll(
         jsonFiles.map(async (f): Promise<string | null> => {
           try {
             checkAborted(signal);
@@ -108,11 +121,11 @@ export async function scanNodeSummary(
     return { total, counts };
   }
 
-  const [ticketRecords, issueResult, handoverInfo] = await Promise.all([
-    loadTicketRecords(storyDir, { signal }),
-    countDir(join(storyDir, "issues"), ["open"]),
-    findLatestHandover(join(storyDir, "handovers"), signal).catch(() => null),
-  ]);
+  const ticketsRead = loadTicketRecords(storyDir, { signal });
+  const issuesRead = countDir(join(storyDir, "issues"), ["open"]);
+  const handoverRead = findLatestHandover(join(storyDir, "handovers"), signal).catch(() => null);
+  await settleAll<unknown>([ticketsRead, issuesRead, handoverRead]);
+  const [ticketRecords, issueResult, handoverInfo] = await Promise.all([ticketsRead, issuesRead, handoverRead]);
   checkAborted(signal);
 
   return {

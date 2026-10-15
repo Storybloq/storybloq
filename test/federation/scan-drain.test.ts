@@ -9,34 +9,63 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const held = vi.hoisted(() => new Map<string, { wait: Promise<void>; release: () => void }>());
+interface Gate {
+  /** Resolves when a matching read reaches the gate. */
+  arrived: Promise<void>;
+  arrive: () => void;
+  /** null: watch only, the read goes straight through. */
+  open: Promise<void> | null;
+  release: () => void;
+  /** Resolves when the real read behind the gate has settled. */
+  done: Promise<void>;
+  finish: () => void;
+}
+
+const gates = vi.hoisted(() => new Map<string, Gate>());
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
-  const waitIfHeld = async (path: unknown): Promise<void> => {
-    for (const [suffix, gate] of held) if (String(path).endsWith(suffix)) await gate.wait;
+  const through = async (path: unknown, call: () => Promise<unknown>): Promise<unknown> => {
+    const gate = [...gates].find(([suffix]) => String(path).endsWith(suffix))?.[1];
+    if (!gate) return call();
+    gate.arrive();
+    if (gate.open) await gate.open;
+    try {
+      return await call();
+    } finally {
+      gate.finish();
+    }
   };
   return {
     ...real,
-    readdir: (async (path: Parameters<typeof real.readdir>[0], ...rest: unknown[]) => {
-      await waitIfHeld(path);
-      return (real.readdir as (...a: unknown[]) => unknown)(path, ...rest);
-    }) as typeof real.readdir,
-    readFile: (async (path: Parameters<typeof real.readFile>[0], ...rest: unknown[]) => {
-      await waitIfHeld(path);
-      return (real.readFile as (...a: unknown[]) => unknown)(path, ...rest);
-    }) as typeof real.readFile,
+    readdir: ((path: Parameters<typeof real.readdir>[0], ...rest: unknown[]) =>
+      through(path, () => (real.readdir as (...a: unknown[]) => Promise<unknown>)(path, ...rest))) as typeof real.readdir,
+    readFile: ((path: Parameters<typeof real.readFile>[0], ...rest: unknown[]) =>
+      through(path, () => (real.readFile as (...a: unknown[]) => Promise<unknown>)(path, ...rest))) as typeof real.readFile,
   };
 });
 
 const { scanNodeSummary, runNodeScans, NOT_SCANNED_REASON } = await import("../../src/federation/scanner.js");
 
-function hold(suffix: string): () => void {
-  let release!: () => void;
-  const wait = new Promise<void>((r) => { release = r; });
-  held.set(suffix, { wait, release });
-  return () => { held.delete(suffix); release(); };
+function gate(suffix: string, holdOpen: boolean): Gate {
+  let arrive!: () => void;
+  let release: () => void = () => {};
+  let finish!: () => void;
+  const arrived = new Promise<void>((r) => { arrive = r; });
+  const open = holdOpen ? new Promise<void>((r) => { release = r; }) : null;
+  const done = new Promise<void>((r) => { finish = r; });
+  const g: Gate = { arrived, arrive, open, release, done, finish };
+  gates.set(suffix, g);
+  return g;
 }
+
+/** Hold matching reads until released. */
+const hold = (suffix: string): Gate => gate(suffix, true);
+/** Let matching reads through, but report when they arrive and settle. */
+const watch = (suffix: string): Gate => gate(suffix, false);
+
+/** Lets every promise chain already resolved run to the end (one macrotask turn). */
+const drainMicrotasks = () => new Promise<void>((r) => setImmediate(r));
 
 const dirs: string[] = [];
 
@@ -62,39 +91,43 @@ function settledFlag(p: Promise<unknown>): { readonly settled: boolean } {
   return flag;
 }
 
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 afterEach(() => {
-  for (const gate of held.values()) gate.release();
-  held.clear();
+  for (const g of gates.values()) g.release();
+  gates.clear();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
 describe("T-486 U2-3b: a node scan settles only after every read it launched", () => {
   it("a ticket load that fails at once does not settle the scan while the issue read is still pending", async () => {
     const story = nodeDir({ ticketsIsFile: true });
-    const release = hold(join(story, "issues"));
+    const issues = hold(join(story, "issues"));
+    const tickets = watch(join(story, "tickets"));
     const scan = scanNodeSummary(story);
     const flag = settledFlag(scan);
-    await pause(60);
+    await Promise.all([issues.arrived, tickets.done]);
+    await drainMicrotasks();
     expect(flag.settled).toBe(false);
-    release();
+    issues.release();
     await expect(scan).rejects.toThrow();
   });
 
   it("an aborted issue count waits for its pending file reads before it settles", async () => {
     const story = nodeDir({ issues: { "a.json": "open", "b.json": "open" } });
-    const releaseA = hold(join("issues", "a.json"));
-    const releaseB = hold(join("issues", "b.json"));
+    const a = hold(join("issues", "a.json"));
+    const b = hold(join("issues", "b.json"));
+    const tickets = watch(join(story, "tickets"));
+    const handovers = watch(join(story, "handovers"));
     const controller = new AbortController();
     const scan = scanNodeSummary(story, controller.signal);
     const flag = settledFlag(scan);
-    await pause(30);
+    // Both issue reads have started and every other branch has finished its reads.
+    await Promise.all([a.arrived, b.arrived, tickets.done, handovers.done]);
     controller.abort();
-    releaseA();
-    await pause(60);
+    a.release();
+    await a.done;
+    await drainMicrotasks();
     expect(flag.settled).toBe(false);
-    releaseB();
+    b.release();
     await expect(scan).rejects.toThrow();
   });
 
@@ -103,12 +136,14 @@ describe("T-486 U2-3b: a node scan settles only after every read it launched", (
     const healthy = nodeDir();
     hold(join(failing, "issues"));
     const started: string[] = [];
+    // The deadline is long enough for the ticket load to fail first even on a loaded runner,
+    // so a scan that settled on that failure would free the slot before the deadline.
     const results = await runNodeScans(
       [{ name: "failing", storyDir: failing }, { name: "healthy", storyDir: healthy }],
       {
         concurrency: 1,
-        timeoutMs: 40,
-        settleGraceMs: 40,
+        timeoutMs: 1000,
+        settleGraceMs: 100,
         scan: (dir, signal) => { started.push(dir); return scanNodeSummary(dir, signal); },
       },
     );

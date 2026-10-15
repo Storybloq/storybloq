@@ -1,13 +1,19 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
 import type { Ticket } from "../models/ticket.js";
+import type { ProjectState } from "../core/project-state.js";
 import type { ResolvedNode } from "./resolver.js";
+import { crossNodeObservation, type CrossNodeObservationOptions } from "./cross-node-observation.js";
 
+/**
+ * A cross-node ref's live status. Only "complete" releases the dependent;
+ * "withdrawn" and "withheld" carry the withdrawn ticket ids, and
+ * "checkpoint" is an owner checkpoint not yet approved or retired (T-486 U2-4).
+ */
 export type CrossNodeRefStatus =
-  | { resolved: true; status: "complete" | "open" | "inprogress" }
+  | { resolved: true; status: "complete" | "open" | "inprogress" | "checkpoint" }
+  | { resolved: true; status: "withdrawn" | "withheld"; detail: string[] }
   | { resolved: false; reason: string };
-
 
 function normalizeStatus(status: string): "complete" | "open" | "inprogress" {
   if (status === "complete" || status === "resolved") return "complete";
@@ -15,113 +21,119 @@ function normalizeStatus(status: string): "complete" | "open" | "inprogress" {
   return "open";
 }
 
-const DISPLAY_TICKET_REGEX = /^T-\d+[a-z]?$/;
-const DISPLAY_ISSUE_REGEX = /^ISS-\d+$/;
-
-// Tickets dir for legacy (T-) AND canonical (t-) ticket refs; issues dir for
-// ISS-/i-. ISS-687: dispatching on startsWith("T-") alone misrouted canonical
-// ticket refs (lowercase t-) to issues/, so they never resolved.
-function subdirFor(itemId: string): "tickets" | "issues" {
-  return itemId.startsWith("T-") || itemId.startsWith("t-") ? "tickets" : "issues";
+/** ISS-687: legacy (T-) and canonical (t-) ticket refs read the tickets directory. */
+export function isTicketRef(itemId: string): boolean {
+  return itemId.startsWith("T-") || itemId.startsWith("t-");
 }
 
-function statusFromContent(parsed: Record<string, unknown>): CrossNodeRefStatus {
+/**
+ * T-486 U2-4 (V3A 5c, D1): a ticket ref judged from the target node's whole
+ * ticket graph by the node's own release rule. A missing or ambiguous ref is
+ * unresolved; a found one is complete only when it releases.
+ */
+export function ticketRefStatus(graph: ProjectState, itemId: string): CrossNodeRefStatus {
+  const found = graph.resolveTicketRef(itemId);
+  if (found.kind === "missing") {
+    // B1, fail closed: a file the loader could not accept that could be this ref names the cause.
+    const files = graph.omittedTickets.filter((o) => o.id === undefined || o.id === itemId).map((o) => o.file);
+    if (files.length > 0) return { resolved: false, reason: `ticket files the node could not load: ${files.join(", ")}` };
+    return { resolved: false, reason: "item not found in node" };
+  }
+  if (found.kind === "ambiguous") {
+    return { resolved: false, reason: `ambiguous ref ${itemId} in node (${found.matches.map((m) => m.id).join(", ")})` };
+  }
+  const ticket = found.item;
+  const release = graph.dependencyRelease(ticket);
+  if (release.releases) return { resolved: true, status: "complete" };
+  const reason = release.reason;
+  switch (reason) {
+    case "withdrawn":
+    case "withheld":
+      return { resolved: true, status: reason, detail: [...release.detail] };
+    case "duplicate":
+      return { resolved: false, reason: `duplicate canonical id ${ticket.id} in node` };
+    case "cycle":
+      return { resolved: false, reason: `parent cycle under ${ticket.id}` };
+    case "incomplete":
+      return { resolved: false, reason: `ticket files the node could not load: ${release.detail.join(", ")}` };
+    case "checkpoint":
+      return { resolved: true, status: "checkpoint" };
+    case null:
+      return { resolved: true, status: ticket.status === "inprogress" ? "inprogress" : "open" };
+    default: {
+      const unhandled: never = reason;
+      return { resolved: false, reason: `unknown release reason ${String(unhandled)}` };
+    }
+  }
+}
+
+const DISPLAY_ISSUE_REGEX = /^ISS-\d+$/;
+
+function issueStatusFromContent(parsed: Record<string, unknown>): CrossNodeRefStatus {
   if (typeof parsed.status === "string") {
-    return { resolved: true, status: normalizeStatus(parsed.status) };
+    const status = normalizeStatus(parsed.status);
+    return { resolved: true, status };
   }
   return { resolved: false, reason: "item not found in node" };
 }
 
-/// Resolves a single `itemId` (canonical or display form) against a node's
-/// .story/ dir. ISS-687.
-async function resolveItemStatus(storyDir: string, itemId: string): Promise<CrossNodeRefStatus> {
-  const dir = join(storyDir, subdirFor(itemId));
-
-  // 1. Direct filename match: canonical refs (t-/i-) and legacy/unreconciled
-  //    display refs whose file is still named by the display id.
+/**
+ * An issue ref, read from the node's issues directory: the file named by the
+ * ref, then a displayId match, then a previousDisplayIds match (ISS-687,
+ * N-059). It runs inside the node's job, so the scheduler bounds it.
+ */
+export async function resolveIssueStatus(storyDir: string, itemId: string, signal?: AbortSignal): Promise<CrossNodeRefStatus> {
+  const dir = join(storyDir, "issues");
   try {
     const raw = await readFile(join(dir, `${itemId}.json`), "utf-8");
-    return statusFromContent(JSON.parse(raw) as Record<string, unknown>);
+    return issueStatusFromContent(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     // fall through to the displayId-from-content scan
   }
-
-  // 2. displayId-from-content fallback (N-059): a display-form ref against a
-  //    node whose item was reconciled to a canonical filename. Scan for a file
-  //    whose displayId matches; fall back to a previousDisplayIds match only if
-  //    no current displayId matches (current displayId wins, per the resolver).
-  //    Canonical refs never reach here -- they resolve by filename in step 1.
-  if (DISPLAY_TICKET_REGEX.test(itemId) || DISPLAY_ISSUE_REGEX.test(itemId)) {
+  signal?.throwIfAborted();
+  if (DISPLAY_ISSUE_REGEX.test(itemId)) {
     try {
       const files = await readdir(dir);
       let prevFallback: CrossNodeRefStatus | null = null;
       for (const file of files) {
         if (!file.endsWith(".json")) continue;
+        signal?.throwIfAborted();
         try {
           const parsed = JSON.parse(await readFile(join(dir, file), "utf-8")) as Record<string, unknown>;
-          if (parsed.displayId === itemId) return statusFromContent(parsed);
+          if (parsed.displayId === itemId) return issueStatusFromContent(parsed);
           if (
             prevFallback === null &&
             Array.isArray(parsed.previousDisplayIds) &&
             (parsed.previousDisplayIds as unknown[]).includes(itemId)
           ) {
-            prevFallback = statusFromContent(parsed);
+            prevFallback = issueStatusFromContent(parsed);
           }
         } catch {
           // skip unreadable/malformed file
         }
       }
       if (prevFallback) return prevFallback;
-    } catch {
-      // dir missing -- fall through to unresolved
+    } catch (err) {
+      if (signal?.aborted) throw err;
     }
   }
-
   return { resolved: false, reason: "item not found in node" };
 }
 
 export class CrossNodeBlockingResolver {
   private constructor(private readonly statuses: Map<string, CrossNodeRefStatus>) {}
 
+  /** T-486 U2-4: built from one live observation (bounded, one graph load per node). */
   static async build(
     tickets: readonly Ticket[],
     resolvedNodes: Map<string, ResolvedNode>,
+    options: Omit<CrossNodeObservationOptions, "tickets" | "resolvedNodes"> = {},
   ): Promise<CrossNodeBlockingResolver> {
-    const refsByNode = new Map<string, Set<string>>();
+    const observation = await crossNodeObservation({ ...options, tickets, resolvedNodes });
+    return new CrossNodeBlockingResolver(observation.statuses);
+  }
 
-    for (const ticket of tickets) {
-      const refs = ticket.crossNodeBlockedBy;
-      if (!refs) continue;
-      for (const ref of refs) {
-        const match = CROSS_NODE_REF_CAPTURE_REGEX.exec(ref);
-        if (!match) continue;
-        const nodeName = match[1]!;
-        const itemId = match[2]!;
-        if (!refsByNode.has(nodeName)) refsByNode.set(nodeName, new Set());
-        refsByNode.get(nodeName)!.add(itemId);
-      }
-    }
-
-    const statuses = new Map<string, CrossNodeRefStatus>();
-
-    for (const [nodeName, itemIds] of refsByNode) {
-      const node = resolvedNodes.get(nodeName);
-
-      if (!node || !node.resolved) {
-        const reason = node?.reason ?? "node not configured";
-        for (const itemId of itemIds) {
-          statuses.set(`${nodeName}:${itemId}`, { resolved: false, reason });
-        }
-        continue;
-      }
-
-      const reads = Array.from(itemIds).map(async (itemId) => {
-        statuses.set(`${nodeName}:${itemId}`, await resolveItemStatus(node.storyDir, itemId));
-      });
-
-      await Promise.all(reads);
-    }
-
+  static fromStatuses(statuses: Map<string, CrossNodeRefStatus>): CrossNodeBlockingResolver {
     return new CrossNodeBlockingResolver(statuses);
   }
 

@@ -245,7 +245,7 @@ describe("CrossNodeBlockingResolver", () => {
       expect(resolver.isCrossNodeBlocked(ticket)).toBe(true);
     });
 
-    it("remote ticket with status 'resolved' -> getCrossNodeStatus resolved=true status='complete', isCrossNodeBlocked=false", async () => {
+    it("remote ticket file with a non-ticket status ('resolved') -> unresolved, the reason names the file, isCrossNodeBlocked='unresolved'", async () => {
       const nodeDir = await createNodeWithTickets("engine", [{ id: "T-061", status: "resolved" }]);
       const ticket = makeTicketWithCrossRef("T-001", ["engine:T-061"]);
       const resolvedNodes = new Map<string, ResolvedNode>([
@@ -253,12 +253,9 @@ describe("CrossNodeBlockingResolver", () => {
       ]);
       const resolver = await CrossNodeBlockingResolver.build([ticket], resolvedNodes);
       const status = resolver.getCrossNodeStatus("engine:T-061");
-      expect(status).toBeDefined();
-      expect(status?.resolved).toBe(true);
-      if (status?.resolved) {
-        expect(status.status).toBe("complete");
-      }
-      expect(resolver.isCrossNodeBlocked(ticket)).toBe(false);
+      expect(status).toMatchObject({ resolved: false });
+      expect((status as { reason: string }).reason).toContain("T-061.json");
+      expect(resolver.isCrossNodeBlocked(ticket)).toBe("unresolved");
     });
   });
 
@@ -310,7 +307,12 @@ describe("CrossNodeBlockingResolver", () => {
       const storyDir = join(dir, ".story");
       await mkdir(join(storyDir, "tickets"), { recursive: true });
       await mkdir(join(storyDir, "issues"), { recursive: true });
-      for (const t of tickets) await writeFile(join(storyDir, "tickets", t.file), JSON.stringify(t.content));
+      // T-486 U2-4: the resolver now reads nodes through the real loader, so each fixture is a full, schema-valid ticket.
+      const full = (c: Record<string, unknown>) => ({
+        title: "engine ticket", description: "", type: "task", phase: null, order: 10, blockedBy: [],
+        createdDate: "2026-01-01", completedDate: c.status === "complete" ? "2026-05-01" : null, ...c,
+      });
+      for (const t of tickets) await writeFile(join(storyDir, "tickets", t.file), JSON.stringify(full(t.content)));
       for (const i of issues) await writeFile(join(storyDir, "issues", i.file), JSON.stringify(i.content));
       return dir;
     }

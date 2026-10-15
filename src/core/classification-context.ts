@@ -10,8 +10,8 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tryReadFile } from "../cli/util/file-io.js";
-import { readFederationCache } from "../federation/cache.js";
 import { computeActionability, buildHandoverClassificationInputs, type Actionability } from "./recommend.js";
+import { crossNodeStatusRecord, observeProject } from "../federation/cross-node-observation.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { CommandContext } from "../cli/types.js";
@@ -26,7 +26,6 @@ export interface ClassificationContext {
   readonly recentHandovers: readonly RecentHandover[];
   /** `0` = window fully read; positive = that many intended files failed to read; `null` = the directory itself could not be listed. */
   readonly unreadableHandoverCount: number | null;
-  readonly crossNodeRefStatuses?: Record<string, string>;
 }
 
 const HANDOVER_WINDOW = 10;
@@ -53,13 +52,7 @@ export function loadClassificationContext(root: string, handoversDir: string): C
     unreadableHandoverCount = null;
   }
 
-  const cache = readFederationCache(join(root, ".story"));
-
-  return {
-    recentHandovers,
-    unreadableHandoverCount,
-    crossNodeRefStatuses: cache?.crossNodeRefStatuses,
-  };
+  return { recentHandovers, unreadableHandoverCount };
 }
 
 /**
@@ -71,16 +64,19 @@ export function loadClassificationContext(root: string, handoversDir: string): C
  * earlier `recommend()` response: it is this handler's own fresh read, and
  * can succeed or fail on its own.
  */
-export function computeTargetedActionability(
+export async function computeTargetedActionability(
   ctx: CommandContext,
   kind: "ticket" | "issue",
   item: Ticket | Issue,
-): { actionability: Actionability; unreadableHandoverCount: number | null } {
+): Promise<{ actionability: Actionability; unreadableHandoverCount: number | null }> {
   const classification = loadClassificationContext(ctx.root, ctx.handoversDir);
+  // T-486 U2-4 (ruling 1): the live observation over this one item, as
+  // recommend computes it; the federation cache is never read here.
+  const observation = await observeProject({ tickets: kind === "ticket" ? [item as Ticket] : [], config: ctx.state.config }, ctx.root);
   const { latestDispositionById } = buildHandoverClassificationInputs(ctx.state, classification.recentHandovers);
   const actionability = computeActionability(kind, item, {
     state: ctx.state,
-    crossNodeRefStatuses: classification.crossNodeRefStatuses,
+    crossNodeRefStatuses: crossNodeStatusRecord(observation),
     latestDispositionById,
   });
   return { actionability, unreadableHandoverCount: classification.unreadableHandoverCount };

@@ -27,6 +27,9 @@ import {
 } from "../../autonomous/review-contract.js";
 import { reviewBackendsForClient } from "../../autonomous/stages/codex-native.js";
 import { ExitCode, formatValidation } from "../../core/output-formatter.js";
+import { displayIdOf } from "../../core/resolver.js";
+import { isActiveLifecycle } from "../../core/project-state.js";
+import { observeProject } from "../../federation/cross-node-observation.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import { HANDOVER_TEMPLATE_MARKER, hasCarriedForwardHeading } from "../../core/handover-template.js";
 import { isFilenameAdmitted } from "../../core/handover-brief.js";
@@ -341,6 +344,60 @@ export function handleValidate(ctx: CommandContext): CommandResult {
   };
 }
 
+const OMITTED_FAULT: Record<"read" | "parse" | "schema", string> = {
+  read: "cannot be read; check its permissions",
+  parse: "is not valid JSON; fix the syntax",
+  schema: "fails the ticket schema; fix the fields named in the loader warning",
+};
+
+/**
+ * T-486 U2-4 (B1, ruling 3): one warning per ticket file the loader could not
+ * accept, naming what is wrong, the fix, and the releases it holds.
+ */
+export function omittedTicketFindings(ctx: CommandContext): ValidationFinding[] {
+  const reach = ctx.state.omittedReach();
+  return ctx.state.omittedTickets.map((o, i) => {
+    const r = reach[i]!;
+    const label = (id: string) => {
+      const t = ctx.state.ticketByID(id);
+      return t ? displayIdOf(t) : id;
+    };
+    const holds = r.every
+      ? "holds every dependency release in this project until fixed"
+      : r.ids.length === 0
+        ? "holds no dependency release"
+        : `holds the release of ${r.ids.map(label).join(", ")} until fixed`;
+    return { level: "warning", code: "omitted_ticket_file", message: `${o.file} ${OMITTED_FAULT[o.reason]}; it ${holds}`, entity: o.id ?? null };
+  });
+}
+
+/**
+ * T-486 U2-4 (V3A 5c): an open ticket whose cross-node blocker is withdrawn,
+ * or withholds withdrawn work, from the live observation only.
+ */
+async function crossNodeWithdrawnFindings(ctx: CommandContext): Promise<ValidationFinding[]> {
+  const observation = await observeProject(ctx.state, ctx.root);
+  const findings: ValidationFinding[] = [];
+  for (const ticket of ctx.state.tickets) {
+    if (ticket.status === "complete" || !isActiveLifecycle(ticket)) continue;
+    for (const ref of ticket.crossNodeBlockedBy ?? []) {
+      const status = observation.statuses.get(ref);
+      if (!status?.resolved) continue;
+      let what: string;
+      if (status.status === "withdrawn") what = `is withdrawn in node "${ref.slice(0, ref.indexOf(":"))}"`;
+      else if (status.status === "withheld") what = `has withdrawn work under it (${status.detail.join(", ")})`;
+      else continue;
+      findings.push({
+        level: "warning",
+        code: "cross_node_withdrawn",
+        message: `${displayIdOf(ticket)}: crossNodeBlockedBy ${ref} ${what}; retarget or remove the edge`,
+        entity: ticket.id,
+      });
+    }
+  }
+  return findings;
+}
+
 /** Full validation including Git and working-tree source provenance checks. */
 export async function handleValidateWithSourceRefs(
   ctx: CommandContext,
@@ -351,6 +408,8 @@ export async function handleValidateWithSourceRefs(
     ...sourceFindings,
     ...(await capabilityFindings(ctx)),
     ...glossaryFindings(ctx),
+    ...omittedTicketFindings(ctx),
+    ...(await crossNodeWithdrawnFindings(ctx)),
   ]);
   return {
     output: formatValidation(complete, ctx.format),

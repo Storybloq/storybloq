@@ -4,7 +4,7 @@ import { resolveAllNodes } from "../../federation/resolver.js";
 import { scanAllSummaries } from "../../federation/scanner.js";
 import { buildFederationState } from "../../federation/state.js";
 import { writeFederationCache } from "../../federation/cache.js";
-import { CrossNodeBlockingResolver } from "../../federation/cross-node-resolver.js";
+import { crossNodeObservation } from "../../federation/cross-node-observation.js";
 import { join } from "node:path";
 import type { CommandContext, CommandResult } from "../types.js";
 import { busSummary } from "../../bus/store.js";
@@ -266,13 +266,14 @@ export async function handleStatus(
     const scanResults = await scanAllSummaries(resolvedNodes);
     const fedState = buildFederationState(config, resolvedNodes, scanResults);
 
-    const resolver = await CrossNodeBlockingResolver.build(ctx.state.tickets, resolvedNodes);
+    // T-486 U2-4: the live observation; the cache is written from it.
+    const observation = await crossNodeObservation({ tickets: ctx.state.tickets, resolvedNodes });
     // Compact carries no roster: nothing is read for it here either (the
     // federated read is the orchestrator's plus every node's Bus probes).
     const roster = opts.compact ? undefined : await statusRoster(ctx.root, ctx.state, resolvedNodes);
 
     try {
-      writeFederationCache(join(ctx.root, ".story"), fedState, resolver.resolvedStatuses);
+      writeFederationCache(join(ctx.root, ".story"), fedState, observation.statuses);
     } catch {
       // best-effort cache write
     }

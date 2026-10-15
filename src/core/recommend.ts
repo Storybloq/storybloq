@@ -11,6 +11,7 @@ import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { IssueSeverity } from "../models/types.js";
 import type { FederationState, FederationNodeEntry } from "../federation/state.js";
+import { withdrawnRefPhrase, type CrossNodeObservation } from "../federation/cross-node-observation.js";
 import type { TrajectoryDisposition, IdOccurrence, TrajectoryHandoverInput } from "./markdown-sections.js";
 import { parseHandoverMarkdown, buildTrajectory, firstDispositionPerHandover } from "./markdown-sections.js";
 import {
@@ -49,7 +50,8 @@ export type RecommendCategory =
   | "handover_context"
   | "debt_trend"
   | "checkpoint_reassess"
-  | "unphased_ticket";
+  | "unphased_ticket"
+  | "cross_node_withdrawn";
 
 export interface RecommendOptions {
   /** Successfully-read handovers, last 10 intended, newest first. Replaces `latestHandoverContent`. */
@@ -59,6 +61,8 @@ export interface RecommendOptions {
   readonly previousOpenIssueCount?: number;
   readonly federationState?: FederationState;
   readonly crossNodeRefStatuses?: Record<string, string>;
+  /** T-486 U2-4: the live observation; the only source of a cross_node_withdrawn action. */
+  readonly crossNodeObservation?: CrossNodeObservation;
   readonly currentUser?: string;
 }
 
@@ -296,6 +300,7 @@ const CATEGORY_PRIORITY: Record<RecommendCategory, number> = {
   open_issue: 15,
   checkpoint_reassess: 16,
   unphased_ticket: 17,
+  cross_node_withdrawn: 18,
 };
 
 /**
@@ -350,6 +355,7 @@ export function recommend(
     () => generateOpenIssues(state),
     () => generateDebtTrend(state, options),
     () => generateUnphasedTickets(state, crossNodeStatuses),
+    () => generateCrossNodeRetargets(state, options?.crossNodeObservation),
   ];
 
   if (options?.federationState && state.config.type === "orchestrator") {
@@ -541,6 +547,35 @@ export function buildHandoverClassificationInputs(
 }
 
 // --- Generators (private) ---
+
+/**
+ * T-486 U2-4 (V3A 5c): an open ticket whose cross-node blocker was withdrawn,
+ * or is an umbrella with withdrawn work under it, waits on work that will not
+ * come: retarget or remove the edge. Read from the live observation only; an
+ * unresolved ref, or a cached value, never produces one.
+ */
+function generateCrossNodeRetargets(state: ProjectState, observation?: CrossNodeObservation): Recommendation[] {
+  if (!observation) return [];
+  const recs: Recommendation[] = [];
+  let index = 0;
+  for (const ticket of state.leafTickets) {
+    if (ticket.status === "complete" || !isActiveLifecycle(ticket)) continue;
+    for (const ref of ticket.crossNodeBlockedBy ?? []) {
+      const status = observation.statuses.get(ref);
+      const what = status ? withdrawnRefPhrase(ref, status) : null;
+      if (!what) continue;
+      recs.push({
+        id: `RETARGET_${ticket.id}_${ref}`,
+        kind: "action",
+        title: `Retarget ${displayIdOf(ticket)}: its cross-node blocker ${what}`,
+        category: "cross_node_withdrawn",
+        reason: "the dependent waits on work that will not be delivered -- retarget or remove the edge",
+        score: 760 - Math.min(index++, 9),
+      });
+    }
+  }
+  return recs;
+}
 
 function generateValidationSuggestions(
   state: ProjectState,

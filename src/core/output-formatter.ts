@@ -13,7 +13,8 @@ import { dispositionEvidenceView, issueJsonBody, issueStatusLabel, effectiveReso
 import type { Note } from "../models/note.js";
 import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
-import type { ProjectState } from "./project-state.js";
+import type { DependencyReleaseReason, ProjectState } from "./project-state.js";
+import type { CrossNodeRefStatus } from "../federation/cross-node-resolver.js";
 import type { LoadWarning } from "./errors.js";
 import type { ValidationResult, ValidationFinding, ValidationLevel } from "./validation.js";
 import type { LedgerIntegrityResult } from "./ledger-integrity.js";
@@ -1655,11 +1656,46 @@ export function formatIssueList(
  * T-486 U2: a blocker ref's release, additive to its stored status. A missing
  * or ambiguous ref does not release and carries no withdrawal reason.
  */
-function blockerRelease(state: ProjectState, ref: string): { releases: boolean; reason: "withdrawn" | "withheld" | null; detail: string[] } {
+function blockerRelease(state: ProjectState, ref: string): { releases: boolean; reason: DependencyReleaseReason | null; detail: string[] } {
   const resolved = state.resolveTicketRef(ref);
   if (resolved.kind !== "found") return { releases: false, reason: null, detail: [] };
   const release = state.dependencyRelease(resolved.item);
   return { releases: release.releases, reason: release.reason, detail: [...release.detail] };
+}
+
+/**
+ * T-486 U2-4: the cross-node half of `ticket blocked`: each ref's live
+ * status, and for an unresolved ref the cached value, labelled stale.
+ */
+export interface BlockedCrossNodeView {
+  readonly statuses: ReadonlyMap<string, CrossNodeRefStatus>;
+  readonly cached?: Readonly<Record<string, string>>;
+  readonly scannedAt?: string;
+}
+
+function crossNodeBlockerText(ref: string, view: BlockedCrossNodeView): string {
+  const status = view.statuses.get(ref);
+  if (!status || !status.resolved) {
+    const cached = view.cached?.[ref];
+    const stale = cached && cached !== "unresolved" ? `; cached ${cached}, stale (scanned ${view.scannedAt ?? "unknown"})` : "";
+    return `${ref} (unresolved: ${status ? status.reason : "not observed"}${stale})`;
+  }
+  const node = ref.slice(0, ref.indexOf(":"));
+  if (status.status === "withdrawn") return `${ref} (withdrawn in node "${node}"; retarget or remove the edge)`;
+  if (status.status === "withheld") return `${ref} (withheld: withdrawn work under it: ${status.detail.join(", ")}; retarget or remove the edge)`;
+  return `${ref} (${status.status})`;
+}
+
+function crossNodeBlockerJson(ref: string, view: BlockedCrossNodeView): Record<string, unknown> {
+  const status = view.statuses.get(ref);
+  if (!status || !status.resolved) {
+    const cached = view.cached?.[ref];
+    return {
+      ref, status: "unresolved", reason: status ? status.reason : "not observed",
+      ...(cached && cached !== "unresolved" ? { cached, stale: true, scannedAt: view.scannedAt ?? null } : {}),
+    };
+  }
+  return { ref, status: status.status, ...("detail" in status ? { detail: status.detail } : {}) };
 }
 
 export function formatBlockedTickets(
@@ -1667,6 +1703,7 @@ export function formatBlockedTickets(
   state: ProjectState,
   format: OutputFormat,
   citedRulingsByTicketId: ReadonlyMap<string, readonly CitationResolution[]> = new Map(),
+  crossNode?: BlockedCrossNodeView,
 ): string {
   if (format === "json") {
     return JSON.stringify(
@@ -1678,6 +1715,9 @@ export function formatBlockedTickets(
             status: state.ticketByID(bid)?.status ?? "unknown",
             ...blockerRelease(state, bid),
           })),
+          ...(crossNode && (t.crossNodeBlockedBy ?? []).length > 0
+            ? { crossNodeBlockers: (t.crossNodeBlockedBy ?? []).map((ref) => crossNodeBlockerJson(ref, crossNode)) }
+            : {}),
           citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []),
         })),
       ),
@@ -1701,10 +1741,14 @@ export function formatBlockedTickets(
             });
             return `${displayIdOf(resolved.item)} (umbrella, withdrawn work under it: ${under.join(", ")})`;
           }
+          if (release.reason === "incomplete") {
+            return `${displayIdOf(resolved.item)} (held by ticket files the loader could not accept: ${release.detail.join(", ")})`;
+          }
           return `${displayIdOf(resolved.item)} (${resolved.item.status})`;
         }
         return `${bid} (unknown)`;
       })
+      .concat(crossNode ? (t.crossNodeBlockedBy ?? []).map((ref) => crossNodeBlockerText(ref, crossNode)) : [])
       .join(", ");
     lines.push(`${displayIdOf(t)}: ${escapeMarkdownInline(t.title)} -- blocked by: ${blockerInfo}`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);

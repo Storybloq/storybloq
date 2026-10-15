@@ -4,6 +4,7 @@ import type { Note } from "../models/note.js";
 import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
 import type { Config } from "../models/config.js";
+import type { OmittedTicketRecord } from "./project-loader.js";
 import type { IssueSeverity } from "../models/types.js";
 import { resolveRef, buildPrevDisplayIndex, type ResolveResult } from "./resolver.js";
 import { compareByRank } from "./fractional-index.js";
@@ -16,16 +17,32 @@ export type PhaseStatus = "notstarted" | "inprogress" | "complete";
 
 /**
  * T-486 U2: whether a ticket, as a blocker, releases the tickets that wait on
- * it. `reason` names a withdrawal that holds it: the ticket itself
- * ("withdrawn") or withdrawn leaf work under an umbrella ("withheld"), and
- * `detail` lists the withdrawn ticket ids either way. The cross-node resolver
- * uses the same vocabulary (plan V3A 5c).
+ * it, and what holds it when it does not:
+ * - "withdrawn": the ticket itself; `detail` is its id;
+ * - "withheld": withdrawn leaf work under an umbrella; `detail` lists it;
+ * - "duplicate": its canonical id is claimed by two or more records;
+ * - "cycle": the umbrella walk met a parent cycle;
+ * - "checkpoint": an owner checkpoint that does not release;
+ * - "incomplete": a ticket file the loader could not accept could be the
+ *   blocker or sit under it (B1); `detail` lists the files;
+ * - null: a release, or a ticket not stored complete.
+ * The cross-node resolver projects the same vocabulary (plan V3A 5c, U2-4).
  */
+export type DependencyReleaseReason = "withdrawn" | "withheld" | "duplicate" | "cycle" | "checkpoint" | "incomplete";
+
 export interface DependencyRelease {
   readonly releases: boolean;
-  readonly reason: "withdrawn" | "withheld" | null;
+  readonly reason: DependencyReleaseReason | null;
   readonly detail: readonly string[];
 }
+
+/**
+ * T-486 U2-4 (B1): which releases an omitted ticket file could hold. `every`
+ * when it could sit anywhere (its parentage is unknown, or its parent chain
+ * is missing, ambiguous or cyclic); otherwise the accepted ancestors its
+ * chain reaches, plus its own id when it has one.
+ */
+export type OmittedReach = { readonly every: true } | { readonly every: false; readonly ids: readonly string[] };
 
 /**
  * Pure derived-data container. All derivation happens eagerly in the constructor.
@@ -40,6 +57,8 @@ export class ProjectState {
   readonly roadmap: Readonly<Roadmap>;
   readonly config: Readonly<Config>;
   readonly handoverFilenames: readonly string[];
+  /** T-486 U2-4 (B1): ticket files the loader could not accept; each holds the releases it could affect. */
+  readonly omittedTickets: readonly OmittedTicketRecord[];
 
   // --- Active (lifecycle-filtered) ---
   readonly activeTickets: readonly Ticket[];
@@ -86,6 +105,8 @@ export class ProjectState {
   private readonly issuesByPrevDisplayID: Map<string, Issue[]>;
   private readonly notesByPrevDisplayID: Map<string, Note[]>;
   private readonly lessonsByPrevDisplayID: Map<string, Lesson[]>;
+  private readonly incompleteByBlocker = new Map<string, string[]>();
+  private omittedReachCache: OmittedReach[] | null = null;
 
   // --- Counts ---
   readonly totalTicketCount: number;
@@ -123,8 +144,11 @@ export class ProjectState {
     roadmap: Roadmap;
     config: Config;
     handoverFilenames: string[];
+    /** T-486 U2-4 (B1): ticket files the loader could not accept. */
+    omittedTickets?: readonly OmittedTicketRecord[];
   }) {
     this.tickets = input.tickets;
+    this.omittedTickets = input.omittedTickets ?? [];
     this.issues = input.issues;
     this.notes = input.notes;
     this.lessons = input.lessons ?? [];
@@ -462,20 +486,87 @@ export class ProjectState {
    */
   dependencyRelease(blocker: Ticket): DependencyRelease {
     const plain = (releases: boolean): DependencyRelease => ({ releases, reason: null, detail: [] });
+    const held = (reason: DependencyReleaseReason, detail: readonly string[] = []): DependencyRelease => ({ releases: false, reason, detail });
     // T-486 U2-3 (B3): two records claiming one canonical id leave the blocker
     // unresolved, whichever of them a lookup returns.
-    if (this.ticketIdentity.duplicateIds.has(blocker.id)) return plain(false);
-    if (hasOwnerCheckpoint(blocker)) return plain(checkpointReleases(blocker));
+    if (this.ticketIdentity.duplicateIds.has(blocker.id)) return held("duplicate");
+    // T-486 U2-4 (B1): a ticket file the loader could not accept, which could
+    // be this blocker or sit under it, holds the release (fails closed).
+    const incomplete = this.incompleteFilesFor(blocker.id);
+    if (incomplete.length > 0) return held("incomplete", incomplete);
+    if (hasOwnerCheckpoint(blocker)) return checkpointReleases(blocker) ? plain(true) : held("checkpoint");
     if (isDeleted(blocker)) return plain(true);
-    if (isEffectivelyWithdrawn(blocker)) return { releases: false, reason: "withdrawn", detail: [blocker.id] };
+    if (isEffectivelyWithdrawn(blocker)) return held("withdrawn", [blocker.id]);
     if (this.hasAnyChild(blocker.id)) {
       const all = this.withdrawnUnder(blocker.id, this.childrenByParent);
       const counted = this.withdrawnUnder(blocker.id, this.countedChildrenByParent);
       const withdrawn = [...new Set([...all.withdrawn, ...counted.withdrawn])];
-      if (withdrawn.length > 0) return { releases: false, reason: "withheld", detail: withdrawn };
-      if (all.cycle || counted.cycle) return plain(false);
+      if (withdrawn.length > 0) return held("withheld", withdrawn);
+      if (all.cycle || counted.cycle) return held("cycle");
     }
     return plain(blocker.status === "complete");
+  }
+
+  /**
+   * T-486 U2-4 (B1): which releases each omitted ticket file could hold, in
+   * `omittedTickets` order. A record is provably outside a blocker's subtree
+   * only when its parent chain of accepted records reaches a root that is not
+   * the blocker, or it has no parent and another id. Anything less certain
+   * (unknown parentage, a missing or ambiguous parent, a duplicated id on the
+   * chain, a parent cycle) could sit anywhere, so it holds every release.
+   */
+  omittedReach(): readonly OmittedReach[] {
+    if (this.omittedReachCache) return this.omittedReachCache;
+    this.omittedReachCache = this.omittedTickets.map((o): OmittedReach => {
+      const own = o.id !== undefined ? [o.id] : [];
+      if (o.parentage === "unknown") return { every: true };
+      if (o.parentage === "root") return { every: false, ids: own };
+      const ancestors: string[] = [];
+      let ref: unknown = o.parentTicket;
+      while (ref != null) {
+        if (typeof ref !== "string") return { every: true };
+        const resolved = this.resolveTicketRef(ref);
+        if (resolved.kind !== "found") return { every: true };
+        const parent = resolved.item;
+        if (this.ticketIdentity.duplicateIds.has(parent.id) || ancestors.includes(parent.id)) return { every: true };
+        ancestors.push(parent.id);
+        ref = parent.parentTicket;
+      }
+      return { every: false, ids: [...own, ...ancestors] };
+    });
+    return this.omittedReachCache;
+  }
+
+  /** T-486 U2-4 (B1): the omitted ticket files that could be `blockerId` or sit under it, memoised per blocker. */
+  private incompleteFilesFor(blockerId: string): string[] {
+    if (this.omittedTickets.length === 0) return [];
+    const memo = this.incompleteByBlocker.get(blockerId);
+    if (memo) return memo;
+    const reach = this.omittedReach();
+    const files = this.omittedTickets
+      .filter((_, i) => reach[i]!.every || (reach[i] as { ids: readonly string[] }).ids.includes(blockerId))
+      .map((o) => o.file);
+    this.incompleteByBlocker.set(blockerId, files);
+    return files;
+  }
+
+  /**
+   * T-486 U2-4: a ticket graph alone (a node's records and its omitted files),
+   * for the cross-node resolver: no issues, notes or roadmap, a minimal config.
+   */
+  static forTicketGraph(tickets: readonly Ticket[], omittedTickets: readonly OmittedTicketRecord[]): ProjectState {
+    return new ProjectState({
+      tickets: [...tickets],
+      issues: [],
+      notes: [],
+      roadmap: { title: "", date: "1970-01-01", phases: [], blockers: [] } as Roadmap,
+      config: {
+        version: 2, project: "node", type: "", language: "",
+        features: { tickets: true, issues: false, handovers: false, roadmap: false, reviews: false },
+      } as Config,
+      handoverFilenames: [],
+      omittedTickets,
+    });
   }
 
   get blockedCount(): number {

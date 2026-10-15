@@ -159,8 +159,8 @@ describe("MCP integration -- real filesystem", () => {
     expect(parsed.data.unreadableHandoverCount).toBe(0);
   });
 
-  it("storybloq_ticket_get -- withActionability shares the same crossNodeRefStatuses cache recommend() reads (loadClassificationContext is genuinely shared)", async () => {
-    const root = await setupProject();
+  /** T-095, blocked across nodes by engine:T-005. */
+  async function writeCrossNodeDependent(root: string): Promise<void> {
     await writeFile(
       join(root, ".story", "tickets", "T-095.json"),
       JSON.stringify({
@@ -177,6 +177,33 @@ describe("MCP integration -- real filesystem", () => {
         crossNodeBlockedBy: ["engine:T-005"],
       }),
     );
+  }
+
+  it("storybloq_ticket_get -- withActionability judges a cross-node blocker by the same live observation recommend() uses", async () => {
+    // T-486 U2-4 (ruling 1): a real node ledger whose T-005 is complete.
+    const root = await setupProject();
+    await writeCrossNodeDependent(root);
+    const node = await mkdtemp(join(tmpdir(), "mcp-int-node-"));
+    tmpDirs.push(node);
+    await initProject(node, { name: "engine" });
+    await writeFile(join(node, ".story", "tickets", "T-005.json"), JSON.stringify({
+      id: "T-005", title: "Engine work", description: "", type: "task", status: "complete", phase: null,
+      order: 10, createdDate: "2026-09-01", completedDate: "2026-09-02", blockedBy: [], parentTicket: null,
+    }));
+    const configPath = join(root, ".story", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf-8")) as Record<string, unknown>;
+    await writeFile(configPath, JSON.stringify({ ...config, nodes: { engine: { path: node } } }));
+    const result = await runMcpReadTool(root, (ctx) => handleTicketGet("T-095", ctx, true), undefined, "json");
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed.data.actionability.status).toBe("actionable");
+  });
+
+  it("storybloq_ticket_get -- withActionability: a cache that says complete releases nothing when the node is not configured", async () => {
+    // T-486 U2-4 (ruling 1): the cache is no longer read for actionability;
+    // with no node to observe, the ref is unresolved and the ticket blocked.
+    const root = await setupProject();
+    await writeCrossNodeDependent(root);
     await writeFile(
       join(root, ".story", "federation-cache.json"),
       JSON.stringify({
@@ -188,9 +215,7 @@ describe("MCP integration -- real filesystem", () => {
     const result = await runMcpReadTool(root, (ctx) => handleTicketGet("T-095", ctx, true), undefined, "json");
     expect(result.isError).toBeUndefined();
     const parsed = JSON.parse(result.content[0].text);
-    // The cross-node dependency is resolved (complete) in the shared cache --
-    // actionable, not blocked, matching how recommend() itself would treat it.
-    expect(parsed.data.actionability.status).toBe("actionable");
+    expect(parsed.data.actionability.status).toBe("blocked");
   });
 
   it("storybloq_ticket_get -- withActionability:true on an archived ticket returns complete/ledger, matching how recommend() treats it", async () => {

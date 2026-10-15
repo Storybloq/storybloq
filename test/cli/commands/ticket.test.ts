@@ -200,7 +200,7 @@ describe("handleTicketNext", () => {
 });
 
 describe("handleTicketBlocked", () => {
-  it("returns blocked tickets", () => {
+  it("returns blocked tickets", async () => {
     const ctx = makeCtx({
       state: makeState({
         tickets: [
@@ -210,7 +210,7 @@ describe("handleTicketBlocked", () => {
         roadmap: makeRoadmap([makePhase({ id: "p1" })]),
       }),
     });
-    const result = handleTicketBlocked(ctx);
+    const result = await handleTicketBlocked(ctx);
     expect(result.output).toContain("T-002");
     expect(result.exitCode).toBeUndefined();
   });

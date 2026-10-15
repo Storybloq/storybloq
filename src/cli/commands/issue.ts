@@ -188,11 +188,14 @@ export function handleIssueList(
   return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
 }
 
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability?: false): CommandResult;
+export function handleIssueGet(id: string, ctx: CommandContext, withActionability: boolean): CommandResult | Promise<CommandResult>;
+/** T-486 U2-4: async only with actionability (the shared targeted lookup). */
 export function handleIssueGet(
   id: string,
   ctx: CommandContext,
   withActionability = false,
-): CommandResult {
+): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveIssueRef(id);
   if (result.kind === "ambiguous") {
     const ids = result.matches.map((m) => m.id).join(", ");
@@ -210,10 +213,11 @@ export function handleIssueGet(
     };
   }
   const rulingCtx = loadCitationContext(ctx.root);
-  const extraJsonFields = withActionability ? computeTargetedActionability(ctx, "issue", result.item) : undefined;
-  return {
-    output: formatIssue(result.item, ctx.format, ctx.state, resolveEntityCitations(result.item, rulingCtx), extraJsonFields),
-  };
+  const item = result.item;
+  const render = (extraJsonFields?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => ({
+    output: formatIssue(item, ctx.format, ctx.state, resolveEntityCitations(item, rulingCtx), extraJsonFields),
+  });
+  return withActionability ? computeTargetedActionability(ctx, "issue", item).then(render) : render();
 }
 
 export function handleIssueMetaGet(
@@ -307,6 +311,7 @@ function validatePostWriteIssueState(
     roadmap: state.roadmap,
     config: state.config,
     handoverFilenames: [...state.handoverFilenames],
+    omittedTickets: state.omittedTickets,
   });
   const postResult = validateProject(postState);
   const { counts: postErrors, messages: postMessages } = buildErrorMultiset(postResult.findings);

@@ -19,6 +19,7 @@ import { loadFederationState, summariesForTotals } from "../../src/federation/re
 import { resolveAllNodes, type ResolvedNode } from "../../src/federation/resolver.js";
 import {
   NOT_SCANNED_REASON,
+  runNodeJobs,
   runNodeScans,
   scanAllSummaries,
   scanNodeSummary,
@@ -141,6 +142,33 @@ describe("T-486 U2-3b: one bounded scheduler for every node scan", () => {
     expect(out).toBeDefined();
     expect([...out!.values()].map((r) => r.reason)).toEqual(Array(6).fill("timeout"));
     expect([c.started, c.settled, c.peak]).toEqual([6, 6, 4]);
+  });
+
+  it("aborting the scheduler's signal fixes every pending and queued node as cancelled and returns without waiting", async () => {
+    vi.useFakeTimers();
+    const aborted: AbortSignal[] = [];
+    let started = 0;
+    const stop = new AbortController();
+    let out: Map<string, { ok: boolean; reason?: string }> | undefined;
+    void runNodeJobs(jobs(6), {
+      run: (_dir, signal) => {
+        started++;
+        signal.addEventListener("abort", () => aborted.push(signal));
+        return new Promise<never>(() => {});
+      },
+      concurrency: 4,
+      timeoutMs: 10_000,
+      signal: stop.signal,
+    }).then((r) => { out = r as never; });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(out).toBeUndefined();
+    stop.abort("stop");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(out).toBeDefined();
+    expect([...out!.values()].map((r) => r.reason)).toEqual(Array(6).fill("cancelled: stop"));
+    expect([started, aborted.length]).toEqual([4, 4]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(started).toBe(4);
   });
 
   it("a scan that throws before returning a promise is a scan error, and the rest still run", async () => {

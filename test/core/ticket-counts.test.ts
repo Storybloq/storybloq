@@ -127,10 +127,10 @@ describe("T-486 U2-3a fixture F1: literal counts and records, independently for 
       "T-001", "T-010", "T-011", "T-012", "T-013", "T-020", "T-021", "T-030", "T-031", "T-040", "T-070-copy", "T-070", F,
     ].map((f) => `.story/tickets/${f}.json`));
     expect(r.omitted).toEqual([
-      { file: ".story/tickets/T-050.json", reason: "schema", id: "T-050", parentTicket: "T-010" },
-      { file: ".story/tickets/T-080.json", reason: "schema", id: "T-080", parentTicket: "not-an-id" },
-      { file: ".story/tickets/T-081.json", reason: "schema", id: "T-081" },
-      { file: ".story/tickets/broken.json", reason: "parse" },
+      { file: ".story/tickets/T-050.json", reason: "schema", id: "T-050", parentTicket: "T-010", parentage: "ref" },
+      { file: ".story/tickets/T-080.json", reason: "schema", id: "T-080", parentTicket: "not-an-id", parentage: "ref" },
+      { file: ".story/tickets/T-081.json", reason: "schema", id: "T-081", parentage: "root" },
+      { file: ".story/tickets/broken.json", reason: "parse", parentage: "unknown" },
     ]);
     expect(r.identity.diagnostics.map(({ code, key, files, ids }) => ({ code, key, files, ids }))).toEqual([
       { code: "duplicate-id", key: "T-070", files: [".story/tickets/T-070-copy.json", ".story/tickets/T-070.json"], ids: ["T-070"] },
@@ -158,10 +158,25 @@ describe("T-486 U2-3a fixture F1: literal counts and records, independently for 
     expect(applyTicketIdentityPolicy([raw("T-001"), raw(F)]).diagnostics).toEqual([]);
   });
 
-  it("a dependent of the duplicated canonical id stays blocked; a reference by exact legacy id releases (N9, N17)", async () => {
+  it("a dependent of the duplicated canonical id stays blocked; an omitted file that could sit anywhere holds every other release (N9, B1)", async () => {
     const state = await stateOf(await board(F1));
     expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(true);
-    expect(state.dependencyRelease(state.ticketByID("T-070")!)).toEqual({ releases: false, reason: null, detail: [] });
+    expect(state.dependencyRelease(state.ticketByID("T-070")!)).toEqual({ releases: false, reason: "duplicate", detail: [] });
+    // T-486 U2-4 (B1, local, fails closed): broken.json could be any ticket,
+    // and T-080's parent "not-an-id" resolves to no record, so either could
+    // sit under T-001: it does not release and its dependent T-021 is blocked.
+    expect(state.dependencyRelease(state.ticketByID("T-001")!)).toEqual({
+      releases: false, reason: "incomplete", detail: [".story/tickets/T-080.json", ".story/tickets/broken.json"],
+    });
+    expect(state.isBlocked(state.ticketByID("T-021")!)).toBe(true);
+    expect(state.blockedCount).toBe(2);
+  });
+
+  it("without those two files, a reference by exact legacy id releases and the duplicated id stays blocked (N9, N17)", async () => {
+    const anywhere = new Set(["broken.json", "T-080"]);
+    const state = await stateOf(await board(F1.filter((e) => !anywhere.has(Array.isArray(e) ? e[0] : String(e.id)))));
+    expect(state.dependencyRelease(state.ticketByID("T-070")!)).toEqual({ releases: false, reason: "duplicate", detail: [] });
+    expect(state.isBlocked(state.ticketByID("T-020")!)).toBe(true);
     // "T-001" is both a legacy id and F's displayId: the exact id wins.
     expect(state.isBlocked(state.ticketByID("T-021")!)).toBe(false);
     expect(state.blockedCount).toBe(1);
@@ -196,7 +211,7 @@ describe("T-486 U2-3a counts (N2, N5) and surfaces", () => {
 
   it("status, recap and export md split off withdrawn work when there is some", async () => {
     const state = await stateOf(await board(F1));
-    const line = "Tickets: 3/8 complete (2 delivered, 1 withdrawn), 1 blocked";
+    const line = "Tickets: 3/8 complete (2 delivered, 1 withdrawn), 2 blocked";
     expect(formatStatus(state, "md").split("\n")).toContain(line);
     expect(formatRecap(recapWithoutSnapshot, state, "md").split("\n")).toContain(line);
     expect(formatExport(state, "all", null, "md").split("\n")).toContain("Tickets: 3/8 complete (2 delivered, 1 withdrawn)");
@@ -253,7 +268,7 @@ describe("T-486 U2-3a identity policy (B3: N9, N12 to N16)", () => {
     const state = await stateOf(root);
     expect(state.ticketByID("T-002")!.status).toBe("complete");
     expect(state.isBlocked(state.ticketByID("T-030")!)).toBe(true);
-    expect(state.dependencyRelease(state.ticketByID("T-002")!)).toEqual({ releases: false, reason: null, detail: [] });
+    expect(state.dependencyRelease(state.ticketByID("T-002")!)).toEqual({ releases: false, reason: "duplicate", detail: [] });
   });
 
   it("N12, N13, N14: two tickets sharing a displayId are both counted and diagnosed; a canonical-id ref to either releases, the shared displayId does not", async () => {

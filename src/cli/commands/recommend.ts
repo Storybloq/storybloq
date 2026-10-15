@@ -5,6 +5,7 @@ import { recommend, type RecommendOptions } from "../../core/recommend.js";
 import { formatRecommendations } from "../../core/output-formatter.js";
 import { loadFederationState } from "../../federation/recommend-loader.js";
 import { loadClassificationContext } from "../../core/classification-context.js";
+import { crossNodeStatusRecord, observeProject } from "../../federation/cross-node-observation.js";
 import type { CommandContext, CommandResult } from "../types.js";
 
 export async function handleRecommend(
@@ -15,6 +16,8 @@ export async function handleRecommend(
   const baseOptions = buildRecommendOptions(ctx);
   const fedState = await loadFederationState(ctx.root, ctx.state.config);
   const classification = loadClassificationContext(ctx.root, ctx.handoversDir);
+  // T-486 U2-4: one live observation; the federation cache is not read here.
+  const observation = await observeProject(ctx.state, ctx.root);
 
   let currentUser: string | undefined;
   try {
@@ -27,7 +30,8 @@ export async function handleRecommend(
     recentHandovers: classification.recentHandovers,
     unreadableHandoverCount: classification.unreadableHandoverCount,
     ...(fedState ? { federationState: fedState } : {}),
-    ...(classification.crossNodeRefStatuses ? { crossNodeRefStatuses: classification.crossNodeRefStatuses } : {}),
+    crossNodeRefStatuses: crossNodeStatusRecord(observation),
+    crossNodeObservation: observation,
     ...(currentUser ? { currentUser } : {}),
   };
   const result = recommend(ctx.state, count, options);

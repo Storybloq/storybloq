@@ -280,9 +280,11 @@ export function nextTickets(
 /**
  * All currently blocked incomplete leaf tickets.
  */
-export function blockedTickets(state: ProjectState): readonly Ticket[] {
+export function blockedTickets(state: ProjectState, crossNodeRefStatuses?: Record<string, string>): readonly Ticket[] {
+  // T-486 U2-4: with a live observation's map, a ticket blocked only across
+  // nodes is listed too (an unresolved ref stays blocked).
   return state.leafTickets.filter(
-    (t) => t.status !== "complete" && state.isBlocked(t),
+    (t) => t.status !== "complete" && (state.isBlocked(t) || (crossNodeRefStatuses !== undefined && isCrossNodeBlocked(t, crossNodeRefStatuses))),
   );
 }
 

@@ -178,37 +178,66 @@ export interface NodeScanSchedule {
 /** The failure every queued node gets once a timed-out scan did not stop. */
 export const NOT_SCANNED_REASON = "not scanned: an earlier scan did not stop";
 
+/** How a node job ends: its value, or why it has none. */
+export type NodeJobResult<T> = { ok: true; value: T } | { ok: false; reason: string };
+
+export interface NodeJobSchedule<T> {
+  run: (storyDir: string, signal: AbortSignal) => Promise<T>;
+  concurrency?: number;
+  timeoutMs?: number;
+  /** How long a timed-out job has to settle after its abort; defaults to the timeout. */
+  settleGraceMs?: number;
+  /**
+   * T-486 U2-4: the caller's stop. When it aborts, every running job is
+   * aborted, every node without a result gets "cancelled: <reason>", nothing
+   * more starts, and the call returns at once.
+   */
+  signal?: AbortSignal;
+}
+
 /**
- * T-486 U2-3b (B2): the one way a node scan starts, for the fresh scan and
- * the cache rescan alike. At most `concurrency` scans run at once. Each scan
- * gets its own AbortController, owned here: the signal goes into the scan and
- * is aborted at the deadline, when the node's result is fixed as "timeout"
- * so no caller waits past the bound to report it. The slot is freed only when
- * the scan itself settles, so a scan that ignores its deadline keeps holding
- * it. If a timed-out scan has not settled within `settleGraceMs` of its abort,
- * its cancellation is unconfirmed: nothing more is started, and every node
- * still queued fails with NOT_SCANNED_REASON. Every slot therefore frees or
- * stops the queue within timeoutMs + settleGraceMs, and the call settles
- * within ceil(jobs / concurrency) of those, whatever the scans do.
+ * T-486 U2-3b (B2): the one way a node job starts: the fresh scan, the cache
+ * rescan and the cross-node observation (U2-4) alike. At most `concurrency`
+ * jobs run at once. Each job gets its own AbortController, owned here: the
+ * signal goes into the job and is aborted at the deadline, when the node's
+ * result is fixed as "timeout" so no caller waits past the bound to report it.
+ * The slot is freed only when the job itself settles, so a job that ignores
+ * its deadline keeps holding it. If a timed-out job has not settled within
+ * `settleGraceMs` of its abort, its cancellation is unconfirmed: nothing more
+ * is started, and every node still queued fails with NOT_SCANNED_REASON.
+ * Every slot therefore frees or stops the queue within timeoutMs +
+ * settleGraceMs, and the call settles within ceil(jobs / concurrency) of
+ * those, whatever the jobs do.
  */
-export function runNodeScans(jobs: readonly NodeScanJob[], options: NodeScanSchedule = {}): Promise<Map<string, NodeScanResult>> {
-  const scan = options.scan ?? scanNodeSummary;
+export function runNodeJobs<T>(jobs: readonly NodeScanJob[], options: NodeJobSchedule<T>): Promise<Map<string, NodeJobResult<T>>> {
   const concurrency = Math.max(1, options.concurrency ?? NODE_SCAN_CONCURRENCY);
   const timeoutMs = options.timeoutMs ?? NODE_SCAN_TIMEOUT_MS;
   const settleGraceMs = options.settleGraceMs ?? timeoutMs;
-  const results = new Map<string, NodeScanResult>();
+  const results = new Map<string, NodeJobResult<T>>();
   const queue = [...jobs];
+  const controllers = new Set<AbortController>();
   let running = 0;
   let stopped = false;
 
   return new Promise((resolveAll) => {
     const finishIfDone = (): void => {
-      if (results.size === jobs.length) resolveAll(results);
+      if (results.size !== jobs.length) return;
+      options.signal?.removeEventListener("abort", cancel);
+      resolveAll(results);
     };
     const stopQueue = (): void => {
       stopped = true;
-      for (const job of queue.splice(0)) results.set(job.name, { reachable: false, reason: NOT_SCANNED_REASON });
+      for (const job of queue.splice(0)) results.set(job.name, { ok: false, reason: NOT_SCANNED_REASON });
       finishIfDone();
+    };
+    const cancel = (): void => {
+      stopped = true;
+      const raw = options.signal?.reason;
+      const reason = `cancelled: ${typeof raw === "string" ? raw : raw instanceof Error ? raw.message : "aborted"}`;
+      for (const job of jobs) if (!results.has(job.name)) results.set(job.name, { ok: false, reason });
+      queue.length = 0;
+      for (const controller of controllers) controller.abort();
+      resolveAll(results);
     };
     const pump = (): void => {
       while (!stopped && running < concurrency && queue.length > 0) start(queue.shift()!);
@@ -217,40 +246,57 @@ export function runNodeScans(jobs: readonly NodeScanJob[], options: NodeScanSche
     const start = (job: NodeScanJob): void => {
       running++;
       const controller = new AbortController();
-      const record = (result: NodeScanResult): void => {
+      controllers.add(controller);
+      const record = (result: NodeJobResult<T>): void => {
         if (!results.has(job.name)) results.set(job.name, result);
       };
       let settled = false;
       let grace: ReturnType<typeof setTimeout> | undefined;
       const deadline = setTimeout(() => {
-        record({ reachable: false, reason: "timeout" });
+        record({ ok: false, reason: "timeout" });
         controller.abort();
         grace = setTimeout(() => {
           if (!settled) stopQueue();
         }, settleGraceMs);
         finishIfDone();
       }, timeoutMs);
-      let work: Promise<NodeScanSummary>;
+      let work: Promise<T>;
       try {
-        work = scan(job.storyDir, controller.signal);
+        work = options.run(job.storyDir, controller.signal);
       } catch (err) {
         work = Promise.reject(err);
       }
       void work
         .then(
-          (summary) => record({ reachable: true, summary }),
-          () => record({ reachable: false, reason: "scan error" }),
+          (value) => record({ ok: true, value }),
+          () => record({ ok: false, reason: "scan error" }),
         )
         .finally(() => {
           settled = true;
+          controllers.delete(controller);
           clearTimeout(deadline);
           clearTimeout(grace);
           running--;
           pump();
         });
     };
+    if (options.signal?.aborted) return cancel();
+    options.signal?.addEventListener("abort", cancel, { once: true });
     pump();
   });
+}
+
+/** The node scan through `runNodeJobs`, with the scan's own result shape (U2-3b). */
+export async function runNodeScans(jobs: readonly NodeScanJob[], options: NodeScanSchedule = {}): Promise<Map<string, NodeScanResult>> {
+  const ran = await runNodeJobs(jobs, {
+    run: options.scan ?? scanNodeSummary,
+    concurrency: options.concurrency,
+    timeoutMs: options.timeoutMs,
+    settleGraceMs: options.settleGraceMs,
+  });
+  const results = new Map<string, NodeScanResult>();
+  for (const [name, r] of ran) results.set(name, r.ok ? { reachable: true, summary: r.value } : { reachable: false, reason: r.reason });
+  return results;
 }
 
 export async function scanAllSummaries(

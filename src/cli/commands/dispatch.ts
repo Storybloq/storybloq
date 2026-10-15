@@ -7,8 +7,7 @@ import { ExitCode } from "../../core/output-formatter.js";
 import type { Config } from "../../models/config.js";
 import { loadFederationState } from "../../federation/recommend-loader.js";
 import { loadNodeRecommendations, type NodeRecommendationLoadWarning } from "../../federation/node-recommend.js";
-import { readFederationCache } from "../../federation/cache.js";
-import { join } from "node:path";
+import { crossNodeStatusRecord, observeProject } from "../../federation/cross-node-observation.js";
 
 export interface DispatchOptions {
   readonly ids: readonly string[] | "all";
@@ -81,8 +80,13 @@ function appendNodeRecommendationWarnings(
   };
 }
 
-function crossNodeRefStatuses(ctx: CommandContext): Record<string, string> | undefined {
-  return readFederationCache(join(ctx.root, ".story"))?.crossNodeRefStatuses;
+/**
+ * T-486 U2-4: one live observation per command, over this ledger's tickets.
+ * Node tickets' refs are looked up in the same map, as before; the
+ * federation cache is not read.
+ */
+async function crossNodeRefStatuses(ctx: CommandContext): Promise<Record<string, string>> {
+  return crossNodeStatusRecord(await observeProject(ctx.state, ctx.root));
 }
 
 export async function handleDispatchRecommend(ctx: CommandContext, count: number): Promise<CommandResult> {
@@ -90,10 +94,7 @@ export async function handleDispatchRecommend(ctx: CommandContext, count: number
   if (config.type === "orchestrator") {
     return handleFederationDispatchRecommend(ctx, count);
   }
-  const cache = readFederationCache(join(ctx.root, ".story"));
-  const options: RecommendOptions = {
-    ...(cache?.crossNodeRefStatuses ? { crossNodeRefStatuses: cache.crossNodeRefStatuses } : {}),
-  };
+  const options: RecommendOptions = { crossNodeRefStatuses: await crossNodeRefStatuses(ctx) };
   const { recommendations } = recommend(ctx.state, count, options);
   const claudeVersion = detectClaudeVersion();
   const plan = buildDispatchPlan(recommendations, "all", ctx.root, claudeVersion, getMaxAgents(config));
@@ -104,7 +105,6 @@ export async function handleDispatchRecommend(ctx: CommandContext, count: number
 
 async function handleFederationDispatchRecommend(ctx: CommandContext, count: number): Promise<CommandResult> {
   const config = ctx.state.config as Config;
-  const cachedStatuses = crossNodeRefStatuses(ctx);
   const fedState = await loadFederationState(ctx.root, config);
   if (!fedState) {
     return {
@@ -112,7 +112,7 @@ async function handleFederationDispatchRecommend(ctx: CommandContext, count: num
       exitCode: ExitCode.USER_ERROR,
     };
   }
-  const statuses = crossNodeRefStatuses(ctx) ?? cachedStatuses;
+  const statuses = await crossNodeRefStatuses(ctx);
   const nodeRecs = await loadNodeRecommendations(fedState, count, statuses);
   const claudeVersion = detectClaudeVersion();
   const plan = appendNodeRecommendationWarnings(
@@ -137,7 +137,6 @@ export async function handleDispatch(ctx: CommandContext, options: DispatchOptio
   const claudeVersion = detectClaudeVersion();
 
   if (config.type === "orchestrator") {
-    const cachedStatuses = crossNodeRefStatuses(ctx);
     const fedState = await loadFederationState(ctx.root, config);
     if (!fedState) {
       return {
@@ -145,17 +144,14 @@ export async function handleDispatch(ctx: CommandContext, options: DispatchOptio
         exitCode: ExitCode.USER_ERROR,
       };
     }
-    const statuses = crossNodeRefStatuses(ctx) ?? cachedStatuses;
+    const statuses = await crossNodeRefStatuses(ctx);
     const nodeRecs = await loadNodeRecommendations(fedState, options.count, statuses);
     plan = appendNodeRecommendationWarnings(
       buildFederationDispatchPlan(nodeRecs.recommendationsByNode, claudeVersion, getMaxAgents(config)),
       nodeRecs.warnings,
     );
   } else {
-    const cache = readFederationCache(join(ctx.root, ".story"));
-    const recOptions: RecommendOptions = {
-      ...(cache?.crossNodeRefStatuses ? { crossNodeRefStatuses: cache.crossNodeRefStatuses } : {}),
-    };
+    const recOptions: RecommendOptions = { crossNodeRefStatuses: await crossNodeRefStatuses(ctx) };
     const { recommendations } = recommend(ctx.state, options.count, recOptions);
     plan = buildDispatchPlan(recommendations, options.ids, ctx.root, claudeVersion, getMaxAgents(config), titleLookup(ctx));
   }

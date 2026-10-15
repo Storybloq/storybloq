@@ -21,6 +21,9 @@ import { ProjectState } from "../../core/project-state.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
 import { computeTargetedActionability } from "../../core/classification-context.js";
+import { readFederationCache } from "../../federation/cache.js";
+import { crossNodeStatusRecord, observeProject } from "../../federation/cross-node-observation.js";
+import { join } from "node:path";
 import {
   withProjectLock,
   writeTicketUnlocked,
@@ -131,11 +134,14 @@ export function handleTicketList(
   return { output: formatTicketList(tickets, ctx.format, citationMapFor(tickets, rulingCtx)) };
 }
 
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability?: false): CommandResult;
+export function handleTicketGet(id: string, ctx: CommandContext, withActionability: boolean): CommandResult | Promise<CommandResult>;
+/** T-486 U2-4: async only with actionability, which reads the live cross-node observation. */
 export function handleTicketGet(
   id: string,
   ctx: CommandContext,
   withActionability = false,
-): CommandResult {
+): CommandResult | Promise<CommandResult> {
   const result = ctx.state.resolveTicketRef(id);
   if (result.kind === "ambiguous") {
     const ids = result.matches.map((m) => m.id).join(", ");
@@ -153,10 +159,11 @@ export function handleTicketGet(
     };
   }
   const rulingCtx = loadCitationContext(ctx.root);
-  const extraJsonFields = withActionability ? computeTargetedActionability(ctx, "ticket", result.item) : undefined;
-  return {
-    output: formatTicket(result.item, ctx.state, ctx.format, resolveEntityCitations(result.item, rulingCtx), extraJsonFields),
-  };
+  const item = result.item;
+  const render = (extraJsonFields?: Awaited<ReturnType<typeof computeTargetedActionability>>): CommandResult => ({
+    output: formatTicket(item, ctx.state, ctx.format, resolveEntityCitations(item, rulingCtx), extraJsonFields),
+  });
+  return withActionability ? computeTargetedActionability(ctx, "ticket", item).then(render) : render();
 }
 
 export function handleTicketMetaGet(
@@ -208,9 +215,21 @@ export function handleTicketNext(ctx: CommandContext, count: number = 1): Comman
   return { output: formatNextTicketsOutcome(outcome, ctx.state, ctx.format, citedRulingsByTicketId), exitCode };
 }
 
-export function handleTicketBlocked(ctx: CommandContext): CommandResult {
-  const blocked = blockedTickets(ctx.state);
-  return { output: formatBlockedTickets(blocked, ctx.state, ctx.format, citationMapFor(blocked, loadCitationContext(ctx.root))) };
+/**
+ * T-486 U2-4: lists tickets blocked locally or across nodes, each cross-node
+ * ref with its live status; an unresolved ref shows the cached value, if
+ * any, labelled stale.
+ */
+export async function handleTicketBlocked(ctx: CommandContext): Promise<CommandResult> {
+  const observation = await observeProject(ctx.state, ctx.root);
+  const blocked = blockedTickets(ctx.state, crossNodeStatusRecord(observation));
+  const cache = observation.statuses.size > 0 ? readFederationCache(join(ctx.root, ".story")) : null;
+  return {
+    output: formatBlockedTickets(blocked, ctx.state, ctx.format, citationMapFor(blocked, loadCitationContext(ctx.root)), {
+      statuses: observation.statuses,
+      ...(cache?.crossNodeRefStatuses ? { cached: cache.crossNodeRefStatuses, scannedAt: cache.lastScanTimestamp } : {}),
+    }),
+  };
 }
 
 // --- Write Handlers ---
@@ -301,6 +320,7 @@ export function validatePostWriteState(
     roadmap: state.roadmap,
     config: state.config,
     handoverFilenames: [...state.handoverFilenames],
+    omittedTickets: state.omittedTickets,
   });
   const postResult = validateProject(postState);
   const { counts: postErrors, messages: postMessages } = buildErrorMultiset(postResult.findings);

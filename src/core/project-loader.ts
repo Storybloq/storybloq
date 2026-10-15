@@ -97,6 +97,13 @@ export interface OmittedTicketRecord {
   readonly reason: "read" | "parse" | "schema";
   readonly id?: string;
   readonly parentTicket?: string;
+  /**
+   * T-486 U2-4 (B1): "root" when the parsed record has no parent (absent or
+   * null), "ref" when parentTicket is a string (carried in `parentTicket`),
+   * "unknown" when the file could not be read or parsed or parentTicket is
+   * malformed, so the record could sit under any ticket.
+   */
+  readonly parentage: "root" | "ref" | "unknown";
 }
 
 export interface TicketRecords {
@@ -231,6 +238,7 @@ export async function loadProject(
 
   // 6. Load tickets (best-effort)
   const fileClassifications = new Map<string, "legacy" | "team">();
+  const omittedTickets: OmittedTicketRecord[] = [];
   const tickets = await loadDirectory<Ticket>(
     join(wrapDir, "tickets"),
     absRoot,
@@ -238,6 +246,7 @@ export async function loadProject(
     warnings,
     "ticket",
     fileClassifications,
+    { omitted: omittedTickets },
   );
 
   // 7. Load issues (best-effort)
@@ -300,6 +309,7 @@ export async function loadProject(
     roadmap,
     config,
     handoverFilenames,
+    omittedTickets,
   });
 
   // 11. ISS-730: opt-in continuous cross-reference integrity check. When
@@ -1597,12 +1607,13 @@ async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const roadmap = await loadSingletonFile<Roadmap>("roadmap.json", wrapDir, absRoot, RoadmapSchema);
   const warnings: LoadWarning[] = [];
   const fileClassifications = new Map<string, "legacy" | "team">();
-  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications);
+  const omittedTickets: OmittedTicketRecord[] = [];
+  const tickets = await loadDirectory<Ticket>(join(wrapDir, "tickets"), absRoot, TicketSchema, warnings, "ticket", fileClassifications, { omitted: omittedTickets });
   const issues = await loadDirectory<Issue>(join(wrapDir, "issues"), absRoot, IssueSchema, warnings, "issue", fileClassifications);
   const notes = await loadDirectory<Note>(join(wrapDir, "notes"), absRoot, NoteSchema, warnings, "note", fileClassifications);
   const lessons = await loadDirectory<Lesson>(join(wrapDir, "lessons"), absRoot, LessonSchema, warnings, "lesson", fileClassifications);
   const handoverFilenames = await listHandovers(join(wrapDir, "handovers"), absRoot, warnings);
-  const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames });
+  const state = new ProjectState({ tickets, issues, notes, lessons, roadmap, config, handoverFilenames, omittedTickets });
   return { state, warnings, fileClassifications };
 }
 
@@ -1791,20 +1802,22 @@ async function loadDirectory<T>(
         message: err instanceof Error ? err.message : String(err),
         type: "parse_error",
       });
-      extras.omitted?.push({ file: relPath, reason: stage });
+      extras.omitted?.push({ file: relPath, reason: stage, parentage: "unknown" });
     }
   }
 
   return results;
 }
 
-/** The id and parentTicket a refused record exposes as strings, if any. */
-function recoverableIdentity(parsed: unknown): { id?: string; parentTicket?: string } {
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+/** The id and parentTicket a refused record exposes as strings, if any, and its parentage (B1). */
+function recoverableIdentity(parsed: unknown): Pick<OmittedTicketRecord, "id" | "parentTicket" | "parentage"> {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return { parentage: "unknown" };
   const raw = parsed as Record<string, unknown>;
+  const parent = raw.parentTicket;
   return {
     ...(typeof raw.id === "string" ? { id: raw.id } : {}),
-    ...(typeof raw.parentTicket === "string" ? { parentTicket: raw.parentTicket } : {}),
+    ...(typeof parent === "string" ? { parentTicket: parent } : {}),
+    parentage: typeof parent === "string" ? "ref" : parent == null ? "root" : "unknown",
   };
 }
 

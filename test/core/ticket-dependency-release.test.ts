@@ -231,7 +231,7 @@ describe("T-486 U2-2 umbrellas (R2, R3, R8, R11)", () => {
     const root = await board([umbrella({ parentTicket: "T-011" }), delivered("T-011", { parentTicket: "T-010" }), ticket("T-020", { blockedBy: ["T-010"] })]);
     expect(await blocked(root, "T-020")).toBe(true);
     const state = await stateOf(root);
-    expect(state.dependencyRelease(state.ticketByID("T-010")!)).toEqual({ releases: false, reason: null, detail: [] });
+    expect(state.dependencyRelease(state.ticketByID("T-010")!)).toEqual({ releases: false, reason: "cycle", detail: [] });
   });
 
   it("R11: a parent cycle elsewhere on the board neither hangs the walk nor blocks an umbrella outside it", async () => {

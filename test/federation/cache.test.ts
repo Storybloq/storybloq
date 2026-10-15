@@ -32,7 +32,7 @@ const sampleState: FederationState = {
       reachable: true,
       scanSummary: {
         project: "engine", type: "npm", ticketCount: 10, openTickets: 3,
-        completeTickets: 7, issueCount: 2, openIssues: 1,
+        completeTickets: 7, deliveredTickets: 7, withdrawnTickets: 0, ticketWarnings: 0, excludedTickets: 0, partial: false, countingContract: 2, issueCount: 2, openIssues: 1,
         lastHandoverDate: "2026-05-01", lastHandoverTitle: "Session",
       },
     },
@@ -50,7 +50,7 @@ const sampleState: FederationState = {
   ],
   totalTickets: 10,
   totalOpenTickets: 3,
-  totalCompleteTickets: 7,
+  totalCompleteTickets: 7, totalDeliveredTickets: 7, totalWithdrawnTickets: 0, legacyExcludedNodes: 0, partialNodes: 0, totalExcludedTickets: 0,
   totalIssues: 2,
   totalOpenIssues: 1,
   lastScanTimestamp: new Date().toISOString(),

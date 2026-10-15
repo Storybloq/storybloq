@@ -7,7 +7,9 @@ export interface LatestHandoverInfo {
   heading: string | null;
 }
 
-export async function findLatestHandover(handoversDir: string): Promise<LatestHandoverInfo | null> {
+/** `signal` (T-486 U2-3b): checked before each read, so a node scan's deadline stops it. */
+export async function findLatestHandover(handoversDir: string, signal?: AbortSignal): Promise<LatestHandoverInfo | null> {
+  signal?.throwIfAborted();
   const files = await readdir(handoversDir);
   const mdFiles = files.filter((f) => f.endsWith(".md"));
   if (mdFiles.length === 0) return null;
@@ -17,6 +19,7 @@ export async function findLatestHandover(handoversDir: string): Promise<LatestHa
   const date = dateMatch ? dateMatch[1]! : null;
 
   let heading: string | null = null;
+  signal?.throwIfAborted();
   try {
     const content = await readFile(join(handoversDir, latest), "utf-8");
     const headingMatch = content.match(/^#\s+(.+)/m);

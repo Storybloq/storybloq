@@ -37,9 +37,12 @@ async function createNodeProject(opts: {
     await writeFile(
       join(storyDir, "tickets", `${t.id}.json`),
       JSON.stringify({
+        // T-486 U2-3b: the scanner reads tickets through the loader, so the
+        // fixture records are schema-valid ones.
         id: t.id, title: "Test ticket", type: "task",
         status: t.status, phase: null, order: 10, blockedBy: [],
-        description: "", parentTicket: null, created: "2026-01-01",
+        description: "", parentTicket: null, createdDate: "2026-01-01",
+        completedDate: t.status === "complete" ? "2026-01-02" : null,
       }),
     );
   }
@@ -88,7 +91,8 @@ describe("scanNodeSummary", () => {
     expect(result.type).toBe("npm");
     expect(result.ticketCount).toBe(3);
     expect(result.completeTickets).toBe(1);
-    expect(result.openTickets).toBe(1);
+    // Open is every non-terminal counted leaf, so T-003 (in progress) is open.
+    expect(result.openTickets).toBe(2);
     expect(result.issueCount).toBe(2);
     expect(result.openIssues).toBe(1);
   });
@@ -108,14 +112,17 @@ describe("scanNodeSummary", () => {
       JSON.stringify({
         id: "T-001", title: "Good", type: "task", status: "open",
         phase: null, order: 10, blockedBy: [], description: "",
-        parentTicket: null, created: "2026-01-01",
+        parentTicket: null, createdDate: "2026-01-01", completedDate: null,
       }),
     );
     const result = await scanNodeSummary(join(dir, ".story"));
     expect(result.ticketCount).toBe(1);
+    // T-486 U2-3b: the refused file is counted as excluded and the summary is partial.
+    expect(result.excludedTickets).toBe(1);
+    expect(result.partial).toBe(true);
   });
 
-  it("counts inprogress tickets in total but not in open or complete", async () => {
+  it("counts in-progress tickets as open (T-486 U2-3b: open is every non-terminal leaf)", async () => {
     const dir = await createNodeProject({
       name: "mixed",
       tickets: [
@@ -125,8 +132,25 @@ describe("scanNodeSummary", () => {
     });
     const result = await scanNodeSummary(join(dir, ".story"));
     expect(result.ticketCount).toBe(2);
-    expect(result.openTickets).toBe(0);
+    expect(result.openTickets).toBe(2);
     expect(result.completeTickets).toBe(0);
+  });
+
+  it("counts a blocked ticket as open", async () => {
+    const dir = await createNodeProject({
+      name: "blocked",
+      tickets: [{ id: "T-001", status: "inprogress" }],
+    });
+    await writeFile(
+      join(dir, ".story", "tickets", "T-002.json"),
+      JSON.stringify({
+        id: "T-002", title: "Waits", type: "task", status: "open",
+        phase: null, order: 20, blockedBy: ["T-001"], description: "",
+        parentTicket: null, createdDate: "2026-01-01", completedDate: null,
+      }),
+    );
+    const result = await scanNodeSummary(join(dir, ".story"));
+    expect([result.ticketCount, result.openTickets, result.completeTickets]).toEqual([2, 2, 0]);
   });
 
   it("tolerates corrupt issue JSON", async () => {

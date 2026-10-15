@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadProject } from "../../src/core/project-loader.js";
 import { buildCompactStatusData } from "../../src/core/output-formatter.js";
-import { ticketRefNormalizer } from "../../src/core/ticket-counts.js";
+import { applyTicketIdentityPolicy, ticketRefNormalizer } from "../../src/core/ticket-counts.js";
 import {
   buildParentResolver,
+  countedSidebarTickets,
   extractRecord,
   projectSidebar,
   type SidebarInput,
@@ -626,5 +627,76 @@ describe("sidebar projection (T-508)", () => {
     expect(extractRecord("ticket", "{not json")).toBeNull();
     expect(extractRecord("ticket", JSON.stringify({ title: "no id" }))).toBeNull();
     expect(extractRecord("issue", JSON.stringify({ id: "ISS-9" }))).toBeNull();
+  });
+});
+
+/** A board with only these tickets, written one file each. */
+async function writeTicketBoard(files: Record<string, Record<string, unknown>>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "storybloq-sidebar-dup-"));
+  const storyDir = join(dir, ".story");
+  for (const sub of ["tickets", "issues", "handovers"]) await mkdir(join(storyDir, sub), { recursive: true });
+  await writeFile(join(storyDir, "config.json"), JSON.stringify(config, null, 2));
+  await writeFile(join(storyDir, "roadmap.json"), JSON.stringify(roadmap, null, 2));
+  for (const [name, data] of Object.entries(files)) {
+    await writeFile(join(storyDir, "tickets", name), JSON.stringify(data, null, 2));
+  }
+  return dir;
+}
+
+describe("sidebar projection: the duplicate canonical id rule (T-486 U2-3b)", () => {
+  // The R2-1 fixture: two records claim canonical id A (both T-050), B is
+  // T-050 as well and delivered, C is delivered under T-050, and T-070 waits
+  // on B. The CLI drops both A records from every count, so T-050 names B
+  // alone in the counted population and B is an umbrella over C: two leaves.
+  const A = "t-0000000000000c01";
+  const B = "t-0000000000000c02";
+  const C = "t-0000000000000c03";
+  const r21 = {
+    [`${A}-a.json`]: ticket({ id: A, displayId: "T-050" }),
+    [`${A}-b.json`]: ticket({ id: A, displayId: "T-050" }),
+    [`${B}.json`]: ticket({ id: B, displayId: "T-050", status: "complete", completedDate: "2026-02-01" }),
+    [`${C}.json`]: ticket({ id: C, displayId: "T-051", status: "complete", completedDate: "2026-02-01", parentTicket: "T-050" }),
+    ["T-070.json"]: ticket({ id: "T-070", blockedBy: [B] }),
+  };
+  const figures = (p: { totalTickets: number; completeTickets: number; openTickets: number; blockedTickets: number }) =>
+    [p.totalTickets, p.completeTickets, p.openTickets, p.blockedTickets];
+  const compactOf = async (dir: string) => {
+    const { state } = await loadProject(dir);
+    return buildCompactStatusData(state, [], [], undefined, undefined, [], { items: [], warnings: [] });
+  };
+
+  it("counts the R2-1 fixture as the CLI does: two leaves, one complete, one open, none blocked", async () => {
+    root = await writeTicketBoard(r21);
+    const compact = await compactOf(root);
+    const mine = projectSidebar(await readAsTheModDoes(root));
+    expect(figures(compact)).toEqual([2, 1, 1, 0]);
+    expect(figures(mine)).toEqual([2, 1, 1, 0]);
+    const cards = [...mine.board.open, ...mine.board.inProgress, ...mine.board.done].filter((c) => c.kind === "ticket").map((c) => c.id).sort();
+    expect(cards).toEqual(["T-051", "T-070"]);
+  });
+
+  it("resolves parents over the counted tickets exactly as the CLI's counted normalizer does", async () => {
+    root = await writeTicketBoard(r21);
+    const { state } = await loadProject(root);
+    const theirs = ticketRefNormalizer(applyTicketIdentityPolicy(state.tickets).counted);
+    const all = (await readAsTheModDoes(root)).tickets;
+    const counted = countedSidebarTickets(all);
+    expect(counted.map((t) => t.id).sort()).toEqual([B, C, "T-070"].sort());
+    const mine = buildParentResolver(counted);
+    for (const ref of ["T-050", "T-051", A, B, C, "T-070", "T-999"]) {
+      expect({ ref, resolved: mine(ref) }).toEqual({ ref, resolved: theirs(ref) });
+    }
+  });
+
+  it("holds a ticket whose blocker is a duplicated canonical id, even when both records are complete", async () => {
+    root = await writeTicketBoard({
+      [`${A}-a.json`]: ticket({ id: A, displayId: "T-050", status: "complete", completedDate: "2026-02-01" }),
+      [`${A}-b.json`]: ticket({ id: A, displayId: "T-050", status: "complete", completedDate: "2026-02-01" }),
+      ["T-071.json"]: ticket({ id: "T-071", blockedBy: [A] }),
+    });
+    const compact = await compactOf(root);
+    const mine = projectSidebar(await readAsTheModDoes(root));
+    expect(figures(compact)).toEqual([1, 0, 1, 1]);
+    expect(figures(mine)).toEqual([1, 0, 1, 1]);
   });
 });

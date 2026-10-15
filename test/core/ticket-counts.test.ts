@@ -412,7 +412,7 @@ describe("T-486 U2-3a fixup 2: umbrella counts walk the counted children (R2-1)"
   const B = "t-0000000000000c02";
   const C = "t-0000000000000c03";
 
-  it("a parent displayId made unique by dropping a duplicated record: the umbrella counts its counted child, the release walk keeps reading every record", async () => {
+  it("a parent displayId made unique by dropping a duplicated record: the umbrella counts its counted child, and the release walk finds it in the counted list", async () => {
     const root = await board([
       [`${A}-a.json`, ticket(A, { displayId: "T-050" })],
       [`${A}-b.json`, ticket(A, { displayId: "T-050" })],
@@ -427,9 +427,60 @@ describe("T-486 U2-3a fixup 2: umbrella counts walk the counted children (R2-1)"
     expect(umbrellaProgress(B, state)).toEqual({ total: 1, complete: 1, status: "complete" });
     expect(state.countedUmbrellaLeaves(B).map((t) => t.id)).toEqual([C]);
     expect([state.leafTicketCount, state.completeLeafTicketCount]).toEqual([2, 1]);
-    // Every record: T-050 is ambiguous, so the listing and the release walk find no child under B.
+    // Every record: T-050 is ambiguous, so the listing finds no child under B.
+    // The release walk also reads the counted list (U2-3b), finds the
+    // delivered C there, and B releases as before.
     expect(state.umbrellaChildren(B)).toEqual([]);
     expect(state.dependencyRelease(state.ticketByID(B)!)).toEqual({ releases: true, reason: null, detail: [] });
     expect(state.isBlocked(state.ticketByID("T-070")!)).toBe(false);
+  });
+});
+
+describe("T-486 U2-3b: the release walk reads both child lists, each on its own", () => {
+  const A = "t-0000000000000d01";
+  const B = "t-0000000000000d02";
+  const C = "t-0000000000000d03";
+  const X = "t-0000000000000d04";
+  const Y = "t-0000000000000d05";
+
+  it("an umbrella whose only counted child is withdrawn does not release, though its displayId is ambiguous over every record", async () => {
+    const root = await board([
+      [`${A}-a.json`, ticket(A, { displayId: "T-050" })],
+      [`${A}-b.json`, ticket(A, { displayId: "T-050" })],
+      delivered(B, { displayId: "T-050" }),
+      withdrawn(C, { displayId: "T-051", parentTicket: "T-050" }),
+      ticket("T-070", { blockedBy: [B] }),
+    ]);
+    const state = await stateOf(root);
+    // The counts make B an umbrella over the withdrawn C alone.
+    expect(state.umbrellaIDs.has(B)).toBe(true);
+    expect(state.countedUmbrellaLeaves(B).map((t) => t.id)).toEqual([C]);
+    // Over every record T-050 is ambiguous, so only the counted walk finds C.
+    expect(state.umbrellaChildren(B)).toEqual([]);
+    expect(state.dependencyRelease(state.ticketByID(B)!)).toEqual({ releases: false, reason: "withheld", detail: [C] });
+    expect(state.isBlocked(state.ticketByID("T-070")!)).toBe(true);
+  });
+
+  it("a withdrawn leaf in the all-records list still withholds when the counted list gives it a delivered child", async () => {
+    // X is B's child by id in both lists. Over every record T-060 is carried
+    // by X and by both records of the duplicated A, so Y's parent stays
+    // unresolved and X is a withdrawn leaf. In the counted population A is
+    // dropped, T-060 names X alone, and Y is X's child, so X is an
+    // intermediate there. A single walk over the two lists merged would
+    // descend through X, find only the delivered Y and release B.
+    const root = await board([
+      [`${A}-a.json`, ticket(A, { displayId: "T-060" })],
+      [`${A}-b.json`, ticket(A, { displayId: "T-060" })],
+      delivered(B, { displayId: "T-061" }),
+      withdrawn(X, { displayId: "T-060", parentTicket: B }),
+      delivered(Y, { displayId: "T-062", parentTicket: "T-060" }),
+      ticket("T-080", { blockedBy: [B] }),
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaChildren(B).map((t) => t.id)).toEqual([X]);
+    expect(state.umbrellaChildren(X)).toEqual([]);
+    expect(state.countedUmbrellaLeaves(B).map((t) => t.id)).toEqual([Y]);
+    expect(state.dependencyRelease(state.ticketByID(B)!)).toEqual({ releases: false, reason: "withheld", detail: [X] });
+    expect(state.isBlocked(state.ticketByID("T-080")!)).toBe(true);
   });
 });

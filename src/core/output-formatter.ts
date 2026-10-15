@@ -1076,6 +1076,15 @@ export function formatStatus(
   return lines.join("\n");
 }
 
+/** T-486 U2-3b: the aggregate line's withdrawn split, partial marker (B5) and legacy exclusion (5d). */
+function federationTicketNotes(fedState: FederationState): string {
+  const parts: string[] = [];
+  if (fedState.totalWithdrawnTickets > 0) parts.push(`, ${fedState.totalWithdrawnTickets} withdrawn`);
+  if (fedState.partialNodes > 0) parts.push(` (partial: ${fedState.totalExcludedTickets} ticket(s) excluded)`);
+  if (fedState.legacyExcludedNodes > 0) parts.push(` (${fedState.legacyExcludedNodes} node(s) on the old counting contract excluded)`);
+  return parts.join("");
+}
+
 export function formatFederatedStatus(
   fedState: FederationState,
   config: Config,
@@ -1120,6 +1129,7 @@ export function formatFederatedStatus(
     dependsOn: node.dependsOn,
     reachable: node.reachable,
     scanSummary: node.scanSummary,
+    ...(node.legacy ? { legacy: node.legacy } : {}),
   }));
   const data = {
     federation: { ...fedState, nodes: sanitizedNodes },
@@ -1171,7 +1181,7 @@ export function formatFederatedStatus(
     `# ${escapeMarkdownInline(fedState.orchestratorProject)} (orchestrator)`,
     "",
     `Federation: ${fedState.nodeCount} nodes (${fedState.reachableCount} reachable${fedState.unreachableCount > 0 ? `, ${fedState.unreachableCount} unreachable` : ""})`,
-    `Tickets: ${fedState.totalCompleteTickets}/${fedState.totalTickets} across all nodes | Issues: ${fedState.totalOpenIssues} open`,
+    `Tickets: ${fedState.totalCompleteTickets}/${fedState.totalTickets} across all nodes${federationTicketNotes(fedState)} | Issues: ${fedState.totalOpenIssues} open`,
     ...rosterStatusLines(roster),
     ...busStatusLines(bus),
     "",
@@ -1190,10 +1200,15 @@ export function formatFederatedStatus(
   lines.push("|------|--------|---------|--------|---------------|------|");
 
   for (const node of fedState.nodes) {
-    if (node.reachable && node.scanSummary) {
-      const s = node.scanSummary;
+    if (node.legacy) {
       lines.push(
-        `| ${escapeMarkdownInline(node.name)} | ${escapeMarkdownInline(node.health)} | ${s.completeTickets}/${s.ticketCount} | ${s.openIssues} open | ${escapeMarkdownInline(s.lastHandoverDate ?? "none")} | ${escapeMarkdownInline(node.role)} |`,
+        `| ${escapeMarkdownInline(node.name)} | ${escapeMarkdownInline(node.health)} | legacy | -- | ${escapeMarkdownInline(node.legacy.at)} | ${escapeMarkdownInline(node.role)} |`,
+      );
+    } else if (node.reachable && node.scanSummary) {
+      const s = node.scanSummary;
+      const withdrawn = s.withdrawnTickets > 0 ? `, ${s.withdrawnTickets} withdrawn` : "";
+      lines.push(
+        `| ${escapeMarkdownInline(node.name)} | ${escapeMarkdownInline(node.health)} | ${s.completeTickets}/${s.ticketCount}${withdrawn}${s.partial ? " (partial)" : ""} | ${s.openIssues} open | ${escapeMarkdownInline(s.lastHandoverDate ?? "none")} | ${escapeMarkdownInline(node.role)} |`,
       );
     } else {
       lines.push(

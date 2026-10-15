@@ -322,6 +322,29 @@ export function buildParentResolver(tickets: readonly SidebarTicket[]): (ref: st
   };
 }
 
+/**
+ * T-486 U2-3b: the canonical ids claimed by more than one record. The CLI's
+ * applyTicketIdentityPolicy (src/core/ticket-counts.ts) leaves every such
+ * record out of every count and out of dependency release, so the sidebar
+ * does the same: none of them is a leaf, an umbrella or a parent, and a
+ * blocker that names one never releases.
+ */
+function duplicatedTicketIds(tickets: readonly SidebarTicket[]): Set<string> {
+  const seen = new Set<string>();
+  const duplicated = new Set<string>();
+  for (const t of tickets) {
+    if (seen.has(t.id)) duplicated.add(t.id);
+    else seen.add(t.id);
+  }
+  return duplicated;
+}
+
+/** The counted population: every record whose canonical id no other record claims. */
+export function countedSidebarTickets(tickets: readonly SidebarTicket[]): SidebarTicket[] {
+  const duplicated = duplicatedTicketIds(tickets);
+  return tickets.filter((t) => !duplicated.has(t.id));
+}
+
 function aggregateStatus(leaves: readonly SidebarTicket[]): PhaseStatus {
   if (leaves.length === 0) return "notstarted";
   if (leaves.every((t) => t.status === "complete")) return "complete";
@@ -338,9 +361,13 @@ function aggregateStatus(leaves: readonly SidebarTicket[]): PhaseStatus {
  */
 export function projectSidebar(input: SidebarInput): SidebarProjection {
   const resolve = buildResolver(input.tickets);
-  const resolveParent = buildParentResolver(input.tickets);
+  // Blockers resolve over every record, as the CLI's isBlocked does; parents
+  // and leaves come from the counted population, as its umbrellaIdsOf does.
+  const duplicated = duplicatedTicketIds(input.tickets);
+  const counted = input.tickets.filter((t) => !duplicated.has(t.id));
+  const resolveParent = buildParentResolver(counted);
 
-  const activeTickets = input.tickets.filter(isActive);
+  const activeTickets = counted.filter(isActive);
   const activeIssues = input.issues.filter(isActive);
 
   // An umbrella is any ticket another active ticket names as its parent. The
@@ -359,6 +386,7 @@ export function projectSidebar(input: SidebarInput): SidebarProjection {
     for (const ref of t.blockedBy) {
       const resolved = resolve(ref);
       if (resolved.kind === "missing" || resolved.kind === "ambiguous") return true;
+      if (duplicated.has(resolved.item.id)) return true;
       if (resolved.item.lifecycle !== "deleted" && resolved.item.status !== "complete") return true;
     }
     return false;

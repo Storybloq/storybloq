@@ -90,7 +90,7 @@ function makeState(nodes: FederationNodeEntry[]): FederationState {
     nodes,
     totalTickets: 0,
     totalOpenTickets: 0,
-    totalCompleteTickets: 0,
+    totalCompleteTickets: 0, totalDeliveredTickets: 0, totalWithdrawnTickets: 0, legacyExcludedNodes: 0, partialNodes: 0, totalExcludedTickets: 0,
     totalIssues: 0,
     totalOpenIssues: 0,
     lastScanTimestamp: new Date().toISOString(),

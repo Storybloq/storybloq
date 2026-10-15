@@ -3,17 +3,30 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { FederationState } from "./state.js";
 import type { CrossNodeRefStatus } from "./cross-node-resolver.js";
+import { COUNTING_CONTRACT } from "./scanner.js";
 
 export interface CachedNodeSummary {
-  ticketCount: number;
-  openTickets: number;
-  completeTickets: number;
-  issueCount: number;
-  openIssues: number;
-  lastHandoverDate: string | null;
-  lastHandoverTitle: string | null;
+  /** Absent on a legacy entry (B4: its old numbers are never rewritten or relabelled). */
+  ticketCount?: number;
+  openTickets?: number;
+  completeTickets?: number;
+  issueCount?: number;
+  openIssues?: number;
+  lastHandoverDate?: string | null;
+  lastHandoverTitle?: string | null;
   reachable: boolean;
   unreachableReason?: string;
+  /** T-486 U2-3b: absent means 1 (raw records, umbrellas included). Only a summary computed in this process is stamped 2. */
+  countingContract?: number;
+  deliveredTickets?: number;
+  withdrawnTickets?: number;
+  ticketWarnings?: number;
+  excludedTickets?: number;
+  partial?: boolean;
+  /** A contract-1 entry whose rescan failed: excluded from totals until a rescan succeeds. */
+  legacy?: boolean;
+  legacyReason?: string;
+  legacyAt?: string;
 }
 
 export interface FederationCache {
@@ -50,6 +63,13 @@ export function writeFederationCache(
   };
 
   for (const entry of state.nodes) {
+    if (entry.legacy) {
+      cache.nodes[entry.name] = {
+        reachable: entry.reachable, countingContract: 1, legacy: true, legacyReason: entry.legacy.reason, legacyAt: entry.legacy.at,
+      };
+      continue;
+    }
+    const s = entry.scanSummary;
     const summary: CachedNodeSummary = {
       ticketCount: entry.scanSummary?.ticketCount ?? 0,
       openTickets: entry.scanSummary?.openTickets ?? 0,
@@ -60,6 +80,14 @@ export function writeFederationCache(
       lastHandoverTitle: entry.scanSummary?.lastHandoverTitle ?? null,
       reachable: entry.reachable,
     };
+    if (s?.countingContract === COUNTING_CONTRACT) {
+      summary.countingContract = s.countingContract;
+      summary.deliveredTickets = s.deliveredTickets;
+      summary.withdrawnTickets = s.withdrawnTickets;
+      summary.ticketWarnings = s.ticketWarnings;
+      summary.excludedTickets = s.excludedTickets;
+      summary.partial = s.partial;
+    }
     if (!entry.reachable && entry.unreachableReason) {
       summary.unreachableReason = entry.unreachableReason;
     }
@@ -74,6 +102,11 @@ export function writeFederationCache(
     cache.crossNodeRefStatuses = statuses;
   }
 
+  writeFederationCacheObject(storyDir, cache);
+}
+
+/** The one atomic cache write (temp file then rename); callers treat it as best-effort. */
+export function writeFederationCacheObject(storyDir: string, cache: FederationCache): void {
   const cachePath = join(storyDir, CACHE_FILENAME);
   const tmpPath = `${cachePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   try {

@@ -451,7 +451,13 @@ export class ProjectState {
    *    archived and deleted referrers included, so the walk descends through
    *    deleted intermediates; only a deleted leaf contributes nothing. An
    *    archived withdrawn child still withholds, though `umbrellaIDs` (phase
-   *    and umbrella status) counts active children only;
+   *    and umbrella status) counts active children only. The walk runs twice,
+   *    once over every record (childrenByParent) and once over the counted
+   *    population (countedChildrenByParent), each with its own idea of a
+   *    leaf, and the umbrella is held when either finds a withdrawn leaf or a
+   *    cycle (T-486 U2-3b). The two lists are never merged into one walk: a
+   *    withdrawn leaf in one list that has a child in the other would be
+   *    walked through instead of reported;
    * 5. a leaf releases when stored complete.
    */
   dependencyRelease(blocker: Ticket): DependencyRelease {
@@ -463,9 +469,11 @@ export class ProjectState {
     if (isDeleted(blocker)) return plain(true);
     if (isEffectivelyWithdrawn(blocker)) return { releases: false, reason: "withdrawn", detail: [blocker.id] };
     if (this.hasAnyChild(blocker.id)) {
-      const under = this.withdrawnUnder(blocker.id);
-      if (under.withdrawn.length > 0) return { releases: false, reason: "withheld", detail: under.withdrawn };
-      if (under.cycle) return plain(false);
+      const all = this.withdrawnUnder(blocker.id, this.childrenByParent);
+      const counted = this.withdrawnUnder(blocker.id, this.countedChildrenByParent);
+      const withdrawn = [...new Set([...all.withdrawn, ...counted.withdrawn])];
+      if (withdrawn.length > 0) return { releases: false, reason: "withheld", detail: withdrawn };
+      if (all.cycle || counted.cycle) return plain(false);
     }
     return plain(blocker.status === "complete");
   }
@@ -573,30 +581,32 @@ export class ProjectState {
 
   /**
    * T-486 U2: whether the release walk treats `id` as an umbrella: any
-   * ticket names it as parent. `childrenByParent` holds every referrer,
-   * archived and deleted ones included, and none is filtered here.
+   * ticket names it as parent in either child list. `childrenByParent` holds
+   * every referrer, archived and deleted ones included, and none is filtered
+   * here; `countedChildrenByParent` holds the counted population's (U2-3b).
    */
   private hasAnyChild(id: string): boolean {
-    return (this.childrenByParent.get(id) ?? []).length > 0;
+    return (this.childrenByParent.get(id) ?? []).length > 0 || (this.countedChildrenByParent.get(id) ?? []).length > 0;
   }
 
   /**
    * T-486 U2: the effectively withdrawn non-deleted leaves under an umbrella,
    * archived ones included, walked through every descendant that has any
-   * child, deleted descendants included. A ticket has one parent, so a walk that meets an id
-   * twice has found a parent cycle through the umbrella itself (or two records
-   * claiming one id); it stops there and reports it, and the umbrella does not
-   * release.
+   * child, deleted descendants included, all within the one child list
+   * given (U2-3b: the caller walks each list on its own). A ticket has one
+   * parent, so a walk that meets an id twice has found a parent cycle through
+   * the umbrella itself (or two records claiming one id); it stops there and
+   * reports it, and the umbrella does not release.
    */
-  private withdrawnUnder(umbrellaId: string): { withdrawn: string[]; cycle: boolean } {
+  private withdrawnUnder(umbrellaId: string, children: ReadonlyMap<string, readonly Ticket[]>): { withdrawn: string[]; cycle: boolean } {
     const withdrawn: string[] = [];
     const seen = new Set<string>([umbrellaId]);
     let cycle = false;
     const walk = (id: string): void => {
-      for (const child of this.childrenByParent.get(id) ?? []) {
+      for (const child of children.get(id) ?? []) {
         if (seen.has(child.id)) { cycle = true; continue; }
         seen.add(child.id);
-        if (this.hasAnyChild(child.id)) walk(child.id);
+        if ((children.get(child.id) ?? []).length > 0) walk(child.id);
         else if (!isDeleted(child) && isEffectivelyWithdrawn(child)) withdrawn.push(child.id);
       }
     };

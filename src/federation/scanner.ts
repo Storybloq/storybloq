@@ -1,15 +1,37 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import type { ResolvedNode } from "./resolver.js";
-import { loadProject, type LoadResult } from "../core/project-loader.js";
+import { loadProject, loadTicketRecords, type LoadResult } from "../core/project-loader.js";
+import { computeTicketCounts } from "../core/ticket-counts.js";
 import { findLatestHandover } from "./handover-utils.js";
+
+/** T-486 U2-3b: the counting contract a summary was computed under (contract 1: raw records, umbrellas included). */
+export const COUNTING_CONTRACT = 2;
+
+/** The per-node scan deadline, shared by the scan and the cache rescan (B2). */
+export const NODE_SCAN_TIMEOUT_MS = 2000;
+
+/** How many node rescans run at once (B2). */
+export const NODE_SCAN_CONCURRENCY = 4;
 
 export interface NodeScanSummary {
   project: string;
   type: string;
+  /** Leaf tickets (computeTicketCounts), the same population as the node's own status. */
   ticketCount: number;
+  /** Leaves that are not terminal, in-progress and blocked work included. */
   openTickets: number;
+  /** Terminal leaves; `deliveredTickets + withdrawnTickets`. */
   completeTickets: number;
+  deliveredTickets: number;
+  withdrawnTickets: number;
+  /** Loader warnings plus identity diagnostics for the tickets directory. */
+  ticketWarnings: number;
+  /** Ticket files the loader refused plus records left out for a duplicated canonical id. */
+  excludedTickets: number;
+  /** True when any ticket record was excluded: the counts cover the accepted records only. */
+  partial: boolean;
+  countingContract: typeof COUNTING_CONTRACT;
   issueCount: number;
   openIssues: number;
   lastHandoverDate: string | null;
@@ -22,6 +44,9 @@ export type NodeScanResult =
 
 export interface ScanOptions {
   timeoutMs?: number;
+  /** Tests only: the scan and the concurrency the scheduler uses. */
+  scan?: NodeScanFn;
+  concurrency?: number;
 }
 
 function checkAborted(signal?: AbortSignal): void {
@@ -83,18 +108,17 @@ export async function scanNodeSummary(
     return { total, counts };
   }
 
-  const [ticketResult, issueResult, handoverInfo] = await Promise.all([
-    countDir(join(storyDir, "tickets"), ["open", "complete"]),
+  const [ticketRecords, issueResult, handoverInfo] = await Promise.all([
+    loadTicketRecords(storyDir, { signal }),
     countDir(join(storyDir, "issues"), ["open"]),
-    findLatestHandover(join(storyDir, "handovers")).catch(() => null),
+    findLatestHandover(join(storyDir, "handovers"), signal).catch(() => null),
   ]);
+  checkAborted(signal);
 
   return {
     project: typeof config.project === "string" ? config.project : "unknown",
     type: typeof config.type === "string" ? config.type : "unknown",
-    ticketCount: ticketResult.total,
-    openTickets: ticketResult.counts.get("open") ?? 0,
-    completeTickets: ticketResult.counts.get("complete") ?? 0,
+    ...ticketSummary(ticketRecords),
     issueCount: issueResult.total,
     openIssues: issueResult.counts.get("open") ?? 0,
     lastHandoverDate: handoverInfo?.date ?? null,
@@ -102,17 +126,117 @@ export async function scanNodeSummary(
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, controller: AbortController): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      controller.abort();
-      reject(new Error("timeout"));
-    }, ms);
+/** T-486 U2-3b: the ticket half of a node summary, by the one counting contract (V3A 5a/5b, B1, B5). */
+function ticketSummary(records: Awaited<ReturnType<typeof loadTicketRecords>>): Pick<
+  NodeScanSummary,
+  "ticketCount" | "openTickets" | "completeTickets" | "deliveredTickets" | "withdrawnTickets" | "ticketWarnings" | "excludedTickets" | "partial" | "countingContract"
+> {
+  const counts = computeTicketCounts(records.identity.counted);
+  const excluded = records.omitted.length + (records.records.length - records.identity.counted.length);
+  return {
+    ticketCount: counts.leaf,
+    openTickets: counts.active,
+    completeTickets: counts.terminal,
+    deliveredTickets: counts.delivered,
+    withdrawnTickets: counts.withdrawn,
+    ticketWarnings: records.warnings.length + records.identity.diagnostics.length,
+    excludedTickets: excluded,
+    partial: excluded > 0,
+    countingContract: COUNTING_CONTRACT,
+  };
+}
 
-    promise.then(
-      (val) => { clearTimeout(timer); resolve(val); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
+/** How a node scan is run: the scheduler owns the signal and aborts it at the deadline. */
+export type NodeScanFn = (storyDir: string, signal: AbortSignal) => Promise<NodeScanSummary>;
+
+export interface NodeScanJob {
+  name: string;
+  storyDir: string;
+}
+
+export interface NodeScanSchedule {
+  scan?: NodeScanFn;
+  concurrency?: number;
+  timeoutMs?: number;
+  /** How long a timed-out scan has to settle after its abort; defaults to the timeout. */
+  settleGraceMs?: number;
+}
+
+/** The failure every queued node gets once a timed-out scan did not stop. */
+export const NOT_SCANNED_REASON = "not scanned: an earlier scan did not stop";
+
+/**
+ * T-486 U2-3b (B2): the one way a node scan starts, for the fresh scan and
+ * the cache rescan alike. At most `concurrency` scans run at once. Each scan
+ * gets its own AbortController, owned here: the signal goes into the scan and
+ * is aborted at the deadline, when the node's result is fixed as "timeout"
+ * so no caller waits past the bound to report it. The slot is freed only when
+ * the scan itself settles, so a scan that ignores its deadline keeps holding
+ * it. If a timed-out scan has not settled within `settleGraceMs` of its abort,
+ * its cancellation is unconfirmed: nothing more is started, and every node
+ * still queued fails with NOT_SCANNED_REASON. Every slot therefore frees or
+ * stops the queue within timeoutMs + settleGraceMs, and the call settles
+ * within ceil(jobs / concurrency) of those, whatever the scans do.
+ */
+export function runNodeScans(jobs: readonly NodeScanJob[], options: NodeScanSchedule = {}): Promise<Map<string, NodeScanResult>> {
+  const scan = options.scan ?? scanNodeSummary;
+  const concurrency = Math.max(1, options.concurrency ?? NODE_SCAN_CONCURRENCY);
+  const timeoutMs = options.timeoutMs ?? NODE_SCAN_TIMEOUT_MS;
+  const settleGraceMs = options.settleGraceMs ?? timeoutMs;
+  const results = new Map<string, NodeScanResult>();
+  const queue = [...jobs];
+  let running = 0;
+  let stopped = false;
+
+  return new Promise((resolveAll) => {
+    const finishIfDone = (): void => {
+      if (results.size === jobs.length) resolveAll(results);
+    };
+    const stopQueue = (): void => {
+      stopped = true;
+      for (const job of queue.splice(0)) results.set(job.name, { reachable: false, reason: NOT_SCANNED_REASON });
+      finishIfDone();
+    };
+    const pump = (): void => {
+      while (!stopped && running < concurrency && queue.length > 0) start(queue.shift()!);
+      finishIfDone();
+    };
+    const start = (job: NodeScanJob): void => {
+      running++;
+      const controller = new AbortController();
+      const record = (result: NodeScanResult): void => {
+        if (!results.has(job.name)) results.set(job.name, result);
+      };
+      let settled = false;
+      let grace: ReturnType<typeof setTimeout> | undefined;
+      const deadline = setTimeout(() => {
+        record({ reachable: false, reason: "timeout" });
+        controller.abort();
+        grace = setTimeout(() => {
+          if (!settled) stopQueue();
+        }, settleGraceMs);
+        finishIfDone();
+      }, timeoutMs);
+      let work: Promise<NodeScanSummary>;
+      try {
+        work = scan(job.storyDir, controller.signal);
+      } catch (err) {
+        work = Promise.reject(err);
+      }
+      void work
+        .then(
+          (summary) => record({ reachable: true, summary }),
+          () => record({ reachable: false, reason: "scan error" }),
+        )
+        .finally(() => {
+          settled = true;
+          clearTimeout(deadline);
+          clearTimeout(grace);
+          running--;
+          pump();
+        });
+    };
+    pump();
   });
 }
 
@@ -120,38 +244,19 @@ export async function scanAllSummaries(
   nodes: Map<string, ResolvedNode>,
   options?: ScanOptions,
 ): Promise<Map<string, NodeScanResult>> {
-  const timeoutMs = options?.timeoutMs ?? 2000;
   const results = new Map<string, NodeScanResult>();
-
-  const promises: Array<{ name: string; promise: Promise<NodeScanResult> }> = [];
-
+  const jobs: NodeScanJob[] = [];
   for (const [name, node] of nodes) {
-    if (!node.resolved) {
-      results.set(name, { reachable: false, reason: node.reason });
-      continue;
-    }
-
-    const controller = new AbortController();
-    const scanPromise = withTimeout(
-      scanNodeSummary(node.storyDir, controller.signal),
-      timeoutMs,
-      controller,
-    )
-      .then((summary): NodeScanResult => ({ reachable: true, summary }))
-      .catch((err): NodeScanResult => {
-        const isTimeout = (err instanceof Error && err.message === "timeout") ||
-          (typeof DOMException !== "undefined" && err instanceof DOMException && err.name === "AbortError");
-        return { reachable: false, reason: isTimeout ? "timeout" : "scan error" };
-      });
-
-    promises.push({ name, promise: scanPromise });
+    if (node.resolved) jobs.push({ name, storyDir: node.storyDir });
+    else results.set(name, { reachable: false, reason: node.reason });
   }
-
-  const settled = await Promise.all(promises.map((p) => p.promise));
-  for (let i = 0; i < promises.length; i++) {
-    results.set(promises[i]!.name, settled[i]!);
-  }
-
+  const scanned = await runNodeScans(jobs, {
+    scan: options?.scan,
+    concurrency: options?.concurrency,
+    timeoutMs: options?.timeoutMs,
+  });
+  // Unresolved nodes first, then the scanned ones in job order, as before.
+  for (const job of jobs) results.set(job.name, scanned.get(job.name)!);
   return results;
 }
 

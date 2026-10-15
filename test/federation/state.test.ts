@@ -86,11 +86,11 @@ describe("buildFederationState", () => {
     const scans = new Map<string, NodeScanResult>([
       ["engine", {
         reachable: true,
-        summary: { project: "engine", type: "npm", ticketCount: 10, openTickets: 3, completeTickets: 7, issueCount: 2, openIssues: 1, lastHandoverDate: "2026-05-01", lastHandoverTitle: "Session" },
+        summary: { project: "engine", type: "npm", ticketCount: 10, openTickets: 3, completeTickets: 7, deliveredTickets: 7, withdrawnTickets: 0, ticketWarnings: 0, excludedTickets: 0, partial: false, countingContract: 2, issueCount: 2, openIssues: 1, lastHandoverDate: "2026-05-01", lastHandoverTitle: "Session" },
       }],
       ["cloud", {
         reachable: true,
-        summary: { project: "cloud", type: "npm", ticketCount: 5, openTickets: 2, completeTickets: 3, issueCount: 1, openIssues: 0, lastHandoverDate: null, lastHandoverTitle: null },
+        summary: { project: "cloud", type: "npm", ticketCount: 5, openTickets: 2, completeTickets: 3, deliveredTickets: 3, withdrawnTickets: 0, ticketWarnings: 0, excludedTickets: 0, partial: false, countingContract: 2, issueCount: 1, openIssues: 0, lastHandoverDate: null, lastHandoverTitle: null },
       }],
     ]);
 
@@ -124,7 +124,7 @@ describe("buildFederationState", () => {
     const scans = new Map<string, NodeScanResult>([
       ["engine", {
         reachable: true,
-        summary: { project: "engine", type: "npm", ticketCount: 10, openTickets: 3, completeTickets: 7, issueCount: 2, openIssues: 1, lastHandoverDate: null, lastHandoverTitle: null },
+        summary: { project: "engine", type: "npm", ticketCount: 10, openTickets: 3, completeTickets: 7, deliveredTickets: 7, withdrawnTickets: 0, ticketWarnings: 0, excludedTickets: 0, partial: false, countingContract: 2, issueCount: 2, openIssues: 1, lastHandoverDate: null, lastHandoverTitle: null },
       }],
       ["cloud", { reachable: false, reason: "not found" }],
     ]);
@@ -175,7 +175,7 @@ describe("buildFederationState", () => {
     const scans = new Map<string, NodeScanResult>([
       ["engine", {
         reachable: true,
-        summary: { project: "engine", type: "npm", ticketCount: 0, openTickets: 0, completeTickets: 0, issueCount: 0, openIssues: 0, lastHandoverDate: null, lastHandoverTitle: null },
+        summary: { project: "engine", type: "npm", ticketCount: 0, openTickets: 0, completeTickets: 0, deliveredTickets: 0, withdrawnTickets: 0, ticketWarnings: 0, excludedTickets: 0, partial: false, countingContract: 2, issueCount: 0, openIssues: 0, lastHandoverDate: null, lastHandoverTitle: null },
       }],
     ]);
 

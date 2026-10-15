@@ -111,6 +111,8 @@ describe("display ID output in aggregate formatters", () => {
             removed: [],
             statusChanged: [],
             descriptionChanged: [],
+            withdrawn: [],
+            withdrawalCleared: [],
           },
           issues: { added: [], resolved: [], statusChanged: [], impactChanged: [] },
           blockers: { added: [], cleared: [] },

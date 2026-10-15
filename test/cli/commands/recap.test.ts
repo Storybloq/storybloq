@@ -125,6 +125,41 @@ describe("formatRecap", () => {
     expect(md).toContain("Phase Transitions");
   });
 
+  it("T-486 U2-5: recap shows tickets withdrawn and no longer withdrawn, in md and json", async () => {
+    const withdrawn = (id: string, reason: string) => makeTicket({
+      id, phase: "p1", status: "complete", completedDate: "2026-03-05",
+      ...({ resolutionKind: { kind: "withdrawn", closedOn: "2026-03-05", reason } } as object),
+    });
+    const delivered = (id: string) => makeTicket({ id, phase: "p1", status: "complete", completedDate: "2026-03-05" });
+    const currentState = makeState({
+      tickets: [withdrawn("T-004", "# Folded into T-9"), delivered("T-005")],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const snapshotInfo = {
+      snapshot: {
+        version: 1 as const,
+        createdAt: new Date().toISOString(),
+        project: "test",
+        config: minimalConfig,
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+        tickets: [delivered("T-004"), withdrawn("T-005", "Was dropped")],
+        issues: [],
+        notes: [],
+        lessons: [],
+        handoverFilenames: [],
+      },
+      filename: "snap.json",
+    };
+    const recap = await buildRecap(currentState, snapshotInfo, "/tmp");
+    const md = formatRecap(recap, currentState, "md");
+    expect(md).toContain("Since snapshot:");
+    expect(md).toContain("- Withdrawn: T-004 (\\# Folded into T-9)");
+    expect(md).toContain("- No longer withdrawn: T-005");
+    const json = JSON.parse(formatRecap(recap, currentState, "json")).data;
+    expect(json.changes.tickets.withdrawn).toEqual([{ id: "T-004", title: "Test T-004", reason: "# Folded into T-9" }]);
+    expect(json.changes.tickets.withdrawalCleared).toEqual([{ id: "T-005", title: "Test T-005" }]);
+  });
+
   it("MD shows partial warning when snapshot had warnings", async () => {
     const state = makeState();
     const snapshotInfo = {

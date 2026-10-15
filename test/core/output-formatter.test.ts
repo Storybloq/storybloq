@@ -1827,3 +1827,91 @@ describe("T-522: formatProposalsSectionBounded is bounded on both axes", () => {
     expect(withLc.revision).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+describe("export rows and withdrawal (T-486 U2-5)", () => {
+  const REASON = "Folded into *T-9* <b>later</b>";
+  const withdrawnTicket = (id: string, phase: string, order: number) => makeTicket({
+    id, phase, order, status: "complete", completedDate: "2026-03-05",
+    ...({ resolutionKind: { kind: "withdrawn", closedOn: "2026-03-05", reason: REASON } } as object),
+  });
+  const staleTicket = (id: string, phase: string, order: number) => makeTicket({
+    id, phase, order, status: "complete", completedDate: "2026-03-07",
+    ...({ resolutionKind: { kind: "withdrawn", closedOn: "2026-03-01", reason: "Old" } } as object),
+  });
+  const EFFECTIVE = { resolutionKind: "withdrawn", resolutionKindState: "effective", reason: REASON };
+  const STALE = { resolutionKind: null, resolutionKindState: "stale", reason: null };
+
+  function exportState() {
+    return makeState({
+      tickets: [
+        withdrawnTicket("T-001", "p1", 10),
+        staleTicket("T-002", "p1", 20),
+        makeTicket({ id: "T-003", phase: "p1", order: 30, description: "x".repeat(10000), ...({ extraNotes: "y".repeat(5000) } as object) }),
+        withdrawnTicket("T-010", "p2", 10),
+        staleTicket("T-011", "p2", 20),
+        makeTicket({ id: "T-012", phase: "p2", order: 30, blockedBy: ["T-001", "T-002"] }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p2" })]),
+    });
+  }
+
+  it("lean export rows stay under the byte budget", () => {
+    const state = exportState();
+    const phase = JSON.parse(outputFormatter.formatExport(state, "phase", "p1", "json")).data;
+    const full = JSON.parse(outputFormatter.formatExport(state, "all", null, "json")).data;
+    const fullRows = full.phases.flatMap((p: { tickets: unknown[] }) => p.tickets) as Array<Record<string, unknown>>;
+    for (const row of phase.tickets as Array<Record<string, unknown>>) {
+      expect(Object.keys(row).sort()).toEqual(["displayId", "effective", "id", "order", "resolutionKind", "status", "title", "type"]);
+      expect(JSON.stringify(row).length).toBeLessThan(400);
+    }
+    for (const row of fullRows) {
+      expect(Object.keys(row).sort()).toEqual(["displayId", "effective", "id", "resolutionKind", "status", "title", "type"]);
+      expect(JSON.stringify(row).length).toBeLessThan(400);
+    }
+    const w = phase.tickets.find((r: { id: string }) => r.id === "T-001");
+    expect(w.resolutionKind).toBe("withdrawn");
+    expect(w.effective).toEqual(EFFECTIVE);
+    const s = fullRows.find((r) => r.id === "T-002")!;
+    expect(s.resolutionKind).toBeNull();
+    expect(s.effective).toEqual(STALE);
+  });
+
+  it("markdown export appends {withdrawn: reason}, escaped", () => {
+    const state = exportState();
+    const tag = ` {withdrawn: ${escapeMarkdownDocument(REASON)}}`;
+    expect(tag).not.toContain("<b>");
+    const phaseLines = outputFormatter.formatExport(state, "phase", "p1", "md").split("\n");
+    expect(phaseLines.find((l) => l.includes("T-001:"))).toBe(`[x] T-001: Test T-001${tag}`);
+    expect(phaseLines.find((l) => l.includes("T-002:"))).toBe("[x] T-002: Test T-002");
+    const fullLines = outputFormatter.formatExport(state, "all", null, "md").split("\n");
+    expect(fullLines.find((l) => l.includes("T-010:"))).toBe(`[x] T-010: Test T-010${tag}`);
+    expect(fullLines.find((l) => l.includes("T-011:"))).toBe("[x] T-011: Test T-011");
+  });
+
+  it("an export line carries the withdrawal tag once, with no second (withdrawn) marker", () => {
+    const state = exportState();
+    const lines = [
+      ...outputFormatter.formatExport(state, "phase", "p1", "md").split("\n"),
+      ...outputFormatter.formatExport(state, "all", null, "md").split("\n"),
+      ...outputFormatter.formatExport(state, "phase", "p2", "md").split("\n"),
+    ].filter((l) => l.includes("{withdrawn:"));
+    expect(lines.length).toBe(5);
+    for (const line of lines) {
+      expect(line).not.toContain("(withdrawn)");
+      expect(line.split("{withdrawn:").length).toBe(2);
+    }
+  });
+
+  it("phase export shows a withdrawn cross-phase blocker as withdrawn", () => {
+    const state = exportState();
+    const json = JSON.parse(outputFormatter.formatExport(state, "phase", "p2", "json")).data;
+    const deps = json.crossPhaseDependencies as Array<Record<string, unknown>>;
+    const w = deps.find((d) => d.id === "T-001")!;
+    expect(w).toMatchObject({ displayId: "T-001", status: "complete", phase: "p1", resolutionKind: "withdrawn", effective: EFFECTIVE });
+    const s = deps.find((d) => d.id === "T-002")!;
+    expect(s).toMatchObject({ displayId: "T-002", status: "complete", phase: "p1", resolutionKind: null, effective: STALE });
+    const md = outputFormatter.formatExport(state, "phase", "p2", "md").split("\n");
+    expect(md.find((l) => l.startsWith("- T-001:"))).toBe(`- T-001: Test T-001 [complete] {withdrawn: ${escapeMarkdownDocument(REASON)}} (p1)`);
+    expect(md.find((l) => l.startsWith("- T-002:"))).toBe("- T-002: Test T-002 [complete] (p1)");
+  });
+});

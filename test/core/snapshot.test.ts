@@ -794,3 +794,40 @@ describe("snapshot", () => {
     });
   });
 });
+
+describe("snapshot diff: withdrawal (T-486 U2-5)", () => {
+  const roadmap = makeRoadmap([makePhase({ id: "p1" })]);
+  const delivered = (id: string) => makeTicket({ id, status: "complete", completedDate: "2026-03-05" });
+  const withdrawn = (id: string, reason: string) => makeTicket({
+    id, status: "complete", completedDate: "2026-03-05",
+    ...({ resolutionKind: { kind: "withdrawn", closedOn: "2026-03-05", reason } } as object),
+  });
+  const stale = (id: string) => makeTicket({
+    id, status: "complete", completedDate: "2026-03-05",
+    ...({ resolutionKind: { kind: "withdrawn", closedOn: "2026-03-01", reason: "Old" } } as object),
+  });
+
+  it("complete to withdrawn, status unchanged, is reported as withdrawn", () => {
+    const diff = diffStates(makeState({ tickets: [delivered("T-004")], roadmap }), makeState({ tickets: [withdrawn("T-004", "Dropped")], roadmap }));
+    expect(diff.tickets.statusChanged).toEqual([]);
+    expect(diff.tickets.withdrawn).toEqual([{ id: "T-004", title: "Test T-004", reason: "Dropped" }]);
+    expect(diff.tickets.withdrawalCleared).toEqual([]);
+  });
+
+  it("withdrawn to delivered appears as no longer withdrawn", () => {
+    const diff = diffStates(makeState({ tickets: [withdrawn("T-004", "Dropped")], roadmap }), makeState({ tickets: [delivered("T-004")], roadmap }));
+    expect(diff.tickets.statusChanged).toEqual([]);
+    expect(diff.tickets.withdrawalCleared).toEqual([{ id: "T-004", title: "Test T-004" }]);
+    expect(diff.tickets.withdrawn).toEqual([]);
+  });
+
+  it("a pre-U2 snapshot reads as absent, and a stale withdrawal is never reported", () => {
+    // The snapshot record has no resolutionKind at all, as one written before U2.
+    const pre = diffStates(makeState({ tickets: [delivered("T-004"), delivered("T-005")], roadmap }), makeState({ tickets: [withdrawn("T-004", "Dropped"), stale("T-005")], roadmap }));
+    expect(pre.tickets.withdrawn.map((t) => t.id)).toEqual(["T-004"]);
+    expect(pre.tickets.withdrawalCleared).toEqual([]);
+    // A stale record on the snapshot side was never effective, so moving off it clears nothing.
+    const back = diffStates(makeState({ tickets: [stale("T-005")], roadmap }), makeState({ tickets: [delivered("T-005")], roadmap }));
+    expect(back.tickets.withdrawalCleared).toEqual([]);
+  });
+});

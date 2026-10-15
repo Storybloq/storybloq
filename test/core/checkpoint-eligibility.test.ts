@@ -256,6 +256,24 @@ describe("recommend", () => {
     }
   });
 
+  it("T-486 U2-5: a withdrawn ticket with a changed checkpoint gets no re-verify action", async () => {
+    const dir = await project();
+    const cp = await newCheckpoint(dir);
+    const { ticket } = await resolveCheckpoint(dir, cp.id, expectedOf(cp), { response: "yes", actor: ACTOR });
+    const kept = await newTicket(dir, [cp.id], "Delivered twin");
+    const dropped = await newTicket(dir, [cp.id], "Withdrawn twin");
+    await handleTicketUpdate(kept, { status: "complete" }, "json", dir);
+    await handleTicketUpdate(dropped, { status: "complete" }, "json", dir);
+    const path = join(dir, ".story", "tickets", `${dropped}.json`);
+    const record = JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
+    record.resolutionKind = { kind: "withdrawn", closedOn: record.completedDate, reason: "No longer needed" };
+    await writeFile(path, JSON.stringify(record, null, 2) + "\n");
+
+    await changeCheckpoint(dir, cp.id, expectedOf(ticket), { ...DECISION, question: "Ship it in October?" }, ACTOR);
+    const ids = recommend(await stateOf(dir), 10).recommendations.filter((r) => r.category === "checkpoint_reassess").map((r) => r.id);
+    expect(ids).toEqual([`checkpoint-reassess:${kept}`]);
+  });
+
   it("a completed dependent whose checkpoint changed shows a reassessment line until it is re-completed", async () => {
     const dir = await project();
     const cp = await newCheckpoint(dir);

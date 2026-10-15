@@ -224,7 +224,7 @@ describe("recap carries the same line and the nudge", () => {
   afterEach(() => { vi.useRealTimers(); });
 
   const emptyDiff = {
-    tickets: { added: [], removed: [], statusChanged: [], descriptionChanged: [] },
+    tickets: { added: [], removed: [], statusChanged: [], descriptionChanged: [], withdrawn: [], withdrawalCleared: [] },
     issues: { added: [], resolved: [], statusChanged: [], impactChanged: [] },
     blockers: { added: [], cleared: [] },
     phases: { added: [], removed: [], statusChanged: [] },

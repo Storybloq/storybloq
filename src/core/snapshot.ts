@@ -18,6 +18,7 @@ import { ProjectState, type PhaseStatus } from "./project-state.js";
 import { type LoadWarning } from "./errors.js";
 import { phasesWithStatus, nextTicket, isBlockerCleared } from "./queries.js";
 import { displayIdOf } from "./resolver.js";
+import { isEffectivelyWithdrawn, ticketResolutionKindView } from "./resolution-kind.js";
 import type { LoadResult } from "./project-loader.js";
 import { atomicWrite, guardPath } from "./project-loader.js";
 import { gitHeadHash, gitIsAncestor, gitCommitDistance } from "../autonomous/git-inspector.js";
@@ -195,6 +196,10 @@ export interface SnapshotDiff {
     removed: Array<{ id: string; displayId?: string; title: string }>;
     statusChanged: TicketChange[];
     descriptionChanged: ContentChange[];
+    /** T-486 U2-5: effectively withdrawn now and not in the snapshot, whether or not the status moved. */
+    withdrawn: Array<{ id: string; displayId?: string; title: string; reason: string }>;
+    /** Effectively withdrawn in the snapshot and not now: reopened, re-closed, or turned into a delivery. */
+    withdrawalCleared: Array<{ id: string; displayId?: string; title: string }>;
   };
   issues: {
     added: Array<{ id: string; displayId?: string; title: string }>;
@@ -262,6 +267,8 @@ export function diffStates(
   const ticketsRemoved: Array<{ id: string; displayId?: string; title: string }> = [];
   const ticketsStatusChanged: TicketChange[] = [];
   const ticketsDescriptionChanged: ContentChange[] = [];
+  const ticketsWithdrawn: Array<{ id: string; displayId?: string; title: string; reason: string }> = [];
+  const ticketsWithdrawalCleared: Array<{ id: string; displayId?: string; title: string }> = [];
 
   for (const [id, cur] of curTickets) {
     const snap = snapTickets.get(id);
@@ -273,6 +280,15 @@ export function diffStates(
       }
       if (snap.description !== cur.description) {
         ticketsDescriptionChanged.push({ id, displayId: cur.displayId ?? undefined, title: cur.title });
+      }
+      // Both sides read through the effective view of the stored record. A
+      // snapshot written before U2 carries no kind, so it reads as absent.
+      const was = isEffectivelyWithdrawn(snap);
+      const now = ticketResolutionKindView(cur);
+      if (now.state === "effective" && !was) {
+        ticketsWithdrawn.push({ id, displayId: cur.displayId ?? undefined, title: cur.title, reason: now.reason! });
+      } else if (was && now.state !== "effective") {
+        ticketsWithdrawalCleared.push({ id, displayId: cur.displayId ?? undefined, title: cur.title });
       }
     }
   }
@@ -441,7 +457,7 @@ export function diffStates(
   }
 
   return {
-    tickets: { added: ticketsAdded, removed: ticketsRemoved, statusChanged: ticketsStatusChanged, descriptionChanged: ticketsDescriptionChanged },
+    tickets: { added: ticketsAdded, removed: ticketsRemoved, statusChanged: ticketsStatusChanged, descriptionChanged: ticketsDescriptionChanged, withdrawn: ticketsWithdrawn, withdrawalCleared: ticketsWithdrawalCleared },
     issues: { added: issuesAdded, resolved: issuesResolved, statusChanged: issuesStatusChanged, impactChanged: issuesImpactChanged },
     blockers: { added: blockersAdded, cleared: blockersCleared },
     phases: { added: phasesAdded, removed: phasesRemoved, statusChanged: phasesStatusChanged },

@@ -56,6 +56,8 @@ export interface SidebarTicket {
   readonly blockedBy: readonly string[];
   readonly lifecycle: string | null;
   readonly order: number;
+  /** T-486 U2-5: the CLI's effective withdrawal. Optional because a record cached before it existed has none. */
+  readonly withdrawn?: boolean;
 }
 
 /** An issue, reduced the same way. */
@@ -92,6 +94,8 @@ export interface SidebarBoardCard {
   readonly kind: LedgerKind;
   /** An issue's severity; null on a ticket, which has none. */
   readonly severity: string | null;
+  /** T-486 U2-5: a ticket whose withdrawal is effective; always false on an issue. */
+  readonly withdrawn: boolean;
 }
 
 /** Every active leaf and issue appears once, in its recorded status column.
@@ -211,7 +215,36 @@ export function extractRecord(kind: LedgerKind, text: string): SidebarRecord | n
     blockedBy: asStringArray(raw["blockedBy"]),
     lifecycle,
     order: typeof orderRaw === "number" && Number.isFinite(orderRaw) ? orderRaw : 0,
+    withdrawn: isEffectivelyWithdrawn(raw),
   };
+}
+
+/**
+ * T-486 U2-5: the CLI's effective-withdrawal rule (`ticketResolutionKindView`
+ * in src/core/resolution-kind.ts), reproduced for the same reason as the
+ * counts and held equal by `test/plugin/sidebar-projection.test.ts`. A
+ * well-formed `withdrawn` kind counts only on a complete ticket that is not an
+ * owner checkpoint, closed on the day it was completed. A stale or malformed
+ * kind is not a withdrawal.
+ */
+function isEffectivelyWithdrawn(raw: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(raw, "resolutionKind")) return false;
+  const value = raw["resolutionKind"];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const kind = value as Record<string, unknown>;
+  const reason = kind["reason"];
+  const closedOn = kind["closedOn"];
+  if (kind["kind"] !== "withdrawn" || typeof reason !== "string" || reason.length === 0) return false;
+  if (typeof closedOn !== "string" || !isCalendarDate(closedOn)) return false;
+  if (Object.prototype.hasOwnProperty.call(raw, "ownerCheckpoint") && raw["ownerCheckpoint"] !== undefined) return false;
+  return raw["status"] === "complete" && closedOn === raw["completedDate"];
+}
+
+/** `YYYY-MM-DD` that names a real day, as the CLI's DateSchema reads it. */
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const day = new Date(value + "T00:00:00Z");
+  return !isNaN(day.getTime()) && day.toISOString().startsWith(value);
 }
 
 function isActive(record: { readonly lifecycle: string | null }): boolean {
@@ -428,6 +461,7 @@ export function projectSidebar(input: SidebarInput): SidebarProjection {
     blocked: t.status !== "complete" && isBlocked(t),
     kind: "ticket",
     severity: null,
+    withdrawn: t.withdrawn === true,
   });
   const issueCard = (i: SidebarIssue): SidebarBoardCard => ({
     key: `issue:${i.id}`,
@@ -438,6 +472,7 @@ export function projectSidebar(input: SidebarInput): SidebarProjection {
     blocked: false,
     kind: "issue",
     severity: i.severity,
+    withdrawn: false,
   });
   // Ticket order, then the id as the tie-break, so the columns are stable
   // between renders and between sessions. Order alone is not enough: the

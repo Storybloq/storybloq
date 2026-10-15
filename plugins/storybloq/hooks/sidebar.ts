@@ -351,6 +351,14 @@ async function loadCache(dashboard: DashboardState, $: any): Promise<void> {
         const record = entry?.record as { title?: unknown } | undefined;
         if (record && typeof record.title === "string") record.title = displaySafe(record.title);
       }
+      // T-486 U2-5: a complete ticket cached before `withdrawn` existed is read
+      // again, so withdrawn work does not sit in Done unmarked until its file
+      // next changes. Every other cached record is still served warm.
+      for (const [path, entry] of Object.entries(dashboard.cache)) {
+        const record = entry?.record as { kind?: unknown; status?: unknown; withdrawn?: unknown } | undefined;
+        if (record && record.kind === "ticket" && record.status === "complete" && typeof record.withdrawn !== "boolean")
+          delete dashboard.cache[path];
+      }
       // A cache from an earlier session is enough to draw real numbers while
       // this session's scan confirms them.
       dashboard.warm = Object.keys(dashboard.cache).length > 0;

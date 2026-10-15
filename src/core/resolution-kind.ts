@@ -237,3 +237,26 @@ export function issueStatusLabel(issue: Loose): string {
   const kind = effectiveResolutionKind(issue);
   return kind ? `${String(issue.status)} (${kind})` : String(issue.status);
 }
+
+export interface TicketEffectiveJson {
+  readonly resolutionKind: "withdrawn" | null;
+  readonly resolutionKindState: ResolutionKindState;
+  readonly reason: string | null;
+}
+
+/** T-486 U2-5: the derived withdrawal every ticket JSON surface reports beside the loaded record. */
+export function ticketEffectiveJson(ticket: Loose): TicketEffectiveJson {
+  const view = ticketResolutionKindView(ticket);
+  return { resolutionKind: view.kind, resolutionKindState: view.state, reason: view.reason };
+}
+
+/**
+ * One ticket as a JSON response body, on the rule `issueJsonBody` follows: the
+ * loaded record, any caller extras, and `effective`. A record that already
+ * uses a reserved name is returned untouched under `stored`.
+ */
+export function ticketJsonBody(ticket: Loose, extras: Record<string, unknown> = {}): Record<string, unknown> {
+  const effective = ticketEffectiveJson(ticket);
+  const collides = RESERVED_RESPONSE_KEYS.some((k) => Object.prototype.hasOwnProperty.call(ticket, k));
+  return collides ? { stored: ticket, ...extras, effective } : { ...ticket, ...extras, effective };
+}

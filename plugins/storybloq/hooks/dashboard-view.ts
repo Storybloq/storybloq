@@ -278,7 +278,9 @@ function sessionCard(dashboard: DashboardState, cards: readonly SidebarBoardCard
 function cardRow(dashboard: DashboardState, elements: any, card: SidebarBoardCard, width: number, done = false, stage: StageMark | null = null): unknown {
   const effect = dashboard.motion.card(card.key);
   const ready = effect.ready && !card.blocked && !done;
-  const blocked = card.blocked ? (width >= 32 ? "[Blocked] " : "[!] ") : ready ? (width >= 32 ? "✓ Ready " : "✓ ") : "";
+  // T-486 U2-5: a withdrawn ticket is finished but was never delivered; its Done card says so.
+  const withdrawn = done && card.withdrawn ? (width >= 32 ? "[Withdrawn] " : "[W] ") : "";
+  const blocked = withdrawn !== "" ? withdrawn : card.blocked ? (width >= 32 ? "[Blocked] " : "[!] ") : ready ? (width >= 32 ? "✓ Ready " : "✓ ") : "";
   const tag = stage !== null && stage.key === card.key
     && cellWidth(card.id) + 1 + cellWidth(stage.text) + cellWidth(blocked) + 2 <= width ? stage.text : "";
   const id = truncate(card.id, Math.max(1, width - cellWidth(tag) - cellWidth(blocked) - 3));
@@ -290,7 +292,7 @@ function cardRow(dashboard: DashboardState, elements: any, card: SidebarBoardCar
     children: [
       paneText(dashboard, elements.Text, { dimColor: true, ...(tone ? { color: tone } : {}), children: `${id} ` }),
       ...(tag === "" ? [] : [paneText(dashboard, elements.Text, { ...(stage!.stale ? { dimColor: true } : { color: "cyan" }), children: tag })]),
-      paneText(dashboard, elements.Text, { ...(card.blocked ? { color: "yellow" } : { dimColor: effect.fading }), children: blocked }),
+      paneText(dashboard, elements.Text, { ...(card.blocked ? { color: "yellow" } : withdrawn !== "" ? { dimColor: true } : { dimColor: effect.fading }), children: blocked }),
       paneText(dashboard, elements.Text, { bold: !done, dimColor: done, children: shimmerTitle(dashboard, elements, truncate(card.title, room), effect.progress) }),
     ],
   });

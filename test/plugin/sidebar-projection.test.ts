@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { loadProject } from "../../src/core/project-loader.js";
 import { buildCompactStatusData } from "../../src/core/output-formatter.js";
 import { applyTicketIdentityPolicy, ticketRefNormalizer } from "../../src/core/ticket-counts.js";
+import { ticketResolutionKindView } from "../../src/core/resolution-kind.js";
 import {
   buildParentResolver,
   countedSidebarTickets,
@@ -698,5 +699,45 @@ describe("sidebar projection: the duplicate canonical id rule (T-486 U2-3b)", ()
     const mine = projectSidebar(await readAsTheModDoes(root));
     expect(figures(compact)).toEqual([1, 0, 1, 1]);
     expect(figures(mine)).toEqual([1, 0, 1, 1]);
+  });
+});
+
+describe("sidebar projection: withdrawn Done cards (T-486 U2-5)", () => {
+  const base = { id: "T-001", title: "T", type: "task", status: "complete", phase: "p1", order: 1, completedDate: "2026-03-05", blockedBy: [] };
+  const kind = (over: Record<string, unknown>) => ({ kind: "withdrawn", closedOn: "2026-03-05", reason: "Dropped", ...over });
+  // The shared fixture: every branch of the CLI's effective-view rule.
+  const FIXTURE: Array<[string, Record<string, unknown>]> = [
+    ["effective", { ...base, resolutionKind: kind({}) }],
+    ["absent", { ...base }],
+    ["stale: reopened", { ...base, status: "open", completedDate: null, resolutionKind: kind({}) }],
+    ["stale: re-closed on another day", { ...base, completedDate: "2026-03-07", resolutionKind: kind({}) }],
+    ["stale: owner checkpoint", { ...base, ownerCheckpoint: { kind: "decision" }, resolutionKind: kind({}) }],
+    ["malformed: empty reason", { ...base, resolutionKind: kind({ reason: "" }) }],
+    ["malformed: bad date", { ...base, completedDate: "2026-02-30", resolutionKind: kind({ closedOn: "2026-02-30" }) }],
+    ["malformed: not an object", { ...base, resolutionKind: "withdrawn" }],
+    ["malformed: null", { ...base, resolutionKind: null }],
+    ["wrong entity", { ...base, resolutionKind: kind({ kind: "fixed" }) }],
+    ["extra keys kept", { ...base, resolutionKind: kind({ by: "owner" }) }],
+  ];
+
+  it("extractRecord's withdrawn flag equals ticketResolutionKindView over the shared fixture", () => {
+    for (const [name, record] of FIXTURE) {
+      const extracted = extractRecord("ticket", JSON.stringify(record)) as SidebarTicket;
+      expect({ name, withdrawn: extracted.withdrawn }).toEqual({ name, withdrawn: ticketResolutionKindView(record).state === "effective" });
+    }
+    expect(FIXTURE.filter(([, r]) => ticketResolutionKindView(r).state === "effective").length).toBe(2);
+  });
+
+  it("marks an effectively withdrawn Done card, and not a stale one", () => {
+    const tickets = [
+      extractRecord("ticket", JSON.stringify({ ...base, id: "T-001", resolutionKind: kind({}) })) as SidebarTicket,
+      extractRecord("ticket", JSON.stringify({ ...base, id: "T-002", completedDate: "2026-03-07", resolutionKind: kind({}) })) as SidebarTicket,
+      extractRecord("ticket", JSON.stringify({ ...base, id: "T-003", status: "open", completedDate: null })) as SidebarTicket,
+    ];
+    const mine = projectSidebar({ project: "p", phases: [{ id: "p1", name: "One" }], tickets, issues: [], handoverFilenames: [] });
+    const done = new Map(mine.board.done.map((c) => [c.id, c.withdrawn]));
+    expect(done.get("T-001")).toBe(true);
+    expect(done.get("T-002")).toBe(false);
+    expect(mine.board.open.find((c) => c.id === "T-003")!.withdrawn).toBe(false);
   });
 });

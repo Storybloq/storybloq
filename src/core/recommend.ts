@@ -28,6 +28,7 @@ import { notHiddenByEarmark } from "./earmarks.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { applyClaimAnnotations } from "./claims.js";
 import { checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers, reassessCheckpoints } from "./owner-checkpoint.js";
+import { isEffectivelyWithdrawn } from "./resolution-kind.js";
 import { displayIdOf } from "./resolver.js";
 import type { Claim } from "../models/types.js";
 
@@ -609,7 +610,8 @@ function generateCheckpointReassessments(state: ProjectState): Recommendation[] 
   const out: Recommendation[] = [];
   let index = 0;
   for (const ticket of state.leafTickets) {
-    if (ticket.status !== "complete" || !isActiveLifecycle(ticket)) continue;
+    // T-486 U2-5: withdrawn work was never delivered against the answer, so there is nothing to re-verify.
+    if (ticket.status !== "complete" || !isActiveLifecycle(ticket) || isEffectivelyWithdrawn(ticket)) continue;
     const flagged = reassessCheckpoints(state, ticket).filter((v) => v.flag);
     if (flagged.length === 0) continue;
     const labels = flagged.map((v) => {

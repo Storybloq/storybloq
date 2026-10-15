@@ -858,6 +858,39 @@ describe("dashboard hierarchy and state feedback", () => {
     expect(findUi(active, "board-inprogress-heading").color).toBe("cyan");
   });
 
+  it("T-486 U2-5: marks an effectively withdrawn Done card, and not a stale one", async () => {
+    const h = new Harness();
+    seedLedger(h.fs, "/repo");
+    const effective = { ...JSON.parse(ticket("T-003", "complete")), completedDate: "2026-03-05", resolutionKind: { kind: "withdrawn", closedOn: "2026-03-05", reason: "Dropped" } };
+    const stale = { ...JSON.parse(ticket("T-004", "complete")), completedDate: "2026-03-07", resolutionKind: { kind: "withdrawn", closedOn: "2026-03-01", reason: "Old" } };
+    h.fs.addFile("/repo/.story/tickets/T-003.json", JSON.stringify(effective));
+    h.fs.addFile("/repo/.story/tickets/T-004.json", JSON.stringify(stale));
+    await h.start("/repo"); await h.settle();
+    const done = findUi(JSON.parse(h.render()), "board-done");
+    expect(findUi(done, "ticket:T-003").children[1]).toMatchObject({ children: "[Withdrawn] ", dimColor: true });
+    expect(findUi(done, "ticket:T-004").children[1].children).toBe("");
+  });
+
+  it("T-486 U2-5: re-reads a complete ticket cached before the withdrawn field existed", async () => {
+    const h = new Harness();
+    seedLedger(h.fs, "/repo");
+    const effective = { ...JSON.parse(ticket("T-003", "complete")), completedDate: "2026-03-05", resolutionKind: { kind: "withdrawn", closedOn: "2026-03-05", reason: "Dropped" } };
+    h.fs.addFile("/repo/.story/tickets/T-003.json", JSON.stringify(effective));
+    const mtimeMs = (await h.fs.stat("/repo/.story/tickets/T-003.json")).mtimeMs;
+    h.store.set("sidebar-ledger-cache-v1", {
+      ".story/tickets/T-003.json": {
+        mtimeMs,
+        record: {
+          kind: "ticket", id: "T-003", displayId: "T-003", previousDisplayIds: [], title: "Ticket T-003",
+          status: "complete", phase: "p1", parentTicket: null, blockedBy: [], lifecycle: null, order: 1,
+        },
+      },
+    });
+    await h.start("/repo"); await h.settle();
+    const done = findUi(JSON.parse(h.render()), "board-done");
+    expect(findUi(done, "ticket:T-003").children[1]).toMatchObject({ children: "[Withdrawn] " });
+  });
+
   it("highlights a status change once, then settles without rearranging the board", async () => {
     const h = new Harness(); seedLedger(h.fs, "/repo");
     await h.start("/repo"); await h.settle();

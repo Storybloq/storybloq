@@ -17,6 +17,7 @@ import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
 import { assertCheckpointEligible, completeDependent, describeCheckpointBlock, describeIneligible, evidenceFor } from "../../core/checkpoint-evidence.js";
 import { pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
+import { ticketJsonBody } from "../../core/resolution-kind.js";
 import { ProjectState } from "../../core/project-state.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { citationMapFor, resolveEntityCitations, resolveCitesRulingsInput } from "../../core/ruling.js";
@@ -463,7 +464,7 @@ export async function handleTicketCreate(
     : null;
   const warnings = branchWarning ? [branchWarning] : undefined;
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(createdTicket), null, 2), ...(warnings && { warnings }) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(createdTicket)), null, 2), ...(warnings && { warnings }) };
   }
   return { output: `Created ticket ${displayIdOf(createdTicket)}: ${createdTicket.title}${phaseNote}`, ...(warnings && { warnings }) };
 }
@@ -751,7 +752,7 @@ export async function handleTicketUpdate(
     ? ["outer render fence removed; use --format json for round trips"]
     : undefined;
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedTicket), null, 2), ...(warnings && { warnings }) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2), ...(warnings && { warnings }) };
   }
   return { output: `Updated ticket ${displayIdOf(updatedTicket)}: ${updatedTicket.title}`, ...(warnings && { warnings }) };
 }
@@ -789,7 +790,7 @@ export async function handleTicketMetaSet(
 
   if (!updatedTicket) throw new Error("Ticket metadata not updated");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedTicket), null, 2) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2) };
   }
   return { output: `Updated metadata ${path} on ticket ${displayIdOf(updatedTicket)}` };
 }
@@ -825,7 +826,7 @@ export async function handleTicketMetaUnset(
 
   if (!updatedTicket) throw new Error("Ticket metadata not updated");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedTicket), null, 2) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2) };
   }
   return { output: `Unset metadata ${path} on ticket ${displayIdOf(updatedTicket)}` };
 }
@@ -879,7 +880,7 @@ export async function handleTicketUnclaim(
   });
   if (!updatedTicket) throw new Error("Ticket not updated");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedTicket), null, 2) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2) };
   }
   return { output: `Unclaimed ticket ${(updatedTicket as Record<string, unknown>).displayId as string | undefined ?? updatedTicket.id}` };
 }
@@ -939,7 +940,7 @@ export async function handleTicketStart(
   if (!updatedTicket) throw new Error("Ticket not updated");
   if (claimWarning) process.stderr.write(claimWarning + "\n");
   if (format === "json") {
-    return { output: JSON.stringify(successEnvelope(updatedTicket), null, 2) };
+    return { output: JSON.stringify(successEnvelope(ticketJsonBody(updatedTicket)), null, 2) };
   }
   return { output: `Started ticket ${(updatedTicket as Record<string, unknown>).displayId as string | undefined ?? updatedTicket.id}: ${updatedTicket.title}` };
 }

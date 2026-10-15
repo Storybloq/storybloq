@@ -9,7 +9,7 @@ import type { FederationState, FederationNodeEntry } from "../federation/state.j
 import type { Config } from "../models/config.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
-import { dispositionEvidenceView, issueJsonBody, issueStatusLabel, effectiveResolutionKind } from "./resolution-kind.js";
+import { dispositionEvidenceView, issueJsonBody, issueStatusLabel, effectiveResolutionKind, isEffectivelyWithdrawn, ticketEffectiveJson, ticketJsonBody, ticketResolutionKindView, type TicketEffectiveJson } from "./resolution-kind.js";
 import type { Note } from "../models/note.js";
 import type { Lesson } from "../models/lesson.js";
 import type { Roadmap } from "../models/roadmap.js";
@@ -1312,7 +1312,7 @@ export function formatPhaseTickets(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        tickets.map((t) => ({ ...t, ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+        tickets.map((t) => ticketJsonBody(t, { ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
       ),
       null,
       2,
@@ -1376,7 +1376,7 @@ export function formatTicket(
 ): string {
   if (format === "json") {
     return JSON.stringify(
-      successEnvelope({ ...ticket, ...checkpointJson(ticket), citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields }),
+      successEnvelope(ticketJsonBody(ticket, { ...checkpointJson(ticket), citedRulings: citedRulingsForJson(citedRulings), ...extraJsonFields })),
       null,
       2,
     );
@@ -1386,7 +1386,7 @@ export function formatTicket(
   const lines: string[] = [
     `# ${escapeMarkdownInline(displayIdOf(ticket))}: ${escapeMarkdownInline(ticket.title)}${blocked}`,
     "",
-    `Status: ${ticket.status} | Type: ${ticket.type} | Phase: ${ticket.phase ?? "none"} | Order: ${ticket.order}`,
+    `Status: ${ticketStatusText(ticket)} | Type: ${ticket.type} | Phase: ${ticket.phase ?? "none"} | Order: ${ticket.order}`,
     `Created: ${ticket.createdDate}${ticket.completedDate ? ` | Completed: ${ticket.completedDate}` : ""}`,
   ];
   if (ticket.blockedBy.length > 0) {
@@ -1415,7 +1415,7 @@ export function formatNextTicketOutcome(
   if (format === "json") {
     const enriched =
       outcome.kind === "found"
-        ? { ...outcome, ticket: { ...outcome.ticket, citedRulings: citedRulingsForJson(citedRulings) } }
+        ? { ...outcome, ticket: ticketJsonBody(outcome.ticket, { citedRulings: citedRulingsForJson(citedRulings) }) }
         : outcome;
     return JSON.stringify(successEnvelope(enriched), null, 2);
   }
@@ -1471,7 +1471,7 @@ export function formatNextTicketsOutcome(
             ...outcome,
             candidates: outcome.candidates.map((c) => ({
               ...c,
-              ticket: { ...c.ticket, citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(c.ticket.id) ?? []) },
+              ticket: ticketJsonBody(c.ticket, { citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(c.ticket.id) ?? []) }),
             })),
           }
         : outcome;
@@ -1548,7 +1548,7 @@ export function formatTicketList(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        tickets.map((t) => ({ ...t, ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
+        tickets.map((t) => ticketJsonBody(t, { ...checkpointJson(t), citedRulings: citedRulingsForJson(citedRulingsByTicketId.get(t.id) ?? []) })),
       ),
       null,
       2,
@@ -1560,7 +1560,7 @@ export function formatTicketList(
     const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
     const checkpoint = checkpointSummary(t);
     const mark = checkpoint ? ` [checkpoint ${checkpoint.state}]` : "";
-    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${mark} (${t.phase ?? "none"})`);
+    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${withdrawnMark(t)}${mark} (${t.phase ?? "none"})`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
     if (rulingsSection) lines.push(rulingsSection);
   }
@@ -1708,8 +1708,7 @@ export function formatBlockedTickets(
   if (format === "json") {
     return JSON.stringify(
       successEnvelope(
-        tickets.map((t) => ({
-          ...t,
+        tickets.map((t) => ticketJsonBody(t, {
           blockers: t.blockedBy.map((bid) => ({
             id: bid,
             status: state.ticketByID(bid)?.status ?? "unknown",
@@ -3025,7 +3024,7 @@ export function formatRecap(
 
       // Ticket changes
       const ticketChanges = changes.tickets;
-      if (ticketChanges.added.length > 0 || ticketChanges.removed.length > 0 || ticketChanges.statusChanged.length > 0 || ticketChanges.descriptionChanged.length > 0) {
+      if (ticketChanges.added.length > 0 || ticketChanges.removed.length > 0 || ticketChanges.statusChanged.length > 0 || ticketChanges.descriptionChanged.length > 0 || ticketChanges.withdrawn.length > 0 || ticketChanges.withdrawalCleared.length > 0) {
         lines.push("");
         lines.push("## Tickets");
         for (const t of ticketChanges.statusChanged) {
@@ -3039,6 +3038,12 @@ export function formatRecap(
         }
         for (const t of ticketChanges.descriptionChanged) {
           lines.push(`- ${displayIdOf(t)}: description updated`);
+        }
+        for (const t of ticketChanges.withdrawn) {
+          lines.push(`- Withdrawn: ${displayIdOf(t)} (${escapeMarkdownInline(t.reason)})`);
+        }
+        for (const t of ticketChanges.withdrawalCleared) {
+          lines.push(`- No longer withdrawn: ${displayIdOf(t)}`);
         }
       }
 
@@ -3248,9 +3253,9 @@ function formatPhaseExport(
     return JSON.stringify(
       successEnvelope({
         phase: { id: phase.id, name: phase.name, description: phase.description, status: phaseStatus },
-        tickets: leaves.map((t) => ({ id: t.id, title: t.title, status: t.status, type: t.type, order: t.order })),
+        tickets: leaves.map((t) => ({ id: t.id, title: t.title, status: t.status, type: t.type, order: t.order, ...exportTicketLean(t) })),
         umbrellaAncestors: [...umbrellaAncestors.values()].map((t) => ({ id: t.id, title: t.title })),
-        crossPhaseDependencies: [...crossPhaseDeps.values()].map((t) => ({ id: t.id, title: t.title, status: t.status, phase: t.phase })),
+        crossPhaseDependencies: [...crossPhaseDeps.values()].map((t) => ({ id: t.id, title: t.title, status: t.status, phase: t.phase, ...exportTicketLean(t) })),
         issues: relatedIssues.map((i) => exportIssueRow(i)),
         blockers: activeBlockers.map((b) => ({ name: b.name, note: b.note ?? null })),
       }),
@@ -3273,7 +3278,7 @@ function formatPhaseExport(
     for (const t of leaves) {
       const indicator = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
       const parentLabel = t.parentTicket && umbrellaAncestors.has(t.parentTicket) ? ` (under ${resolveTicketRefDisplay(t.parentTicket, state)})` : "";
-      lines.push(`${indicator} ${displayIdOf(t)}: ${escapeMarkdownDocument(t.title)}${parentLabel}`);
+      lines.push(`${indicator} ${displayIdOf(t)}: ${escapeMarkdownDocument(t.title)}${exportTicketWithdrawalTag(t)}${parentLabel}`);
     }
   }
 
@@ -3281,7 +3286,7 @@ function formatPhaseExport(
     lines.push("");
     lines.push("## Cross-Phase Dependencies");
     for (const [, dep] of crossPhaseDeps) {
-      lines.push(`- ${displayIdOf(dep)}: ${escapeMarkdownDocument(dep.title)} [${dep.status}] (${dep.phase ?? "unphased"})`);
+      lines.push(`- ${displayIdOf(dep)}: ${escapeMarkdownDocument(dep.title)} [${dep.status}]${exportTicketWithdrawalTag(dep)} (${dep.phase ?? "unphased"})`);
     }
   }
 
@@ -3337,6 +3342,18 @@ function exportIssueRow(issue: Issue): Record<string, unknown> {
  * An exported issue line's disposition, as list shows it, with the evidence
  * only while it is bound: ` {owner_gated: reason [ref]}`, or "" when none.
  */
+/** T-486 U2-5: what a lean export ticket row adds: the display id and the withdrawal, never the full body. */
+function exportTicketLean(t: Ticket): { displayId: string; resolutionKind: "withdrawn" | null; effective: TicketEffectiveJson } {
+  const effective = ticketEffectiveJson(t);
+  return { displayId: displayIdOf(t), resolutionKind: effective.resolutionKind, effective };
+}
+
+/** T-486 U2-5: ` {withdrawn: reason}` on an export line while the withdrawal is effective. */
+function exportTicketWithdrawalTag(t: Ticket): string {
+  const view = ticketResolutionKindView(t);
+  return view.state === "effective" ? ` {withdrawn: ${escapeMarkdownDocument(view.reason!)}}` : "";
+}
+
 function exportDispositionTag(issue: Issue): string {
   if (!issue.disposition) return "";
   const evidence = dispositionEvidenceView(issue);
@@ -3366,6 +3383,7 @@ function formatFullExport(
             title: t.title,
             status: t.status,
             type: t.type,
+            ...exportTicketLean(t),
           })),
         })),
         issues: state.activeIssues.map((i) => exportIssueRow(i)),
@@ -3415,7 +3433,7 @@ function formatFullExport(
       lines.push("");
       for (const t of tickets) {
         const ti = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
-        lines.push(`${ti} ${displayIdOf(t)}: ${escapeMarkdownDocument(t.title)}`);
+        lines.push(`${ti} ${displayIdOf(t)}: ${escapeMarkdownDocument(t.title)}${exportTicketWithdrawalTag(t)}`);
       }
     }
   }
@@ -3471,6 +3489,8 @@ function hasAnyChanges(diff: SnapshotDiff): boolean {
     diff.tickets.removed.length > 0 ||
     diff.tickets.statusChanged.length > 0 ||
     diff.tickets.descriptionChanged.length > 0 ||
+    diff.tickets.withdrawn.length > 0 ||
+    diff.tickets.withdrawalCleared.length > 0 ||
     diff.issues.added.length > 0 ||
     diff.issues.resolved.length > 0 ||
     diff.issues.statusChanged.length > 0 ||
@@ -3551,7 +3571,18 @@ function formatTicketOneLiner(t: Ticket, state: ProjectState): string {
   // T-537: a checkpoint's stored status says nothing about its answer.
   const checkpoint = checkpointSummary(t);
   const mark = checkpoint ? ` [checkpoint ${checkpoint.state}]` : "";
-  return `${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${mark}${blocked}`;
+  return `${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${withdrawnMark(t)}${mark}${blocked}`;
+}
+
+/** T-486 U2-5: a ticket line keeps `[x]` and says `(withdrawn)` while the withdrawal is effective. */
+function withdrawnMark(t: Ticket): string {
+  return isEffectivelyWithdrawn(t) ? " (withdrawn)" : "";
+}
+
+/** T-486 U2-5: `complete (withdrawn): <reason>` while effective; a stale or malformed kind shows the stored status. */
+function ticketStatusText(ticket: Ticket): string {
+  const view = ticketResolutionKindView(ticket);
+  return view.state === "effective" ? `${ticket.status} (withdrawn): ${escapeMarkdownInline(view.reason!)}` : ticket.status;
 }
 
 // --- Reference ---

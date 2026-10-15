@@ -91,6 +91,15 @@ describe("T-486 U2-4: the live cross-node observation is bounded (B2)", () => {
     expect(obs.statuses.size).toBe(20);
   });
 
+  it("two node names that resolve to one directory: each name's refs resolve, and the directory is loaded once", async () => {
+    const { calls, load } = loader({ cpm: [ticket("T-1", { status: "complete", completedDate: DONE }), ticket("T-2")] });
+    const shared = new Map<string, ResolvedNode>(["a", "b"].map((n) => [n, { name: n, resolved: true, storyDir: "/nowhere/cpm/.story" } as unknown as ResolvedNode]));
+    const obs = await crossNodeObservation({ tickets: [dependent("a:T-1", "b:T-2")], resolvedNodes: shared, load });
+    expect(obs.statuses.get("a:T-1")).toEqual({ resolved: true, status: "complete" });
+    expect(obs.statuses.get("b:T-2")).toEqual({ resolved: true, status: "open" });
+    expect(calls).toHaveLength(1);
+  });
+
   it("the whole observation stops at its own deadline even when every node stalls", async () => {
     const { load } = loader({}, { ignoreAbort: true });
     const started = Date.now();

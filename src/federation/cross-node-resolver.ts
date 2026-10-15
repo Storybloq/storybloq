@@ -83,14 +83,23 @@ function issueStatusFromContent(parsed: Record<string, unknown>): CrossNodeRefSt
  * N-059). It runs inside the node's job, so the scheduler bounds it.
  */
 export async function resolveIssueStatus(storyDir: string, itemId: string, signal?: AbortSignal): Promise<CrossNodeRefStatus> {
+  signal?.throwIfAborted();
   const dir = join(storyDir, "issues");
+  let direct: string | null = null;
   try {
-    const raw = await readFile(join(dir, `${itemId}.json`), "utf-8");
-    return issueStatusFromContent(JSON.parse(raw) as Record<string, unknown>);
+    direct = await readFile(join(dir, `${itemId}.json`), "utf-8");
   } catch {
     // fall through to the displayId-from-content scan
   }
+  // A cancel during the read returns nothing, not a status.
   signal?.throwIfAborted();
+  if (direct !== null) {
+    try {
+      return issueStatusFromContent(JSON.parse(direct) as Record<string, unknown>);
+    } catch {
+      // malformed: fall through to the displayId-from-content scan
+    }
+  }
   if (DISPLAY_ISSUE_REGEX.test(itemId)) {
     try {
       const files = await readdir(dir);
@@ -98,8 +107,15 @@ export async function resolveIssueStatus(storyDir: string, itemId: string, signa
       for (const file of files) {
         if (!file.endsWith(".json")) continue;
         signal?.throwIfAborted();
+        let raw: string;
         try {
-          const parsed = JSON.parse(await readFile(join(dir, file), "utf-8")) as Record<string, unknown>;
+          raw = await readFile(join(dir, file), "utf-8");
+        } catch {
+          continue;
+        }
+        signal?.throwIfAborted();
+        try {
+          const parsed = JSON.parse(raw) as Record<string, unknown>;
           if (parsed.displayId === itemId) return issueStatusFromContent(parsed);
           if (
             prevFallback === null &&

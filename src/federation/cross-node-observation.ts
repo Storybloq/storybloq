@@ -55,17 +55,20 @@ export async function crossNodeObservation(options: CrossNodeObservationOptions)
   // B2-P1: no cross-node edge, no read and no job.
   if (refsByNode.size === 0) return { live: true, observedAt, statuses };
 
-  const jobs: { name: string; storyDir: string }[] = [];
+  // One job per directory: node names that resolve to the same directory
+  // share one load, and each name's refs are mapped back to it.
+  const namesByDir = new Map<string, string[]>();
   for (const [nodeName, itemIds] of refsByNode) {
     const node = options.resolvedNodes.get(nodeName);
     if (node && node.resolved) {
-      jobs.push({ name: nodeName, storyDir: node.storyDir });
+      namesByDir.set(node.storyDir, [...(namesByDir.get(node.storyDir) ?? []), nodeName]);
       continue;
     }
     const reason = node && !node.resolved ? node.reason : "node not configured";
     for (const itemId of itemIds) statuses.set(`${nodeName}:${itemId}`, { resolved: false, reason });
   }
-  if (jobs.length === 0) return { live: true, observedAt, statuses };
+  if (namesByDir.size === 0) return { live: true, observedAt, statuses };
+  const jobs = [...namesByDir.keys()].map((storyDir) => ({ name: storyDir, storyDir }));
 
   const load = options.load ?? defaultLoad;
   const controller = new AbortController();
@@ -79,8 +82,8 @@ export async function crossNodeObservation(options: CrossNodeObservationOptions)
       timeoutMs: options.nodeTimeoutMs ?? NODE_SCAN_TIMEOUT_MS,
       signal: controller.signal,
       run: async (storyDir, signal) => {
-        const nodeName = jobs.find((j) => j.storyDir === storyDir)!.name;
-        const itemIds = [...refsByNode.get(nodeName)!];
+        const names = namesByDir.get(storyDir)!;
+        const itemIds = [...new Set(names.flatMap((name) => [...refsByNode.get(name)!]))];
         const out = new Map<string, CrossNodeRefStatus>();
         const ticketIds = itemIds.filter(isTicketRef);
         if (ticketIds.length > 0) {
@@ -91,16 +94,18 @@ export async function crossNodeObservation(options: CrossNodeObservationOptions)
           for (const itemId of ticketIds) out.set(itemId, ticketRefStatus(graph, itemId));
         }
         for (const itemId of itemIds.filter((id) => !isTicketRef(id))) {
+          signal.throwIfAborted();
           out.set(itemId, await resolveIssueStatus(storyDir, itemId, signal));
         }
         return out;
       },
     });
-    for (const job of jobs) {
-      const result = results.get(job.name)!;
-      for (const itemId of refsByNode.get(job.name)!) {
-        const ref = `${job.name}:${itemId}`;
-        statuses.set(ref, result.ok ? result.value.get(itemId)! : { resolved: false, reason: result.reason });
+    for (const [storyDir, names] of namesByDir) {
+      const result = results.get(storyDir)!;
+      for (const name of names) {
+        for (const itemId of refsByNode.get(name)!) {
+          statuses.set(`${name}:${itemId}`, result.ok ? result.value.get(itemId)! : { resolved: false, reason: result.reason });
+        }
       }
     }
   } finally {

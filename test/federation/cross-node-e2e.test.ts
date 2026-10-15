@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,6 +150,31 @@ describe("T-486 U2-4: cross-node end to end, separate ledgers", () => {
     // dispatch --dry-run runs on the same live observation without error.
     const plan = await handleDispatch(await ctxAt(orch), { ids: "all", count: 3, dryRun: true, yes: false });
     expect(plan.exitCode ?? 0).toBe(0);
+  });
+
+  it("E2E dispatch: the dry-run plan follows the live node, not the cache, in both directions", async () => {
+    // A plain project with one configured node: dispatch plans this project's own tickets.
+    const node = mkdtempSync(join(tmpdir(), "t486-u24-node-"));
+    const solo = mkdtempSync(join(tmpdir(), "t486-u24-solo-"));
+    dirs.push(node, solo);
+    await initProject(node, { name: "cpm" });
+    writeTickets(node, [delivered("T-4")]);
+    await initProject(solo, { name: "solo" });
+    const configPath = join(solo, ".story", "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as Raw;
+    writeFileSync(configPath, JSON.stringify({ ...config, nodes: { cpm: { path: node } } }));
+    writeTickets(solo, [ticket("T-7", { crossNodeBlockedBy: ["cpm:T-4"] })]);
+    const cacheSays = (value: string) => writeFileSync(join(solo, ".story", "federation-cache.json"),
+      JSON.stringify({ lastScanTimestamp: "2026-02-01T00:00:00.000Z", nodes: {}, crossNodeRefStatuses: { "cpm:T-4": value } }));
+    const planned = async () => {
+      const plan = JSON.parse((await handleDispatch(await ctxAt(solo), { ids: "all", count: 5, dryRun: true, yes: false })).output);
+      return (plan.entries as Array<{ target: { id: string } }>).map((e) => e.target.id);
+    };
+    cacheSays("withdrawn");
+    expect(await planned()).toContain("T-7");
+    writeTickets(node, [withdrawn("T-4")]);
+    cacheSays("complete");
+    expect(await planned()).not.toContain("T-7");
   });
 
   it("E2E 4: node path changed after the scan: unresolved, no action", async () => {

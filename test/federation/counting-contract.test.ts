@@ -165,6 +165,8 @@ describe("T-486 U2-3b: one bounded scheduler for every node scan", () => {
     stop.abort("stop");
     await vi.advanceTimersByTimeAsync(0);
     expect(out).toBeDefined();
+    // T-486 U2-4 fixup: cancel clears every running job's deadline and grace timer.
+    expect(vi.getTimerCount()).toBe(0);
     expect([...out!.values()].map((r) => r.reason)).toEqual(Array(6).fill("cancelled: stop"));
     expect([started, aborted.length]).toEqual([4, 4]);
     await vi.advanceTimersByTimeAsync(30_000);

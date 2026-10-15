@@ -216,6 +216,7 @@ export function runNodeJobs<T>(jobs: readonly NodeScanJob[], options: NodeJobSch
   const results = new Map<string, NodeJobResult<T>>();
   const queue = [...jobs];
   const controllers = new Set<AbortController>();
+  const timerCleanups = new Set<() => void>();
   let running = 0;
   let stopped = false;
 
@@ -237,6 +238,10 @@ export function runNodeJobs<T>(jobs: readonly NodeScanJob[], options: NodeJobSch
       for (const job of jobs) if (!results.has(job.name)) results.set(job.name, { ok: false, reason });
       queue.length = 0;
       for (const controller of controllers) controller.abort();
+      // No deadline or grace timer outlives the cancel (a job that ignores
+      // the abort settles later through its own handlers).
+      for (const clearTimers of timerCleanups) clearTimers();
+      timerCleanups.clear();
       resolveAll(results);
     };
     const pump = (): void => {
@@ -260,6 +265,11 @@ export function runNodeJobs<T>(jobs: readonly NodeScanJob[], options: NodeJobSch
         }, settleGraceMs);
         finishIfDone();
       }, timeoutMs);
+      const clearTimers = (): void => {
+        clearTimeout(deadline);
+        clearTimeout(grace);
+      };
+      timerCleanups.add(clearTimers);
       let work: Promise<T>;
       try {
         work = options.run(job.storyDir, controller.signal);
@@ -274,8 +284,8 @@ export function runNodeJobs<T>(jobs: readonly NodeScanJob[], options: NodeJobSch
         .finally(() => {
           settled = true;
           controllers.delete(controller);
-          clearTimeout(deadline);
-          clearTimeout(grace);
+          timerCleanups.delete(clearTimers);
+          clearTimers();
           running--;
           pump();
         });

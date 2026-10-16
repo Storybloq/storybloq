@@ -1210,6 +1210,22 @@ describe("ISS-958 S6 addendum 2: awaited-callback primitives (R-a, R-a1)", () =>
     expect(r.errors.some((e) => e.startsWith("lock-lifetime: awaited-callback primitive project.ts#withProjectLock rejected"))).toBe(true);
   });
 
+  it("the callback forwarded through a nested AsyncLocalStorage.run, as the lock helper does, verifies", () => {
+    const r = add2Scan(WRITE_UNDER_PROJECT, "", PRIM, projectChain("return await als.run(handle, () => als.run(handle + 1, fn));"));
+    expect(r.errors).toEqual([]);
+    expect(r.chainMembers).toEqual(["project.ts#internal", "project.ts#withLock"]);
+  });
+
+  it.each([
+    ["the arrow forwards to a run method that is not Node's AsyncLocalStorage",
+      "const fake = { held: [] as unknown[], run<R>(s: number, f: () => R): R { this.held.push(f); return undefined as R; } };\n    return await als.run(handle, () => fake.run(handle, fn));"],
+    ["the arrow passes the callback elsewhere", "const wrap = <R>(f: () => R) => f;\n    return await als.run(handle, () => als.run(handle, wrap(fn)));"],
+    ["the arrow stores the callback", "let held: unknown;\n    return await als.run(handle, () => als.run(handle, (held = fn) as typeof fn));"],
+  ])("the pin is rejected when %s", (_n, line) => {
+    const r = add2Scan(WRITE_UNDER_PROJECT, "", PRIM, projectChain(line));
+    expect(r.errors.some((e) => e.startsWith("lock-lifetime: awaited-callback primitive project.ts#withProjectLock rejected"))).toBe(true);
+  });
+
   it("a run method on a class that is not Node's AsyncLocalStorage is library-mediated and rejects the pin", () => {
     const r = add2Scan(WRITE_UNDER_PROJECT, "", PRIM, projectChain("return await als.run(handle, fn);", "fake-als"));
     expect(r.errors.some((e) => e.includes("rejected") && e.includes("library-mediated"))).toBe(true);

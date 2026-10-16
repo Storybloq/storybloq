@@ -1554,6 +1554,20 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         if (r) return r;
         continue;
       }
+      // A parameterless arrow whose whole body hands the callback to the trusted adapter's callback slot
+      // (`() => als.run(store, fn)`) invokes it in place, as `() => fn()` would; the arrow itself is then
+      // checked as that carrier is. Any other use of the callback inside a closure stays a value.
+      if (carrier && ts.isArrowFunction(carrier) && carrier.parameters.length === 0 && carrier.body === outerOf(parent)
+        && ts.isCallExpression(parent) && isTrustedAdapterCall(parent) && parent.arguments.indexOf(o as ts.Expression) === parent.arguments.length - 1) {
+        const co = outerOf(carrier);
+        const call = co.parent;
+        if (!call || !ts.isCallExpression(call) || !call.arguments.includes(co as ts.Expression)) {
+          return `${path}: the closure forwarding the callback at ${where(carrier)} is not passed directly to a call`;
+        }
+        const r = delegate(call, call.arguments.indexOf(co as ts.Expression), fn, path, depth);
+        if (r) return r;
+        continue;
+      }
       return `${path}: the callback is used as a value at ${where(u)}`;
     }
     return null;

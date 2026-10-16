@@ -6,6 +6,8 @@ This file is referenced from SKILL.md for `/story triage` (`$story triage` on Co
 
 This workflow mutates no issue, no ticket, no severity, and creates nothing. The classifications and recommendations defined below are OUTPUT VOCABULARY for the report, never values to write into the ledger. Evidence only -- the maintainer closes, files, and reprioritizes; never this workflow. Do not call any `storybloq_*` create/update/delete tool or any `storybloq ... create/update/delete` CLI command during triage.
 
+Acting on the report is a separate step: `storybloq triage` (dry run, then `--apply`) is the action layer; this workflow never calls it.
+
 Two precise qualifications:
 
 - Ordinary Storybloq reads may recover an incomplete transaction journal under lock. That is the loader's own behavior, not a write this workflow performs.

@@ -1,0 +1,16 @@
+{
+  "name": "storybloq",
+  "version": "1.16.0",
+  "description": "Open the current local project's Storybloq board, context and handovers.",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Storybloq",
+    "shortDescription": "Your local project board and memory",
+    "defaultPrompt": [
+      "Open Storybloq for this project"
+    ],
+    "composerIcon": "./.codex-plugin/icon.png",
+    "logo": "./.codex-plugin/icon.png"
+  }
+}

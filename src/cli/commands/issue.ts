@@ -11,6 +11,8 @@ import { inferIssuePhase } from "../../autonomous/issue-create-preparation.js";
 import { validateProject } from "../../core/validation.js";
 import { resolveAndNormalizeTicketRef, resolveAndNormalizeIssueRef, RefResolutionError } from "../../core/ref-normalization.js";
 import { ProjectState, isDeleted } from "../../core/project-state.js";
+import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
+import type { IssueUpdateInput } from "../../core/update-inputs.js";
 import {
   withProjectLock,
   writeIssueUnlocked,
@@ -42,7 +44,6 @@ import {
 import { ISSUE_DISPOSITIONS,
   type Issue,
   type IssueDisposition,
-  type IssueSourceRefInput,
 } from "../../models/issue.js";
 import {
   IssueSourceRefError,
@@ -462,30 +463,10 @@ export async function handleIssueCreate(
 
 export async function handleIssueUpdate(
   id: string,
-  updates: {
-    status?: string;
-    title?: string;
-    severity?: string;
-    impact?: string;
-    resolution?: string | null;
-    components?: string[];
-    relatedTickets?: string[];
-    location?: string[];
-    sourceRefs?: IssueSourceRefInput[];
-    order?: number;
-    phase?: string | null;
-    citesRuling?: string[];
-    clearCitesRulings?: boolean;
-    resolutionKind?: string;
-    duplicateOf?: string;
-    /** A disposition value, or null to clear it with its evidence. */
-    disposition?: string | null;
-    dispositionReason?: string;
-    dispositionRef?: string;
-  },
+  updates: IssueUpdateInput,
   format: string,
   root: string,
-  opts?: { clearEarmarkForSession?: string },
+  opts?: { clearEarmarkForSession?: string } & UpdateWriteHooks<Issue>,
 ): Promise<CommandResult> {
   assertUpdateHasFields(
     updates,
@@ -538,6 +519,8 @@ export async function handleIssueUpdate(
     if (!existing) {
       throw new CliValidationError("not_found", `Issue ${id} not found`);
     }
+
+    await opts?.precondition?.(existing, state);
 
     let sourceRefs;
     try {
@@ -599,7 +582,7 @@ export async function handleIssueUpdate(
     }
 
     validatePostWriteIssueState(issue, state, false);
-    await writeIssueUnlocked(issue, root);
+    await writeIssueUnlocked(issue, root, opts);
     updatedIssue = issue;
   });
 

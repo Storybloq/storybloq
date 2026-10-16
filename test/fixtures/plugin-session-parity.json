@@ -1,0 +1,271 @@
+{
+  "now": "2026-09-30T12:00:00Z",
+  "presence": [
+    {
+      "name": "open tool before lease",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:58:00.001Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "working", "visible": true, "animates": true }
+    },
+    {
+      "name": "open tool at lease",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:58:00Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": {
+        "state": "maybeWorking",
+        "visible": true,
+        "animates": false
+      }
+    },
+    {
+      "name": "idle before window",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:50:00.001Z"
+      },
+      "expected": { "state": "idleRecent", "visible": true, "animates": true }
+    },
+    {
+      "name": "idle at window",
+      "record": { "sessionId": "fixture", "startedAt": "2026-09-30T11:50:00Z" },
+      "expected": { "state": "unknown", "visible": true, "animates": false }
+    },
+    {
+      "name": "tool before sweep horizon",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T00:00:00.001Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": {
+        "state": "maybeWorking",
+        "visible": true,
+        "animates": false
+      }
+    },
+    {
+      "name": "at sweep horizon",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T00:00:00Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "stale", "visible": false, "animates": false }
+    },
+    {
+      "name": "small future clock",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T12:02:00Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "working", "visible": true, "animates": true }
+    },
+    {
+      "name": "future past tolerance",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T12:02:00.001Z",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "unknown", "visible": true, "animates": false }
+    },
+    {
+      "name": "last event takes precedence",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-29T12:00:00Z",
+        "lastEventAt": "2026-09-30T11:59:59Z"
+      },
+      "expected": { "state": "idleRecent", "visible": true, "animates": true }
+    },
+    {
+      "name": "bad last event falls back",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:59:59Z",
+        "lastEventAt": "not a timestamp"
+      },
+      "expected": { "state": "idleRecent", "visible": true, "animates": true }
+    },
+    {
+      "name": "date only is not activity evidence",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30",
+        "lastEventAt": "today"
+      },
+      "expected": { "state": "unknown", "visible": true, "animates": false }
+    },
+    {
+      "name": "suppressed working row is hidden",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:59:59Z",
+        "suppressed": true,
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "working", "visible": false, "animates": true }
+    },
+    {
+      "name": "ended wins over tools and clock",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "not a timestamp",
+        "endedAt": "",
+        "openTools": [{ "id": "a", "tool": "Build" }]
+      },
+      "expected": { "state": "ended", "visible": false, "animates": false }
+    },
+    {
+      "name": "empty tools are idle",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T11:59:59Z",
+        "openTools": []
+      },
+      "expected": { "state": "idleRecent", "visible": true, "animates": true }
+    },
+    {
+      "name": "offset timestamp is supported",
+      "record": {
+        "sessionId": "fixture",
+        "startedAt": "2026-09-30T04:59:59-07:00"
+      },
+      "expected": { "state": "idleRecent", "visible": true, "animates": true }
+    }
+  ],
+  "status": [
+    {
+      "name": "input wins over other signals",
+      "signals": {
+        "claudeStatus": " WAITING_FOR_INPUT ",
+        "alive": false,
+        "lastMcpCall": "invalid",
+        "healthState": "crashed"
+      },
+      "expected": "needsInput"
+    },
+    {
+      "name": "explicit dead signal",
+      "signals": { "alive": false, "lastMcpCall": "2026-09-30T12:00:00Z" },
+      "expected": "unresponsive"
+    },
+    {
+      "name": "fresh call before boundary",
+      "signals": { "lastMcpCall": "2026-09-30T11:58:00.001Z" },
+      "expected": "working"
+    },
+    {
+      "name": "stale at boundary",
+      "signals": { "lastMcpCall": "2026-09-30T11:58:00Z" },
+      "expected": "stale"
+    },
+    {
+      "name": "stale before unresponsive boundary",
+      "signals": { "lastMcpCall": "2026-09-30T11:55:00.001Z" },
+      "expected": "stale"
+    },
+    {
+      "name": "unresponsive at boundary",
+      "signals": { "lastMcpCall": "2026-09-30T11:55:00Z" },
+      "expected": "unresponsive"
+    },
+    {
+      "name": "malformed call precedes health",
+      "signals": { "lastMcpCall": "invalid", "healthState": "crashed" },
+      "expected": "stale"
+    },
+    {
+      "name": "crashed health",
+      "signals": { "healthState": "CrAsHeD" },
+      "expected": "unresponsive"
+    },
+    {
+      "name": "degraded health",
+      "signals": { "healthState": "waiting-on-dialog" },
+      "expected": "degraded"
+    },
+    {
+      "name": "unknown health retains reported working",
+      "signals": { "healthState": "future-status" },
+      "expected": "working"
+    },
+    {
+      "name": "missing health retains reported working",
+      "signals": {},
+      "expected": "working"
+    },
+    {
+      "name": "future call matches current Mac rule",
+      "signals": { "lastMcpCall": "2026-10-01T12:00:00Z" },
+      "expected": "working"
+    }
+  ],
+  "queue": [
+    {
+      "name": "normalized order and done precedence",
+      "input": {
+        "targetWork": [" T-001 ", "", "T-002", "T-001", " ISS-001 "],
+        "completedThisSession": ["T-001", "T-001", "outside"],
+        "currentTicket": "T-001",
+        "currentIssue": "ISS-001"
+      },
+      "expected": {
+        "completed": 1,
+        "total": 3,
+        "fraction": 0.3333333333333333,
+        "items": [
+          { "id": "T-001", "status": "done" },
+          { "id": "T-002", "status": "queued" },
+          { "id": "ISS-001", "status": "queued" }
+        ]
+      }
+    },
+    {
+      "name": "blank ticket falls back to issue",
+      "input": {
+        "targetWork": ["ISS-001", "T-001"],
+        "currentTicket": " ",
+        "currentIssue": " ISS-001 "
+      },
+      "expected": {
+        "completed": 0,
+        "total": 2,
+        "fraction": 0,
+        "items": [
+          { "id": "ISS-001", "status": "current" },
+          { "id": "T-001", "status": "queued" }
+        ]
+      }
+    },
+    {
+      "name": "ticket takes precedence",
+      "input": {
+        "targetWork": ["ISS-001", "T-001"],
+        "currentTicket": "T-001",
+        "currentIssue": "ISS-001"
+      },
+      "expected": {
+        "completed": 0,
+        "total": 2,
+        "fraction": 0,
+        "items": [
+          { "id": "ISS-001", "status": "queued" },
+          { "id": "T-001", "status": "current" }
+        ]
+      }
+    },
+    {
+      "name": "empty queue",
+      "input": { "targetWork": [" ", ""] },
+      "expected": { "completed": 0, "total": 0, "fraction": 0, "items": [] }
+    }
+  ]
+}

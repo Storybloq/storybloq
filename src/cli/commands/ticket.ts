@@ -50,6 +50,8 @@ import {
   type TicketType,
 } from "../../models/types.js";
 import type { Ticket } from "../../models/ticket.js";
+import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
+import type { TicketUpdateInput } from "../../core/update-inputs.js";
 import {
   todayISO,
   CliValidationError,
@@ -524,25 +526,11 @@ async function resolveCompletionGuard(
 
 export async function handleTicketUpdate(
   id: string,
-  updates: {
-    status?: string;
-    title?: string;
-    type?: string;
-    phase?: string | null;
-    order?: number;
-    description?: string;
-    blockedBy?: string[];
-    crossNodeBlockedBy?: string[] | null;
-    parentTicket?: string | null;
-    citesRuling?: string[];
-    clearCitesRulings?: boolean;
-    /** T-486 U2-6: "withdrawn" closes the ticket as withdrawn rather than delivered. */
-    resolutionKind?: string;
-    reason?: string;
-  },
+  updates: TicketUpdateInput,
   format: string,
   root: string,
   force = false,
+  hooks?: UpdateWriteHooks<Ticket>,
 ): Promise<CommandResult> {
   if (updates.reason !== undefined && updates.resolutionKind === undefined) {
     throw new CliValidationError("invalid_input", "--reason is only for a withdrawal: pass it with --resolution-kind withdrawn");
@@ -600,6 +588,8 @@ export async function handleTicketUpdate(
     if (!existing) {
       throw new CliValidationError("not_found", `Ticket ${id} not found`);
     }
+
+    await hooks?.precondition?.(existing, state);
 
     if (updates.phase !== undefined) {
       validatePhase(updates.phase, { state });
@@ -790,7 +780,7 @@ export async function handleTicketUpdate(
     // ticket waits on has not released and records the checkpoint state it
     // relied on. Every other update writes as before.
     if (completes) {
-      const outcome = await completeDependent(state, finalTicket, root);
+      const outcome = await completeDependent(state, finalTicket, root, hooks);
       if (outcome.kind === "checkpoint-blocked") {
         throw new CliValidationError("conflict", describeCheckpointBlock(displayIdOf(existing), outcome.checkpoints.map((c) => {
           const t = state.ticketByID(c);
@@ -800,7 +790,7 @@ export async function handleTicketUpdate(
       updatedTicket = outcome.ticket;
       return;
     }
-    await writeTicketUnlocked(finalTicket, root);
+    await writeTicketUnlocked(finalTicket, root, hooks);
     updatedTicket = finalTicket;
   });
 

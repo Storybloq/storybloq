@@ -6,7 +6,7 @@
  * listener that would corrupt the JSON-RPC channel. Handler files import
  * types from THIS module instead.
  */
-import type { ExitCodeValue } from "../core/output-formatter.js";
+import type { ExitCodeValue } from "../core/exit-codes.js";
 import type { OutputFormat } from "../models/types.js";
 import type { ProjectState } from "../core/project-state.js";
 import type { LoadWarning } from "../core/errors.js";
@@ -53,4 +53,4 @@ export interface DeleteCommandContext extends CommandContext {
   readonly force: boolean;
 }
 
-export type { ExitCodeValue } from "../core/output-formatter.js";
+export type { ExitCodeValue } from "../core/exit-codes.js";

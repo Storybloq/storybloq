@@ -32,6 +32,8 @@ import {
   assertUpdateHasFields,
 } from "../helpers.js";
 import type { CommandContext, CommandResult } from "../types.js";
+import type { NoteUpdateHatches, NoteUpdateInput } from "../../core/update-inputs.js";
+import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
 
 export const NOTE_CORE_METADATA_KEYS = new Set([
   "id",
@@ -195,11 +197,7 @@ export async function handleNoteCreate(
 export const NOTE_REPLACE_GUARD_FLOOR = 1000;
 export const NOTE_REPLACE_GUARD_RATIO = 0.2;
 
-/** How the caller spells the two ways past the guard, for its refusal text. */
-export interface NoteUpdateHatches {
-  confirm: string;
-  append: string;
-}
+export type { NoteUpdateHatches };
 
 const MCP_NOTE_UPDATE_HATCHES: NoteUpdateHatches = {
   confirm: "confirmReplace: true",
@@ -208,18 +206,11 @@ const MCP_NOTE_UPDATE_HATCHES: NoteUpdateHatches = {
 
 export async function handleNoteUpdate(
   id: string,
-  updates: {
-    content?: string;
-    title?: string | null;
-    tags?: string[];
-    clearTags?: boolean;
-    status?: string;
-    mode?: "replace" | "append";
-    confirmReplace?: boolean;
-  },
+  updates: NoteUpdateInput,
   format: OutputFormat,
   root: string,
   hatches: NoteUpdateHatches = MCP_NOTE_UPDATE_HATCHES,
+  hooks?: UpdateWriteHooks<Note>,
 ): Promise<CommandResult> {
   const { mode, confirmReplace, ...fields } = updates;
   if (mode !== undefined && mode !== "replace" && mode !== "append") {
@@ -261,6 +252,7 @@ export async function handleNoteUpdate(
     if (!existing) {
       throw new CliValidationError("not_found", `Note ${id} not found`);
     }
+    await hooks?.precondition?.(existing, state);
 
     // Tags: --clear-tags → []. --tags with values → replace. neither → unchanged.
     const tagsUpdate: Partial<Note> = {};
@@ -302,7 +294,7 @@ export async function handleNoteUpdate(
       updatedDate: todayISO(),
     };
 
-    await writeNoteUnlocked(note, root);
+    await writeNoteUnlocked(note, root, hooks);
     updatedNote = note;
   });
 

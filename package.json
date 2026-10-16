@@ -33,23 +33,28 @@
   },
   "bin": {
     "storybloq": "dist/cli.js",
-    "storybloq-presence": "dist/presence.js"
+    "storybloq-presence": "dist/presence.js",
+    "storybloq-codex": "dist/codex-plugin.js"
   },
   "files": [
     "dist",
     "src/skill",
+    ".codex-plugin",
+    "skills/storybloq",
     "plugins/storybloq/.claude-plugin/plugin.json",
     "plugins/storybloq/hooks/hooks.json",
     "plugins/storybloq/hooks/*.ts",
     "!plugins/storybloq/hooks/*.test.ts",
     "README.md",
+    "CODEX-PLUGIN.md",
+    "OPENAI-RELEASE.md",
     "NOTICE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node board-app/build.mjs --package",
     "test": "vitest run --maxWorkers=4",
     "test:watch": "vitest",
     "labels:export": "tsx scripts/export-labels.ts",
@@ -57,10 +62,11 @@
     "dev": "tsup --watch",
     "typecheck": "bash scripts/tsc-gate.sh",
     "prepublishOnly": "bash scripts/tsc-gate.sh && npm run build && STORYBLOQ_COMPAT_REQUIRED=1 npm test",
-    "compat:fetch": "bash scripts/compat-fetch.sh"
+    "compat:fetch": "bash scripts/compat-fetch.sh",
+    "test:board-package": "node --test scripts/test-local-board.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@storybloq/lenses": "^0.6.0",
     "canonicalize": "^3.0.0",
     "proper-lockfile": "^4.1.2",
@@ -77,6 +83,9 @@
     "tsup": "^8",
     "tsx": "^4.21.0",
     "typescript": "^5",
-    "vitest": "^3"
+    "vitest": "^3",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@openai/mcp-extensions": "0.1.0",
+    "esbuild": "0.25.12"
   }
 }

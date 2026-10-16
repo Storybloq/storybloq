@@ -6,7 +6,37 @@ export {};
 
 // --mcp flag: start MCP server instead of CLI.
 // Enables one-line registration: claude mcp add storybloq -- npx -y @storybloq/storybloq --mcp
-if (!process.argv.includes("--mcp")) {
+if (process.argv[2] === "--local-cli") {
+  try {
+    const { runLocalProjectCommand } = await import("./local-profile.js");
+    await runLocalProjectCommand(process.argv.slice(3), process.cwd(), async (root, args) => {
+      process.chdir(root);
+      process.env.STORYBLOQ_PROJECT_ROOT = root;
+      delete process.env.CLAUDESTORY_PROJECT_ROOT;
+      delete process.env.STORYBLOQ_APPROVED_NODE_ROOTS;
+      process.argv = [...process.argv.slice(0, 2), ...args];
+      await runCli(true);
+    });
+  } catch (error) {
+    process.stderr.write(`Storybloq local command: ${(error as Error).message}\n`);
+    process.exitCode = 2;
+  }
+} else if (process.argv.includes("--board-mcp")) {
+  // Keep the board SDK out of ordinary CLI startup and preserve the task cwd.
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const board = spawn(process.execPath, [fileURLToPath(new URL("./board/server.js", import.meta.url)), "--local", "--local-cli-profile-v1"], {
+    stdio: "inherit",
+  });
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => board.kill(signal));
+  }
+  board.on("error", () => {
+    process.stderr.write("Storybloq board could not start. Reinstall Storybloq and retry.\n");
+    process.exitCode = 1;
+  });
+  board.on("exit", (code) => { process.exitCode = code ?? 1; });
+} else if (!process.argv.includes("--mcp")) {
   await runCli();
 } else {
   await import("../mcp/index.js");
@@ -33,11 +63,12 @@ async function emitUpdateBannerIfStale(version: string): Promise<void> {
   }
 }
 
-async function runCli(): Promise<void> {
+async function runCli(taskLocal = false): Promise<void> {
   const { default: yargs } = await import("yargs");
   const { hideBin } = await import("yargs/helpers");
   const { ExitCode, formatError, errorEnvelope } = await import("../core/output-formatter.js");
-  const { writeOutput } = await import("./run.js");
+  const { writeOutput, configureCliNotifications } = await import("./run.js");
+  configureCliNotifications(!taskLocal);
   const { configureRawMode, checkRawMode, rawRejectionPending, RAW_REJECTION_EXIT } = await import("./raw-mode.js");
   const { takeArrayOptionError, resetArrayOptionError } = await import("./array-options.js");
   const { buildUsageInfo, truncateHelpText, FAIL_USAGE_HELP_BYTE_BUDGET } = await import("./fail-usage.js");
@@ -110,7 +141,7 @@ async function runCli(): Promise<void> {
 
   // ISS-570: silent skill-dir refresh if the CLI version changed + schedule
   // a background update check so the next invocation's banner is fresh.
-  if (!shouldSkipHousekeeping(dispatchedArgv)) {
+  if (!taskLocal && !shouldSkipHousekeeping(dispatchedArgv)) {
     const { preCommandHousekeeping } = await import("./housekeeping.js");
     await preCommandHousekeeping(version, dispatchedArgv);
   }
@@ -297,7 +328,7 @@ async function runCli(): Promise<void> {
   // own output. Prints to stderr so it never interferes with structured
   // JSON on stdout. ISS-736: gated on TTY/env/command via the pure guard.
   const { shouldEmitUpdateBanner } = await import("../core/update-check.js");
-  if (shouldEmitUpdateBanner({ stderrIsTTY: process.stderr.isTTY === true, env: process.env, command: dispatchedCommand })) {
+  if (!taskLocal && shouldEmitUpdateBanner({ stderrIsTTY: process.stderr.isTTY === true, env: process.env, command: dispatchedCommand })) {
     await emitUpdateBannerIfStale(version);
   }
 }

@@ -107,30 +107,37 @@ function contextFor(root: string, overrides: Partial<FullSessionState> = {}): St
 
 type StrategySpy = { applyStrategy: (...args: unknown[]) => Promise<unknown> };
 
-/** Sets the disposition after the first check, before the locked transaction. */
-function injectDispositionAtStrategy(root: string, id: string) {
-  return vi.spyOn(PickTicketStage.prototype as unknown as StrategySpy, "applyStrategy")
+/**
+ * Sets the disposition after the first check, before the locked transaction,
+ * and keeps the bytes it wrote: anything the refused pick writes afterwards
+ * shows up as a difference from them.
+ */
+function injectDispositionAtStrategy(root: string, id: string): { bytes: string | null } {
+  const injected = { bytes: null as string | null };
+  vi.spyOn(PickTicketStage.prototype as unknown as StrategySpy, "applyStrategy")
     .mockImplementation(async () => {
       writeIssue(root, id, { disposition: "owner_gated" });
+      injected.bytes = readFileSync(issuePath(root, id), "utf-8");
       return null;
     });
+  return injected;
 }
 
 describe("PICK_TICKET refuses a non-actionable issue (T-486 U4)", () => {
   it("A3: a disposition set before the locked pick is refused there, and nothing is written", async () => {
     const root = buildRepo();
     writeIssue(root, "ISS-200");
-    injectDispositionAtStrategy(root, "ISS-200");
+    const injected = injectDispositionAtStrategy(root, "ISS-200");
     const ctx = contextFor(root);
 
     const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-200" });
-    const injected = readFileSync(issuePath(root, "ISS-200"), "utf-8");
 
     expect(result.action).toBe("retry");
     expect((result as { instruction: string }).instruction)
       .toBe("Issue ISS-200 has disposition owner_gated and is not actionable. Pick a different issue, or clear its disposition first.");
-    expect(readFileSync(issuePath(root, "ISS-200"), "utf-8")).toBe(injected);
-    expect(JSON.parse(injected).status).toBe("open");
+    expect(injected.bytes).not.toBeNull();
+    expect(readFileSync(issuePath(root, "ISS-200"), "utf-8")).toBe(injected.bytes);
+    expect(JSON.parse(injected.bytes!).status).toBe("open");
     expect(ctx.state.pendingProjectMutation ?? null).toBeNull();
     expect((ctx.state as unknown as { currentIssue?: unknown }).currentIssue ?? null).toBeNull();
   });

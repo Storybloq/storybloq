@@ -87,7 +87,7 @@ import { telemetryDirPath } from "../../src/autonomous/liveness.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 import {
-  setupProject, writeIssue, issueText, readIssue, acquiredBy, deferredAs, loadedFingerprint,
+  setupProject, writeIssue, issueText, readIssue, acquiredBy, deferredAs, resolvedAs, loadedFingerprint,
   readState, eventsOfType, treeDigest, plant, report, resume, cancel,
 } from "./_issue-sweep-harness.js";
 
@@ -342,6 +342,66 @@ describe("malformed markers (T-486 U4 T13)", () => {
       const s = readState(dir);
       expect(s.pendingProjectMutation).toBeNull();
       expect(s.issueSweepState?.current).toBe("ISS-001");
+    });
+  }
+});
+
+describe("a referenced entity deleted after the release intent (T-486 U4-1 fixup)", () => {
+  // The issue's fingerprint cannot see the entity it references, so the issue
+  // still matches releasePre. The release is written only while the fresh
+  // classification still gives the marker's outcome.
+  const refCases: Array<[string, (sessionId: string) => Loose, RegExp]> = [
+    ["a deferral whose ref is an issue", (sid) => ({ ...acquiredBy(sid), ...deferredAs("owner_gated", "Owner decides.", "ISS-050") }),
+      /dispositionRef: --ref ISS-050 names no ticket, issue, note, lesson or ruling/],
+    ["a duplicate", (sid) => ({ ...acquiredBy(sid), ...resolvedAs("duplicate", "Same as ISS-050.", { duplicateOf: "ISS-050" }) }),
+      /duplicateOf: --duplicate-of ISS-050 names no ticket or issue/],
+  ];
+  const deleteTarget = () => rmSync(join(root, ".story", "issues", "ISS-050.json"));
+
+  function expectNothingRecorded(dir: string, before: string): void {
+    expect(issueText(root, "ISS-001")).toBe(before);
+    expect(hoisted.ledgerWrites).not.toContain("ISS-001");
+    const s = readState(dir);
+    expect(s.pendingProjectMutation ?? null).toBeNull();
+    expect(s.issueSweepState?.current).toBe("ISS-001");
+    expect(s.issueSweepState?.resolved).toEqual([]);
+    expect(s.issueSweepState?.disposed ?? []).toEqual([]);
+    expect(s.issueSweepState?.deferred ?? []).toEqual([]);
+    expect(s.issueSweepState?.conflicted ?? []).toEqual([]);
+  }
+
+  for (const [name, fields, refusal] of refCases) {
+    it(`live (M-relive): ${name}, target deleted between the intent and the release lock`, async () => {
+      const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: ["ISS-002"], resolved: [] });
+      writeIssue(root, "ISS-050");
+      writeIssue(root, "ISS-001", fields(sessionId));
+      writeIssue(root, "ISS-002");
+      const before = issueText(root, "ISS-001");
+      hoisted.hooks.push({ when: (_p, n) => isStep(n, "release"), mode: "after", fn: deleteTarget });
+
+      const r = await report(root, sessionId);
+
+      expect(r.text).toMatch(refusal);
+      expectNothingRecorded(dir, before);
+      expect(readIssue(root, "ISS-002").status).toBe("open");
+    });
+
+    it(`recovery (M-rerec): ${name}, target deleted between the intent and recovery`, async () => {
+      const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: ["ISS-002"], resolved: [] });
+      writeIssue(root, "ISS-050");
+      writeIssue(root, "ISS-001", fields(sessionId));
+      writeIssue(root, "ISS-002");
+      const before = issueText(root, "ISS-001");
+      hoisted.hooks.push({ when: (_p, n) => isStep(n, "release"), mode: "crash-after" });
+      await report(root, sessionId);
+      expect(isStep(readState(dir) as unknown as Loose, "release")).toBe(true);
+      deleteTarget();
+
+      const r = await report(root, sessionId);
+
+      expect(r.text).toMatch(refusal);
+      expectNothingRecorded(dir, before);
+      expect(readIssue(root, "ISS-002").status).toBe("open");
     });
   }
 });

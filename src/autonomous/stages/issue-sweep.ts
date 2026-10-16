@@ -263,8 +263,17 @@ export async function recoverIssueSweepStep(root: string, state: FullSessionStat
         }
         const recorded = settled({ issueSweepState: withOutcome(sweep, step.outcome, step.entry), pendingProjectMutation: null });
         const fingerprint = entityFingerprint(issue);
+        // Already released: the outcome was valid when the release was
+        // written and the issue is no longer held, so recording it is the
+        // only way to finish the step.
         if (fingerprint === step.releasePost) { result = recorded; return; }
         if (fingerprint === step.releasePre) {
+          // The fingerprint cannot see an entity the issue references (its
+          // dispositionRef or duplicateOf target), so the outcome is written
+          // only while the fresh classification still gives it. Otherwise
+          // nothing of ours was written: clear the marker, keep `current`,
+          // and the next report re-classifies and names the gap.
+          if (exit.kind !== step.outcome) { result = settled(cleared); return; }
           const image = releaseImage(issue, step.outcome, sessionId);
           if (entityFingerprint(image) !== step.releasePost) { result = conflict("inconsistent-marker"); return; }
           await writeIssueUnlocked(image, root);
@@ -605,7 +614,7 @@ export class IssueSweepStage implements WorkflowStage {
       pendingProjectMutation: { type: SWEEP_STEP, variant: "release", transitionId, current, outcome, entry, releasePre, releasePost },
     });
 
-    let verdict = "changed" as "landed" | "changed" | { conflicted: string };
+    let verdict = "changed" as "landed" | "changed" | { conflicted: string } | { refused: string; reminders?: string[] };
     try {
       await withProjectLockForIssueSweep(ctx.root, async ({ state: projectState }) => {
         const fresh = projectState.issues.find(i => i.id === current);
@@ -613,14 +622,26 @@ export class IssueSweepStage implements WorkflowStage {
         const again = await classifySweepExit(fresh, projectState, ctx.root, sessionId);
         if (again.kind === "conflicted") { verdict = { conflicted: again.reason }; return; }
         const fingerprint = entityFingerprint(fresh);
+        // Already released (a concurrent replay): the outcome was valid when
+        // it was written, so it is recorded.
         if (fingerprint === releasePost) { verdict = "landed"; return; }
         if (fingerprint === releasePre) {
+          // The fingerprint cannot see a referenced entity (dispositionRef,
+          // duplicateOf), so the release is written only while the fresh
+          // classification still gives this outcome.
+          if (again.kind === "retry") { verdict = { refused: again.text, ...(again.reminders && { reminders: again.reminders }) }; return; }
+          if (again.kind !== outcome) { verdict = { refused: `Issue ${current} no longer qualifies as ${outcome}; report again.` }; return; }
           await writeIssueUnlocked(image, ctx.root);
           verdict = "landed";
         }
       });
     } catch (err) {
       return { action: "retry", instruction: sweepStepPendingText(failureText(err)) };
+    }
+    if (typeof verdict === "object" && "refused" in verdict) {
+      // Nothing of ours was written: the marker is cleared, `current` kept.
+      ctx.writeState({ pendingProjectMutation: null });
+      return { action: "retry", instruction: verdict.refused, ...(verdict.reminders && { reminders: verdict.reminders }) };
     }
     if (typeof verdict === "object") {
       ctx.writeState({ issueSweepState: withConflicted(ctx.state.issueSweepState!, current, verdict.conflicted), pendingProjectMutation: null });

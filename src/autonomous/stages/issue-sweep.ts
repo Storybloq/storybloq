@@ -62,6 +62,30 @@ export function sweepStepPendingText(reason: string): string {
   return `The issue sweep's last step could not be confirmed (${reason}). Nothing was acquired or advanced; retry the same call.`;
 }
 
+/** T-486 U4 (R14): `owner_gated` requests an owner decision; it never records one. */
+export function dispositionLabel(disposition: string): string {
+  return disposition === "owner_gated" ? "owner decision requested" : disposition;
+}
+
+/** T-486 U4 (5i): the sweep's unfinished and non-fixed outcomes, for the handover. */
+export function issueSweepSummaryLines(sweep: SweepState | null | undefined): string[] {
+  if (!sweep) return [];
+  const { disposed, deferred, conflicted } = sweepLists(sweep);
+  const out: string[] = [];
+  if (deferred.length > 0) {
+    out.push("Deferred by the issue sweep:", ...deferred.map((d) => `- ${d.id}: ${dispositionLabel(d.disposition)} (${d.reason}; evidence ${d.ref})`));
+  }
+  if (disposed.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("Disposed:", ...disposed.map((d) => `- ${d.id}: ${d.kind}`));
+  }
+  if (conflicted.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("Left by the issue sweep, not finished:", ...conflicted.map((c) => `- ${c.id}: ${c.reason}`));
+  }
+  return out;
+}
+
 export function isSweepStepMarker(mutation: unknown): boolean {
   return typeof mutation === "object" && mutation !== null && (mutation as Record<string, unknown>).type === SWEEP_STEP;
 }
@@ -422,6 +446,11 @@ export class IssueSweepStage implements WorkflowStage {
       `Severity: ${issue.severity}`,
       issue.impact ? `Impact: ${issue.impact}` : "",
       citedRulingsSection,
+      // T-486 U4 (5i): the three exits, the L-094 premise check, and what
+      // owner_gated means.
+      "Fix it and set it resolved; or resolve it with a kind (`wontfix`, `superseded`, `not_reproducible`, or `duplicate` with `duplicateOf`) and a reason; or set a non-actionable disposition with a reason and an evidence reference.",
+      "Verify the issue's premise against the code before acting on it.",
+      "`owner_gated` requests an owner decision; it does not record one.",
     ].filter(Boolean).join("\n");
   }
 
@@ -444,7 +473,13 @@ export class IssueSweepStage implements WorkflowStage {
 
   private complete(ctx: StageContext): StageAdvance {
     const sweep = sweepLists(ctx.state.issueSweepState ?? EMPTY_SWEEP);
-    ctx.appendEvent("issue_sweep_complete", { resolved: sweep.resolved.length });
+    // T-486 U4 (5i): `resolved` stays a count; the other outcomes carry their reasons.
+    ctx.appendEvent("issue_sweep_complete", {
+      resolved: sweep.resolved.length,
+      disposed: sweep.disposed,
+      deferred: sweep.deferred.map((d) => ({ ...d, disposition: dispositionLabel(d.disposition) })),
+      conflicted: sweep.conflicted,
+    });
     return { action: "goto", target: "HANDOVER" };
   }
 

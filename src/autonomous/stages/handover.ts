@@ -9,6 +9,7 @@ import { formatCompactReport } from "../../core/session-report-formatter.js";
 import { loadProject } from "../../core/project-loader.js";
 import { nextTickets } from "../../core/queries.js";
 import { knowledgeImpactSection } from "../knowledge-impact-summary.js";
+import { issueSweepSummaryLines } from "./issue-sweep.js";
 
 /** T-527: said in both instructions when the session accepted a knowledge review. */
 const KNOWLEDGE_SECTION_NOTE =
@@ -77,7 +78,10 @@ export class HandoverStage implements WorkflowStage {
     // T-527: the accepted knowledge reviews, from state rather than from what
     // the agent wrote, so the handover always records what was accepted.
     const knowledge = knowledgeImpactSection(ctx.state, "## Knowledge impact");
-    const content = knowledge.length > 0 ? `${written.trimEnd()}\n\n${knowledge.join("\n")}\n` : written;
+    const withKnowledge = knowledge.length > 0 ? `${written.trimEnd()}\n\n${knowledge.join("\n")}\n` : written;
+    // T-486 U4 (5i): what the issue sweep did not simply fix, from state.
+    const sweepLines = issueSweepSummaryLines(ctx.state.issueSweepState);
+    const content = sweepLines.length > 0 ? `${withKnowledge.trimEnd()}\n\n${sweepLines.join("\n")}\n` : withKnowledge;
 
     // Create handover via existing handler
     let handoverFailed = false;
@@ -188,6 +192,7 @@ export class HandoverStage implements WorkflowStage {
           "",
           ctx.state.completedTickets.map((t) => `- ${(t as Record<string, unknown>).displayId as string | undefined ?? t.id}${t.title ? `: ${t.title}` : ""} (${t.commitHash ?? "no commit"})`).join("\n"),
           ...(resolvedList ? [resolvedList] : []),
+          ...(sweepLines.length > 0 ? ["", ...sweepLines] : []),
         ].join("\n") + reportSection,
         reminders: [],
         transitionedFrom: "HANDOVER",

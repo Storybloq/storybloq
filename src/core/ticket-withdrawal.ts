@@ -17,7 +17,7 @@ import { displayIdOf } from "./resolver.js";
  * Why `ticket` cannot be withdrawn on `graph`, empty when it can. An umbrella
  * is refused outright. Otherwise every live ticket whose blockedBy resolves to
  * the ticket, or to any ancestor of it in either child list, is named with its
- * edge. `graph` must hold `ticket` as it will be written.
+ * edge. `graph` must hold `ticket` as it will be written, as this same object.
  */
 export function withdrawalRefusals(graph: ProjectState, ticket: Ticket): string[] {
   const label = displayIdOf(ticket);
@@ -40,7 +40,9 @@ export function withdrawalRefusals(graph: ProjectState, ticket: Ticket): string[
   }
   const edges: string[] = [];
   for (const dependent of graph.tickets) {
-    if (isDeleted(dependent) || dependent.id === ticket.id) continue;
+    // Codex F6: only the record being withdrawn is skipped; another file
+    // claiming the same id keeps its own edges.
+    if (isDeleted(dependent) || dependent === ticket) continue;
     for (const ref of dependent.blockedBy) {
       const resolved = graph.resolveTicketRef(ref);
       if (resolved.kind !== "found") continue;

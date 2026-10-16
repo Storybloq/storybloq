@@ -551,6 +551,7 @@ export async function assertWithdrawalLedgerCurrent(
   const { records, files, omitted } = await loadTicketRecords(join(absRoot, ".story"));
   const byPath = new Map<string, Ticket>(records.map((record, i) => [files[i]!, record]));
   const touched = new Set<string>();
+  const invalid: string[] = [];
   const ticketsDir = join(absRoot, ".story", "tickets") + sep;
   for (const op of operations) {
     if (!resolve(op.target).startsWith(ticketsDir)) continue;
@@ -560,12 +561,21 @@ export async function assertWithdrawalLedgerCurrent(
     if (op.op === "write") {
       const parsed = TicketSchema.safeParse(priorRecord(op.content));
       if (parsed.success) byPath.set(file, parsed.data);
+      else invalid.push(file);
     }
+  }
+  // Codex F5: a record that fails the schema has no edges to check, so a
+  // withdrawal never commits beside one. A gated target missing from the
+  // graph below cannot happen today (a transaction names a ticket once and
+  // every raw writer targets tickets/); it fails closed if that changes.
+  if (invalid.length > 0) {
+    throw new ProjectLoaderError("conflict", `Cannot commit a withdrawal beside ticket bytes that are not a valid ticket (${invalid.join(", ")}); their edges cannot be checked.`);
   }
   const graph = ProjectState.forTicketGraph([...byPath.values()], omitted.filter((o) => !touched.has(o.file)));
   for (const file of gated) {
     const ticket = byPath.get(file);
-    if (ticket) assertWithdrawable(graph, ticket);
+    if (!ticket) throw new ProjectLoaderError("conflict", `Cannot commit the withdrawal in ${file}: this write leaves no ticket there.`);
+    assertWithdrawable(graph, ticket);
   }
 }
 

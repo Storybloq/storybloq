@@ -200,6 +200,15 @@ describe("T-486 U2-6 ledger refusals", () => {
     expect(err.message).toContain("T-012 blockedBy umbrella T-002 (ancestor of T-004)");
   });
 
+  it("F6: another file claiming the withdrawn ticket's id keeps its edge to the umbrella ancestor", async () => {
+    const root = await board("non-team", [t("T-002"), done("T-004", { parentTicket: "T-002" })]);
+    writeRaw(root, t("T-004", { blockedBy: ["T-002"] }), "T-004-b");
+    const err = await refused(root, "T-004", () =>
+      withProjectLock(root, { strict: false }, () =>
+        writeTicketUnlocked(withdrawn("T-004", "Superseded", { parentTicket: "T-002" }) as unknown as Ticket, root)));
+    expect(err.message).toContain("T-004 blockedBy umbrella T-002 (ancestor of T-004)");
+  });
+
   it("D3: a deleted dependent does not block", async () => {
     const root = await board("non-team", [done("T-004"), t("T-009", { blockedBy: ["T-004"], lifecycle: "deleted" })]);
     await handleTicketUpdate("T-004", { ...WITHDRAW }, "json", root);
@@ -388,6 +397,34 @@ describe("T-486 U2-6 boundary", () => {
       }));
     expect(err.message).toContain("T-009 blockedBy T-004");
     expect(readTicket(root, `${dup}-b`).title).toBe("Ticket t-0000000000000a09");
+  });
+
+  it("F5: a raw withdrawal whose bytes fail the ticket schema is refused at commit", async () => {
+    const root = await board("non-team", [done("T-004"), t("T-009", { blockedBy: ["T-004"] })]);
+    const err = await refused(root, "T-004", () =>
+      withProjectLock(root, { strict: false }, async () => {
+        // repair and reconcile authorise raw bytes: only the resolution
+        // metadata is checked before the commit.
+        const target = ticketPath(root, "T-004");
+        const content = serializeJSON({ ...withdrawn("T-004"), title: 42 });
+        authoriseTicketBytes(root, target, readTicket(root, "T-004"), content);
+        await runTransactionUnlocked(root, [{ op: "write", target, content }]);
+      }));
+    expect(err.message).toContain("not a valid ticket");
+  });
+
+  it("F5: a schema-invalid dependent written beside a withdrawal is refused, its blockedBy edge with it", async () => {
+    const root = await board("non-team", [done("T-004")]);
+    const err = await refused(root, "T-004", () =>
+      withProjectLock(root, { strict: false }, async () => {
+        const target = ticketPath(root, "T-009");
+        const content = serializeJSON({ ...t("T-009", { blockedBy: ["T-004"] }), title: 42 });
+        authoriseTicketBytes(root, target, {}, content);
+        const w = await prepareTicketWrite(withdrawn("T-004") as unknown as Ticket, root);
+        await runTransactionUnlocked(root, [{ op: "write", target, content }, { op: "write", ...w }]);
+      }));
+    expect(err.message).toContain("not a valid ticket");
+    expect(existsSync(ticketPath(root, "T-009"))).toBe(false);
   });
 
   it("F4f: the exported writeTicket refuses a withdrawal with a live dependent", async () => {

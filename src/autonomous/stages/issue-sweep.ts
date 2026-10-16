@@ -58,6 +58,10 @@ export class IssueSweepStage implements WorkflowStage {
           const id = candidateIds[i]!;
           const freshIssue = freshState.issues.find(x => x.id === id);
           if (!freshIssue || freshIssue.status !== "open" || isDeleted(freshIssue)) continue;
+          // T-486 U4 (ISS-1113): enter() filters on a read taken before this
+          // lock, so a disposition set since then is caught here, on the read
+          // the write acts on.
+          if (isNonActionableDisposition(freshIssue.disposition)) continue;
           const decision = tryAcquireEarmark(freshIssue.earmark, ctx.state.sessionId, "worker");
           if (!decision.ok) continue; // earmarked to someone else -- skip, do not retry within this sweep
           const updated: Issue = {

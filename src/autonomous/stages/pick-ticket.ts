@@ -20,6 +20,7 @@ import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } f
 import { entityFingerprint } from "../pending-artifacts.js";
 import { resolveGateStatus } from "./gate-enforcement.js";
 import { tryAcquireEarmark, describeEarmarkHolder, isEarmarkVisible } from "../../core/earmarks.js";
+import { isNonActionableDisposition } from "../../core/issue-disposition.js";
 import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
@@ -37,6 +38,18 @@ type RevalidationResult<T> =
   | { kind: "ok"; item: T }
   | { kind: "rejected"; advance: StageAdvance }
   | { kind: "transient"; message: string };
+
+/**
+ * T-486 U4 (ISS-1113): an issue whose disposition says nobody will act on it
+ * is not picked, unless the run named it: targeted mode keeps picking a named
+ * issue whatever its disposition. Checked on every read a pick acts on (the
+ * first check, the locked earmark transaction, the mismatch revalidation), so
+ * a disposition set while the pick is in flight still refuses it.
+ */
+function nonActionablePickRefusal(issue: Issue, label: string, targeted: boolean): string | null {
+  if (targeted || !isNonActionableDisposition(issue.disposition)) return null;
+  return `Issue ${label} has disposition ${issue.disposition} and is not actionable. Pick a different issue, or clear its disposition first.`;
+}
 
 /**
  * PICK_TICKET stage -- Claude selects the next ticket to work on.
@@ -483,6 +496,8 @@ export class PickTicketStage implements WorkflowStage {
     if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { action: "retry", instruction: `Issue ${issueLabel} is ${issue.status}. Pick an open issue.` };
     }
+    const notActionable = nonActionablePickRefusal(issue, issueLabel, targeted);
+    if (notActionable) return { action: "retry", instruction: notActionable };
 
     // T-328: same order as the ticket path -- eligibility, then affinity, then
     // the strategy that actually moves the repository.
@@ -535,6 +550,11 @@ export class PickTicketStage implements WorkflowStage {
         const freshIssue = freshState.issues.find(i => i.id === issue.id);
         if (!freshIssue) {
           refusal = `Issue ${issueLabel} no longer exists. Pick a different issue.`;
+          return;
+        }
+        const freshRefusal = nonActionablePickRefusal(freshIssue, issueLabel, targeted);
+        if (freshRefusal) {
+          refusal = freshRefusal;
           return;
         }
         const decision = tryAcquireEarmark(freshIssue.earmark, ctx.state.sessionId, "worker");
@@ -956,6 +976,8 @@ export class PickTicketStage implements WorkflowStage {
     if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { kind: "rejected", advance: { action: "retry", instruction: `Issue ${label} is now ${issue.status}. Pick an open item.` } };
     }
+    const notActionable = nonActionablePickRefusal(issue, label, targeted);
+    if (notActionable) return { kind: "rejected", advance: { action: "retry", instruction: notActionable } };
     return { kind: "ok", item: issue };
   }
 

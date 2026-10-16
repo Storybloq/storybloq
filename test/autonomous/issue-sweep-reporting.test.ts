@@ -95,6 +95,41 @@ describe("issue sweep reporting (T-486 U4-2)", () => {
     expect(summary).not.toMatch(/accepted/);
   });
 
+  it("T21 (U4-2 fixup): reasons and refs stay literal text inside their one list item in the handover and the summary", async () => {
+    const INJECT = "\n# Heading\n- item [link](https://example.com) <b>x</b>";
+    const { sessionId, dir } = plant(root, {
+      remaining: [], current: null, resolved: [],
+      deferred: [{ id: "ISS-003", disposition: "owner_gated", reason: `Owner decides.${INJECT}`, ref: `T-001${INJECT}` }],
+      conflicted: [{ id: "ISS-004", reason: `merge conflicts${INJECT}` }],
+    });
+    writeSessionSync(dir, { ...readState(dir), state: "HANDOVER", previousState: "ISSUE_SWEEP" });
+
+    const r = await handleAutonomousGuide(root, {
+      action: "report", sessionId,
+      report: { completedAction: "handover_written", handoverContent: "# Handover\n\nWork done.\n" },
+    });
+    expect(r.isError).toBeFalsy();
+    const summary = (r.content ?? []).map((c) => ("text" in c ? String(c.text) : "")).join("\n");
+    const files = readdirSync(join(root, ".story", "handovers")).filter((f) => f.endsWith(".md"));
+    expect(files).toHaveLength(1);
+    const body = readFileSync(join(root, ".story", "handovers", files[0]!), "utf-8");
+
+    const LITERAL = " # Heading - item \\[link\\](https://example.com) \\<b\\>x\\</b\\>";
+    const deferredLine = `- ISS-003: owner decision requested (Owner decides.${LITERAL}; evidence T-001${LITERAL})`;
+    const conflictedLine = `- ISS-004: merge conflicts${LITERAL}`;
+    for (const text of [body, summary]) {
+      const lines = text.split("\n");
+      expect(lines).toContain(deferredLine);
+      expect(lines).toContain(conflictedLine);
+      expect(lines.filter((l) => l.includes("ISS-003"))).toEqual([deferredLine]);
+      expect(lines.filter((l) => l.includes("ISS-004"))).toEqual([conflictedLine]);
+      expect(lines.filter((l) => /^#+ Heading/.test(l))).toEqual([]);
+      expect(lines.filter((l) => l.startsWith("- item"))).toEqual([]);
+      expect(text).not.toMatch(/(^|[^\\])<b>/);
+      expect(text).not.toMatch(/(^|[^\\])\[link\]/);
+    }
+  });
+
   it("T20: the instruction names the three exits, the premise check and what owner_gated means, verbatim", async () => {
     const { sessionId } = plant(root, { remaining: ["ISS-001"], current: null, resolved: [] });
     writeIssue(root, "ISS-001");

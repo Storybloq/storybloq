@@ -10,7 +10,7 @@ import { dispositionEvidenceView, effectiveResolutionKind } from "../../core/res
 import { entityFingerprint } from "../pending-artifacts.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
-import { formatCitedRulingsSection } from "../../core/output-formatter.js";
+import { formatCitedRulingsSection, escapeMarkdownInline } from "../../core/output-formatter.js";
 
 type SweepState = NonNullable<FullSessionState["issueSweepState"]>;
 
@@ -67,21 +67,32 @@ export function dispositionLabel(disposition: string): string {
   return disposition === "owner_gated" ? "owner decision requested" : disposition;
 }
 
+/**
+ * T-486 U4-2 fixup: one dynamic field inside a handover list item, kept as
+ * literal text. escapeMarkdownInline guards only line-start markers; it keeps
+ * line breaks and leaves links and HTML live, so those are handled here: line
+ * breaks become one space, and backslashes, brackets and angle brackets are
+ * backslash-escaped.
+ */
+function inlineField(text: string): string {
+  return escapeMarkdownInline(text.replace(/\r\n|[\r\n\u2028\u2029]/g, " ").replace(/[\\[\]<>]/g, "\\$&"));
+}
+
 /** T-486 U4 (5i): the sweep's unfinished and non-fixed outcomes, for the handover. */
 export function issueSweepSummaryLines(sweep: SweepState | null | undefined): string[] {
   if (!sweep) return [];
   const { disposed, deferred, conflicted } = sweepLists(sweep);
   const out: string[] = [];
   if (deferred.length > 0) {
-    out.push("Deferred by the issue sweep:", ...deferred.map((d) => `- ${d.id}: ${dispositionLabel(d.disposition)} (${d.reason}; evidence ${d.ref})`));
+    out.push("Deferred by the issue sweep:", ...deferred.map((d) => `- ${inlineField(d.id)}: ${inlineField(dispositionLabel(d.disposition))} (${inlineField(d.reason)}; evidence ${inlineField(d.ref)})`));
   }
   if (disposed.length > 0) {
     if (out.length > 0) out.push("");
-    out.push("Disposed:", ...disposed.map((d) => `- ${d.id}: ${d.kind}`));
+    out.push("Disposed:", ...disposed.map((d) => `- ${inlineField(d.id)}: ${inlineField(d.kind)}`));
   }
   if (conflicted.length > 0) {
     if (out.length > 0) out.push("");
-    out.push("Left by the issue sweep, not finished:", ...conflicted.map((c) => `- ${c.id}: ${c.reason}`));
+    out.push("Left by the issue sweep, not finished:", ...conflicted.map((c) => `- ${inlineField(c.id)}: ${inlineField(c.reason)}`));
   }
   return out;
 }

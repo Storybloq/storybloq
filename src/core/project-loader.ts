@@ -46,6 +46,7 @@ import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthor
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { applyTicketIdentityPolicy, type TicketIdentityReport } from "./ticket-counts.js";
 import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
+import { assertWithdrawable } from "./ticket-withdrawal.js";
 import type { ZodType } from "zod";
 
 // --- Public Types ---
@@ -390,7 +391,8 @@ export async function prepareTicketWrite(
   // and the decision.
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
-  ctx.recordPrepared(target, content, assertTicketResolutionWrite(ctx, `.story/tickets/${parsed.id}.json`, prior ?? {}, parsed));
+  const decision = assertTicketResolutionWrite(ctx, `.story/tickets/${parsed.id}.json`, prior ?? {}, parsed);
+  ctx.recordPrepared(target, content, decision.dependsOnBoard, decision.withdrawalGated);
   return { target, content };
 }
 
@@ -420,6 +422,7 @@ export async function writeTicketUnlocked(
 ): Promise<void> {
   const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
   assertPreparedWritesCurrent(root, [{ target, content }]);
+  await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
   if (options?.createOnly) {
     await atomicCreate(target, content);
   } else {
@@ -516,7 +519,54 @@ export function authoriseTicketBytes(
   }
   const ctx = heldResolutionContext(root, undefined);
   const rel = relative(resolve(root), resolve(target)).split(sep).join("/");
-  ctx.recordPrepared(target, content, assertTicketResolutionWrite(ctx, rel, prior, record));
+  const decision = assertTicketResolutionWrite(ctx, rel, prior, record);
+  ctx.recordPrepared(target, content, decision.dependsOnBoard, decision.withdrawalGated);
+}
+
+/**
+ * T-486 U2-6: the ledger refusals of a withdrawal, at its own commit. Called
+ * right after `assertPreparedWritesCurrent` wherever ticket bytes commit
+ * (writeTicketUnlocked, the ticket tombstone, runTransactionUnlocked). It
+ * works only when one of the writes carries a withdrawal-gated token, so an
+ * ordinary write pays one token lookup.
+ *
+ * The graph is the tickets directory read fresh under the lock, one record
+ * per file, with this operation's own writes and deletes applied by file
+ * path, never by id: two files claiming one canonical id keep their own
+ * edges. Nothing prepared but not committed is counted, and a dependent
+ * committed after the withdrawal was prepared is seen.
+ *
+ * Not covered: ticket bytes the merge driver writes (protocol 5) and journal
+ * forward recovery, which replays checked content.
+ */
+export async function assertWithdrawalLedgerCurrent(
+  root: string,
+  operations: ReadonlyArray<{ op: "write"; target: string; content: string } | { op: "delete"; target: string }>,
+): Promise<void> {
+  const absRoot = resolve(root);
+  const contexts = (resolutionContextChain.getStore() ?? []).filter((c) => c.root === absRoot);
+  const gated = operations.flatMap((op) =>
+    op.op === "write" && contexts.some((c) => c.preparedWithdrawal(op.target, op.content)) ? [relative(absRoot, resolve(op.target))] : []);
+  if (gated.length === 0) return;
+  const { records, files, omitted } = await loadTicketRecords(join(absRoot, ".story"));
+  const byPath = new Map<string, Ticket>(records.map((record, i) => [files[i]!, record]));
+  const touched = new Set<string>();
+  const ticketsDir = join(absRoot, ".story", "tickets") + sep;
+  for (const op of operations) {
+    if (!resolve(op.target).startsWith(ticketsDir)) continue;
+    const file = relative(absRoot, resolve(op.target));
+    touched.add(file);
+    byPath.delete(file);
+    if (op.op === "write") {
+      const parsed = TicketSchema.safeParse(priorRecord(op.content));
+      if (parsed.success) byPath.set(file, parsed.data);
+    }
+  }
+  const graph = ProjectState.forTicketGraph([...byPath.values()], omitted.filter((o) => !touched.has(o.file)));
+  for (const file of gated) {
+    const ticket = byPath.get(file);
+    if (ticket) assertWithdrawable(graph, ticket);
+  }
 }
 
 /**
@@ -817,6 +867,7 @@ export async function deleteTicket(
       const content = serializeJSON(raw);
       authoriseTicketBytes(root, targetPath, prior, content);
       assertPreparedWritesCurrent(root, [{ target: targetPath, content }]);
+      await assertWithdrawalLedgerCurrent(root, [{ op: "write", target: targetPath, content }]);
       await atomicWrite(targetPath, content);
     } else {
       await fencedUnlink(targetPath);
@@ -1295,6 +1346,7 @@ export async function runTransactionUnlocked(
     guardedTargets.add(target);
   }
   assertPreparedWritesCurrent(root, operations.flatMap((op) => op.op === "write" && guardedTargets.has(resolve(op.target)) ? [{ target: op.target, content: op.content }] : []));
+  await assertWithdrawalLedgerCurrent(root, operations);
 
   try {
     // 1. Build entries

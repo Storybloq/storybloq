@@ -1398,6 +1398,17 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "boolean",
                   describe: "Clear all cited rulings",
                 })
+                .option("resolution-kind", {
+                  type: "string",
+                  choices: ["withdrawn"],
+                  describe:
+                    "Close the ticket as withdrawn, not delivered (needs --reason and a complete ticket; add --status complete to complete it now). " +
+                    "Refused while a live ticket waits on it or on an umbrella above it. Without this flag, --status complete on a withdrawn ticket makes it delivered, and reopening drops the withdrawal",
+                })
+                .option("reason", {
+                  type: "string",
+                  describe: "Why the ticket is withdrawn (with --resolution-kind withdrawn)",
+                })
                 .conflicts("description", "stdin")
                 .conflicts("cites-ruling", "clear-cites-rulings"),
               {
@@ -1464,6 +1475,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   parentTicket: argv["parent-ticket"] === "" ? null : argv["parent-ticket"] as string | undefined,
                   citesRuling: argv["cites-ruling"] as string[] | undefined,
                   clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
+                  resolutionKind: argv["resolution-kind"] as string | undefined,
+                  reason: argv.reason as string | undefined,
                 },
                 format,
                 eff.root,

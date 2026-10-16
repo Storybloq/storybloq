@@ -16,7 +16,8 @@ import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
 import { assertCheckpointEligible, completeDependent, describeCheckpointBlock, describeIneligible, evidenceFor } from "../../core/checkpoint-evidence.js";
-import { pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
+import { hasOwnerCheckpoint, pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
+import { assertWithdrawable } from "../../core/ticket-withdrawal.js";
 import { ticketJsonBody } from "../../core/resolution-kind.js";
 import { ProjectState } from "../../core/project-state.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
@@ -535,15 +536,29 @@ export async function handleTicketUpdate(
     parentTicket?: string | null;
     citesRuling?: string[];
     clearCitesRulings?: boolean;
+    /** T-486 U2-6: "withdrawn" closes the ticket as withdrawn rather than delivered. */
+    resolutionKind?: string;
+    reason?: string;
   },
   format: string,
   root: string,
   force = false,
 ): Promise<CommandResult> {
+  if (updates.reason !== undefined && updates.resolutionKind === undefined) {
+    throw new CliValidationError("invalid_input", "--reason is only for a withdrawal: pass it with --resolution-kind withdrawn");
+  }
+  const withdrawal = updates.resolutionKind !== undefined;
+  if (withdrawal && updates.resolutionKind !== "withdrawn") {
+    throw new CliValidationError("invalid_input", `Unknown ticket resolution kind "${updates.resolutionKind}": a ticket can only be withdrawn`);
+  }
+  const withdrawalReason = updates.reason?.trim() ?? "";
+  if (withdrawal && withdrawalReason === "") {
+    throw new CliValidationError("invalid_input", "A withdrawal needs a non-empty --reason saying why the work is not delivered");
+  }
   assertUpdateHasFields(
     updates,
     "ticket",
-    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings",
+    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings, resolutionKind (with reason)",
   );
   // ISS-1192: an agent that reads the md-rendered description back and
   // writes it verbatim carries the render fence into storage, growing by one
@@ -607,7 +622,7 @@ export async function handleTicketUpdate(
       }
     }
 
-    const ticket: Ticket = {
+    const built: Ticket = {
       ...existing,
       ...(updates.title !== undefined && { title: updates.title }),
       ...(updates.type !== undefined && { type: updates.type as TicketType }),
@@ -620,6 +635,34 @@ export async function handleTicketUpdate(
       ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
       ...statusChanges,
     };
+
+    // T-486 U2-6: the withdrawal setter. With the flag, the ticket as updated
+    // must be complete and must not be an owner checkpoint or an umbrella,
+    // and no live ticket may wait on it or on an umbrella above it; the
+    // withdrawal is bound to the completion date. Without it, a status change
+    // (a reopen, S1) or an explicit re-completion (S2) drops any stored
+    // withdrawal, so the ticket reads as delivered or open; every other edit
+    // keeps the slot byte for byte.
+    let ticket: Ticket = built;
+    const recompletes = updates.status === "complete" && existing.status === "complete";
+    if (withdrawal) {
+      const label = displayIdOf(existing);
+      if (hasOwnerCheckpoint(built)) {
+        throw new CliValidationError("invalid_input", `Cannot withdraw ${label}: an owner checkpoint cannot be withdrawn; it releases by its own resolution, so retire it instead`);
+      }
+      if (built.status !== "complete") {
+        throw new CliValidationError("invalid_input", `Cannot withdraw ${label}: a withdrawal needs a complete ticket (it is ${built.status}); pass --status complete to complete it now`);
+      }
+      ticket = { ...built, resolutionKind: { kind: "withdrawn", closedOn: built.completedDate, reason: withdrawalReason } };
+      // Early, for a clear message: the lock's tickets with this one as it
+      // will be written, so a new parent in the same update counts. The
+      // check at commit (assertWithdrawalLedgerCurrent) is the authority.
+      const candidate = ticket;
+      assertWithdrawable(ProjectState.forTicketGraph(state.tickets.map((t) => (t === existing ? candidate : t)), state.omittedTickets), candidate);
+    } else if ((statusChanges.status !== undefined || recompletes) && Object.hasOwn(built, "resolutionKind")) {
+      const { resolutionKind: _dropped, ...rest } = built;
+      ticket = rest as Ticket;
+    }
 
     // T-537: an explicit `status: complete` on a ticket already complete is a
     // re-completion. It refreshes the checkpoint evidence (which is how a
@@ -728,11 +771,25 @@ export async function handleTicketUpdate(
       finalTicket = completedWithEarmark;
     }
     validatePostWriteState(finalTicket, state, false);
+    const completes = !isNoOpUpdate && finalTicket.status === "complete" && (existing.status !== "complete" || refreshesEvidence);
+    // T-486 U2-6 (P1): withdrawing a ticket that is already complete does not
+    // go through completeDependent below, so it meets the same refusal here:
+    // a ticket waiting on an owner checkpoint that has not released cannot
+    // close, delivered or withdrawn.
+    if (withdrawal && !isNoOpUpdate && !completes) {
+      const pending = pendingCheckpointBlockers(state, finalTicket);
+      if (pending.length > 0) {
+        throw new CliValidationError("conflict", describeCheckpointBlock(displayIdOf(existing), pending.map((c) => {
+          const t = state.ticketByID(c);
+          return t ? displayIdOf(t) : c;
+        })));
+      }
+    }
     // T-537: a completion, or a re-completion that refreshes evidence, goes
     // through completeDependent, which refuses while an owner checkpoint the
     // ticket waits on has not released and records the checkpoint state it
     // relied on. Every other update writes as before.
-    if (!isNoOpUpdate && finalTicket.status === "complete" && (existing.status !== "complete" || refreshesEvidence)) {
+    if (completes) {
       const outcome = await completeDependent(state, finalTicket, root);
       if (outcome.kind === "checkpoint-blocked") {
         throw new CliValidationError("conflict", describeCheckpointBlock(displayIdOf(existing), outcome.checkpoints.map((c) => {

@@ -15,7 +15,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
 - **ticket blocked** (--format?) - List blocked tickets with their blocking dependencies
 - **ticket create** (--title, --type, --phase?, --description?, --stdin?, --parent-ticket?, --blocked-by?, --cites-ruling?, --format?, --node?, --commit?) - Create a new ticket
-- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --format?, --commit?) - Update a ticket
+- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --format?, --commit?) - Update a ticket
 - **ticket meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on a ticket
 - **ticket delete <id>** (--force?, --hard?, --format?, --commit?) - Delete a ticket
 - **checkpoint enable** (--format?, --commit?) - Turn owner checkpoints on (config schemaVersion 4; a team ledger must merge them first)
@@ -218,7 +218,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_note_create** (content, title?, tags?, commit?) - Create note
 - **storybloq_note_update** (id, content?, mode?, confirmReplace?, title?, tags?, status?, commit?) - Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?, citesRuling?, node?, commit?) - Create ticket
-- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, node?, commit?) - Update ticket
+- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, resolutionKind?, reason?, node?, commit?) - Update ticket
 - **storybloq_ticket_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, sourceRefs?, dedupeKey?, createdBy?, phase?, citesRuling?, node?, commit?) - Create issue with optional persisted review provenance and retry deduplication

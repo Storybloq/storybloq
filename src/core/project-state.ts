@@ -106,6 +106,7 @@ export class ProjectState {
   private readonly notesByPrevDisplayID: Map<string, Note[]>;
   private readonly lessonsByPrevDisplayID: Map<string, Lesson[]>;
   private readonly incompleteByBlocker = new Map<string, string[]>();
+  private parentIndex: Map<string, Set<string>> | null = null;
   private omittedReachCache: OmittedReach[] | null = null;
 
   // --- Counts ---
@@ -675,9 +676,32 @@ export class ProjectState {
    * ticket names it as parent in either child list. `childrenByParent` holds
    * every referrer, archived and deleted ones included, and none is filtered
    * here; `countedChildrenByParent` holds the counted population's (U2-3b).
+   * U2-6: the withdrawal setter refuses exactly these.
    */
-  private hasAnyChild(id: string): boolean {
+  hasAnyChild(id: string): boolean {
     return (this.childrenByParent.get(id) ?? []).length > 0 || (this.countedChildrenByParent.get(id) ?? []).length > 0;
+  }
+
+  /**
+   * T-486 U2-6: the parents `id` sits under in either child list the release
+   * walk reads, so an ancestor walk sees every umbrella `dependencyRelease`
+   * would hold for a withdrawal under it.
+   */
+  parentsOf(id: string): readonly string[] {
+    if (this.parentIndex === null) {
+      const index = new Map<string, Set<string>>();
+      for (const children of [this.childrenByParent, this.countedChildrenByParent]) {
+        for (const [parent, kids] of children) {
+          for (const kid of kids) {
+            const parents = index.get(kid.id);
+            if (parents) parents.add(parent);
+            else index.set(kid.id, new Set([parent]));
+          }
+        }
+      }
+      this.parentIndex = index;
+    }
+    return [...(this.parentIndex.get(id) ?? [])];
   }
 
   /**

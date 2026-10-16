@@ -1035,6 +1035,11 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       force: z.boolean().optional().describe("Bypass the ownership guard: complete a ticket claimed by another session, or reopen a complete one (ISS-981). Does not take over a claim; reopening leaves existing claim material unchanged."),
       citesRuling: z.array(RulingIdSchema).optional().describe("Replaces existing cited rulings. Mutually exclusive with clearCitesRulings."),
       clearCitesRulings: z.boolean().optional().describe("Clear all cited rulings"),
+      resolutionKind: z.enum(["withdrawn"]).optional().describe(
+        "Close the ticket as withdrawn, not delivered. Needs reason and a complete ticket (pass status complete to complete it now). " +
+          "Refused while a live ticket waits on it or on an umbrella above it. Without it, status complete on a withdrawn ticket makes it delivered, and reopening drops the withdrawal.",
+      ),
+      reason: z.string().min(1).optional().describe("Why the ticket is withdrawn. Only with resolutionKind."),
       node: nodeParam,
     },
   }, async (args) => {
@@ -1057,6 +1062,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           crossNodeBlockedBy: args.crossNodeBlockedBy,
           citesRuling: args.citesRuling,
           clearCitesRulings: args.clearCitesRulings,
+          resolutionKind: args.resolutionKind,
+          reason: args.reason,
         },
         format,
         root,

@@ -65,10 +65,14 @@ export interface ResolutionWriteContext {
    * Records the token for `content` prepared for `target` under this context:
    * its hash, this context, and (when the decision read the board's config or
    * git answers) this generation. It replaces any earlier token for `target`.
+   * `withdrawalGated` marks bytes whose ledger refusals run at commit
+   * (T-486 U2-6, `assertTicketResolutionWrite`).
    */
-  recordPrepared(target: string, content: string, dependsOnBoard: boolean): void;
+  recordPrepared(target: string, content: string, dependsOnBoard: boolean, withdrawalGated?: boolean): void;
   /** Whether committing `content` to `target` is covered by a current token of this context. */
   preparedVerdict(target: string, content: string): PreparedVerdict;
+  /** Whether a current token of this context covers exactly `content` for `target` and is withdrawal-gated. */
+  preparedWithdrawal(target: string, content: string): boolean;
   /** The config, or null when it could not be read (a kind write then fails closed). */
   config(): Pick<Config, "team"> | null;
   readiness(relPath: string): ReturnType<typeof resolutionWritesReadiness>;
@@ -95,6 +99,7 @@ interface PreparedToken {
   readonly owner: SharedState;
   readonly hash: string;
   readonly generation: number | null;
+  readonly withdrawal: boolean;
 }
 
 /**
@@ -159,8 +164,13 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
     ownsLock() {
       return shared.ownsLock();
     },
-    recordPrepared(target, content, dependsOnBoard) {
-      preparedTokens.set(resolve(target), { owner: shared, hash: contentHash(content), generation: dependsOnBoard ? shared.generation : null });
+    recordPrepared(target, content, dependsOnBoard, withdrawalGated = false) {
+      preparedTokens.set(resolve(target), {
+        owner: shared,
+        hash: contentHash(content),
+        generation: dependsOnBoard ? shared.generation : null,
+        withdrawal: withdrawalGated,
+      });
     },
     preparedVerdict(target, content) {
       const token = preparedTokens.get(resolve(target));
@@ -171,6 +181,13 @@ function contextOver(root: string, shared: SharedState, git: GitRead): Resolutio
       if (token.hash !== contentHash(content)) return "changed";
       if (token.generation !== null && token.generation !== shared.generation) return "stale";
       return "current";
+    },
+    preparedWithdrawal(target, content) {
+      // No ownership probe: assertPreparedWritesCurrent has just made it, and
+      // a second probe would sit between the commit check and the write.
+      const token = preparedTokens.get(resolve(target));
+      return token !== undefined && token.owner === shared && !shared.released && token.withdrawal &&
+        token.hash === contentHash(content) && (token.generation === null || token.generation === shared.generation);
     },
     config() {
       if (shared.config === null) shared.config = { value: readConfigForGuard(root) };
@@ -290,27 +307,36 @@ export function assertResolutionMetadataWrite(
   return boardDependent;
 }
 
-/** The refusal every newly effective withdrawal gets until the setter slice (U2-6) ships. */
-export const TICKET_WITHDRAWAL_DISABLED = "ticket withdrawal is not enabled in this build";
+/** What the ticket boundary decided for one write. */
+export interface TicketWriteDecision {
+  /** The decision read the board's config and git answers (see `preparedVerdict`). */
+  readonly dependsOnBoard: boolean;
+  /** The bytes carry an effective withdrawal whose ledger refusals run at commit (project-loader.ts). */
+  readonly withdrawalGated: boolean;
+}
+
+const UNGATED: TicketWriteDecision = { dependsOnBoard: false, withdrawalGated: false };
 
 /**
  * T-486 U2 section 2: the ticket counterpart, for the withdrawal kind. Same
  * context rules as the issue boundary. Removal, preserved metadata and a
  * deactivation pass; an added or changed slot must be a valid withdrawal
  * bound to the proposed completion on a ticket that is not an owner
- * checkpoint; and any write that makes a withdrawal effective is refused in
- * this build, whatever the writer. Returns whether the decision read board
- * state (never, until the setter slice adds readiness).
+ * checkpoint. U2-6: an effective withdrawal whose raw slot changed, or that
+ * is newly effective, asks what an issue kind asks (a readable config and,
+ * on a team board, the fence and the v5 driver), and its bytes are marked
+ * so the ledger refusals (ticket-withdrawal.ts) run against disk when they
+ * commit. Only an unchanged effective slot is exempt.
  */
 export function assertTicketResolutionWrite(
   ctx: ResolutionWriteContext,
   relPath: string,
   prior: Loose | "unknown",
   proposed: Loose,
-): boolean {
+): TicketWriteDecision {
   if (ctx.released) throw new ResolutionWriteContextError("the write context belongs to a lock that was released");
   if (!ctx.ownsLock()) throw new ResolutionWriteContextError("the project lock this write context belongs to no longer owns .story/.lock");
-  if (!has(proposed, "resolutionKind")) return false;
+  if (!has(proposed, "resolutionKind")) return UNGATED;
   const rawChanged = prior === "unknown" || !slotEqual(prior, proposed, ["resolutionKind"]);
   const gaps: string[] = [];
   if (rawChanged) {
@@ -327,10 +353,28 @@ export function assertTicketResolutionWrite(
       if (hasOwnerCheckpoint(proposed)) gaps.push("resolutionKind is written on an owner checkpoint, which releases by its own resolution");
     }
   }
+  let gated = false;
+  let readinessGap = false;
   if (gaps.length === 0) {
     const before = prior === "unknown" ? null : ticketResolutionKindView(prior).state;
-    if (ticketResolutionKindView(proposed).state === "effective" && before !== "effective") gaps.push(TICKET_WITHDRAWAL_DISABLED);
+    const effective = ticketResolutionKindView(proposed).state === "effective";
+    const activation = effective && before !== "effective";
+    if (effective && (rawChanged || activation)) {
+      gated = true;
+      const config = ctx.config();
+      if (config === null) {
+        gaps.push("the project config could not be read, so the board's readiness for resolution kinds is unknown");
+      } else if (isTeamModeConfig(config)) {
+        const readiness = ctx.readiness(relPath);
+        if (!readiness.fenceOk) gaps.push(`team.minCliVersion is ${config.team?.minCliVersion ?? "unset"}, below ${RESOLUTION_KIND_MIN_CLI_VERSION}`);
+        if (!readiness.driver.ok) gaps.push(readiness.driver.message);
+        readinessGap = !readiness.fenceOk || !readiness.driver.ok;
+      }
+    }
   }
-  if (gaps.length > 0) throw new ProjectLoaderError("conflict", `Refusing the write to ${relPath}: ${gaps.join("; ")}.`);
-  return false;
+  if (gaps.length > 0) {
+    const setup = readinessGap ? ` Run storybloq team setup on a ${RESOLUTION_KIND_MIN_CLI_VERSION}+ CLI.` : "";
+    throw new ProjectLoaderError("conflict", `Refusing the write to ${relPath}: ${gaps.join("; ")}.${setup}`);
+  }
+  return { dependsOnBoard: gated, withdrawalGated: gated };
 }

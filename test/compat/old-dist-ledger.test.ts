@@ -70,6 +70,32 @@ describe.skipIf(skip !== null)(`published CLIs on a board with resolution kinds$
     for (const key of T486_KEYS) expect(after[key], key).toEqual(ISSUE[key]);
   });
 
+  /** A withdrawn ticket, as a 1.16 client writes it. */
+  const TICKET = {
+    id: "T-001", title: "Withdrawn work", type: "task", status: "complete", phase: null, order: 10, description: "",
+    createdDate: "2026-01-01", completedDate: "2026-01-02", blockedBy: [], parentTicket: null,
+    resolutionKind: { kind: "withdrawn", closedOn: "2026-01-02", reason: "Superseded by T-9" },
+  };
+
+  it.each(dists.map((d) => [d.version, d.bin]))("O1: %s validates a withdrawn ticket and keeps its kind through a strict update", (version, bin) => {
+    const root = temp();
+    const home = join(root, "home");
+    mkdirSync(home);
+    expect(run(bin, root, home, "init", "--name", "t486").status).toBe(0);
+    const path = join(root, ".story", "tickets", "T-001.json");
+    writeFileSync(path, JSON.stringify(TICKET, null, 2) + "\n");
+
+    const validate = run(bin, root, home, "validate", "--format", "json");
+    expect(validate.status, validate.stdout + validate.stderr).toBe(0);
+    expect(JSON.parse(validate.stdout).data).toMatchObject({ valid: true, errorCount: 0 });
+
+    const update = run(bin, root, home, "ticket", "update", "T-001", "--title", `retitled by ${version}`, "--format", "json");
+    expect(update.status, update.stdout + update.stderr).toBe(0);
+    const after = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    expect(after.title).toBe(`retitled by ${version}`);
+    expect(after.resolutionKind).toEqual(TICKET.resolutionKind);
+  });
+
   /** A board whose one issue the current handler closed with a kind, as a 1.16 user would. */
   async function handlerBoard(): Promise<{ root: string; home: string; path: string; ref: string }> {
     const root = temp();

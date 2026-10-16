@@ -14,7 +14,7 @@ import { initProject } from "../../src/core/init.js";
 import { loadProject } from "../../src/core/project-loader.js";
 import { CHECKPOINT_SCHEMA_VERSION } from "../../src/core/errors.js";
 import { changeCheckpoint, createCheckpoint, resolveCheckpoint, retireCheckpoint, type ExpectedCheckpoint } from "../../src/core/checkpoint-lifecycle.js";
-import { assertCheckpointEligible, describeIneligible } from "../../src/core/checkpoint-evidence.js";
+import { assertCheckpointEligible, describeCheckpointBlock, describeIneligible } from "../../src/core/checkpoint-evidence.js";
 import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 import { nextTicket, nextTickets, ticketsUnblockedBy } from "../../src/core/queries.js";
 import { recommend } from "../../src/core/recommend.js";
@@ -290,5 +290,34 @@ describe("recommend", () => {
     await resolveCheckpoint(dir, cp.id, expectedOf(changed), { response: "yes, October", actor: ACTOR });
     await handleTicketUpdate(dep, { status: "complete" }, "json", dir);
     expect(recommend(await stateOf(dir), 10).recommendations.map((r) => r.category)).not.toContain("checkpoint_reassess");
+  });
+});
+
+describe("T-486 U2-6 withdrawal and owner checkpoints", () => {
+  it("F2: withdrawing a complete ticket without --status is refused while its checkpoint has not released", async () => {
+    const dir = await project();
+    const cp = await newCheckpoint(dir);
+    const { ticket } = await resolveCheckpoint(dir, cp.id, expectedOf(cp), { response: "yes", actor: ACTOR });
+    const dep = await newTicket(dir, [cp.id]);
+    await handleTicketUpdate(dep, { status: "complete" }, "json", dir);
+    await changeCheckpoint(dir, cp.id, expectedOf(ticket), { ...DECISION, question: "Ship it in October?" }, ACTOR);
+    const path = join(dir, ".story", "tickets", `${dep}.json`);
+    const before = await readFile(path, "utf-8");
+    const err = await handleTicketUpdate(dep, { resolutionKind: "withdrawn", reason: "Dropped" }, "json", dir).then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toBe(describeCheckpointBlock(dep, [cp.id]));
+    expect(await readFile(path, "utf-8")).toBe(before);
+  });
+
+  it("S4: withdrawing an owner checkpoint is refused by the setter, file unchanged", async () => {
+    const dir = await project();
+    const cp = await newCheckpoint(dir);
+    await resolveCheckpoint(dir, cp.id, expectedOf(cp), { response: "yes", actor: ACTOR });
+    const path = join(dir, ".story", "tickets", `${cp.id}.json`);
+    const before = await readFile(path, "utf-8");
+    const err = await handleTicketUpdate(cp.id, { resolutionKind: "withdrawn", reason: "x" }, "json", dir).then(() => null, (e: unknown) => e as Error);
+    // The setter's own text, distinct from the boundary's "written on an owner checkpoint".
+    expect(err!.message).toContain("an owner checkpoint cannot be withdrawn");
+    expect(await readFile(path, "utf-8")).toBe(before);
   });
 });

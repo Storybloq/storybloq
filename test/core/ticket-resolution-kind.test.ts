@@ -30,7 +30,7 @@ import {
   writeTicket,
   writeTicketUnlocked,
 } from "../../src/core/project-loader.js";
-import { ResolutionWriteContextError, TICKET_WITHDRAWAL_DISABLED } from "../../src/core/resolution-write-guard.js";
+import { ResolutionWriteContextError } from "../../src/core/resolution-write-guard.js";
 import { validateProject } from "../../src/core/validation.js";
 import { threeWayMerge } from "../../src/core/merge-driver.js";
 import { getMergeRules } from "../../src/core/field-classification.js";
@@ -360,18 +360,21 @@ describe("T-486 U2 metadata protection (P1-P3)", () => {
 
 // --- write boundary ---------------------------------------------------------
 
-describe("T-486 U2 write boundary: every newly effective withdrawal is refused before U2-6", () => {
-  it.each(["non-team", "ready", "low-fence"] as const)("W6: on a %s board, ticket update restoring complete around a stale withdrawal is refused", async (kind) => {
+describe("T-486 U2-6 write boundary: an activation asks the board, the setter drops a stale withdrawal", () => {
+  it.each(["non-team", "ready", "low-fence"] as const)("W6 / S2: on a %s board, ticket update restoring complete around a stale withdrawal lands and drops it", async (kind) => {
     const root = await board(kind, [reopenedToday()]);
-    const err = await refused(root, "T-001", () => handleTicketUpdate("T-001", { status: "complete" }, "json", root, true));
-    expect(err.message).toBe(`Refusing the write to .story/tickets/T-001.json: ${TICKET_WITHDRAWAL_DISABLED}.`);
+    await handleTicketUpdate("T-001", { status: "complete" }, "json", root, true);
+    const after = readTicket(root, "T-001");
+    expect(after.status).toBe("complete");
+    expect("resolutionKind" in after).toBe(false);
   });
 
-  it("force does not bypass the boundary: an activation through ticket update with force=true is refused", async () => {
+  it("S2 without force: the completion lands and the stale withdrawal never activates", async () => {
     const root = await board("non-team", [reopenedToday()]);
-    const forced = await refused(root, "T-001", () => handleTicketUpdate("T-001", { status: "complete" }, "json", root, true));
-    expect(forced.message).toBe(`Refusing the write to .story/tickets/T-001.json: ${TICKET_WITHDRAWAL_DISABLED}.`);
-    expect(readTicket(root, "T-001").status).toBe("open");
+    await handleTicketUpdate("T-001", { status: "complete" }, "json", root);
+    const after = readTicket(root, "T-001");
+    expect(after.status).toBe("complete");
+    expect(isEffectivelyWithdrawn(after)).toBe(false);
   });
 
   it("W6: the same update succeeds once the withdrawal is gone (the refusal is the withdrawal, not the update)", async () => {
@@ -400,8 +403,8 @@ describe("T-486 U2 write boundary: every newly effective withdrawal is refused b
     expect(err.message).toContain("ledger restore does not restore tickets: it covers rulings, notes and issues only");
   });
 
-  it("W8: storybloq resolve --use theirs to the matching completion is refused", async () => {
-    const root = await board("non-team");
+  it.each([["non-team", null], ["low-fence", "team.minCliVersion is 1.15.0, below"]] as const)("W8: on a %s board, storybloq resolve --use theirs to the matching completion activates only where the board is ready", async (kind, gap) => {
+    const root = await board(kind);
     const ours = reopenedToday();
     const theirs: Record<string, unknown> = { ...ours, status: "complete", completedDate: todayISO() };
     const members = ["status", "completedDate"];
@@ -409,14 +412,25 @@ describe("T-486 U2 write boundary: every newly effective withdrawal is refused b
       ...ours,
       _conflicts: members.map((m) => ({ fieldPath: `/${m}`, field: m, kind: "coupled", group: "ticket-status", base: ours[m], ours: ours[m], theirs: theirs[m] })),
     });
+    if (gap === null) {
+      await handleResolve("T-001", root, { field: "status", use: "theirs", format: "json" });
+      expect(isEffectivelyWithdrawn(readTicket(root, "T-001"))).toBe(true);
+      return;
+    }
     const err = await refused(root, "T-001", () => handleResolve("T-001", root, { field: "status", use: "theirs", format: "json" }));
-    expect(err.message).toContain(TICKET_WITHDRAWAL_DISABLED);
+    expect(err.message).toContain(gap);
   });
 
-  it("an ordinary write of a new effective withdrawal is refused (the exported writeTicket, no loaded state: C3)", async () => {
+  it("an ordinary write of a new effective withdrawal lands on a plain board (the exported writeTicket, no loaded state: C3)", async () => {
     const root = await board("non-team", [withId(byName("absent"), "T-001")]);
+    await writeTicket({ ...withId(byName("effective"), "T-001") } as unknown as Ticket, root);
+    expect(isEffectivelyWithdrawn(readTicket(root, "T-001"))).toBe(true);
+  });
+
+  it("the same write is refused on a low-fence board, naming the fence", async () => {
+    const root = await board("low-fence", [withId(byName("absent"), "T-001")]);
     const err = await refused(root, "T-001", () => writeTicket({ ...withId(byName("effective"), "T-001") } as unknown as Ticket, root));
-    expect(err.message).toBe(`Refusing the write to .story/tickets/T-001.json: ${TICKET_WITHDRAWAL_DISABLED}.`);
+    expect(err.message).toContain("team.minCliVersion is 1.15.0, below");
   });
 
   it("W9: a newly inserted malformed object is refused, naming the field", async () => {
@@ -469,10 +483,11 @@ describe("T-486 U2 write boundary: every newly effective withdrawal is refused b
     expect("resolutionKind" in readTicket(root, "T-001")).toBe(false);
   });
 
-  it("deactivation passes: reopening a ticket with an effective withdrawal keeps the now-stale object", async () => {
+  it("deactivation passes: a raw reopen of a ticket with an effective withdrawal keeps the now-stale object", async () => {
     const root = await board("low-fence", [withId(byName("effective"), "T-001")]);
-    // force: the completed-ticket ownership guard is not what this pins.
-    await handleTicketUpdate("T-001", { status: "open" }, "json", root, true);
+    // Raw: the setter now drops the object on a reopen (S1); the boundary's
+    // deactivation rule is pinned through a writer that keeps it.
+    await writeTicket({ ...readTicket(root, "T-001"), status: "open", completedDate: null } as unknown as Ticket, root);
     const after = readTicket(root, "T-001");
     expect(after.status).toBe("open");
     expect(after.resolutionKind).toStrictEqual(WITHDRAWAL);
@@ -575,11 +590,15 @@ describe("T-486 U2 the ticket write context (H1, H2)", () => {
       expect(() => authoriseTicketBytes(root, ticketPath(root, "T-001"), {}, "[]\n")).toThrow(
         "Refusing the write to .story/tickets/T-001.json: its bytes are not a JSON object",
       );
-      expect(() => authoriseTicketBytes(root, ticketPath(root, "T-001"), readTicket(root, "T-001"), serializeJSON(withId(byName("effective"), "T-001")))).toThrow(
-        TICKET_WITHDRAWAL_DISABLED,
-      );
     });
     noJournal(root);
+    const low = await board("low-fence", [withId(byName("absent"), "T-001")]);
+    await withProjectLock(low, { strict: false }, async () => {
+      expect(() => authoriseTicketBytes(low, ticketPath(low, "T-001"), readTicket(low, "T-001"), serializeJSON(withId(byName("effective"), "T-001")))).toThrow(
+        "team.minCliVersion is 1.15.0, below",
+      );
+    });
+    noJournal(low);
   });
 
   it("repair: an ordinary ticket repair goes through the boundary and commits exactly its patch", async () => {
@@ -590,14 +609,23 @@ describe("T-486 U2 the ticket write context (H1, H2)", () => {
     noJournal(root);
   });
 
-  it("repair: a ticket repair that would make a stale withdrawal effective is refused", async () => {
-    const root = await board("non-team", [reopenedToday()]);
+  it("repair: a ticket repair that makes a stale withdrawal effective lands on a ready board", async () => {
+    const root = await board("ready", [reopenedToday()]);
+    await withProjectLock(root, { strict: false }, () =>
+      applyRepairPatches(root, [{ id: "T-001", type: "ticket", set: { status: "complete", completedDate: todayISO() }, unset: [] }]),
+    );
+    expect(isEffectivelyWithdrawn(readTicket(root, "T-001"))).toBe(true);
+    noJournal(root);
+  });
+
+  it("repair: the same repair is refused on a low-fence board, naming the fence", async () => {
+    const root = await board("low-fence", [reopenedToday()]);
     const err = await refused(root, "T-001", () =>
       withProjectLock(root, { strict: false }, () =>
         applyRepairPatches(root, [{ id: "T-001", type: "ticket", set: { status: "complete", completedDate: todayISO() }, unset: [] }]),
       ),
     );
-    expect(err.message).toBe(`Refusing the write to .story/tickets/T-001.json: ${TICKET_WITHDRAWAL_DISABLED}.`);
+    expect(err.message).toContain("team.minCliVersion is 1.15.0, below");
   });
 
   it("a transaction naming the same ticket twice is refused before anything is journaled", async () => {

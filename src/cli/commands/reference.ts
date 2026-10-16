@@ -56,8 +56,8 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket update",
     description: "Update a ticket",
-    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--format", "--commit"],
+    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--commit] [--format <json|md>]",
+    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--format", "--commit"],
   },
   {
     name: "ticket meta",
@@ -1093,7 +1093,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_note_create", description: "Create note", params: ["content","title?","tags?","commit?"] },
   { name: "storybloq_note_update", description: "Update note", params: ["id","content?","mode?","confirmReplace?","title?","tags?","status?","commit?"] },
   { name: "storybloq_ticket_create", description: "Create ticket", params: ["title","type","phase?","description?","blockedBy?","parentTicket?","citesRuling?","node?","commit?"] },
-  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id","status?","title?","type?","order?","description?","phase?","parentTicket?","blockedBy?","crossNodeBlockedBy?","force?","citesRuling?","clearCitesRulings?","node?","commit?"] },
+  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id","status?","title?","type?","order?","description?","phase?","parentTicket?","blockedBy?","crossNodeBlockedBy?","force?","citesRuling?","clearCitesRulings?","resolutionKind?","reason?","node?","commit?"] },
   { name: "storybloq_ticket_meta_set", description: "Set custom passthrough metadata on a ticket", params: ["id","path","value?","commit?"] },
   { name: "storybloq_ticket_meta_unset", description: "Unset custom passthrough metadata from a ticket", params: ["id","path","commit?"] },
   { name: "storybloq_issue_create", description: "Create issue with optional persisted review provenance and retry deduplication", params: ["title","severity","impact","components?","relatedTickets?","location?","sourceRefs?","dedupeKey?","createdBy?","phase?","citesRuling?","node?","commit?"] },

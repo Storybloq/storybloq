@@ -1477,6 +1477,12 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
    * never by the method name alone. It invokes its callback synchronously, once,
    * and returns the callback's return value.
    */
+  /**
+   * The adapter's callback slot: `run(store, callback, ...args)` invokes its second argument and hands it any later
+   * ones, so the callback must sit at index 1 with no spread before it.
+   */
+  const inCallbackSlot = (c: ts.CallExpression, index: number): boolean =>
+    index === 1 && !c.arguments.slice(0, 2).some(ts.isSpreadElement);
   function isTrustedAdapterCall(c: ts.CallExpression): boolean {
     const e = skipOuter(c.expression);
     if (!ts.isPropertyAccessExpression(e)) return false;
@@ -1558,7 +1564,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       // (`() => als.run(store, fn)`) invokes it in place, as `() => fn()` would; the arrow itself is then
       // checked as that carrier is. Any other use of the callback inside a closure stays a value.
       if (carrier && ts.isArrowFunction(carrier) && carrier.parameters.length === 0 && carrier.body === outerOf(parent)
-        && ts.isCallExpression(parent) && isTrustedAdapterCall(parent) && parent.arguments.indexOf(o as ts.Expression) === parent.arguments.length - 1) {
+        && ts.isCallExpression(parent) && isTrustedAdapterCall(parent) && inCallbackSlot(parent, parent.arguments.indexOf(o as ts.Expression))) {
         const co = outerOf(carrier);
         const call = co.parent;
         if (!call || !ts.isCallExpression(call) || !call.arguments.includes(co as ts.Expression)) {
@@ -1576,7 +1582,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (inLoop(call, owner)) return `${path}: the delegating call at ${where(call)} is inside a loop`;
     if (!formOk(call)) return `${path}: the delegating call at ${where(call)} is neither awaited nor returned outside a releasing try`;
     if (isTrustedAdapterCall(call)) {
-      if (index !== call.arguments.length - 1) return `${path}: the adapter at ${where(call)} receives the callback in the wrong position`;
+      if (!inCallbackSlot(call, index)) return `${path}: the adapter at ${where(call)} receives the callback in the wrong position`;
       const releasing = ownTries(owner).find((t) => t.finallyBlock);
       if (releasing && !(call.pos >= releasing.tryBlock.pos && call.end <= releasing.tryBlock.end)) {
         return `${path}: the adapter call at ${where(call)} is outside the try whose finally releases`;

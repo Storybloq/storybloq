@@ -1129,7 +1129,11 @@ describe("ISS-958 S7: the lock entry's release is the one tied to its acquisitio
 // ---- the S6 scanner addendum 2 (R-a to R-e) ----------------------------------------
 
 const NODE_ALS = `declare module "node:async_hooks" {
-  export class AsyncLocalStorage<T> { run<R>(store: T, callback: () => R): R; getStore(): T | undefined; }
+  export class AsyncLocalStorage<T> {
+    run<R>(store: T, callback: () => R): R;
+    run<R, TArgs extends any[]>(store: T, callback: (...args: TArgs) => R, ...args: TArgs): R;
+    getStore(): T | undefined;
+  }
 }
 declare module "fake-als" {
   export class AsyncLocalStorage<T> { run<R>(store: T, callback: () => R): R; }
@@ -1221,6 +1225,12 @@ describe("ISS-958 S6 addendum 2: awaited-callback primitives (R-a, R-a1)", () =>
       "const fake = { held: [] as unknown[], run<R>(s: number, f: () => R): R { this.held.push(f); return undefined as R; } };\n    return await als.run(handle, () => fake.run(handle, fn));"],
     ["the arrow passes the callback elsewhere", "const wrap = <R>(f: () => R) => f;\n    return await als.run(handle, () => als.run(handle, wrap(fn)));"],
     ["the arrow stores the callback", "let held: unknown;\n    return await als.run(handle, () => als.run(handle, (held = fn) as typeof fn));"],
+    ["the arrow hands the callback to run's argument list, after a detaching callback",
+      "return await als.run(handle, () => als.run(handle, (cb: () => Promise<T>) => { setTimeout(cb, 0); return Promise.resolve(undefined as T); }, fn));"],
+    ["the arrow hands the callback to run after a spread",
+      "const rest: [number] = [handle];\n    return await als.run(handle, () => als.run(...rest, fn));"],
+    ["the helper hands the callback to run's argument list, after a detaching callback",
+      "return await als.run(handle, (cb: () => Promise<T>) => { setTimeout(cb, 0); return Promise.resolve(undefined as T); }, fn);"],
   ])("the pin is rejected when %s", (_n, line) => {
     const r = add2Scan(WRITE_UNDER_PROJECT, "", PRIM, projectChain(line));
     expect(r.errors.some((e) => e.startsWith("lock-lifetime: awaited-callback primitive project.ts#withProjectLock rejected"))).toBe(true);

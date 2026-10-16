@@ -265,8 +265,11 @@ export async function recoverIssueSweepStep(root: string, state: FullSessionStat
         const fingerprint = entityFingerprint(issue);
         // Already released: the outcome was valid when the release was
         // written and the issue is no longer held, so recording it is the
-        // only way to finish the step.
-        if (fingerprint === step.releasePost) { result = recorded; return; }
+        // only way to finish the step. A postimage match proves that only
+        // when the release changes something: an issue held with no earmark
+        // and no sweepAcquisition releases to itself (pre equals post), so
+        // it falls through to the releasePre path and its re-check.
+        if (fingerprint === step.releasePost && step.releasePre !== step.releasePost) { result = recorded; return; }
         if (fingerprint === step.releasePre) {
           // The fingerprint cannot see an entity the issue references (its
           // dispositionRef or duplicateOf target), so the outcome is written
@@ -623,8 +626,11 @@ export class IssueSweepStage implements WorkflowStage {
         if (again.kind === "conflicted") { verdict = { conflicted: again.reason }; return; }
         const fingerprint = entityFingerprint(fresh);
         // Already released (a concurrent replay): the outcome was valid when
-        // it was written, so it is recorded.
-        if (fingerprint === releasePost) { verdict = "landed"; return; }
+        // it was written, so it is recorded. Only a release that changes
+        // something proves it landed; when pre equals post (an issue held
+        // with no earmark and no sweepAcquisition), the releasePre path
+        // re-checks the outcome first.
+        if (fingerprint === releasePost && releasePre !== releasePost) { verdict = "landed"; return; }
         if (fingerprint === releasePre) {
           // The fingerprint cannot see a referenced entity (dispositionRef,
           // duplicateOf), so the release is written only while the fresh

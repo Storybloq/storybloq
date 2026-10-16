@@ -355,6 +355,11 @@ describe("a referenced entity deleted after the release intent (T-486 U4-1 fixup
       /dispositionRef: --ref ISS-050 names no ticket, issue, note, lesson or ruling/],
     ["a duplicate", (sid) => ({ ...acquiredBy(sid), ...resolvedAs("duplicate", "Same as ISS-050.", { duplicateOf: "ISS-050" }) }),
       /duplicateOf: --duplicate-of ISS-050 names no ticket or issue/],
+    // Held with no earmark and no sweepAcquisition (a legacy acquisition):
+    // the release changes nothing, so releasePre equals releasePost and a
+    // postimage match alone proves nothing (M-prepost).
+    ["a legacy duplicate with no earmark and no acquisition", () => resolvedAs("duplicate", "Same as ISS-050.", { duplicateOf: "ISS-050" }),
+      /duplicateOf: --duplicate-of ISS-050 names no ticket or issue/],
   ];
   const deleteTarget = () => rmSync(join(root, ".story", "issues", "ISS-050.json"));
 

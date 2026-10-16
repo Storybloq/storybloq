@@ -157,6 +157,25 @@ export function effectiveResolutionKind(issue: Loose): IssueResolutionKind | nul
   return resolutionKindView(issue).kind;
 }
 
+export type ResolutionKindBindBlocker = "not-resolved" | "no-resolution" | "no-resolved-date";
+
+/**
+ * T-486 U3: why a kind cannot be bound to this issue, or null when it can. A
+ * kind binds the issue's resolvedDate and resolution text, so it needs both.
+ * The single setter and bulk triage read this one check, so a dry run never
+ * lists as writable an issue the setter would refuse.
+ */
+export function resolutionKindBindBlocker(issue: {
+  status: string;
+  resolution?: string | null;
+  resolvedDate?: string | null;
+}): ResolutionKindBindBlocker | null {
+  if (issue.status !== "resolved") return "not-resolved";
+  if (!issue.resolution) return "no-resolution";
+  if (!issue.resolvedDate) return "no-resolved-date";
+  return null;
+}
+
 const EVIDENCE_KEYS = ["dispositionReason", "dispositionRef", "dispositionFor"] as const;
 
 const GIT_SHA = /^[0-9a-f]{7,40}$/i;

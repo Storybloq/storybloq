@@ -18,7 +18,7 @@ import {
 } from "../../core/project-loader.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
-import { ISSUE_RESOLUTION_KINDS, dispositionRefForm, effectiveResolutionKind, issueJsonBody, resolutionDigest, type IssueResolutionKind } from "../../core/resolution-kind.js";
+import { ISSUE_RESOLUTION_KINDS, dispositionRefForm, effectiveResolutionKind, issueJsonBody, resolutionDigest, resolutionKindBindBlocker, type IssueResolutionKind } from "../../core/resolution-kind.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -731,13 +731,14 @@ function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutio
     const { resolutionKind: _dropped, ...rest } = issue as Issue & { resolutionKind?: unknown };
     return rest as Issue;
   }
-  if (issue.status !== "resolved") {
+  const blocker = resolutionKindBindBlocker(issue);
+  if (blocker === "not-resolved") {
     throw new CliValidationError("invalid_input", `--resolution-kind needs a resolved issue; this one is ${issue.status} after the update`);
   }
-  if (!issue.resolution) {
+  if (blocker === "no-resolution") {
     throw new CliValidationError("invalid_input", "--resolution-kind needs a resolution; pass --resolution");
   }
-  if (!issue.resolvedDate) {
+  if (blocker === "no-resolved-date") {
     throw new CliValidationError("invalid_input", "--resolution-kind needs a resolvedDate; reopen and resolve the issue again");
   }
   if (kind === "duplicate") {

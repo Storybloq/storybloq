@@ -12,7 +12,7 @@ import type { Issue } from "../models/issue.js";
 import type { ProjectState } from "./project-state.js";
 import { isDeleted } from "./project-state.js";
 import { triageEarmarkHold } from "./earmarks.js";
-import { effectiveResolutionKind } from "./resolution-kind.js";
+import { effectiveResolutionKind, resolutionKindBindBlocker } from "./resolution-kind.js";
 import { displayIdOf } from "./resolver.js";
 import { escapeMarkdownInline, successEnvelope } from "./output-formatter.js";
 import { CliValidationError } from "../cli/helpers.js";
@@ -189,11 +189,15 @@ export function triageNotApplicable(issue: Issue, action: TriageAction | null): 
   switch (action.kind) {
     case "resolve":
       return issue.status === "resolved" ? "already resolved" : null;
-    case "set-resolution-kind":
-      if (issue.status !== "resolved") return `not resolved (${issue.status})`;
+    case "set-resolution-kind": {
+      const blocker = resolutionKindBindBlocker(issue);
+      if (blocker === "not-resolved") return `not resolved (${issue.status})`;
+      if (blocker === "no-resolution") return "no resolution text";
+      if (blocker === "no-resolved-date") return "no resolvedDate";
       return effectiveResolutionKind(issue as unknown as Record<string, unknown>) === action.resolutionKind
         ? `resolution kind is already ${action.resolutionKind}`
         : null;
+    }
     case "relate":
       return issue.relatedTickets.includes(action.ticket) ? `already related to ${action.ticket}` : null;
     case "set-phase":

@@ -397,6 +397,15 @@ describe("T-486 U3 triage: bounded patterns", () => {
     expect((await triage(dir, { titleMatches: "cli", ids: ["ISS-001", "ISS-003"] })).truncatedInputs).toBeUndefined();
   });
 
+  it("T30: --set-resolution-kind puts a resolved issue with no resolution text or no resolvedDate under not applicable", async () => {
+    const dir = await selectorBoard();
+    issue(dir, "ISS-008", { title: "No text", status: "resolved", resolution: null, resolvedDate: "2026-02-02" });
+    issue(dir, "ISS-009", { title: "No date", status: "resolved", resolution: "wontfix: dropped", resolvedDate: null });
+    const d = await triage(dir, { ids: ["ISS-004", "ISS-008", "ISS-009"], status: ["resolved"], setResolutionKind: "wontfix" });
+    expect(ids(d.writable)).toEqual(["ISS-004"]);
+    expect(d.notApplicable.map((e) => [e.id, e.reason])).toEqual([["ISS-008", "no resolution text"], ["ISS-009", "no resolvedDate"]]);
+  });
+
   it("T29: a pattern with backticks, quotes and ${ is matched as a literal pattern", async () => {
     const dir = await selectorBoard();
     issue(dir, "ISS-032", { title: "use `${x}` and \"q\" and 'q' here" });

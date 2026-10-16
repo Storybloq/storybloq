@@ -291,18 +291,33 @@ function validatePostWriteIssueState(
   state: ProjectState,
   isCreate: boolean,
 ): void {
+  validatePostWriteIssueStates([candidate], state, isCreate);
+}
+
+/**
+ * T-486 U3: the same check over several issues written together. The post
+ * state carries every candidate at once, so it is judged once, never against
+ * a state that holds only one of them.
+ */
+export function validatePostWriteIssueStates(
+  candidates: readonly Issue[],
+  state: ProjectState,
+  isCreate: boolean,
+): void {
   // Pre-write validation
   const preResult = validateProject(state);
   const { counts: preErrors } = buildErrorMultiset(preResult.findings);
 
   // Post-write validation
   const existingIssues = [...state.issues];
-  if (isCreate) {
-    existingIssues.push(candidate);
-  } else {
-    const idx = existingIssues.findIndex((i) => i.id === candidate.id);
-    if (idx >= 0) existingIssues[idx] = candidate;
-    else existingIssues.push(candidate);
+  for (const candidate of candidates) {
+    if (isCreate) {
+      existingIssues.push(candidate);
+    } else {
+      const idx = existingIssues.findIndex((i) => i.id === candidate.id);
+      if (idx >= 0) existingIssues[idx] = candidate;
+      else existingIssues.push(candidate);
+    }
   }
   const postState = new ProjectState({
     tickets: [...state.tickets],
@@ -665,7 +680,7 @@ export function assertDispositionInput(updates: { disposition?: string | null; d
  * it (`dispositionFor`); a clear deletes all four keys, and `duplicateOf`
  * too unless the issue is resolved as a duplicate.
  */
-function applyDisposition(
+export function applyDisposition(
   issue: Issue,
   updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string; duplicateOf?: string },
   state: ProjectState,
@@ -724,7 +739,7 @@ export function resolveDispositionRef(state: ProjectState, root: string, ref: st
  * that changes the status or the resolution text deletes any stored kind:
  * the closure it described is gone, and leaving it would only be stale.
  */
-function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutionKind | undefined, state: ProjectState): Issue {
+export function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutionKind | undefined, state: ProjectState): Issue {
   if (kind === undefined) {
     const closureChanged = issue.status !== existing.status || (issue.resolution ?? null) !== (existing.resolution ?? null);
     if (!closureChanged || !Object.prototype.hasOwnProperty.call(issue, "resolutionKind")) return issue;

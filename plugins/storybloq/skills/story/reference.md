@@ -106,7 +106,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **setup** (--client?, --skip-hooks?, --skip-skill?) - Install Storybloq skill, MCP, and hooks for Claude, Codex, or both
 - **setup-skill** (--skip-hooks?) - Compatibility alias for `storybloq setup --client claude`
 - **update** (--client?) - Install the newest storybloq into the running Node's prefix, re-run setup for your AI clients, and say when to restart (on Windows it prints the two manual steps instead)
-- **triage** (--older-than?, --severity?, --component?, --status?, --orphan?, --unphased?, --disposition?, --title-matches?, --resolution-matches?, --ids?, --resolve?, --reason?, --kind?, --set-disposition?, --ref?, --relate?, --set-phase?, --set-resolution-kind?, --format?) - Bulk issue triage (T-486): selectors pick open issues, one action is planned and shown as a dry run. Earmarked, in-progress, conflicted and deleted issues are protected
+- **triage** (--older-than?, --severity?, --component?, --status?, --orphan?, --unphased?, --disposition?, --title-matches?, --resolution-matches?, --ids?, --resolve?, --reason?, --kind?, --set-disposition?, --ref?, --relate?, --set-phase?, --set-resolution-kind?, --apply?, --force?, --format?) - Bulk issue triage (T-486): selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected
 - **reconcile** (--dry-run?, --ci?, --rebalance-ranks?, --format?) - Detect and fix duplicate displayIds across all entity types
 - **conflicts list** (--format?) - List all items with unresolved merge conflicts
 - **conflicts show <id>** (--format?) - Show field-level conflict detail for an item

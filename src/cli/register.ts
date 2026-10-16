@@ -1821,7 +1821,9 @@ export function registerTriageCommand(yargs: Argv): Argv {
           .option("ref", { type: "string", describe: "Where the disposition was decided" })
           .option("relate", { type: "string", describe: "Ticket to add to relatedTickets" })
           .option("set-phase", { type: "string", describe: "Phase to set, or none" })
-          .option("set-resolution-kind", { type: "string", describe: "Resolution kind to bind on resolved issues" }),
+          .option("set-resolution-kind", { type: "string", describe: "Resolution kind to bind on resolved issues" })
+          .option("apply", { type: "boolean", describe: "Write the action to every writable match, all or nothing" })
+          .option("force", { type: "boolean", describe: "With --apply, allow more than 50 writes" }),
         {
           severity: { ...SPLIT_LIST, describe: "Severities (any of)" },
           component: { ...SPLIT_LIST, describe: "Components (any of)" },
@@ -1858,8 +1860,10 @@ export function registerTriageCommand(yargs: Argv): Argv {
           relate: argv.relate as string | undefined,
           setPhase: argv["set-phase"] as string | undefined,
           setResolutionKind: argv["set-resolution-kind"] as string | undefined,
+          apply: argv.apply as boolean | undefined,
+          force: argv.force as boolean | undefined,
         }, format, root);
-        writeOutput(result.output, format);
+        writeOutput(applyHandlerWarnings(result.output, format, result.warnings ?? []), format);
         process.exitCode = result.exitCode ?? ExitCode.OK;
       } catch (err: unknown) {
         const { ProjectLoaderError } = await import("../core/errors.js");

@@ -15,6 +15,9 @@ import yargs from "yargs";
 import { initProject } from "../../../src/core/init.js";
 import { handleTriage, type TriageFlags } from "../../../src/cli/commands/triage.js";
 import { handleIssueUpdate } from "../../../src/cli/commands/issue.js";
+import { prepareIssueWriteSeams } from "../../../src/core/project-loader.js";
+import { resolutionDigest } from "../../../src/core/resolution-kind.js";
+import { todayISO } from "../../../src/cli/helpers.js";
 import { registerTriageCommand } from "../../../src/cli/register.js";
 import { PROJECT_ROOT_ENV_VAR, LEGACY_PROJECT_ROOT_ENV_VAR } from "../../../src/core/project-root-shared.js";
 
@@ -432,5 +435,185 @@ describe("T-486 U3 triage: bounded patterns", () => {
     expect(Date.now() - started).toBeLessThan(5000);
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("matching deadline");
+  });
+});
+
+describe("T-486 U3 triage: apply", () => {
+  const fileOf = (dir: string, id: string): string => readFileSync(join(dir, ".story", "issues", `${id}.json`), "utf-8");
+
+  async function apply(dir: string, flags: TriageFlags, today = TODAY): Promise<TriageData> {
+    const r = await handleTriage({ ...flags, apply: true }, "json", dir, { today });
+    expect(r.exitCode ?? 0).toBe(0);
+    return (JSON.parse(r.output) as { data: TriageData }).data;
+  }
+
+  it("T4: --apply writes exactly the writable set and nothing else", async () => {
+    const dir = await selectorBoard();
+    const before = snapshot(dir);
+    const d = await apply(dir, { olderThan: 90, resolve: true, reason: "not worth doing" });
+    expect(d.applied).toBe("all");
+    expect(ids(d.writable)).toEqual(["ISS-001", "ISS-003"]);
+    const after = snapshot(dir);
+    const changed = [...after.keys()].filter((k) => after.get(k) !== before.get(k)).sort();
+    expect(changed).toEqual([join(".story", "issues", "ISS-001.json"), join(".story", "issues", "ISS-003.json")]);
+    expect([...before.keys()].sort()).toEqual([...after.keys()].sort());
+    const written = readJson(dir, "issues/ISS-001.json");
+    expect(written).toMatchObject({ status: "resolved", resolution: "not worth doing", resolvedDate: TODAY });
+    expect(written.resolutionKind).toEqual({ kind: "wontfix", closedOn: TODAY, resolutionDigest: resolutionDigest("not worth doing") });
+  });
+
+  it("T12: a bulk resolve writes the same bytes as a single issue update", async () => {
+    const bulk = await selectorBoard();
+    const single = await selectorBoard();
+    await apply(bulk, { ids: ["ISS-003"], resolve: true, reason: "replaced by T-001", kind: "superseded" }, todayISO());
+    await handleIssueUpdate("ISS-003", { status: "resolved", resolution: "replaced by T-001", resolutionKind: "superseded" }, "json", single);
+    expect(fileOf(bulk, "ISS-003")).toBe(fileOf(single, "ISS-003"));
+  });
+
+  it("T25: a bulk disposition writes the same bytes as a single issue update", async () => {
+    const bulk = await selectorBoard();
+    const single = await selectorBoard();
+    await apply(bulk, { ids: ["ISS-003"], setDisposition: "owner_gated", reason: "needs a product call", ref: "T-001" });
+    await handleIssueUpdate("ISS-003", { disposition: "owner_gated", dispositionReason: "needs a product call", dispositionRef: "T-001" }, "json", single);
+    expect(fileOf(bulk, "ISS-003")).toBe(fileOf(single, "ISS-003"));
+  });
+
+  it("T27: --set-disposition none clears the four keys, keeping duplicateOf only on an issue resolved as a duplicate", async () => {
+    const dir = await selectorBoard();
+    const evidence = { disposition: "duplicate", dispositionReason: "same crash", dispositionRef: "ISS-001", dispositionFor: "duplicate", duplicateOf: "ISS-001" };
+    issue(dir, "ISS-040", { title: "Open with a disposition", ...evidence });
+    issue(dir, "ISS-041", {
+      title: "Resolved as a duplicate", status: "resolved", resolution: "duplicate of ISS-001", resolvedDate: "2026-02-01", ...evidence,
+      resolutionKind: { kind: "duplicate", closedOn: "2026-02-01", resolutionDigest: resolutionDigest("duplicate of ISS-001") },
+    });
+    const d = await apply(dir, { ids: ["ISS-040", "ISS-041"], status: ["open", "resolved"], setDisposition: "none" });
+    expect(ids(d.writable)).toEqual(["ISS-040", "ISS-041"]);
+    const open = readJson(dir, "issues/ISS-040.json");
+    const resolved = readJson(dir, "issues/ISS-041.json");
+    for (const key of ["disposition", "dispositionReason", "dispositionRef", "dispositionFor"]) {
+      expect(open, key).not.toHaveProperty(key);
+      expect(resolved, key).not.toHaveProperty(key);
+    }
+    expect(open).not.toHaveProperty("duplicateOf");
+    expect(resolved.duplicateOf).toBe("ISS-001");
+  });
+
+  it("T20: --set-resolution-kind binds each issue's own resolvedDate and resolution", async () => {
+    const dir = await selectorBoard();
+    issue(dir, "ISS-007", { title: "Another closure", status: "resolved", resolution: "wontfix: out of scope", resolvedDate: "2026-03-03" });
+    const d = await apply(dir, { status: ["resolved"], resolutionMatches: "^wontfix:", setResolutionKind: "wontfix" });
+    expect(ids(d.writable)).toEqual(["ISS-004", "ISS-007"]);
+    expect(readJson(dir, "issues/ISS-004.json").resolutionKind).toEqual({ kind: "wontfix", closedOn: "2026-02-01", resolutionDigest: resolutionDigest("wontfix: not worth it") });
+    expect(readJson(dir, "issues/ISS-007.json").resolutionKind).toEqual({ kind: "wontfix", closedOn: "2026-03-03", resolutionDigest: resolutionDigest("wontfix: out of scope") });
+    const again = await apply(dir, { status: ["resolved"], resolutionMatches: "^wontfix:", setResolutionKind: "wontfix" });
+    expect(again.notApplicable.map((e) => e.id)).toEqual(["ISS-004", "ISS-007"]);
+  });
+
+  it("T8: more than 50 writable issues needs --force; the cap counts writable issues only", async () => {
+    const dir = await project();
+    for (let n = 100; n < 151; n++) issue(dir, `ISS-${n}`, { title: `Bulk ${n}` });
+    const before = snapshot(dir);
+    const err = await handleTriage({ status: ["open"], resolve: true, reason: "x", apply: true }, "json", dir, { today: TODAY }).then(() => null, (e: unknown) => e as Error);
+    expect(err?.message).toContain("over the cap of 50");
+    expect(snapshot(dir)).toEqual(before);
+    issue(dir, "ISS-150", { title: "Bulk 150", status: "inprogress" });
+    const capped = await apply(dir, { status: ["open", "inprogress"], resolve: true, reason: "x" });
+    expect(capped.writable).toHaveLength(50);
+    expect(capped.protected).toHaveLength(1);
+    expect(capped.applied).toBe("all");
+    issue(dir, "ISS-151", { title: "Bulk 151" });
+    issue(dir, "ISS-152", { title: "Bulk 152" });
+    for (let n = 153; n < 202; n++) issue(dir, `ISS-${n}`, { title: `Bulk ${n}` });
+    const forced = await apply(dir, { status: ["open"], resolve: true, reason: "x", force: true });
+    expect(forced.writable).toHaveLength(51);
+    expect(forced.applied).toBe("all");
+  });
+
+  it("T9: protected issues are never written, even with --force", async () => {
+    const dir = await selectorBoard();
+    issue(dir, "ISS-010", { title: "Reserved", earmark: EARMARK_RESERVED });
+    issue(dir, "ISS-011", { title: "Being worked", status: "inprogress" });
+    issue(dir, "ISS-012", { title: "Conflicted", _conflicts: CONFLICT });
+    issue(dir, "ISS-013", { title: "Tombstoned", lifecycle: "deleted", deletedAt: "2026-10-01T00:00:00.000Z", deletedBy: "test" });
+    const before = snapshot(dir);
+    const d = await apply(dir, { ids: ["ISS-001", "ISS-010", "ISS-011", "ISS-012", "ISS-013"], status: ["open", "inprogress"], resolve: true, reason: "x", force: true });
+    expect(ids(d.writable)).toEqual(["ISS-001"]);
+    for (const id of ["ISS-010", "ISS-011", "ISS-012", "ISS-013"]) {
+      const rel = join(".story", "issues", `${id}.json`);
+      expect(snapshot(dir).get(rel), id).toBe(before.get(rel));
+    }
+  });
+
+  it("T28: earmarked resolved issues are not written by --set-resolution-kind --apply --force", async () => {
+    const dir = await selectorBoard();
+    issue(dir, "ISS-022", { title: "Resolved reserved", status: "resolved", resolution: "wontfix: dropped", resolvedDate: "2026-02-01", earmark: EARMARK_RESERVED });
+    issue(dir, "ISS-023", { title: "Resolved assigned", status: "resolved", resolution: "wontfix: dropped", resolvedDate: "2026-02-01", earmark: EARMARK_ASSIGNED });
+    const before = [fileOf(dir, "ISS-022"), fileOf(dir, "ISS-023")];
+    const d = await apply(dir, { status: ["resolved"], resolutionMatches: "^wontfix:", setResolutionKind: "wontfix", force: true });
+    expect(ids(d.writable)).toEqual(["ISS-004"]);
+    expect([fileOf(dir, "ISS-022"), fileOf(dir, "ISS-023")]).toEqual(before);
+  });
+
+  it("T10: a not-applicable issue is never written", async () => {
+    const dir = await selectorBoard();
+    const before = fileOf(dir, "ISS-003");
+    const d = await apply(dir, { ids: ["ISS-001", "ISS-003"], relate: "T-001" });
+    expect(ids(d.notApplicable)).toEqual(["ISS-003"]);
+    expect(fileOf(dir, "ISS-003")).toBe(before);
+    expect(readJson(dir, "issues/ISS-001.json").relatedTickets).toEqual(["T-001"]);
+    await apply(dir, { ids: ["ISS-003"], relate: "T-002" });
+    expect(readJson(dir, "issues/ISS-003.json").relatedTickets).toEqual(["T-001", "T-002"]);
+  });
+
+  it("T23: an apply beside a conflicted issue writes only the writable one", async () => {
+    const dir = await selectorBoard();
+    issue(dir, "ISS-012", { title: "Conflicted", _conflicts: CONFLICT });
+    const before = fileOf(dir, "ISS-012");
+    const d = await apply(dir, { ids: ["ISS-001", "ISS-012"], setPhase: "p2" });
+    expect(ids(d.writable)).toEqual(["ISS-001"]);
+    expect(readJson(dir, "issues/ISS-001.json").phase).toBe("p2");
+    expect(fileOf(dir, "ISS-012")).toBe(before);
+  });
+
+  it("T11: each run computes its set under its own lock; an issue resolved after a dry run is not written", async () => {
+    const dir = await selectorBoard();
+    const dry = await triage(dir, { olderThan: 90, resolve: true, reason: "x" });
+    expect(ids(dry.writable)).toEqual(["ISS-001", "ISS-003"]);
+    await handleIssueUpdate("ISS-001", { status: "resolved", resolution: "fixed elsewhere" }, "json", dir);
+    const between = fileOf(dir, "ISS-001");
+    const d = await apply(dir, { olderThan: 90, resolve: true, reason: "x" });
+    expect(ids(d.writable)).toEqual(["ISS-003"]);
+    expect(fileOf(dir, "ISS-001")).toBe(between);
+  });
+
+  it("T18: a refusal while preparing one write writes none of the set", async () => {
+    const dir = await selectorBoard();
+    const before = snapshot(dir);
+    const original = prepareIssueWriteSeams.readPrior;
+    prepareIssueWriteSeams.readPrior = async (path: string) => {
+      if (path.endsWith("ISS-003.json")) throw new Error("injected refusal for ISS-003");
+      return original(path);
+    };
+    try {
+      const err = await handleTriage({ olderThan: 90, resolve: true, reason: "x", apply: true }, "json", dir, { today: TODAY }).then(() => null, (e: unknown) => e as Error);
+      expect(err?.message).toContain("injected refusal for ISS-003");
+    } finally {
+      prepareIssueWriteSeams.readPrior = original;
+    }
+    expect(snapshot(dir)).toEqual(before);
+  });
+
+  it("refuses --force without --apply, and --apply without an action", async () => {
+    const dir = await selectorBoard();
+    expect((await refusal(dir, { olderThan: 90, resolve: true, reason: "x", force: true })).message).toContain("--force goes with --apply");
+    expect((await refusal(dir, { olderThan: 90, apply: true })).message).toContain("--apply needs an action");
+  });
+
+  it("T6: --apply runs through the parser", async () => {
+    const dir = await selectorBoard();
+    const r = await cli(dir, ["--ids", "ISS-001", "--set-phase", "p2", "--apply", "--format", "json"]);
+    expect(r.exitCode).toBe(0);
+    expect((JSON.parse(r.stdout) as { data: TriageData }).data.applied).toBe("all");
+    expect(readJson(dir, "issues/ISS-001.json").phase).toBe("p2");
   });
 });

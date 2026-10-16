@@ -4,7 +4,12 @@
  * refusal that needs no state is raised before the lock, so a refused run
  * takes no lock and writes nothing.
  */
-import { withProjectLockForIssueTriage } from "../../core/project-loader.js";
+import {
+  prepareIssueWrite,
+  runTransactionUnlocked,
+  TransactionRecoveryPendingError,
+  withProjectLockForIssueTriage,
+} from "../../core/project-loader.js";
 import type { ProjectState } from "../../core/project-state.js";
 import { isDeleted } from "../../core/project-state.js";
 import { resolveAndNormalizeIssueRef, RefResolutionError } from "../../core/ref-normalization.js";
@@ -12,16 +17,29 @@ import {
   assertTriagePattern,
   formatTriagePlan,
   planTriage,
+  triageOverCap,
+  TRIAGE_CAP,
+  type TriageApplied,
   type TriageAction,
   type TriagePlan,
   type TriageSelectors,
 } from "../../core/triage.js";
 import { ISSUE_RESOLUTION_KINDS } from "../../core/resolution-kind.js";
 import { ISSUE_DISPOSITIONS } from "../../models/issue.js";
+import type { Issue } from "../../models/issue.js";
 import { ISSUE_SEVERITIES, ISSUE_STATUSES } from "../../models/types.js";
+import { ExitCode } from "../../core/output-formatter.js";
 import { CliValidationError, todayISO } from "../helpers.js";
 import type { CommandResult } from "../types.js";
-import { assertDispositionInput, resolveDispositionRef, validateAndResolveRelatedTickets } from "./issue.js";
+import {
+  applyDisposition,
+  applyResolutionKind,
+  assertDispositionInput,
+  resolveDispositionRef,
+  validateAndResolveRelatedTickets,
+  validatePostWriteIssueStates,
+} from "./issue.js";
+import type { IssueResolutionKind } from "../../core/resolution-kind.js";
 
 /** The command's flags, as the parser hands them over. */
 export interface TriageFlags {
@@ -43,6 +61,8 @@ export interface TriageFlags {
   relate?: string;
   setPhase?: string;
   setResolutionKind?: string;
+  apply?: boolean;
+  force?: boolean;
 }
 
 /** Bulk resolve records one of these; fixed and duplicate are per issue. */
@@ -156,6 +176,33 @@ function parseAction(flags: TriageFlags): TriageAction | null {
   }
 }
 
+/**
+ * One issue after the action, built the way `issue update` builds it: the
+ * same spread over the stored issue, then the same kind and disposition
+ * helpers, so a bulk write and a single update of the same issue produce the
+ * same bytes.
+ */
+function triagePostimage(existing: Issue, action: TriageAction, state: ProjectState, root: string, today: string): Issue {
+  switch (action.kind) {
+    case "resolve": {
+      const issue: Issue = { ...existing, resolution: action.reason, status: "resolved", resolvedDate: today };
+      return applyResolutionKind(issue, existing, action.resolutionKind as IssueResolutionKind, state);
+    }
+    case "set-resolution-kind":
+      return applyResolutionKind({ ...existing }, existing, action.resolutionKind as IssueResolutionKind, state);
+    case "relate":
+      return applyResolutionKind({ ...existing, relatedTickets: [...existing.relatedTickets, action.ticket] }, existing, undefined, state);
+    case "set-phase":
+      return applyResolutionKind({ ...existing, phase: action.phase }, existing, undefined, state);
+    case "set-disposition": {
+      const issue = applyResolutionKind({ ...existing }, existing, undefined, state);
+      return action.disposition === null
+        ? applyDisposition(issue, { disposition: null }, state, root)
+        : applyDisposition(issue, { disposition: action.disposition, dispositionReason: action.reason, dispositionRef: action.ref }, state, root);
+    }
+  }
+}
+
 /** Resolves every --ids entry; one that names no issue refuses the run. */
 function resolveIds(state: ProjectState, ids: readonly string[]): Set<string> {
   const resolved = new Set<string>();
@@ -201,15 +248,45 @@ export async function handleTriage(
 ): Promise<CommandResult> {
   const selectors = parseSelectors(flags);
   const parsedAction = parseAction(flags);
+  if (flags.force && !flags.apply) refuse("--force goes with --apply; it lifts the size cap of an apply");
+  if (flags.apply && !parsedAction) refuse("--apply needs an action (--resolve, --set-disposition, --relate, --set-phase or --set-resolution-kind)");
   const today = opts.today ?? todayISO();
 
   let plan: TriagePlan | undefined;
   let action: TriageAction | null | undefined;
+  // Assigned inside the lock callback, which control-flow narrowing does not follow.
+  let applied = "none" as TriageApplied;
+  let pending: string | undefined;
   await withProjectLockForIssueTriage(root, async ({ state }) => {
     const ids = flags.ids !== undefined ? resolveIds(state, flags.ids) : undefined;
     action = resolveActionRefs(state, root, parsedAction);
     plan = await planTriage(state, { ...selectors, ...(ids && { ids }) }, action, today);
+    if (!flags.apply || !action || plan.writableIssues.length === 0) return;
+    if (triageOverCap(plan, flags.force === true)) {
+      refuse(`--apply would write ${plan.writable.length} issues, over the cap of ${TRIAGE_CAP}; check the dry run, then pass --force to write them all`);
+    }
+    const chosen = action;
+    const postimages = plan.writableIssues.map((issue) => triagePostimage(issue, chosen, state, root, today));
+    validatePostWriteIssueStates(postimages, state, false);
+    const operations: Array<{ op: "write"; target: string; content: string }> = [];
+    for (const issue of postimages) {
+      const { target, content } = await prepareIssueWrite(issue, root);
+      operations.push({ op: "write", target, content });
+    }
+    try {
+      await runTransactionUnlocked(root, operations);
+      applied = "all";
+    } catch (err) {
+      if (!(err instanceof TransactionRecoveryPendingError)) throw err;
+      applied = "recovery-pending";
+      pending = err.message;
+    }
   });
   if (!plan) throw new Error("triage computed no plan");
-  return { output: formatTriagePlan(plan, action ?? null, "none", true, format) };
+  const output = formatTriagePlan(plan, action ?? null, applied, !flags.apply, format);
+  if (applied === "recovery-pending") {
+    const note = `The write began and did not finish: ${pending}. The next storybloq write completes it; do not re-run this triage.`;
+    return { output, exitCode: ExitCode.USER_ERROR, warnings: [note] };
+  }
+  return { output };
 }

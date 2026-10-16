@@ -602,9 +602,9 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "triage",
-    description: "Bulk issue triage (T-486): selectors pick open issues, one action is planned and shown as a dry run. Earmarked, in-progress, conflicted and deleted issues are protected",
-    usage: "storybloq triage [--older-than <days>] [--severity <list>] [--component <list>] [--status <list>] [--orphan] [--unphased] [--disposition <value|none>] [--title-matches <regex>] [--resolution-matches <regex>] [--ids <list>] [--resolve] [--reason <text>] [--kind <kind>] [--set-disposition <value|none>] [--ref <ref>] [--relate <ticket>] [--set-phase <phase|none>] [--set-resolution-kind <kind>] [--format <json|md>]",
-    flags: ["--older-than", "--severity", "--component", "--status", "--orphan", "--unphased", "--disposition", "--title-matches", "--resolution-matches", "--ids", "--resolve", "--reason", "--kind", "--set-disposition", "--ref", "--relate", "--set-phase", "--set-resolution-kind", "--format"],
+    description: "Bulk issue triage (T-486): selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
+    usage: "storybloq triage [--older-than <days>] [--severity <list>] [--component <list>] [--status <list>] [--orphan] [--unphased] [--disposition <value|none>] [--title-matches <regex>] [--resolution-matches <regex>] [--ids <list>] [--resolve] [--reason <text>] [--kind <kind>] [--set-disposition <value|none>] [--ref <ref>] [--relate <ticket>] [--set-phase <phase|none>] [--set-resolution-kind <kind>] [--apply] [--force] [--format <json|md>]",
+    flags: ["--older-than", "--severity", "--component", "--status", "--orphan", "--unphased", "--disposition", "--title-matches", "--resolution-matches", "--ids", "--resolve", "--reason", "--kind", "--set-disposition", "--ref", "--relate", "--set-phase", "--set-resolution-kind", "--apply", "--force", "--format"],
   },
   {
     name: "reconcile",

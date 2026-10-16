@@ -633,7 +633,7 @@ export async function handleIssueUpdate(
  * issue. A missing, ambiguous or deleted target, or the issue itself, is
  * refused.
  */
-function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string): string {
+export function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string): string {
   const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref)];
   if (results.some((r) => r.kind === "ambiguous")) {
     throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is ambiguous; use the canonical id`);

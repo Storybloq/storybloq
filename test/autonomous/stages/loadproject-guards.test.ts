@@ -207,7 +207,7 @@ describe("ISS-089: IssueSweepStage.report() with throwing loadProject", () => {
     const stage = new IssueSweepStage();
     const state = makeState({
       state: "ISSUE_SWEEP",
-      issueSweepState: { remaining: ["ISS-001", "ISS-002"], current: "ISS-001", resolved: [] },
+      issueSweepState: { remaining: ["ISS-001", "ISS-002"], current: "ISS-001", resolved: [], disposed: [], deferred: [], conflicted: [] },
     });
     const ctx = new ThrowingCtx(testRoot, sessionDir, state, makeRecipe());
     const result = await stage.report(ctx, { completedAction: "issue_fixed" });

@@ -13,7 +13,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const hoisted = vi.hoisted(() => ({ failLock: false }));
+// T-486 U4: the sweep takes its own lock. `failSweepFrom` is the first sweep
+// lock call that fails while failLock is set (0 and 1 both mean every call).
+const hoisted = vi.hoisted(() => ({ failLock: false, sweepCalls: 0, failSweepFrom: 0 }));
 vi.mock("../../../src/core/project-loader.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/core/project-loader.js")>();
   return {
@@ -21,6 +23,11 @@ vi.mock("../../../src/core/project-loader.js", async (importOriginal) => {
     withProjectLock: async (...args: Parameters<typeof actual.withProjectLock>) => {
       if (hoisted.failLock) throw new Error("simulated lock/read/write failure");
       return actual.withProjectLock(...args);
+    },
+    withProjectLockForIssueSweep: async (...args: Parameters<typeof actual.withProjectLockForIssueSweep>) => {
+      hoisted.sweepCalls++;
+      if (hoisted.failLock && hoisted.sweepCalls >= hoisted.failSweepFrom) throw new Error("simulated lock/read/write failure");
+      return actual.withProjectLockForIssueSweep(...args);
     },
   };
 });
@@ -106,7 +113,10 @@ function makeRecipe(): ResolvedRecipe {
 describe("earmark choke point fails closed on a lock/read/write error (T-475, round-3 binding)", () => {
   let root: string;
   beforeEach(() => { root = buildRepo(); mkdirSync(join(root, ".story", "sessions", "s"), { recursive: true }); });
-  afterEach(() => { hoisted.failLock = false; rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => {
+    hoisted.failLock = false; hoisted.sweepCalls = 0; hoisted.failSweepFrom = 0;
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it("PICK_TICKET ticket path: refuses the pick and leaves the ticket untouched", async () => {
     writeTicket(root, "T-001");
@@ -168,6 +178,10 @@ describe("earmark choke point fails closed on a lock/read/write error (T-475, ro
     const raw = JSON.parse(readFileSync(join(root, ".story", "issues", `${currentId}.json`), "utf-8"));
     writeFileSync(join(root, ".story", "issues", `${currentId}.json`), JSON.stringify({ ...raw, status: "resolved", resolvedDate: "2026-08-30", resolution: "fixed" }));
 
+    // The current issue's classification and release take the first two
+    // sweep locks; the third is the next acquisition.
+    hoisted.sweepCalls = 0;
+    hoisted.failSweepFrom = 3;
     hoisted.failLock = true;
     const result = await stage.report(ctx, { completedAction: "issue_fixed" });
 

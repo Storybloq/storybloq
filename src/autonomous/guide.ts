@@ -103,6 +103,7 @@ import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
 import { PARK_ACTION, PARK_STAGES } from "./stages/park.js";
+import { recoverIssueSweepStep, sweepStepPendingText } from "./stages/issue-sweep.js";
 import "./stages/index.js"; // Register all extracted stages
 import { writeCheckpoint } from "./telemetry-writer.js";
 
@@ -729,7 +730,8 @@ async function cancelClaimPosture(
 type RecoveryResult =
   | { readonly kind: "recovered"; readonly state: FullSessionState }
   | { readonly kind: "checkpoint-blocked"; readonly ticketId: string; readonly checkpoints: readonly string[]; readonly state: FullSessionState }
-  | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState };
+  | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState }
+  | { readonly kind: "sweep-step-pending"; readonly reason: string; readonly state: FullSessionState };
 
 const recovered = (state: FullSessionState): RecoveryResult => ({ kind: "recovered", state });
 
@@ -808,6 +810,15 @@ function checkpointBlockedResult(dir: string, state: FullSessionState, block: Ch
     `Once the owner answers, resume with { "sessionId": "${state.sessionId}", "action": "resume" }; ` +
     `or cancel with { "sessionId": "${state.sessionId}", "action": "cancel" }, which abandons the completion.`,
   ));
+}
+
+/**
+ * T-486 U4 (5h): start, report and resume stop here while an issue-sweep step
+ * cannot be confirmed. Nothing is written: the marker stays, and the same
+ * call settles it once the project lock is available.
+ */
+function sweepStepPendingResult(reason: string): McpToolResult {
+  return guideError(new Error(sweepStepPendingText(reason)));
 }
 
 /**
@@ -926,6 +937,17 @@ async function recoverPendingMutation(
     }
     const cleared = { ...state, pendingProjectMutation: null };
     return recovered(writeSessionAndRefresh(root, dir, cleared, "if-active"));
+  }
+
+  // T-486 U4 (5g): an issue-sweep step. Classified and written inside one
+  // sweep lock; a lock or IO failure keeps the marker and blocks the caller.
+  if (m.type === "issue_sweep_step") {
+    const step = await recoverIssueSweepStep(root, state);
+    if (step.kind === "pending") return { kind: "sweep-step-pending", reason: step.reason, state };
+    for (const event of step.events) {
+      appendEvent(dir, { rev: state.revision, type: event.type, timestamp: new Date().toISOString(), data: event.data });
+    }
+    return recovered(writeSessionAndRefresh(root, dir, { ...state, ...step.updates } as FullSessionState, "if-active"));
   }
 
   if (m.type !== "ticket_update") return recovered(state);
@@ -1545,6 +1567,7 @@ async function handleStartAfterNormalization(
     const startRecovery = await recoverPendingMutation(existing.dir, existing.state, root);
     if (startRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(existing.dir, existing.state, startRecovery);
     if (startRecovery.kind === "load-failed") return loadFailedResult(existing.dir, existing.state, startRecovery);
+    if (startRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(startRecovery.reason);
     // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);
   }
@@ -2837,6 +2860,7 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   const reportRecovery = await recoverPendingMutation(info.dir, state, root);
   if (reportRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, state, reportRecovery);
   if (reportRecovery.kind === "load-failed") return loadFailedResult(info.dir, state, reportRecovery);
+  if (reportRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(reportRecovery.reason);
   state = reportRecovery.state;
 
   // ISS-037: retry pending deferrals from previous calls
@@ -3621,6 +3645,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   const resumeRecovery = await recoverPendingMutation(info.dir, info.state, root);
   if (resumeRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, info.state, resumeRecovery);
   if (resumeRecovery.kind === "load-failed") return loadFailedResult(info.dir, info.state, resumeRecovery);
+  if (resumeRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(resumeRecovery.reason);
   const recoveredState = resumeRecovery.state;
   if (recoveredState !== info.state) {
     const reread = findSessionById(root, args.sessionId);

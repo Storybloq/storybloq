@@ -125,6 +125,17 @@ export function notHiddenByEarmark(item: { status: string; earmark?: Earmark | n
   return item.status !== "open" || isEarmarkVisible(item);
 }
 
+/**
+ * T-486 U3: bulk triage never writes an earmarked issue. Unlike the two
+ * listing helpers above, this one is load-bearing and status-blind: a
+ * reserved or assigned earmark protects the issue whatever its status, with
+ * no exemption for the holder session or the earmark's age.
+ */
+export function triageEarmarkHold(item: { status: string; earmark?: Earmark | null }): boolean {
+  const earmark = item.earmark;
+  return earmark != null && (earmark.stage === "reserved" || earmark.stage === "assigned");
+}
+
 function isStaleByAge(since: string, thresholdHours: number, nowIso: string): boolean {
   const ageMs = Date.parse(nowIso) - Date.parse(since);
   // An unparseable `since` fails closed -- flagged as stale rather than

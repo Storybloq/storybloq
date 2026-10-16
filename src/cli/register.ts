@@ -1798,6 +1798,84 @@ export function registerTicketCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// triage (T-486 U3)
+// ---------------------------------------------------------------------------
+
+export function registerTriageCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "triage",
+    "Select issues in bulk and print the whole matched set",
+    (y: Argv) =>
+      addFormatOption(
+        arrayOptions(y
+          .option("older-than", { type: "number", describe: "Discovered more than this many days ago" })
+          .option("orphan", { type: "boolean", describe: "No related tickets" })
+          .option("unphased", { type: "boolean", describe: "No phase" })
+          .option("disposition", { type: "string", describe: "Disposition value, or none" })
+          .option("title-matches", { type: "string", describe: "Title pattern (case-insensitive, at most 256 characters)" })
+          .option("resolution-matches", { type: "string", describe: "Resolution pattern (case-insensitive, at most 256 characters)" })
+          .option("resolve", { type: "boolean", describe: "Resolve every writable match (needs --reason)" })
+          .option("reason", { type: "string", describe: "Why, recorded on every issue written" })
+          .option("kind", { type: "string", describe: "Resolution kind for --resolve: wontfix, superseded or not_reproducible" })
+          .option("set-disposition", { type: "string", describe: "Disposition to set (with --reason and --ref), or none" })
+          .option("ref", { type: "string", describe: "Where the disposition was decided" })
+          .option("relate", { type: "string", describe: "Ticket to add to relatedTickets" })
+          .option("set-phase", { type: "string", describe: "Phase to set, or none" })
+          .option("set-resolution-kind", { type: "string", describe: "Resolution kind to bind on resolved issues" }),
+        {
+          severity: { ...SPLIT_LIST, describe: "Severities (any of)" },
+          component: { ...SPLIT_LIST, describe: "Components (any of)" },
+          status: { ...SPLIT_LIST, describe: "Statuses (any of; default open)" },
+          ids: { ...SPLIT_LIST, describe: "Issue ids (any of)" },
+        },
+      )),
+    async (argv) => {
+      const format = parseOutputFormat(argv.format as string);
+      const root = (await import("../core/project-root-discovery.js")).discoverProjectRoot();
+      if (!root) {
+        writeOutput(formatError("not_found", "No .story/ project found.", format), format);
+        process.exitCode = ExitCode.USER_ERROR;
+        return;
+      }
+      try {
+        const { handleTriage } = await import("./commands/triage.js");
+        const result = await handleTriage({
+          olderThan: argv["older-than"] as number | undefined,
+          severity: argv.severity as string[] | undefined,
+          component: argv.component as string[] | undefined,
+          status: argv.status as string[] | undefined,
+          orphan: argv.orphan as boolean | undefined,
+          unphased: argv.unphased as boolean | undefined,
+          disposition: argv.disposition as string | undefined,
+          titleMatches: argv["title-matches"] as string | undefined,
+          resolutionMatches: argv["resolution-matches"] as string | undefined,
+          ids: argv.ids as string[] | undefined,
+          resolve: argv.resolve as boolean | undefined,
+          reason: argv.reason as string | undefined,
+          kind: argv.kind as string | undefined,
+          setDisposition: argv["set-disposition"] as string | undefined,
+          ref: argv.ref as string | undefined,
+          relate: argv.relate as string | undefined,
+          setPhase: argv["set-phase"] as string | undefined,
+          setResolutionKind: argv["set-resolution-kind"] as string | undefined,
+        }, format, root);
+        writeOutput(result.output, format);
+        process.exitCode = result.exitCode ?? ExitCode.OK;
+      } catch (err: unknown) {
+        const { ProjectLoaderError } = await import("../core/errors.js");
+        if (err instanceof CliValidationError || err instanceof ProjectLoaderError) {
+          writeOutput(formatError(err.code, err.message, format), format);
+          process.exitCode = ExitCode.USER_ERROR;
+          return;
+        }
+        writeOutput(formatError("io_error", err instanceof Error ? err.message : String(err), format), format);
+        process.exitCode = ExitCode.USER_ERROR;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // issue
 // ---------------------------------------------------------------------------
 

@@ -256,7 +256,7 @@ export function handleIssueMetaGet(
 
 // --- Write Handlers ---
 
-function validateAndResolveRelatedTickets(ids: string[], state: ProjectState): string[] {
+export function validateAndResolveRelatedTickets(ids: string[], state: ProjectState): string[] {
   const resolved: string[] = [];
   for (const tid of ids) {
     try {
@@ -637,7 +637,7 @@ function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string
  * alone, and clearing takes the evidence with it. Checked before the lock so
  * a refused input writes nothing.
  */
-function assertDispositionInput(updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string }): void {
+export function assertDispositionInput(updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string }): void {
   const { disposition, dispositionReason: reason, dispositionRef: ref } = updates;
   if (disposition === undefined) {
     if (reason !== undefined || ref !== undefined) {
@@ -700,7 +700,7 @@ function applyDisposition(
  * exists and is not deleted, and the canonical id is stored. A git sha (7 to
  * 40 hex characters) or an https URL is checked by its syntax only.
  */
-function resolveDispositionRef(state: ProjectState, root: string, ref: string): string {
+export function resolveDispositionRef(state: ProjectState, root: string, ref: string): string {
   const form = dispositionRefForm(ref);
   if (form === "sha" || form === "url") return ref;
   if (form === "bad-url") throw new CliValidationError("invalid_input", `--ref ${ref} is not a valid https URL`);

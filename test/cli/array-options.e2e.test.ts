@@ -350,6 +350,12 @@ function seedIssue(dir: string): void {
   expect(res.code, res.out).toBe(0);
 }
 
+/** Display ids a triage dry run matched, across its three lists. */
+function triageMatched(out: string): string[] {
+  const data = (JSON.parse(out) as { data: Record<"writable" | "protected" | "notApplicable", Array<{ displayId: string }>> }).data;
+  return [...data.writable, ...data.protected, ...data.notApplicable].map((e) => e.displayId).sort();
+}
+
 function seedFile(dir: string): void {
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "src", "a.ts"), "line1\nline2\n", "utf-8");
@@ -797,6 +803,53 @@ const MATRIX: Coverage[] = [
       expect(res.code, res.out).toBe(0);
       expect(byDisplayId(dir, "tickets", "T-001").crossNodeBlockedBy)
         .toEqual(["engine:T-001", "client:T-005"]);
+    },
+  },
+  {
+    key: "triage --severity",
+    check: (dir) => {
+      for (const severity of ["low", "high", "medium"]) {
+        expect(run(dir, "issue", "create", "--title", severity, "--severity", severity, "--impact", "x").code).toBe(0);
+      }
+      const res = run(dir, "triage", "--severity", "low,high", "--format", "json");
+      expect(res.code, res.out).toBe(0);
+      expect(triageMatched(res.out)).toEqual(["ISS-001", "ISS-002"]);
+    },
+  },
+  {
+    key: "triage --component",
+    check: (dir) => {
+      for (const component of ["cli", "mac", "web"]) {
+        expect(run(dir, "issue", "create", "--title", component, "--severity", "low", "--impact", "x", "--components", component).code).toBe(0);
+      }
+      const res = run(dir, "triage", "--component", "cli,mac", "--format", "json");
+      expect(res.code, res.out).toBe(0);
+      expect(triageMatched(res.out)).toEqual(["ISS-001", "ISS-002"]);
+    },
+  },
+  {
+    key: "triage --status",
+    check: (dir) => {
+      seedIssue(dir);
+      seedIssue(dir);
+      seedIssue(dir);
+      expect(run(dir, "issue", "update", "ISS-002", "--status", "inprogress").code).toBe(0);
+      const res = run(dir, "triage", "--status", "open,inprogress", "--format", "json");
+      expect(res.code, res.out).toBe(0);
+      expect(triageMatched(res.out)).toEqual(["ISS-001", "ISS-002", "ISS-003"]);
+      const only = run(dir, "triage", "--status", "inprogress", "--format", "json");
+      expect(triageMatched(only.out)).toEqual(["ISS-002"]);
+    },
+  },
+  {
+    key: "triage --ids",
+    check: (dir) => {
+      seedIssue(dir);
+      seedIssue(dir);
+      seedIssue(dir);
+      const res = run(dir, "triage", "--ids", "ISS-001,ISS-003", "--format", "json");
+      expect(res.code, res.out).toBe(0);
+      expect(triageMatched(res.out)).toEqual(["ISS-001", "ISS-003"]);
     },
   },
   {

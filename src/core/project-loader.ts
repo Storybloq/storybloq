@@ -1230,6 +1230,34 @@ export async function withProjectLock(
   return withProjectLockInternal(root, options, handler);
 }
 
+/**
+ * T-486 U3: the lock `storybloq triage` runs under. Everything
+ * `withProjectLock` does (recovery, strict loading, the schema-version and
+ * team-capability checks) runs unchanged; only the board-wide conflict check
+ * is replaced. A conflict on config, the roadmap, a ticket, a note or a
+ * lesson still refuses, because triage reads them. A conflicted issue
+ * reaches the handler, which reports it as protected and never writes it.
+ */
+export async function withProjectLockForIssueTriage(
+  root: string,
+  handler: (result: LoadResult) => Promise<void>,
+): Promise<void> {
+  return withProjectLockInternal(root, { strict: true, _skipConflictCheck: true }, async (result) => {
+    const { hasConflicts } = await import("./conflicts.js");
+    const blocking = hasConflicts(result.state).items.filter((item) => item.type !== "issue");
+    if (blocking.length > 0) {
+      const summary = blocking.map((i) => `${i.id} (${i.conflictCount})`).join(", ");
+      throw new ProjectLoaderError(
+        "conflict",
+        `Cannot triage: ${blocking.length} item(s) other than issues have unresolved conflicts: ${summary}. ` +
+        `Run \`storybloq conflicts list\` to inspect, then \`storybloq resolve <id> --use ours|theirs\`. ` +
+        `For config.json/roadmap.json use \`storybloq resolve config\` or \`storybloq resolve roadmap\`.`,
+      );
+    }
+    await handler(result);
+  });
+}
+
 export async function withConflictResolutionLock(
   root: string,
   handler: (result: LoadResult) => Promise<void>,

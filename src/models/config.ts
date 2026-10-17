@@ -185,6 +185,13 @@ export const ConfigSchema = z
       // sit unconverted (reserved) or unclaimed (assigned, no matching
       // ticket claim; always for issues per AM-b) before it is flagged.
       earmarkStaleThresholdHours: z.number().min(0).optional(),
+      // T-481: aging thresholds (src/core/aging.ts, AGING_DEFAULTS). Read by
+      // agingConfig; no consumer ranks or flags on them yet.
+      staleInProgressDays: z.number().min(0).optional(),
+      staleCriticalIssueDays: z.number().min(0).optional(),
+      agingIssueDays: z.number().min(0).optional(),
+      agingIssueBoostPerMonth: z.number().min(0).optional(),
+      agingStaleInProgressPenalty: z.number().min(0).optional(),
       // ISS-1282: `{ geminiRuling: "r-..." }`, the owner ruling under which a
       // Gemini-observed bridge review may satisfy a gate. Permissive for the
       // reviewEffort reason; the review stages read and validate it.

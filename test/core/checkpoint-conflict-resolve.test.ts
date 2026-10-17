@@ -56,7 +56,7 @@ function expectedOf(t: object): ExpectedCheckpoint {
  * `retired`, each written by the lifecycle from `base` as two branches would.
  * The ticket file on disk is left as the driver's merge of `ours` and `theirs`.
  */
-async function conflicted(ours: "approved" | "retired", theirs: "approved" | "retired", opts: { evidence?: boolean } = {}) {
+async function conflicted(ours: "approved" | "retired", theirs: "approved" | "retired", opts: { evidence?: boolean; backdate?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "t537-cr-"));
   dirs.push(dir);
   await initProject(dir, { name: "t537" });
@@ -83,6 +83,8 @@ async function conflicted(ours: "approved" | "retired", theirs: "approved" | "re
     approved.checkpointEvidence = entry("approved", 2);
     retired.checkpointEvidence = entry("retired", 3);
   }
+  // T-481: every version dated 2020-01-01, so a settlement stamp is visible.
+  if (opts.backdate) for (const v of [base, approved, retired]) v.updatedDate = "2020-01-01";
   const sides = { approved, retired };
   const merged = threeWayMerge(base, sides[ours], sides[theirs], "ticket");
   expect(merged.clean).toBe(false);
@@ -308,5 +310,59 @@ describe("resolving a checkpoint in conflict", () => {
     const forged = { ...(before._conflicts as Json[]).find((c) => String(c.fieldPath).includes("ownerCheckpoint"))!.ours as Json, question: "Edited by hand" };
     await expect(handleResolve(id, dir, { field: "ownerCheckpoint", value: forged, actor: ACTOR, format: "json" })).rejects.toThrow(/coupled group|digest does not match/);
     expect(await read()).toEqual(before);
+  });
+});
+
+// T-481 T14 (checkpoint conflict settlement): resolving a conflict picks a
+// side; the settlement write never stamps updatedDate.
+describe("T-481 T14: checkpoint conflict settlement keeps updatedDate", () => {
+  for (const use of ["ours", "theirs"] as const) {
+    it(`taking ${use} settles at a new generation and keeps 2020-01-01`, async () => {
+      const { dir, id, read, sides } = await conflicted("approved", "retired", { backdate: true });
+      await handleResolve(id, dir, { use, actor: ACTOR, format: "json" });
+      const t = await read();
+      expect(t._conflicts ?? []).toEqual([]);
+      expect(history(t).some((e) => e.event === "conflict-resolved")).toBe(true);
+      expect(generation(t)).toBeGreaterThan(Math.max(generation(sides.approved), generation(sides.retired)));
+      expect(t.updatedDate).toBe("2020-01-01");
+    });
+  }
+});
+
+// T-481 T14 (adoptConflictEvidence): adopting a side's evidence is conflict
+// resolution; the adopting write keeps updatedDate.
+describe("T-481 T14: adopting a side's evidence keeps updatedDate", () => {
+  it("the side's evidence is adopted and updatedDate stays 2020-01-01", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "t481-cr-"));
+    dirs.push(dir);
+    await initProject(dir, { name: "t481" });
+    const configPath = join(dir, ".story", "config.json");
+    const config = JSON.parse(await readFile(configPath, "utf-8"));
+    config.schemaVersion = CHECKPOINT_SCHEMA_VERSION;
+    await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
+    const cp = await createCheckpoint(dir, { title: "Upstream", description: "", phase: "p0", owner: "owner", content: { kind: "decision", question: "Upstream?", evidenceRefs: [] }, actor: ACTOR });
+    const cpPath = join(dir, ".story", "tickets", `${cp.id}.json`);
+    const pending = expectedOf(JSON.parse(await readFile(cpPath, "utf-8")) as Json);
+    await resolveCheckpoint(dir, cp.id, pending, { response: "yes", actor: ACTOR });
+    const up = expectedOf(JSON.parse(await readFile(cpPath, "utf-8")) as Json);
+    const entry = (generation: number) => [{ checkpoint: cp.id, generation, revision: up.revision, digest: up.digest, state: "approved" }];
+
+    const path = join(dir, ".story", "tickets", "T-050.json");
+    const read = async (): Promise<Json> => JSON.parse(await readFile(path, "utf-8")) as Json;
+    const base: Json = {
+      id: "T-050", title: "Dependent", type: "task", status: "complete", phase: "p0", order: 50,
+      description: "", createdDate: "2020-01-01", updatedDate: "2020-01-01", completedDate: "2020-01-01", blockedBy: [cp.id], parentTicket: null,
+    };
+    const deleted = { ...base, checkpointEvidence: entry(up.generation - 1), lifecycle: "deleted", deletedAt: "2026-09-27T00:00:00.000Z", deletedBy: ACTOR };
+    const edited = { ...base, title: "Dependent, edited", checkpointEvidence: entry(up.generation) };
+    const merged = threeWayMerge(base, deleted, edited, "ticket");
+    expect(merged.clean).toBe(false);
+    await writeFile(path, JSON.stringify(merged.merged, null, 2) + "\n");
+
+    await handleResolve("T-050", dir, { field: "_entity", use: "ours", actor: ACTOR, format: "json" });
+    const t = await read();
+    expect(t._conflicts ?? []).toEqual([]);
+    expect(t.checkpointEvidence).toEqual(entry(up.generation - 1));
+    expect(t.updatedDate).toBe("2020-01-01");
   });
 });

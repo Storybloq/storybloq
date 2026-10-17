@@ -309,3 +309,33 @@ describe("handleRulingSupersede", () => {
     ).rejects.toThrow(CliValidationError);
   });
 });
+
+// T-481 T14: adding a ruling citation to an item is a reference rewrite; the
+// cited ticket and issue keep their updatedDate.
+describe("T-481 T14: a citesRulings rewrite keeps updatedDate", () => {
+  it("handleRulingCreate --cites appends the ruling to a ticket and an issue and keeps 2020-01-01", async () => {
+    const dir = await newProject();
+    const { readFile } = await import("node:fs/promises");
+    const ticketPath = join(dir, ".story", "tickets", "T-001.json");
+    const issuePath = join(dir, ".story", "issues", "ISS-001.json");
+    await writeFile(ticketPath, JSON.stringify({
+      id: "T-001", title: "Ticket", description: "", type: "task", status: "open", phase: null, order: 10,
+      createdDate: "2020-01-01", updatedDate: "2020-01-01", completedDate: null, blockedBy: [], parentTicket: null,
+    }));
+    await writeFile(issuePath, JSON.stringify({
+      id: "ISS-001", title: "Issue", status: "open", severity: "medium", components: [], impact: "test",
+      resolution: null, location: [], discoveredDate: "2020-01-01", updatedDate: "2020-01-01",
+      resolvedDate: null, relatedTickets: [],
+    }));
+
+    const result = await handleRulingCreate({ ...BASE_CREATE_ARGS, cites: ["T-001", "ISS-001"] }, "json", dir);
+    const id = JSON.parse(result.output).data.id as string;
+
+    const ticket = JSON.parse(await readFile(ticketPath, "utf-8"));
+    expect(ticket.citesRulings).toEqual([id]);
+    expect(ticket.updatedDate).toBe("2020-01-01");
+    const issue = JSON.parse(await readFile(issuePath, "utf-8"));
+    expect(issue.citesRulings).toEqual([id]);
+    expect(issue.updatedDate).toBe("2020-01-01");
+  });
+});

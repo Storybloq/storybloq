@@ -14,7 +14,7 @@ import {
 } from "../../../src/cli/commands/issue.js";
 import { handleTicketCreate } from "../../../src/cli/commands/ticket.js";
 import { ExitCode } from "../../../src/core/output-formatter.js";
-import { CliValidationError } from "../../../src/cli/helpers.js";
+import { CliValidationError, todayISO } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
 import { loadProject } from "../../../src/core/project-loader.js";
 import { makeState, makeIssue } from "../../core/test-factories.js";
@@ -978,5 +978,106 @@ describe("handleIssueCreate validation texts and precedence are unchanged by ISS
     const dir = await project();
     await expect(handleIssueCreate({ ...base, severity: "high", phase: "" }, "json", dir))
       .rejects.toThrow('references unknown phase ""');
+  });
+});
+
+// T-481 T4: priority and waitingOn through the issue CLI handlers, and the
+// updatedDate stamp on an edit and on a status change.
+describe("T-481 T4: issue priority, waitingOn and updatedDate", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  async function setup(): Promise<{ dir: string; file: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "t481-t4-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleIssueCreate(
+      { title: "Bug", severity: "high", impact: "broken", components: ["core"], relatedTickets: [], location: [] },
+      "md", dir,
+    );
+    const issuesDir = join(dir, ".story", "issues");
+    const name = (await readdir(issuesDir)).find((f) => f.endsWith(".json"))!;
+    const file = join(issuesDir, name);
+    const record = JSON.parse(await readFile(file, "utf-8"));
+    await writeFile(file, JSON.stringify({ ...record, updatedDate: "2020-01-01" }, null, 2) + "\n", "utf-8");
+    return { dir, file };
+  }
+  const read = async (file: string) => JSON.parse(await readFile(file, "utf-8")) as Record<string, unknown>;
+
+  it("--severity stamps today's local date", async () => {
+    const { dir, file } = await setup();
+    await handleIssueUpdate("ISS-001", { severity: "low" }, "json", dir);
+    const i = await read(file);
+    expect(i.severity).toBe("low");
+    expect(i.updatedDate).toBe(todayISO());
+  });
+
+  it("--status resolved stamps today's local date", async () => {
+    const { dir, file } = await setup();
+    await handleIssueUpdate("ISS-001", { status: "resolved", resolution: "Fixed." }, "json", dir);
+    const i = await read(file);
+    expect(i.status).toBe("resolved");
+    expect(i.updatedDate).toBe(todayISO());
+  });
+
+  it("--priority p1 and --waiting-on external are stored; --waiting-on none removes the key", async () => {
+    const { dir, file } = await setup();
+    await handleIssueUpdate("ISS-001", { priority: "p1", waitingOn: "external" } as never, "json", dir);
+    let i = await read(file);
+    expect(i.priority).toBe("p1");
+    expect(i.waitingOn).toBe("external");
+    await handleIssueUpdate("ISS-001", { waitingOn: "none" } as never, "json", dir);
+    i = await read(file);
+    expect("waitingOn" in i).toBe(false);
+    expect(i.priority).toBe("p1");
+  });
+
+  it("create accepts --priority and --waiting-on", async () => {
+    const { dir } = await setup();
+    const result = await handleIssueCreate(
+      { title: "Second", severity: "low", impact: "x", components: [], relatedTickets: [], location: [], priority: "p3", waitingOn: "owner" } as never,
+      "json", dir,
+    );
+    const data = JSON.parse(result.output).data;
+    expect(data.priority).toBe("p3");
+    expect(data.waitingOn).toBe("owner");
+  });
+
+  it("--priority high and --waiting-on maybe are refused and nothing is written", async () => {
+    const { dir, file } = await setup();
+    const before = await readFile(file, "utf-8");
+    await expect(handleIssueUpdate("ISS-001", { priority: "high" } as never, "json", dir)).rejects.toThrow(/p0, p1, p2, p3/);
+    await expect(handleIssueUpdate("ISS-001", { waitingOn: "maybe" } as never, "json", dir)).rejects.toThrow(/owner, external, none/);
+    expect(await readFile(file, "utf-8")).toBe(before);
+  });
+
+  it("list --priority p2 includes an issue with no priority; --waiting-on filters through the view", () => {
+    const ctx = makeCtx({
+      state: makeState({
+        issues: [
+          makeIssue({ id: "ISS-001" }),
+          makeIssue({ id: "ISS-002", priority: "p1" } as never),
+          makeIssue({ id: "ISS-003", priority: "high", waitingOn: "external" } as never),
+        ],
+      }),
+    });
+    const p2 = handleIssueList({ priority: "p2" } as never, ctx).output;
+    expect(p2).toContain("ISS-001");
+    expect(p2).toContain("ISS-003");
+    expect(p2).not.toContain("ISS-002");
+    const ext = handleIssueList({ waitingOn: "external" } as never, ctx).output;
+    expect(ext).toContain("ISS-003");
+    expect(ext).not.toContain("ISS-001");
+  });
+
+  it("meta set priority and waitingOn refuse, naming the flag", async () => {
+    const { dir, file } = await setup();
+    const before = await readFile(file, "utf-8");
+    await expect(handleIssueMetaSet("ISS-001", "priority", "p1", "json", dir)).rejects.toThrow(/--priority/);
+    await expect(handleIssueMetaSet("ISS-001", "waitingOn", "owner", "json", dir)).rejects.toThrow(/--waiting-on/);
+    expect(await readFile(file, "utf-8")).toBe(before);
   });
 });

@@ -13,6 +13,9 @@ import {
   makePhase,
   minimalConfig,
 } from "./test-factories.js";
+import { formatRecommendations } from "../../src/core/output-formatter.js";
+import { SCENARIO_SPECS } from "../../scripts/owner-checkpoint-vectors.js";
+import { TicketSchema, type Ticket } from "../../src/models/ticket.js";
 
 function makeFedNode(overrides: Partial<FederationNodeEntry> & { name: string }): FederationNodeEntry {
   return {
@@ -1860,5 +1863,146 @@ describe("ISS-1112: unphased band", () => {
     const recs = recommend(state, 10).recommendations;
     expect(recs.find((r) => r.id === "T-002")).toBeUndefined();
     expect(recs.find((r) => r.id === "T-003")?.category).not.toBeUndefined();
+  });
+});
+
+// T-481 B7: computeActionability's tier-1 order (lifecycle, earmark, owner
+// checkpoint, completion) across the states where those checks overlap. T-481
+// adds a waiting check and extracts the completion expression without moving
+// anything; these results must not change.
+describe("T-481 B7: computeActionability tier-1 precedence on overlapping states", () => {
+  const noDispositions = new Map<string, TrajectoryDisposition>();
+  const ctx = (state: ProjectState) => ({ state, crossNodeRefStatuses: undefined, latestDispositionById: noDispositions });
+  const earmark = {
+    stage: "assigned", holderRole: "worker", holderSession: "11111111-1111-4111-8111-111111111111",
+    reservedBy: { client: "claude", id: "test-session" }, arrangementId: "a-0123456789abcdef",
+    since: "2026-08-28T00:00:00.000Z",
+  };
+  const fromScenario = (name: string, over: Record<string, unknown> = {}) => {
+    const spec = SCENARIO_SPECS.find((s) => s.name === name)!;
+    const tickets = spec.tickets.map((t) => TicketSchema.parse(t.id === "T-001" ? { ...t, ...over } : t)) as Ticket[];
+    const state = makeState({ tickets });
+    return computeActionability("ticket", tickets.find((t) => t.id === "T-001")!, ctx(state)).status;
+  };
+
+  it("archived and deleted are complete", () => {
+    const t = makeTicket({ id: "T-001", lifecycle: "archived", status: "open" });
+    expect(computeActionability("ticket", t, ctx(makeState({ tickets: [t] }))).status).toBe("complete");
+    const i = makeIssue({ id: "ISS-001", lifecycle: "deleted", status: "open" });
+    expect(computeActionability("issue", i, ctx(makeState({ issues: [i] }))).status).toBe("complete");
+  });
+
+  // Pen ruling 2026-10-17: an earmark hides only an OPEN item (notHiddenByEarmark), so a finished earmarked item reads complete.
+  it("a completed earmarked ticket and a resolved earmarked issue read complete; an open earmarked ticket reads blocked", () => {
+    const t = makeTicket({ id: "T-001", status: "complete", completedDate: "2026-01-02", earmark } as never);
+    expect(computeActionability("ticket", t, ctx(makeState({ tickets: [t] }))).status).toBe("complete");
+    const i = makeIssue({ id: "ISS-001", status: "resolved", resolvedDate: "2026-01-02", resolution: "done", earmark } as never);
+    expect(computeActionability("issue", i, ctx(makeState({ issues: [i] }))).status).toBe("complete");
+    const open = makeTicket({ id: "T-002", earmark } as never);
+    expect(computeActionability("ticket", open, ctx(makeState({ tickets: [open] }))).status).toBe("blocked");
+  });
+
+  it("owner checkpoints: approved and retired are complete; pending and unrecognised stored complete stay owner_gated", () => {
+    expect(fromScenario("approved")).toBe("complete");
+    expect(fromScenario("retired")).toBe("complete");
+    expect(fromScenario("pending", { status: "complete", completedDate: "2026-01-02" })).toBe("owner_gated");
+    expect(fromScenario("unknown-kind")).toBe("owner_gated");
+  });
+
+  it("an umbrella reads its derived status, never its stored one", () => {
+    const openUmbrella = makeTicket({ id: "T-010", status: "open" });
+    const doneLeaf = makeTicket({ id: "T-011", status: "complete", parentTicket: "T-010", completedDate: "2026-01-02" });
+    const s1 = makeState({ tickets: [openUmbrella, doneLeaf] });
+    expect(computeActionability("ticket", openUmbrella, ctx(s1)).status).toBe("complete");
+    const doneUmbrella = makeTicket({ id: "T-020", status: "complete", completedDate: "2026-01-02" });
+    const openLeaf = makeTicket({ id: "T-021", status: "open", parentTicket: "T-020" });
+    const s2 = makeState({ tickets: [doneUmbrella, openLeaf] });
+    expect(computeActionability("ticket", doneUmbrella, ctx(s2)).status).not.toBe("complete");
+  });
+
+  it("a complete leaf and a resolved issue are complete", () => {
+    const t = makeTicket({ id: "T-001", status: "complete", completedDate: "2026-01-02" });
+    expect(computeActionability("ticket", t, ctx(makeState({ tickets: [t] }))).status).toBe("complete");
+    const i = makeIssue({ id: "ISS-001", status: "resolved", resolvedDate: "2026-01-02", resolution: "done" });
+    expect(computeActionability("issue", i, ctx(makeState({ issues: [i] }))).status).toBe("complete");
+  });
+});
+
+// T-481 T6: the waiting check in computeActionability's tier 1, recommend's
+// waiting list, and the md Waiting section.
+describe("T-481 T6: waiting items in recommend", () => {
+  const noDispositions = new Map<string, TrajectoryDisposition>();
+  const ctx = (state: ProjectState) => ({ state, crossNodeRefStatuses: undefined, latestDispositionById: noDispositions });
+  const w = (extra: Record<string, unknown>) => extra as never;
+  const earmark = {
+    stage: "assigned", holderRole: "worker", holderSession: "11111111-1111-4111-8111-111111111111",
+    reservedBy: { client: "claude", id: "test-session" }, arrangementId: "a-0123456789abcdef",
+    since: "2026-08-28T00:00:00.000Z",
+  };
+  const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id).sort();
+
+  it("owner reads owner_gated with the waitingOn reason; external reads blocked", () => {
+    const o = makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) });
+    const e = makeTicket({ id: "T-002", ...w({ waitingOn: "external" }) });
+    const state = makeState({ tickets: [o, e] });
+    expect(computeActionability("ticket", o, ctx(state))).toMatchObject({ status: "owner_gated", reason: expect.stringContaining("waitingOn") });
+    expect(computeActionability("ticket", e, ctx(state))).toMatchObject({ status: "blocked", reason: expect.stringContaining("waitingOn") });
+    const i = makeIssue({ id: "ISS-001", ...w({ waitingOn: "owner" }) });
+    expect(computeActionability("issue", i, ctx(makeState({ issues: [i] })))).toMatchObject({ status: "owner_gated" });
+  });
+
+  it("an issue waiting on the owner with no disposition is never recommended", () => {
+    const state = makeState({
+      issues: [makeIssue({ id: "ISS-001", severity: "critical", ...w({ waitingOn: "owner" }) }), makeIssue({ id: "ISS-002", severity: "low" })],
+    });
+    const recs = recommend(state, 10).recommendations.map((r) => r.id);
+    expect(recs).not.toContain("ISS-001");
+  });
+
+  it("waiting lists every waiting item regardless of count, generator, status or blockers", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", order: 10, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-002", order: 20, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-003", order: 30, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-004", order: 40, ...w({ waitingOn: "external" }) }),
+        makeTicket({ id: "T-005", order: 50, status: "inprogress", ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-006", order: 60, blockedBy: ["T-009"], ...w({ waitingOn: "external" }) }),
+        makeTicket({ id: "T-009", order: 90 }),
+        makeTicket({ id: "T-007", phase: "p9", order: 10, ...w({ waitingOn: "owner" }) }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const result = recommend(state, 2) as unknown as { waiting: { owner: { id: string }[]; external: { id: string }[] }; recommendations: { id: string }[] };
+    expect(ids(result.waiting.owner)).toEqual(["T-001", "T-002", "T-003", "T-005", "T-007"]);
+    expect(ids(result.waiting.external)).toEqual(["T-004", "T-006"]);
+    for (const r of result.recommendations) expect(["T-001", "T-002", "T-003", "T-004", "T-005", "T-006", "T-007"]).not.toContain(r.id);
+  });
+
+  it("the default md shows the Waiting section even with zero recommendations; JSON always carries waiting", () => {
+    const state = makeState({ tickets: [makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) })] });
+    const result = recommend(state, 5);
+    expect(result.recommendations).toHaveLength(0);
+    const md = formatRecommendations(result, state, "md");
+    expect(md).toMatch(/Waiting/);
+    expect(md).toContain("T-001");
+    const json = JSON.parse(formatRecommendations(result, state, "json"));
+    expect(json.data.waiting.owner.map((x: { id: string }) => x.id)).toEqual(["T-001"]);
+    const empty = makeState({ tickets: [makeTicket({ id: "T-001" })] });
+    expect(JSON.parse(formatRecommendations(recommend(empty, 5), empty, "json")).data.waiting).toEqual({ owner: [], external: [] });
+  });
+
+  it("ordering: earmark before waiting; completion before waiting; an owner checkpoint reads by its checkpoint", () => {
+    const em = makeTicket({ id: "T-001", earmark, ...w({ waitingOn: "owner" }) } as never);
+    expect(computeActionability("ticket", em, ctx(makeState({ tickets: [em] }))).status).toBe("blocked");
+    const done = makeTicket({ id: "T-002", status: "complete", completedDate: "2026-01-02", ...w({ waitingOn: "owner" }) });
+    expect(computeActionability("ticket", done, ctx(makeState({ tickets: [done] }))).status).toBe("complete");
+    const res = makeIssue({ id: "ISS-001", status: "resolved", resolvedDate: "2026-01-02", resolution: "done", ...w({ waitingOn: "external" }) });
+    expect(computeActionability("issue", res, ctx(makeState({ issues: [res] }))).status).toBe("complete");
+    const spec = SCENARIO_SPECS.find((s) => s.name === "pending")!;
+    const tickets = spec.tickets.map((t) => TicketSchema.parse(t.id === "T-001" ? { ...t, waitingOn: "external" } : t)) as Ticket[];
+    const cp = computeActionability("ticket", tickets.find((t) => t.id === "T-001")!, ctx(makeState({ tickets })));
+    expect(cp.status).toBe("owner_gated");
+    expect(cp.reason).not.toContain("waitingOn");
   });
 });

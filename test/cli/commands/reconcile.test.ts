@@ -265,3 +265,25 @@ describe("handleReconcile", () => {
     });
   });
 });
+
+// T-481 B4: reconcile rewrites raw JSON outside the stamping write path, so a
+// renumbered item keeps its updatedDate and changes only its identity fields.
+describe("T-481 B4: reconcile never stamps updatedDate", () => {
+  it("a renumbered issue keeps its old updatedDate and gains only previousDisplayIds", async () => {
+    const root = createProject();
+    const issues = join(root, ".story", "issues");
+    mkdirSync(issues, { recursive: true });
+    const issue = (id: string, title: string, discoveredDate: string) => ({
+      id, displayId: "ISS-001", title, status: "open", severity: "medium", components: [], impact: "x",
+      resolution: null, location: [], discoveredDate, resolvedDate: null, relatedTickets: [], order: 10, phase: null,
+      updatedDate: "2020-01-01",
+    });
+    writeJson(join(issues, "i-0000000000000001.json"), issue("i-0000000000000001", "Winner", "2020-01-01"));
+    const loserPrior = issue("i-0000000000000002", "Loser", "2020-02-01");
+    writeJson(join(issues, "i-0000000000000002.json"), loserPrior);
+    const result = await handleReconcile(root, { dryRun: false, ci: false, format: "md" });
+    expect(result.exitCode).toBe(0);
+    const loser = JSON.parse(readFileSync(join(issues, "i-0000000000000002.json"), "utf-8"));
+    expect(loser).toEqual({ ...loserPrior, displayId: "ISS-002", previousDisplayIds: ["ISS-001"] });
+  });
+});

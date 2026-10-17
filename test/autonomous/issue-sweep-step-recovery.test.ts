@@ -86,6 +86,7 @@ import { writeSessionSync } from "../../src/autonomous/session.js";
 import { telemetryDirPath } from "../../src/autonomous/liveness.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
+import { todayISO } from "../../src/cli/helpers.js";
 import {
   setupProject, writeIssue, issueText, readIssue, acquiredBy, deferredAs, resolvedAs, loadedFingerprint,
   readState, eventsOfType, treeDigest, plant, report, resume, cancel,
@@ -533,5 +534,199 @@ describe("resume keeps the sweep's record (T-486 U4 T22, T23)", () => {
     expect(s.pendingProjectMutation).toBeNull();
     expect(s.issueSweepState).toMatchObject({ current: "ISS-002", remaining: ["ISS-003"], resolved: ["ISS-001"], ...lists });
     expect(readIssue(root, "ISS-003").status).toBe("open");
+  });
+});
+
+// T-481 B5: a release marker written before T-481 carries no stampDate. Its
+// fingerprints describe an unstamped image, so a replay must write that image
+// with updatedDate untouched, and a landed release is still recognised.
+describe("T-481 B5: legacy release markers (no stampDate)", () => {
+  /**
+   * A release marker as a pre-T-481 build wrote it: no stampDate, and both
+   * fingerprints over unstamped images. Built by hand so the pin outlives the
+   * stamping change.
+   */
+  async function legacyRelease(sessionId: string, id: string): Promise<Loose> {
+    const path = join(root, ".story", "issues", `${id}.json`);
+    const original = issueText(root, id);
+    const releasePre = await loadedFingerprint(root, id);
+    const { sweepAcquisition: _a, ...rest } = JSON.parse(original) as Loose;
+    writeFileSync(path, JSON.stringify({ ...rest, status: "open" }, null, 2) + "\n");
+    const releasePost = await loadedFingerprint(root, id);
+    writeFileSync(path, original);
+    return {
+      type: "issue_sweep_step", variant: "release", transitionId: "issue-sweep-release-legacy",
+      current: id, outcome: "deferred",
+      entry: { id, disposition: "owner_gated", reason: "Owner decides.", ref: "T-001" },
+      releasePre, releasePost,
+    };
+  }
+
+  for (const landed of [false, true]) {
+    it(`deferred, ${landed ? "write landed" : "write not landed"}: resume ${landed ? "recognises it" : "replays the unstamped image"}`, async () => {
+      const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: [], resolved: [] }, { compact: true });
+      writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), ...deferredAs("owner_gated", "Owner decides.", "T-001"), updatedDate: "2020-01-01" });
+      const legacy = await legacyRelease(sessionId, "ISS-001");
+      patchState(dir, { pendingProjectMutation: legacy });
+      if (landed) {
+        const { sweepAcquisition: _a, ...rest } = readIssue(root, "ISS-001");
+        writeFileSync(join(root, ".story", "issues", "ISS-001.json"), JSON.stringify({ ...rest, status: "open" }, null, 2) + "\n");
+      }
+
+      await resume(root, sessionId);
+
+      const issue = readIssue(root, "ISS-001");
+      expect(issue.status).toBe("open");
+      expect(issue.sweepAcquisition).toBeUndefined();
+      expect(issue.updatedDate).toBe("2020-01-01");
+      const s = readState(dir);
+      expect(s.pendingProjectMutation).toBeNull();
+      expect(s.issueSweepState?.deferred).toEqual([{ id: "ISS-001", disposition: "owner_gated", reason: "Owner decides.", ref: "T-001" }]);
+      expect(eventsOfType(dir, "issue_sweep_conflict")).toHaveLength(0);
+    });
+  }
+});
+
+// T-481 T13a and T13b: the sweep's recorded writes stamp the day the marker
+// recorded, and recovery recognises or replays that exact image, including
+// when it runs after local midnight.
+describe("T-481 T13a/T13b: stamped sweep steps and their recovery", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** Moves the clock past the next local midnight and refreshes the lease. */
+  function nextLocalDay(dir: string): void {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 5, 0, 0);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(d);
+    const now = new Date();
+    const s = readState(dir) as unknown as Loose;
+    patchState(dir, {
+      lease: { ...(s.lease as Loose), lastHeartbeat: now.toISOString(), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString() },
+      compactPreparedAt: now.toISOString(),
+    });
+  }
+
+  for (const nextDay of [false, true]) {
+    it(`T13a: a crash after the acquisition write is recognised${nextDay ? " on the next local day" : ""}, and the issue carries the acquisition day`, async () => {
+      const { sessionId, dir } = fixedCurrent(["ISS-002"]);
+      writeIssue(root, "ISS-002", { updatedDate: "2020-01-01" });
+      const day = todayISO();
+      hoisted.hooks.push({ when: acquisitionRecord("ISS-002"), mode: "crash-before" });
+
+      await report(root, sessionId);
+      const mid = readState(dir) as unknown as Loose;
+      expect(isStep(mid, "acquire")).toBe(true);
+      expect(marker(mid)?.stampDate).toBe(day);
+      expect(readIssue(root, "ISS-002").status).toBe("inprogress");
+
+      patchState(dir, { state: "COMPACT", preCompactState: "ISSUE_SWEEP", compactPending: true, compactPreparedAt: new Date().toISOString() });
+      if (nextDay) nextLocalDay(dir);
+      await resume(root, sessionId);
+
+      const s = readState(dir);
+      expect(s.pendingProjectMutation).toBeNull();
+      expect(s.issueSweepState?.current).toBe("ISS-002");
+      expect(eventsOfType(dir, "issue_sweep_conflict")).toHaveLength(0);
+      expect(readIssue(root, "ISS-002").updatedDate).toBe(day);
+    });
+  }
+
+  it("T13b: a deferred release that landed before the crash is recognised, and carries the release day", async () => {
+    const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: [], resolved: [] });
+    writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), ...deferredAs("owner_gated", "Owner decides.", "T-001"), updatedDate: "2020-01-01" });
+    const day = todayISO();
+    hoisted.hooks.push({ when: outcomeCommit, mode: "crash-before" });
+
+    await report(root, sessionId);
+    expect(readIssue(root, "ISS-001").status).toBe("open");
+
+    patchState(dir, { state: "COMPACT", preCompactState: "ISSUE_SWEEP", compactPending: true, compactPreparedAt: new Date().toISOString() });
+    await resume(root, sessionId);
+
+    const s = readState(dir);
+    expect(s.pendingProjectMutation).toBeNull();
+    expect(s.issueSweepState?.deferred).toEqual([{ id: "ISS-001", disposition: "owner_gated", reason: "Owner decides.", ref: "T-001" }]);
+    expect(eventsOfType(dir, "issue_sweep_conflict")).toHaveLength(0);
+    expect(readIssue(root, "ISS-001").updatedDate).toBe(day);
+  });
+
+  it("T13b: a deferred release that had not landed is replayed on the next local day with the recorded date, then recognised", async () => {
+    const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: [], resolved: [] });
+    writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), ...deferredAs("owner_gated", "Owner decides.", "T-001"), updatedDate: "2020-01-01" });
+    const day = todayISO();
+    hoisted.hooks.push({ when: (_p, n) => isStep(n, "release"), mode: "crash-after" });
+
+    await report(root, sessionId);
+    const mid = readState(dir) as unknown as Loose;
+    expect(isStep(mid, "release")).toBe(true);
+    expect(marker(mid)?.stampDate).toBe(day);
+    expect(readIssue(root, "ISS-001").status).toBe("inprogress");
+
+    patchState(dir, { state: "COMPACT", preCompactState: "ISSUE_SWEEP", compactPending: true, compactPreparedAt: new Date().toISOString() });
+    nextLocalDay(dir);
+    expect(todayISO()).not.toBe(day);
+    await resume(root, sessionId);
+
+    const issue = readIssue(root, "ISS-001");
+    expect(issue.status).toBe("open");
+    expect(issue.sweepAcquisition).toBeUndefined();
+    expect(issue.updatedDate).toBe(day);
+    const s = readState(dir);
+    expect(s.pendingProjectMutation).toBeNull();
+    expect(s.issueSweepState?.deferred).toEqual([{ id: "ISS-001", disposition: "owner_gated", reason: "Owner decides.", ref: "T-001" }]);
+    expect(eventsOfType(dir, "issue_sweep_conflict")).toHaveLength(0);
+  });
+
+  for (const bad of ["2026-02-30", "20261017", 20261017] as const) {
+    it(`T13d: a release marker whose stampDate is ${JSON.stringify(bad)} is malformed: no replay, nothing written`, async () => {
+      const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: [], resolved: [] });
+      writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), ...deferredAs("owner_gated", "Owner decides.", "T-001"), updatedDate: "2020-01-01" });
+      hoisted.hooks.push({ when: (_p, n) => isStep(n, "release"), mode: "crash-after" });
+      await report(root, sessionId);
+      const mid = readState(dir) as unknown as Loose;
+      expect(isStep(mid, "release")).toBe(true);
+      expect(typeof marker(mid)?.stampDate).toBe("string");
+      patchState(dir, {
+        pendingProjectMutation: { ...marker(mid)!, stampDate: bad },
+        state: "COMPACT", preCompactState: "ISSUE_SWEEP", compactPending: true, compactPreparedAt: new Date().toISOString(),
+      });
+      const before = issueText(root, "ISS-001");
+      hoisted.ledgerWrites = [];
+
+      await resume(root, sessionId);
+
+      expect(issueText(root, "ISS-001")).toBe(before);
+      expect(hoisted.ledgerWrites).toEqual([]);
+      expect(eventsOfType(dir, "issue_sweep_conflict").map((e) => (e.data as Loose).reason)).toEqual(["malformed-marker"]);
+    });
+  }
+
+  it("T13b: an earmark-only release (fixed) writes no updatedDate and is recognised", async () => {
+    const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: [], resolved: [] });
+    writeIssue(root, "ISS-001", {
+      ...acquiredBy(sessionId), status: "resolved", resolution: "Fixed.", resolvedDate: "2026-10-16", updatedDate: "2020-01-01",
+      earmark: {
+        stage: "assigned", reservedBy: { client: "claude", id: "pen-task-1" }, arrangementId: "a-0123456789abcdef",
+        since: new Date().toISOString(), holderRole: "worker", holderSession: sessionId,
+      },
+    });
+    hoisted.hooks.push({ when: outcomeCommit, mode: "crash-before" });
+
+    await report(root, sessionId);
+    const issue = readIssue(root, "ISS-001");
+    expect(issue.earmark ?? null).toBeNull();
+    expect(issue.sweepAcquisition).toBeUndefined();
+    expect(issue.updatedDate).toBe("2020-01-01");
+
+    patchState(dir, { state: "COMPACT", preCompactState: "ISSUE_SWEEP", compactPending: true, compactPreparedAt: new Date().toISOString() });
+    await resume(root, sessionId);
+
+    const s = readState(dir);
+    expect(s.pendingProjectMutation).toBeNull();
+    expect(s.issueSweepState?.resolved).toEqual(["ISS-001"]);
+    expect(eventsOfType(dir, "issue_sweep_conflict")).toHaveLength(0);
+    expect(readIssue(root, "ISS-001").updatedDate).toBe("2020-01-01");
   });
 });

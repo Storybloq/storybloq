@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2673,5 +2673,203 @@ describe("T-450 step 4: the prepare site records what recovery cannot reconstruc
     expect(record.target).toBe("ISS-001");
     expect(record.value).toBe("inprogress");
     expect(typeof record.transitionId).toBe("string");
+  });
+});
+
+/**
+ * T-481 B6: characterises the issue-pick crash-recovery gap at base 440397eb.
+ * The marker fingerprints the snapshot read before the earmark conversion and
+ * predicts a spread-and-status postimage, but the stage writes the converted
+ * record through handleIssueUpdate, which also drops a stored resolutionKind
+ * on a status change. Neither fingerprint then matches the ledger, so the
+ * classifier returns a conflict where "applied" or "replay" is correct.
+ * T-481 S2 inverts these expectations (T13c/T13f).
+ */
+describe("T-481 B6: the issue pick's recorded fingerprints at base", () => {
+  let root: string | null = null;
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = null;
+  });
+
+  function buildWith(extra: Record<string, unknown>): string {
+    const r = buildRepo();
+    const path = join(r, ".story", "issues", "ISS-001.json");
+    const issue = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...issue, ...extra }));
+    git(r, ["add", "-A"]);
+    git(r, ["commit", "-qm", "t481 fixture"]);
+    return r;
+  }
+
+  async function pick(r: string): Promise<Record<string, unknown>> {
+    const dir = join(r, ".story", "sessions", "s");
+    mkdirSync(dir, { recursive: true });
+    const ctx = new StageContext(r, dir, makeState(r), makeRecipe());
+    const seen: Record<string, unknown>[] = [];
+    const real = ctx.writeState.bind(ctx);
+    vi.spyOn(ctx, "writeState").mockImplementation((patch: Partial<FullSessionState>) => {
+      const marker = (patch as { pendingProjectMutation?: unknown }).pendingProjectMutation;
+      if (marker) seen.push(marker as Record<string, unknown>);
+      return real(patch);
+    });
+    const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
+    expect(result.action).toBe("goto");
+    expect(seen).toHaveLength(1);
+    return seen[0]!;
+  }
+
+  async function observe(r: string) {
+    const { state } = await loadProject(r);
+    return state.issues.find((i) => i.id === "ISS-001");
+  }
+
+  const reserved = {
+    earmark: {
+      stage: "reserved", reservedBy: { client: "claude", id: "pen-task" },
+      arrangementId: "a-0000000000000001", since: "2020-01-01T00:00:00.000Z",
+      holderRole: "worker", holderSession: null,
+    },
+  };
+  const staleKind = { resolutionKind: { kind: "fixed", closedOn: "2020-01-01", resolutionDigest: "0".repeat(64) } };
+
+  for (const [name, extra] of [["a reserved earmark converted at pick", reserved], ["a stale resolutionKind", staleKind]] as const) {
+    it(`${name}: after the status write, the classifier quarantines it as unconfirmed-postimage, not applied (base gap)`, async () => {
+      root = buildWith(extra);
+      const record = await pick(root);
+      const applied = await observe(root);
+      expect(applied?.status).toBe("inprogress");
+      expect(reasonOf(classifyPendingMutation(record, observeAt("ISS-001", { entity: applied }), NO_AUTHORITY))).toBe("unconfirmed-postimage");
+    });
+
+    it(`${name}: before the status write, the classifier does not authorise a replay (base gap)`, async () => {
+      root = buildWith(extra);
+      const record = await pick(root);
+      const { handleIssueUpdate } = await import("../../src/cli/commands/issue.js");
+      await handleIssueUpdate("ISS-001", { status: "open" }, "json", root);
+      const before = await observe(root);
+      expect(before?.status).toBe("open");
+      expect(classifyPendingMutation(record, observeAt("ISS-001", { entity: before }), NO_AUTHORITY)).not.toEqual({ kind: "replay" });
+    });
+  }
+});
+
+/**
+ * T-481 T13f: a stamped issue_update marker, built by the real pick with a
+ * reserved earmark converted and a stale resolutionKind dropped, classifies
+ * by the stamped reconstruction: REPLAY at the preimage, APPLIED at the
+ * postimage. A stamped marker whose postimage was built the old way can never
+ * converge (malformed-record). An unstamped legacy marker keeps the spread
+ * reconstruction in both directions.
+ */
+describe("T-481 T13f: classifying the stamped issue-pick marker", () => {
+  let root: string | null = null;
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = null;
+  });
+
+  const both = {
+    earmark: {
+      stage: "reserved", reservedBy: { client: "claude", id: "pen-task" },
+      arrangementId: "a-0000000000000001", since: "2020-01-01T00:00:00.000Z",
+      holderRole: "worker", holderSession: null,
+    },
+    resolutionKind: { kind: "fixed", closedOn: "2020-01-01", resolutionDigest: "0".repeat(64) },
+    updatedDate: "2020-01-01",
+  };
+
+  function build(extra: Record<string, unknown>): string {
+    const r = buildRepo();
+    const path = join(r, ".story", "issues", "ISS-001.json");
+    const issue = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...issue, ...extra }));
+    git(r, ["add", "-A"]);
+    git(r, ["commit", "-qm", "t481 fixture"]);
+    return r;
+  }
+
+  /** The real pick's marker and the issue bytes at the moment it was written. */
+  async function pick(r: string): Promise<{ record: Record<string, unknown>; atMarker: string }> {
+    const dir = join(r, ".story", "sessions", "s");
+    mkdirSync(dir, { recursive: true });
+    const ctx = new StageContext(r, dir, makeState(r), makeRecipe());
+    const path = join(r, ".story", "issues", "ISS-001.json");
+    const seen: Array<{ record: Record<string, unknown>; atMarker: string }> = [];
+    const real = ctx.writeState.bind(ctx);
+    vi.spyOn(ctx, "writeState").mockImplementation((patch: Partial<FullSessionState>) => {
+      const marker = (patch as { pendingProjectMutation?: unknown }).pendingProjectMutation;
+      if (marker) seen.push({ record: JSON.parse(JSON.stringify(marker)) as Record<string, unknown>, atMarker: readFileSync(path, "utf-8") });
+      return real(patch);
+    });
+    const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
+    expect(result.action).toBe("goto");
+    expect(seen).toHaveLength(1);
+    return seen[0]!;
+  }
+
+  async function observe(r: string) {
+    const { state } = await loadProject(r);
+    return state.issues.find((i) => i.id === "ISS-001");
+  }
+
+  it("occupant at the postimage: APPLIED", async () => {
+    root = build(both);
+    const { record } = await pick(root);
+    expect(typeof record.stampDate).toBe("string");
+    const applied = await observe(root);
+    expect(applied?.status).toBe("inprogress");
+    expect(classifyPendingMutation(record, observeAt("ISS-001", { entity: applied }), NO_AUTHORITY)).toEqual({ kind: "applied" });
+  });
+
+  it("occupant at the preimage: REPLAY", async () => {
+    root = build(both);
+    const { record, atMarker } = await pick(root);
+    expect(typeof record.stampDate).toBe("string");
+    writeFileSync(join(root, ".story", "issues", "ISS-001.json"), atMarker);
+    const before = await observe(root);
+    expect(before?.status).toBe("open");
+    expect(classifyPendingMutation(record, observeAt("ISS-001", { entity: before }), NO_AUTHORITY)).toEqual({ kind: "replay" });
+  });
+
+  it("the same stamped marker with its postimage built the old way: malformed-record", async () => {
+    root = build(both);
+    const { record, atMarker } = await pick(root);
+    expect(typeof record.stampDate).toBe("string");
+    writeFileSync(join(root, ".story", "issues", "ISS-001.json"), atMarker);
+    const before = await observe(root);
+    const oldWay = { ...record, postimageFingerprint: entityFingerprint({ ...before!, status: "inprogress" }) };
+    expect(reasonOf(classifyPendingMutation(oldWay, observeAt("ISS-001", { entity: before }), NO_AUTHORITY))).toBe("malformed-record");
+  });
+
+  for (const bad of ["2026-02-30", "20261017", 20261017] as const) {
+    it(`T13d: a stampDate of ${JSON.stringify(bad)} is malformed-record at the preimage and at the postimage`, async () => {
+      root = build(both);
+      const { record, atMarker } = await pick(root);
+      expect(typeof record.stampDate).toBe("string");
+      const broken = { ...record, stampDate: bad };
+      const applied = await observe(root);
+      expect(reasonOf(classifyPendingMutation(broken, observeAt("ISS-001", { entity: applied }), NO_AUTHORITY))).toBe("malformed-record");
+      writeFileSync(join(root, ".story", "issues", "ISS-001.json"), atMarker);
+      const before = await observe(root);
+      expect(reasonOf(classifyPendingMutation(broken, observeAt("ISS-001", { entity: before }), NO_AUTHORITY))).toBe("malformed-record");
+    });
+  }
+
+  it("an unstamped legacy marker classifies by the spread reconstruction in both directions", async () => {
+    root = build({ updatedDate: "2020-01-01" });
+    const before = await observe(root);
+    const legacy = {
+      type: "issue_update", target: "ISS-001", field: "status", value: "inprogress", expectedCurrent: "open",
+      transitionId: "issue-pick-legacy", provenance: { ownerTask: null, revision: 1, ticket: null },
+      preimage: { present: true, value: "open" }, postimage: { present: true, value: "inprogress" },
+      preimageFingerprint: entityFingerprint(before!),
+      postimageFingerprint: entityFingerprint({ ...before!, status: "inprogress" }),
+    };
+    expect(classifyPendingMutation(legacy, observeAt("ISS-001", { entity: before }), NO_AUTHORITY)).toEqual({ kind: "replay" });
+    const after = { ...before!, status: "inprogress" as const };
+    expect(classifyPendingMutation(legacy, observeAt("ISS-001", { entity: after }), NO_AUTHORITY)).toEqual({ kind: "applied" });
   });
 });

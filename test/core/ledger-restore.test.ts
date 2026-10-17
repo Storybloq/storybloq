@@ -514,3 +514,25 @@ describe("restoreRecord: inputs", () => {
     await expect(restoreRecord(root, CAP_TARGET, base, "--help", deps)).rejects.toBeInstanceOf(RestoreInputError);
   });
 });
+
+// T-481 B4: restore writes the recorded bytes back, outside the stamping write
+// path, so a restored issue keeps exactly its historical updatedDate.
+describe("T-481 B4: restore never stamps updatedDate", () => {
+  it("an issue record restores to its exact base bytes, old updatedDate included", async () => {
+    const root = await newProject();
+    const path = ".story/issues/i-0000000000000001.json";
+    const issue = (impact: string) => ({
+      id: "i-0000000000000001", displayId: "ISS-001", title: "Old issue", status: "open", severity: "medium",
+      components: [], impact, resolution: null, location: [], discoveredDate: "2020-01-01", resolvedDate: null,
+      relatedTickets: [], order: 10, phase: null, updatedDate: "2020-01-01",
+    });
+    const baseBytes = doc(issue("first"));
+    write(root, path, baseBytes);
+    const base = commit(root, "base");
+    write(root, path, doc({ ...issue("second"), updatedDate: "2020-02-02" }));
+    const mixed = commit(root, "edit");
+    const result = await restoreRecord(root, { kind: "record", path }, base, mixed, deps);
+    expect(result).toEqual({ outcome: "restored", target: path });
+    expect(read(root, path)).toBe(baseBytes);
+  });
+});

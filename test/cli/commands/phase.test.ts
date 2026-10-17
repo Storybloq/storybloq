@@ -494,3 +494,47 @@ describe("handlePhaseDelete", () => {
     expect(parsed.data.id).toBe("p1");
   });
 });
+
+// T-481 T14: a phase-delete reassignment rewrites a reference, not content;
+// neither the ticket nor the issue gets a new updatedDate.
+describe("T-481 T14: handlePhaseDelete reassignment keeps updatedDate", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  it("the reassigned ticket and issue change phase and keep 2020-01-01", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "phase-delete-t481-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handlePhaseCreate(
+      { id: "p1", name: "Target", label: "T", description: "T", after: "p0", atStart: false },
+      "md", dir,
+    );
+    await handleTicketCreate(
+      { title: "T in p0", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null },
+      "md", dir,
+    );
+    await handleIssueCreate(
+      { title: "I in p0", severity: "medium", impact: "test", components: [], relatedTickets: ["T-001"], location: [] },
+      "md", dir,
+    );
+    const { writeFile: wf } = await import("node:fs/promises");
+    const ticketPath = join(dir, ".story", "tickets", "T-001.json");
+    const issuePath = join(dir, ".story", "issues", "ISS-001.json");
+    const ticketData = JSON.parse(await readFile(ticketPath, "utf-8"));
+    await wf(ticketPath, JSON.stringify({ ...ticketData, updatedDate: "2020-01-01" }, null, 2));
+    const issueData = JSON.parse(await readFile(issuePath, "utf-8"));
+    await wf(issuePath, JSON.stringify({ ...issueData, phase: "p0", updatedDate: "2020-01-01" }, null, 2));
+
+    await handlePhaseDelete("p0", "p1", "md", dir);
+
+    const ticket = JSON.parse(await readFile(ticketPath, "utf-8"));
+    expect(ticket.phase).toBe("p1");
+    expect(ticket.updatedDate).toBe("2020-01-01");
+    const issue = JSON.parse(await readFile(issuePath, "utf-8"));
+    expect(issue.phase).toBe("p1");
+    expect(issue.updatedDate).toBe("2020-01-01");
+  });
+});

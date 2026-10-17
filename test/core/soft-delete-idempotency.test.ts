@@ -228,3 +228,25 @@ describe("ISS-757: CLI delete handlers surface alreadyDeleted", () => {
     expect(JSON.parse(json.output!).data.alreadyDeleted).toBe(true);
   });
 });
+
+// T-481 B3: a soft delete adds exactly the tombstone fields, never updatedDate.
+// merge-driver.ts hasNonTombstoneChanges treats any other changed field as an
+// edit, so a stamped tombstone would merge as a delete-edit conflict (ISS-727).
+describe("T-481 B3: a tombstone adds only lifecycle, deletedAt and deletedBy", () => {
+  for (const e of entities.filter((x) => x.kind === "ticket" || x.kind === "issue")) {
+    it(`${e.kind}: the delete adds exactly the tombstone keys and leaves updatedDate alone`, async () => {
+      const root = await createProject(teamConfig);
+      const path = join(root, ".story", e.dir, `${e.id}.json`);
+      const prior = JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
+      prior.updatedDate = "2020-01-01";
+      await writeFile(path, JSON.stringify(prior, null, 2));
+      await e.del(e.id, root, { actor: "t481@test" });
+      const after = JSON.parse(await readFile(path, "utf-8")) as Record<string, unknown>;
+      const added = Object.keys(after).filter((k) => !(k in prior)).sort();
+      expect(added).toEqual(["deletedAt", "deletedBy", "lifecycle"]);
+      const changed = Object.keys(prior).filter((k) => JSON.stringify(prior[k]) !== JSON.stringify(after[k]));
+      expect(changed).toEqual([]);
+      expect(after.updatedDate).toBe("2020-01-01");
+    });
+  }
+});

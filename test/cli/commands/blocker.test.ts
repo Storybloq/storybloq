@@ -8,7 +8,7 @@ import {
   handleBlockerClear,
 } from "../../../src/cli/commands/blocker.js";
 import { initProject } from "../../../src/core/init.js";
-import { makeState, makeRoadmap, makePhase } from "../../core/test-factories.js";
+import { makeState, makeRoadmap, makePhase, makeTicket, makeIssue } from "../../core/test-factories.js";
 import type { CommandContext } from "../../../src/cli/run.js";
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -166,5 +166,37 @@ describe("handleBlockerClear", () => {
     const parsed = JSON.parse(result.output);
     expect(parsed.data.note).toBe("Approved on 2026-03-20");
     expect(parsed.data.cleared).toBe(true);
+  });
+});
+
+// T-481 T8: blocker list names what waits on a role, from the waiting inventory.
+describe("T-481 T8: handleBlockerList lists waiting tickets and issues with their role", () => {
+  const w = (extra: Record<string, unknown>) => extra as never;
+  const state = () => makeState({
+    tickets: [
+      makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) }),
+      makeTicket({ id: "T-002", ...w({ waitingOn: "external" }) }),
+      makeTicket({ id: "T-003" }),
+    ],
+    issues: [makeIssue({ id: "ISS-001", ...w({ waitingOn: "owner" }) })],
+  });
+
+  it("md: a Waiting section names each item under its role", () => {
+    const out = handleBlockerList(makeCtx({ state: state() })).output;
+    expect(out).toMatch(/Waiting/);
+    const ownerLine = out.split("\n").findIndex((l) => /owner/i.test(l));
+    const externalLine = out.split("\n").findIndex((l) => /external/i.test(l));
+    expect(ownerLine).toBeGreaterThanOrEqual(0);
+    expect(externalLine).toBeGreaterThanOrEqual(0);
+    for (const id of ["T-001", "T-002", "ISS-001"]) expect(out).toContain(id);
+    expect(out).not.toContain("T-003");
+  });
+
+  it("json: data stays the blocker array; the inventory travels beside it", () => {
+    const out = JSON.parse(handleBlockerList(makeCtx({ state: state(), format: "json" })).output);
+    expect(Array.isArray(out.data)).toBe(true);
+    const waiting = out.waiting as { owner: { id: string }[]; external: { id: string }[] };
+    expect(waiting.owner.map((x) => x.id).sort()).toEqual(["ISS-001", "T-001"]);
+    expect(waiting.external.map((x) => x.id)).toEqual(["T-002"]);
   });
 });

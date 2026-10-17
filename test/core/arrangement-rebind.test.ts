@@ -477,6 +477,20 @@ describe("rebind: refusals and side effects", () => {
     expect(result.carriedEarmarks.sort()).toEqual(["ISS-001", "T-001"]);
   });
 
+  it("T-481 T14: the rebind re-points earmarks and keeps updatedDate 2020-01-01", async () => {
+    await coordinated();
+    const earmark = { reservedBy: pen, arrangementId: id, since: new Date().toISOString(), stage: "reserved", holderRole: "worker", holderSession: null };
+    await writeFile(join(root, ".story", "tickets", "T-001.json"), JSON.stringify({ id: "T-001", title: "Carried", description: "", type: "feature", status: "open", phase: null, order: 1, createdDate: "2020-01-01", updatedDate: "2020-01-01", completedDate: null, blockedBy: [], earmark }));
+    await writeFile(join(root, ".story", "issues", "ISS-001.json"), JSON.stringify({ id: "ISS-001", title: "Carried issue", status: "open", severity: "low", components: [], impact: "", resolution: null, location: [], discoveredDate: "2020-01-01", updatedDate: "2020-01-01", resolvedDate: null, relatedTickets: [], earmark }));
+    const result = await rebind();
+    const ticket = await readJson(join(root, ".story", "tickets", "T-001.json"));
+    const issue = await readJson(join(root, ".story", "issues", "ISS-001.json"));
+    expect(ticket.earmark.arrangementId).toBe(result.successorId);
+    expect(issue.earmark.arrangementId).toBe(result.successorId);
+    expect(ticket.updatedDate).toBe("2020-01-01");
+    expect(issue.updatedDate).toBe("2020-01-01");
+  });
+
   it("R11: a readable local runtime that diverges from the checkpoint refuses", async () => {
     await coordinated({ dropRuntime: false });
     const arrangement = await readJson(arrangementFile());

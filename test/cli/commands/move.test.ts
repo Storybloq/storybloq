@@ -413,3 +413,18 @@ describe("ISS-805: early-validation --format json envelopes", () => {
     expect(result.output).toBe("Error: specify --after or --before.");
   });
 });
+
+// T-481 T14: a rank move is ordering, not content; it never stamps updatedDate.
+describe("T-481 T14: handleTicketMove keeps updatedDate", () => {
+  it("moving a ticket changes its rank and keeps updatedDate 2020-01-01", async () => {
+    const dir = await makeTeamProject();
+    await writeTicketRaw(dir, "T-001", 10, { rank: "a0", updatedDate: "2020-01-01" });
+    await writeTicketRaw(dir, "T-002", 20, { rank: "a1", updatedDate: "2020-01-01" });
+
+    const result = await handleTicketMove("T-001", dir, { after: "T-002", format: "json" });
+    expect(JSON.parse(result.output).ok).toBe(true);
+    const raw = JSON.parse(await readFile(join(dir, ".story", "tickets", "T-001.json"), "utf-8"));
+    expect(raw.rank).not.toBe("a0");
+    expect(raw.updatedDate).toBe("2020-01-01");
+  });
+});

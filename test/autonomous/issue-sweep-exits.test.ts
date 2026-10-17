@@ -60,7 +60,7 @@ import { IssueSweepStage, sweepStepPendingText } from "../../src/autonomous/stag
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
 import {
   OTHER_SESSION, setupProject, writeIssue, issueText, readIssue, acquiredBy, resolvedAs, deferredAs,
-  readState, stateText, plant, report, loadedFingerprint,
+  readState, stateText, plant, report, resume, loadedFingerprint,
 } from "./_issue-sweep-harness.js";
 
 let root: string;
@@ -326,4 +326,83 @@ describe("ISSUE_SWEEP refuses to act past a pending step (T-486 U4 T16s)", () =>
     expect(stateText(dir)).toBe(stateBefore);
     expect(issueText(root, "ISS-002")).toBe(issueBefore);
   });
+});
+
+// T-481 T7c: an issue the sweep already holds that starts to wait stays held.
+// Resume and report return a waiting explanation, write nothing, invent no
+// disposition and keep `current`; clearing the field restores normal flow.
+describe("T-481 T7c: a held issue that starts to wait", () => {
+  const outcomes: Array<[string, (sid: string) => Record<string, unknown>]> = [
+    ["still in progress", (sid) => ({ ...acquiredBy(sid) })],
+    ["resolved", (sid) => ({ ...acquiredBy(sid), status: "resolved", resolution: "Fixed it.", resolvedDate: "2026-10-16" })],
+    ["deferred", (sid) => ({ ...acquiredBy(sid), ...deferredAs("owner_gated", "Owner decides.", "T-001") })],
+  ];
+  for (const wait of ["owner", "external"] as const) {
+    for (const [name, fields] of outcomes) {
+      it(`${wait}, ${name}: report explains the wait and changes nothing; once cleared it settles normally`, async () => {
+        const { sessionId, dir } = plant(root, sweepOn());
+        writeIssue(root, "ISS-001", { ...fields(sessionId), waitingOn: wait });
+        const before = issueText(root, "ISS-001");
+
+        const r = await report(root, sessionId);
+
+        expect(r.thrown).toBeNull();
+        expect(r.text).toContain("waitingOn");
+        expect(r.text).toContain("storybloq issue update ISS-001 --waiting-on none");
+        expect(issueText(root, "ISS-001")).toBe(before);
+        const s = readState(dir);
+        expect(s.issueSweepState?.current).toBe("ISS-001");
+        expect(s.pendingProjectMutation).toBeNull();
+        expect(s.issueSweepState?.resolved ?? []).toEqual([]);
+        expect(s.issueSweepState?.deferred ?? []).toEqual([]);
+        expect(hoisted.releaseMarkers).toHaveLength(0);
+
+        if (name === "still in progress") return;
+        const { waitingOn: _w, ...cleared } = { ...fields(sessionId) } as Record<string, unknown>;
+        writeIssue(root, "ISS-001", cleared);
+        await report(root, sessionId);
+        const settled = readState(dir).issueSweepState!;
+        expect(settled.current).toBeNull();
+        if (name === "resolved") expect(settled.resolved).toEqual(["ISS-001"]);
+        else expect(settled.deferred).toEqual([{ id: "ISS-001", disposition: "owner_gated", reason: "Owner decides.", ref: "T-001" }]);
+      });
+    }
+
+    it(`${wait}: a resume of the held issue returns the waiting explanation, not work instructions`, async () => {
+      const { sessionId, dir } = plant(root, sweepOn(), { compact: true });
+      writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), waitingOn: wait });
+      const before = issueText(root, "ISS-001");
+
+      const r = await resume(root, sessionId);
+
+      expect(r.text).toContain("waitingOn");
+      expect(r.text).not.toContain("Fix **ISS-001**");
+      expect(issueText(root, "ISS-001")).toBe(before);
+      expect(readState(dir).issueSweepState?.current).toBe("ISS-001");
+
+      writeIssue(root, "ISS-001", { ...acquiredBy(sessionId) });
+      const again = await report(root, sessionId);
+      expect(again.text).not.toContain("--waiting-on none");
+    });
+  }
+});
+
+// T-481 T7b (sweep): a waiting issue is never acquired, at the source filter
+// or at the locked recheck.
+describe("T-481 T7b: the sweep never acquires a waiting issue", () => {
+  for (const wait of ["owner", "external"] as const) {
+    it(`${wait}: a waiting issue in the queue is skipped and the next one is acquired`, async () => {
+      const { sessionId, dir } = plant(root, { current: "ISS-001", remaining: ["ISS-002", "ISS-003"], resolved: [] });
+      writeIssue(root, "ISS-001", { ...acquiredBy(sessionId), status: "resolved", resolution: "Fixed it.", resolvedDate: "2026-10-16" });
+      writeIssue(root, "ISS-002", { waitingOn: wait });
+      writeIssue(root, "ISS-003");
+      const before = issueText(root, "ISS-002");
+
+      const r = await report(root, sessionId);
+
+      expect(r.text).toContain("ISS-003");
+      expect(issueText(root, "ISS-002")).toBe(before);
+      expect(readState(dir).issueSweepState?.current).toBe("ISS-003");
+    });
+  }
 });

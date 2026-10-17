@@ -389,6 +389,53 @@ describe("handleArrangementUpdate", () => {
       expect(issueAfter.earmark).toBeNull();
     });
 
+    it("T-481 T14: the close-time earmark clear keeps updatedDate 2020-01-01 on the ticket and the issue", async () => {
+      const { dir } = await newProjectWithTicket();
+      const issueCreated = await handleIssueCreate(
+        { title: "Duet arrangement issue", severity: "medium", impact: "", components: [], relatedTickets: [], location: [] },
+        "json",
+        dir,
+      );
+      const issueId = JSON.parse(issueCreated.output).data.id as string;
+      const created = await handleArrangementCreate(
+        { bounds: ["T-001", issueId], parties: PARTIES, onIrreversibleWork: "hold" },
+        "json",
+        dir,
+      );
+      const arrangementId = JSON.parse(created.output).data.id as string;
+      await handleEarmarkReserve(
+        { ref: "T-001", role: "worker", arrangement: arrangementId, clientTaskId: "worker-session" },
+        "json",
+        dir,
+      );
+      const ticketPath = join(dir, ".story", "tickets", "T-001.json");
+      const issuePath = join(dir, ".story", "issues", `${issueId}.json`);
+      const ticketRaw = JSON.parse(await readFile(ticketPath, "utf-8"));
+      writeFileSync(ticketPath, JSON.stringify({ ...ticketRaw, updatedDate: "2020-01-01" }, null, 2));
+      const issueRaw = JSON.parse(await readFile(issuePath, "utf-8"));
+      writeFileSync(issuePath, JSON.stringify({
+        ...issueRaw,
+        updatedDate: "2020-01-01",
+        earmark: {
+          stage: "assigned",
+          reservedBy: { client: "claude", id: "worker-session" },
+          arrangementId,
+          since: new Date().toISOString(),
+          holderRole: "worker",
+          holderSession: "11111111-1111-4111-8111-111111111111",
+        },
+      }, null, 2));
+
+      await handleArrangementUpdate(arrangementId, { lifecycle: "closed" }, "json", dir);
+
+      const ticketAfter = JSON.parse(await readFile(ticketPath, "utf-8"));
+      const issueAfter = JSON.parse(await readFile(issuePath, "utf-8"));
+      expect(ticketAfter.earmark).toBeNull();
+      expect(issueAfter.earmark).toBeNull();
+      expect(ticketAfter.updatedDate).toBe("2020-01-01");
+      expect(issueAfter.updatedDate).toBe("2020-01-01");
+    });
+
     it("does not clear an earmark bound to a DIFFERENT arrangement", async () => {
       const { dir } = await newProjectWithTicket();
       const closing = await handleArrangementCreate(

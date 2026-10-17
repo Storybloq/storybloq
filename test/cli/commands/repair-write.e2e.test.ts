@@ -153,3 +153,63 @@ describe("ISS-738: repair write mode is a minimal patch, not a loader round-trip
     expect(readFileSync(target, "utf-8")).toBe(serializeJSON({ ...original, relatedTickets: [] }));
   });
 });
+
+// T-481 B4: repair writes raw minimal patches outside the stamping write path,
+// so a repaired file keeps its updatedDate and gains nothing else.
+describe("T-481 B4: repair never stamps updatedDate", () => {
+  it("a stale-ref fix on a ticket carrying an old updatedDate changes only the patched field", () => {
+    const dir = makeProject();
+    const original = {
+      id: "T-001", title: "Old ticket", description: "", type: "task", status: "open",
+      phase: "p1", order: 10, createdDate: "2020-01-01", completedDate: null,
+      blockedBy: ["T-999"], parentTicket: null, updatedDate: "2020-01-01",
+    };
+    const target = join(dir, ".story", "tickets", "T-001.json");
+    writeFileSync(target, serializeJSON(original));
+    runRepair(dir);
+    expect(readFileSync(target, "utf-8")).toBe(serializeJSON({ ...original, blockedBy: [] }));
+  });
+});
+
+// T-481 T10 (scope item 7): an interim `meta set` pass may have stored values
+// outside p0..p3 and owner/external/none. They load, and repair unsets them
+// with one line each, leaving valid values and every other byte alone.
+describe("T-481 T10: repair unsets unrecognised priority and waitingOn values", () => {
+  it("stored \"high\" and \"maybe\" are unset with one line each; valid values are untouched", () => {
+    const dir = makeProject();
+    const bad = {
+      id: "T-001", title: "Bad values", description: "", type: "task", status: "open",
+      phase: "p1", order: 10, createdDate: "2020-01-01", completedDate: null,
+      blockedBy: [], parentTicket: null, priority: "high", waitingOn: "maybe", updatedDate: "2020-01-01",
+    };
+    const good = {
+      id: "T-002", title: "Good values", description: "", type: "task", status: "open",
+      phase: "p1", order: 20, createdDate: "2020-01-01", completedDate: null,
+      blockedBy: [], parentTicket: null, priority: "p1", waitingOn: "owner", updatedDate: "2020-01-01",
+    };
+    const badIssue = {
+      id: "ISS-001", title: "Bad issue", status: "open", severity: "low", components: [], impact: "x",
+      resolution: null, location: [], discoveredDate: "2020-01-01", resolvedDate: null, relatedTickets: [],
+      priority: "urgent",
+    };
+    const badPath = join(dir, ".story", "tickets", "T-001.json");
+    const goodPath = join(dir, ".story", "tickets", "T-002.json");
+    const issuePath = join(dir, ".story", "issues", "ISS-001.json");
+    writeFileSync(badPath, serializeJSON(bad));
+    writeFileSync(goodPath, serializeJSON(good));
+    writeFileSync(issuePath, serializeJSON(badIssue));
+
+    const out = runRepair(dir);
+
+    const { priority: _p, waitingOn: _w, ...badFixed } = bad;
+    expect(readFileSync(badPath, "utf-8")).toBe(serializeJSON(badFixed));
+    expect(readFileSync(goodPath, "utf-8")).toBe(serializeJSON(good));
+    const { priority: _ip, ...issueFixed } = badIssue;
+    expect(readFileSync(issuePath, "utf-8")).toBe(serializeJSON(issueFixed));
+    const lines = out.split("\n");
+    expect(lines.filter((l) => l.includes("T-001") && l.includes("priority"))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("T-001") && l.includes("waitingOn"))).toHaveLength(1);
+    expect(lines.filter((l) => l.includes("ISS-001") && l.includes("priority"))).toHaveLength(1);
+    expect(lines.some((l) => l.includes("T-002"))).toBe(false);
+  });
+});

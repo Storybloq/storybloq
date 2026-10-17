@@ -9,7 +9,11 @@ import {
   phasesWithStatus,
   isBlockerCleared,
   isCrossNodeBlocked,
+  waitingInventory,
 } from "../../src/core/queries.js";
+import { handleTicketNext } from "../../src/cli/commands/ticket.js";
+import { SCENARIO_SPECS } from "../../scripts/owner-checkpoint-vectors.js";
+import { TicketSchema, type Ticket } from "../../src/models/ticket.js";
 import { makeTicket, makeIssue, makeState, makeRoadmap, makePhase } from "./test-factories.js";
 
 describe("nextTicket", () => {
@@ -875,5 +879,170 @@ describe("ISS-1112: unphased fall-through", () => {
     expect(one.unblockImpact.ticketId).toBe("T-001");
     expect(one.unblockImpact.wouldUnblock.map((t) => t.id)).toEqual(["T-031"]);
     expect(one.umbrellaProgress).toEqual({ total: 2, complete: 1, status: "inprogress" });
+  });
+});
+
+// T-481 T5: every next-ticket path skips a ticket that waits on the owner or
+// an external party, offers the eligible control, and offers the ticket again
+// once the field is cleared.
+describe("T-481 T5: the next-ticket candidate filters skip waiting tickets", () => {
+  const roadmap2 = () => makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p2" })]);
+  const w = (extra: Record<string, unknown>) => extra as never;
+
+  for (const wait of ["owner", "external"] as const) {
+    it(`nextTicket, phased (${wait}): skips the waiting ticket, offers the control, and offers it once cleared`, () => {
+      const tickets = (field: boolean) => [
+        makeTicket({ id: "T-001", phase: "p1", order: 10, ...(field ? w({ waitingOn: wait }) : {}) }),
+        makeTicket({ id: "T-002", phase: "p1", order: 20 }),
+      ];
+      const waiting = nextTicket(makeState({ tickets: tickets(true), roadmap: roadmap2() }));
+      expect(waiting.kind === "found" && waiting.ticket.id).toBe("T-002");
+      const cleared = nextTicket(makeState({ tickets: tickets(false), roadmap: roadmap2() }));
+      expect(cleared.kind === "found" && cleared.ticket.id).toBe("T-001");
+    });
+
+    it(`nextTickets, phased (${wait}): the waiting ticket is never a candidate`, () => {
+      const state = makeState({
+        tickets: [
+          makeTicket({ id: "T-001", phase: "p1", order: 10, ...w({ waitingOn: wait }) }),
+          makeTicket({ id: "T-002", phase: "p1", order: 20 }),
+          makeTicket({ id: "T-003", phase: "p2", order: 10, ...w({ waitingOn: wait }) }),
+          makeTicket({ id: "T-004", phase: "p2", order: 20 }),
+        ],
+        roadmap: roadmap2(),
+      });
+      const out = nextTickets(state, 5);
+      expect(out.kind === "found" && out.candidates.map((c) => c.ticket.id)).toEqual(["T-002", "T-004"]);
+    });
+
+    it(`unphased leaves (${wait}): the waiting unphased ticket is skipped by both next paths`, () => {
+      const state = makeState({
+        tickets: [
+          makeTicket({ id: "T-001", phase: "p1", order: 10, status: "complete" }),
+          makeTicket({ id: "T-020", phase: null, order: 10, ...w({ waitingOn: wait }) }),
+          makeTicket({ id: "T-021", phase: null, order: 20 }),
+        ],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      });
+      const one = nextTicket(state);
+      expect(one.kind === "found" && one.ticket.id).toBe("T-021");
+      const many = nextTickets(state, 5);
+      expect(many.kind === "found" && many.candidates.map((c) => c.ticket.id)).toEqual(["T-021"]);
+    });
+  }
+
+  it("an unrecognised waitingOn value reads as none and does not exclude", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1", order: 10, ...w({ waitingOn: "maybe" }) })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const out = nextTicket(state);
+    expect(out.kind === "found" && out.ticket.id).toBe("T-001");
+  });
+});
+
+// T-481 T5i: one waiting inventory, printed by ticket next. It lists every
+// unfinished item that waits, with no regard to blockers, phases, claims,
+// earmarks, in-progress status or the requested count.
+describe("T-481 T5i: waitingInventory and the ticket next listing", () => {
+  const w = (extra: Record<string, unknown>) => extra as never;
+  const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id).sort();
+  const earmark = {
+    stage: "assigned", holderRole: "worker", holderSession: "11111111-1111-4111-8111-111111111111",
+    reservedBy: { client: "claude", id: "test-session" }, arrangementId: "a-0123456789abcdef",
+    since: "2026-08-28T00:00:00.000Z",
+  };
+  const ctxOf = (state: ReturnType<typeof makeState>) => ({
+    state, warnings: [], root: "/tmp/t481-t5i", handoversDir: "/tmp/t481-t5i/.story/handovers", format: "md" as const,
+  });
+
+  it("lists in-progress, blocked, later-phase, umbrella and issue waits; next lists them while offering other work", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", phase: "p1", order: 10 }),
+        makeTicket({ id: "T-002", phase: "p1", order: 20, status: "inprogress", ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-003", phase: "p1", order: 30, blockedBy: ["T-001"], ...w({ waitingOn: "external" }) }),
+        makeTicket({ id: "T-004", phase: "p2", order: 10, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-010", phase: "p2", order: 20, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-011", phase: "p2", order: 30, parentTicket: "T-010" }),
+      ],
+      issues: [
+        makeIssue({ id: "ISS-001", ...w({ waitingOn: "owner" }) }),
+        makeIssue({ id: "ISS-002", ...w({ waitingOn: "external" }) }),
+        makeIssue({ id: "ISS-003" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" }), makePhase({ id: "p2" })]),
+    });
+    const inv = waitingInventory(state);
+    expect(ids(inv.owner)).toEqual(["ISS-001", "T-002", "T-004", "T-010"]);
+    expect(ids(inv.external)).toEqual(["ISS-002", "T-003"]);
+    expect(inv.owner.find((x) => x.id === "T-010")).toMatchObject({ umbrella: true });
+    expect(inv.owner.find((x) => x.id === "T-004")).not.toMatchObject({ umbrella: true });
+
+    // next returns from p1 with --count 1; the later-phase wait is still listed.
+    const one = handleTicketNext(ctxOf(state), 1).output;
+    expect(one).toContain("T-001");
+    for (const id of ["T-002", "T-003", "T-004", "T-010", "ISS-001", "ISS-002"]) expect(one).toContain(id);
+    expect(one).toMatch(/wait on the owner/);
+    expect(one).toMatch(/external party/);
+
+    // The umbrella's own child, which does not wait, is still offered.
+    const many = nextTickets(state, 5);
+    expect(many.kind === "found" && many.candidates.map((c) => c.ticket.id)).toContain("T-011");
+    const listed = handleTicketNext(ctxOf(state), 1).output;
+    expect(listed).toContain("T-010");
+  });
+
+  it("umbrella mismatches read the derived status", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-020", phase: "p1", order: 10, status: "complete", completedDate: "2026-01-02", ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-021", phase: "p1", order: 20, parentTicket: "T-020" }),
+        makeTicket({ id: "T-030", phase: "p1", order: 30, ...w({ waitingOn: "owner" }) }),
+        makeTicket({ id: "T-031", phase: "p1", order: 40, parentTicket: "T-030", status: "complete", completedDate: "2026-01-02" }),
+      ],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    expect(ids(waitingInventory(state).owner)).toEqual(["T-020"]);
+  });
+
+  it("archived waiting records are not listed", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", lifecycle: "archived", ...w({ waitingOn: "owner" }) } as never)],
+      issues: [makeIssue({ id: "ISS-001", lifecycle: "archived", ...w({ waitingOn: "external" }) } as never)],
+    });
+    const inv = waitingInventory(state);
+    expect(inv.owner).toEqual([]);
+    expect(inv.external).toEqual([]);
+  });
+
+  it("owner checkpoints: open, pending-stored-complete and unrecognised are listed; approved is not", () => {
+    const listed = (name: string, over: Record<string, unknown> = {}) => {
+      const spec = SCENARIO_SPECS.find((s) => s.name === name)!;
+      const tickets = spec.tickets.map((t) => TicketSchema.parse(t.id === "T-001" ? { ...t, waitingOn: "owner", ...over } : t)) as Ticket[];
+      return ids(waitingInventory(makeState({ tickets })).owner).includes("T-001");
+    };
+    expect(listed("pending")).toBe(true);
+    expect(listed("approved")).toBe(false);
+    expect(listed("pending", { status: "complete", completedDate: "2026-01-02" })).toBe(true);
+    expect(listed("unknown-kind")).toBe(true);
+  });
+
+  it("earmarks are ignored: a completed earmarked waiting ticket is finished, an open one is listed", () => {
+    const state = makeState({
+      tickets: [
+        makeTicket({ id: "T-001", status: "complete", completedDate: "2026-01-02", earmark, ...w({ waitingOn: "owner" }) } as never),
+        makeTicket({ id: "T-002", earmark, ...w({ waitingOn: "owner" }) } as never),
+      ],
+    });
+    expect(ids(waitingInventory(state).owner)).toEqual(["T-002"]);
+  });
+
+  it("complete tickets and resolved issues are not listed", () => {
+    const state = makeState({
+      tickets: [makeTicket({ id: "T-001", status: "complete", completedDate: "2026-01-02", ...w({ waitingOn: "owner" }) })],
+      issues: [makeIssue({ id: "ISS-001", status: "resolved", resolvedDate: "2026-01-02", resolution: "done", ...w({ waitingOn: "owner" }) })],
+    });
+    expect(waitingInventory(state)).toEqual({ owner: [], external: [] });
   });
 });

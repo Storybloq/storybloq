@@ -436,3 +436,55 @@ describe("T-522 commit 3: conflicts list/show/resolve reach rulings", () => {
     expect(JSON.parse(res.output).error).toContain("Ruling scan was incomplete");
   });
 });
+
+// T-481 T9: resolve --value validates only the priority/waitingOn values it
+// assigns; an unchanged invalid value round-trips so repair can still unset it.
+// T-481 T14 (conflict family): conflict resolution picks a side and never
+// stamps updatedDate.
+describe("T-481 T9 and T14: conflict resolution and the new fields", () => {
+  function writeIssueFile(dir: string, id: string, overrides: Json): void {
+    writeFileSync(join(dir, ".story", "issues", `${id}.json`), JSON.stringify({
+      id, title: `Issue ${id}`, status: "open", severity: "high", components: [], impact: "x",
+      resolution: null, location: [], discoveredDate: "2026-01-01", resolvedDate: null, relatedTickets: [],
+      ...overrides,
+    }, null, 2) + "\n");
+  }
+  const priorityConflict = (): Json => ({ fieldPath: "/priority", field: "priority", kind: "field", base: "p2", ours: "p1", theirs: "p3" });
+  const readEntity = (dir: string, kind: "tickets" | "issues", id: string) =>
+    JSON.parse(readFileSync(join(dir, ".story", kind, `${id}.json`), "utf-8")) as Json;
+
+  for (const kind of ["tickets", "issues"] as const) {
+    const id = kind === "tickets" ? "T-001" : "ISS-001";
+    const write = (dir: string, o: Json) => kind === "tickets" ? writeTicketFile(dir, id, o) : writeIssueFile(dir, id, o);
+
+    it(`${kind}: --value priority "high" is refused naming the allowed values; nothing is written`, async () => {
+      const dir = makeProject();
+      write(dir, { priority: "p2", _conflicts: [priorityConflict()] });
+      const path = join(dir, ".story", kind, `${id}.json`);
+      const before = readFileSync(path, "utf-8");
+      await expect(handleResolve(id, dir, { field: "priority", value: "high" })).rejects.toThrow(/p0, p1, p2, p3/);
+      expect(readFileSync(path, "utf-8")).toBe(before);
+    });
+
+    it(`${kind}: an unrelated --value on an entity already holding priority "high" succeeds and keeps it`, async () => {
+      const dir = makeProject();
+      write(dir, { priority: "high", waitingOn: "maybe", _conflicts: [titleConflict()] });
+      const result = await handleResolve(id, dir, { field: "title", value: "Hand-picked" });
+      expect(result.exitCode ?? 0).toBe(0);
+      const e = readEntity(dir, kind, id);
+      expect(e.title).toBe("Hand-picked");
+      expect(e.priority).toBe("high");
+      expect(e.waitingOn).toBe("maybe");
+    });
+
+    it(`${kind}: resolve --use theirs lands the title and keeps updatedDate 2020-01-01`, async () => {
+      const dir = makeProject();
+      write(dir, { updatedDate: "2020-01-01", _conflicts: [titleConflict()] });
+      await handleResolve(id, dir, { use: "theirs" });
+      const e = readEntity(dir, kind, id);
+      expect(e.title).toBe("Theirs title");
+      expect(e._conflicts).toBeUndefined();
+      expect(e.updatedDate).toBe("2020-01-01");
+    });
+  }
+});

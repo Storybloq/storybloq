@@ -17,7 +17,7 @@ import {
 } from "../../../src/cli/commands/ticket.js";
 import { execFileSync } from "node:child_process";
 import { ExitCode } from "../../../src/core/output-formatter.js";
-import { CliValidationError } from "../../../src/cli/helpers.js";
+import { CliValidationError, todayISO } from "../../../src/cli/helpers.js";
 import { initProject } from "../../../src/core/init.js";
 import { loadProject } from "../../../src/core/project-loader.js";
 import { writeRulingUnlocked } from "../../../src/core/ruling-loader.js";
@@ -992,10 +992,10 @@ describe("handleTicketMeta", () => {
     tmpDirs.push(dir);
     await setupProject(dir);
 
-    await handleTicketMetaSet("T-001", "priority", "high", "json", dir);
+    await handleTicketMetaSet("T-001", "estimate", "high", "json", dir);
     const getResult = handleTicketMetaGet("T-001", undefined, await loadCtx(dir));
     const metadata = JSON.parse(getResult.output).data;
-    expect(metadata).toEqual({ priority: "high" });
+    expect(metadata).toEqual({ estimate: "high" });
     expect(metadata.title).toBeUndefined();
     expect(metadata.status).toBeUndefined();
   });
@@ -1402,5 +1402,103 @@ describe("T-476 section 10: setting citesRulings via create/update", () => {
     await expect(
       handleTicketUpdate("T-001", { citesRuling: ["not-a-ruling"] }, "json", dir),
     ).rejects.toThrow(CliValidationError);
+  });
+});
+
+// T-481 T3: priority and waitingOn through the ticket CLI handlers, and the
+// updatedDate stamp on an edit.
+describe("T-481 T3: ticket priority, waitingOn and updatedDate", () => {
+  const tmpDirs: string[] = [];
+  afterEach(async () => {
+    for (const d of tmpDirs) await rm(d, { recursive: true, force: true });
+    tmpDirs.length = 0;
+  });
+
+  async function setup(): Promise<{ dir: string; file: string }> {
+    const dir = await mkdtemp(join(tmpdir(), "t481-t3-"));
+    tmpDirs.push(dir);
+    await initProject(dir, { name: "test" });
+    await handleTicketCreate(
+      { title: "Original", type: "task", phase: "p0", description: "d", blockedBy: [], parentTicket: null },
+      "md", dir,
+    );
+    const ticketsDir = join(dir, ".story", "tickets");
+    const { readdirSync } = await import("node:fs");
+    const name = readdirSync(ticketsDir).find((f) => f.endsWith(".json"))!;
+    const file = join(ticketsDir, name);
+    const record = JSON.parse(await readFile(file, "utf-8"));
+    await writeFile(file, JSON.stringify({ ...record, updatedDate: "2020-01-01" }, null, 2) + "\n", "utf-8");
+    return { dir, file };
+  }
+  const read = async (file: string) => JSON.parse(await readFile(file, "utf-8")) as Record<string, unknown>;
+
+  it("--title stamps today's local date", async () => {
+    const { dir, file } = await setup();
+    await handleTicketUpdate("T-001", { title: "Edited" }, "json", dir);
+    const t = await read(file);
+    expect(t.title).toBe("Edited");
+    expect(t.updatedDate).toBe(todayISO());
+  });
+
+  it("--priority p1 and --waiting-on owner are stored; --waiting-on none removes the key", async () => {
+    const { dir, file } = await setup();
+    await handleTicketUpdate("T-001", { priority: "p1", waitingOn: "owner" } as never, "json", dir);
+    let t = await read(file);
+    expect(t.priority).toBe("p1");
+    expect(t.waitingOn).toBe("owner");
+    await handleTicketUpdate("T-001", { waitingOn: "none" } as never, "json", dir);
+    t = await read(file);
+    expect("waitingOn" in t).toBe(false);
+    expect(t.priority).toBe("p1");
+  });
+
+  it("create accepts --priority and --waiting-on", async () => {
+    const { dir } = await setup();
+    const result = await handleTicketCreate(
+      { title: "Second", type: "task", phase: "p0", description: "", blockedBy: [], parentTicket: null, priority: "p0", waitingOn: "external" } as never,
+      "json", dir,
+    );
+    const data = JSON.parse(result.output).data;
+    expect(data.priority).toBe("p0");
+    expect(data.waitingOn).toBe("external");
+  });
+
+  it("--priority high and --waiting-on maybe are refused and nothing is written", async () => {
+    const { dir, file } = await setup();
+    const before = await readFile(file, "utf-8");
+    await expect(handleTicketUpdate("T-001", { priority: "high" } as never, "json", dir)).rejects.toThrow(/p0, p1, p2, p3/);
+    await expect(handleTicketUpdate("T-001", { waitingOn: "maybe" } as never, "json", dir)).rejects.toThrow(/owner, external, none/);
+    expect(await readFile(file, "utf-8")).toBe(before);
+  });
+
+  it("list --priority p2 includes a ticket with no priority; --waiting-on filters through the view", () => {
+    const ctx = makeCtx({
+      state: makeState({
+        tickets: [
+          makeTicket({ id: "T-001", phase: "p1" }),
+          makeTicket({ id: "T-002", phase: "p1", priority: "p1" } as never),
+          makeTicket({ id: "T-003", phase: "p1", priority: "high", waitingOn: "owner" } as never),
+        ],
+        roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+      }),
+    });
+    const p2 = handleTicketList({ priority: "p2" } as never, ctx).output;
+    expect(p2).toContain("T-001");
+    expect(p2).toContain("T-003");
+    expect(p2).not.toContain("T-002");
+    const owner = handleTicketList({ waitingOn: "owner" } as never, ctx).output;
+    expect(owner).toContain("T-003");
+    expect(owner).not.toContain("T-001");
+    const none = handleTicketList({ waitingOn: "none" } as never, ctx).output;
+    expect(none).toContain("T-001");
+    expect(none).not.toContain("T-003");
+  });
+
+  it("meta set priority and waitingOn refuse, naming the flag", async () => {
+    const { dir, file } = await setup();
+    const before = await readFile(file, "utf-8");
+    await expect(handleTicketMetaSet("T-001", "priority", "p1", "json", dir)).rejects.toThrow(/--priority/);
+    await expect(handleTicketMetaSet("T-001", "waitingOn", "owner", "json", dir)).rejects.toThrow(/--waiting-on/);
+    expect(await readFile(file, "utf-8")).toBe(before);
   });
 });

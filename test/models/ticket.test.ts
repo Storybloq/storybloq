@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { resolve } from "node:path";
 import { fixturesDir, readJson } from "../helpers.js";
+import { effectivePriority, effectiveWaitingOn, isWaiting } from "../../src/models/types.js";
 import { TicketSchema } from "../../src/models/ticket.js";
 
 describe("TicketSchema", () => {
@@ -201,5 +202,50 @@ describe("TicketSchema", () => {
       const result = TicketSchema.safeParse(data);
       expect(result.success).toBe(true);
     });
+  });
+});
+
+// T-481 B1: priority and waitingOn load whatever is stored, including values
+// outside p0..p3 and owner/external/none, so repair can reach and unset them.
+describe("T-481 B1: TicketSchema loads priority and waitingOn values as stored", () => {
+  const base = readJson(resolve(fixturesDir, "valid/basic/tickets/T-002.json")) as Record<string, unknown>;
+  it("absent fields load", () => {
+    const r = TicketSchema.safeParse(base);
+    expect(r.success).toBe(true);
+  });
+  for (const value of [{ priority: "p0" }, { priority: "p1" }, { priority: "p2" }, { priority: "p3" },
+    { waitingOn: "owner" }, { waitingOn: "external" }, { waitingOn: "none" },
+    { priority: "high" }, { waitingOn: "maybe" }, { priority: "high", waitingOn: "maybe" }]) {
+    it(`loads ${JSON.stringify(value)} unchanged`, () => {
+      const r = TicketSchema.safeParse({ ...base, ...value });
+      expect(r.success).toBe(true);
+      if (r.success) expect(r.data).toMatchObject(value);
+    });
+  }
+});
+
+// T-481 T1: readers go through the views; an unrecognised value reads as the
+// default and never throws.
+describe("T-481 T1: effectivePriority and effectiveWaitingOn on a loaded ticket", () => {
+  const base = readJson(resolve(fixturesDir, "valid/basic/tickets/T-002.json")) as Record<string, unknown>;
+  const load = (extra: Record<string, unknown>) => TicketSchema.parse({ ...base, ...extra });
+  it("absent reads as p2 and none", () => {
+    expect(effectivePriority(load({}))).toBe("p2");
+    expect(effectiveWaitingOn(load({}))).toBe("none");
+    expect(isWaiting(load({}))).toBe(false);
+  });
+  it("recognised values read as stored", () => {
+    for (const p of ["p0", "p1", "p2", "p3"]) expect(effectivePriority(load({ priority: p }))).toBe(p);
+    expect(effectiveWaitingOn(load({ waitingOn: "owner" }))).toBe("owner");
+    expect(effectiveWaitingOn(load({ waitingOn: "external" }))).toBe("external");
+    expect(isWaiting(load({ waitingOn: "owner" }))).toBe(true);
+    expect(isWaiting(load({ waitingOn: "external" }))).toBe(true);
+    expect(isWaiting(load({ waitingOn: "none" }))).toBe(false);
+  });
+  it('"high" and "maybe" read as p2 and none', () => {
+    expect(effectivePriority(load({ priority: "high" }))).toBe("p2");
+    expect(effectiveWaitingOn(load({ waitingOn: "maybe" }))).toBe("none");
+    expect(isWaiting(load({ waitingOn: "maybe" }))).toBe(false);
+    expect(effectivePriority(load({ priority: 3 }))).toBe("p2");
   });
 });

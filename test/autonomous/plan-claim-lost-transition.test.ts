@@ -36,6 +36,7 @@ import { handleAutonomousGuide } from "../../src/autonomous/guide.js";
 import { createSession, writeSessionSync } from "../../src/autonomous/session.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
+import { todayISO } from "../../src/cli/helpers.js";
 
 const NOW = new Date().toISOString();
 
@@ -124,3 +125,99 @@ describe("PLAN claim-lost transition to PICK_TICKET (ISS-767)", () => {
     expect(written.claim.user).toBe("rival@example.com");
   });
 });
+
+// T-481 T12 / T12r: the PLAN claim stamps updatedDate; a skip release stamps
+// only when a claim is released, never for an earmark-only clear.
+const T481_ARRANGEMENT = "a-0123456789abcdef";
+const T481_RESERVED_BY = { client: "claude" as const, id: "pen-task-1" };
+
+function t481Ticket(extra: Record<string, unknown>): void {
+  writeFileSync(join(root, ".story", "tickets", "T-001.json"), JSON.stringify({
+    id: "T-001", title: "Test ticket", description: "A test.", type: "task",
+    status: "open", phase: "p1", order: 10, createdDate: "2020-01-01",
+    updatedDate: "2020-01-01", completedDate: null, blockedBy: [],
+    ...extra,
+  }));
+}
+
+function t481Read(): Record<string, unknown> {
+  return JSON.parse(readFileSync(join(root, ".story", "tickets", "T-001.json"), "utf-8")) as Record<string, unknown>;
+}
+
+function t481Earmark(sessionId: string): Record<string, unknown> {
+  return {
+    stage: "assigned", reservedBy: T481_RESERVED_BY, arrangementId: T481_ARRANGEMENT,
+    since: NOW, holderRole: "worker", holderSession: sessionId,
+  };
+}
+
+function t481Session(state: string): { sessionId: string; sessDir: string } {
+  const session = createSession(root, "coding", "test-workspace");
+  const sessDir = join(root, ".story", "sessions", session.sessionId);
+  writeSessionSync(sessDir, {
+    ...session,
+    state,
+    previousState: "PICK_TICKET",
+    ticket: { id: "T-001", title: "Test ticket", risk: "low", claimed: true },
+    git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123" },
+    reviews: { plan: [], code: [] },
+  } as unknown as FullSessionState);
+  return { sessionId: session.sessionId, sessDir };
+}
+
+describe("T-481 T12: the PLAN claim stamps updatedDate", () => {
+  it("claiming a ticket last updated 2020-01-01 stamps today", async () => {
+    t481Ticket({});
+    const { sessionId, sessDir } = t481Session("PLAN");
+    writeFileSync(join(sessDir, "plan.md"), "# Plan\n\nEXISTING: none found within src/; closest candidate lacks the behaviour; new implementation limited to this fixture\n1. Do the thing.\n", "utf-8");
+
+    const result = await handleAutonomousGuide(root, {
+      action: "report", sessionId, report: { completedAction: "plan_written" },
+    });
+    expect(result.isError).toBeFalsy();
+
+    const written = t481Read();
+    expect(written.status).toBe("inprogress");
+    expect(written.claimedBySession).toBe(sessionId);
+    expect(written.updatedDate).toBe(todayISO());
+  });
+});
+
+for (const state of ["PLAN", "PLAN_REVIEW", "CODE_REVIEW"] as const) {
+  describe(`T-481 T12r: skip_ticket release in ${state}`, () => {
+    it("an earmark-only clear removes the earmark and keeps updatedDate", async () => {
+      const { sessionId } = t481Session(state);
+      t481Ticket({ earmark: t481Earmark(sessionId) });
+
+      const result = await handleAutonomousGuide(root, {
+        action: "report", sessionId, report: { completedAction: "skip_ticket", notes: "not workable" },
+      });
+      expect(result.isError).toBeFalsy();
+
+      const written = t481Read();
+      expect(written.earmark).toBeNull();
+      expect(written.status).toBe("open");
+      expect(written.updatedDate).toBe("2020-01-01");
+    });
+
+    it("a claim release together with the earmark clear stamps today", async () => {
+      const { sessionId } = t481Session(state);
+      t481Ticket({
+        status: "inprogress", claimedBySession: sessionId,
+        claim: { user: "me@example.com", branch: "main", since: NOW },
+        earmark: t481Earmark(sessionId),
+      });
+
+      const result = await handleAutonomousGuide(root, {
+        action: "report", sessionId, report: { completedAction: "skip_ticket", notes: "not workable" },
+      });
+      expect(result.isError).toBeFalsy();
+
+      const written = t481Read();
+      expect(written.earmark).toBeNull();
+      expect(written.status).toBe("open");
+      expect(written.claimedBySession).toBeUndefined();
+      expect(written.updatedDate).toBe(todayISO());
+    });
+  });
+}

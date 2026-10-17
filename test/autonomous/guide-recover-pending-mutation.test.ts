@@ -45,7 +45,30 @@ const hoisted = vi.hoisted(() => ({
   currentLockInvocation: null as number | null,
   writeIssueCalls: [] as Array<{ lockInvocation: number | null }>,
   issueUpdateCalls: 0,
+  injectInprogressError: false,
 }));
+
+// T-481: the pen's replay test needs a project that loads strictly and still
+// fails post-write validation. No shipped rule turns on an issue's status, so
+// an extra error finding is added while the switch is on, only for a project
+// in which ISS-001 is inprogress: the pre-write state passes, the candidate
+// fails.
+vi.mock("../../src/core/validation.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/core/validation.js")>();
+  return {
+    ...actual,
+    validateProject: (...args: Parameters<typeof actual.validateProject>) => {
+      const result = actual.validateProject(...args);
+      if (!hoisted.injectInprogressError) return result;
+      const target = args[0].issues.find((i) => i.id === "ISS-001");
+      if (target?.status !== "inprogress") return result;
+      return {
+        ...result,
+        findings: [...result.findings, { level: "error", code: "t481_injected", message: "Injected post-write failure.", entity: "ISS-001" }],
+      } as typeof result;
+    },
+  };
+});
 
 vi.mock("../../src/core/project-loader.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/project-loader.js")>();
@@ -86,6 +109,9 @@ import { createSession, writeSessionSync } from "../../src/autonomous/session.js
 import { entityFingerprint } from "../../src/autonomous/pending-artifacts.js";
 import { deriveWorkspaceId, type FullSessionState } from "../../src/autonomous/session-types.js";
 import { killSidecarsInRoot } from "./_sidecar-cleanup.js";
+import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
+import { PickTicketStage } from "../../src/autonomous/stages/pick-ticket.js";
+import { todayISO } from "../../src/cli/helpers.js";
 
 const NOW = new Date().toISOString();
 
@@ -207,6 +233,7 @@ beforeEach(() => {
   hoisted.currentLockInvocation = null;
   hoisted.writeIssueCalls = [];
   hoisted.issueUpdateCalls = 0;
+  hoisted.injectInprogressError = false;
   root = mkdtempSync(join(tmpdir(), "guide-recover-issue-"));
   setupProject(root);
 });
@@ -426,5 +453,279 @@ describe("recoverPendingMutation issue_update branch (ISS-1052)", () => {
     // the lock's own callback, not after it returned.
     expect(hoisted.writeIssueCalls.length).toBe(1);
     expect(hoisted.writeIssueCalls[0]?.lockInvocation).not.toBeNull();
+  });
+});
+
+// T-481 B5: a marker written before T-481 carries no stampDate. Its
+// fingerprints describe an unstamped image, so its replay must write that
+// image exactly: status changed, updatedDate left as it was.
+describe("T-481 B5: a pre-T-481 issue_update marker replays unstamped", () => {
+  it("preimage match replays the status and leaves an old updatedDate untouched", async () => {
+    writeTicket(root, "T-001", { status: "inprogress" });
+    writeIssue(root, "ISS-001", { status: "open", updatedDate: "2020-01-01" });
+    const preimageFingerprint = await loadedIssueFingerprint(root, "ISS-001");
+    const postimageFingerprint = await loadedIssueFingerprint(root, "ISS-001", { status: "inprogress" });
+    const { sessDir } = plantSession(root, {
+      type: "issue_update", target: "ISS-001", value: "inprogress", expectedCurrent: "open",
+      transitionId: "txn-legacy-replay", preimageFingerprint, postimageFingerprint,
+    });
+    await driveRecovery(root);
+    expect(readState(sessDir).pendingProjectMutation).toBeNull();
+    const after = readIssue(root, "ISS-001");
+    expect(after.status).toBe("inprogress");
+    expect(after.updatedDate).toBe("2020-01-01");
+    expect(eventsOfType(sessDir, "mutation_conflict").length).toBe(0);
+  });
+});
+
+// T-481 B6 (guide level): the issue-pick marker as pick-ticket.ts:609-610
+// builds it at 440397eb, fingerprinted over the snapshot read BEFORE the
+// earmark conversion and over `{ ...issue, status: "inprogress" }`, while the
+// ledger holds what the pick actually wrote. Characterises what recovery does
+// today; T13c inverts it.
+describe("T-481 B6: guide recovery of the issue-pick marker at base", () => {
+  const reserved = {
+    stage: "reserved", reservedBy: { client: "claude", id: "pen-task" },
+    arrangementId: "a-0000000000000001", since: "2020-01-01T00:00:00.000Z",
+    holderRole: "worker", holderSession: null,
+  };
+  const staleKind = { kind: "fixed", closedOn: "2020-01-01", resolutionDigest: "0".repeat(64) };
+
+  async function planted(snapshot: Record<string, unknown>) {
+    writeTicket(root, "T-001", { status: "inprogress" });
+    writeIssue(root, "ISS-001", snapshot);
+    const preimageFingerprint = await loadedIssueFingerprint(root, "ISS-001");
+    const postimageFingerprint = await loadedIssueFingerprint(root, "ISS-001", { status: "inprogress" });
+    return { preimageFingerprint, postimageFingerprint };
+  }
+
+  const cases: Array<[string, Record<string, unknown>, (sessionId: string) => Record<string, unknown>]> = [
+    ["(a) reserved earmark converted, crash before the status write", { status: "open", earmark: reserved },
+      (sid) => ({ status: "open", earmark: { ...reserved, stage: "assigned", holderSession: sid } })],
+    ["(b) reserved earmark converted, crash after the status write", { status: "open", earmark: reserved },
+      (sid) => ({ status: "inprogress", earmark: { ...reserved, stage: "assigned", holderSession: sid } })],
+    ["(c) stale resolutionKind, crash after the status write", { status: "open", resolutionKind: staleKind },
+      () => ({ status: "inprogress" })],
+  ];
+  for (const [name, snapshot, landed] of cases) {
+    it(`${name}: recovery records a conflict and writes nothing`, async () => {
+      const fps = await planted(snapshot);
+      const { sessionId, sessDir } = plantSession(root, {
+        type: "issue_update", target: "ISS-001", value: "inprogress", expectedCurrent: "open",
+        transitionId: "txn-b6", ...fps,
+      });
+      writeIssue(root, "ISS-001", landed(sessionId));
+      const before = readFileSync(join(root, ".story", "issues", "ISS-001.json"), "utf-8");
+      await driveRecovery(root);
+      expect(eventsOfType(sessDir, "mutation_conflict").length).toBe(1);
+      expect(readFileSync(join(root, ".story", "issues", "ISS-001.json"), "utf-8")).toBe(before);
+    });
+  }
+});
+
+// T-481 T13c, T13e and the strict-load-passes, validation-fails replay: the
+// issue pick records a stamped marker whose postimage is the image the live
+// write produces; recovery replays exactly that image under the live write's
+// checks, or recognises it as applied, and never writes on a refusal.
+describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () => {
+  const reserved = {
+    stage: "reserved", reservedBy: { client: "claude", id: "pen-task" },
+    arrangementId: "a-0000000000000001", since: "2020-01-01T00:00:00.000Z",
+    holderRole: "worker", holderSession: null,
+  };
+  const staleKind = { kind: "fixed", closedOn: "2020-01-01", resolutionDigest: "0".repeat(64) };
+  const issuePath = () => join(root, ".story", "issues", "ISS-001.json");
+  const issueBytes = () => readFileSync(issuePath(), "utf-8");
+  const corruptTicket = () => join(root, ".story", "tickets", "T-999.json");
+
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  function makeRecipe(): ResolvedRecipe {
+    return {
+      id: "coding",
+      pipeline: ["PICK_TICKET", "PLAN", "PLAN_REVIEW", "IMPLEMENT", "CODE_REVIEW", "FINALIZE", "COMPLETE"],
+      postComplete: [], stages: {}, dirtyFileHandling: "block",
+      branchStrategy: "current" as ResolvedRecipe["branchStrategy"],
+      reviewEffort: {
+        level: "standard", source: "default",
+        explicitKnobs: { codeReviewMaxRounds: false, planReviewBackends: false, codeReviewBackends: false },
+      },
+      defaults: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["agent"], handoverInterval: 3 },
+    };
+  }
+
+  type Pick = {
+    sessionId: string; sessDir: string; planted: FullSessionState; ctx: StageContext;
+    marker: Record<string, unknown> | null; atMarker: string | null; final: string;
+  };
+
+  /** Runs the real issue pick in a planted session; `onMarker` runs right after the marker is written. */
+  async function livePick(snapshot: Record<string, unknown>, onMarker?: () => void): Promise<Pick> {
+    writeTicket(root, "T-001", { status: "inprogress" });
+    writeIssue(root, "ISS-001", { updatedDate: "2020-01-01", ...snapshot });
+    const { sessionId, sessDir } = plantSession(root, null);
+    const planted = readState(sessDir);
+    const ctx = new StageContext(root, sessDir, {
+      ...planted, state: "PICK_TICKET", ticket: undefined, claimEpoch: undefined,
+    } as unknown as FullSessionState, makeRecipe());
+    vi.spyOn(PickTicketStage.prototype as unknown as { applyStrategy: () => Promise<unknown> }, "applyStrategy")
+      .mockResolvedValue(null);
+    const out: Pick = { sessionId, sessDir, planted, ctx, marker: null, atMarker: null, final: "" };
+    const original = ctx.writeState.bind(ctx);
+    vi.spyOn(ctx, "writeState").mockImplementation(((patch: Record<string, unknown>) => {
+      const written = original(patch as never);
+      if (patch && patch.pendingProjectMutation) {
+        out.marker = JSON.parse(JSON.stringify(patch.pendingProjectMutation)) as Record<string, unknown>;
+        out.atMarker = issueBytes();
+        onMarker?.();
+      }
+      return written;
+    }) as never);
+    const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
+    expect(result.action, JSON.stringify(result)).not.toBe("retry");
+    vi.mocked(ctx.writeState).mockRestore();
+    out.final = issueBytes();
+    return out;
+  }
+
+  /** Puts the planted session back with the pick's marker, as a crash would leave it. */
+  function replant(pick: Pick): void {
+    writeSessionSync(pick.sessDir, { ...pick.planted, pendingProjectMutation: pick.marker } as FullSessionState);
+  }
+
+  /** Moves the clock past the next local midnight and refreshes the lease. */
+  function nextLocalDay(sessDir: string): void {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 5, 0, 0);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(d);
+    const now = new Date();
+    const s = readState(sessDir) as unknown as Record<string, unknown>;
+    writeSessionSync(sessDir, {
+      ...s,
+      lease: { ...(s.lease as Record<string, unknown>), lastHeartbeat: now.toISOString(), expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString() },
+    } as unknown as FullSessionState);
+  }
+
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["no earmark", { status: "open" }],
+    ["a reserved earmark converted at pick", { status: "open", earmark: reserved }],
+    ["a stale resolutionKind", { status: "open", resolutionKind: staleKind }],
+    ["both", { status: "open", earmark: reserved, resolutionKind: staleKind }],
+  ];
+
+  for (const [name, snapshot] of cases) {
+    it(`${name}: the live pick writes the stamped postimage the marker records`, async () => {
+      const day = todayISO();
+      const pick = await livePick(snapshot);
+      expect(pick.marker?.stampDate).toBe(day);
+      const after = JSON.parse(pick.final) as Record<string, unknown>;
+      expect(after.status).toBe("inprogress");
+      expect(after.updatedDate).toBe(day);
+      expect(after.resolutionKind).toBeUndefined();
+      if ("earmark" in snapshot) expect(after.earmark).toMatchObject({ stage: "assigned", holderSession: pick.sessionId });
+      expect(await loadedIssueFingerprint(root, "ISS-001")).toBe(pick.marker?.postimageFingerprint);
+    });
+
+    for (const nextDay of [false, true]) {
+      it(`${name}: a crash before the status write is replayed to the recorded postimage${nextDay ? " on the next local day" : ""}`, async () => {
+        const day = todayISO();
+        const pick = await livePick(snapshot);
+        expect(pick.marker?.stampDate).toBe(day);
+        writeFileSync(issuePath(), pick.atMarker!);
+        replant(pick);
+        if (nextDay) nextLocalDay(pick.sessDir);
+        await driveRecovery(root);
+        expect(readState(pick.sessDir).pendingProjectMutation).toBeNull();
+        expect(eventsOfType(pick.sessDir, "mutation_conflict").length).toBe(0);
+        expect(JSON.parse(issueBytes())).toEqual(JSON.parse(pick.final));
+        expect(readIssue(root, "ISS-001").updatedDate).toBe(day);
+        expect(await loadedIssueFingerprint(root, "ISS-001")).toBe(pick.marker?.postimageFingerprint);
+      });
+    }
+
+    it(`${name}: a crash after the status write is recognised as applied and nothing is written`, async () => {
+      const pick = await livePick(snapshot);
+      expect(pick.marker?.stampDate).toBe(todayISO());
+      replant(pick);
+      hoisted.writeIssueCalls = [];
+      await driveRecovery(root);
+      expect(readState(pick.sessDir).pendingProjectMutation).toBeNull();
+      expect(eventsOfType(pick.sessDir, "mutation_conflict").length).toBe(0);
+      expect(hoisted.writeIssueCalls.length).toBe(0);
+      expect(issueBytes()).toBe(pick.final);
+    });
+  }
+
+  it("an issue changed between the marker and the status write is not written, and the marker stays", async () => {
+    let changed = "";
+    const pick = await livePick({ status: "open" }, () => {
+      writeIssue(root, "ISS-001", { status: "open", updatedDate: "2020-01-01", title: "Edited by someone else" });
+      changed = issueBytes();
+    });
+    expect(pick.final).toBe(changed);
+    expect(pick.ctx.state.pendingProjectMutation).not.toBeNull();
+  });
+
+  it("T13e live: another ticket made unreadable after the marker refuses the status write, and the marker stays", async () => {
+    const pick = await livePick({ status: "open" }, () => { writeFileSync(corruptTicket(), "{ not json"); });
+    expect(pick.final).toBe(pick.atMarker);
+    expect(pick.ctx.state.pendingProjectMutation).not.toBeNull();
+  });
+
+  it("T13e recovery: at the preimage with an unreadable ticket it refuses and keeps the marker; once repaired it replays", async () => {
+    const pick = await livePick({ status: "open", earmark: reserved });
+    writeFileSync(issuePath(), pick.atMarker!);
+    replant(pick);
+    writeFileSync(corruptTicket(), "{ not json");
+    await driveRecovery(root);
+    expect(issueBytes()).toBe(pick.atMarker);
+    expect(readState(pick.sessDir).pendingProjectMutation).not.toBeNull();
+
+    rmSync(corruptTicket());
+    await driveRecovery(root);
+    expect(readState(pick.sessDir).pendingProjectMutation).toBeNull();
+    expect(JSON.parse(issueBytes())).toEqual(JSON.parse(pick.final));
+    expect(await loadedIssueFingerprint(root, "ISS-001")).toBe(pick.marker?.postimageFingerprint);
+  });
+
+  it("T13e recovery: at the postimage with an unreadable ticket it recognises the write and writes nothing", async () => {
+    const pick = await livePick({ status: "open", earmark: reserved });
+    replant(pick);
+    writeFileSync(corruptTicket(), "{ not json");
+    hoisted.writeIssueCalls = [];
+    await driveRecovery(root);
+    expect(readState(pick.sessDir).pendingProjectMutation).toBeNull();
+    expect(hoisted.writeIssueCalls.length).toBe(0);
+    expect(issueBytes()).toBe(pick.final);
+  });
+
+  for (const bad of ["2026-02-30", "20261017", 20261017] as const) {
+    it(`T13d: a marker whose stampDate is ${JSON.stringify(bad)} is malformed: no replay, nothing written`, async () => {
+      const pick = await livePick({ status: "open", earmark: reserved });
+      expect(typeof pick.marker?.stampDate).toBe("string");
+      writeFileSync(issuePath(), pick.atMarker!);
+      pick.marker = { ...pick.marker!, stampDate: bad };
+      replant(pick);
+      hoisted.writeIssueCalls = [];
+      await driveRecovery(root);
+      expect(issueBytes()).toBe(pick.atMarker);
+      expect(hoisted.writeIssueCalls.length).toBe(0);
+      expect(eventsOfType(pick.sessDir, "mutation_conflict").length).toBe(1);
+    });
+  }
+
+  it("a replay that passes the strict load but fails post-write validation writes nothing and keeps the marker", async () => {
+    const pick = await livePick({ status: "open", earmark: reserved });
+    expect(pick.marker?.stampDate).toBe(todayISO());
+    writeFileSync(issuePath(), pick.atMarker!);
+    replant(pick);
+    hoisted.injectInprogressError = true;
+    hoisted.writeIssueCalls = [];
+    await driveRecovery(root);
+    expect(issueBytes()).toBe(pick.atMarker);
+    expect(hoisted.writeIssueCalls.length).toBe(0);
+    expect(readState(pick.sessDir).pendingProjectMutation).not.toBeNull();
   });
 });

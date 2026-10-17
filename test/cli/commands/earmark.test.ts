@@ -557,3 +557,37 @@ describe("ISS-1077 (C4): CLI node-scoped earmark writes honor federation.allowNo
     expect(JSON.parse(result.output).data.earmark.stage).toBe("reserved");
   });
 });
+
+// T-481 T14 (projection): reserve, assign and release change only the earmark,
+// which the content projection drops, so updatedDate never moves.
+describe("T-481 T14: earmark reserve, assign and release keep updatedDate", () => {
+  async function backdate(path: string): Promise<void> {
+    const raw = JSON.parse(await readFile(path, "utf-8"));
+    writeFileSync(path, JSON.stringify({ ...raw, updatedDate: "2020-01-01" }, null, 2));
+  }
+
+  for (const kind of ["ticket", "issue"] as const) {
+    it(`${kind}: each earmark step lands and updatedDate stays 2020-01-01`, async () => {
+      const { dir } = await newProject();
+      const id = kind === "ticket" ? await createTicket(dir) : await createIssue(dir);
+      const path = join(dir, ".story", kind === "ticket" ? "tickets" : "issues", `${id}.json`);
+      await backdate(path);
+      await createArrangement(dir, id);
+      const read = async () => JSON.parse(await readFile(path, "utf-8"));
+
+      await handleEarmarkReserve({ ref: id, role: "worker", clientTaskId: RESERVER }, "json", dir);
+      expect((await read()).earmark.stage).toBe("reserved");
+      expect((await read()).updatedDate).toBe("2020-01-01");
+
+      const sessionId = "44444444-4444-4444-8444-444444444444";
+      writeLiveSession(dir, sessionId, RESERVER);
+      await handleEarmarkAssign({ ref: id, to: sessionId, role: "worker", clientTaskId: RESERVER }, "json", dir);
+      expect((await read()).earmark.stage).toBe("assigned");
+      expect((await read()).updatedDate).toBe("2020-01-01");
+
+      await handleEarmarkRelease({ ref: id, clientTaskId: PEN_TASK }, "json", dir);
+      expect((await read()).earmark ?? null).toBeNull();
+      expect((await read()).updatedDate).toBe("2020-01-01");
+    });
+  }
+});

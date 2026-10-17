@@ -431,6 +431,9 @@ describe("new_branch_from_main: eligibility is revalidated before touching git",
     ["was claimed by another user", () => ({
       claim: { user: "other@example.com", branch: "story/T-200", claimedAt: "2026-07-01T00:00:00Z" },
     })],
+    // T-481 T7a: revalidateTicket refuses a ticket that began to wait.
+    ["began waiting on the owner (T-481)", () => ({ waitingOn: "owner" })],
+    ["began waiting on an external party (T-481)", () => ({ waitingOn: "external" })],
   ])("refuses and leaves the branch alone when the target %s between offer and acceptance", async (_label, mutate) => {
     const { root } = buildMismatchRepo();
     track(root);
@@ -1155,6 +1158,28 @@ describe("mismatch escapes on the issue path", () => {
     expect(currentBranch(root), "a non-actionable issue changed the branch").toBe(branchBefore);
     expect(pending(ctx), "the stale episode was left open").toBeNull();
   });
+
+  for (const wait of ["owner", "external"] as const) {
+    it(`T-481 T7b: refuses an issue that began waiting on ${wait} between offer and acceptance, even when the run named it`, async () => {
+      for (const targeted of [false, true]) {
+        const { root } = buildMismatchRepo();
+        track(root);
+        writeTicket(root, "T-100");
+        writeIssue(root, "ISS-200");
+        const { stage, ctx } = await openIssueEpisodeOrFail(root);
+        if (targeted) ctx.writeState({ targetWork: ["ISS-200"] });
+        const branchBefore = currentBranch(root);
+        writeIssue(root, "ISS-200", { waitingOn: wait });
+
+        const result = await stage.report(ctx, { completedAction: "new_branch_from_main" });
+
+        expect(result.action, `targeted=${targeted}`).toBe("retry");
+        expect((result as { instruction: string }).instruction).toContain("waitingOn");
+        expect(currentBranch(root)).toBe(branchBefore);
+        expect(pending(ctx)).toBeNull();
+      }
+    });
+  }
 
   it("still branches for a non-actionable issue the run named (T-486 U4 A4, revalidation)", async () => {
     const { root } = buildMismatchRepo();

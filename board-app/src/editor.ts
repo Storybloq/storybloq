@@ -171,6 +171,8 @@ export function createEditor(root: string, access: Promise<RootAccess>) {
     await read(kind, id);
     const updates: TicketUpdateInput & IssueUpdateInput = { ...parsed.data };
     let savedState: ProjectState | undefined,
+      saved: Ticket | Issue | undefined,
+      savedId: string | undefined,
       originalBytes = 0,
       totalBytes = 0;
     const hooks = {
@@ -207,6 +209,7 @@ export function createEditor(root: string, access: Promise<RootAccess>) {
               );
             updates.phase = match.id;
           }
+          savedId = existing.id;
           originalBytes = scope.fileBytes(kind, id + ".json");
           totalBytes = scope.totalBytes();
           savedState = state;
@@ -215,16 +218,18 @@ export function createEditor(root: string, access: Promise<RootAccess>) {
       validatePreparedContent: async (content: string) => {
         await checkRoot();
         validateEditSize(content, originalBytes, totalBytes);
+        // The revision comes from the exact record written, not from the
+        // JSON read surface, which adds effective and checkpoint views.
+        const record = JSON.parse(content) as Ticket | Issue;
+        if (record.id === savedId) saved = record;
       },
     };
     try {
-      const result =
-        kind === "tickets"
-          ? await handleTicketUpdate(id, updates, "json", root, reopen, hooks)
-          : await handleIssueUpdate(id, updates, "json", root, hooks);
-      const item = JSON.parse(result.output).data as Ticket | Issue;
-      if (!savedState) throw new Error("Missing saved state");
-      return projectEditor(savedState, kind, item);
+      if (kind === "tickets")
+        await handleTicketUpdate(id, updates, "json", root, reopen, hooks);
+      else await handleIssueUpdate(id, updates, "json", root, hooks);
+      if (!savedState || !saved) throw new Error("Missing saved record");
+      return projectEditor(savedState, kind, saved);
     } catch (error) {
       if (error instanceof EditError || error instanceof BoardError)
         throw error;

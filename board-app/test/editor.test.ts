@@ -311,6 +311,48 @@ test("hashed records keep their canonical filenames while preserving display IDs
   }
 });
 
+// T-566: main's JSON read surfaces add effective, checkpoint and cited-ruling
+// fields (and wrap a colliding record in stored). The revision a save returns
+// must still be the stored record's, so the next save does not conflict.
+test("a save returns the stored revision so the next save from it succeeds", async () => {
+  const s = await session();
+  try {
+    await s.put(
+      "tickets/T-001.json",
+      ticket("T-001", { effective: "authored", checkpoint: "authored" }),
+    );
+    await s.put("issues/ISS-001.json", issue("ISS-001", { extension: 42 }));
+    for (const [kind, id, patches] of [
+      ["tickets", "T-001", [{ title: "First edit" }, { title: "Second edit" }]],
+      [
+        "issues",
+        "ISS-001",
+        [{ title: "First edit" }, { severity: "critical" }],
+      ],
+    ] as const) {
+      let revision = (await s.editor(kind, id)).revision;
+      for (const patch of patches) {
+        const r = await s.call("storybloq_item_save", {
+          kind,
+          id,
+          revision,
+          patch,
+        });
+        assert.equal(r.isError, undefined, JSON.stringify(r));
+        revision = r._meta.editor.revision;
+        assert.equal((await s.editor(kind, id)).revision, revision, kind);
+      }
+    }
+    const saved = await s.disk("tickets/T-001.json");
+    assert.equal(saved.title, "Second edit");
+    assert.equal(saved.effective, "authored");
+    assert.equal(saved.checkpoint, "authored");
+    assert.equal((await s.disk("issues/ISS-001.json")).severity, "critical");
+  } finally {
+    await s.close();
+  }
+});
+
 test("protected patches and invalid dependencies fail without changing bytes", async () => {
   const s = await session();
   try {

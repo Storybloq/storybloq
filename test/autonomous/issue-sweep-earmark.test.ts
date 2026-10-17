@@ -271,3 +271,25 @@ describe("ISSUE_SWEEP earmark choke point (T-475)", () => {
     });
   });
 });
+
+describe("T-481 T7b: a waiting issue never enters the sweep's queue", () => {
+  for (const wait of ["owner", "external"] as const) {
+    it(`${wait}: enter() leaves it out of remaining and never touches it`, async () => {
+      const root = await newProject();
+      tempDirs.push(root);
+      const eligible = await createIssue(root, "eligible", "critical");
+      const waiting = await createIssue(root, "waits", "high");
+      const path = join(root, ".story", "issues", `${waiting}.json`);
+      const raw = JSON.parse(await readFile(path, "utf-8"));
+      await withProjectLock(root, { strict: false }, () => writeIssueUnlocked({ ...raw, waitingOn: wait }, root));
+      const before = await readFile(path, "utf-8");
+
+      const ctx = new StageContext(root, newSessionDirIn(root), makeState(), makeRecipe());
+      await stage.enter(ctx);
+
+      expect(ctx.state.issueSweepState?.current).toBe(eligible);
+      expect(ctx.state.issueSweepState?.remaining ?? []).not.toContain(waiting);
+      expect(await readFile(path, "utf-8")).toBe(before);
+    });
+  }
+});

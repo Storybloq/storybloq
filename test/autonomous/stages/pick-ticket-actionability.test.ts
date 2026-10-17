@@ -210,10 +210,13 @@ describe("T-481 T7a/T7b: PICK_TICKET refuses waiting items", () => {
         writeTicket(root, "T-100", { waitingOn: wait });
         const before = readFileSync(ticketPath(root, "T-100"), "utf-8");
         const ctx = contextFor(root, targeted ? { targetWork: ["T-100"] } as Partial<FullSessionState> : {});
+        const strategy = vi.spyOn(PickTicketStage.prototype as unknown as StrategySpy, "applyStrategy");
         const result = await new PickTicketStage().report(ctx, { completedAction: "ticket_picked", ticketId: "T-100" });
         expect(result.action).toBe("retry");
         expect((result as { instruction: string }).instruction).toContain("waitingOn");
         expect(readFileSync(ticketPath(root, "T-100"), "utf-8")).toBe(before);
+        // Refused before the branch strategy touches git, not only under the lock.
+        expect(strategy).not.toHaveBeenCalled();
       });
 
       it(`ticket, ${mode}, a wait on ${wait} added after the first read is refused under the lock`, async () => {
@@ -235,11 +238,13 @@ describe("T-481 T7a/T7b: PICK_TICKET refuses waiting items", () => {
         writeIssue(root, "ISS-200", { waitingOn: wait });
         const before = readFileSync(issuePath(root, "ISS-200"), "utf-8");
         const ctx = contextFor(root, targeted ? { targetWork: ["ISS-200"] } as Partial<FullSessionState> : {});
+        const strategy = vi.spyOn(PickTicketStage.prototype as unknown as StrategySpy, "applyStrategy");
         const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-200" });
         expect(result.action).toBe("retry");
         expect((result as { instruction: string }).instruction).toContain("waitingOn");
         expect(readFileSync(issuePath(root, "ISS-200"), "utf-8")).toBe(before);
         expect(ctx.state.pendingProjectMutation ?? null).toBeNull();
+        expect(strategy).not.toHaveBeenCalled();
       });
 
       it(`issue, ${mode}, a wait on ${wait} added after the first read is refused under the lock`, async () => {

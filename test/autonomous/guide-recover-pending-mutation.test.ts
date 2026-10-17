@@ -476,6 +476,21 @@ describe("T-481 B5: a pre-T-481 issue_update marker replays unstamped", () => {
     expect(after.updatedDate).toBe("2020-01-01");
     expect(eventsOfType(sessDir, "mutation_conflict").length).toBe(0);
   });
+
+  it("a marker older than fingerprints (neither image recorded) also replays unstamped", async () => {
+    writeTicket(root, "T-001", { status: "inprogress" });
+    writeIssue(root, "ISS-001", { status: "open", updatedDate: "2020-01-01" });
+    const { sessDir } = plantSession(root, {
+      type: "issue_update", target: "ISS-001", value: "inprogress", expectedCurrent: "open",
+      transitionId: "txn-legacy-unfingerprinted",
+    });
+    await driveRecovery(root);
+    expect(readState(sessDir).pendingProjectMutation).toBeNull();
+    const after = readIssue(root, "ISS-001");
+    expect(after.status).toBe("inprogress");
+    expect(after.updatedDate).toBe("2020-01-01");
+    expect(eventsOfType(sessDir, "mutation_conflict").length).toBe(0);
+  });
 });
 
 // T-481 B6 (guide level): the issue-pick marker as pick-ticket.ts:609-610
@@ -722,7 +737,10 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       await driveRecovery(root);
       expect(issueBytes()).toBe(pick.atMarker);
       expect(hoisted.writeIssueCalls.length).toBe(0);
-      expect(eventsOfType(pick.sessDir, "mutation_conflict").length).toBe(1);
+      const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
+      expect(conflicts.length).toBe(1);
+      // Refused as malformed at recognition, never reaching the replay.
+      expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
     });
   }
 

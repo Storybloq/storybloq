@@ -4,18 +4,18 @@
 
 ### JSON output envelope
 
-`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn.
+`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).
 
 Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.
 
 - **init** (--name?, --force?, --type?, --language?, --node?, --format?) - Initialize a new .story/ project
-- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. Other top-level fields are kept whole.
-- **ticket list** (--status?, --phase?, --type?, --format?, --node?) - List tickets with optional filters
+- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Every other top-level field is kept whole.
+- **ticket list** (--status?, --phase?, --type?, --priority?, --waiting-on?, --format?, --node?) - List tickets with optional filters
 - **ticket get <id>** (--format?) - Get ticket details by ID
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
 - **ticket blocked** (--format?) - List blocked tickets with their blocking dependencies
-- **ticket create** (--title, --type, --phase?, --description?, --stdin?, --parent-ticket?, --blocked-by?, --cites-ruling?, --format?, --node?, --commit?) - Create a new ticket
-- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --format?, --commit?) - Update a ticket
+- **ticket create** (--title, --type, --phase?, --description?, --stdin?, --parent-ticket?, --blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --node?, --commit?) - Create a new ticket
+- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --commit?) - Update a ticket
 - **ticket meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on a ticket
 - **ticket delete <id>** (--force?, --hard?, --format?, --commit?) - Delete a ticket
 - **checkpoint enable** (--format?, --commit?) - Turn owner checkpoints on (config schemaVersion 4; a team ledger must merge them first)
@@ -27,10 +27,10 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **checkpoint retire <id>** (--generation, --revision, --digest, --actor?, --reason, --format?, --commit?) - Retire a checkpoint, releasing dependents; needs a reason
 - **checkpoint resolve-conflict <id>** (--use?, --field?, --value?, --actor?, --format?, --commit?) - Settle a merge conflict on a checkpoint; a selected approval returns to pending (CLI-only)
 - **checkpoint list** (--state?, --format?) - Owner checkpoints with the state a change must name (CLI-only)
-- **issue list** (--status?, --severity?, --component?, --phase?, --disposition?, --actionable?, --non-actionable?, --resolution-kind?, --format?) - List issues with optional filters
+- **issue list** (--status?, --severity?, --component?, --phase?, --disposition?, --actionable?, --non-actionable?, --resolution-kind?, --priority?, --waiting-on?, --format?) - List issues with optional filters
 - **issue get <id>** (--format?) - Get issue details by ID
-- **issue create** (--title, --severity, --impact?, --stdin?, --phase?, --dedupe-key?, --created-by?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --format?, --commit?) - Create a new issue
-- **issue update <id>** (--status?, --title?, --severity?, --impact?, --stdin?, --resolution?, --order?, --phase?, --clear-cites-rulings?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --resolution-kind?, --duplicate-of?, --disposition?, --reason?, --ref?, --clear-disposition?, --format?, --commit?) - Update an issue
+- **issue create** (--title, --severity, --impact?, --stdin?, --phase?, --dedupe-key?, --created-by?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --priority?, --waiting-on?, --format?, --commit?) - Create a new issue
+- **issue update <id>** (--status?, --title?, --severity?, --impact?, --stdin?, --resolution?, --order?, --phase?, --clear-cites-rulings?, --components?, --related-tickets?, --location?, --source-ref?, --cites-ruling?, --resolution-kind?, --duplicate-of?, --disposition?, --reason?, --ref?, --clear-disposition?, --priority?, --waiting-on?, --format?, --commit?) - Update an issue
 - **issue meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on an issue
 - **issue delete <id>** (--hard?, --format?, --commit?) - Delete an issue
 - **phase list** (--format?, --node?) - List all phases with derived status
@@ -55,7 +55,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **note delete <id>** (--hard?, --format?, --commit?) - Delete a note
 - **lesson list** (--status?, --tag?, --source?, --format?) - List lessons with optional status/tag/source filters
 - **lesson get <id>** (--format?) - Get a lesson by ID
-- **lesson digest** (--format?, --limit?, --select?) - Ranked digest of active lessons. --limit/--select: one-line-per-lesson form; --select is phase:<id>/component:<name>/item:<id>, falls back to --limit.
+- **lesson digest** (--format?, --limit?, --select?) - Ranked digest of active lessons. --limit/--select (T-320): one-line-per-lesson form; --select is phase:<id>/component:<name>/item:<id>, falls back to --limit.
 - **lesson create** (--title, --content?, --context, --source, --supersedes?, --stdin?, --tags?, --format?, --commit?) - Create a new lesson
 - **lesson update <id>** (--title?, --content?, --context?, --clear-tags?, --status?, --stdin?, --tags?, --format?, --commit?) - Update a lesson
 - **lesson reinforce <id>** (--format?, --commit?) - Reinforce a lesson: increment count and update lastValidated
@@ -84,7 +84,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **ruling get <id>** (--format?) - Get a ruling by ID with its lifecycle, revision digest and chain status
 - **ruling create** (--text, --attribution, --date, --scope-tag?, --cites?, --client-task-id?, --context?, --alternatives?, --consequences?, --reconsider-when?, --format?, --commit?) - Record a ruling verbatim; --cites adds its id to each named ticket or issue in the same transaction; narrative flags are recorded beside the text, never inside it
 - **ruling supersede <id>** (--with?, --text?, --attribution?, --date?, --scope-tag?, --client-task-id?, --branch?, --context?, --alternatives?, --consequences?, --reconsider-when?, --format?, --commit?) - Supersede a ruling: link an existing one with --with, or record a new superseding ruling; --branch knowingly records a second successor
-- **ruling propose** (--text, --attribution, --date, --scope-tag?, --for?, --proposes-to-supersede?, --client-task-id?, --context?, --alternatives?, --consequences?, --reconsider-when?, --format?, --commit?) - Propose a ruling. A proposal binds nothing until accepted; drafting a replacement revokes nothing. --for names the items that gain the citation at accept
+- **ruling propose** (--text, --attribution, --date, --scope-tag?, --for?, --proposes-to-supersede?, --client-task-id?, --context?, --alternatives?, --consequences?, --reconsider-when?, --format?, --commit?) - Propose a ruling (T-522). A proposal binds nothing until accepted; drafting a replacement revokes nothing. --for names the items that gain the citation at accept
 - **ruling accept <id>** (--revision, --attribution, --date, --branch?, --client-task-id?, --format?, --commit?) - Accept a proposed ruling: records a claim of authority and cites it from every --for item in one transaction. --revision is the digest of what was reviewed, not proof of who approved
 - **ruling withdraw <id>** (--reason?, --client-task-id?, --format?, --commit?) - Withdraw a proposed ruling; proposed records only, an accepted ruling is superseded instead
 - **duet spawn** (--name?, --pen?, --bounds?, --arrangement?, --model?, --dir?, --role?, --permission-mode?, --terminal?, --auto-load?, --pen-task-id?, --print?, --recover?, --format?) - Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role and handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce itself. Permission mode defaults to auto, or bypassPermissions when the pen runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print; --recover needs none and lists interrupted spawns read-only
@@ -100,14 +100,13 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **selftest** (--format?) - Run integration smoke test: create/update/delete cycle across all entity types
 - **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
-- **setup-review <gate|run|status>** (--setup?, --backend?, --new-cycle?, --reason, --skipped?) - Setup plan review
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink)
 - **setup** (--client?, --skip-hooks?, --skip-skill?) - Install Storybloq skill, MCP, and hooks for Claude, Codex, or both
 - **setup-skill** (--skip-hooks?) - Compatibility alias for `storybloq setup --client claude`
 - **update** (--client?) - Install the newest storybloq into the running Node's prefix, re-run setup for your AI clients, and say when to restart (on Windows it prints the two manual steps instead)
-- **triage** (--older-than?, --severity?, --component?, --status?, --orphan?, --unphased?, --disposition?, --title-matches?, --resolution-matches?, --ids?, --resolve?, --reason?, --kind?, --set-disposition?, --ref?, --relate?, --set-phase?, --set-resolution-kind?, --apply?, --force?, --format?) - Bulk issue triage: selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected
+- **triage** (--older-than?, --severity?, --component?, --status?, --orphan?, --unphased?, --disposition?, --title-matches?, --resolution-matches?, --ids?, --resolve?, --reason?, --kind?, --set-disposition?, --ref?, --relate?, --set-phase?, --set-resolution-kind?, --apply?, --force?, --format?) - Bulk issue triage (T-486): selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected
 - **reconcile** (--dry-run?, --ci?, --rebalance-ranks?, --format?) - Detect and fix duplicate displayIds across all entity types
 - **conflicts list** (--format?) - List all items with unresolved merge conflicts
 - **conflicts show <id>** (--format?) - Show field-level conflict detail for an item
@@ -230,7 +229,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_phase_create** (id, name, label, description, summary?, after?, atStart?, commit?) - Create phase in roadmap
 - **storybloq_lesson_list** (status?, tag?, source?) - List lessons
 - **storybloq_lesson_get** (id) - Get lesson by ID
-- **storybloq_lesson_digest** (limit?, select?) - Ranked digest of active lessons. limit/select; see CLI lesson digest.
+- **storybloq_lesson_digest** (limit?, select?) - Ranked digest of active lessons. limit/select (T-320); see CLI lesson digest.
 - **storybloq_lesson_create** (title, content, context, source, tags?, supersedes?, commit?) - Create lesson
 - **storybloq_lesson_update** (id, title?, content?, context?, tags?, status?, commit?) - Update lesson
 - **storybloq_lesson_reinforce** (id, commit?) - Reinforce lesson: increment count and update lastValidated
@@ -299,7 +298,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 
 With no .story/ project on the path, the MCP server starts degraded and registers only:
 
-- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first
+- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first (T-446)
 - **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) -- context usage and session facts without a project
 - **storybloq_health** (format?, only?, refresh?) -- read-only tooling checks without a project
 - **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then dynamically register the full tool set

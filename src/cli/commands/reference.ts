@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. Other top-level fields are kept whole.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Every other top-level field is kept whole.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -27,7 +27,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     name: "ticket list",
     description: "List tickets with optional filters",
     usage: "storybloq ticket list [--status <value>] [--phase <value>] [--type <value>] [--priority <value>] [--waiting-on <value>] [--format <json|md>] [--node <value>]",
-    flags: ["--status", "--phase", "--type", "--format", "--node"],
+    flags: ["--status", "--phase", "--type", "--priority", "--waiting-on", "--format", "--node"],
   },
   {
     name: "ticket get",
@@ -51,13 +51,13 @@ export const COMMANDS: readonly CommandEntry[] = [
     name: "ticket create",
     description: "Create a new ticket",
     usage: "storybloq ticket create --title <value> --type <value> [--phase <value>] [--description <value>] [--stdin] [--parent-ticket <value>] [--blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>] [--node <value>]",
-    flags: ["--title", "--type", "--phase", "--description", "--stdin", "--parent-ticket", "--blocked-by", "--cites-ruling", "--format", "--node", "--commit"],
+    flags: ["--title", "--type", "--phase", "--description", "--stdin", "--parent-ticket", "--blocked-by", "--cites-ruling", "--priority", "--waiting-on", "--format", "--node", "--commit"],
   },
   {
     name: "ticket update",
     description: "Update a ticket",
     usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--format", "--commit"],
+    flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--priority", "--waiting-on", "--format", "--commit"],
   },
   {
     name: "ticket meta",
@@ -129,7 +129,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     name: "issue list",
     description: "List issues with optional filters",
     usage: "storybloq issue list [--status <value>] [--severity <value>] [--component <value>] [--phase <value>] [--disposition <value|none>] [--actionable] [--non-actionable] [--resolution-kind <kind>] [--priority <value>] [--waiting-on <value>] [--format <json|md>]",
-    flags: ["--status", "--severity", "--component", "--phase", "--disposition", "--actionable", "--non-actionable", "--resolution-kind", "--format"],
+    flags: ["--status", "--severity", "--component", "--phase", "--disposition", "--actionable", "--non-actionable", "--resolution-kind", "--priority", "--waiting-on", "--format"],
   },
   {
     name: "issue get",
@@ -141,13 +141,13 @@ export const COMMANDS: readonly CommandEntry[] = [
     name: "issue create",
     description: "Create a new issue",
     usage: "storybloq issue create --title <value> --severity <value> [--impact <value>] [--stdin] [--phase <value>] [--dedupe-key <value>] [--created-by <value>] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
-    flags: ["--title", "--severity", "--impact", "--stdin", "--phase", "--dedupe-key", "--created-by", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--format", "--commit"],
+    flags: ["--title", "--severity", "--impact", "--stdin", "--phase", "--dedupe-key", "--created-by", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--priority", "--waiting-on", "--format", "--commit"],
   },
   {
     name: "issue update",
     description: "Update an issue",
     usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--disposition <value>] [--reason <text>] [--ref <ref>] [--clear-disposition] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
-    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--disposition", "--reason", "--ref", "--clear-disposition", "--format", "--commit"],
+    flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--disposition", "--reason", "--ref", "--clear-disposition", "--priority", "--waiting-on", "--format", "--commit"],
   },
   {
     name: "issue meta",

@@ -23,6 +23,13 @@ vi.mock("../../../src/cli/commands/issue.js", async (importOriginal) => {
       if (hoisted.failUpdate) throw new Error("simulated issue-update failure");
       return actual.handleIssueUpdate(...args);
     },
+    // T-481 D2a: the pick's status write is now a prepared, stamped write that
+    // runs this validation under the lock instead of calling handleIssueUpdate,
+    // so the simulated failure is injected here as well.
+    validatePostWriteIssueState: (...args: Parameters<typeof actual.validatePostWriteIssueState>) => {
+      if (hoisted.failUpdate) throw new Error("simulated issue-update failure");
+      return actual.validatePostWriteIssueState(...args);
+    },
   };
 });
 

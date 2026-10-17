@@ -206,6 +206,19 @@ test("a locally declared or misbound NoteUpdateHatches is refused", () => {
       ),
     /canonical module/,
   );
+  // A local declaration shadows even a correct canonical import.
+  assert.throws(
+    () =>
+      signature(
+        bound.replace(
+          "export function",
+          "interface NoteUpdateHatches {confirm: string; append: string} export function",
+        ),
+        "write",
+        noteUrl,
+      ),
+    /canonical module/,
+  );
   assert.throws(
     () =>
       signature(

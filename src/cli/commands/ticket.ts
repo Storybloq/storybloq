@@ -57,6 +57,7 @@ import {
   CliValidationError,
   assertUpdateHasFields,
 } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
   formatMetadataValue,
@@ -382,7 +383,8 @@ export async function prepareNewTicketUnlocked(
     displayId = undefined;
   }
   const order = nextOrder(args.phase, state);
-  const createdAt = new Date().toISOString();
+  const instant = new Date();
+  const createdAt = instant.toISOString();
   return {
     id,
     ...(displayId != null && { displayId }),
@@ -392,7 +394,7 @@ export async function prepareNewTicketUnlocked(
     status: "open",
     phase: args.phase,
     order,
-    createdDate: createdAt.slice(0, 10),
+    createdDate: localDateOf(instant),
     ...(isTeam && { createdAt }),
     completedDate: null,
     blockedBy: resolvedBlockedBy,

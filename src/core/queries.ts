@@ -320,8 +320,8 @@ export function umbrellaProgress(
   state: ProjectState,
 ): UmbrellaProgress | null {
   if (!state.umbrellaIDs.has(ticketId)) return null;
-  // T-486 U2-3a: the counted descendants, the same walk umbrellaStatus reads.
-  const leaves = state.countedUmbrellaLeaves(ticketId);
+  // ISS-1378: the counted active descendants, the same walk umbrellaStatus reads.
+  const leaves = state.countedActiveUmbrellaLeaves(ticketId);
   const complete = leaves.filter((t) => t.status === "complete").length;
   const withdrawn = leaves.filter((t) => t.status === "complete" && isEffectivelyWithdrawn(t)).length;
   return {

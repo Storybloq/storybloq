@@ -1966,8 +1966,8 @@ export interface CandidateTakeoverDeps {
    * must both come from what is on disk NOW. Defaults to `readSession` on
    * the session directory. */
   readonly readState?: () => FullSessionState | null;
-  /** The durable state write (ruling B7). Defaults to the durable variant
-   * through `writeSessionAndRefresh`; injectable so a write failure is
+  /** The durable state write (ruling B7). Defaults to the one state writer,
+   * durable since ISS-958, through `writeSessionAndRefresh`; injectable so a write failure is
    * testable without breaking a real filesystem. */
   readonly writeState?: (state: FullSessionState) => FullSessionState;
   readonly nowIso?: () => string;
@@ -2058,7 +2058,7 @@ export async function commitCandidateTakeoverLocked(
   const readState = deps.readState ?? (() => readSession(sessionDir));
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
   const writeState = deps.writeState
-    ?? ((state: FullSessionState) => writeSessionAndRefresh(root, sessionDir, state, "if-active", "durable"));
+    ?? ((state: FullSessionState) => writeSessionAndRefresh(root, sessionDir, state, "if-active"));
   const underProjectLock = deps.withProjectLock
     ?? (async (fn: () => Promise<void>) => {
       const { withProjectLock } = await import("../core/project-loader.js");
@@ -2813,9 +2813,9 @@ function refusePublishedResume(
  * confirmation ADOPTS (same transitionId, re-minted pair, bumped epoch) when
  * work exists, and SUPERSEDES (new id, predecessor triple) when it does not.
  *
- * C2: the intent closes ONLY after write 4 is locally durable. Write 4
- * itself routes through the durable variant for candidate authority (the
- * shared core's barrier), and the close verifies the RE-READ persisted
+ * C2: the intent closes ONLY after write 4 is locally durable. Write 4 goes
+ * through the durable state writer (the shared core's barrier, which every
+ * state write carries since ISS-958), and the close verifies the RE-READ persisted
  * transition, so a crash at any point leaves a retryable intent, never a
  * closed intent whose publication evaporated.
  */
@@ -2918,9 +2918,8 @@ export async function commitCandidateCancelLocked(
         // This used to claim "the record and intent are unchanged". That is
         // FALSE, and falsely reassuring in the one direction that matters.
         // `applyCancellationTransition` performs write 4 -- the state write that
-        // carries the published transition -- and for a candidate transition it
-        // routes through the DURABLE writer precisely because the intent's close
-        // depends on that write having happened. A throw after that write leaves
+        // carries the published transition -- through the durable state writer,
+        // and the intent's close depends on that write having happened. A throw after that write leaves
         // the cancellation visible on disk while this call reports a failure, so
         // the record may well have changed.
         //
@@ -3252,6 +3251,13 @@ export async function commitCandidateCancelLocked(
       authority,
     });
   } catch (err) {
+    // ISS-958 exception (iii): an undurable write PUBLISHED the transition, so
+    // "refused or failed" would be false; say what was published instead.
+    if (err instanceof StateWriteUndurableError) {
+      return { kind: "refused", stage: "transition", detail:
+        `state published at revision ${err.published.revision}, durability unproven (${err.message}); ` +
+        "the intent stays open and a retry resumes the published record" };
+    }
     return { kind: "refused", stage: "transition", detail:
       `the transition refused or failed (${err instanceof Error ? err.message : "unknown error"}); the ` +
       "durable intent is unchanged, so re-authorization and retry remain available" };

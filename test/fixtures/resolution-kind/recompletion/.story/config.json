@@ -1,0 +1,18 @@
+{
+  "checkpointEnable": {
+    "at": "2026-10-17T04:33:24.850Z",
+    "step": "complete"
+  },
+  "features": {
+    "handovers": true,
+    "issues": true,
+    "reviews": true,
+    "roadmap": true,
+    "tickets": true
+  },
+  "language": "TypeScript",
+  "project": "w-fixture",
+  "schemaVersion": 4,
+  "type": "npm",
+  "version": 2
+}

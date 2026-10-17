@@ -30,7 +30,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
     terminationReason: null, waitingForRetry: false, lastGuideCall: now, startedAt: now, guideCallCount: 5,
     config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["codex", "agent"] },
     ticket: { id: "T-001", title: "Test ticket", claimed: true },
-    testBaseline: { failCount: 2, exitCode: 1, timestamp: now },
+    testBaseline: { failCount: 2, passCount: 0, summary: "2 failed", exitCode: 1, timestamp: now },
     filedDeferrals: [], pendingDeferrals: [], deferralsUnfiled: false,
     resolvedIssues: [],
     currentIssue: null,

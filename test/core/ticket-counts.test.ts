@@ -499,3 +499,92 @@ describe("T-486 U2-3b: the release walk reads both child lists, each on its own"
     expect(state.isBlocked(state.ticketByID("T-080")!)).toBe(true);
   });
 });
+
+describe("ISS-1378 Part C: umbrella status and progress count active descendants only", () => {
+  const DEL = { lifecycle: "deleted", deletedAt: "2026-03-01T00:00:00.000Z" };
+  const ARC = { lifecycle: "archived" };
+
+  /** Every ticket's release result, so a display change can be shown not to move it. */
+  const releases = (state: Awaited<ReturnType<typeof stateOf>>) =>
+    Object.fromEntries(state.tickets.map((t) => [t.id, state.dependencyRelease(t)]));
+
+  it("mixed active, archived and deleted siblings: only the active child counts", async () => {
+    const root = await board([
+      delivered("T-100"),
+      ticket("T-101", { parentTicket: "T-100" }),
+      delivered("T-102", { parentTicket: "T-100", ...DEL }),
+      delivered("T-103", { parentTicket: "T-100", ...ARC }),
+      ticket("T-109", { blockedBy: ["T-100"] }),
+    ]);
+    const state = await stateOf(root);
+    expect(state.leafTicketCount).toBe(2);
+    expect(umbrellaProgress("T-100", state)).toEqual({ total: 1, complete: 0, status: "notstarted" });
+    expect(state.umbrellaStatus("T-100")).toBe("notstarted");
+    expect(state.dependencyRelease(state.ticketByID("T-100")!)).toEqual({ releases: true, reason: null, detail: [] });
+  });
+
+  it("an archived intermediate is walked through: its active descendant counts and it contributes nothing", async () => {
+    const root = await board([
+      ticket("T-110"),
+      delivered("T-111", { parentTicket: "T-110", ...ARC }),
+      delivered("T-112", { parentTicket: "T-111" }),
+      ticket("T-113", { parentTicket: "T-110" }),
+    ]);
+    const state = await stateOf(root);
+    expect(state.umbrellaIDs.has("T-111")).toBe(true);
+    expect(umbrellaProgress("T-110", state)).toEqual({ total: 2, complete: 1, status: "inprogress" });
+    expect(state.umbrellaStatus("T-110")).toBe("inprogress");
+  });
+
+  it("a deleted intermediate above a withdrawn active leaf: the leaf counts as withdrawn, and the release walk still withholds", async () => {
+    const root = await board([
+      delivered("T-120"),
+      delivered("T-121", { parentTicket: "T-120", ...DEL }),
+      withdrawn("T-122", { parentTicket: "T-121" }),
+      delivered("T-123", { parentTicket: "T-120" }),
+      ticket("T-129", { blockedBy: ["T-120"] }),
+    ]);
+    const state = await stateOf(root);
+    // T-121 is deleted, but the active T-122 names it, so it is an umbrella the walk passes through.
+    expect(state.umbrellaIDs.has("T-121")).toBe(true);
+    expect(umbrellaProgress("T-120", state)).toEqual({ total: 2, complete: 2, withdrawn: 1, status: "complete" });
+    expect(state.dependencyRelease(state.ticketByID("T-120")!)).toEqual({ releases: false, reason: "withheld", detail: ["T-122"] });
+  });
+
+  it("an archived withdrawn leaf is not counted in progress, yet still withholds in release", async () => {
+    const root = await board([
+      delivered("T-130"),
+      delivered("T-131", { parentTicket: "T-130" }),
+      withdrawn("T-132", { parentTicket: "T-130", ...ARC }),
+      ticket("T-139", { blockedBy: ["T-130"] }),
+    ]);
+    const state = await stateOf(root);
+    expect(umbrellaProgress("T-130", state)).toEqual({ total: 1, complete: 1, status: "complete" });
+    expect(state.dependencyRelease(state.ticketByID("T-130")!)).toEqual({ releases: false, reason: "withheld", detail: ["T-132"] });
+    expect(state.isBlocked(state.ticketByID("T-139")!)).toBe(true);
+  });
+
+  it("release results are the ones the every-lifecycle walk gave before the display change", async () => {
+    const root = await board([
+      delivered("T-140"),
+      delivered("T-141", { parentTicket: "T-140", ...DEL }),
+      withdrawn("T-142", { parentTicket: "T-141" }),
+      delivered("T-143"),
+      withdrawn("T-144", { parentTicket: "T-143", ...ARC }),
+      delivered("T-145"),
+      delivered("T-146", { parentTicket: "T-145", ...ARC }),
+    ]);
+    const state = await stateOf(root);
+    expect(releases(state)).toEqual({
+      "T-140": { releases: false, reason: "withheld", detail: ["T-142"] },
+      "T-141": { releases: true, reason: null, detail: [] },
+      "T-142": { releases: false, reason: "withdrawn", detail: ["T-142"] },
+      "T-143": { releases: false, reason: "withheld", detail: ["T-144"] },
+      "T-144": { releases: false, reason: "withdrawn", detail: ["T-144"] },
+      "T-145": { releases: true, reason: null, detail: [] },
+      "T-146": { releases: true, reason: null, detail: [] },
+    });
+    // The every-lifecycle walk is unchanged and stays available.
+    expect(state.countedUmbrellaLeaves("T-145").map((t) => t.id)).toEqual(["T-146"]);
+  });
+});

@@ -150,7 +150,7 @@ describe("CodeReviewStage identity spine (T-488)", () => {
 
   it("an issue-fix round records kind 'issue', and no round writes ticketId", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState({
-      ticket: null,
+      ticket: undefined,
       currentIssue: { id: ISSUE_ID, displayId: "ISS-500", title: "An issue", severity: "high" },
     } as Partial<FullSessionState>), makeRecipe());
 
@@ -359,7 +359,7 @@ describe("PLAN redirect: retention and the generation boundary (T-488 D9/D3)", (
       ticket: { id: "T-001", displayId: "T-001", title: "T", claimed: true, risk: "low", realizedRisk: "high" },
       lensReviewHistory: [{
         ticketId: "T-001", stage: "CODE_REVIEW", lens: "security", category: "authz",
-        severity: "critical", disposition: "accepted", description: "why sixty rounds went nowhere",
+        severity: "critical", disposition: "addressed", description: "why sixty rounds went nowhere",
         timestamp: new Date().toISOString(),
       }],
     } as Partial<FullSessionState>), makeRecipe(12));

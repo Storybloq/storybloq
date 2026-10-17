@@ -1524,6 +1524,11 @@ export const SessionStateSchema = z.object({
     remaining: z.array(z.string()),
     current: z.string().nullable(),
     resolved: z.array(z.string()),
+    // T-486 U4: how the sweep finished each issue that was not fixed, and
+    // the issues it could not finish. Defaulted, so a 1.16.0 state parses.
+    disposed: z.array(z.object({ id: z.string(), kind: z.string() })).default([]),
+    deferred: z.array(z.object({ id: z.string(), disposition: z.string(), reason: z.string(), ref: z.string() })).default([]),
+    conflicted: z.array(z.object({ id: z.string(), reason: z.string() })).default([]),
   }).nullable().default(null),
   pipelinePhase: z.enum(["ticket", "postComplete"]).default("ticket"),
 

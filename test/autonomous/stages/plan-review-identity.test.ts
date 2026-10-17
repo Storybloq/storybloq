@@ -172,7 +172,7 @@ describe("PlanReviewStage identity spine (T-488)", () => {
   it("writes NEITHER identity field for a round with no ticket at all", async () => {
     // A placeholder here would either fail validation or collide across items,
     // and an id-shaped "unknown" is a value that reads like an address.
-    const ctx = new StageContext(testRoot, sessionDir, makeState({ ticket: null } as Partial<FullSessionState>), makeRecipe());
+    const ctx = new StageContext(testRoot, sessionDir, makeState({ ticket: undefined } as Partial<FullSessionState>), makeRecipe());
     await stage.report(ctx, { completedAction: "plan_review_round", verdict: "revise", findings: [MINOR], reviewReceipts: planReceipt(PLAN) } as never);
 
     const record = ctx.state.reviews.plan[0] as ReviewRecord;

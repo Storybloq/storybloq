@@ -7,7 +7,7 @@ import {
   type LensFindingDisposition,
 } from "../session-types.js";
 import { createHash } from "node:crypto";
-import { writeSessionSync, appendEvent } from "../session.js";
+import { writeSessionSync, appendEvent, StateWriteUndurableError } from "../session.js";
 import { killSidecar, writeShutdownMarker } from "../liveness.js";
 import { writeEvent, markEnded } from "../telemetry-writer.js";
 import { refreshStatusForSession } from "../status-writer.js";
@@ -137,11 +137,22 @@ export class StageContext {
   /**
    * Write state updates atomically. Returns the written state with incremented revision.
    * Updates the internal snapshot so subsequent reads via `this.state` are consistent.
+   *
+   * ISS-958 (policy A): on StateWriteUndurableError the state WAS published,
+   * so the snapshot adopts `err.published` before the error propagates. A
+   * stage that swallows the error and writes again then builds on the
+   * published revision instead of reusing its number with different content.
    */
   writeState(updates: Partial<FullSessionState>, opts?: { refreshStatus?: boolean }): FullSessionState {
     const prevState = this._state.state;
     const merged = { ...this._state, ...updates } as FullSessionState;
-    const written = writeSessionSync(this.dir, merged);
+    let written: FullSessionState;
+    try {
+      written = writeSessionSync(this.dir, merged);
+    } catch (err) {
+      if (err instanceof StateWriteUndurableError) this._state = err.published;
+      throw err;
+    }
     this._state = written;
     if (opts?.refreshStatus || written.state !== prevState) {
       try { refreshStatusForSession(this.root, this.dir, written, "guide"); } catch { /* best-effort */ }
@@ -152,10 +163,23 @@ export class StageContext {
   /**
    * T-260: Terminal transition with sidecar cleanup.
    * Persists state first, then kills sidecar and writes shutdown marker (best-effort).
+   *
+   * ISS-958 (policy TC): a StateWriteUndurableError means the terminal state
+   * WAS published, and nothing re-enters a terminal session to finish this
+   * tail later. So the tail runs against the published state, then the error
+   * propagates.
    */
   finalizeSession(updates: Partial<FullSessionState>, terminalData?: Record<string, unknown>): FullSessionState {
     const pidToKill = this._state.sidecarPid;
-    const written = this.writeState(updates);
+    let written: FullSessionState;
+    let undurable: StateWriteUndurableError | null = null;
+    try {
+      written = this.writeState(updates);
+    } catch (err) {
+      if (!(err instanceof StateWriteUndurableError)) throw err;
+      undurable = err;
+      written = err.published;
+    }
     try { killSidecar(pidToKill); } catch { /* best-effort */ }
     try { writeShutdownMarker(this.dir); } catch { /* best-effort */ }
     const reason = (updates as Record<string, unknown>).terminationReason as string ?? "normal";
@@ -171,6 +195,7 @@ export class StageContext {
       },
     });
     markEnded(this.dir, reason);
+    if (undurable) throw undurable;
     return written;
   }
 

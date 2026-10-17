@@ -313,7 +313,7 @@ describe("PlanReviewStage empty change-request guard (ISS-1114)", () => {
 
   it("falls through unchanged when there is no ticket", async () => {
     const ctx = new StageContext(testRoot, sessionDir, makeState({
-      ticket: null,
+      ticket: undefined,
     } as Partial<FullSessionState>), makeRecipe());
 
     const advance = await stage.report(ctx, { ...EMPTY_REPORT, reviewReceipts: planReceipt(PLAN) });

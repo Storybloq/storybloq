@@ -239,7 +239,8 @@ export async function performNewBranchFromMain(
    * MUST throw if it cannot. The write-ahead guarantee is only as strong as
    * this callback: a memory-only implementation would let git create a branch
    * that no recorded attempt can later identify. `StageContext.writeState`
-   * satisfies it (it calls `writeSessionSync` and propagates failures).
+   * satisfies it: it calls `writeSessionSync`, which since ISS-958 fsyncs the
+   * temp file and the directory around its rename, and it propagates failures.
    */
   persistAttemptSync: (attempt: BranchAttempt) => void,
 ): Promise<NewBranchOutcome> {

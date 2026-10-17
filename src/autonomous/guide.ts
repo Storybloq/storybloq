@@ -70,6 +70,7 @@ import {
   readEvents,
   readSession,
   readSessionResilient,
+  StateWriteUndurableError,
   type ActiveSessionInfo,
 } from "./session.js";
 import { RECOVERY_MAPPING, recoveryResets } from "./recovery-state.js";
@@ -103,6 +104,7 @@ import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
 import { PARK_ACTION, PARK_STAGES } from "./stages/park.js";
+import { recoverIssueSweepStep, sweepStepPendingText } from "./stages/issue-sweep.js";
 import "./stages/index.js"; // Register all extracted stages
 import { writeCheckpoint } from "./telemetry-writer.js";
 
@@ -729,9 +731,15 @@ async function cancelClaimPosture(
 type RecoveryResult =
   | { readonly kind: "recovered"; readonly state: FullSessionState }
   | { readonly kind: "checkpoint-blocked"; readonly ticketId: string; readonly checkpoints: readonly string[]; readonly state: FullSessionState }
-  | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState };
+  | { readonly kind: "load-failed"; readonly ticketId: string; readonly reason: string; readonly state: FullSessionState }
+  | { readonly kind: "sweep-step-pending"; readonly reason: string; readonly state: FullSessionState };
 
 const recovered = (state: FullSessionState): RecoveryResult => ({ kind: "recovered", state });
+
+/** ISS-958: direct access for the published-but-undurable recovery tests. */
+export const __recoveryTesting = {
+  recoverPendingMutation: (dir: string, state: FullSessionState, root: string) => recoverPendingMutation(dir, state, root),
+};
 
 type CheckpointBlock = { readonly ticketId: string; readonly checkpoints: readonly string[] };
 
@@ -808,6 +816,15 @@ function checkpointBlockedResult(dir: string, state: FullSessionState, block: Ch
     `Once the owner answers, resume with { "sessionId": "${state.sessionId}", "action": "resume" }; ` +
     `or cancel with { "sessionId": "${state.sessionId}", "action": "cancel" }, which abandons the completion.`,
   ));
+}
+
+/**
+ * T-486 U4 (5h): start, report and resume stop here while an issue-sweep step
+ * cannot be confirmed. Nothing is written: the marker stays, and the same
+ * call settles it once the project lock is available.
+ */
+function sweepStepPendingResult(reason: string): McpToolResult {
+  return guideError(new Error(sweepStepPendingText(reason)));
 }
 
 /**
@@ -926,6 +943,17 @@ async function recoverPendingMutation(
     }
     const cleared = { ...state, pendingProjectMutation: null };
     return recovered(writeSessionAndRefresh(root, dir, cleared, "if-active"));
+  }
+
+  // T-486 U4 (5g): an issue-sweep step. Classified and written inside one
+  // sweep lock; a lock or IO failure keeps the marker and blocks the caller.
+  if (m.type === "issue_sweep_step") {
+    const step = await recoverIssueSweepStep(root, state);
+    if (step.kind === "pending") return { kind: "sweep-step-pending", reason: step.reason, state };
+    for (const event of step.events) {
+      appendEvent(dir, { rev: state.revision, type: event.type, timestamp: new Date().toISOString(), data: event.data });
+    }
+    return recovered(writeSessionAndRefresh(root, dir, { ...state, ...step.updates } as FullSessionState, "if-active"));
   }
 
   if (m.type !== "ticket_update") return recovered(state);
@@ -1063,6 +1091,12 @@ async function recoverPendingMutation(
       }
     });
   } catch (err) {
+    // ISS-958 (policy A): the only state write in this body is
+    // recordConflict's marker clear. A StateWriteUndurableError means that
+    // clear WAS published, so "leave the marker for the next attempt" would
+    // be false; adopt the published state, exactly as the conflict branch
+    // below does on success.
+    if (err instanceof StateWriteUndurableError) return recovered(err.published);
     // A completion is refused, marker kept (T-537); any other target keeps
     // the lock/IO rule: leave the marker for the next attempt.
     if (completion) return { kind: "load-failed", ticketId: targetId, reason: failureReason(err), state };
@@ -1441,7 +1475,13 @@ async function trySupersedeFinishedOrphan(
     );
     // T-260: Cross-process finalization (marker only, no PID kill)
     writeShutdownMarker(info.dir);
-  } catch {
+  } catch (err) {
+    // ISS-958 (policy TC): the superseded state WAS published, and nothing
+    // revisits a superseded session, so its marker is written now.
+    if (err instanceof StateWriteUndurableError) {
+      writeShutdownMarker(info.dir);
+      throw err;
+    }
     return null;
   }
 
@@ -1545,6 +1585,7 @@ async function handleStartAfterNormalization(
     const startRecovery = await recoverPendingMutation(existing.dir, existing.state, root);
     if (startRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(existing.dir, existing.state, startRecovery);
     if (startRecovery.kind === "load-failed") return loadFailedResult(existing.dir, existing.state, startRecovery);
+    if (startRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(startRecovery.reason);
     // Re-read after recovery -- session may have been ended by postMutation
     existing = findActiveSessionFull(root);
   }
@@ -1733,7 +1774,13 @@ async function handleStartAfterNormalization(
   // blockers is empty, so every probed entry is kind:"checked" with liveness:"dead".
   for (const p of probed) {
     if (p.kind !== "checked") continue; // unreachable given the guard above; keeps the compiler honest
-    writeSessionAndRefresh(root, p.dir, { ...p.current, status: "superseded" as const } as FullSessionState, "always");
+    try {
+      writeSessionAndRefresh(root, p.dir, { ...p.current, status: "superseded" as const } as FullSessionState, "always");
+    } catch (err) {
+      // ISS-958 (policy TC): published as superseded; finish its tail first.
+      if (err instanceof StateWriteUndurableError) writeShutdownMarker(p.dir);
+      throw err;
+    }
     writeShutdownMarker(p.dir);
   }
 
@@ -2837,6 +2884,7 @@ async function handleReport(root: string, args: GuideInput): Promise<McpToolResu
   const reportRecovery = await recoverPendingMutation(info.dir, state, root);
   if (reportRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, state, reportRecovery);
   if (reportRecovery.kind === "load-failed") return loadFailedResult(info.dir, state, reportRecovery);
+  if (reportRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(reportRecovery.reason);
   state = reportRecovery.state;
 
   // ISS-037: retry pending deferrals from previous calls
@@ -3621,6 +3669,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   const resumeRecovery = await recoverPendingMutation(info.dir, info.state, root);
   if (resumeRecovery.kind === "checkpoint-blocked") return checkpointBlockedResult(info.dir, info.state, resumeRecovery);
   if (resumeRecovery.kind === "load-failed") return loadFailedResult(info.dir, info.state, resumeRecovery);
+  if (resumeRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(resumeRecovery.reason);
   const recoveredState = resumeRecovery.state;
   if (recoveredState !== info.state) {
     const reread = findSessionById(root, args.sessionId);
@@ -3716,6 +3765,23 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     resumeSidecarPid = spawn.kind === "spawned" ? spawn.pid : null;
   } catch { /* best-effort */ }
 
+  // ISS-958 exception (iv): once a resume write has published sidecarPid,
+  // the session owns that sidecar, and a later failure must not kill it
+  // (a published-but-undurable write counts when it published this pid).
+  let sidecarPublished = false;
+  const publishResume = (next: FullSessionState): FullSessionState => {
+    try {
+      const w = writeSessionAndRefresh(root, info.dir, next, "always");
+      sidecarPublished = true;
+      return w;
+    } catch (err) {
+      if (err instanceof StateWriteUndurableError && err.published.sidecarPid === resumeSidecarPid) {
+        sidecarPublished = true;
+      }
+      throw err;
+    }
+  };
+
   try {
 
   if (expectedHead && headResult.data.hash !== expectedHead && !ownCommitDrift) {
@@ -3746,7 +3812,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       mapping = { state: "HANDOVER", resetPlan: false, resetCode: false };
     }
 
-    let driftWritten = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
+    let driftWritten = publishResume(withoutLimitKeys({
       ...refreshedResumeState,
       state: mapping.state,
       previousState: "COMPACT",
@@ -3767,7 +3833,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
       sidecarPid: resumeSidecarPid,
       ownerTask: reboundOwnerTask,
       claudeCodeSessionId: reboundClaudeCodeSessionId,
-    } as FullSessionState), "always");
+    } as FullSessionState));
 
     appendEvent(info.dir, {
       rev: driftWritten.revision,
@@ -3982,7 +4048,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   // Branch A: HEAD matches -- normal resume (or own-commit drift from T-184)
   // Reset pressure only when SessionStart confirmed that client compaction occurred.
   // T-534: the limit keys are omitted, never written back.
-  const written = writeSessionAndRefresh(root, info.dir, withoutLimitKeys({
+  const written = publishResume(withoutLimitKeys({
     ...refreshedResumeState,
     state: resumeState,
     preCompactState: null,
@@ -4001,7 +4067,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
     sidecarPid: resumeSidecarPid,
     ownerTask: reboundOwnerTask,
     claudeCodeSessionId: reboundClaudeCodeSessionId,
-  } as FullSessionState), "always");
+  } as FullSessionState));
   appendEvent(info.dir, {
     rev: written.revision,
     type: "resumed",
@@ -4175,8 +4241,11 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
   });
 
   } catch (err) {
-    // T-260: Clean up sidecar if resume fails after spawn
-    try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    // T-260: Clean up sidecar if resume fails after spawn, unless a resume
+    // write already published it (ISS-958 exception (iv)).
+    if (!sidecarPublished) {
+      try { killSidecar(resumeSidecarPid); } catch { /* best-effort */ }
+    }
     throw err;
   }
 }
@@ -4846,21 +4915,6 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Validate transition + write state atomically. Returns the written state with updated revision. */
-function transitionAndWrite(
-  root: string,
-  dir: string,
-  state: FullSessionState,
-  to: WorkflowState,
-): FullSessionState {
-  const from = state.state as WorkflowState;
-  if (from !== to) {
-    assertTransition(from, to);
-  }
-  const updated = { ...state, state: to, previousState: from };
-  return writeSessionAndRefresh(root, dir, updated, "always");
-}
 
 function guideResult(
   state: FullSessionState,

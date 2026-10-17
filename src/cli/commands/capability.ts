@@ -58,6 +58,7 @@ import {
 } from "../../core/output-formatter.js";
 import { restoreRecord, RestoreInputError, RestoreUnsafe, type RestoreResult, type RestoreTarget } from "../../core/ledger-restore.js";
 import { CliValidationError } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { OutputFormat } from "../../models/types.js";
 
@@ -105,7 +106,7 @@ async function freshCheckpoint(root: string): Promise<{ sha: string; date: strin
         "so it cannot be stamped outside a git repository with at least one commit.",
     );
   }
-  return { sha: head, date: new Date().toISOString().slice(0, 10) };
+  return { sha: head, date: localDateOf(new Date()) };
 }
 
 /**
@@ -767,7 +768,7 @@ export async function handleCapabilityCheck(
         "The check could not read HEAD, so no entry was verified against a commit and nothing can be stamped.",
       );
     }
-    const checkpoint = { sha: report.head, date: new Date().toISOString().slice(0, 10) };
+    const checkpoint = { sha: report.head, date: localDateOf(new Date()) };
     /**
      * A stamp certifies exactly the entry bytes and the HEAD that were
      * checked. The check ran on `doc`, loaded before the lock and up to 30s

@@ -1,6 +1,7 @@
 import { mkdir, stat, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { writeConfig, writeRoadmap, loadProject } from "./project-loader.js";
+import { localDateOf } from "./local-date.js";
 import { recordBoardTarget } from "./board-write-recorder.js";
 import { ProjectLoaderError, CURRENT_SCHEMA_VERSION, INTEGRITY_WARNING_TYPES } from "./errors.js";
 import type { Config } from "../models/config.js";
@@ -72,7 +73,7 @@ export async function initProject(
   ];
 
   // Today's date
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateOf(new Date());
 
   const isOrchestrator = (options.type ?? "generic") === "orchestrator";
 

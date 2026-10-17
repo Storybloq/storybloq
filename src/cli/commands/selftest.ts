@@ -32,6 +32,7 @@ import type { Note } from "../../models/note.js";
 import type { Lesson } from "../../models/lesson.js";
 import type { CommandResult } from "../types.js";
 import { todayISO } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 
 export interface SelftestCheckResult {
   readonly entity: "ticket" | "issue" | "note" | "lesson";
@@ -102,8 +103,9 @@ export async function handleSelftest(
         } else {
           ticketId = nextTicketID(result.state.tickets);
         }
-        const createdAt = new Date().toISOString();
-        const today = createdAt.slice(0, 10);
+        const instant = new Date();
+        const createdAt = instant.toISOString();
+        const today = localDateOf(instant);
         const ticket: Ticket = {
           id: ticketId,
           ...(displayId != null && { displayId }),
@@ -189,8 +191,9 @@ export async function handleSelftest(
         } else {
           issueId = nextIssueID(result.state.issues);
         }
-        const createdAt = new Date().toISOString();
-        const today = createdAt.slice(0, 10);
+        const instant = new Date();
+        const createdAt = instant.toISOString();
+        const today = localDateOf(instant);
         const issue: Issue = {
           id: issueId,
           ...(displayId != null && { displayId }),
@@ -278,8 +281,9 @@ export async function handleSelftest(
         } else {
           noteId = nextNoteID(result.state.notes);
         }
-        const createdAt = new Date().toISOString();
-        const today = createdAt.slice(0, 10);
+        const instant = new Date();
+        const createdAt = instant.toISOString();
+        const today = localDateOf(instant);
         const note: Note = {
           id: noteId,
           ...(displayId != null && { displayId }),
@@ -361,8 +365,9 @@ export async function handleSelftest(
         } else {
           lessonId = nextLessonID(result.state.lessons);
         }
-        const createdAt = new Date().toISOString();
-        const today = createdAt.slice(0, 10);
+        const instant = new Date();
+        const createdAt = instant.toISOString();
+        const today = localDateOf(instant);
         const lesson: Lesson = {
           id: lessonId,
           ...(displayId != null && { displayId }),

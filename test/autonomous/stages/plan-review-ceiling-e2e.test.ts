@@ -29,7 +29,7 @@ import type { ResolvedRecipe } from "../../../src/autonomous/recipes/loader.js";
 
 const TICKET = "t-p1ce111n90000012";
 const CEILING = DEFAULT_PLAN_REVIEW_MAX_ROUNDS + PLAN_REVIEW_HARD_CEILING_GRACE; // 8
-const SESSION_ID = "00000000-0000-0000-0000-0000000000p1";
+const SESSION_ID = "00000000-0000-0000-0000-0000000000a1";
 const NOW = "2026-08-27T00:00:00.000Z";
 /** A provable claim this session holds on TICKET, for the ownership-release tests below. */
 const MY_CLAIM = { user: SESSION_ID, branch: "main", since: NOW };
@@ -52,7 +52,7 @@ function activeBaseline(rawTokens: readonly string[], planText = "placeholder pl
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();
   return {
-    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-0000000000p1",
+    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-0000000000a1",
     recipe: "coding", state: "PLAN_REVIEW", revision: 1, status: "active",
     reviews: { plan: [], code: [] }, completedTickets: [],
     finalizeCheckpoint: null,

@@ -1,0 +1,18 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-17",
+  "description": "Body",
+  "displayId": "T-008",
+  "id": "T-008",
+  "order": 80,
+  "phase": "p1",
+  "resolutionKind": {
+    "closedOn": "2026-02-01",
+    "kind": "withdrawn",
+    "reason": "Superseded by T-099"
+  },
+  "status": "open",
+  "title": "Open stale",
+  "type": "task"
+}

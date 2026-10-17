@@ -1,0 +1,29 @@
+{
+  "blockedBy": [
+    "T-001"
+  ],
+  "checkpointEvidence": [
+    {
+      "checkpoint": "T-001",
+      "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+      "generation": 2,
+      "revision": 1,
+      "state": "approved"
+    }
+  ],
+  "completedDate": "2026-02-01",
+  "createdDate": "2026-10-17",
+  "description": "Body",
+  "displayId": "T-004",
+  "id": "T-004",
+  "order": 40,
+  "phase": "p1",
+  "resolutionKind": {
+    "closedOn": "2026-02-01",
+    "kind": "withdrawn",
+    "reason": "Superseded by T-099"
+  },
+  "status": "complete",
+  "title": "Dep current",
+  "type": "task"
+}

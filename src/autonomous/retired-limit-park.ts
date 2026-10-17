@@ -29,6 +29,7 @@ import {
   writeSessionSync,
   isRetiredLimitPark,
   LIMIT_KEYS,
+  StateWriteUndurableError,
 } from "./session.js";
 import { WORKFLOW_STATES, type FullSessionState } from "./session-types.js";
 import { classifyLandedCommit, inspectLandedCommit, itemBaseline } from "./landed-commit.js";
@@ -171,11 +172,33 @@ export async function normalizeRetiredLimitParkLocked(
 
   if (!hasLimitKeys) return { kind: "unchanged", state };
 
+  // ISS-958 (TR): an undurable write still PUBLISHED the normalization, so it
+  // is recorded against the published revision exactly as success would
+  // record it, and the refusal says what happened. A retry finds no limit
+  // keys and returns unchanged without recording again.
+  const publish = (
+    next: FullSessionState,
+    transition: RetiredParkTransition,
+    extra?: Record<string, unknown>,
+  ): RetiredParkResult => {
+    let written: FullSessionState;
+    try {
+      written = writeSessionSync(dir, next);
+    } catch (err) {
+      if (!(err instanceof StateWriteUndurableError)) throw err;
+      record(dir, err.published, transition, extra);
+      return failed(
+        `session ${state.sessionId}: normalization published at revision ${err.published.revision} ` +
+        `but its durability is unproven (${err.message}); retry is safe`,
+      );
+    }
+    record(dir, written, transition, extra);
+    return { kind: "normalized", state: written, transition };
+  };
+
   const strip = (): RetiredParkResult => {
     try {
-      const written = writeSessionSync(dir, withoutLimitKeys(state));
-      record(dir, written, "stripped");
-      return { kind: "normalized", state: written, transition: "stripped" };
+      return publish(withoutLimitKeys(state), "stripped");
     } catch (err) {
       return failed(`session ${state.sessionId}: write failed (${(err as Error).message})`);
     }
@@ -199,17 +222,13 @@ export async function normalizeRetiredLimitParkLocked(
   const now = new Date().toISOString();
   try {
     if (state.preCompactState !== "FINALIZE") {
-      const written = writeSessionSync(dir, withoutLimitKeys({ ...state, compactPreparedAt: now }));
-      record(dir, written, "compact-park");
-      return { kind: "normalized", state: written, transition: "compact-park" };
+      return publish(withoutLimitKeys({ ...state, compactPreparedAt: now }), "compact-park");
     }
 
     const evidence = await inspectLandedCommit(root, state, itemBaseline(state) ?? null, { ancestry: true });
     const landed = classifyLandedCommit(evidence);
     if (landed === "committed" || landed === "verified") {
-      const written = writeSessionSync(dir, withoutLimitKeys({ ...state, compactPreparedAt: now }));
-      record(dir, written, "finalize-kept", { landed });
-      return { kind: "normalized", state: written, transition: "finalize-kept" };
+      return publish(withoutLimitKeys({ ...state, compactPreparedAt: now }), "finalize-kept", { landed });
     }
     if (landed === "unavailable" && !opts.forceUnavailableGit) {
       return {
@@ -225,7 +244,7 @@ export async function normalizeRetiredLimitParkLocked(
     // re-target the park to the FINALIZE recovery, as external drift would.
     const mapping = RECOVERY_MAPPING.FINALIZE!;
     const head = landed === "unavailable" ? null : evidence.head;
-    const written = writeSessionSync(dir, withoutLimitKeys({
+    return publish(withoutLimitKeys({
       ...state,
       ...recoveryResets(state, mapping),
       state: "COMPACT",
@@ -236,9 +255,7 @@ export async function normalizeRetiredLimitParkLocked(
       ...(head !== null
         ? { git: { ...state.git, expectedHead: head, mergeBase: head, itemBaseHead: head } }
         : {}),
-    } as FullSessionState));
-    record(dir, written, "finalize-recovered", { landed, forced: landed === "unavailable" });
-    return { kind: "normalized", state: written, transition: "finalize-recovered" };
+    } as FullSessionState), "finalize-recovered", { landed, forced: landed === "unavailable" });
   } catch (err) {
     return failed(`session ${state.sessionId}: write failed (${(err as Error).message})`);
   }

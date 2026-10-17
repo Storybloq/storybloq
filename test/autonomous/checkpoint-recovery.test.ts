@@ -96,7 +96,7 @@ function readTicket(root: string, id: string): Record<string, unknown> {
 }
 
 /** Advances the session when the completion lands; a blocked or abandoned completion never applies it. */
-const POST_MUTATION = { nextSessionState: "HANDOVER", terminationReason: "t537-post-mutation", clearTicket: true };
+const POST_MUTATION = { nextSessionState: "HANDOVER", terminationReason: "admin_recovery", clearTicket: true };
 
 /** A session (WRITE_TESTS by default) with a proven claim on T-001 and a pending completion of it. */
 function plantBlockedCompletion(

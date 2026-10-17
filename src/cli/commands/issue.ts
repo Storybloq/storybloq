@@ -20,7 +20,7 @@ import {
 } from "../../core/project-loader.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
-import { ISSUE_RESOLUTION_KINDS, dispositionRefForm, effectiveResolutionKind, issueJsonBody, resolutionDigest, type IssueResolutionKind } from "../../core/resolution-kind.js";
+import { ISSUE_RESOLUTION_KINDS, dispositionRefForm, effectiveResolutionKind, issueJsonBody, resolutionDigest, resolutionKindBindBlocker, type IssueResolutionKind } from "../../core/resolution-kind.js";
 import { nextIssueID, allocateTeamIssueId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -54,6 +54,7 @@ import {
   CliValidationError,
   assertUpdateHasFields,
 } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
   formatMetadataValue,
@@ -257,7 +258,7 @@ export function handleIssueMetaGet(
 
 // --- Write Handlers ---
 
-function validateAndResolveRelatedTickets(ids: string[], state: ProjectState): string[] {
+export function validateAndResolveRelatedTickets(ids: string[], state: ProjectState): string[] {
   const resolved: string[] = [];
   for (const tid of ids) {
     try {
@@ -292,18 +293,33 @@ function validatePostWriteIssueState(
   state: ProjectState,
   isCreate: boolean,
 ): void {
+  validatePostWriteIssueStates([candidate], state, isCreate);
+}
+
+/**
+ * T-486 U3: the same check over several issues written together. The post
+ * state carries every candidate at once, so it is judged once, never against
+ * a state that holds only one of them.
+ */
+export function validatePostWriteIssueStates(
+  candidates: readonly Issue[],
+  state: ProjectState,
+  isCreate: boolean,
+): void {
   // Pre-write validation
   const preResult = validateProject(state);
   const { counts: preErrors } = buildErrorMultiset(preResult.findings);
 
   // Post-write validation
   const existingIssues = [...state.issues];
-  if (isCreate) {
-    existingIssues.push(candidate);
-  } else {
-    const idx = existingIssues.findIndex((i) => i.id === candidate.id);
-    if (idx >= 0) existingIssues[idx] = candidate;
-    else existingIssues.push(candidate);
+  for (const candidate of candidates) {
+    if (isCreate) {
+      existingIssues.push(candidate);
+    } else {
+      const idx = existingIssues.findIndex((i) => i.id === candidate.id);
+      if (idx >= 0) existingIssues[idx] = candidate;
+      else existingIssues.push(candidate);
+    }
   }
   const postState = new ProjectState({
     tickets: [...state.tickets],
@@ -406,7 +422,8 @@ export async function handleIssueCreate(
       id = nextIssueID(state.issues);
       displayId = undefined;
     }
-    const createdAt = new Date().toISOString();
+    const instant = new Date();
+    const createdAt = instant.toISOString();
     const issue: Issue = {
       id,
       ...(displayId != null && { displayId }),
@@ -419,7 +436,7 @@ export async function handleIssueCreate(
       location: args.location,
       ...(sourceRefs && sourceRefs.length > 0 ? { sourceRefs } : {}),
       ...(args.dedupeKey ? { dedupeKey: args.dedupeKey } : {}),
-      discoveredDate: createdAt.slice(0, 10),
+      discoveredDate: localDateOf(instant),
       ...(isTeam && { createdAt }),
       ...(args.createdBy ? { createdBy: args.createdBy } : {}),
       resolvedDate: null,
@@ -601,7 +618,7 @@ export async function handleIssueUpdate(
  * issue. A missing, ambiguous or deleted target, or the issue itself, is
  * refused.
  */
-function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string): string {
+export function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string): string {
   const results = [state.resolveTicketRef(ref), state.resolveIssueRef(ref)];
   if (results.some((r) => r.kind === "ambiguous")) {
     throw new CliValidationError("invalid_input", `--duplicate-of ${ref} is ambiguous; use the canonical id`);
@@ -620,7 +637,7 @@ function resolveDuplicateTarget(state: ProjectState, ref: string, selfId: string
  * alone, and clearing takes the evidence with it. Checked before the lock so
  * a refused input writes nothing.
  */
-function assertDispositionInput(updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string }): void {
+export function assertDispositionInput(updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string }): void {
   const { disposition, dispositionReason: reason, dispositionRef: ref } = updates;
   if (disposition === undefined) {
     if (reason !== undefined || ref !== undefined) {
@@ -648,7 +665,7 @@ function assertDispositionInput(updates: { disposition?: string | null; disposit
  * it (`dispositionFor`); a clear deletes all four keys, and `duplicateOf`
  * too unless the issue is resolved as a duplicate.
  */
-function applyDisposition(
+export function applyDisposition(
   issue: Issue,
   updates: { disposition?: string | null; dispositionReason?: string; dispositionRef?: string; duplicateOf?: string },
   state: ProjectState,
@@ -683,7 +700,7 @@ function applyDisposition(
  * exists and is not deleted, and the canonical id is stored. A git sha (7 to
  * 40 hex characters) or an https URL is checked by its syntax only.
  */
-function resolveDispositionRef(state: ProjectState, root: string, ref: string): string {
+export function resolveDispositionRef(state: ProjectState, root: string, ref: string): string {
   const form = dispositionRefForm(ref);
   if (form === "sha" || form === "url") return ref;
   if (form === "bad-url") throw new CliValidationError("invalid_input", `--ref ${ref} is not a valid https URL`);
@@ -707,20 +724,21 @@ function resolveDispositionRef(state: ProjectState, root: string, ref: string): 
  * that changes the status or the resolution text deletes any stored kind:
  * the closure it described is gone, and leaving it would only be stale.
  */
-function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutionKind | undefined, state: ProjectState): Issue {
+export function applyResolutionKind(issue: Issue, existing: Issue, kind: IssueResolutionKind | undefined, state: ProjectState): Issue {
   if (kind === undefined) {
     const closureChanged = issue.status !== existing.status || (issue.resolution ?? null) !== (existing.resolution ?? null);
     if (!closureChanged || !Object.prototype.hasOwnProperty.call(issue, "resolutionKind")) return issue;
     const { resolutionKind: _dropped, ...rest } = issue as Issue & { resolutionKind?: unknown };
     return rest as Issue;
   }
-  if (issue.status !== "resolved") {
+  const blocker = resolutionKindBindBlocker(issue);
+  if (blocker === "not-resolved") {
     throw new CliValidationError("invalid_input", `--resolution-kind needs a resolved issue; this one is ${issue.status} after the update`);
   }
-  if (!issue.resolution) {
+  if (blocker === "no-resolution") {
     throw new CliValidationError("invalid_input", "--resolution-kind needs a resolution; pass --resolution");
   }
-  if (!issue.resolvedDate) {
+  if (blocker === "no-resolved-date") {
     throw new CliValidationError("invalid_input", "--resolution-kind needs a resolvedDate; reopen and resolve the issue again");
   }
   if (kind === "duplicate") {

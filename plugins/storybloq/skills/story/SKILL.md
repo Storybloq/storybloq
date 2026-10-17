@@ -379,6 +379,9 @@ When starting work on a ticket, update its status to `inprogress`. When done, up
 
 **Plan and code review:** Before implementing any plan, review it with the multi-lens review system. Read `review-lenses/review-lenses.md` in the same directory as this skill file and follow its workflow. This applies whether you used `/story plan`, native plan mode, or wrote the plan manually. The lens system runs 9 specialized reviewers in parallel (security, error handling, clean code, concurrency, performance, API design, test quality, accessibility, data safety) via the @storybloq/lenses registry and merges findings programmatically into a single verdict. After implementation, review the code diff the same way before committing.
 
+**Backlog hygiene:** at a wave boundary, run `storybloq triage --older-than 90` and act on each issue it lists. Reproducible and blocking: link it to a ticket (`--relate`). Real but unscheduled: leave it open. Needs a product decision: `--set-disposition owner_gated` (until T-481). Not worth doing: `--resolve --kind wontfix` with the reason.
+A bulk reason is a claim about every issue it touches (L-094): verify the premise for each before `--apply` writes one reason to many.
+
 ## Rulings
 
 A ruling is a decision that binds an item: an owner's call, an architecture decision, a gate outcome. Rulings reach agents by CITATION, never by paste. A decision pasted into a plan, a handover or a prompt is a copy, and copies drift; a citation means every agent working that item reads one record, and reads the version that is current now.

@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -97,7 +97,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
   return {
     schemaVersion: 1, sessionId: "00000000-0000-0000-0000-0000000000e1",
     recipe: "coding", state: "ISSUE_SWEEP", revision: 1, status: "active",
-    reviews: { plan: [], code: [] }, completedTickets: [TICKET],
+    reviews: { plan: [], code: [] }, completedTickets: [{ id: TICKET }],
     finalizeCheckpoint: null,
     git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123" },
     lease: { workspaceId: "test", lastHeartbeat: now, expiresAt: now },
@@ -106,7 +106,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
     compactPending: false, compactPreparedAt: null, resumeBlocked: false,
     terminationReason: null, waitingForRetry: false, lastGuideCall: now, startedAt: now, guideCallCount: 5,
     config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["lenses"] },
-    ticket: null,
+    ticket: undefined,
     filedDeferrals: [], pendingDeferrals: [], deferralsUnfiled: false,
     resolvedIssues: [], currentIssue: null,
     codeReviewRoundCounter: null, pendingCeilingEscalation: null,
@@ -165,6 +165,32 @@ describe("ISSUE_SWEEP does not demand a fix for a non-actionable issue (ISS-1113
     expect(c.state.issueSweepState?.current).toBe("ISS-200");
     // Nothing non-actionable was even queued behind it.
     expect(c.state.issueSweepState?.remaining ?? []).toEqual([]);
+  });
+
+  /**
+   * T-486 U4 A1. enter() filters on a read taken before the acquisition lock,
+   * so a disposition set between that read and the lock must be caught on the
+   * locked read the write acts on. The injection lands right after enter's
+   * read returns.
+   */
+  it("does not acquire an issue whose disposition was set after enter's filter (T-486 U4 A1)", async () => {
+    writeIssue(root, "ISS-200", { severity: "critical" });
+    writeIssue(root, "ISS-201", { severity: "low" });
+    const c = ctx();
+    const original = c.loadProject.bind(c);
+    vi.spyOn(c, "loadProject").mockImplementation(async () => {
+      const loaded = await original();
+      writeIssue(root, "ISS-200", { severity: "critical", disposition: "owner_gated" });
+      return loaded;
+    });
+
+    const result = await new IssueSweepStage().enter(c);
+
+    expect(result).not.toMatchObject({ action: "goto" });
+    expect(c.state.issueSweepState?.current).toBe("ISS-201");
+    const skipped = JSON.parse(readFileSync(join(root, ".story", "issues", "ISS-200.json"), "utf-8"));
+    expect(skipped.status).toBe("open");
+    expect(skipped.disposition).toBe("owner_gated");
   });
 
   it("still sweeps an issue that carries no disposition at all", async () => {

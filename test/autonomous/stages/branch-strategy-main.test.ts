@@ -91,7 +91,7 @@ function writeIssue(root: string, id: string, overrides: Record<string, unknown>
 function makeState(root: string, overrides: Partial<FullSessionState> = {}): FullSessionState {
   const now = new Date().toISOString();
   return {
-    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-00000000t328",
+    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-000000000328",
     recipe: "coding", state: "PICK_TICKET", revision: 1, status: "active", mode: "auto",
     reviews: { plan: [], code: [] }, completedTickets: [], finalizeCheckpoint: null,
     git: { branch: currentBranch(root), mergeBase: null, expectedHead: undefined },

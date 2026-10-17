@@ -1,3 +1,4 @@
+import { todayISO } from "../../src/cli/helpers.js";
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm, readdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -65,8 +66,8 @@ describe("initProject", () => {
     await initProject(testRoot, { name: "test" });
 
     const { state } = await loadProject(testRoot);
-    const today = new Date().toISOString().slice(0, 10);
-    expect(state.roadmap.date).toBe(today);
+    // ISS-1383: a date-only field is the local date.
+    expect(state.roadmap.date).toBe(todayISO());
   });
 
   it("throws conflict if .story/ exists", async () => {

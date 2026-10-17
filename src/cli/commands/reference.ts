@@ -434,7 +434,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "brief",
-    description: "The context brief for a ticket or issue: binding rulings, suggested rulings, capabilities, terms, lessons, and what discovery could not see. Read-only; a suggestion binds nothing. --rebase adopts a session's provisional context manifest after recovery",
+    description: "The context brief for a ticket or issue: binding and suggested rulings, capabilities, terms, lessons, and what discovery could not see. Read-only. --rebase adopts a session's provisional context manifest after recovery",
     usage: "storybloq brief <id> [--budget <value>] [--rebase <value>] [--reason <value>] [--by <value>] [--commit] [--format <json|md>]",
     flags: ["--budget", "--rebase", "--reason", "--by", "--format", "--commit"],
   },
@@ -488,7 +488,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role with the handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce to the pen itself. Permission mode defaults to auto, inheriting bypassPermissions only when the pen itself runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). Requirements are conditional: --name and --pen for any launch or --print; --bounds for the automatic arrangement (the default for a Claude pen with a task id); none of them for --recover, which lists interrupted spawns read-only",
+    description: "Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role with the handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce to the pen itself. Permission mode defaults to auto, inheriting bypassPermissions only when the pen itself runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print, --bounds for the automatic arrangement; --recover needs none and lists interrupted spawns read-only",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
   },
@@ -554,7 +554,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "health",
-    description: "Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. --format json is the shared {version, data} envelope with the result under data; --raw unwraps it",
+    description: "Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it",
     usage: "storybloq health [--only <ids>] [--refresh] [--format json|md] [--raw]",
     flags: ["--only", "--refresh", "--format"],
   },
@@ -578,7 +578,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "session intel",
-    description: "Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink); a refusal names the rule that failed",
+    description: "Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink)",
     usage: "storybloq session intel [--session-id <id>] [--transcript <path>] [--caller-model <model>] [--full] [--client-task-id <id>] [--format json|md]",
     flags: ["--session-id", "--transcript", "--caller-model", "--full", "--client-task-id", "--format"],
   },
@@ -599,6 +599,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     description: "Install the newest storybloq into the running Node's prefix, re-run setup for your AI clients, and say when to restart (on Windows it prints the two manual steps instead)",
     usage: "storybloq update [--client <claude|codex|all>]",
     flags: ["--client"],
+  },
+  {
+    name: "triage",
+    description: "Bulk issue triage (T-486): selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
+    usage: "storybloq triage [--older-than <days>] [--severity <list>] [--component <list>] [--status <list>] [--orphan] [--unphased] [--disposition <value|none>] [--title-matches <regex>] [--resolution-matches <regex>] [--ids <list>] [--resolve] [--reason <text>] [--kind <kind>] [--set-disposition <value|none>] [--ref <ref>] [--relate <ticket>] [--set-phase <phase|none>] [--set-resolution-kind <kind>] [--apply] [--force] [--format <json|md>]",
+    flags: ["--older-than", "--severity", "--component", "--status", "--orphan", "--unphased", "--disposition", "--title-matches", "--resolution-matches", "--ids", "--resolve", "--reason", "--kind", "--set-disposition", "--ref", "--relate", "--set-phase", "--set-resolution-kind", "--apply", "--force", "--format"],
   },
   {
     name: "reconcile",
@@ -680,19 +686,19 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus init",
-    description: "Low-level initializer: enable the local Storybloq Bus v2 for this project (prefer `storybloq bus setup`). Initializes a fresh v2 runtime only; if a v1 runtime is present it refuses with `upgrade_required` and directs you to `storybloq bus setup`, which resolves this task's identity and runs the guided drain/upgrade.",
+    description: "Low-level initializer: enable the local Storybloq Bus v2 for this project (prefer `storybloq bus setup`). Fresh v2 runtime only; a v1 runtime refuses with `upgrade_required`, and `bus setup` runs the guided drain/upgrade.",
     usage: "storybloq bus init [--format <md|json>]",
     flags: ["--format"],
   },
   {
     name: "bus setup",
-    description: "Connect this task to the Storybloq Bus in one idempotent, resumable command. Initializes or upgrades the runtime, joins this task's endpoint, and (when hook delivery is enabled) enables this client's guarded on-boundary hooks. With one endpoint it ends with a handoff line inviting the other task to connect. --replace <endpoint-id> retires a proven-offline incumbent and takes its place, redelivering that endpoint's undelivered mail to this successor. --force-archive overrides unread noncritical v1 delivery only during a v1->v2 upgrade; it never bypasses ship-gate blockers (unacknowledged critical messages, parked unresolved critical threads, quarantined threads).",
+    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, and (when hook delivery is enabled) enables this client's guarded on-boundary hooks. With one endpoint it ends with a handoff line inviting the other task to connect. --replace <endpoint-id> retires a proven-offline incumbent and takes its place, redelivering that endpoint's undelivered mail to this successor. --force-archive overrides unread noncritical v1 delivery only during a v1->v2 upgrade; it never bypasses ship-gate blockers (unacknowledged critical messages, parked critical threads, quarantined threads).",
     usage: "storybloq bus setup [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--delivery <live|poll>] [--wake <never|idle>] [--session-name <value>] [--transport-address <value>] [--replace <value>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--delivery", "--wake", "--session-name", "--transport-address", "--replace", "--force-archive", "--format"],
   },
   {
     name: "bus auto-attach",
-    description: "Turn per-session Bus auto-attach on or off for this project (opt-in, default off). `on` runs the full `bus setup` bootstrap once (initializing the runtime, joining this task, and installing the global client hooks) and sets the opt-in flag; thereafter every new session auto-attaches at SessionStart with its on-boundary delivery tiers enabled, no command, and a session that finds a proven-dead peer reclaims its slot and inherits its undelivered mail. `off` clears the flag and leaves the runtime and existing endpoints in place.",
+    description: "Turn per-session Bus auto-attach on or off for this project (opt-in, default off). `on` runs the full `bus setup` bootstrap once and sets the opt-in flag; thereafter every new session auto-attaches at SessionStart with its on-boundary delivery tiers enabled, no command, and a session that finds a proven-dead peer reclaims its slot and inherits its undelivered mail. `off` clears the flag and leaves the runtime and existing endpoints in place.",
     usage: "storybloq bus auto-attach <state> [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--force-archive", "--format"],
   },
@@ -722,7 +728,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus poll",
-    description: "Poll unacknowledged messages for the task-bound endpoint. --limit bounds how many messages are returned (applies to the wait drain too). With --wait, block until a message arrives or --timeout elapses (v2 only), then exit: 0 = message delivered, 4 = timed out, 5 = another --wait already owns this endpoint.",
+    description: "Poll unacknowledged messages for the task-bound endpoint. --limit caps the messages returned, wait drain included. --wait blocks until a message or --timeout (v2 only), then exits 0 = message delivered, 4 = timed out, 5 = another --wait already owns this endpoint.",
     usage: "storybloq bus poll [--endpoint <value>] [--client <claude|codex>] [--task-id <value>] [--limit <number>] [--wait] [--timeout <number>] [--format <md|json>]",
     flags: ["--endpoint", "--client", "--task-id", "--limit", "--wait", "--timeout", "--format"],
   },
@@ -1130,7 +1136,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_selftest", description: "Integration smoke test: create/update/delete cycle", params: [] },
   { name: "storybloq_health", description: "Tooling check: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session message delivery. Works without .story/, read-only", params: ["format?","only?","refresh?"] },
   { name: "storybloq_review_lenses_prepare", description: "Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts", params: ["stage","diff","changedFiles","ticketDescription?","reviewRound?","priorDeferrals?","sessionId?","target?"] },
-  { name: "storybloq_review_lenses_synthesize", description: "Run the @storybloq/lenses merger pipeline programmatically over raw lens outputs; returns the ReviewVerdict envelope (no merger agent). Echo prepare's citedRulingsUndelivered here; without a sessionId it is the only route a delivery hold has", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
+  { name: "storybloq_review_lenses_synthesize", description: "Run the lenses merger pipeline over raw lens outputs; returns the ReviewVerdict envelope (no merger agent). Echo prepare's citedRulingsUndelivered here; without a sessionId it is the only route a delivery hold has", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
   { name: "storybloq_review_lenses_judge", description: "Deterministic three-value verdict mapping over the synthesize ReviewVerdict plus convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round or a coverage cap is routed like a findings cap", params: ["reviewVerdict?","convergenceHistory?"] },
   { name: "storybloq_autonomous_guide", description: "Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE", params: ["sessionId","action","clientTaskId?","takeover?","ownerGoneCandidateTakeover?","ownerGoneCandidateCancel?","mode?","reviewEffort?","ticketId?","targetWork?","report?"] },
   { name: "storybloq_session_guard", description: "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode", params: ["clientTaskId?"] },

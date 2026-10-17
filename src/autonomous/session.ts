@@ -90,7 +90,15 @@ export interface SessionConfig {
   branchStrategy?: string;
 }
 
-/** Create a new session directory and write initial state.json. */
+/**
+ * Create a new session directory and write initial state.json.
+ *
+ * ISS-958 (policy OC): this call owns the directory it creates. On
+ * StateWriteUndurableError the initial state WAS published, but the caller
+ * never learns the session exists, so a published-but-unowned session would
+ * hold the workspace slot. The directory is removed before the error
+ * propagates, and the message says whether the removal succeeded.
+ */
 export function createSession(
   root: string,
   recipe: string,
@@ -153,7 +161,22 @@ export function createSession(
     },
   };
 
-  writeSessionSync(dir, state);
+  try {
+    writeSessionSync(dir, state);
+  } catch (err) {
+    if (err instanceof StateWriteUndurableError) {
+      let removed = true;
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        removed = false;
+      }
+      err.message += removed
+        ? `; created session ${id} removed; nothing to resume`
+        : `; created session ${id} could NOT be removed: ${dir}`;
+    }
+    throw err;
+  }
   return state;
 }
 
@@ -275,61 +298,12 @@ export function pathIsAbsent(dir: string): boolean {
 }
 
 /**
- * Read and validate session state, KEEPING the reason it failed (ISS-897).
- *
- * `readSession` below throws that reason away and every caller then reports the
- * constant string "corrupt or unreadable", which N-097 called the worst DX
- * moment in the product: an operator has no way to learn WHICH field failed
- * short of extracting the zod schema by hand. The failure detail zod already
- * produces is carried here so `session list`, `session show`, and
- * `session report` can name the field, the expected type, and what was there.
- *
- * STRICT, like `readSession`: it does NOT apply ISS-556's lensReviewHistory
- * recovery, because the diagnostic and admin paths that use it are exactly where
- * an operator should SEE corruption rather than have it quietly worked around.
- * "Worked around" and not "repaired": that recovery substitutes in memory and
- * writes nothing back, so the bytes on disk are exactly as wrong on the next
- * read, and a diagnostic tool that hid them would be reporting a state no file
- * is in.
+ * ISS-958: the strict reader's verdict on an already-parsed state.json value, the version fence and then
+ * the schema. Factored out so the writer refuses exactly what the strict reader refuses.
  */
-export function readSessionStrict(
-  dir: string,
+export function validatePersisted(
+  parsed: unknown,
 ): { ok: true; state: FullSessionState } | { ok: false; failure: SessionLookupFailure } {
-  const path = statePath(dir);
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (err) {
-    // ENOENT on `state.json` is ambiguous: the session directory may be absent
-    // entirely, or present with the file gone. Only the second is `missing-state`
-    // -- calling the first "corrupt" invents damage where the caller simply
-    // asked for a session that was never created or has been cleaned up.
-    const presence = probePath(dir);
-    if ((err as NodeJS.ErrnoException).code === "ENOENT" && presence === "absent") {
-      return { ok: false, failure: { kind: "missing" } };
-    }
-    return {
-      ok: false,
-      failure: {
-        kind: "unreadable",
-        // `missing-state` claims an entry IS there, so it is reserved for a probe
-        // that proved it. A probe that could not look (EACCES, EIO) proves
-        // nothing in either direction and must not borrow that claim.
-        reason:
-          (err as NodeJS.ErrnoException).code === "ENOENT" && presence === "present"
-            ? "missing-state"
-            : "unreadable-file",
-      },
-    };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false, failure: { kind: "unreadable", reason: "invalid-json" } };
-  }
-
   // The version fence runs BEFORE schema parse, exactly as in
   // `readSessionDetailed`, and it must (ISS-897). Without it a session written
   // by a newer build fails `safeParse` and arrives at every caller as ordinary
@@ -385,6 +359,65 @@ export function readSessionStrict(
     };
   }
   return { ok: true, state: result.data };
+}
+
+/**
+ * Read and validate session state, KEEPING the reason it failed (ISS-897).
+ *
+ * `readSession` below throws that reason away and every caller then reports the
+ * constant string "corrupt or unreadable", which N-097 called the worst DX
+ * moment in the product: an operator has no way to learn WHICH field failed
+ * short of extracting the zod schema by hand. The failure detail zod already
+ * produces is carried here so `session list`, `session show`, and
+ * `session report` can name the field, the expected type, and what was there.
+ *
+ * STRICT, like `readSession`: it does NOT apply ISS-556's lensReviewHistory
+ * recovery, because the diagnostic and admin paths that use it are exactly where
+ * an operator should SEE corruption rather than have it quietly worked around.
+ * "Worked around" and not "repaired": that recovery substitutes in memory and
+ * writes nothing back, so the bytes on disk are exactly as wrong on the next
+ * read, and a diagnostic tool that hid them would be reporting a state no file
+ * is in.
+ */
+export function readSessionStrict(
+  dir: string,
+): { ok: true; state: FullSessionState } | { ok: false; failure: SessionLookupFailure } {
+  const path = statePath(dir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    // ENOENT on `state.json` is ambiguous: the session directory may be absent
+    // entirely, or present with the file gone. Only the second is `missing-state`
+    // -- calling the first "corrupt" invents damage where the caller simply
+    // asked for a session that was never created or has been cleaned up.
+    const presence = probePath(dir);
+    if ((err as NodeJS.ErrnoException).code === "ENOENT" && presence === "absent") {
+      return { ok: false, failure: { kind: "missing" } };
+    }
+    return {
+      ok: false,
+      failure: {
+        kind: "unreadable",
+        // `missing-state` claims an entry IS there, so it is reserved for a probe
+        // that proved it. A probe that could not look (EACCES, EIO) proves
+        // nothing in either direction and must not borrow that claim.
+        reason:
+          (err as NodeJS.ErrnoException).code === "ENOENT" && presence === "present"
+            ? "missing-state"
+            : "unreadable-file",
+      },
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, failure: { kind: "unreadable", reason: "invalid-json" } };
+  }
+
+  return validatePersisted(parsed);
 }
 
 /**
@@ -506,36 +539,17 @@ function toPersistedSessionState(state: FullSessionState): Record<string, unknow
 }
 
 /**
- * Crash-injection seams for the DURABLE state writer below, the same
+ * Crash-injection seams for the state writer below, the same
  * discipline as candidate-recovery's `__intentTesting`: each barrier is
  * followed by an injection point so a suite can stop the world after every
  * filesystem operation and assert what survives.
  */
 export const __stateWriteTesting = {
   at: (_point: string): void => undefined,
+  fsync: (fd: number): void => fsyncSync(fd),
+  writeSync: (fd: number, bytes: Buffer): number => writeSync(fd, bytes),
 };
 
-/**
- * Write session state atomically AND durably (T-450 6b, ruling ea611619 B7).
- *
- * `writeSessionSync` below gives ORDERING, not durability: no temp fsync, no
- * directory fsync, so a power loss can drop the rename while later writes
- * survive. That is tolerable for ordinary state updates and NOT tolerable for
- * exactly two writes, which are this function's only permitted callers:
- *
- *   1. the takeover postimage (`commitCandidateTakeover`), where the proof
- *      must be inseparable from the fact it proves, and
- *   2. the cancellation write-4 barrier (`commitCandidateCancel`), because
- *      the intent CLOSE fsyncs file and directory while writes 1/3/4 do not,
- *      so power loss could otherwise keep a closed cancellation intent whose
- *      published transition evaporated: permanent foreclosure.
- *
- * Same encode as writeSessionSync (`toPersistedSessionState`, preserving the
- * ISS-902 single-encode boundary) and the same revision-plus-exactly-one
- * contract, so `committedRevision` precomputation holds identically. The 15
- * ordinary call sites are untouched on purpose; the GENERAL hardening of the
- * shared writer is ISS-958, out of this ticket.
- */
 /**
  * Thrown when the rename SUCCEEDED and a later barrier did not.
  *
@@ -551,37 +565,53 @@ export const __stateWriteTesting = {
  * a retried fsync that fails again proves nothing new, and the honest recovery
  * is the caller's crash-retry path, which re-reads the state and resumes.
  */
+export type StateWriteObserved = "published-bytes" | "different-bytes" | "unreadable";
+
 export class StateWriteUndurableError extends Error {
   readonly published: FullSessionState;
-  constructor(published: FullSessionState, cause: unknown) {
+  /** One re-read after the failure, as classification only (R1.3); it never turns the failure into a success. */
+  readonly observed: StateWriteObserved | undefined;
+  constructor(published: FullSessionState, cause: unknown, observed?: StateWriteObserved) {
     super(
       `session state revision ${published.revision} was published by rename but its durability ` +
       `barriers did not complete: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "StateWriteUndurableError";
     this.published = published;
+    this.observed = observed;
     this.cause = cause;
   }
 }
 
-export function writeSessionDurableSync(dir: string, state: FullSessionState): FullSessionState {
+/**
+ * Write session state atomically AND durably (ISS-958). The one state writer: validate the outgoing bytes the
+ * way the strict reader would, write the temp with a checked length, fsync it, rename it over state.json, fsync
+ * the directory. Increments revision by exactly one and returns the written state.
+ *
+ * A refusal or a failure before the rename is a plain error with nothing published. A failure after it is a
+ * StateWriteUndurableError: the new state is visible to every reader, only its survival is unproven.
+ */
+export function writeSessionSync(dir: string, state: FullSessionState): FullSessionState {
   const path = statePath(dir);
   const updated = { ...state, revision: state.revision + 1 };
   const content = JSON.stringify(toPersistedSessionState(updated), null, 2) + "\n";
-  const tmp = `${path}.${process.pid}.durable.tmp`;
+  const verdict = validatePersisted(JSON.parse(content));
+  if (!verdict.ok) refuseOutgoing(path, verdict.failure);
+  __stateWriteTesting.at("state:validated");
+  const tmp = `${path}.${process.pid}.tmp`;
   let renamed = false;
   try {
     const fd = openSync(tmp, "w");
     try {
       const bytes = Buffer.from(content, "utf-8");
-      const written = writeSync(fd, bytes);
+      const written = __stateWriteTesting.writeSync(fd, bytes);
       // Checked because this temp is renamed over the canonical state: a short
       // write here becomes a permanently malformed state.json.
       if (written !== bytes.length) {
         throw new Error(`state write was short: ${written} of ${bytes.length} bytes to ${tmp}`);
       }
       __stateWriteTesting.at("state:tmp-written");
-      fsyncSync(fd);
+      __stateWriteTesting.fsync(fd);
       __stateWriteTesting.at("state:tmp-fsynced");
     } finally {
       closeSync(fd);
@@ -594,33 +624,30 @@ export function writeSessionDurableSync(dir: string, state: FullSessionState): F
     // stated limit as the intent protocol's barriers).
     const dirFd = openSync(dir, "r");
     try {
-      fsyncSync(dirFd);
+      __stateWriteTesting.fsync(dirFd);
     } finally {
       closeSync(dirFd);
     }
     __stateWriteTesting.at("state:dir-fsynced");
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
-    if (renamed) throw new StateWriteUndurableError(updated, err);
+    if (renamed) throw new StateWriteUndurableError(updated, err, observeAfterFailure(path, content));
     throw err;
   }
   return updated;
 }
 
-/** Write session state atomically (write tmp, rename). Increments revision. Returns the written state. */
-export function writeSessionSync(dir: string, state: FullSessionState): FullSessionState {
-  const path = statePath(dir);
-  const updated = { ...state, revision: state.revision + 1 };
-  const content = JSON.stringify(toPersistedSessionState(updated), null, 2) + "\n";
-  const tmp = `${path}.${process.pid}.tmp`;
+function observeAfterFailure(path: string, content: string): StateWriteObserved {
   try {
-    writeFileSync(tmp, content, "utf-8");
-    renameSync(tmp, path);
-  } catch (err) {
-    try { unlinkSync(tmp); } catch { /* ignore */ }
-    throw err;
+    return readFileSync(path, "utf-8") === content ? "published-bytes" : "different-bytes";
+  } catch {
+    return "unreadable";
   }
-  return updated;
+}
+
+/** A pre-rename refusal: a plain error, nothing written. */
+function refuseOutgoing(path: string, failure: SessionLookupFailure): never {
+  throw new Error(`refusing to write session state that the strict reader would refuse (${failure.kind}${"reason" in failure ? `: ${failure.reason}` : ""}) to ${path}`);
 }
 
 /** Append an event to events.log (best-effort, non-authoritative). */
@@ -636,9 +663,13 @@ export function appendEvent(dir: string, event: EventEntry): void {
 
 /**
  * Append an event to events.log, then write session state atomically.
- * If the state write throws, the events.log is truncated back to its
- * pre-append size so audit log and state remain consistent (all-or-nothing).
- * Throws if either step fails.
+ * If the state write throws BEFORE publishing, the events.log is truncated
+ * back to its pre-append size so audit log and state remain consistent
+ * (all-or-nothing). Throws if either step fails.
+ *
+ * ISS-958 R1 exception (i): a StateWriteUndurableError means the rename
+ * already published the state this event describes, so the line is KEPT.
+ * Truncating it would leave a published state whose audit event is missing.
  */
 export function writeSessionWithEvent(
   dir: string,
@@ -659,10 +690,12 @@ export function writeSessionWithEvent(
   try {
     return writeSessionSync(dir, nextState);
   } catch (err) {
-    try {
-      truncateSync(path, sizeBefore);
-    } catch {
-      // best-effort -- events.log may have been deleted or is unwritable
+    if (!(err instanceof StateWriteUndurableError)) {
+      try {
+        truncateSync(path, sizeBefore);
+      } catch {
+        // best-effort -- events.log may have been deleted or is unwritable
+      }
     }
     throw err;
   }

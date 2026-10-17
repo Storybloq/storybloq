@@ -1,0 +1,102 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-16",
+  "createdDate": "2026-10-17",
+  "description": "",
+  "displayId": "T-002",
+  "id": "T-002",
+  "order": 20,
+  "ownerCheckpoint": {
+    "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+    "evidenceRefs": [],
+    "generation": 4,
+    "history": [
+      {
+        "at": "2026-10-17T04:33:25.591Z",
+        "by": "unknown",
+        "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+        "event": "created",
+        "evidenceRefs": [],
+        "generation": 1,
+        "kind": "decision",
+        "question": "Ship B?",
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:26.406Z",
+        "by": "unknown",
+        "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+        "event": "resolved",
+        "evidenceRefs": [],
+        "generation": 2,
+        "kind": "decision",
+        "question": "Ship B?",
+        "resolution": {
+          "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+          "generation": 2,
+          "respondedAt": "2026-10-17T04:33:26.406Z",
+          "respondedBy": "unknown",
+          "response": "yes",
+          "revision": 1
+        },
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:29.309Z",
+        "by": "unknown",
+        "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+        "event": "reopened",
+        "evidenceRefs": [],
+        "generation": 3,
+        "kind": "decision",
+        "question": "Ship B?",
+        "reason": "again",
+        "resolution": {
+          "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+          "generation": 2,
+          "respondedAt": "2026-10-17T04:33:26.406Z",
+          "respondedBy": "unknown",
+          "response": "yes",
+          "revision": 1
+        },
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:29.571Z",
+        "by": "unknown",
+        "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+        "event": "resolved",
+        "evidenceRefs": [],
+        "generation": 4,
+        "kind": "decision",
+        "question": "Ship B?",
+        "resolution": {
+          "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+          "generation": 4,
+          "respondedAt": "2026-10-17T04:33:29.571Z",
+          "respondedBy": "unknown",
+          "response": "yes again",
+          "revision": 1
+        },
+        "revision": 1
+      }
+    ],
+    "kind": "decision",
+    "lifecycle": "active",
+    "owner": "owner",
+    "question": "Ship B?",
+    "resolution": {
+      "digest": "63ca6ed7ee08d13063a558a2bacfd3711b37316e7019b9fbb9b6803f8cb7cd6b",
+      "generation": 4,
+      "respondedAt": "2026-10-17T04:33:29.571Z",
+      "respondedBy": "unknown",
+      "response": "yes again",
+      "revision": 1
+    },
+    "revision": 1
+  },
+  "phase": "p1",
+  "status": "complete",
+  "title": "Gate B",
+  "type": "task"
+}

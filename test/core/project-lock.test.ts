@@ -14,7 +14,8 @@ import {
   symlinkSync,
 } from "node:fs";
 import { readFile, writeFile, rm, mkdtemp, mkdir } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1129,5 +1130,59 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     const finalTickets = (await loadProject(testRoot)).state.tickets;
     const ids = finalTickets.map((t) => t.id).sort();
     expect(new Set(ids).size).toBe(ids.length); // no duplicate ids
+  });
+});
+
+// ISS-1382: the Storybloq Mac app now holds this same identity-file lock. Its
+// body is written by Swift with a null processSignature (the sandboxed app
+// cannot run ps), so the CLI must treat a live app holder as "unknown" and
+// never steal it, while still reclaiming one whose process has exited.
+describe("project-lock facing a Mac app (Swift-shaped) holder", () => {
+  let dir: string;
+  let lockPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "sb-project-lock-swift-"));
+    lockPath = join(dir, ".lock");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function swiftBody(pid: number): string {
+    // Byte shape of StoryFileLock.acquire: compact JSON, a fresh 32-hex token
+    // per acquisition (the identity cache is keyed by token), ms epoch.
+    const token = randomUUID().replace(/-/g, "");
+    return JSON.stringify({ pid, token, acquiredAt: Date.now(), processSignature: null });
+  }
+
+  it("a live app holder (null signature) times out untouched", async () => {
+    writeFileSync(lockPath, swiftBody(process.pid), { mode: 0o600 });
+    const before = readFileSync(lockPath, "utf-8");
+    const ino = statSync(lockPath).ino;
+    await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 300, pollMs: 20 })).rejects.toThrow(/Timed out acquiring project lock/);
+    expect(readFileSync(lockPath, "utf-8")).toBe(before);
+    expect(statSync(lockPath).ino).toBe(ino);
+  });
+
+  it("an exited app holder is reclaimed", async () => {
+    writeFileSync(lockPath, swiftBody(deadPid()), { mode: 0o600 });
+    const handle = await acquireProjectLockAsync(lockPath, { deadlineMs: 1000, pollMs: 20 });
+    expect(verifyProjectLockOwnership(handle)).toBe(true);
+    releaseProjectLock(handle);
+  });
+
+  it("an app pid reused by a live, unrelated process is never reclaimed (fails closed)", async () => {
+    const child = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+    try {
+      expect(child.pid).toBeTruthy();
+      writeFileSync(lockPath, swiftBody(child.pid!), { mode: 0o600 });
+      const before = readFileSync(lockPath, "utf-8");
+      await expect(acquireProjectLockAsync(lockPath, { deadlineMs: 300, pollMs: 20 })).rejects.toThrow(/Timed out acquiring project lock/);
+      expect(readFileSync(lockPath, "utf-8")).toBe(before);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 });

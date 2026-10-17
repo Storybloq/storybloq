@@ -1,0 +1,846 @@
+{
+  "generatedBy": "scripts/omitted-loader-vectors.ts",
+  "config": "{\n  \"version\": 2,\n  \"project\": \"vectors\",\n  \"type\": \"npm\",\n  \"language\": \"TypeScript\",\n  \"features\": {\n    \"tickets\": true,\n    \"issues\": true,\n    \"handovers\": true,\n    \"roadmap\": true,\n    \"reviews\": true\n  }\n}\n",
+  "roadmap": "{\n  \"title\": \"vectors\",\n  \"date\": \"2026-01-01\",\n  \"phases\": [\n    {\n      \"id\": \"p1\",\n      \"label\": \"P1\",\n      \"name\": \"One\",\n      \"description\": \"\"\n    }\n  ],\n  \"blockers\": []\n}\n",
+  "cases": [
+    {
+      "name": "invalid json",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{ not json\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "parse",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "json fragment",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "7\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "json array",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "[]\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, string parentTicket, with id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"id\":\"T-409\",\"parentTicket\":\"T-401\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "id": "T-409",
+            "parentTicket": "T-401",
+            "parentage": "ref"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, string parentTicket, no id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"parentTicket\":\"T-401\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentTicket": "T-401",
+            "parentage": "ref"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, null parentTicket, with id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"id\":\"T-409\",\"parentTicket\":null,\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "id": "T-409",
+            "parentage": "root"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, null parentTicket, no id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"parentTicket\":null,\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentage": "root"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, no parentTicket, with id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"id\":\"T-409\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "id": "T-409",
+            "parentage": "root"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, no parentTicket, no id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentage": "root"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, numeric parentTicket, with id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"id\":\"T-409\",\"parentTicket\":5,\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "id": "T-409",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, numeric parentTicket, no id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"parentTicket\":5,\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "schema, numeric id",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "content": "{\"id\":409,\"parentTicket\":\"T-401\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "schema",
+            "parentTicket": "T-401",
+            "parentage": "ref"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "directory entry",
+      "entries": [
+        {
+          "name": "T-401.json",
+          "content": "{\n  \"id\": \"T-401\",\n  \"title\": \"T-401\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-402.json",
+          "content": "{\n  \"id\": \"T-402\",\n  \"title\": \"T-402\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-401\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-409.json",
+          "directory": true
+        }
+      ],
+      "pairs": [
+        [
+          "T-401",
+          "T-402"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-409.json",
+            "reason": "read",
+            "parentage": "unknown"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-409.json"
+        ],
+        "releases": [
+          {
+            "id": "T-401",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          },
+          {
+            "id": "T-402",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-409.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "selective parentage",
+      "entries": [
+        {
+          "name": "T-430.json",
+          "content": "{\n  \"id\": \"T-430\",\n  \"title\": \"T-430\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-431.json",
+          "content": "{\n  \"id\": \"T-431\",\n  \"title\": \"T-431\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-430\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-432.json",
+          "content": "{\n  \"id\": \"T-432\",\n  \"title\": \"T-432\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-433.json",
+          "content": "{\n  \"id\": \"T-433\",\n  \"title\": \"T-433\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-432\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-439.json",
+          "content": "{\"id\":\"T-439\",\"parentTicket\":\"T-430\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-430",
+          "T-431"
+        ],
+        [
+          "T-432",
+          "T-433"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-439.json",
+            "reason": "schema",
+            "id": "T-439",
+            "parentTicket": "T-430",
+            "parentage": "ref"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-439.json"
+        ],
+        "releases": [
+          {
+            "id": "T-430",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-439.json"
+            ]
+          },
+          {
+            "id": "T-431",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-432",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-433",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "filename order",
+      "entries": [
+        {
+          "name": "T-440.json",
+          "content": "{\n  \"id\": \"T-440\",\n  \"title\": \"T-440\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"complete\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": \"2026-02-01\",\n  \"blockedBy\": []\n}\n"
+        },
+        {
+          "name": "T-441.json",
+          "content": "{\n  \"id\": \"T-441\",\n  \"title\": \"T-441\",\n  \"description\": \"\",\n  \"type\": \"task\",\n  \"status\": \"open\",\n  \"phase\": \"p1\",\n  \"order\": 10,\n  \"createdDate\": \"2026-01-01\",\n  \"completedDate\": null,\n  \"blockedBy\": [\n    \"T-440\"\n  ]\n}\n"
+        },
+        {
+          "name": "T-.json",
+          "content": "{\"parentTicket\":\"T-440\",\"title\":7}\n"
+        },
+        {
+          "name": "T-𐀀.json",
+          "content": "{\"parentTicket\":\"T-440\",\"title\":7}\n"
+        },
+        {
+          "name": "T-b.json",
+          "content": "{\"parentTicket\":\"T-440\",\"title\":7}\n"
+        },
+        {
+          "name": "T-a.json",
+          "content": "{\"parentTicket\":\"T-440\",\"title\":7}\n"
+        }
+      ],
+      "pairs": [
+        [
+          "T-440",
+          "T-441"
+        ]
+      ],
+      "expected": {
+        "omitted": [
+          {
+            "file": ".story/tickets/T-a.json",
+            "reason": "schema",
+            "parentTicket": "T-440",
+            "parentage": "ref"
+          },
+          {
+            "file": ".story/tickets/T-b.json",
+            "reason": "schema",
+            "parentTicket": "T-440",
+            "parentage": "ref"
+          },
+          {
+            "file": ".story/tickets/T-𐀀.json",
+            "reason": "schema",
+            "parentTicket": "T-440",
+            "parentage": "ref"
+          },
+          {
+            "file": ".story/tickets/T-.json",
+            "reason": "schema",
+            "parentTicket": "T-440",
+            "parentage": "ref"
+          }
+        ],
+        "warningFiles": [
+          ".story/tickets/T-a.json",
+          ".story/tickets/T-b.json",
+          ".story/tickets/T-𐀀.json",
+          ".story/tickets/T-.json"
+        ],
+        "releases": [
+          {
+            "id": "T-440",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-a.json",
+              ".story/tickets/T-b.json",
+              ".story/tickets/T-𐀀.json",
+              ".story/tickets/T-.json"
+            ]
+          },
+          {
+            "id": "T-441",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -5,10 +5,12 @@ import type { GuideReportInput } from "../session-types.js";
 import { handleHandoverCreate } from "../../cli/commands/handover.js";
 import { gitStashPop } from "../git-inspector.js";
 import { removeResumeMarker } from "../resume-marker.js";
+import { StateWriteUndurableError } from "../session.js";
 import { formatCompactReport } from "../../core/session-report-formatter.js";
 import { loadProject } from "../../core/project-loader.js";
 import { nextTickets } from "../../core/queries.js";
 import { knowledgeImpactSection } from "../knowledge-impact-summary.js";
+import { issueSweepSummaryLines } from "./issue-sweep.js";
 
 /** T-527: said in both instructions when the session accepted a knowledge review. */
 const KNOWLEDGE_SECTION_NOTE =
@@ -30,8 +32,9 @@ export class HandoverStage implements WorkflowStage {
     const rotation = ctx.state.contextRotation;
     const knowledgeNote = (ctx.state.knowledgeImpacts ?? []).length > 0 ? KNOWLEDGE_SECTION_NOTE : null;
     if (rotation) {
+      const targetDisplayIds = ctx.state.targetWorkDisplayIds;
       const remaining = rotation.remainingTargets
-        .map((id) => ctx.state.targetWorkDisplayIds[id] ?? id)
+        .map((id) => targetDisplayIds[id] ?? id)
         .join(", ");
       return {
         instruction: [
@@ -77,7 +80,10 @@ export class HandoverStage implements WorkflowStage {
     // T-527: the accepted knowledge reviews, from state rather than from what
     // the agent wrote, so the handover always records what was accepted.
     const knowledge = knowledgeImpactSection(ctx.state, "## Knowledge impact");
-    const content = knowledge.length > 0 ? `${written.trimEnd()}\n\n${knowledge.join("\n")}\n` : written;
+    const withKnowledge = knowledge.length > 0 ? `${written.trimEnd()}\n\n${knowledge.join("\n")}\n` : written;
+    // T-486 U4 (5i): what the issue sweep did not simply fix, from state.
+    const sweepLines = issueSweepSummaryLines(ctx.state.issueSweepState);
+    const content = sweepLines.length > 0 ? `${withKnowledge.trimEnd()}\n\n${sweepLines.join("\n")}\n` : withKnowledge;
 
     // Create handover via existing handler
     let handoverFailed = false;
@@ -141,23 +147,32 @@ export class HandoverStage implements WorkflowStage {
     await ctx.drainDeferrals();
     const hasUnfiled = (ctx.state.pendingDeferrals ?? []).length > 0;
 
-    // End session (T-260: finalize kills sidecar + writes shutdown marker)
-    ctx.finalizeSession({
-      state: "SESSION_END",
-      previousState: "HANDOVER",
-      status: "completed" as const,
-      terminationReason: "normal" as const,
-      deferralsUnfiled: hasUnfiled,
-    });
+    const completeTail = (): void => {
+      ctx.appendEvent("session_end", {
+        ticketsCompleted: ctx.state.completedTickets.length,
+        issuesResolved: (ctx.state.resolvedIssues ?? []).length,
+        handoverFailed,
+      });
+      // T-183: Clean resume marker
+      removeResumeMarker(ctx.root);
+    };
 
-    ctx.appendEvent("session_end", {
-      ticketsCompleted: ctx.state.completedTickets.length,
-      issuesResolved: (ctx.state.resolvedIssues ?? []).length,
-      handoverFailed,
-    });
-
-    // T-183: Clean resume marker
-    removeResumeMarker(ctx.root);
+    // End session (T-260: finalize kills sidecar + writes shutdown marker).
+    // ISS-958 (policy TC): an undurable publication still ended the session,
+    // so this stage's own tail completes before the error propagates.
+    try {
+      ctx.finalizeSession({
+        state: "SESSION_END",
+        previousState: "HANDOVER",
+        status: "completed" as const,
+        terminationReason: "normal" as const,
+        deferralsUnfiled: hasUnfiled,
+      });
+    } catch (err) {
+      if (err instanceof StateWriteUndurableError) completeTail();
+      throw err;
+    }
+    completeTail();
 
     // T-185: Build compact session report
     let reportSection = "";
@@ -176,7 +191,8 @@ export class HandoverStage implements WorkflowStage {
 
     const ticketsDone = ctx.state.completedTickets.length;
     const issuesDone = (ctx.state.resolvedIssues ?? []).length;
-    const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${ctx.state.resolvedIssueDisplayIds?.[id] ?? id} (resolved)`).join("\n");
+    const resolvedDisplayIds = ctx.state.resolvedIssueDisplayIds;
+    const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${resolvedDisplayIds?.[id] ?? id} (resolved)`).join("\n");
     // Terminal -- return advance but the walker will see SESSION_END is terminal
     return {
       action: "advance",
@@ -188,6 +204,7 @@ export class HandoverStage implements WorkflowStage {
           "",
           ctx.state.completedTickets.map((t) => `- ${(t as Record<string, unknown>).displayId as string | undefined ?? t.id}${t.title ? `: ${t.title}` : ""} (${t.commitHash ?? "no commit"})`).join("\n"),
           ...(resolvedList ? [resolvedList] : []),
+          ...(sweepLines.length > 0 ? ["", ...sweepLines] : []),
         ].join("\n") + reportSection,
         reminders: [],
         transitionedFrom: "HANDOVER",

@@ -72,7 +72,7 @@ function ticket(id: string, fields: Record<string, unknown>): Record<string, unk
   };
 }
 
-interface CpOptions {
+export interface CpOptions {
   readonly kind?: "decision" | "acceptance";
   readonly question?: string;
   readonly criteria?: string;
@@ -85,7 +85,7 @@ interface CpOptions {
   readonly events?: readonly CheckpointEvent[];
 }
 
-function checkpoint(o: CpOptions): Record<string, unknown> {
+export function checkpoint(o: CpOptions): Record<string, unknown> {
   const kind = o.kind ?? "decision";
   const content: CheckpointContent = kind === "decision" ? { kind, question: o.question ?? "Proceed?", evidenceRefs: [] } : { kind, criteria: o.criteria ?? "Works", evidenceRefs: ["demo.md"] };
   const digest = o.digest ?? checkpointDigest(content);

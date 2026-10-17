@@ -1,3 +1,4 @@
+import { localDateOf } from "../../core/local-date.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { computeReconcilePlan, computeRebalancePlan, type EntityType, type ReconcileContext, type ReconcileRename } from "../../core/reconcile.js";
@@ -259,8 +260,9 @@ function buildMappingNoteOp(
     noteId = nextNoteID(state.notes);
     noteDisplayId = undefined;
   }
-  const createdAt = new Date().toISOString();
-  const today = createdAt.slice(0, 10);
+  const instant = new Date();
+  const createdAt = instant.toISOString();
+  const today = localDateOf(instant);
   const note: Note = {
     id: noteId,
     ...(noteDisplayId != null && { displayId: noteDisplayId }),

@@ -122,7 +122,7 @@ function contextFor(
   const now = new Date().toISOString();
   const head = git(root, ["rev-parse", "HEAD"]);
   const state = {
-    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-00000000t328",
+    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-000000000328",
     recipe: "coding", state: "PICK_TICKET", revision: 1, status: "active", mode: "auto",
     reviews: { plan: [], code: [] }, completedTickets: [], finalizeCheckpoint: null,
     git: { branch: currentBranch(root), mergeBase: null, expectedHead: head, initHead: head },
@@ -1136,6 +1136,43 @@ describe("mismatch escapes on the issue path", () => {
     expect(selected, "the issue was not selected").toBeTruthy();
     expect(selected!.displayId ?? selected!.id).toBe("ISS-200");
     expect(pending(ctx), "the episode was left open after it resolved").toBeNull();
+  });
+
+  it("refuses an issue that became non-actionable between offer and acceptance, and leaves the branch alone (T-486 U4 A2)", async () => {
+    const { root } = buildMismatchRepo();
+    track(root);
+    writeTicket(root, "T-100");
+    writeIssue(root, "ISS-200");
+
+    const { stage, ctx } = await openIssueEpisodeOrFail(root);
+    const branchBefore = currentBranch(root);
+    writeIssue(root, "ISS-200", { disposition: "owner_gated" });
+
+    const result = await stage.report(ctx, { completedAction: "new_branch_from_main" });
+
+    expect(result.action).toBe("retry");
+    expect((result as { instruction: string }).instruction).toContain("has disposition owner_gated and is not actionable");
+    expect(currentBranch(root), "a non-actionable issue changed the branch").toBe(branchBefore);
+    expect(pending(ctx), "the stale episode was left open").toBeNull();
+  });
+
+  it("still branches for a non-actionable issue the run named (T-486 U4 A4, revalidation)", async () => {
+    const { root } = buildMismatchRepo();
+    track(root);
+    writeTicket(root, "T-100");
+    writeIssue(root, "ISS-200");
+
+    // checkMismatch never opens an episode in targeted mode, so the episode is
+    // opened untargeted and the run is then named: the only way revalidation
+    // sees a targeted session.
+    const { stage, ctx } = await openIssueEpisodeOrFail(root);
+    ctx.writeState({ targetWork: ["ISS-200"] });
+    writeIssue(root, "ISS-200", { disposition: "owner_gated" });
+
+    const result = await stage.report(ctx, { completedAction: "new_branch_from_main" });
+
+    expect(result.action, JSON.stringify(result)).toBe("goto");
+    expect((result as { target: string }).target).toBe("ISSUE_FIX");
   });
 
   it("records a skipped issue under its canonical id", async () => {

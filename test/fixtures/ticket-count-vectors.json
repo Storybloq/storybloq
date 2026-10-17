@@ -1,0 +1,5961 @@
+{
+  "generatedBy": "scripts/ticket-count-vectors.ts",
+  "dates": [
+    {
+      "value": "2026-02-28",
+      "valid": true
+    },
+    {
+      "value": "2026-02-29",
+      "valid": false
+    },
+    {
+      "value": "2024-02-29",
+      "valid": true
+    },
+    {
+      "value": "1900-02-29",
+      "valid": false
+    },
+    {
+      "value": "2000-02-29",
+      "valid": true
+    },
+    {
+      "value": "0000-02-29",
+      "valid": true
+    },
+    {
+      "value": "0000-01-01",
+      "valid": true
+    },
+    {
+      "value": "9999-12-31",
+      "valid": true
+    },
+    {
+      "value": "2026-13-01",
+      "valid": false
+    },
+    {
+      "value": "2026-00-10",
+      "valid": false
+    },
+    {
+      "value": "2026-04-31",
+      "valid": false
+    },
+    {
+      "value": "2026-04-30",
+      "valid": true
+    },
+    {
+      "value": "2026-1-01",
+      "valid": false
+    },
+    {
+      "value": "2026-02-01T00",
+      "valid": false
+    },
+    {
+      "value": "",
+      "valid": false
+    }
+  ],
+  "boards": [
+    {
+      "name": "sidebar u2-3a",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 1,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-001"
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 2,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-002",
+          "parentTicket": "T-001"
+        },
+        {
+          "id": "T-003",
+          "title": "T-003",
+          "description": "",
+          "type": "task",
+          "status": "inprogress",
+          "phase": "p1",
+          "order": 3,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-003",
+          "parentTicket": "T-001"
+        },
+        {
+          "id": "T-004",
+          "title": "T-004",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p2",
+          "order": 4,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-004"
+        },
+        {
+          "id": "t-zz11yy22xx33ww44",
+          "title": "t-zz11yy22xx33ww44",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p2",
+          "order": 5,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-003"
+          ],
+          "displayId": "T-005"
+        },
+        {
+          "id": "T-006",
+          "title": "T-006",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 6,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-999"
+          ],
+          "displayId": "T-006"
+        },
+        {
+          "id": "T-007",
+          "title": "T-007",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 7,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-007",
+          "lifecycle": "deleted"
+        },
+        {
+          "id": "T-020",
+          "title": "T-020",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 20,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-020"
+        },
+        {
+          "id": "T-021",
+          "title": "T-021",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 21,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-003"
+          ],
+          "displayId": "T-021"
+        },
+        {
+          "id": "T-022",
+          "title": "T-022",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 22,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-022"
+        },
+        {
+          "id": "t-aa11aa11aa11aa11",
+          "title": "t-aa11aa11aa11aa11",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-010"
+        },
+        {
+          "id": "t-bb22bb22bb22bb22",
+          "title": "t-bb22bb22bb22bb22",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 11,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-010"
+        },
+        {
+          "id": "t-cc33cc33cc33cc33",
+          "title": "t-cc33cc33cc33cc33",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 12,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-011",
+          "previousDisplayIds": [
+            "T-010"
+          ]
+        },
+        {
+          "id": "T-013",
+          "title": "T-013",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p3",
+          "order": 13,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-013",
+          "parentTicket": "T-010"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 12,
+          "terminal": 3,
+          "delivered": 3,
+          "withdrawn": 0,
+          "active": 9,
+          "blocked": 3
+        },
+        "umbrellaIds": [
+          "T-001",
+          "T-010"
+        ],
+        "blockedIds": [
+          "t-zz11yy22xx33ww44",
+          "T-006",
+          "T-021"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 5,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 5,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-001": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "T-010": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-001",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-002",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-003",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-004",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-zz11yy22xx33ww44",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-006",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-007",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-020",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-021",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-022",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-aa11aa11aa11aa11",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-bb22bb22bb22bb22",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-cc33cc33cc33cc33",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-013",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate id",
+      "tickets": [
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-001"
+        },
+        {
+          "id": "T-001",
+          "title": "T-001",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-001"
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-002"
+        },
+        {
+          "id": "T-003",
+          "title": "T-003",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-001"
+          ],
+          "displayId": "T-003"
+        },
+        {
+          "id": "T-004",
+          "title": "T-004",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-004",
+          "parentTicket": "T-001"
+        },
+        {
+          "id": "T-005",
+          "title": "T-005",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-005"
+        },
+        {
+          "id": "T-005",
+          "title": "T-005",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-005"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 3,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-001"
+        ],
+        "blockedIds": [
+          "T-003"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 3,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-001": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-001",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-001",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-002",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-003",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-004",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-005",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-005",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicated dependents",
+      "tickets": [
+        {
+          "id": "T-009",
+          "title": "T-009",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-009"
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-009"
+          ],
+          "displayId": "T-002"
+        },
+        {
+          "id": "T-002",
+          "title": "T-002",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-009"
+          ],
+          "displayId": "T-002"
+        },
+        {
+          "id": "T-003",
+          "title": "T-003",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-009"
+          ],
+          "displayId": "T-003"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-002",
+          "T-002",
+          "T-003"
+        ],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 2,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-009",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-002",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-002",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-003",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "id shadows displayId",
+      "tickets": [
+        {
+          "id": "T-020",
+          "title": "T-020",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-099"
+        },
+        {
+          "id": "t-0000000000000a02",
+          "title": "t-0000000000000a02",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-020"
+        },
+        {
+          "id": "T-021",
+          "title": "T-021",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-021",
+          "parentTicket": "T-020"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-020"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 2,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-020": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-020",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000a02",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-021",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambiguous shadows alias",
+      "tickets": [
+        {
+          "id": "t-0000000000000b01",
+          "title": "t-0000000000000b01",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-010"
+        },
+        {
+          "id": "t-0000000000000b02",
+          "title": "t-0000000000000b02",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-010"
+        },
+        {
+          "id": "t-0000000000000b03",
+          "title": "t-0000000000000b03",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-012",
+          "previousDisplayIds": [
+            "T-010"
+          ]
+        },
+        {
+          "id": "T-013",
+          "title": "T-013",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-013",
+          "parentTicket": "T-010"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 4,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-010"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 4,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-010": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "t-0000000000000b01",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000b02",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000b03",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-013",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "alias with no current holder",
+      "tickets": [
+        {
+          "id": "t-0000000000000c01",
+          "title": "t-0000000000000c01",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-031",
+          "previousDisplayIds": [
+            "T-030"
+          ]
+        },
+        {
+          "id": "T-032",
+          "title": "T-032",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-032",
+          "parentTicket": "T-030"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 1,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 0,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "t-0000000000000c01"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "t-0000000000000c01": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "t-0000000000000c01",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-032",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "whitespace displayId parent",
+      "tickets": [
+        {
+          "id": "t-0000000000000c11",
+          "title": "t-0000000000000c11",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": " T-040"
+        },
+        {
+          "id": "T-041",
+          "title": "T-041",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-041",
+          "parentTicket": "T-040"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-040"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 2,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-040": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "t-0000000000000c11",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-041",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdrawn and stale blockers",
+      "tickets": [
+        {
+          "id": "T-050",
+          "title": "T-050",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-050",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          }
+        },
+        {
+          "id": "T-051",
+          "title": "T-051",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-050"
+          ],
+          "displayId": "T-051"
+        },
+        {
+          "id": "T-052",
+          "title": "T-052",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-03-01",
+          "blockedBy": [],
+          "displayId": "T-052",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          }
+        },
+        {
+          "id": "T-053",
+          "title": "T-053",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-052"
+          ],
+          "displayId": "T-053"
+        },
+        {
+          "id": "T-054",
+          "title": "T-054",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p2",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-054",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          }
+        },
+        {
+          "id": "T-055",
+          "title": "T-055",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p2",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-055"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 6,
+          "terminal": 4,
+          "delivered": 2,
+          "withdrawn": 2,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-051"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 1
+          },
+          "p2": {
+            "status": "complete",
+            "total": 2,
+            "complete": 2,
+            "withdrawn": 1
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-050",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-050"
+            ]
+          },
+          {
+            "id": "T-051",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-052",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-053",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-054",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-054"
+            ]
+          },
+          {
+            "id": "T-055",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "deleted blockers",
+      "tickets": [
+        {
+          "id": "T-060",
+          "title": "T-060",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-060",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-061",
+          "title": "T-061",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-061",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-062",
+          "title": "T-062",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-062",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          },
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-063",
+          "title": "T-063",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-060"
+          ],
+          "displayId": "T-063"
+        },
+        {
+          "id": "T-064",
+          "title": "T-064",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-061"
+          ],
+          "displayId": "T-064"
+        },
+        {
+          "id": "T-065",
+          "title": "T-065",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-062"
+          ],
+          "displayId": "T-065"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 3,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 3,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-065"
+        ],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 3,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-060",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-061",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-062",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-063",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-064",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-065",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "umbrella withholds",
+      "tickets": [
+        {
+          "id": "T-070",
+          "title": "T-070",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-070"
+        },
+        {
+          "id": "T-071",
+          "title": "T-071",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-071",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-070"
+        },
+        {
+          "id": "T-072",
+          "title": "T-072",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-072",
+          "parentTicket": "T-070"
+        },
+        {
+          "id": "T-073",
+          "title": "T-073",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-070"
+          ],
+          "displayId": "T-073"
+        },
+        {
+          "id": "T-074",
+          "title": "T-074",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-074"
+        },
+        {
+          "id": "T-075",
+          "title": "T-075",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-075",
+          "parentTicket": "T-074"
+        },
+        {
+          "id": "T-076",
+          "title": "T-076",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-076",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-075"
+        },
+        {
+          "id": "T-077",
+          "title": "T-077",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-074"
+          ],
+          "displayId": "T-077"
+        },
+        {
+          "id": "T-078",
+          "title": "T-078",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-078",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          }
+        },
+        {
+          "id": "T-079",
+          "title": "T-079",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-079",
+          "parentTicket": "T-078"
+        },
+        {
+          "id": "T-080",
+          "title": "T-080",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-078"
+          ],
+          "displayId": "T-080"
+        },
+        {
+          "id": "T-081",
+          "title": "T-081",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-081"
+        },
+        {
+          "id": "T-082",
+          "title": "T-082",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-082",
+          "parentTicket": "T-081"
+        },
+        {
+          "id": "T-083",
+          "title": "T-083",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-081"
+          ],
+          "displayId": "T-083"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 9,
+          "terminal": 5,
+          "delivered": 3,
+          "withdrawn": 2,
+          "active": 4,
+          "blocked": 3
+        },
+        "umbrellaIds": [
+          "T-070",
+          "T-074",
+          "T-075",
+          "T-078",
+          "T-081"
+        ],
+        "blockedIds": [
+          "T-073",
+          "T-077",
+          "T-080"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 9,
+            "complete": 5,
+            "withdrawn": 2
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-070": {
+            "status": "complete",
+            "total": 2,
+            "complete": 2,
+            "withdrawn": 1
+          },
+          "T-074": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "T-075": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "T-078": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "T-081": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-070",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-071"
+            ]
+          },
+          {
+            "id": "T-071",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-071"
+            ]
+          },
+          {
+            "id": "T-072",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-073",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-074",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-076"
+            ]
+          },
+          {
+            "id": "T-075",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-076"
+            ]
+          },
+          {
+            "id": "T-076",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-076"
+            ]
+          },
+          {
+            "id": "T-077",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-078",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-078"
+            ]
+          },
+          {
+            "id": "T-079",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-080",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-081",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-082",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-083",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "withheld in counted walk only",
+      "tickets": [
+        {
+          "id": "t-0000000000000d01",
+          "title": "t-0000000000000d01",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-050"
+        },
+        {
+          "id": "t-0000000000000d01",
+          "title": "t-0000000000000d01",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-050"
+        },
+        {
+          "id": "t-0000000000000d02",
+          "title": "t-0000000000000d02",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-050"
+        },
+        {
+          "id": "t-0000000000000d03",
+          "title": "t-0000000000000d03",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "displayId": "T-051",
+          "parentTicket": "T-050"
+        },
+        {
+          "id": "T-070",
+          "title": "T-070",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "t-0000000000000d02"
+          ],
+          "displayId": "T-070"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 0,
+          "withdrawn": 1,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "t-0000000000000d02"
+        ],
+        "blockedIds": [
+          "T-070"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "t-0000000000000d02": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          }
+        },
+        "releases": [
+          {
+            "id": "t-0000000000000d01",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000d01",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000d02",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "t-0000000000000d03"
+            ]
+          },
+          {
+            "id": "t-0000000000000d03",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "t-0000000000000d03"
+            ]
+          },
+          {
+            "id": "T-070",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "withheld in all-records walk only",
+      "tickets": [
+        {
+          "id": "t-0000000000000d11",
+          "title": "t-0000000000000d11",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-060"
+        },
+        {
+          "id": "t-0000000000000d11",
+          "title": "t-0000000000000d11",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-060"
+        },
+        {
+          "id": "t-0000000000000d12",
+          "title": "t-0000000000000d12",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-061"
+        },
+        {
+          "id": "t-0000000000000d14",
+          "title": "t-0000000000000d14",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "displayId": "T-060",
+          "parentTicket": "t-0000000000000d12"
+        },
+        {
+          "id": "t-0000000000000d15",
+          "title": "t-0000000000000d15",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-062",
+          "parentTicket": "T-060"
+        },
+        {
+          "id": "T-080",
+          "title": "T-080",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "t-0000000000000d12"
+          ],
+          "displayId": "T-080"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "t-0000000000000d12",
+          "t-0000000000000d14"
+        ],
+        "blockedIds": [
+          "T-080"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "t-0000000000000d12": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "t-0000000000000d14": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "t-0000000000000d11",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000d11",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "t-0000000000000d12",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "t-0000000000000d14"
+            ]
+          },
+          {
+            "id": "t-0000000000000d14",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "t-0000000000000d14"
+            ]
+          },
+          {
+            "id": "t-0000000000000d15",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-080",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "merged walk masks leaf",
+      "tickets": [
+        {
+          "id": "T-300",
+          "title": "T-300",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-300"
+        },
+        {
+          "id": "T-301",
+          "title": "T-301",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-301",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-300"
+        },
+        {
+          "id": "T-302",
+          "title": "T-302",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-302",
+          "parentTicket": "T-301"
+        },
+        {
+          "id": "T-302",
+          "title": "T-302",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-302",
+          "parentTicket": "T-301"
+        },
+        {
+          "id": "T-303",
+          "title": "T-303",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-300"
+          ],
+          "displayId": "T-303"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 0,
+          "withdrawn": 1,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-300"
+        ],
+        "blockedIds": [
+          "T-303"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-300": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          }
+        },
+        "releases": [
+          {
+            "id": "T-300",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-301"
+            ]
+          },
+          {
+            "id": "T-301",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-301"
+            ]
+          },
+          {
+            "id": "T-302",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-302",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-303",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "archived withdrawals",
+      "tickets": [
+        {
+          "id": "T-090",
+          "title": "T-090",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-090"
+        },
+        {
+          "id": "T-091",
+          "title": "T-091",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-091",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-090",
+          "lifecycle": "archived"
+        },
+        {
+          "id": "T-092",
+          "title": "T-092",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-090"
+          ],
+          "displayId": "T-092"
+        },
+        {
+          "id": "T-093",
+          "title": "T-093",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-093"
+        },
+        {
+          "id": "T-094",
+          "title": "T-094",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-094",
+          "parentTicket": "T-093"
+        },
+        {
+          "id": "T-095",
+          "title": "T-095",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-095",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-094",
+          "lifecycle": "archived"
+        },
+        {
+          "id": "T-096",
+          "title": "T-096",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-093"
+          ],
+          "displayId": "T-096"
+        },
+        {
+          "id": "T-097",
+          "title": "T-097",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-097"
+        },
+        {
+          "id": "T-098",
+          "title": "T-098",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-098",
+          "parentTicket": "T-097",
+          "lifecycle": "archived"
+        },
+        {
+          "id": "T-099",
+          "title": "T-099",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-097"
+          ],
+          "displayId": "T-099"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 6,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 4,
+          "blocked": 2
+        },
+        "umbrellaIds": [
+          "T-093"
+        ],
+        "blockedIds": [
+          "T-092",
+          "T-096"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 6,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-093": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-090",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-091"
+            ]
+          },
+          {
+            "id": "T-091",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-091"
+            ]
+          },
+          {
+            "id": "T-092",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-093",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-095"
+            ]
+          },
+          {
+            "id": "T-094",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-095"
+            ]
+          },
+          {
+            "id": "T-095",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-095"
+            ]
+          },
+          {
+            "id": "T-096",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-097",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-098",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-099",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "deleted intermediates",
+      "tickets": [
+        {
+          "id": "T-100",
+          "title": "T-100",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-100"
+        },
+        {
+          "id": "T-101",
+          "title": "T-101",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-101",
+          "parentTicket": "T-100",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-102",
+          "title": "T-102",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-102",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-101"
+        },
+        {
+          "id": "T-103",
+          "title": "T-103",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-100"
+          ],
+          "displayId": "T-103"
+        },
+        {
+          "id": "T-110",
+          "title": "T-110",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-110"
+        },
+        {
+          "id": "T-111",
+          "title": "T-111",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-111",
+          "parentTicket": "T-110",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-112",
+          "title": "T-112",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-112",
+          "parentTicket": "T-111",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-113",
+          "title": "T-113",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-113",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-112",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-114",
+          "title": "T-114",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-110"
+          ],
+          "displayId": "T-114"
+        },
+        {
+          "id": "T-120",
+          "title": "T-120",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-120"
+        },
+        {
+          "id": "T-121",
+          "title": "T-121",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-121",
+          "parentTicket": "T-120",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-122",
+          "title": "T-122",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-122",
+          "parentTicket": "T-121",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-123",
+          "title": "T-123",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-120"
+          ],
+          "displayId": "T-123"
+        },
+        {
+          "id": "T-124",
+          "title": "T-124",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-124",
+          "parentTicket": "T-121"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 8,
+          "terminal": 5,
+          "delivered": 4,
+          "withdrawn": 1,
+          "active": 3,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-101",
+          "T-121"
+        ],
+        "blockedIds": [
+          "T-103"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 8,
+            "complete": 5,
+            "withdrawn": 1
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-101": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "T-121": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-100",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-102"
+            ]
+          },
+          {
+            "id": "T-101",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-102",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-102"
+            ]
+          },
+          {
+            "id": "T-103",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-110",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-111",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-112",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-113",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-114",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-120",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-121",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-122",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-123",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-124",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate visits",
+      "tickets": [
+        {
+          "id": "T-130",
+          "title": "T-130",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-130"
+        },
+        {
+          "id": "T-131",
+          "title": "T-131",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-131",
+          "parentTicket": "T-130"
+        },
+        {
+          "id": "T-131",
+          "title": "T-131",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-131",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-130"
+        },
+        {
+          "id": "T-132",
+          "title": "T-132",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-132",
+          "parentTicket": "T-130"
+        },
+        {
+          "id": "T-133",
+          "title": "T-133",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-130"
+          ],
+          "displayId": "T-133"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-130"
+        ],
+        "blockedIds": [
+          "T-133"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-130": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-130",
+            "releases": false,
+            "reason": "cycle",
+            "detail": []
+          },
+          {
+            "id": "T-131",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-131",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-132",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-133",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "umbrella in a cycle",
+      "tickets": [
+        {
+          "id": "T-140",
+          "title": "T-140",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-140",
+          "parentTicket": "T-141"
+        },
+        {
+          "id": "T-141",
+          "title": "T-141",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-141",
+          "parentTicket": "T-140"
+        },
+        {
+          "id": "T-142",
+          "title": "T-142",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-142",
+          "parentTicket": "T-140"
+        },
+        {
+          "id": "T-143",
+          "title": "T-143",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-140"
+          ],
+          "displayId": "T-143"
+        },
+        {
+          "id": "T-144",
+          "title": "T-144",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-144"
+        },
+        {
+          "id": "T-145",
+          "title": "T-145",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-145",
+          "parentTicket": "T-144"
+        },
+        {
+          "id": "T-146",
+          "title": "T-146",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-144"
+          ],
+          "displayId": "T-146"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-140",
+          "T-141",
+          "T-144"
+        ],
+        "blockedIds": [
+          "T-143"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-140": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "T-141": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "T-144": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-140",
+            "releases": false,
+            "reason": "cycle",
+            "detail": []
+          },
+          {
+            "id": "T-141",
+            "releases": false,
+            "reason": "cycle",
+            "detail": []
+          },
+          {
+            "id": "T-142",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-143",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-144",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-145",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-146",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "withheld beside cycle",
+      "tickets": [
+        {
+          "id": "T-150",
+          "title": "T-150",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-150",
+          "parentTicket": "T-151"
+        },
+        {
+          "id": "T-151",
+          "title": "T-151",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-151",
+          "parentTicket": "T-150"
+        },
+        {
+          "id": "T-152",
+          "title": "T-152",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-152",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "parentTicket": "T-150"
+        },
+        {
+          "id": "T-153",
+          "title": "T-153",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-150"
+          ],
+          "displayId": "T-153"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 0,
+          "withdrawn": 1,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-150",
+          "T-151"
+        ],
+        "blockedIds": [
+          "T-153"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-150": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          },
+          "T-151": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 1
+          }
+        },
+        "releases": [
+          {
+            "id": "T-150",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-152"
+            ]
+          },
+          {
+            "id": "T-151",
+            "releases": false,
+            "reason": "withheld",
+            "detail": [
+              "T-152"
+            ]
+          },
+          {
+            "id": "T-152",
+            "releases": false,
+            "reason": "withdrawn",
+            "detail": [
+              "T-152"
+            ]
+          },
+          {
+            "id": "T-153",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "checkpoints",
+      "tickets": [
+        {
+          "id": "T-160",
+          "title": "T-160",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-160",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-161",
+          "title": "T-161",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-161",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-162",
+          "title": "T-162",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-162",
+          "ownerCheckpoint": {}
+        },
+        {
+          "id": "T-163",
+          "title": "T-163",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-163",
+          "ownerCheckpoint": null
+        },
+        {
+          "id": "T-164",
+          "title": "T-164",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-164",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-165",
+          "title": "T-165",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-165",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-170",
+          "title": "T-170",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-160"
+          ],
+          "displayId": "T-170"
+        },
+        {
+          "id": "T-171",
+          "title": "T-171",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-161"
+          ],
+          "displayId": "T-171"
+        },
+        {
+          "id": "T-172",
+          "title": "T-172",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-162"
+          ],
+          "displayId": "T-172"
+        },
+        {
+          "id": "T-173",
+          "title": "T-173",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-163"
+          ],
+          "displayId": "T-173"
+        },
+        {
+          "id": "T-174",
+          "title": "T-174",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-164"
+          ],
+          "displayId": "T-174"
+        },
+        {
+          "id": "T-175",
+          "title": "T-175",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [
+            "T-164"
+          ],
+          "displayId": "T-175"
+        },
+        {
+          "id": "T-176",
+          "title": "T-176",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-176",
+          "resolutionKind": {
+            "kind": "withdrawn",
+            "closedOn": "2026-02-01",
+            "reason": "Superseded by the redesign."
+          },
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-177",
+          "title": "T-177",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [
+            "T-165"
+          ],
+          "displayId": "T-177",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 14,
+          "terminal": 4,
+          "delivered": 4,
+          "withdrawn": 0,
+          "active": 10,
+          "blocked": 3
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-172",
+          "T-173",
+          "T-174"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 14,
+            "complete": 7,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-160",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-161",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-162",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-163",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-164",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-165",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-170",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-171",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-172",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-173",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-174",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-175",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-176",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-177",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "retired checkpoint stored open",
+      "tickets": [
+        {
+          "id": "T-185",
+          "title": "T-185",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-185",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-186",
+          "title": "T-186",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-185"
+          ],
+          "displayId": "T-186",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-186"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-185",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-186",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "checkpoint progress",
+      "tickets": [
+        {
+          "id": "T-180",
+          "title": "T-180",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-180"
+        },
+        {
+          "id": "T-181",
+          "title": "T-181",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-181",
+          "parentTicket": "T-180",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 1,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ]
+          }
+        },
+        {
+          "id": "T-182",
+          "title": "T-182",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-182",
+          "parentTicket": "T-180",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        },
+        {
+          "id": "T-183",
+          "title": "T-183",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-183",
+          "parentTicket": "T-180"
+        },
+        {
+          "id": "T-184",
+          "title": "T-184",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-184",
+          "parentTicket": "T-180",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "retired",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "retired",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "retiredAt": "2026-09-27T00:00:00.000Z"
+          }
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 3,
+          "delivered": 3,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-180"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-180": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-180",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-181",
+            "releases": false,
+            "reason": "checkpoint",
+            "detail": []
+          },
+          {
+            "id": "T-182",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-183",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-184",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "mixed siblings",
+      "tickets": [
+        {
+          "id": "T-190",
+          "title": "T-190",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-190"
+        },
+        {
+          "id": "T-191",
+          "title": "T-191",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-191",
+          "parentTicket": "T-190"
+        },
+        {
+          "id": "T-192",
+          "title": "T-192",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-192",
+          "parentTicket": "T-190",
+          "lifecycle": "deleted",
+          "deletedAt": "2026-03-01T00:00:00.000Z"
+        },
+        {
+          "id": "T-193",
+          "title": "T-193",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-193",
+          "parentTicket": "T-190",
+          "lifecycle": "archived"
+        },
+        {
+          "id": "T-199",
+          "title": "T-199",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-190"
+          ],
+          "displayId": "T-199"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-190"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 2,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-190": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-190",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-191",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-192",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-193",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-199",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "archived intermediate",
+      "tickets": [
+        {
+          "id": "T-200",
+          "title": "T-200",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-200"
+        },
+        {
+          "id": "T-201",
+          "title": "T-201",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-201",
+          "parentTicket": "T-200",
+          "lifecycle": "archived"
+        },
+        {
+          "id": "T-202",
+          "title": "T-202",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-202",
+          "parentTicket": "T-201"
+        },
+        {
+          "id": "T-203",
+          "title": "T-203",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-203",
+          "parentTicket": "T-200"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 0
+        },
+        "umbrellaIds": [
+          "T-200",
+          "T-201"
+        ],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-200": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "T-201": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-200",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-201",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-202",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-203",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted child",
+      "tickets": [
+        {
+          "id": "T-300",
+          "title": "T-300",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-300"
+        },
+        {
+          "id": "T-301",
+          "title": "T-301",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-301",
+          "parentTicket": "T-300"
+        },
+        {
+          "id": "T-310",
+          "title": "T-310",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-300"
+          ],
+          "displayId": "T-310"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-302.json",
+          "reason": "schema",
+          "id": "T-302",
+          "parentTicket": "T-300",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-300"
+        ],
+        "blockedIds": [
+          "T-310"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-300": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-300",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-302.json"
+            ]
+          },
+          {
+            "id": "T-301",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-310",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted unknown parentage",
+      "tickets": [
+        {
+          "id": "T-320",
+          "title": "T-320",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-320"
+        },
+        {
+          "id": "T-321",
+          "title": "T-321",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-320"
+          ],
+          "displayId": "T-321"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-329.json",
+          "reason": "parse",
+          "parentage": "unknown"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-321"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-320",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-329.json"
+            ]
+          },
+          {
+            "id": "T-321",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-329.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted root elsewhere",
+      "tickets": [
+        {
+          "id": "T-330",
+          "title": "T-330",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-330"
+        },
+        {
+          "id": "T-331",
+          "title": "T-331",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-330"
+          ],
+          "displayId": "T-331"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-399.json",
+          "reason": "schema",
+          "id": "T-399",
+          "parentage": "root"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 0
+        },
+        "umbrellaIds": [],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-330",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-331",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted under another root",
+      "tickets": [
+        {
+          "id": "T-340",
+          "title": "T-340",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-340"
+        },
+        {
+          "id": "T-341",
+          "title": "T-341",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-341",
+          "parentTicket": "T-340"
+        },
+        {
+          "id": "T-342",
+          "title": "T-342",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-340"
+          ],
+          "displayId": "T-342"
+        },
+        {
+          "id": "T-350",
+          "title": "T-350",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-350"
+        },
+        {
+          "id": "T-351",
+          "title": "T-351",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-350"
+          ],
+          "displayId": "T-351"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-343.json",
+          "reason": "schema",
+          "id": "T-343",
+          "parentTicket": "T-341",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-340"
+        ],
+        "blockedIds": [
+          "T-342"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-340": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-340",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-343.json"
+            ]
+          },
+          {
+            "id": "T-341",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-343.json"
+            ]
+          },
+          {
+            "id": "T-342",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-350",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-351",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted missing parent",
+      "tickets": [
+        {
+          "id": "T-360",
+          "title": "T-360",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-360"
+        },
+        {
+          "id": "T-361",
+          "title": "T-361",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-360"
+          ],
+          "displayId": "T-361"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-362.json",
+          "reason": "schema",
+          "parentTicket": "T-999",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-361"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-360",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-362.json"
+            ]
+          },
+          {
+            "id": "T-361",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-362.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted parent cycle",
+      "tickets": [
+        {
+          "id": "T-370",
+          "title": "T-370",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-370",
+          "parentTicket": "T-371"
+        },
+        {
+          "id": "T-371",
+          "title": "T-371",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-371",
+          "parentTicket": "T-370"
+        },
+        {
+          "id": "T-372",
+          "title": "T-372",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-372"
+        },
+        {
+          "id": "T-373",
+          "title": "T-373",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-372"
+          ],
+          "displayId": "T-373"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-374.json",
+          "reason": "schema",
+          "parentTicket": "T-370",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-370",
+          "T-371"
+        ],
+        "blockedIds": [
+          "T-373"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-370": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "T-371": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-370",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-371",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-372",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-373",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted duplicate on chain",
+      "tickets": [
+        {
+          "id": "T-380",
+          "title": "T-380",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-380"
+        },
+        {
+          "id": "T-380",
+          "title": "T-380",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-380"
+        },
+        {
+          "id": "T-381",
+          "title": "T-381",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-381"
+        },
+        {
+          "id": "T-382",
+          "title": "T-382",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-381"
+          ],
+          "displayId": "T-382"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-383.json",
+          "reason": "schema",
+          "parentTicket": "T-380",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-382"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-380",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-380",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-381",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-383.json"
+            ]
+          },
+          {
+            "id": "T-382",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-383.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted own id",
+      "tickets": [
+        {
+          "id": "T-390",
+          "title": "T-390",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-390"
+        },
+        {
+          "id": "T-391",
+          "title": "T-391",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-390"
+          ],
+          "displayId": "T-391"
+        },
+        {
+          "id": "T-392",
+          "title": "T-392",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-392"
+        },
+        {
+          "id": "T-393",
+          "title": "T-393",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-392"
+          ],
+          "displayId": "T-393"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-390-copy.json",
+          "reason": "schema",
+          "id": "T-390",
+          "parentage": "root"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-391"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-390",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-390-copy.json"
+            ]
+          },
+          {
+            "id": "T-391",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-392",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-393",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted beside checkpoint",
+      "tickets": [
+        {
+          "id": "T-395",
+          "title": "T-395",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-395",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-396",
+          "title": "T-396",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-395"
+          ],
+          "displayId": "T-396"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-394.json",
+          "reason": "schema",
+          "parentTicket": "T-395",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-396"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-395",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-394.json"
+            ]
+          },
+          {
+            "id": "T-396",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicated and omitted",
+      "tickets": [
+        {
+          "id": "T-397",
+          "title": "T-397",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-397"
+        },
+        {
+          "id": "T-397",
+          "title": "T-397",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-397"
+        },
+        {
+          "id": "T-398",
+          "title": "T-398",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-397"
+          ],
+          "displayId": "T-398"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-399.json",
+          "reason": "schema",
+          "parentTicket": "T-397",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 1,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-398"
+        ],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-397",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-397",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-398",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-399.json"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

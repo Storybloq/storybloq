@@ -104,5 +104,6 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleTeamConfigSet: "admin: team-mode configuration (CLI-only team workflow)",
   handleTeamInit: "admin: team-mode enablement (CLI-only team workflow)",
   handleTeamSetup: "admin: merge-driver installation (CLI-only team workflow)",
+  handleTriage: "admin: bulk issue triage (CLI-only); a dry run unless --apply",
   handleUpdate: "updates the CLI itself",
 };

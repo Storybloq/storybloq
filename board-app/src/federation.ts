@@ -9,11 +9,27 @@ import {
   type NodeHealth,
 } from "../../src/models/federation-config.js";
 import { hasOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
+import { COUNTING_CONTRACT } from "../../src/federation/scanner.js";
+import type { ProjectState } from "../../src/core/project-state.js";
 import { readLedger } from "./ledger-reader.js";
 import { BoardError } from "./errors.js";
 import { clip } from "./text.js";
 import { calendarDate } from "./history.js";
 const count = z.number().int().min(0).max(10000000);
+// T-486 U2-3b: an entry carries numbers a reader may show only on the
+// current counting contract; a legacy or contract-1 entry may lack them.
+const cacheEntry = z.object({
+  ticketCount: count.optional(),
+  openTickets: count.optional(),
+  completeTickets: count.optional(),
+  issueCount: count.optional(),
+  openIssues: count.optional(),
+  lastHandoverDate: z.string().nullable().optional(),
+  lastHandoverTitle: z.string().nullable().optional(),
+  reachable: z.boolean(),
+  countingContract: count.optional(),
+  legacy: z.boolean().optional(),
+});
 const cacheNode = z.object({
   ticketCount: count,
   openTickets: count,
@@ -26,7 +42,7 @@ const cacheNode = z.object({
 });
 const cacheSchema = z.object({
   lastScanTimestamp: z.string().max(80).datetime({ offset: true }),
-  nodes: z.record(cacheNode),
+  nodes: z.record(cacheEntry),
 });
 export type CachedNode = z.infer<typeof cacheNode>;
 export interface FederationNode {
@@ -43,7 +59,8 @@ export interface FederationNode {
     | "fresh"
     | "stale"
     | "future"
-    | "unreachable";
+    | "unreachable"
+    | "legacy";
 }
 export interface Edge {
   type: "build" | "runtime";
@@ -176,14 +193,24 @@ function projection(
         parsed && Object.hasOwn(parsed.nodes, name)
           ? parsed.nodes[name]
           : undefined;
-      const cached = raw
+      const counted =
+        raw?.reachable &&
+        raw.legacy !== true &&
+        raw.countingContract === COUNTING_CONTRACT
+          ? cacheNode.safeParse({
+              ...raw,
+              lastHandoverDate: raw.lastHandoverDate ?? null,
+              lastHandoverTitle: raw.lastHandoverTitle ?? null,
+            })
+          : undefined;
+      const cached = counted?.success
         ? {
-            ...raw,
-            lastHandoverDate: calendarDate(raw.lastHandoverDate),
+            ...counted.data,
+            lastHandoverDate: calendarDate(counted.data.lastHandoverDate),
             lastHandoverTitle:
-              raw.lastHandoverTitle === null
+              counted.data.lastHandoverTitle === null
                 ? null
-                : clip(raw.lastHandoverTitle, 240),
+                : clip(counted.data.lastHandoverTitle, 240),
           }
         : null;
       return {
@@ -203,7 +230,9 @@ function projection(
                 ? "missing"
                 : !raw.reachable
                   ? "unreachable"
-                  : age < 0
+                  : !cached
+                    ? "legacy"
+                    : age < 0
                     ? "future"
                     : age > 300000
                       ? "stale"
@@ -325,19 +354,7 @@ export async function readNode(
       };
     else
       preview = await readLedger(target, (state) => {
-        const active = state.leafTickets
-          .filter(
-            (t) =>
-              !hasOwnerCheckpoint(t) &&
-              (t.status === "open" || t.status === "inprogress"),
-          )
-          .sort(
-            (a, b) =>
-              Number(b.status === "inprogress") -
-                Number(a.status === "inprogress") ||
-              (a.order ?? 0) - (b.order ?? 0) ||
-              a.id.localeCompare(b.id),
-          );
+        const active = nodePreviewTickets(state);
         const start = Math.min(
           offset,
           Math.max(0, Math.ceil(active.length / limit) - 1) * limit,
@@ -372,4 +389,21 @@ export async function readNode(
     ),
     preview,
   };
+}
+
+/** Active node work from the counted population (T-486 U2-3a), in progress first. */
+export function nodePreviewTickets(state: ProjectState) {
+  return state.countedLeafTickets
+    .filter(
+      (t) =>
+        !hasOwnerCheckpoint(t) &&
+        (t.status === "open" || t.status === "inprogress"),
+    )
+    .sort(
+      (a, b) =>
+        Number(b.status === "inprogress") -
+          Number(a.status === "inprogress") ||
+        (a.order ?? 0) - (b.order ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
 }

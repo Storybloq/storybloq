@@ -2,6 +2,14 @@ import type { ProjectState } from "../../src/core/project-state.js";
 import { readLedger } from "./ledger-reader.js";
 import { projectOverview, type BoardProjection } from "./overview.js";
 import { clip } from "./text.js";
+import {
+  issueEffectiveJson,
+  issueStatusLabel,
+  dispositionEvidenceView,
+  ticketEffectiveJson,
+  type IssueEffectiveJson,
+  type TicketEffectiveJson,
+} from "../../src/core/resolution-kind.js";
 import { BoardError } from "./errors.js";
 export { BoardError } from "./errors.js";
 function fail(message: string): never {
@@ -17,6 +25,8 @@ export interface Item {
   severity?: string;
   description: string;
   truncated: boolean;
+  /** T-486: main's derived withdrawal or resolution kind and disposition evidence. */
+  effective?: TicketEffectiveJson | IssueEffectiveJson;
 }
 export interface Board {
   overview: BoardProjection;
@@ -62,7 +72,8 @@ function projectBoard(state: ProjectState): Board {
       status: state.phaseStatus(p.id),
     })),
     tickets: state.activeTickets.map((t) => ({
-      ...common(t, t.description),
+      ...common(t, withdrawalText(t) + t.description),
+      effective: ticketEffectiveJson(t),
       status: state.isUmbrella(t)
         ? {
             notstarted: "open",
@@ -74,11 +85,33 @@ function projectBoard(state: ProjectState): Board {
     issues: state.activeIssues.map((i) => ({
       ...common(
         i,
-        i.impact + (i.resolution ? "\n\nResolution\n" + i.resolution : ""),
+        issueStateText(i) +
+          i.impact +
+          (i.resolution ? "\n\nResolution\n" + i.resolution : ""),
       ),
       severity: i.severity,
+      effective: issueEffectiveJson(i),
     })),
   };
+}
+function withdrawalText(t: Readonly<Record<string, unknown>>) {
+  const view = ticketEffectiveJson(t);
+  return view.resolutionKind === "withdrawn"
+    ? `Withdrawn: ${view.reason}\n\n`
+    : "";
+}
+function issueStateText(i: Readonly<Record<string, unknown>>) {
+  const label = issueStatusLabel(i),
+    lines = issueEffectiveJson(i).resolutionKind
+      ? [label[0].toUpperCase() + label.slice(1)]
+      : [];
+  if (typeof i.disposition === "string") {
+    lines.push(`Disposition: ${i.disposition}`);
+    const evidence = dispositionEvidenceView(i);
+    if (evidence.state === "effective")
+      lines.push(`Evidence: ${evidence.reason} (${evidence.ref})`);
+  }
+  return lines.length ? lines.join("\n") + "\n\n" : "";
 }
 export function page(board: Board, q: Query) {
   const needle = q.query.toLocaleLowerCase();

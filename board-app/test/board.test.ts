@@ -17,6 +17,19 @@ import { readBoard, page, detail } from "../src/board.js";
 import { createServer, RESOURCE_URI } from "../src/server.js";
 import { fixture, ticket, issue } from "./fixture.js";
 import { overviewPage, initialQuery } from "../src/overview.js";
+import { projectOverview } from "../src/overview.js";
+import { columns } from "../src/board-types.js";
+import { loadProject } from "../../src/core/project-loader.js";
+import {
+  issueEffectiveJson,
+  ticketEffectiveJson,
+} from "../../src/core/resolution-kind.js";
+import {
+  makeState,
+  makeTicket,
+  makePhase,
+  makeRoadmap,
+} from "../../test/core/test-factories.js";
 test("canonical derivations, lifecycle, mixed IDs, projection and pagination", async () => {
   const f = await fixture();
   try {
@@ -730,6 +743,250 @@ test("overview caps huge display labels while preserving canonical detail identi
     }
     assert.ok(JSON.stringify(overview).length < 3000);
   } finally {
+    await f.cleanup();
+  }
+});
+
+// T-566 F7: board counts read main's counted population and effective state.
+const storyInventory = async (root: string) => {
+  const out: Record<string, string> = {};
+  const walk = async (dir: string, rel: string) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, e.name),
+        key = rel ? rel + "/" + e.name : e.name;
+      if (e.isDirectory()) await walk(path, key);
+      else
+        out[key] = createHash("sha256")
+          .update(await readFile(path))
+          .digest("hex");
+    }
+  };
+  await walk(join(root, ".story"), "");
+  return out;
+};
+test("overview cards, column totals and blocked count leave out a duplicated canonical id", () => {
+  const dup = "t-00000000000000aa";
+  const state = makeState({
+    roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    tickets: [
+      makeTicket({ id: "T-001", status: "open" }),
+      makeTicket({ id: "T-002", status: "open", blockedBy: ["T-001"] }),
+      makeTicket({ id: dup, displayId: "T-003", status: "open", blockedBy: ["T-001"] } as any),
+      makeTicket({ id: dup, displayId: "T-004", status: "inprogress", blockedBy: ["T-001"] } as any),
+    ],
+  });
+  assert.equal(state.leafTickets.length, 4);
+  assert.equal(state.countedLeafTickets.length, 2);
+  const o = projectOverview(state);
+  const ids = columns.flatMap((c) => o.columns[c].items.map((i) => i.id));
+  assert.deepEqual(ids.sort(), ["T-001", "T-002"]);
+  assert.equal(
+    columns.reduce((n, c) => n + o.columns[c].total, 0),
+    state.countedLeafTickets.length,
+  );
+  assert.equal(o.columns.inProgress.total, 0);
+  assert.equal(o.summary.blocked, 1);
+  assert.equal(o.summary.blocked, state.blockedCount);
+  assert.equal(o.summary.total, state.totalTicketCount);
+});
+test("an on-disk duplicate id refuses the board read and the editor without changing .story bytes", async () => {
+  const f = await fixture();
+  const server = createServer(f.root, "<h1>Board</h1>"),
+    client = new Client({ name: "dup-test", version: "1" });
+  try {
+    await f.put("tickets/T-001-copy.json", ticket("T-001", { title: "Copy" }));
+    const before = await storyInventory(f.root);
+    await assert.rejects(readBoard(f.root));
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const call = async (name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as any;
+    for (const [name, args] of [
+      ["storybloq_board_overview", {}],
+      ["storybloq_item_editor", { kind: "tickets", id: "T-001" }],
+      [
+        "storybloq_item_save",
+        {
+          kind: "tickets",
+          id: "T-001",
+          revision: "a".repeat(64),
+          patch: { title: "Overwrite" },
+        },
+      ],
+      [
+        "storybloq_item_save",
+        {
+          kind: "issues",
+          id: "ISS-001",
+          revision: "a".repeat(64),
+          patch: { title: "Overwrite" },
+        },
+      ],
+    ] as const) {
+      const r = await call(name, args);
+      assert.equal(r.isError, true, name);
+      assert.deepEqual(await storyInventory(f.root), before, name);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    await f.cleanup();
+  }
+});
+
+const kindOf = (kind: string, closedOn: string, resolution: string) => ({
+  kind,
+  closedOn,
+  resolutionDigest: createHash("sha256")
+    .update(resolution, "utf8")
+    .digest("hex")
+    .slice(0, 16),
+});
+async function effectiveFixture() {
+  const f = await fixture();
+  await f.put(
+    "tickets/T-002.json",
+    ticket("T-002", {
+      status: "complete",
+      completedDate: "2026-10-01",
+      resolutionKind: {
+        kind: "withdrawn",
+        closedOn: "2026-10-01",
+        reason: "Superseded by the merged plan",
+      },
+    }),
+  );
+  await f.put(
+    "tickets/T-003.json",
+    ticket("T-003", {
+      status: "complete",
+      completedDate: "2026-10-02",
+      resolutionKind: {
+        kind: "withdrawn",
+        closedOn: "2026-09-01",
+        reason: "Stale binding",
+      },
+    }),
+  );
+  const resolved = (id: string, kind: string, extra = {}) =>
+    issue(id, {
+      status: "resolved",
+      severity: "low",
+      resolution: "Closed as " + kind,
+      resolvedDate: "2026-10-03",
+      resolutionKind: kindOf(kind, "2026-10-03", "Closed as " + kind),
+      ...extra,
+    });
+  await f.put("issues/ISS-002.json", resolved("ISS-002", "wontfix"));
+  await f.put(
+    "issues/ISS-003.json",
+    resolved("ISS-003", "duplicate", { duplicateOf: "ISS-001" }),
+  );
+  await f.put("issues/ISS-004.json", resolved("ISS-004", "superseded"));
+  await f.put("issues/ISS-005.json", resolved("ISS-005", "not_reproducible"));
+  await f.put(
+    "issues/ISS-006.json",
+    issue("ISS-006", {
+      severity: "medium",
+      disposition: "owner_gated",
+      dispositionReason: "Needs the owner's call",
+      dispositionRef: "T-002",
+      dispositionFor: "owner_gated",
+    }),
+  );
+  return f;
+}
+test("cards and details show main's effective withdrawal, resolution kind and disposition", async () => {
+  const f = await effectiveFixture();
+  try {
+    const loaded = await loadProject(f.root);
+    const state = loaded.state;
+    const b = await readBoard(f.root);
+    const cards = columns.flatMap((c) => b.overview.columns[c].items);
+    const card = (id: string) => cards.find((c) => c.id === id)!;
+    assert.ok(card("T-002").tags.includes("Withdrawn"));
+    assert.ok(!card("T-003").tags.includes("Withdrawn"));
+    assert.ok(card("ISS-002").tags.includes("Won't fix"));
+    assert.ok(card("ISS-003").tags.includes("Duplicate"));
+    assert.ok(card("ISS-004").tags.includes("Superseded"));
+    assert.ok(card("ISS-005").tags.includes("Not reproducible"));
+    assert.ok(card("ISS-006").tags.includes("Owner gated"));
+    for (const id of ["T-002", "T-003"]) {
+      const t = state.ticketByID(id)!;
+      assert.deepEqual(detail(b, "tickets", id).effective, ticketEffectiveJson(t));
+    }
+    for (const id of ["ISS-001", "ISS-002", "ISS-003", "ISS-004", "ISS-005", "ISS-006"]) {
+      const i = state.issueByID(id)!;
+      assert.deepEqual(detail(b, "issues", id).effective, issueEffectiveJson(i));
+    }
+    assert.match(detail(b, "tickets", "T-002").description, /^Withdrawn: Superseded by the merged plan\n\n/);
+    assert.match(detail(b, "issues", "ISS-002").description, /^Resolved \(wontfix\)\n\n/);
+    assert.match(detail(b, "issues", "ISS-006").description, /^Disposition: owner_gated\nEvidence: Needs the owner's call \(T-002\)\n\n/);
+    assert.equal(b.overview.summary.total, state.totalTicketCount);
+    assert.equal(b.overview.summary.complete, state.completeTicketCount);
+    assert.equal(b.overview.summary.openIssues, state.activeIssueCount);
+    assert.equal(b.overview.summary.actionableOpenIssues, state.actionableOpenIssueCount);
+    assert.equal(b.overview.summary.actionableOpenIssues, 1);
+    assert.deepEqual(b.overview.summary.severity, {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      ...Object.fromEntries(state.issuesBySeverity),
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+test("unrelated board edits preserve resolution kind, disposition evidence and withdrawal bytes", async () => {
+  const f = await effectiveFixture();
+  const server = createServer(f.root, "<h1>Board</h1>"),
+    client = new Client({ name: "preserve-test", version: "1" });
+  try {
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+    const call = async (name: string, args: Record<string, unknown>) =>
+      (await client.callTool({ name, arguments: args })) as any;
+    const keys = [
+      "resolutionKind",
+      "reason",
+      "duplicateOf",
+      "disposition",
+      "dispositionReason",
+      "dispositionRef",
+      "dispositionFor",
+      "completedDate",
+      "resolvedDate",
+      "status",
+    ];
+    const pick = (v: any) =>
+      Object.fromEntries(keys.filter((k) => k in v).map((k) => [k, v[k]]));
+    for (const [kind, id, patch] of [
+      ["tickets", "T-002", { title: "Renamed withdrawn ticket" }],
+      ["issues", "ISS-002", { impact: "Edited impact" }],
+      ["issues", "ISS-003", { title: "Renamed duplicate" }],
+      ["issues", "ISS-004", { impact: "Edited impact" }],
+      ["issues", "ISS-005", { title: "Renamed" }],
+      ["issues", "ISS-006", { impact: "Edited impact" }],
+    ] as const) {
+      const path = join(f.root, ".story", kind, id + ".json");
+      const before = pick(JSON.parse(await readFile(path, "utf8")));
+      const e = await call("storybloq_item_editor", { kind, id });
+      assert.equal(e.isError, undefined, JSON.stringify(e));
+      const r = await call("storybloq_item_save", {
+        kind,
+        id,
+        revision: e._meta.editor.revision,
+        patch,
+      });
+      assert.equal(r.isError, undefined, id + JSON.stringify(r));
+      const after = JSON.parse(await readFile(path, "utf8"));
+      assert.deepEqual(pick(after), before, id);
+      for (const [k, v] of Object.entries(patch)) assert.equal(after[k], v);
+    }
+  } finally {
+    await client.close();
+    await server.close();
     await f.cleanup();
   }
 });

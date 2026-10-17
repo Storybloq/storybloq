@@ -19,6 +19,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
 import { fixture, ticket } from "./fixture.js";
+import { nodePreviewTickets } from "../src/federation.js";
+import { makeState, makeTicket } from "../../test/core/test-factories.js";
 
 async function connect(root: string, approvedNodeRoots: string[] = []) {
   const server = (createServer as any)(root, "<h1>Board</h1>", {
@@ -50,6 +52,7 @@ const summary = {
   lastHandoverDate: "2026-09-29",
   lastHandoverTitle: "Recorded work",
   reachable: true,
+  countingContract: 2,
 };
 test("prototype-named nodes with absent cache entries stay readable", async () => {
   const f = await fixture();
@@ -549,4 +552,67 @@ test("Mac tilde-configured node paths still require an exact approved external r
     await f.cleanup();
     await external.cleanup();
   }
+});
+
+// T-566 F7: cached node numbers count only on main's current counting contract (T-486 U2-3b).
+test("federation shows cached numbers only for current-contract summaries", async () => {
+  const f = await fixture();
+  const c = await connect(f.root);
+  try {
+    await config(f, {
+      current: { path: "current" },
+      older: { path: "older" },
+      legacy: { path: "legacy" },
+      offline: { path: "offline" },
+    });
+    const { countingContract: _, ...contractOne } = summary;
+    await f.put("federation-cache.json", {
+      lastScanTimestamp: new Date().toISOString(),
+      nodes: {
+        current: { ...summary, deliveredTickets: 5, withdrawnTickets: 1 },
+        older: contractOne,
+        legacy: {
+          reachable: true,
+          legacy: true,
+          legacyReason: "rescan failed",
+          lastHandoverDate: null,
+          lastHandoverTitle: null,
+        },
+        offline: { reachable: false, unreachableReason: "Offline" },
+      },
+    });
+    const r: any = await c.client.callTool({
+      name: "storybloq_federation",
+      arguments: {},
+    });
+    assert.equal(r.isError, undefined, JSON.stringify(r));
+    const node = (name: string) =>
+      r._meta.federation.nodes.find((n: any) => n.name === name);
+    assert.equal(node("current").cacheState, "fresh");
+    assert.equal(node("current").cache.completeTickets, 6);
+    assert.equal(node("current").cache.ticketCount, 10);
+    for (const name of ["older", "legacy"]) {
+      assert.equal(node(name).cacheState, "legacy", name);
+      assert.equal(node(name).cache, null, name);
+    }
+    assert.equal(node("offline").cacheState, "unreachable");
+    assert.equal(node("offline").cache, null);
+  } finally {
+    await c.close();
+    await f.cleanup();
+  }
+});
+test("node preview lists only the counted population", () => {
+  const dup = "t-00000000000000bb";
+  const state = makeState({
+    tickets: [
+      makeTicket({ id: "T-001", status: "open" }),
+      makeTicket({ id: dup, status: "inprogress" }),
+      makeTicket({ id: dup, status: "open" }),
+    ],
+  });
+  assert.deepEqual(
+    nodePreviewTickets(state).map((t) => t.id),
+    ["T-001"],
+  );
 });

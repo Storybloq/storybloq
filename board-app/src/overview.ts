@@ -3,6 +3,10 @@ import type { ProjectState } from "../../src/core/project-state.js";
 import type { Ticket } from "../../src/models/ticket.js";
 import type { Issue } from "../../src/models/issue.js";
 import { hasOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
+import {
+  effectiveResolutionKind,
+  isEffectivelyWithdrawn,
+} from "../../src/core/resolution-kind.js";
 import { clip } from "./text.js";
 import { BoardError } from "./errors.js";
 import {
@@ -22,6 +26,15 @@ export interface BoardProjection extends Overview {
 const phaseKey = (id: string) => createHash("sha256").update(id).digest("hex");
 const compareID = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const displayLabel = (value: string) => value[0].toUpperCase() + value.slice(1);
+const kindLabel: Record<string, string> = {
+  wontfix: "Won't fix",
+  duplicate: "Duplicate",
+  superseded: "Superseded",
+  not_reproducible: "Not reproducible",
+};
+/** Disposition values are snake_case enum members; `owner_gated` reads "Owner gated". */
+export const dispositionLabel = (value: string) =>
+  displayLabel(value.replaceAll("_", " "));
 
 interface ProjectedRecord {
   card: Card;
@@ -47,7 +60,12 @@ function projectRecord(
   const type = ticket?.type ?? null;
   const components = issue?.components ?? [];
   const name = t.phase ? phaseName.get(t.phase) : undefined;
+  // T-486: effective state through main's single derivations, never raw keys.
+  const resolved = issue ? effectiveResolutionKind(issue) : null;
   const tags = [
+    ticket && isEffectivelyWithdrawn(ticket) ? "Withdrawn" : null,
+    resolved ? (kindLabel[resolved] ?? null) : null,
+    issue?.disposition ? dispositionLabel(issue.disposition) : null,
     type ? displayLabel(type) : null,
     name,
     blocked ? "Blocked" : null,
@@ -128,7 +146,9 @@ export function projectOverview(state: ProjectState): BoardProjection {
   const phases = projectPhases(state);
   const current = state.roadmap.phases[phases.findIndex((p) => p.current)];
   const records = [
-    ...state.leafTickets
+    // T-486 U2-3a: cards and counts read the counted population, which drops
+    // a record whose canonical id is claimed twice.
+    ...state.countedLeafTickets
       .filter((t) => !hasOwnerCheckpoint(t))
       .map((t) => projectRecord(state, t, "tickets", phaseIndex, phaseName)),
     ...state.activeIssues.map((i) =>
@@ -142,9 +162,8 @@ export function projectOverview(state: ProjectState): BoardProjection {
     high: 0,
     medium: 0,
     low: 0,
+    ...Object.fromEntries(state.issuesBySeverity),
   };
-  for (const i of state.activeIssues)
-    if (i.status !== "resolved") severity[i.severity]++;
   return {
     project: clip(state.config.project, 120),
     isOrchestrator: state.config.type === "orchestrator",
@@ -155,13 +174,14 @@ export function projectOverview(state: ProjectState): BoardProjection {
     summary: {
       total: state.totalTicketCount,
       complete: state.completeTicketCount,
-      blocked: state.leafTickets.filter(
+      blocked: state.countedLeafTickets.filter(
         (t) =>
           !hasOwnerCheckpoint(t) &&
           t.status !== "complete" &&
           state.isBlocked(t),
       ).length,
       openIssues: state.activeIssueCount,
+      actionableOpenIssues: state.actionableOpenIssueCount,
       severity,
     },
     currentPhase: current

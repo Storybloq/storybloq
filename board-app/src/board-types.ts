@@ -30,6 +30,7 @@ export interface Overview {
     complete: number;
     blocked: number;
     openIssues: number;
+    actionableOpenIssues?: number;
     severity: Record<string, number>;
   };
   currentPhase: { id: string; name: string; status: string } | null;

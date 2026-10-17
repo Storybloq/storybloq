@@ -277,6 +277,7 @@ export async function handleNoteUpdate(
             `Refusing to replace note ${displayIdOf(existing)}: the new content is ${updates.content.length} chars ` +
               `and the existing content is ${existing.content.length} (under ${NOTE_REPLACE_GUARD_RATIO * 100}% of a note of ${NOTE_REPLACE_GUARD_FLOOR}+ chars). ` +
               `Pass ${hatches.confirm} to replace it anyway, or ${hatches.append} to add to it.`,
+            { reason: "note_destructive_replace" },
           );
         }
         nextContent = updates.content;

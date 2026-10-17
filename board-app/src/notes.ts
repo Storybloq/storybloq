@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Note } from "../../src/models/note.js";
 import type { ProjectState } from "../../src/core/project-state.js";
@@ -28,9 +29,26 @@ export const notePatch = z
     content: z.string().max(48000).optional(),
     tags: z.array(z.string().max(64)).max(200).optional(),
     status: z.enum(["active", "archived"]).optional(),
+    // Explicit consent for main's destructive-replace guard, bound to the
+    // digest of the exact content the refusal reported. Never set implicitly.
+    confirmReplace: z.boolean().optional(),
+    confirmDraftDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
   .strict()
-  .refine((patch) => Object.keys(patch).length > 0);
+  .refine(
+    ({ confirmReplace, confirmDraftDigest, ...fields }) =>
+      Object.keys(fields).length > 0,
+  );
+/** Board spelling of the canonical guard's escape hatches. */
+const BOARD_NOTE_HATCHES = {
+  confirm: "confirmReplace: true with the returned confirmDraftDigest",
+  append: "a smaller edit that keeps the existing text",
+};
+const draftDigest = (content: string) =>
+  createHash("sha256").update(content, "utf8").digest("hex");
 
 function find(state: ProjectState, id: string): Note {
   const resolved = state.resolveNoteRef(id);
@@ -232,16 +250,27 @@ export function createNotes(root: string, access: Promise<RootAccess>) {
         "invalid_input",
         "Check the editable note fields and their limits, then try again.",
       );
+    const { confirmReplace, confirmDraftDigest, ...fields } = parsed.data;
+    if (
+      (confirmReplace !== undefined || confirmDraftDigest !== undefined) &&
+      (confirmReplace !== true ||
+        fields.content === undefined ||
+        confirmDraftDigest !== draftDigest(fields.content))
+    )
+      throw new EditError(
+        "invalid_input",
+        "Replace confirmation does not match this draft. Save again to review the replacement. Your draft is preserved.",
+      );
     await read((state) => editable(find(state, id)));
     let originalBytes = 0,
       totalBytes = 0;
     try {
       const result = await handleNoteUpdate(
         id,
-        { ...parsed.data },
+        { ...fields, ...(confirmReplace === true && { confirmReplace }) },
         "json",
         root,
-        undefined,
+        BOARD_NOTE_HATCHES,
         {
           precondition: async (existing) => {
             await checkRoot();
@@ -269,6 +298,16 @@ export function createNotes(root: string, access: Promise<RootAccess>) {
     } catch (error) {
       if (error instanceof EditError || error instanceof BoardError)
         throw error;
+      if (
+        error instanceof CliValidationError &&
+        error.reason === "note_destructive_replace" &&
+        fields.content !== undefined
+      )
+        throw new EditError(
+          "confirm_replace_required",
+          "Saving would replace most of this long note. Confirm to replace it, or keep editing. Your draft is preserved.",
+          { revision, draftDigest: draftDigest(fields.content) },
+        );
       if (error instanceof CliValidationError)
         throw new EditError(
           error.code === "conflict" ? "conflict" : "invalid_input",

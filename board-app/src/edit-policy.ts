@@ -12,8 +12,14 @@ import type { RootAccess } from "./federation.js";
 
 export class EditError extends BoardError {
   constructor(
-    public readonly code: "conflict" | "invalid_input" | "unavailable",
+    public readonly code:
+      | "conflict"
+      | "invalid_input"
+      | "unavailable"
+      | "confirm_replace_required",
     message: string,
+    /** Consent binding for confirm_replace_required: the reviewed revision and draft digest. */
+    public readonly consent?: { revision: string; draftDigest: string },
   ) {
     super(message);
   }

@@ -9,6 +9,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fixture } from "./fixture.js";
 import { captureLocalContext } from "../src/local-context.js";
@@ -335,6 +336,71 @@ test("local tools expose conversational results and preserve revision conflicts"
       stale.structuredContent,
     );
     assert.equal(await readFile(path, "utf8"), disk);
+  } finally {
+    await client.close();
+    await f.cleanup();
+  }
+});
+
+test("conversational note save needs explicit digest-bound consent for a destructive replace", async () => {
+  const f = await fixture();
+  await mkdir(join(f.root, ".story/notes"));
+  const long = "o".repeat(1000);
+  await f.put("notes/N-001.json", {
+    id: "N-001",
+    title: "Long note",
+    content: long,
+    tags: [],
+    status: "active",
+    createdDate: "2026-10-04",
+    updatedDate: "2026-10-04",
+  });
+  const client = await connect(f.root);
+  const call = async (name: string, args = {}) =>
+    (await client.callTool({ name, arguments: args })) as any;
+  const path = join(f.root, ".story/notes/N-001.json");
+  const digest = (text: string) =>
+    createHash("sha256").update(text, "utf8").digest("hex");
+  try {
+    const editor = (await call("storybloq_note_editor", { id: "N-001" }))
+      .structuredContent.editor;
+    const before = await readFile(path, "utf8"),
+      draft = "n".repeat(199);
+    const refused = await call("storybloq_note_save", {
+      id: "N-001",
+      revision: editor.revision,
+      patch: { content: draft },
+    });
+    assert.equal(refused.isError, true);
+    assert.deepEqual(refused.structuredContent.editError, {
+      code: "confirm_replace_required",
+      message: refused.structuredContent.editError.message,
+      revision: editor.revision,
+      draftDigest: digest(draft),
+    });
+    assert.deepEqual(
+      JSON.parse(refused.content[0].text),
+      refused.structuredContent,
+    );
+    assert.equal(await readFile(path, "utf8"), before);
+    const unbound = await call("storybloq_note_save", {
+      id: "N-001",
+      revision: editor.revision,
+      patch: { content: draft, confirmReplace: true },
+    });
+    assert.equal(unbound.structuredContent.editError.code, "invalid_input");
+    assert.equal(await readFile(path, "utf8"), before);
+    const saved = await call("storybloq_note_save", {
+      id: "N-001",
+      revision: editor.revision,
+      patch: {
+        content: draft,
+        confirmReplace: true,
+        confirmDraftDigest: digest(draft),
+      },
+    });
+    assert.equal(saved.isError, undefined, JSON.stringify(saved));
+    assert.equal(JSON.parse(await readFile(path, "utf8")).content, draft);
   } finally {
     await client.close();
     await f.cleanup();

@@ -1194,3 +1194,163 @@ test("a late retry cannot replace a newer note selection", async () => {
     s.close();
   }
 });
+
+const draftDigest = "d".repeat(64);
+const replaceRefusal = (extra: Record<string, unknown> = {}) => ({
+  isError: true,
+  _meta: {
+    editError: {
+      code: "confirm_replace_required",
+      message: "Saving would replace most of this long note.",
+      revision,
+      draftDigest,
+      ...extra,
+    },
+  },
+});
+const hidden = (s: { d: Document }, id: string) =>
+  s.d.getElementById(id)!.hidden;
+test("a destructive-replace refusal opens a confirm step and confirm resubmits the exact draft", async () => {
+  const saves: any[] = [];
+  const s = await setup(async (name, args) => {
+    if (name === "storybloq_note_save") {
+      saves.push(args);
+      return saves.length === 1
+        ? replaceRefusal()
+        : {
+            _meta: {
+              editor: {
+                ...editor,
+                revision: "c".repeat(64),
+                fields: { ...editor.fields, content: "Short" },
+              },
+            },
+          };
+    }
+    return basic(name, args);
+  });
+  try {
+    await s.open();
+    s.click("edit-note");
+    await tick();
+    assert.equal(hidden(s, "note-confirm-replace"), true);
+    s.change("note-content", "Short");
+    s.click("save-note");
+    await tick();
+    assert.deepEqual(saves, [
+      { id: "N-001", revision, patch: { content: "Short" } },
+    ]);
+    assert.equal(hidden(s, "note-confirm-replace"), false);
+    assert.equal(s.d.activeElement!.id, "note-confirm-replace-title");
+    assert.equal(
+      (s.d.getElementById("note-content") as HTMLTextAreaElement).value,
+      "Short",
+    );
+    s.click("note-confirm-replace-save");
+    await tick();
+    assert.deepEqual(saves[1], {
+      id: "N-001",
+      revision,
+      patch: {
+        content: "Short",
+        confirmReplace: true,
+        confirmDraftDigest: draftDigest,
+      },
+    });
+    assert.equal(saves.length, 2);
+    assert.equal(hidden(s, "note-confirm-replace"), true);
+    assert.equal(s.d.activeElement!.id, "note-detail-title");
+  } finally {
+    s.close();
+  }
+});
+test("cancelling or editing the draft voids replace consent without writing", async () => {
+  const saves: any[] = [];
+  const s = await setup(async (name, args) => {
+    if (name === "storybloq_note_save") {
+      saves.push(args);
+      return replaceRefusal();
+    }
+    return basic(name, args);
+  });
+  try {
+    await s.open();
+    s.click("edit-note");
+    await tick();
+    s.change("note-content", "Short");
+    s.click("save-note");
+    await tick();
+    s.click("note-confirm-replace-cancel");
+    await tick();
+    assert.equal(hidden(s, "note-confirm-replace"), true);
+    assert.equal(saves.length, 1);
+    assert.equal(
+      (s.d.getElementById("note-content") as HTMLTextAreaElement).value,
+      "Short",
+    );
+    s.click("note-confirm-replace-save");
+    await tick();
+    assert.equal(saves.length, 1);
+    s.click("save-note");
+    await tick();
+    assert.equal(hidden(s, "note-confirm-replace"), false);
+    s.change("note-content", "Short, then edited");
+    assert.equal(hidden(s, "note-confirm-replace"), true);
+    s.click("note-confirm-replace-save");
+    await tick();
+    assert.equal(saves.length, 2);
+    s.click("save-note");
+    await tick();
+    assert.deepEqual(saves[2], {
+      id: "N-001",
+      revision,
+      patch: { content: "Short, then edited" },
+    });
+  } finally {
+    s.close();
+  }
+});
+test("only a well-formed confirm_replace_required refusal opens the confirm step", async () => {
+  const responses = [
+    {
+      isError: true,
+      _meta: {
+        editError: {
+          code: "invalid_input",
+          message: "Check content, tags and status.",
+          revision,
+          draftDigest,
+        },
+      },
+    },
+    replaceRefusal({ draftDigest: "not-a-digest" }),
+    replaceRefusal({ revision: "e".repeat(64) }),
+    replaceRefusal({ draftDigest: undefined }),
+  ];
+  const saves: any[] = [];
+  const s = await setup(async (name, args) => {
+    if (name === "storybloq_note_save") {
+      saves.push(args);
+      return responses[saves.length - 1];
+    }
+    return basic(name, args);
+  });
+  try {
+    await s.open();
+    s.click("edit-note");
+    await tick();
+    s.change("note-content", "Short");
+    for (let i = 0; i < responses.length; i++) {
+      s.click("save-note");
+      await tick();
+      assert.equal(hidden(s, "note-confirm-replace"), true, String(i));
+      assert.equal(
+        (s.d.getElementById("note-content") as HTMLTextAreaElement).value,
+        "Short",
+      );
+    }
+    assert.equal(saves.length, responses.length);
+  } finally {
+    s.close();
+  }
+});

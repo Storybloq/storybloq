@@ -65,7 +65,15 @@ export function mountNoteEditor(
     disposed = false,
     pending = false,
     deferred: (() => void) | undefined,
-    origin: HTMLElement | undefined;
+    origin: HTMLElement | undefined,
+    // Replace consent covers only the exact draft the refusal reported.
+    consent:
+      | {
+          patch: Record<string, EditableValue>;
+          revision: string;
+          draftDigest: string;
+        }
+      | undefined;
   const announce = (message: string) => {
     el("note-edit-status").textContent = message;
   };
@@ -102,15 +110,22 @@ export function mountNoteEditor(
       "note-back-to-draft",
       "note-keep-editing",
       "note-discard-edits",
+      "note-confirm-replace-save",
+      "note-confirm-replace-cancel",
     ])
       button(id).disabled = value;
     for (const [key, input] of fields)
       input.disabled = value || record?.limitedFields.includes(key) === true;
   }
+  function voidConsent() {
+    consent = undefined;
+    el("note-confirm-replace").hidden = true;
+  }
   function reset() {
     generation++;
     record = undefined;
     deferred = undefined;
+    voidConsent();
     fields.clear();
     form.hidden = true;
     el("edit-note").hidden = false;
@@ -170,6 +185,7 @@ export function mountNoteEditor(
   }
   function show(e: NoteEditor) {
     record = e;
+    voidConsent();
     fields.clear();
     el("note-editor-fields").replaceChildren(
       ...keys.map((key) => field(key, e.fields[key], e)),
@@ -238,16 +254,24 @@ export function mountNoteEditor(
           "Current values could not load. Your draft is still preserved.";
     }
   }
-  async function save() {
+  async function save(confirmed?: NonNullable<typeof consent>) {
     if (disposed || pending || !record || !selection) return;
-    const patch = values();
-    if (!Object.keys(patch).length) {
+    const draft = values();
+    voidConsent();
+    if (!Object.keys(draft).length) {
       announce("There are no changes to save.");
       return;
     }
     const id = selection,
       revision = record.revision,
-      current = ++generation;
+      current = ++generation,
+      patch = confirmed
+        ? {
+            ...draft,
+            confirmReplace: true,
+            confirmDraftDigest: confirmed.draftDigest,
+          }
+        : draft;
     busy(true);
     announce("Saving changes…");
     try {
@@ -255,8 +279,20 @@ export function mountNoteEditor(
       if (disposed || current !== generation) return;
       if (result.isError) {
         announce(noteEditMessage(result));
-        if (result._meta?.editError?.code === "conflict")
-          await conflict(current, id);
+        const error = result._meta?.editError;
+        if (error?.code === "conflict") await conflict(current, id);
+        else if (
+          !confirmed &&
+          error?.code === "confirm_replace_required" &&
+          error.revision === revision &&
+          typeof error.draftDigest === "string" &&
+          /^[a-f0-9]{64}$/.test(error.draftDigest) &&
+          typeof draft.content === "string"
+        ) {
+          consent = { patch: draft, revision, draftDigest: error.draftDigest };
+          el("note-confirm-replace").hidden = false;
+          el("note-confirm-replace-title").focus();
+        }
       } else {
         const saved = checkedNoteEditor(result, id);
         reset();
@@ -287,6 +323,27 @@ export function mountNoteEditor(
     el("note-discard-title").focus();
   }
   button("edit-note").onclick = () => void edit();
+  // Any change to the draft voids a pending replace confirmation.
+  form.addEventListener("input", () => {
+    if (consent) voidConsent();
+  });
+  button("note-confirm-replace-save").onclick = () => {
+    if (disposed || pending || !record || !consent) return;
+    const confirmed = consent;
+    if (
+      confirmed.revision !== record.revision ||
+      JSON.stringify(values()) !== JSON.stringify(confirmed.patch)
+    ) {
+      voidConsent();
+      return;
+    }
+    void save(confirmed);
+  };
+  button("note-confirm-replace-cancel").onclick = () => {
+    if (disposed || pending) return;
+    voidConsent();
+    focusField();
+  };
   form.onsubmit = (event) => {
     event.preventDefault();
     void save();

@@ -86,7 +86,12 @@ export function createServer(
           outputSchema: {
             [key]: z.record(z.unknown()).optional(),
             editError: z
-              .object({ code: z.string(), message: z.string() })
+              .object({
+                code: z.string(),
+                message: z.string(),
+                revision: z.string().optional(),
+                draftDigest: z.string().optional(),
+              })
               .optional(),
             boardError: z
               .object({ code: z.string(), message: z.string() })
@@ -368,9 +373,10 @@ export function createServer(
         error instanceof BoardError
           ? error.message
           : "The edit could not be confirmed. Your draft is preserved. Reload before retrying.";
+      const consent = error instanceof EditError ? error.consent : undefined;
       return {
         isError: true,
-        ...response("editError", { code, message }),
+        ...response("editError", { code, message, ...consent }),
       };
     }
   };
@@ -492,7 +498,7 @@ export function createServer(
     {
       title: "Save note edit",
       description:
-        "Save changed note fields using canonical locked validation and the reviewed revision. This private server grants its trusted clients editing access.",
+        "Save changed note fields using canonical locked validation and the reviewed revision. This private server grants its trusted clients editing access. A replace that discards most of a long note is refused with confirm_replace_required; only after the user confirms, resend the same content with confirmReplace true and the returned draftDigest as confirmDraftDigest.",
       inputSchema: { id: noteId, revision, patch: notePatch },
       annotations: writeAnnotations,
       ...output("editor"),

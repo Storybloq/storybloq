@@ -13,6 +13,7 @@ import {
   realpath,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../src/server.js";
@@ -890,3 +891,163 @@ test(
     }
   },
 );
+// The save's own refusal code, or the tool schema's rule codes when the
+// protocol layer refused the arguments before the save ran.
+function refusal(r: any): string {
+  if (r._meta?.editError) return r._meta.editError.code;
+  const text = String(r.content?.[0]?.text ?? "");
+  assert.match(text, /Input validation error: Invalid arguments for tool storybloq_note_save/);
+  const codes = [...text.matchAll(/"code": "([a-z_]+)"/g)].map((m) => m[1]);
+  return "schema:" + [...new Set(codes)].join(",");
+}
+const digest = (text: string) =>
+  createHash("sha256").update(text, "utf8").digest("hex");
+test("board note save keeps main's destructive-replace guard at its real thresholds", async () => {
+  const s = await session();
+  try {
+    await s.put("notes/N-002.json", note("N-002", { content: "x".repeat(999) }));
+    await s.put("notes/N-003.json", note("N-003", { content: "x".repeat(1000) }));
+    await s.put("notes/N-004.json", note("N-004", { content: "x".repeat(1000) }));
+    const under = await s.read("N-002");
+    const small = await s.call("storybloq_note_save", {
+      id: under.id,
+      revision: under.revision,
+      patch: { content: "y" },
+    });
+    assert.equal(small.isError, undefined, JSON.stringify(small));
+    assert.equal((await s.disk("N-002")).content, "y");
+    const exact = await s.read("N-003");
+    const fifth = await s.call("storybloq_note_save", {
+      id: exact.id,
+      revision: exact.revision,
+      patch: { content: "y".repeat(200) },
+    });
+    assert.equal(fifth.isError, undefined, JSON.stringify(fifth));
+    assert.equal((await s.disk("N-003")).content, "y".repeat(200));
+    const guarded = await s.read("N-004"),
+      path = join(s.root, ".story/notes/N-004.json"),
+      before = await readFile(path),
+      draft = "y".repeat(199);
+    const refused = await s.call("storybloq_note_save", {
+      id: guarded.id,
+      revision: guarded.revision,
+      patch: { content: draft, title: "Not yet" },
+    });
+    assert.equal(refused.isError, true);
+    assert.equal(refused._meta.editError.code, "confirm_replace_required");
+    assert.equal(refused._meta.editError.revision, guarded.revision);
+    assert.equal(refused._meta.editError.draftDigest, digest(draft));
+    assert.ok(!refused._meta.editError.message.includes("yyyyy"));
+    assert.deepEqual(await readFile(path), before);
+    const confirmed = await s.call("storybloq_note_save", {
+      id: guarded.id,
+      revision: guarded.revision,
+      patch: {
+        content: draft,
+        title: "Now",
+        confirmReplace: true,
+        confirmDraftDigest: digest(draft),
+      },
+    });
+    assert.equal(confirmed.isError, undefined, JSON.stringify(confirmed));
+    const saved = await s.disk("N-004");
+    assert.equal(saved.content, draft);
+    assert.equal(saved.title, "Now");
+    assert.ok(!("confirmReplace" in saved));
+    assert.ok(!("confirmDraftDigest" in saved));
+  } finally {
+    await s.close();
+  }
+});
+test("board replace consent binds the exact draft and the reviewed revision", async () => {
+  const s = await session();
+  try {
+    await s.put("notes/N-001.json", note("N-001", { content: "x".repeat(5000) }));
+    const e = await s.read(),
+      path = join(s.root, ".story/notes/N-001.json"),
+      before = await readFile(path),
+      draft = "short replacement";
+    for (const [patch, code] of [
+      [{ content: draft, confirmReplace: true }, "invalid_input"],
+      [
+        { content: draft, confirmReplace: true, confirmDraftDigest: "0".repeat(64) },
+        "invalid_input",
+      ],
+      [
+        {
+          content: draft + " edited",
+          confirmReplace: true,
+          confirmDraftDigest: digest(draft),
+        },
+        "invalid_input",
+      ],
+      [{ content: draft, confirmDraftDigest: digest(draft) }, "invalid_input"],
+      // Consent alone is not an edit: the schema's refine rule refuses it.
+      [{ confirmReplace: true, confirmDraftDigest: digest(draft) }, "schema:custom"],
+      [{ title: "Only title", confirmReplace: true, confirmDraftDigest: digest(draft) }, "invalid_input"],
+      // The strict schema refuses a mode key before the save runs.
+      [{ content: draft, mode: "append" }, "schema:unrecognized_keys"],
+      [{ content: draft, mode: "replace" }, "schema:unrecognized_keys"],
+    ] as const) {
+      const r = await s.call("storybloq_note_save", {
+        id: e.id,
+        revision: e.revision,
+        patch,
+      });
+      assert.equal(r.isError, true, JSON.stringify(patch));
+      assert.equal(refusal(r), code, JSON.stringify([patch, r]));
+      assert.deepEqual(await readFile(path), before, JSON.stringify(patch));
+    }
+    const moved = await s.call("storybloq_note_save", {
+      id: e.id,
+      revision: e.revision,
+      patch: { title: "Moved on" },
+    });
+    assert.equal(moved.isError, undefined, JSON.stringify(moved));
+    const afterMove = await readFile(path);
+    const stale = await s.call("storybloq_note_save", {
+      id: e.id,
+      revision: e.revision,
+      patch: {
+        content: draft,
+        confirmReplace: true,
+        confirmDraftDigest: digest(draft),
+      },
+    });
+    assert.equal(stale.isError, true);
+    assert.equal(stale._meta.editError.code, "conflict");
+    assert.deepEqual(await readFile(path), afterMove);
+  } finally {
+    await s.close();
+  }
+});
+test("unrelated note validation failures never ask for replace confirmation", async () => {
+  const s = await session();
+  try {
+    await s.put("notes/N-001.json", note("N-001", { content: "x".repeat(5000) }));
+    const e = await s.read(),
+      path = join(s.root, ".story/notes/N-001.json"),
+      before = await readFile(path);
+    // Blank content reaches the canonical CLI validation; the rest are
+    // refused by the tool schema before the save runs.
+    for (const [patch, code] of [
+      [{ content: " " }, "invalid_input"],
+      [{ content: "\n\t" }, "invalid_input"],
+      [{ tags: ["x".repeat(65)] }, "schema:too_big"],
+      [{ status: "deleted" }, "schema:invalid_enum_value"],
+      [{ content: "x".repeat(48001) }, "schema:too_big"],
+    ] as const) {
+      const r = await s.call("storybloq_note_save", {
+        id: e.id,
+        revision: e.revision,
+        patch,
+      });
+      assert.equal(r.isError, true, JSON.stringify(patch));
+      assert.equal(refusal(r), code, JSON.stringify([patch, r]));
+      assert.equal(r._meta?.editError?.draftDigest, undefined);
+      assert.deepEqual(await readFile(path), before);
+    }
+  } finally {
+    await s.close();
+  }
+});

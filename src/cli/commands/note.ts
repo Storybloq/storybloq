@@ -31,6 +31,7 @@ import {
   CliValidationError,
   assertUpdateHasFields,
 } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 
 export const NOTE_CORE_METADATA_KEYS = new Set([
@@ -159,8 +160,9 @@ export async function handleNoteCreate(
       id = nextNoteID(state.notes);
       displayId = undefined;
     }
-    const createdAt = new Date().toISOString();
-    const today = createdAt.slice(0, 10);
+    const instant = new Date();
+    const createdAt = instant.toISOString();
+    const today = localDateOf(instant);
     const tags = args.tags ? normalizeTags(args.tags) : [];
     const note: Note = {
       id,

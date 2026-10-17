@@ -7,6 +7,7 @@ import { DuetOperationSchema, DuetStateSchema, assignmentIdOf, isCompactedAssign
 import { arrangementCapacity, checkpointMatches, compactCheckpoint, type ArrangementCapacity } from "./arrangement-compaction.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
 import { generateCanonicalId } from "./canonical-id.js";
+import { localDateOf } from "./local-date.js";
 import { earmarkMatchesArrangement } from "./earmarks.js";
 import { ownerTaskForCurrentClient } from "../autonomous/client-profile.js";
 import { CliValidationError } from "../cli/helpers.js";
@@ -285,7 +286,7 @@ export async function rotateArrangement(root: string, id: string, clientTaskId?:
       ...carriedFields,
       id: successorId,
       lifecycle: "active",
-      createdDate: now.slice(0, 10),
+      createdDate: localDateOf(new Date(now)),
       updatedAt: now,
       // Only the CURRENT session's receipts: they are what the successor's
       // route verification reads, and older sessions' evidence stays with
@@ -459,7 +460,7 @@ export async function rebindArrangement(
       ...carriedFields,
       id: successorId,
       parties: successorParties,
-      createdDate: at.slice(0, 10),
+      createdDate: localDateOf(new Date(at)),
       updatedAt: at,
       createdBy: actor.id,
       rebind: audit,

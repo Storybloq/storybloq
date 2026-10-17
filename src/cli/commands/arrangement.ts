@@ -28,6 +28,7 @@ import {
 import { TICKET_ID_REGEX, TICKET_CANONICAL_ID_REGEX, ISSUE_ID_REGEX, ISSUE_CANONICAL_ID_REGEX, looksLikeClientTaskId, type OutputFormat } from "../../models/types.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../../models/ticket.js";
 import { CliValidationError } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import type { ProjectState } from "../../core/project-state.js";
 
@@ -210,7 +211,7 @@ export async function handleArrangementCreate(
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     const resolvedBounds = await Promise.all(args.bounds.map((ref) => resolveBoundRef(ref, state, root)));
     const id = generateCanonicalId("a");
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDateOf(new Date());
     const candidate = {
       id,
       lifecycle: "active" as const,

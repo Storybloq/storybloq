@@ -53,6 +53,7 @@ import {
   CliValidationError,
   assertUpdateHasFields,
 } from "../helpers.js";
+import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
 import {
   formatMetadataValue,
@@ -420,7 +421,8 @@ export async function handleIssueCreate(
       id = nextIssueID(state.issues);
       displayId = undefined;
     }
-    const createdAt = new Date().toISOString();
+    const instant = new Date();
+    const createdAt = instant.toISOString();
     const issue: Issue = {
       id,
       ...(displayId != null && { displayId }),
@@ -433,7 +435,7 @@ export async function handleIssueCreate(
       location: args.location,
       ...(sourceRefs && sourceRefs.length > 0 ? { sourceRefs } : {}),
       ...(args.dedupeKey ? { dedupeKey: args.dedupeKey } : {}),
-      discoveredDate: createdAt.slice(0, 10),
+      discoveredDate: localDateOf(instant),
       ...(isTeam && { createdAt }),
       ...(args.createdBy ? { createdBy: args.createdBy } : {}),
       resolvedDate: null,

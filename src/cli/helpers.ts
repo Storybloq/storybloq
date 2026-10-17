@@ -1,3 +1,4 @@
+import { localDateOf } from "../core/local-date.js";
 import { COMMIT_PARAM_DESCRIPTION } from "../core/board-git-state.js";
 import { resolve, relative, extname } from "node:path";
 import { lstat } from "node:fs/promises";
@@ -74,11 +75,7 @@ export function parseOutputFormat(raw: string): OutputFormat {
 
 /** Returns today's date as YYYY-MM-DD using local date components. */
 export function todayISO(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return localDateOf(new Date());
 }
 
 /**

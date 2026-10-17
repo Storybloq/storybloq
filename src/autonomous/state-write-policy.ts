@@ -200,6 +200,8 @@ export const CONTEXT_CONSTRUCTIONS: readonly string[] = [
  */
 export const AWAITED_CALLBACK_PRIMITIVES: readonly string[] = [
   "src/core/project-loader.ts#withProjectLock",
+  // T-486 U4: the issue-sweep lock awaits its handler inside withProjectLockInternal.
+  "src/core/project-loader.ts#withProjectLockForIssueSweep",
 ];
 
 /** Injected awaited-callback slots, each with why only tests supply it. */

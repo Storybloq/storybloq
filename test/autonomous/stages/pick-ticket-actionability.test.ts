@@ -84,7 +84,7 @@ function contextFor(root: string, overrides: Partial<FullSessionState> = {}): St
   const now = new Date().toISOString();
   const head = git(root, ["rev-parse", "HEAD"]);
   const state = {
-    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-0000000u4a03",
+    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-00000000a403",
     recipe: "coding", state: "PICK_TICKET", revision: 1, status: "active", mode: "auto",
     reviews: { plan: [], code: [] }, completedTickets: [], finalizeCheckpoint: null,
     git: { branch: "main", mergeBase: null, expectedHead: head, initHead: head },

@@ -165,7 +165,10 @@ describe("ISS-958 state-write enforcement over src", () => {
   }, 120_000);
 
   it("the awaited-callback primitive, its delegation chain, the injected slots and the context parameters are the pinned sets", () => {
-    expect(AWAITED_CALLBACK_PRIMITIVES).toEqual(["src/core/project-loader.ts#withProjectLock"]);
+    expect(AWAITED_CALLBACK_PRIMITIVES).toEqual([
+      "src/core/project-loader.ts#withProjectLock",
+      "src/core/project-loader.ts#withProjectLockForIssueSweep",
+    ]);
     expect(scan().chainMembers).toEqual([
       "src/core/project-loader.ts#withLock",
       // A hop of the verified default wrapper for the injected takeover slot.

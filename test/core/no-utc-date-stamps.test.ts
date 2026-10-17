@@ -11,7 +11,7 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SRC = fileURLToPath(new URL("../../src", import.meta.url));
-const SLICE = /\.slice\(\s*0\s*,\s*10\s*\)/;
+const SLICE = /\.slice\(\s*0\s*,\s*10\s*\)/g;
 
 /** file (relative to src/, posix) -> exact trimmed line text -> reason. */
 const EXCEPTIONS: ReadonlyArray<{ file: string; line: string; reason: string }> = [
@@ -32,18 +32,36 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/**
+ * Every slice in `text`, matched against the whole text so a call spread over
+ * several lines is found, reported as the trimmed line it starts on.
+ */
+function findSlices(text: string): Array<{ lineNumber: number; line: string }> {
+  const lines = text.split("\n");
+  return [...text.matchAll(SLICE)].map((m) => {
+    const lineNumber = text.slice(0, m.index).split("\n").length;
+    return { lineNumber, line: lines[lineNumber - 1]!.trim() };
+  });
+}
+
 function sliceLines(): Array<{ file: string; line: string }> {
   const hits: Array<{ file: string; line: string }> = [];
   for (const full of walk(SRC)) {
     const file = relative(SRC, full).split(sep).join("/");
-    for (const raw of readFileSync(full, "utf-8").split("\n")) {
-      if (SLICE.test(raw)) hits.push({ file, line: raw.trim() });
-    }
+    for (const hit of findSlices(readFileSync(full, "utf-8"))) hits.push({ file, line: hit.line });
   }
   return hits;
 }
 
 describe("ISS-1383: no slice-spelled date stamps in src/", () => {
+  it("the scanner finds a slice spread over several lines, on the line it starts", () => {
+    const text = "const a = 1;\nconst d = new Date().toISOString().slice(\n  0,\n  10\n);\nconst w = xs.slice(0, 10);\n";
+    expect(findSlices(text)).toEqual([
+      { lineNumber: 2, line: "const d = new Date().toISOString().slice(" },
+      { lineNumber: 6, line: "const w = xs.slice(0, 10);" },
+    ]);
+  });
+
   it("every .slice(0, 10) in src/ is a named exception", () => {
     const unexpected = sliceLines().filter((h) => !EXCEPTIONS.some((e) => e.file === h.file && e.line === h.line));
     expect(unexpected).toEqual([]);

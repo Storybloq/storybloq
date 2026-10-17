@@ -50,6 +50,13 @@ describe("ticket-count vectors", () => {
     expect(board("mixed siblings").umbrellas["T-190"]).toEqual({ status: "notstarted", total: 1, complete: 0, withdrawn: 0 });
   });
 
+  it("an omitted file holds the umbrella it names, after rule 0 and before the checkpoint rule", () => {
+    expect(release("omitted child", "T-300")[0]).toEqual({ id: "T-300", releases: false, reason: "incomplete", detail: [".story/tickets/T-302.json"] });
+    expect(release("omitted under another root", "T-350")[0]).toMatchObject({ releases: true, reason: null });
+    expect(release("omitted beside checkpoint", "T-395")[0]).toMatchObject({ releases: false, reason: "incomplete" });
+    expect(release("duplicated and omitted", "T-397").map((r) => r.reason)).toEqual(["duplicate", "duplicate"]);
+  });
+
   it("a pending checkpoint keeps a stored-complete ticket out of the terminal count", () => {
     expect(board("checkpoints").counts).toMatchObject({ leaf: 14, terminal: 4, blocked: 3 });
     expect(release("checkpoints", "T-164")[0]).toMatchObject({ releases: false, reason: "checkpoint" });

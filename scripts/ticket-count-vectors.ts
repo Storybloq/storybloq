@@ -19,6 +19,7 @@ import { writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProjectState } from "../src/core/project-state.js";
+import type { OmittedTicketRecord } from "../src/core/project-loader.js";
 import { blockedTickets, umbrellaProgress } from "../src/core/queries.js";
 import { isEffectivelyWithdrawn } from "../src/core/resolution-kind.js";
 import { TicketSchema, type Ticket } from "../src/models/ticket.js";
@@ -63,6 +64,13 @@ const pending = checkpoint({ resolved: null, generation: 1, events: ["created"] 
 export interface BoardSpec {
   readonly name: string;
   readonly tickets: readonly Raw[];
+  /** ISS-1384: ticket files the loader left out (T-486 U2-4); written only when present. */
+  readonly omitted?: readonly OmittedTicketRecord[];
+}
+
+/** ISS-1384: an omitted ticket file record, as `loadProject` gives it. */
+function om(name: string, reason: OmittedTicketRecord["reason"], parentage: OmittedTicketRecord["parentage"], extra: { id?: string; parentTicket?: string } = {}): OmittedTicketRecord {
+  return { file: `.story/tickets/${name}.json`, reason, ...extra, parentage };
 }
 
 export const BOARD_SPECS: readonly BoardSpec[] = [
@@ -312,6 +320,64 @@ export const BOARD_SPECS: readonly BoardSpec[] = [
     name: "archived intermediate",
     tickets: [t("T-200"), done("T-201", { parentTicket: "T-200", ...ARC }), done("T-202", { parentTicket: "T-201" }), t("T-203", { parentTicket: "T-200" })],
   },
+  // ISS-1384: the U2-4 omitted-file rule (T-486). Each board pairs a complete
+  // blocker with an open dependent, so `releases` and `blockedIds` carry it.
+  {
+    name: "omitted child",
+    tickets: [done("T-300"), done("T-301", { parentTicket: "T-300" }), t("T-310", { blockedBy: ["T-300"] })],
+    omitted: [om("T-302", "schema", "ref", { id: "T-302", parentTicket: "T-300" })],
+  },
+  {
+    name: "omitted unknown parentage",
+    tickets: [done("T-320"), t("T-321", { blockedBy: ["T-320"] })],
+    omitted: [om("T-329", "parse", "unknown")],
+  },
+  {
+    name: "omitted root elsewhere",
+    tickets: [done("T-330"), t("T-331", { blockedBy: ["T-330"] })],
+    omitted: [om("T-399", "schema", "root", { id: "T-399" })],
+  },
+  {
+    name: "omitted under another root",
+    tickets: [
+      done("T-340"), done("T-341", { parentTicket: "T-340" }), t("T-342", { blockedBy: ["T-340"] }),
+      done("T-350"), t("T-351", { blockedBy: ["T-350"] }),
+    ],
+    omitted: [om("T-343", "schema", "ref", { id: "T-343", parentTicket: "T-341" })],
+  },
+  {
+    name: "omitted missing parent",
+    tickets: [done("T-360"), t("T-361", { blockedBy: ["T-360"] })],
+    omitted: [om("T-362", "schema", "ref", { parentTicket: "T-999" })],
+  },
+  {
+    name: "omitted parent cycle",
+    tickets: [
+      done("T-370", { parentTicket: "T-371" }), done("T-371", { parentTicket: "T-370" }),
+      done("T-372"), t("T-373", { blockedBy: ["T-372"] }),
+    ],
+    omitted: [om("T-374", "schema", "ref", { parentTicket: "T-370" })],
+  },
+  {
+    name: "omitted duplicate on chain",
+    tickets: [done("T-380"), done("T-380"), done("T-381"), t("T-382", { blockedBy: ["T-381"] })],
+    omitted: [om("T-383", "schema", "ref", { parentTicket: "T-380" })],
+  },
+  {
+    name: "omitted own id",
+    tickets: [done("T-390"), t("T-391", { blockedBy: ["T-390"] }), done("T-392"), t("T-393", { blockedBy: ["T-392"] })],
+    omitted: [om("T-390-copy", "schema", "root", { id: "T-390" })],
+  },
+  {
+    name: "omitted beside checkpoint",
+    tickets: [done("T-395", { ownerCheckpoint: approved }), t("T-396", { blockedBy: ["T-395"] })],
+    omitted: [om("T-394", "schema", "ref", { parentTicket: "T-395" })],
+  },
+  {
+    name: "duplicated and omitted",
+    tickets: [done("T-397"), t("T-397"), t("T-398", { blockedBy: ["T-397"] })],
+    omitted: [om("T-399", "schema", "ref", { parentTicket: "T-397" })],
+  },
 ];
 
 export const DATE_CASES: readonly string[] = [
@@ -341,7 +407,7 @@ function progressOf(leaves: readonly Ticket[]) {
 
 function buildBoard(spec: BoardSpec) {
   const tickets = spec.tickets.map((r) => TicketSchema.parse(r)) as Ticket[];
-  const state = new ProjectState({ tickets, issues: [], notes: [], roadmap, config, handoverFilenames: [] });
+  const state = new ProjectState({ tickets, issues: [], notes: [], roadmap, config, handoverFilenames: [], omittedTickets: spec.omitted ?? [] });
   const phases: Raw = {};
   for (const phase of ["p1", "p2", "p3"]) {
     phases[phase] = { status: state.phaseStatus(phase), ...progressOf(state.countedPhaseTickets(phase)) };
@@ -354,6 +420,7 @@ function buildBoard(spec: BoardSpec) {
   return {
     name: spec.name,
     tickets: spec.tickets,
+    ...(spec.omitted ? { omitted: spec.omitted } : {}),
     expected: {
       counts: {
         leaf: state.leafTicketCount,

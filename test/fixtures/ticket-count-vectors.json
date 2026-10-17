@@ -4734,6 +4734,1228 @@
           }
         ]
       }
+    },
+    {
+      "name": "omitted child",
+      "tickets": [
+        {
+          "id": "T-300",
+          "title": "T-300",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-300"
+        },
+        {
+          "id": "T-301",
+          "title": "T-301",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-301",
+          "parentTicket": "T-300"
+        },
+        {
+          "id": "T-310",
+          "title": "T-310",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-300"
+          ],
+          "displayId": "T-310"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-302.json",
+          "reason": "schema",
+          "id": "T-302",
+          "parentTicket": "T-300",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-300"
+        ],
+        "blockedIds": [
+          "T-310"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-300": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-300",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-302.json"
+            ]
+          },
+          {
+            "id": "T-301",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-310",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted unknown parentage",
+      "tickets": [
+        {
+          "id": "T-320",
+          "title": "T-320",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-320"
+        },
+        {
+          "id": "T-321",
+          "title": "T-321",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-320"
+          ],
+          "displayId": "T-321"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-329.json",
+          "reason": "parse",
+          "parentage": "unknown"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-321"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-320",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-329.json"
+            ]
+          },
+          {
+            "id": "T-321",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-329.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted root elsewhere",
+      "tickets": [
+        {
+          "id": "T-330",
+          "title": "T-330",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-330"
+        },
+        {
+          "id": "T-331",
+          "title": "T-331",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-330"
+          ],
+          "displayId": "T-331"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-399.json",
+          "reason": "schema",
+          "id": "T-399",
+          "parentage": "root"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 0
+        },
+        "umbrellaIds": [],
+        "blockedIds": [],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-330",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-331",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted under another root",
+      "tickets": [
+        {
+          "id": "T-340",
+          "title": "T-340",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-340"
+        },
+        {
+          "id": "T-341",
+          "title": "T-341",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-341",
+          "parentTicket": "T-340"
+        },
+        {
+          "id": "T-342",
+          "title": "T-342",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-340"
+          ],
+          "displayId": "T-342"
+        },
+        {
+          "id": "T-350",
+          "title": "T-350",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-350"
+        },
+        {
+          "id": "T-351",
+          "title": "T-351",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-350"
+          ],
+          "displayId": "T-351"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-343.json",
+          "reason": "schema",
+          "id": "T-343",
+          "parentTicket": "T-341",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-340"
+        ],
+        "blockedIds": [
+          "T-342"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-340": {
+            "status": "complete",
+            "total": 1,
+            "complete": 1,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-340",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-343.json"
+            ]
+          },
+          {
+            "id": "T-341",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-343.json"
+            ]
+          },
+          {
+            "id": "T-342",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-350",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-351",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted missing parent",
+      "tickets": [
+        {
+          "id": "T-360",
+          "title": "T-360",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-360"
+        },
+        {
+          "id": "T-361",
+          "title": "T-361",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-360"
+          ],
+          "displayId": "T-361"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-362.json",
+          "reason": "schema",
+          "parentTicket": "T-999",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-361"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-360",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-362.json"
+            ]
+          },
+          {
+            "id": "T-361",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-362.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted parent cycle",
+      "tickets": [
+        {
+          "id": "T-370",
+          "title": "T-370",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-370",
+          "parentTicket": "T-371"
+        },
+        {
+          "id": "T-371",
+          "title": "T-371",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-371",
+          "parentTicket": "T-370"
+        },
+        {
+          "id": "T-372",
+          "title": "T-372",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-372"
+        },
+        {
+          "id": "T-373",
+          "title": "T-373",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-372"
+          ],
+          "displayId": "T-373"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-374.json",
+          "reason": "schema",
+          "parentTicket": "T-370",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [
+          "T-370",
+          "T-371"
+        ],
+        "blockedIds": [
+          "T-373"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {
+          "T-370": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "T-371": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "releases": [
+          {
+            "id": "T-370",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-371",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-372",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          },
+          {
+            "id": "T-373",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-374.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted duplicate on chain",
+      "tickets": [
+        {
+          "id": "T-380",
+          "title": "T-380",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-380"
+        },
+        {
+          "id": "T-380",
+          "title": "T-380",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-380"
+        },
+        {
+          "id": "T-381",
+          "title": "T-381",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-381"
+        },
+        {
+          "id": "T-382",
+          "title": "T-382",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-381"
+          ],
+          "displayId": "T-382"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-383.json",
+          "reason": "schema",
+          "parentTicket": "T-380",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-382"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-380",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-380",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-381",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-383.json"
+            ]
+          },
+          {
+            "id": "T-382",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-383.json"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted own id",
+      "tickets": [
+        {
+          "id": "T-390",
+          "title": "T-390",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-390"
+        },
+        {
+          "id": "T-391",
+          "title": "T-391",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-390"
+          ],
+          "displayId": "T-391"
+        },
+        {
+          "id": "T-392",
+          "title": "T-392",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-392"
+        },
+        {
+          "id": "T-393",
+          "title": "T-393",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-392"
+          ],
+          "displayId": "T-393"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-390-copy.json",
+          "reason": "schema",
+          "id": "T-390",
+          "parentage": "root"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 4,
+          "terminal": 2,
+          "delivered": 2,
+          "withdrawn": 0,
+          "active": 2,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-391"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 4,
+            "complete": 2,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-390",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-390-copy.json"
+            ]
+          },
+          {
+            "id": "T-391",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-392",
+            "releases": true,
+            "reason": null,
+            "detail": []
+          },
+          {
+            "id": "T-393",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "omitted beside checkpoint",
+      "tickets": [
+        {
+          "id": "T-395",
+          "title": "T-395",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-395",
+          "ownerCheckpoint": {
+            "kind": "decision",
+            "question": "Proceed?",
+            "evidenceRefs": [],
+            "owner": "owner",
+            "lifecycle": "active",
+            "revision": 1,
+            "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+            "generation": 2,
+            "history": [
+              {
+                "event": "created",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 1,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              },
+              {
+                "event": "resolved",
+                "kind": "decision",
+                "at": "2026-09-27T00:00:00.000Z",
+                "by": "owner",
+                "generation": 2,
+                "revision": 1,
+                "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+                "evidenceRefs": []
+              }
+            ],
+            "resolution": {
+              "response": "yes",
+              "respondedBy": "owner",
+              "respondedAt": "2026-09-27T00:00:00.000Z",
+              "revision": 1,
+              "digest": "6739f8c2f603d73f3ed64ede189b73f2abc8e5fa9c5eecddb8d6920e68547965",
+              "generation": 2
+            }
+          }
+        },
+        {
+          "id": "T-396",
+          "title": "T-396",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-395"
+          ],
+          "displayId": "T-396"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-394.json",
+          "reason": "schema",
+          "parentTicket": "T-395",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 2,
+          "terminal": 1,
+          "delivered": 1,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-396"
+        ],
+        "phases": {
+          "p1": {
+            "status": "inprogress",
+            "total": 2,
+            "complete": 1,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-395",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-394.json"
+            ]
+          },
+          {
+            "id": "T-396",
+            "releases": false,
+            "reason": null,
+            "detail": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicated and omitted",
+      "tickets": [
+        {
+          "id": "T-397",
+          "title": "T-397",
+          "description": "",
+          "type": "task",
+          "status": "complete",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": "2026-02-01",
+          "blockedBy": [],
+          "displayId": "T-397"
+        },
+        {
+          "id": "T-397",
+          "title": "T-397",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [],
+          "displayId": "T-397"
+        },
+        {
+          "id": "T-398",
+          "title": "T-398",
+          "description": "",
+          "type": "task",
+          "status": "open",
+          "phase": "p1",
+          "order": 10,
+          "createdDate": "2026-01-01",
+          "completedDate": null,
+          "blockedBy": [
+            "T-397"
+          ],
+          "displayId": "T-398"
+        }
+      ],
+      "omitted": [
+        {
+          "file": ".story/tickets/T-399.json",
+          "reason": "schema",
+          "parentTicket": "T-397",
+          "parentage": "ref"
+        }
+      ],
+      "expected": {
+        "counts": {
+          "leaf": 1,
+          "terminal": 0,
+          "delivered": 0,
+          "withdrawn": 0,
+          "active": 1,
+          "blocked": 1
+        },
+        "umbrellaIds": [],
+        "blockedIds": [
+          "T-398"
+        ],
+        "phases": {
+          "p1": {
+            "status": "notstarted",
+            "total": 1,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p2": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          },
+          "p3": {
+            "status": "notstarted",
+            "total": 0,
+            "complete": 0,
+            "withdrawn": 0
+          }
+        },
+        "umbrellas": {},
+        "releases": [
+          {
+            "id": "T-397",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-397",
+            "releases": false,
+            "reason": "duplicate",
+            "detail": []
+          },
+          {
+            "id": "T-398",
+            "releases": false,
+            "reason": "incomplete",
+            "detail": [
+              ".story/tickets/T-399.json"
+            ]
+          }
+        ]
+      }
     }
   ]
 }

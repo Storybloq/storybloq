@@ -395,10 +395,11 @@ export async function handleRulingCreate(
       const existing = target.item.citesRulings ?? [];
       if (existing.includes(ruling.id)) continue;
       const next = [...existing, ruling.id];
+      // T-481: a citesRulings rewrite is a reference, not an edit; it never stamps.
       const prepared =
         target.kind === "issue"
-          ? await prepareIssueWrite({ ...target.item, citesRulings: next }, root)
-          : await prepareTicketWrite({ ...target.item, citesRulings: next }, root);
+          ? await prepareIssueWrite({ ...target.item, citesRulings: next }, root, { touch: false })
+          : await prepareTicketWrite({ ...target.item, citesRulings: next }, root, { touch: false });
       itemOps.push({ op: "write", target: prepared.target, content: prepared.content });
     }
 
@@ -790,10 +791,11 @@ export async function handleRulingAccept(
       const current = target.item.citesRulings ?? [];
       if (current.includes(accepted.id)) continue;
       const next = [...current, accepted.id];
+      // T-481: a citesRulings rewrite is a reference, not an edit; it never stamps.
       const prepared =
         target.kind === "issue"
-          ? await prepareIssueWrite({ ...target.item, citesRulings: next }, root)
-          : await prepareTicketWrite({ ...target.item, citesRulings: next }, root);
+          ? await prepareIssueWrite({ ...target.item, citesRulings: next }, root, { touch: false })
+          : await prepareTicketWrite({ ...target.item, citesRulings: next }, root, { touch: false });
       itemOps.push({ op: "write", target: prepared.target, content: prepared.content });
     }
     const rulingPrepared = await prepareRulingWrite(accepted, root);

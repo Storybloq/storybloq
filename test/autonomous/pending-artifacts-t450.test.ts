@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2324,6 +2324,8 @@ describe("T-450 step 4: the prepare site records what recovery cannot reconstruc
     root = build();
     const dir = join(root, ".story", "sessions", "s");
     mkdirSync(dir, { recursive: true });
+    const issuesDir = join(root, ".story", "issues");
+    prePick = new Map(readdirSync(issuesDir).map((f) => [join(issuesDir, f), readFileSync(join(issuesDir, f), "utf-8")]));
     const ctx = new StageContext(root, dir, makeState(root), makeRecipe());
 
     const seen: Record<string, unknown>[] = [];
@@ -2341,14 +2343,16 @@ describe("T-450 step 4: the prepare site records what recovery cannot reconstruc
   }
 
   /**
-   * Put ISS-001 back to `open`, with the real command, so an observation can be
-   * taken in the state a crash BEFORE the project write would have left. The
-   * stage applies its write, so the pre-write state has to be restored rather
-   * than assumed.
+   * Put the issues back to the bytes they had before the pick, so an
+   * observation can be taken in the state a crash BEFORE the project write
+   * would have left. The stage applies its write, so the pre-write state has
+   * to be restored rather than assumed. T-481: restored byte for byte, since
+   * the real `issue update` command now stamps updatedDate and would leave a
+   * state no crash produces.
    */
-  async function rewindStatus(r: string): Promise<void> {
-    const { handleIssueUpdate } = await import("../../src/cli/commands/issue.js");
-    await handleIssueUpdate("ISS-001", { status: "open" }, "json", r);
+  let prePick = new Map<string, string>();
+  async function rewindStatus(_r: string): Promise<void> {
+    for (const [path, bytes] of prePick) writeFileSync(path, bytes);
   }
 
   it("stages a marker a POST-MIGRATION issue can be recognized by, in one identity domain", async () => {
@@ -2674,85 +2678,6 @@ describe("T-450 step 4: the prepare site records what recovery cannot reconstruc
     expect(record.value).toBe("inprogress");
     expect(typeof record.transitionId).toBe("string");
   });
-});
-
-/**
- * T-481 B6: characterises the issue-pick crash-recovery gap at base 440397eb.
- * The marker fingerprints the snapshot read before the earmark conversion and
- * predicts a spread-and-status postimage, but the stage writes the converted
- * record through handleIssueUpdate, which also drops a stored resolutionKind
- * on a status change. Neither fingerprint then matches the ledger, so the
- * classifier returns a conflict where "applied" or "replay" is correct.
- * T-481 S2 inverts these expectations (T13c/T13f).
- */
-describe("T-481 B6: the issue pick's recorded fingerprints at base", () => {
-  let root: string | null = null;
-  afterEach(() => {
-    vi.restoreAllMocks();
-    if (root) rmSync(root, { recursive: true, force: true });
-    root = null;
-  });
-
-  function buildWith(extra: Record<string, unknown>): string {
-    const r = buildRepo();
-    const path = join(r, ".story", "issues", "ISS-001.json");
-    const issue = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    writeFileSync(path, JSON.stringify({ ...issue, ...extra }));
-    git(r, ["add", "-A"]);
-    git(r, ["commit", "-qm", "t481 fixture"]);
-    return r;
-  }
-
-  async function pick(r: string): Promise<Record<string, unknown>> {
-    const dir = join(r, ".story", "sessions", "s");
-    mkdirSync(dir, { recursive: true });
-    const ctx = new StageContext(r, dir, makeState(r), makeRecipe());
-    const seen: Record<string, unknown>[] = [];
-    const real = ctx.writeState.bind(ctx);
-    vi.spyOn(ctx, "writeState").mockImplementation((patch: Partial<FullSessionState>) => {
-      const marker = (patch as { pendingProjectMutation?: unknown }).pendingProjectMutation;
-      if (marker) seen.push(marker as Record<string, unknown>);
-      return real(patch);
-    });
-    const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
-    expect(result.action).toBe("goto");
-    expect(seen).toHaveLength(1);
-    return seen[0]!;
-  }
-
-  async function observe(r: string) {
-    const { state } = await loadProject(r);
-    return state.issues.find((i) => i.id === "ISS-001");
-  }
-
-  const reserved = {
-    earmark: {
-      stage: "reserved", reservedBy: { client: "claude", id: "pen-task" },
-      arrangementId: "a-0000000000000001", since: "2020-01-01T00:00:00.000Z",
-      holderRole: "worker", holderSession: null,
-    },
-  };
-  const staleKind = { resolutionKind: { kind: "fixed", closedOn: "2020-01-01", resolutionDigest: "0".repeat(64) } };
-
-  for (const [name, extra] of [["a reserved earmark converted at pick", reserved], ["a stale resolutionKind", staleKind]] as const) {
-    it(`${name}: after the status write, the classifier quarantines it as unconfirmed-postimage, not applied (base gap)`, async () => {
-      root = buildWith(extra);
-      const record = await pick(root);
-      const applied = await observe(root);
-      expect(applied?.status).toBe("inprogress");
-      expect(reasonOf(classifyPendingMutation(record, observeAt("ISS-001", { entity: applied }), NO_AUTHORITY))).toBe("unconfirmed-postimage");
-    });
-
-    it(`${name}: before the status write, the classifier does not authorise a replay (base gap)`, async () => {
-      root = buildWith(extra);
-      const record = await pick(root);
-      const { handleIssueUpdate } = await import("../../src/cli/commands/issue.js");
-      await handleIssueUpdate("ISS-001", { status: "open" }, "json", root);
-      const before = await observe(root);
-      expect(before?.status).toBe("open");
-      expect(classifyPendingMutation(record, observeAt("ISS-001", { entity: before }), NO_AUTHORITY)).not.toEqual({ kind: "replay" });
-    });
-  }
 });
 
 /**

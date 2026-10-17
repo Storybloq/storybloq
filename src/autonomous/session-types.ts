@@ -747,6 +747,13 @@ interface PendingFieldWrite extends PendingMutationCommon {
   readonly postimage?: FieldSnapshot;
   readonly preimageFingerprint?: string | null;
   readonly postimageFingerprint?: string | null;
+  /**
+   * T-481 D2a: the day the postimage was stamped with (issue pick). Recovery
+   * replays this date, never the replay day. Absent on a pre-T-481 marker,
+   * whose fingerprints describe an unstamped image; a present value that is
+   * not a real YYYY-MM-DD date makes the marker malformed.
+   */
+  readonly stampDate?: string;
 }
 
 /**

@@ -37,6 +37,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { DateSchema, type IssueStatus } from "../models/types.js";
+import type { Issue } from "../models/issue.js";
+import { touchUpdated } from "../core/metadata-touch.js";
+import { issueStatusImage } from "../core/issue-status-image.js";
 
 import { isResolvedTicketIdentities } from "./resolved-identities.js";
 import type {
@@ -927,6 +931,13 @@ function classifyFieldWrite(
   const value = record.value;
   if (field === null || typeof value !== "string") return quarantine("malformed-record");
   if (!snapshotEquals(postimage, { present: true, value })) return quarantine("malformed-record");
+  // T-481 D2a: a stamped issue_update marker (the issue pick) records the day
+  // its postimage was stamped with. A present value that is not a real
+  // calendar date is a malformed record at either image; absent is a
+  // pre-T-481 marker, predicted by the spread below.
+  const rawStampDate = record.stampDate;
+  if (rawStampDate !== undefined && !DateSchema.safeParse(rawStampDate).success) return quarantine("malformed-record");
+  const stampDate = rawStampDate !== undefined && !ticketScoped ? rawStampDate as string : null;
 
   if (!observed.exists) return quarantine("target-missing");
 
@@ -980,7 +991,10 @@ function classifyFieldWrite(
     // entity it was prepared against does not produce the postimage it
     // predicted. Nothing that happens later can fix that, so it can never
     // converge, and the defect is the record's rather than the world's.
-    if (canonicalContentFingerprint({ ...occupant, [field]: value }) !== postimageFingerprint) {
+    const predicted = stampDate !== null && field === "status"
+      ? touchUpdated(issueStatusImage(occupant as unknown as Issue, value as IssueStatus), occupant, stampDate)
+      : { ...occupant, [field]: value };
+    if (canonicalContentFingerprint(predicted) !== postimageFingerprint) {
       return quarantine("malformed-record");
     }
     return REPLAY;

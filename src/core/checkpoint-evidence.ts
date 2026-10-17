@@ -90,7 +90,8 @@ export async function adoptConflictEvidence(resolved: Ticket, side: Readonly<Rec
   if (side.checkpointEvidence !== undefined) next.checkpointEvidence = side.checkpointEvidence;
   else delete next.checkpointEvidence;
   const ticket = next as Ticket;
-  await writeTicketUnlocked(ticket, root, { authority: CONFLICT_EVIDENCE_AUTHORITY });
+  // T-481: adopting a side's evidence settles a conflict; it never stamps.
+  await writeTicketUnlocked(ticket, root, { authority: CONFLICT_EVIDENCE_AUTHORITY, touch: false });
   return ticket;
 }
 

@@ -293,14 +293,15 @@ export async function handlePhaseDelete(
         maxOrder += 10;
         // T-537: through the ordinary choke point, so the checkpoint write
         // guard sees this write too (a reassignment changes neither field).
-        const { target, content } = await prepareTicketWrite({ ...ticket, phase: reassign, order: maxOrder }, root);
+        // T-481: a reference rewrite on phase delete never stamps.
+        const { target, content } = await prepareTicketWrite({ ...ticket, phase: reassign, order: maxOrder }, root, { touch: false });
         operations.push({ op: "write", target, content });
       }
 
       for (const issue of affectedIssues) {
         // T-486 Codex F2: through the issue choke point too, so the commit
         // carries a prepared token (a reassignment changes no resolution key).
-        const { target, content } = await prepareIssueWrite({ ...issue, phase: reassign }, root);
+        const { target, content } = await prepareIssueWrite({ ...issue, phase: reassign }, root, { touch: false });
         operations.push({ op: "write", target, content });
       }
 

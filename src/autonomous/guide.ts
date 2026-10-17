@@ -44,6 +44,7 @@ import {
 } from "./candidate-recovery.js";
 import type { IssueAuthorityView } from "./candidate-authority.js";
 import type { Ticket } from "../models/ticket.js";
+import { DateSchema } from "../models/types.js";
 import { serverRegistryBinder } from "./mcp-binding.js";
 import { releaseClaimIfOwned, provenOwnership, clearClaimOnComplete } from "../core/claims.js";
 import { clearSameSessionEarmark } from "../core/earmarks.js";
@@ -888,24 +889,45 @@ async function recoverPendingMutation(
     // status-only path would authorize a replay from data that was never
     // validated as either shape.
 
+    // T-481 D2a: a stamped marker (the issue pick since T-481) records the day
+    // its postimage was stamped with. Absent is a pre-T-481 marker; a present
+    // value that is not a real calendar date is malformed.
+    const rawStampDate = (m as { stampDate?: unknown }).stampDate;
+    const stamped = rawStampDate !== undefined;
+    const badStamp = stamped && !DateSchema.safeParse(rawStampDate).success;
+    const stampDate = stamped && !badStamp ? rawStampDate as string : null;
+
     let conflict = false;
+    let replayStamped = false;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../core/project-loader.js");
       const { entityFingerprint } = await import("./pending-artifacts.js");
+      const conflictEvent = (actual: string | null, reason?: string) => {
+        conflict = true;
+        appendEvent(dir, {
+          rev: state.revision, type: "mutation_conflict", timestamp: new Date().toISOString(),
+          data: { targetId, expected: expectedCurrent, actual, transitionId: m.transitionId, ...(reason && { reason }) },
+        });
+      };
+      // Recognition: in the lenient lock. Recognising a write that already
+      // landed authorises nothing new, so an unrelated unreadable file does
+      // not block it.
       await withProjectLock(root, { strict: false }, async ({ state: projectState }) => {
         const issue = projectState.issues.find((i) => i.id === targetId);
-        const fail = (reason?: string) => {
-          conflict = true;
-          appendEvent(dir, {
-            rev: state.revision, type: "mutation_conflict", timestamp: new Date().toISOString(),
-            data: { targetId, expected: expectedCurrent, actual: issue?.status ?? null, transitionId: m.transitionId, ...(reason && { reason }) },
-          });
-        };
+        const fail = (reason?: string) => conflictEvent(issue?.status ?? null, reason);
         if (!issue) return fail("target-missing");
+        if (badStamp) return fail("malformed-marker");
+        if (bothValid && stampDate !== null) {
+          const current = entityFingerprint(issue);
+          if (current === rawPostimage) return; // already applied
+          if (current === rawPreimage) { replayStamped = true; return; }
+          return fail();
+        }
         if (bothValid) {
           const current = entityFingerprint(issue);
           if (current === rawPostimage) return; // already applied
           if (current === rawPreimage) {
+            // A pre-T-481 marker (no stampDate) from here on.
             // AM3 (T-478, codex round-1 finding): a valid preimage match only
             // proves the issue hasn't drifted -- it says nothing about whether
             // `targetValue` is what `rawPostimage` actually describes. Origin
@@ -921,7 +943,8 @@ async function recoverPendingMutation(
             // against that origin's own construction, not copied blindly.
             const candidate = { ...issue, status: targetValue as typeof issue.status };
             if (entityFingerprint(candidate) !== rawPostimage) return fail("inconsistent-marker");
-            await writeIssueUnlocked(candidate, root);
+            // T-481: a pre-T-481 marker fingerprinted an unstamped image.
+            await writeIssueUnlocked(candidate, root, { touch: false });
             return;
           }
           return fail();
@@ -930,7 +953,7 @@ async function recoverPendingMutation(
           // Legacy compatibility: a marker written before fingerprinting existed.
           if (issue.status === targetValue) return; // already applied
           if (expectedCurrent && issue.status === expectedCurrent) {
-            await writeIssueUnlocked({ ...issue, status: targetValue as typeof issue.status }, root);
+            await writeIssueUnlocked({ ...issue, status: targetValue as typeof issue.status }, root, { touch: false });
             return;
           }
           return fail();
@@ -938,6 +961,23 @@ async function recoverPendingMutation(
         // Partial or malformed marker: neither shape is trustworthy.
         return fail("malformed-marker");
       });
+      // Replay: only under the live write's own checks. The strict load, the
+      // preimage re-check, the recorded postimage and the post-write
+      // validation; a failed load or validation throws, writes nothing and
+      // leaves the marker for the next entry.
+      if (replayStamped && stampDate !== null) {
+        const { issueStatusImage, validatePostWriteIssueState } = await import("../cli/commands/issue.js");
+        const { touchUpdated } = await import("../core/metadata-touch.js");
+        await withProjectLock(root, { strict: true }, async ({ state: projectState }) => {
+          const issue = projectState.issues.find((i) => i.id === targetId);
+          if (!issue) return conflictEvent(null, "target-missing");
+          if (entityFingerprint(issue) !== rawPreimage) return conflictEvent(issue.status);
+          const candidate = touchUpdated(issueStatusImage(issue, targetValue as typeof issue.status), issue, stampDate);
+          if (entityFingerprint(candidate) !== rawPostimage) return conflictEvent(issue.status, "inconsistent-marker");
+          validatePostWriteIssueState(candidate, projectState, false);
+          await writeIssueUnlocked(candidate, root, { touch: { date: stampDate } });
+        });
+      }
     } catch {
       return recovered(state); // Lock/IO failure -- leave marker for next attempt, same as ticket_update branch
     }

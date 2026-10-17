@@ -18,6 +18,8 @@ import { storybloqClientProfile } from "../client-profile.js";
 import { reviewRiskForTicket } from "../review-depth.js";
 import { reviewEffortForIssue, reviewEffortForTicket, sessionEffortFromState } from "../review-effort.js";
 import { entityFingerprint } from "../pending-artifacts.js";
+import { touchUpdated } from "../../core/metadata-touch.js";
+import { localDateOf } from "../../core/local-date.js";
 import { resolveGateStatus } from "./gate-enforcement.js";
 import { tryAcquireEarmark, describeEarmarkHolder, isEarmarkVisible } from "../../core/earmarks.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
@@ -543,8 +545,12 @@ export class PickTicketStage implements WorkflowStage {
     // crash-recovery machinery unmodified was judged lower-risk than folding
     // an unrelated write path into a new combined transaction.
     let earmarkRefusal: string | null = null;
+    // T-481 D2a: the record as it stands after the conversion, and the stamped
+    // status image the marker fingerprints and the status write writes.
+    let picked: { pre: Issue; post: Issue; stampDate: string } | null = null;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+      const { issueStatusImage } = await import("../../cli/commands/issue.js");
       let refusal: string | null = null;
       await withProjectLock(ctx.root, { strict: false }, async ({ state: freshState }) => {
         const freshIssue = freshState.issues.find(i => i.id === issue.id);
@@ -562,9 +568,12 @@ export class PickTicketStage implements WorkflowStage {
           refusal = `Issue ${issueLabel} is earmarked for ${describeEarmarkHolder(decision.holder)}. Pick a different issue.`;
           return;
         }
+        const pre: Issue = decision.write ? { ...freshIssue, earmark: decision.write } : freshIssue;
         if (decision.write) {
-          await writeIssueUnlocked({ ...freshIssue, earmark: decision.write }, ctx.root);
+          await writeIssueUnlocked(pre, ctx.root);
         }
+        const stampDate = localDateOf(new Date());
+        picked = { pre, post: touchUpdated(issueStatusImage(pre, "inprogress"), pre, stampDate), stampDate };
       });
       earmarkRefusal = refusal;
     } catch {
@@ -573,6 +582,9 @@ export class PickTicketStage implements WorkflowStage {
     if (earmarkRefusal) {
       return { action: "retry", instruction: earmarkRefusal };
     }
+    if (!picked) return { action: "retry", instruction: `Could not read ${issueLabel} to start it. Try again.` };
+    const { pre, post, stampDate } = picked as { pre: Issue; post: Issue; stampDate: string };
+    const preimageFingerprint = entityFingerprint(pre);
 
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)
@@ -606,13 +618,30 @@ export class PickTicketStage implements WorkflowStage {
         // actually prepared. Without the preimage digest a replay could be
         // authorized against an issue that had drifted since, producing a
         // result this record could never afterwards recognize.
-        preimageFingerprint: entityFingerprint(issue),
-        postimageFingerprint: entityFingerprint({ ...issue, status: "inprogress" }),
+        //
+        // T-481 D2a: both describe the write that actually happens: the
+        // record after the earmark conversion, and its stamped status image,
+        // with the stamp day recorded so a replay writes that same day.
+        preimageFingerprint,
+        postimageFingerprint: entityFingerprint(post),
+        stampDate,
       } satisfies PendingProjectMutation,
     });
     try {
-      const { handleIssueUpdate } = await import("../../cli/commands/issue.js");
-      await handleIssueUpdate(issue.id, { status: "inprogress" }, "json", ctx.root);
+      const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+      const { validatePostWriteIssueState } = await import("../../cli/commands/issue.js");
+      let written = false;
+      // Under the same strict lock and post-write validation as
+      // handleIssueUpdate. An issue that changed since the marker is left
+      // alone, and the marker stays for recovery to settle.
+      await withProjectLock(ctx.root, { strict: true }, async ({ state: freshState }) => {
+        const fresh = freshState.issues.find(i => i.id === issue.id);
+        if (!fresh || entityFingerprint(fresh) !== preimageFingerprint) return;
+        validatePostWriteIssueState(post, freshState, false);
+        await writeIssueUnlocked(post, ctx.root, { touch: { date: stampDate } });
+        written = true;
+      });
+      if (!written) throw new Error(`${issueLabel} changed before its status write`);
       // ISS-1052: only clear the marker on confirmed success. A thrown error
       // here (lock/IO failure) must leave the marker SET, not cleared -- the
       // marker is what lets `recoverPendingMutation` (guide.ts) recognize and

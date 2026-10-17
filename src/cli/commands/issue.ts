@@ -60,6 +60,9 @@ import {
   withPriorityFields,
 } from "../helpers.js";
 import { localDateOf } from "../../core/local-date.js";
+import { issueStatusImage } from "../../core/issue-status-image.js";
+
+export { issueStatusImage };
 import type { CommandContext, CommandResult } from "../types.js";
 import {
   formatMetadataValue,
@@ -111,9 +114,11 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   // T-486 A6: reserved for derived values in JSON output.
   "effective",
   "stored",
-  // T-481: set through --priority / --waiting-on, never through meta set.
+  // T-481: set through --priority / --waiting-on, never through meta set;
+  // updatedDate is stamped by every write that changes content.
   "priority",
   "waitingOn",
+  "updatedDate",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
@@ -308,7 +313,7 @@ function buildErrorMultiset(findings: readonly { level: string; code: string; en
 }
 
 /** ISS-065: Only block writes that make the project WORSE. Pre-existing errors pass through. */
-function validatePostWriteIssueState(
+export function validatePostWriteIssueState(
   candidate: Issue,
   state: ProjectState,
   isCreate: boolean,
@@ -584,19 +589,11 @@ export async function handleIssueUpdate(
       ? validateAndResolveRelatedTickets(updates.relatedTickets, state)
       : undefined;
 
-    // Status transition with date management
-    const statusChanges: Partial<Issue> = {};
-    if (updates.status !== undefined && updates.status !== existing.status) {
-      statusChanges.status = updates.status as IssueStatus;
-      if (updates.status === "resolved" && existing.status !== "resolved") {
-        statusChanges.resolvedDate = todayISO();
-      } else if (updates.status !== "resolved" && existing.status === "resolved") {
-        statusChanges.resolvedDate = null;
-      }
-    }
+    // Status transition with date management (T-481: shared with the issue pick).
+    const statusStep = updates.status !== undefined ? issueStatusImage(existing, updates.status as IssueStatus) : existing;
 
     let issue: Issue = withPriorityFields<Issue>({
-      ...existing,
+      ...statusStep,
       ...(updates.title !== undefined && { title: updates.title }),
       ...(updates.severity !== undefined && { severity: updates.severity as IssueSeverity }),
       ...(updates.impact !== undefined && { impact: updates.impact }),
@@ -608,7 +605,6 @@ export async function handleIssueUpdate(
       ...(updates.order !== undefined && { order: updates.order }),
       ...(updates.phase !== undefined && { phase: updates.phase }),
       ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
-      ...statusChanges,
     }, { priority, waitingOn });
 
     if (updates.duplicateOf !== undefined) {

@@ -30,9 +30,12 @@ import {
   NOTE_ID_REGEX, NOTE_CANONICAL_ID_REGEX,
   LESSON_ID_REGEX, LESSON_CANONICAL_ID_REGEX,
   CROCKFORD_CLASS,
+  DateSchema,
 } from "../models/types.js";
 import { ProjectState } from "./project-state.js";
 import type { PreparedContentValidation } from "./update-write-hooks.js";
+import { localDateOf } from "./local-date.js";
+import { touchUpdated } from "./metadata-touch.js";
 import {
   ProjectLoaderError,
   MAX_SUPPORTED_SCHEMA_VERSION,
@@ -371,22 +374,43 @@ export async function loadProject(
  * `assertTicketResolutionWrite`), on the same prior record and the lock
  * holder's context, with a token recorded for exactly the bytes returned.
  */
+/**
+ * T-481: whether a ticket or issue write stamps `updatedDate`. `true` (the
+ * default) stamps today's local date when the content changed; `false` never
+ * stamps; `{ date }` stamps that recorded date when the content changed, for
+ * a write whose postimage was fingerprinted before it landed (the issue pick
+ * and the sweep steps), so the bytes written are the bytes fingerprinted.
+ */
+export type TouchOption = boolean | { date: string };
+
+/** The date a write stamps with, or null for none. A recorded date must be a real calendar date. */
+function touchDate(touch: TouchOption | undefined): string | null {
+  if (touch === false) return null;
+  if (touch === undefined || touch === true) return localDateOf(new Date());
+  if (!DateSchema.safeParse(touch.date).success) {
+    throw new ProjectLoaderError("invalid_input", `Refusing the write: recorded date ${JSON.stringify(touch.date)} is not a YYYY-MM-DD calendar date`);
+  }
+  return touch.date;
+}
+
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
-  options?: { authority?: CheckpointWriteAuthority; resolutionContext?: ResolutionWriteContext },
+  options?: { authority?: CheckpointWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
 ): Promise<{ target: string; content: string }> {
-  const parsed = TicketSchema.parse(ticket);
-  if (!TICKET_ID_REGEX.test(parsed.id) && !TICKET_CANONICAL_ID_REGEX.test(parsed.id)) {
+  const date = touchDate(options?.touch);
+  const unstamped = TicketSchema.parse(ticket);
+  if (!TICKET_ID_REGEX.test(unstamped.id) && !TICKET_CANONICAL_ID_REGEX.test(unstamped.id)) {
     throw new ProjectLoaderError(
       "invalid_input",
-      `Invalid ticket ID: ${parsed.id}`,
+      `Invalid ticket ID: ${unstamped.id}`,
     );
   }
   const wrapDir = resolve(root, ".story");
-  const target = join(wrapDir, "tickets", `${parsed.id}.json`);
+  const target = join(wrapDir, "tickets", `${unstamped.id}.json`);
   await ensureEntityDir(target, wrapDir);
-  const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${parsed.id}.json`);
+  const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${unstamped.id}.json`);
+  const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
   // As for issues (Codex F1): nothing awaits between obtaining the context
   // and the decision.
@@ -454,9 +478,9 @@ async function readIfExists(path: string): Promise<string | null> {
 export async function writeTicketUnlocked(
   ticket: Ticket,
   root: string,
-  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority } & PreparedContentValidation,
+  options?: { createOnly?: boolean; authority?: CheckpointWriteAuthority; touch?: TouchOption } & PreparedContentValidation,
 ): Promise<void> {
-  const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority });
+  const { target, content } = await prepareTicketWrite(ticket, root, { authority: options?.authority, touch: options?.touch });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await assertWithdrawalLedgerCurrent(root, [{ op: "write", target, content }]);
   await options?.validatePreparedContent?.(content);
@@ -492,21 +516,27 @@ export async function writeTicket(
 export async function prepareIssueWrite(
   issue: Issue,
   root: string,
-  options?: { resolutionContext?: ResolutionWriteContext },
+  options?: { resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
 ): Promise<{ target: string; content: string }> {
-  const parsed = IssueSchema.parse(issue);
-  if (!ISSUE_ID_REGEX.test(parsed.id) && !ISSUE_CANONICAL_ID_REGEX.test(parsed.id)) {
+  const date = touchDate(options?.touch);
+  const unstamped = IssueSchema.parse(issue);
+  if (!ISSUE_ID_REGEX.test(unstamped.id) && !ISSUE_CANONICAL_ID_REGEX.test(unstamped.id)) {
     throw new ProjectLoaderError(
       "invalid_input",
-      `Invalid issue ID: ${parsed.id}`,
+      `Invalid issue ID: ${unstamped.id}`,
     );
   }
   const wrapDir = resolve(root, ".story");
-  const target = join(wrapDir, "issues", `${parsed.id}.json`);
+  const target = join(wrapDir, "issues", `${unstamped.id}.json`);
   await ensureEntityDir(target, wrapDir);
   // Codex F1: the read comes first, and nothing awaits between obtaining the
   // context and the decision, so the lock cannot be released in between.
-  const prior = priorRecord(await prepareIssueWriteSeams.readPrior(target));
+  const priorText = await prepareIssueWriteSeams.readPrior(target);
+  const prior = priorRecord(priorText);
+  // An unparseable prior is replaced, which is a content change.
+  const parsed = date === null || priorText === null
+    ? unstamped
+    : touchUpdated(unstamped, prior === "unknown" ? {} : prior, date);
   const ctx = heldResolutionContext(root, options?.resolutionContext);
   const content = serializeJSON(parsed);
   ctx.recordPrepared(target, content, assertResolutionMetadataWrite(ctx, `.story/issues/${parsed.id}.json`, prior, parsed));
@@ -688,9 +718,9 @@ function heldResolutionContext(root: string, given: ResolutionWriteContext | und
 export async function writeIssueUnlocked(
   issue: Issue,
   root: string,
-  options?: { createOnly?: boolean } & PreparedContentValidation,
+  options?: { createOnly?: boolean; touch?: TouchOption } & PreparedContentValidation,
 ): Promise<void> {
-  const { target, content } = await prepareIssueWrite(issue, root);
+  const { target, content } = await prepareIssueWrite(issue, root, { touch: options?.touch });
   assertPreparedWritesCurrent(root, [{ target, content }]);
   await options?.validatePreparedContent?.(content);
   if (options?.createOnly) {

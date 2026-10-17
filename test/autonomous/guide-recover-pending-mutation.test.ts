@@ -539,6 +539,16 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
   const corruptTicket = () => join(root, ".story", "tickets", "T-999.json");
 
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  // restoreAllMocks above also clears the module mock's resolved values, so
+  // each pick re-arms the HEAD and email the pick reads.
+  beforeEach(async () => {
+    const git = await import("../../src/autonomous/git-inspector.js");
+    vi.mocked(git.gitHead).mockResolvedValue({ ok: true, data: { hash: "abc123" } } as never);
+    vi.mocked(git.gitUserEmail).mockResolvedValue("me@example.com" as never);
+    vi.mocked(git.gitStatus).mockResolvedValue({ ok: true, data: { clean: true, trackedDirty: [], untrackedPaths: [] } } as never);
+    vi.mocked(git.gitMergeBase).mockResolvedValue({ ok: true, data: "abc123" } as never);
+    vi.mocked(git.gitIsAncestor).mockResolvedValue({ ok: true, data: false } as never);
+  });
 
   function makeRecipe(): ResolvedRecipe {
     return {

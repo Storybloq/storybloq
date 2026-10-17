@@ -8,6 +8,9 @@ import { isNonActionableDisposition } from "../../core/issue-disposition.js";
 import { tryAcquireEarmark, clearSameSessionEarmark, describeEarmarkHolder } from "../../core/earmarks.js";
 import { dispositionEvidenceView, effectiveResolutionKind } from "../../core/resolution-kind.js";
 import { entityFingerprint } from "../pending-artifacts.js";
+import { touchUpdated } from "../../core/metadata-touch.js";
+import { localDateOf } from "../../core/local-date.js";
+import { DateSchema } from "../../models/types.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
 import { formatCitedRulingsSection, escapeMarkdownInline } from "../../core/output-formatter.js";
@@ -44,12 +47,15 @@ type ReleaseStep = {
   entry: SweepEntry;
   releasePre: string;
   releasePost: string;
+  /** T-481: the day the release image was stamped with; absent on a pre-T-481 marker. */
+  stampDate?: string;
 };
 type AcquireStep = {
   variant: "acquire";
   transitionId: string;
   next: { id: string; pre: string; post: string };
   after: string[];
+  stampDate?: string;
 };
 export type ParsedSweepStep = ReleaseStep | AcquireStep | { variant: "malformed" };
 
@@ -120,6 +126,10 @@ export function parseSweepStep(mutation: unknown): ParsedSweepStep {
   if (!isRecord(mutation) || mutation.type !== SWEEP_STEP || !isText(mutation.transitionId)) return malformed;
   const m = mutation;
   const transitionId = mutation.transitionId;
+  // T-481 D2a: a recorded stamp date must be a real calendar date; absent is
+  // a pre-T-481 marker whose fingerprints describe an unstamped image.
+  if (m.stampDate !== undefined && !DateSchema.safeParse(m.stampDate).success) return malformed;
+  const stamp = m.stampDate !== undefined ? { stampDate: m.stampDate as string } : {};
   if (m.variant === "release") {
     if (!isText(m.current) || !isText(m.releasePre) || !isText(m.releasePost)) return malformed;
     if (m.outcome !== "fixed" && m.outcome !== "disposed" && m.outcome !== "deferred") return malformed;
@@ -127,14 +137,14 @@ export function parseSweepStep(mutation: unknown): ParsedSweepStep {
     if (!entry) return malformed;
     return {
       variant: "release", transitionId, current: m.current, outcome: m.outcome,
-      entry, releasePre: m.releasePre, releasePost: m.releasePost,
+      entry, releasePre: m.releasePre, releasePost: m.releasePost, ...stamp,
     };
   }
   if (m.variant === "acquire") {
     const next = m.next;
     if (!isRecord(next) || !isText(next.id) || !isText(next.pre) || !isText(next.post)) return malformed;
     if (!Array.isArray(m.after) || !m.after.every(isText)) return malformed;
-    return { variant: "acquire", transitionId, next: { id: next.id, pre: next.pre, post: next.post }, after: [...m.after] };
+    return { variant: "acquire", transitionId, next: { id: next.id, pre: next.pre, post: next.post }, after: [...m.after], ...stamp };
   }
   return malformed;
 }
@@ -312,9 +322,12 @@ export async function recoverIssueSweepStep(root: string, state: FullSessionStat
           // nothing of ours was written: clear the marker, keep `current`,
           // and the next report re-classifies and names the gap.
           if (exit.kind !== step.outcome) { result = settled(cleared); return; }
-          const image = releaseImage(issue, step.outcome, sessionId);
+          // T-481 D2a: a stamped marker replays the date it fingerprinted,
+          // never the replay day; a pre-T-481 marker replays unstamped.
+          const unstamped = releaseImage(issue, step.outcome, sessionId);
+          const image = step.stampDate !== undefined ? touchUpdated(unstamped, issue, step.stampDate) : unstamped;
           if (entityFingerprint(image) !== step.releasePost) { result = conflict("inconsistent-marker"); return; }
-          await writeIssueUnlocked(image, root);
+          await writeIssueUnlocked(image, root, { touch: step.stampDate !== undefined ? { date: step.stampDate } : false });
           result = recorded;
           return;
         }
@@ -346,7 +359,7 @@ type Acquisition =
   | { kind: "error"; message: string }
   | { kind: "pending"; message: string };
 
-type Candidate = { transitionId: string; next: { id: string; pre: string; post: string }; after: string[]; image: Issue };
+type Candidate = { transitionId: string; next: { id: string; pre: string; post: string }; after: string[]; image: Issue; stampDate: string };
 
 /**
  * ISSUE_SWEEP stage -- postComplete stage that sweeps open issues.
@@ -404,11 +417,14 @@ export class IssueSweepStage implements WorkflowStage {
             const decision = tryAcquireEarmark(freshIssue.earmark, sessionId, "worker");
             if (!decision.ok) continue; // earmarked to someone else -- skip, do not retry within this sweep
             const transitionId = `issue-sweep-acquire-${id}-${randomUUID()}`;
-            const image = acquisitionImage(freshIssue, decision.write, sessionId, transitionId);
+            // T-481 D2a: the fingerprinted image is the stamped one, and the
+            // write below stamps the same recorded date.
+            const stampDate = localDateOf(new Date());
+            const image = touchUpdated(acquisitionImage(freshIssue, decision.write, sessionId, transitionId), freshIssue, stampDate);
             const pre = entityFingerprint(freshIssue);
             const post = entityFingerprint(image);
             if (!pre || !post) continue;
-            pick = { transitionId, next: { id, pre, post }, after: candidates.slice(i + 1), image };
+            pick = { transitionId, next: { id, pre, post }, after: candidates.slice(i + 1), image, stampDate };
             return;
           }
         });
@@ -416,11 +432,11 @@ export class IssueSweepStage implements WorkflowStage {
         return { kind: "error", message: failureText(err) };
       }
       if (!pick) return { kind: "exhausted" };
-      const { transitionId, next, after, image } = pick;
+      const { transitionId, next, after, image, stampDate } = pick;
       const stored = ctx.state.issueSweepState ? sweepLists(ctx.state.issueSweepState) : EMPTY_SWEEP;
       ctx.writeState({
         issueSweepState: { ...stored, current: null, remaining: [next.id, ...after] },
-        pendingProjectMutation: { type: SWEEP_STEP, variant: "acquire", transitionId, next, after },
+        pendingProjectMutation: { type: SWEEP_STEP, variant: "acquire", transitionId, next, after, stampDate },
         ...(firstStart ? { pipelinePhase: "postComplete" as const } : {}),
       });
       let landed = false as boolean;
@@ -428,7 +444,7 @@ export class IssueSweepStage implements WorkflowStage {
         await withProjectLockForIssueSweep(ctx.root, async ({ state: freshState }) => {
           const freshIssue = freshState.issues.find(x => x.id === next.id);
           if (!freshIssue || entityFingerprint(freshIssue) !== next.pre) return;
-          await writeIssueUnlocked(image, ctx.root);
+          await writeIssueUnlocked(image, ctx.root, { touch: { date: stampDate } });
           landed = true;
         });
       } catch (err) {
@@ -652,7 +668,10 @@ export class IssueSweepStage implements WorkflowStage {
 
     const outcome: SweepOutcome = settled.kind;
     const entry: SweepEntry = settled.entry;
-    const image = releaseImage(issue, outcome, sessionId);
+    // T-481 D2a: an earmark-only release (fixed, disposed) is not a content
+    // change and stays unstamped; a deferred release reopens and stamps.
+    const stampDate = localDateOf(new Date());
+    const image = touchUpdated(releaseImage(issue, outcome, sessionId), issue, stampDate);
     const releasePre = entityFingerprint(issue);
     const releasePost = entityFingerprint(image);
     if (!releasePre || !releasePost) {
@@ -660,7 +679,7 @@ export class IssueSweepStage implements WorkflowStage {
     }
     const transitionId = `issue-sweep-release-${current}-${randomUUID()}`;
     ctx.writeState({
-      pendingProjectMutation: { type: SWEEP_STEP, variant: "release", transitionId, current, outcome, entry, releasePre, releasePost },
+      pendingProjectMutation: { type: SWEEP_STEP, variant: "release", transitionId, current, outcome, entry, releasePre, releasePost, stampDate },
     });
 
     let verdict = "changed" as "landed" | "changed" | { conflicted: string } | { refused: string; reminders?: string[] };
@@ -683,7 +702,7 @@ export class IssueSweepStage implements WorkflowStage {
           // classification still gives this outcome.
           if (again.kind === "retry") { verdict = { refused: again.text, ...(again.reminders && { reminders: again.reminders }) }; return; }
           if (again.kind !== outcome) { verdict = { refused: `Issue ${current} no longer qualifies as ${outcome}; report again.` }; return; }
-          await writeIssueUnlocked(image, ctx.root);
+          await writeIssueUnlocked(image, ctx.root, { touch: { date: stampDate } });
           verdict = "landed";
         }
       });

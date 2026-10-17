@@ -110,9 +110,11 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "resolutionKind",
   "effective",
   "stored",
-  // T-481: set through --priority / --waiting-on, never through meta set.
+  // T-481: set through --priority / --waiting-on, never through meta set;
+  // updatedDate is stamped by every write that changes content.
   "priority",
   "waitingOn",
+  "updatedDate",
 ]);
 
 // --- Read Handlers ---

@@ -487,7 +487,8 @@ export async function settleCheckpointConflict(
   if (!hasOwnerCheckpoint(resolved)) {
     if (established) refuse("the selected side drops the owner checkpoint, which is never removed; pick the side that keeps it.");
     const next = { ...resolved } as Ticket;
-    await writeTicketUnlocked(next, root, evidenceChanged ? { authority } : undefined);
+    // T-481: conflict settlement picks a side; it is not an edit, so it never stamps.
+    await writeTicketUnlocked(next, root, evidenceChanged ? { authority, touch: false } : { touch: false });
     return next;
   }
 
@@ -524,6 +525,6 @@ export async function settleCheckpointConflict(
   const record = validated({ ...after, history });
   const fields: Record<string, unknown> = approvedSide ? { status: "open", completedDate: null } : {};
   const next = { ...resolved, ...fields, ownerCheckpoint: record } as Ticket;
-  await writeTicketUnlocked(next, root, { authority });
+  await writeTicketUnlocked(next, root, { authority, touch: false });
   return next;
 }

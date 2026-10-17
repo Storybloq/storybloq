@@ -476,7 +476,8 @@ async function writeResolvedTicket(
     await adoptConflictEvidence(resolved as never, resolved, root);
     return;
   }
-  await writeTicketUnlocked(resolved as never, root);
+  // T-481: a resolution picks a side or a value; it never stamps.
+  await writeTicketUnlocked(resolved as never, root, { touch: false });
 }
 
 /**
@@ -594,7 +595,7 @@ export async function handleResolve(
         assertAssignedPriorityFields(target.entity as Record<string, unknown>, mutable as Record<string, unknown>);
       }
       if (target.kind === "ticket") await writeResolvedTicket(target.entity as Record<string, unknown>, mutable as Record<string, unknown>, before, result, resolveOptions, root);
-      else if (target.kind === "issue") await writeIssueUnlocked(mutable as never, root);
+      else if (target.kind === "issue") await writeIssueUnlocked(mutable as never, root, { touch: false });
       else if (target.kind === "note") await writeNoteUnlocked(mutable as never, root);
       else await writeLessonUnlocked(mutable as never, root);
       label = displayIdOf(target.entity as { id: string; displayId?: string | null });

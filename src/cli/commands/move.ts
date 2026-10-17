@@ -115,7 +115,8 @@ export async function handleTicketMove(
         const ranks = rebalanceRanks(siblings.length);
         for (let i = 0; i < siblings.length; i++) {
           const updated: Ticket = { ...siblings[i]!, rank: ranks[i]! };
-          await writeTicketUnlocked(updated, resolve(root));
+          // T-481: rank is ordering, not content; a move never stamps.
+          await writeTicketUnlocked(updated, resolve(root), { touch: false });
           siblings[i] = updated;
         }
       } else {
@@ -128,7 +129,7 @@ export async function handleTicketMove(
           let sibling = siblings[i]!;
           if (sibling.rank == null) {
             sibling = { ...sibling, rank: generateKeyBetween(prev, null) };
-            await writeTicketUnlocked(sibling, resolve(root));
+            await writeTicketUnlocked(sibling, resolve(root), { touch: false });
             siblings[i] = sibling;
           }
           prev = sibling.rank!;
@@ -184,7 +185,7 @@ export async function handleTicketMove(
     }
 
     const updated: Ticket = { ...ticket, rank: newRank };
-    await writeTicketUnlocked(updated, resolve(root));
+    await writeTicketUnlocked(updated, resolve(root), { touch: false });
 
     if (format === "json") {
       output = JSON.stringify({ ok: true, data: { id: ticket.id, displayId: displayIdOf(ticket), rank: newRank } }, null, 2);

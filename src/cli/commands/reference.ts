@@ -26,7 +26,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket list",
     description: "List tickets with optional filters",
-    usage: "storybloq ticket list [--status <value>] [--phase <value>] [--type <value>] [--format <json|md>] [--node <value>]",
+    usage: "storybloq ticket list [--status <value>] [--phase <value>] [--type <value>] [--priority <value>] [--waiting-on <value>] [--format <json|md>] [--node <value>]",
     flags: ["--status", "--phase", "--type", "--format", "--node"],
   },
   {
@@ -50,13 +50,13 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "ticket create",
     description: "Create a new ticket",
-    usage: "storybloq ticket create --title <value> --type <value> [--phase <value>] [--description <value>] [--stdin] [--parent-ticket <value>] [--blocked-by <value>] [--cites-ruling <value>] [--commit] [--format <json|md>] [--node <value>]",
+    usage: "storybloq ticket create --title <value> --type <value> [--phase <value>] [--description <value>] [--stdin] [--parent-ticket <value>] [--blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>] [--node <value>]",
     flags: ["--title", "--type", "--phase", "--description", "--stdin", "--parent-ticket", "--blocked-by", "--cites-ruling", "--format", "--node", "--commit"],
   },
   {
     name: "ticket update",
     description: "Update a ticket",
-    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--commit] [--format <json|md>]",
+    usage: "storybloq ticket update <id> [--status <value>] [--title <value>] [--type <value>] [--phase <value>] [--order <number>] [--description <value>] [--stdin] [--parent-ticket <value>] [--node <value>] [--force] [--clear-cites-rulings] [--resolution-kind <kind>] [--reason <text>] [--blocked-by <value>] [--cross-node-blocked-by <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
     flags: ["--status", "--title", "--type", "--phase", "--order", "--description", "--stdin", "--parent-ticket", "--node", "--force", "--clear-cites-rulings", "--resolution-kind", "--reason", "--blocked-by", "--cross-node-blocked-by", "--cites-ruling", "--format", "--commit"],
   },
   {
@@ -128,7 +128,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue list",
     description: "List issues with optional filters",
-    usage: "storybloq issue list [--status <value>] [--severity <value>] [--component <value>] [--phase <value>] [--disposition <value|none>] [--actionable] [--non-actionable] [--resolution-kind <kind>] [--format <json|md>]",
+    usage: "storybloq issue list [--status <value>] [--severity <value>] [--component <value>] [--phase <value>] [--disposition <value|none>] [--actionable] [--non-actionable] [--resolution-kind <kind>] [--priority <value>] [--waiting-on <value>] [--format <json|md>]",
     flags: ["--status", "--severity", "--component", "--phase", "--disposition", "--actionable", "--non-actionable", "--resolution-kind", "--format"],
   },
   {
@@ -140,13 +140,13 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "issue create",
     description: "Create a new issue",
-    usage: "storybloq issue create --title <value> --severity <value> [--impact <value>] [--stdin] [--phase <value>] [--dedupe-key <value>] [--created-by <value>] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--commit] [--format <json|md>]",
+    usage: "storybloq issue create --title <value> --severity <value> [--impact <value>] [--stdin] [--phase <value>] [--dedupe-key <value>] [--created-by <value>] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
     flags: ["--title", "--severity", "--impact", "--stdin", "--phase", "--dedupe-key", "--created-by", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--format", "--commit"],
   },
   {
     name: "issue update",
     description: "Update an issue",
-    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--disposition <value>] [--reason <text>] [--ref <ref>] [--clear-disposition] [--commit] [--format <json|md>]",
+    usage: "storybloq issue update <id> [--status <value>] [--title <value>] [--severity <value>] [--impact <value>] [--stdin] [--resolution <value>] [--order <number>] [--phase <value>] [--clear-cites-rulings] [--components <value>] [--related-tickets <value>] [--location <value>] [--source-ref <value>] [--cites-ruling <value>] [--resolution-kind <kind>] [--duplicate-of <id>] [--disposition <value>] [--reason <text>] [--ref <ref>] [--clear-disposition] [--priority <value>] [--waiting-on <value>] [--commit] [--format <json|md>]",
     flags: ["--status", "--title", "--severity", "--impact", "--stdin", "--resolution", "--order", "--phase", "--clear-cites-rulings", "--components", "--related-tickets", "--location", "--source-ref", "--cites-ruling", "--resolution-kind", "--duplicate-of", "--disposition", "--reason", "--ref", "--clear-disposition", "--format", "--commit"],
   },
   {
@@ -488,7 +488,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role with the handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce to the pen itself. Permission mode defaults to auto, inheriting bypassPermissions only when the pen itself runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print, --bounds for the automatic arrangement; --recover needs none and lists interrupted spawns read-only",
+    description: "Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role and handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce itself. Permission mode defaults to auto, or bypassPermissions when the pen runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print; --recover needs none and lists interrupted spawns read-only",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
   },
@@ -698,7 +698,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus setup",
-    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, and (when hook delivery is enabled) enables this client's guarded on-boundary hooks. With one endpoint it ends with a handoff line inviting the other task to connect. --replace <endpoint-id> retires a proven-offline incumbent and takes its place, redelivering that endpoint's undelivered mail to this successor. --force-archive overrides unread noncritical v1 delivery only during a v1->v2 upgrade; it never bypasses ship-gate blockers (unacknowledged critical messages, parked critical threads, quarantined threads).",
+    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, and (when hook delivery is enabled) enables this client's guarded on-boundary hooks. With one endpoint it ends with a handoff line for the other task. --replace <endpoint-id> retires a proven-offline incumbent and takes its place, redelivering that endpoint's undelivered mail to this successor. --force-archive overrides unread noncritical v1 delivery only during a v1->v2 upgrade; it never bypasses ship-gate blockers (unacknowledged critical messages, parked critical threads, quarantined threads).",
     usage: "storybloq bus setup [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--delivery <live|poll>] [--wake <never|idle>] [--session-name <value>] [--transport-address <value>] [--replace <value>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--delivery", "--wake", "--session-name", "--transport-address", "--replace", "--force-archive", "--format"],
   },
@@ -1082,12 +1082,12 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_phase_list", description: "All phases with derived status", params: [] },
   { name: "storybloq_phase_current", description: "First non-complete phase", params: [] },
   { name: "storybloq_phase_tickets", description: "Leaf tickets for a specific phase", params: ["phaseId","node?"] },
-  { name: "storybloq_ticket_list", description: "List leaf tickets with optional filters", params: ["status?","phase?","type?","node?"] },
+  { name: "storybloq_ticket_list", description: "List leaf tickets with optional filters", params: ["status?","phase?","type?","priority?","waitingOn?","node?"] },
   { name: "storybloq_ticket_get", description: "Get a ticket by ID", params: ["id","format?","withActionability?","node?"] },
   { name: "storybloq_ticket_meta_get", description: "Get custom passthrough metadata from a ticket", params: ["id","path?"] },
   { name: "storybloq_ticket_next", description: "Highest-priority unblocked ticket(s)", params: ["count?","node?"] },
   { name: "storybloq_ticket_blocked", description: "All blocked tickets with dependencies", params: ["node?"] },
-  { name: "storybloq_issue_list", description: "List issues with optional filters", params: ["status?","severity?","component?","phase?","disposition?","actionable?","resolutionKind?","format?","node?"] },
+  { name: "storybloq_issue_list", description: "List issues with optional filters", params: ["status?","severity?","component?","phase?","disposition?","actionable?","resolutionKind?","priority?","waitingOn?","format?","node?"] },
   { name: "storybloq_issue_get", description: "Get an issue by ID", params: ["id","format?","withActionability?","node?"] },
   { name: "storybloq_issue_meta_get", description: "Get custom passthrough metadata from an issue", params: ["id","path?"] },
   { name: "storybloq_handover_list", description: "List handover filenames (newest first)", params: [] },
@@ -1104,12 +1104,12 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_note_get", description: "Get note by ID", params: ["id"] },
   { name: "storybloq_note_create", description: "Create note", params: ["content","title?","tags?","commit?"] },
   { name: "storybloq_note_update", description: "Update note", params: ["id","content?","mode?","confirmReplace?","title?","tags?","status?","commit?"] },
-  { name: "storybloq_ticket_create", description: "Create ticket", params: ["title","type","phase?","description?","blockedBy?","parentTicket?","citesRuling?","node?","commit?"] },
-  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id","status?","title?","type?","order?","description?","phase?","parentTicket?","blockedBy?","crossNodeBlockedBy?","force?","citesRuling?","clearCitesRulings?","resolutionKind?","reason?","node?","commit?"] },
+  { name: "storybloq_ticket_create", description: "Create ticket", params: ["title","type","phase?","description?","blockedBy?","parentTicket?","citesRuling?","priority?","waitingOn?","node?","commit?"] },
+  { name: "storybloq_ticket_update", description: "Update ticket", params: ["id","status?","title?","type?","order?","description?","phase?","parentTicket?","blockedBy?","crossNodeBlockedBy?","force?","citesRuling?","clearCitesRulings?","resolutionKind?","reason?","priority?","waitingOn?","node?","commit?"] },
   { name: "storybloq_ticket_meta_set", description: "Set custom passthrough metadata on a ticket", params: ["id","path","value?","commit?"] },
   { name: "storybloq_ticket_meta_unset", description: "Unset custom passthrough metadata from a ticket", params: ["id","path","commit?"] },
-  { name: "storybloq_issue_create", description: "Create issue with optional persisted review provenance and retry deduplication", params: ["title","severity","impact","components?","relatedTickets?","location?","sourceRefs?","dedupeKey?","createdBy?","phase?","citesRuling?","node?","commit?"] },
-  { name: "storybloq_issue_update", description: "Update issue", params: ["id","status?","title?","severity?","impact?","resolution?","components?","relatedTickets?","location?","sourceRefs?","order?","phase?","citesRuling?","clearCitesRulings?","resolutionKind?","duplicateOf?","disposition?","dispositionReason?","dispositionRef?","node?","commit?"] },
+  { name: "storybloq_issue_create", description: "Create issue with optional persisted review provenance and retry deduplication", params: ["title","severity","impact","components?","relatedTickets?","location?","sourceRefs?","dedupeKey?","createdBy?","phase?","citesRuling?","priority?","waitingOn?","node?","commit?"] },
+  { name: "storybloq_issue_update", description: "Update issue", params: ["id","status?","title?","severity?","impact?","resolution?","components?","relatedTickets?","location?","sourceRefs?","order?","phase?","citesRuling?","clearCitesRulings?","resolutionKind?","duplicateOf?","disposition?","dispositionReason?","dispositionRef?","priority?","waitingOn?","node?","commit?"] },
   { name: "storybloq_issue_meta_set", description: "Set custom passthrough metadata on an issue", params: ["id","path","value?","commit?"] },
   { name: "storybloq_issue_meta_unset", description: "Unset custom passthrough metadata from an issue", params: ["id","path","commit?"] },
   { name: "storybloq_phase_create", description: "Create phase in roadmap", params: ["id","name","label","description","summary?","after?","atStart?","commit?"] },

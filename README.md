@@ -267,12 +267,12 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 
 | Command | Description |
 |---------|-------------|
-| `storybloq ticket list [--status] [--phase] [--type]` | List leaf tickets (umbrellas excluded) |
+| `storybloq ticket list [--status] [--phase] [--type] [--priority] [--waiting-on]` | List leaf tickets (umbrellas excluded) |
 | `storybloq ticket get <id>` | Full ticket detail |
-| `storybloq ticket next` | Highest-priority unblocked ticket; unphased leaves are offered after phased work |
+| `storybloq ticket next` | Highest-priority unblocked ticket; unphased leaves are offered after phased work; items waiting on a role are never offered but always named |
 | `storybloq ticket blocked` | All currently blocked tickets |
-| `storybloq ticket create --title --type [--phase] [--description] [--blocked-by] [--parent-ticket] [--node <name>]` | Create (use `--node` from orchestrator); `--phase` defaults to the current phase, `--phase ""` leaves it unphased |
-| `storybloq ticket update <id> [--status] [--title] [--phase] [--cross-node-blocked-by] [--resolution-kind withdrawn --reason <text>] [--node <name>] ...` | Update; `--resolution-kind withdrawn` closes a complete ticket as withdrawn rather than delivered |
+| `storybloq ticket create --title --type [--phase] [--description] [--blocked-by] [--parent-ticket] [--priority p0..p3] [--waiting-on owner\|external\|none] [--node <name>]` | Create (use `--node` from orchestrator); `--phase` defaults to the current phase, `--phase ""` leaves it unphased |
+| `storybloq ticket update <id> [--status] [--title] [--phase] [--priority] [--waiting-on] [--cross-node-blocked-by] [--resolution-kind withdrawn --reason <text>] [--node <name>] ...` | Update; `--resolution-kind withdrawn` closes a complete ticket as withdrawn rather than delivered |
 | `storybloq ticket meta get\|set\|unset <id> [path] [value]` | Manage custom passthrough metadata |
 | `storybloq ticket delete <id> [--force]` | Delete |
 
@@ -280,10 +280,10 @@ All commands accept `--format json|md` (default `md`). Pipe JSON through `jq` fo
 
 | Command | Description |
 |---------|-------------|
-| `storybloq issue list [--status] [--severity] [--component] [--phase]` | List issues |
+| `storybloq issue list [--status] [--severity] [--component] [--phase] [--priority] [--waiting-on]` | List issues |
 | `storybloq issue get <id>` | Issue detail |
-| `storybloq issue create --title --severity --impact [--components] [--related-tickets] [--location] [--source-ref <json>] [--dedupe-key] [--created-by]` | Create, with optional durable review evidence and retry identity |
-| `storybloq issue update <id> [--status] [--title] [--severity] [--source-ref <json>] ...` | Update |
+| `storybloq issue create --title --severity --impact [--components] [--related-tickets] [--location] [--source-ref <json>] [--dedupe-key] [--created-by] [--priority] [--waiting-on]` | Create, with optional durable review evidence and retry identity |
+| `storybloq issue update <id> [--status] [--title] [--severity] [--priority] [--waiting-on] [--source-ref <json>] ...` | Update |
 | `storybloq issue meta get\|set\|unset <id> [path] [value]` | Manage custom passthrough metadata |
 | `storybloq issue delete <id>` | Delete |
 
@@ -566,6 +566,8 @@ Issue `sourceRefs` preserve review evidence independently of mutable `path:line`
 Use `storybloq validate --integrity-only` when damaged `config.json` or `roadmap.json` prevents normal loading. This read-only preflight scans every `.story/**/*.json` file in one pass, reports parser positions where available, and separates critical singleton failures from skippable item and auxiliary-file failures. It never rewrites damaged files.
 
 Confirmed manual or external review findings should be filed directly as open issues. Search first, pass reviewer attribution in `createdBy`, attach the review ID and revision through `sourceRefs`, and use a stable `dedupeKey` such as `<review-id>:<finding-id>` so retries are idempotent. Keep uncertain design questions as notes or owner questions; the implementing agent owns issue status and resolution.
+
+Tickets and issues carry two optional scheduling fields. `priority` is `p0` (most urgent) to `p3`; severity is how bad, priority is how soon, and an absent or unrecognised value reads as `p2`. `waitingOn` is `owner` or `external` while an item waits on someone else; `--waiting-on none` removes it. A waiting item is never offered by `ticket next`, `recommend` or autonomous mode, and is listed by role in their output and in `blocker list` until the field is cleared. `updatedDate` is stamped with the local date whenever a write changes an item's content; a write that only changes who holds it (an earmark) does not stamp. `storybloq validate` warns on an unrecognised `priority` or `waitingOn`, and `storybloq repair` unsets it.
 
 Ticket and issue records preserve unknown JSON fields. Use `storybloq ticket meta` and `storybloq issue meta` to read or mutate those custom passthrough fields without touching core Storybloq fields. Values are JSON, and dot paths address nested objects, for example `storybloq ticket meta set T-001 integration.linear '"ABC-123"'`.
 

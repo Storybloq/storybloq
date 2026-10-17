@@ -897,6 +897,29 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
     expect(r.errors.some((e) => /^UNRESOLVED provider types\.ts#WorkflowStage\.skip at user\.ts:\d+ \(reflective write\)$/.test(e))).toBe(true);
   });
 
+  // Mutant FX3-A4e: a non-async provider whose return type is a promise suspends like an async one.
+  it("A1: a non-async provider that returns a promise may suspend", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export class C implements WorkflowStage { async enter(ctx: StageContext) {} skip = (ctx: StageContext) => pause(); }\n");
+    expect(skipLifetime(r)).toHaveLength(1);
+  });
+
+  // Mutant FX3-PV6: a for-of over anything but an array literal fails closed.
+  it("R3-2: a provider assigned by a for-of over a typed array is UNRESOLVED and the call may suspend", () => {
+    const r = inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export function patch(s: WorkflowStage, all: ((ctx: StageContext) => void)[]) { for (s.skip of all) {} }\n");
+    expect(r.errors.some((e) => /^UNRESOLVED provider types\.ts#WorkflowStage\.skip at user\.ts:\d+ \(loop-assigned member\)$/.test(e))).toBe(true);
+    expect(skipLifetime(r)).toHaveLength(1);
+  });
+
+  // Mutant FX4-R41c: a __proto__ write's value is followed, so a synchronous provider passes.
+  it("R4-1: a synchronous provider written through __proto__ is followed, not UNRESOLVED", () => {
+    expect(inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "export function patch(s: WorkflowStage & { __proto__?: object }) { s.__proto__ = { skip: (ctx: StageContext) => {} }; }\n").errors).toEqual([]);
+  });
+
+  // Mutant FX3-L8: a library identity needs every declaration in the default library; a src lookalike has none.
+  it("R3-2: a src namespace named Reflect has no library identity", () => {
+    expect(inLockSkip("stage.skip?.(ctx);", SKIP_SYNC + "namespace Reflect { export function construct(n: number) { return n; } }\nexport const z = Reflect.construct(1);\n").errors).toEqual([]);
+  });
+
   // A2: a guarded test-seam slot behind a local default is credited synchronous; a src supply is refused.
   const TAKEOVER = `export interface TDeps { readonly writeState?: (s: { revision: number }) => { revision: number } }\n`;
   const SEAM_BODY = (deps: string) => `const deps: TDeps = ${deps};
@@ -1369,6 +1392,16 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     expect(unresolvedRef(add2Scan(stmt), fn).length).toBeGreaterThan(0);
   });
 
+  // A src literal that is not itself a flow (an array element, a parameter default, a class field) is reported only by the
+  // contextual check over every object literal; the flows loop never reaches it (mutant RK1 deletes that check).
+  it.each([
+    ["an array element", "", `const all: Deps[] = [{ withLockX: ${P} }];\n    await take(d, ctx, all[0]!);`],
+    ["a parameter default", `export async function viaDefault(d: string, ctx: StageContext, deps: Deps = { withLockX: ${P} }) { await take(d, ctx, deps); }\n`, "await viaDefault(d, ctx);"],
+    ["a class field", `export class Holder { deps: Deps = { withLockX: ${P} }; }\n`, "await take(d, ctx, new Holder().deps);"],
+  ])("T5: an injected slot supplied by src through %s is refused", (_n, extra, body) => {
+    expect(supplied(add2Scan(body, TOP + extra, LISTED))).toHaveLength(1);
+  });
+
   // R4-1 (Codex round 4, W1): a prototype write supplies the slot in every form, judged by its target.
   const TOP_PROTO = TOP.replace("withLockX?:", "__proto__?: object; withLockX?:");
   const PROTO = `{ withLockX: ${P} }`;
@@ -1413,6 +1446,15 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
     expect(proxyWhy(add2Scan(body, TOP, LISTED))).toHaveLength(1);
   });
 
+  // Mutant FX3-P2: with a required member, `{}` is not assignable to Deps and reaches nothing; only the flow type owns the slot.
+  const TOP_LABEL = TOP.replace("withLockX?: (fn: () => Promise<void>) => Promise<void> }", "withLockX?: (fn: () => Promise<void>) => Promise<void>; label: string }");
+  it.each([
+    ["Partial<Deps>", "const part: Partial<Deps> = new Proxy({}, { get() { return undefined; } });\n    void part;"],
+    ["Pick<Deps, \"withLockX\">", "const part: Pick<Deps, \"withLockX\"> = new Proxy({}, { get() { return undefined; } });\n    void part;"],
+  ])("R4-2: a proxy flowing into %s is UNRESOLVED at its construction", (_n, body) => {
+    expect(proxyWhy(add2Scan(body, TOP_LABEL, LISTED))).toHaveLength(1);
+  });
+
   // R4-3: an assertion into a sensitive type, from another type, is the same hole by another route.
   const asserted = (r: { errors: string[] }) =>
     r.errors.filter((e) => /^UNRESOLVED assertion at user\.ts:\d+ \(asserted into a sensitive type\)$/.test(e));
@@ -1430,6 +1472,8 @@ export async function take(d: string, ctx: StageContext, deps: Deps) {
   it("R4-3: a same-type assertion, as const, a non-null assertion and satisfies are not assertions into a sensitive type", () => {
     const r = add2Scan("const a: Deps = {};\n    const b = a as Deps;\n    const c = { n: 1 } as const;\n    const e: Deps | undefined = a;\n    const f = e!;\n    const s = {} satisfies Deps;\n    await take(d, ctx, b);\n    void c; void f; void s;", TOP, LISTED);
     expect(asserted(r)).toEqual([]);
+    // Mutant FX4-R43e: `as const` over a literal holding the context is no assertion into it either.
+    expect(asserted(add2Scan("const k = [ctx, { n: 1 }] as const;\n    void k;", TOP, LISTED))).toEqual([]);
   });
 
   // R5-1 (Codex round 5): an assertion is judged by every sensitive type structurally reachable from the asserted type.
@@ -1616,6 +1660,15 @@ describe("ISS-958 S6 addendum 3: rejected wrappers (R-f), bound writers (R-h, R-
 export function commit(d: string, deps: CDeps) { const apply = deps.apply ?? ((x: string) => 0); return apply(d); }
 `;
   const SEAMS = { testSeamSlots: { "user.ts#CDeps.apply": "tests only" } };
+  // Mutant RJ1: these literals are no flow, so only the contextual check over every object literal reports them.
+  it.each([
+    ["an array element", "export function commitAll(d: string, all: CDeps[]) { for (const x of all) commit(d, x); }\n", "commitAll(d, [{ apply: (x) => x }]);"],
+    ["a parameter default", "export function viaDefault(d: string, deps: CDeps = { apply: (x) => x }) { return commit(d, deps); }\n", "viaDefault(d);"],
+    ["a class field", "export class Holder { deps: CDeps = { apply: (x) => x }; }\n", "commit(d, new Holder().deps);"],
+  ])("R-j1: a test-seam slot supplied by src through %s is refused", (_n, extra, body) => {
+    expect(add2Scan(body, SEAM + extra, SEAMS).errors.some((e) => e.startsWith("test-seam slot user.ts#CDeps.apply is supplied in src at"))).toBe(true);
+  });
+
   it("R-j1: a test-seam slot supplied by src is refused; unsupplied it is silent; unnamed by an edge it is stale", () => {
     const supplied = add2Scan("commit(d, { apply: (x) => x });", SEAM, SEAMS);
     expect(supplied.errors.some((e) => e.startsWith("test-seam slot user.ts#CDeps.apply is supplied in src at"))).toBe(true);

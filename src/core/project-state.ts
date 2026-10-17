@@ -424,7 +424,31 @@ export class ProjectState {
 
   /** Umbrella status derived from descendant leaf tickets (recursive traversal). */
   umbrellaStatus(ticketId: string): PhaseStatus {
-    return ProjectState.aggregateStatus(this.countedUmbrellaLeaves(ticketId));
+    return ProjectState.aggregateStatus(this.countedActiveUmbrellaLeaves(ticketId));
+  }
+
+  /**
+   * ISS-1378: the descendant leaves umbrella status and progress read. The
+   * walk follows the counted children index, so an archived or deleted
+   * intermediate that an active ticket still names as parent is walked
+   * through, contributing nothing itself; only active, non-umbrella children
+   * count as leaves, the same population as the phase counts. Dependency
+   * release keeps walking every lifecycle (`countedUmbrellaLeaves`,
+   * `withdrawnUnder`).
+   */
+  countedActiveUmbrellaLeaves(ticketId: string): Ticket[] {
+    const visited = new Set<string>();
+    const walk = (id: string): Ticket[] => {
+      if (visited.has(id)) return [];
+      visited.add(id);
+      const leaves: Ticket[] = [];
+      for (const child of this.countedChildrenByParent.get(id) ?? []) {
+        if (this.umbrellaIDs.has(child.id)) leaves.push(...walk(child.id));
+        else if (isActiveLifecycle(child)) leaves.push(child);
+      }
+      return leaves;
+    };
+    return walk(ticketId);
   }
 
   /**

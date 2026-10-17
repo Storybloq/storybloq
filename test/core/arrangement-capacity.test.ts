@@ -690,3 +690,21 @@ describe("checkpoint compaction under the arrangement cap", () => {
     );
   });
 });
+
+describe("ISS-1383 A2: the rotation successor's createdDate is local", () => {
+  it("stamps the successor with the local date of the rotation instant", async () => {
+    vi.stubEnv("TZ", "America/Los_Angeles");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-03-10T05:30:00.000Z"));
+      await resolveAssignments(2);
+      await call({ action: "assign", assignment: bigAssignment(50) });
+      const rotated = await rotateArrangement(root, id, pen.id);
+      const successor = JSON.parse(await readFile(arrangementPath(rotated.successorId), "utf-8"));
+      expect(successor.updatedAt.slice(0, 10)).toBe("2026-03-10");
+      expect(successor.createdDate).toBe("2026-03-09");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

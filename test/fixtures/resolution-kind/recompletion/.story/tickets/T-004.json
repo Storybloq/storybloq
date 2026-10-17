@@ -11,7 +11,7 @@
       "state": "approved"
     }
   ],
-  "completedDate": "2026-10-16",
+  "completedDate": "2026-02-01",
   "createdDate": "2026-10-17",
   "description": "Body",
   "displayId": "T-004",
@@ -19,7 +19,7 @@
   "order": 40,
   "phase": "p1",
   "resolutionKind": {
-    "closedOn": "2026-10-16",
+    "closedOn": "2026-02-01",
     "kind": "withdrawn",
     "reason": "Superseded by T-099"
   },

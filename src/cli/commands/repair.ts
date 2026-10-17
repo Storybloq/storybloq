@@ -7,7 +7,7 @@ import type { ProjectState } from "../../core/project-state.js";
 import { authoriseIssueBytes, authoriseTicketBytes, serializeJSON, runTransactionUnlocked } from "../../core/project-loader.js";
 import { assertCheckpointWriteAllowed } from "../../core/checkpoint-guard.js";
 import { CANONICAL_ID_REGEX } from "../../core/canonical-id.js";
-import { TICKET_ID_REGEX, ISSUE_ID_REGEX } from "../../models/types.js";
+import { TICKET_ID_REGEX, ISSUE_ID_REGEX, PRIORITIES, WAITING_ON } from "../../models/types.js";
 
 interface RepairFix {
   entity: string;
@@ -20,7 +20,8 @@ interface RepairFix {
  * never re-serializations of loader-hydrated entities (which absorb derived
  * fields like displayId and defaulted completedDate into every touched file).
  * `set` holds only the fields repair actually changed, as plain JSON values;
- * `unset` holds keys to delete (the ISS-652 stale-claim strip).
+ * `unset` holds keys to delete (the ISS-652 stale-claim strip, and T-481's
+ * unrecognised priority and waitingOn values).
  */
 export interface RepairPatch {
   id: string;
@@ -41,6 +42,18 @@ export interface RepairResult {
  */
 export interface RepairOptions {
   canonicalizeRefs?: boolean;
+}
+
+/**
+ * T-481 scope item 7: the priority and waitingOn keys holding a value outside
+ * the enums (an interim `meta set` pass could store one). The schemas load any
+ * value so this pass can reach it; a valid or absent value is never named.
+ */
+function unrecognisedPriorityFields(item: Record<string, unknown>): Array<"priority" | "waitingOn"> {
+  const out: Array<"priority" | "waitingOn"> = [];
+  if (Object.hasOwn(item, "priority") && !(PRIORITIES as readonly unknown[]).includes(item.priority)) out.push("priority");
+  if (Object.hasOwn(item, "waitingOn") && !(WAITING_ON as readonly unknown[]).includes(item.waitingOn)) out.push("waitingOn");
+  return out;
 }
 
 export function computeRepairs(
@@ -157,12 +170,17 @@ export function computeRepairs(
       fixes.push({ entity: ticket.id, field: "claim", description: "Cleared stale claim state on completed ticket" });
     }
 
-    if (blockedByChanged || parentChanged || phaseCleared || staleClaimOnComplete) {
+    const badTicketFields = unrecognisedPriorityFields(tRec);
+    for (const field of badTicketFields) {
+      fixes.push({ entity: ticket.id, field, description: `Unset unrecognised ${field}: ${JSON.stringify(tRec[field])}` });
+    }
+
+    if (blockedByChanged || parentChanged || phaseCleared || staleClaimOnComplete || badTicketFields.length > 0) {
       const set: Record<string, unknown> = {};
       if (blockedByChanged) set.blockedBy = blockedBy;
       if (parentChanged) set.parentTicket = parentTicket;
       if (phaseCleared) set.phase = null;
-      const unset = staleClaimOnComplete ? ["claim", "claimedBySession"] : [];
+      const unset: string[] = [...(staleClaimOnComplete ? ["claim", "claimedBySession"] : []), ...badTicketFields];
       patches.push({ id: ticket.id, type: "ticket", set, unset });
     }
   }
@@ -206,11 +224,17 @@ export function computeRepairs(
       phaseCleared = true;
     }
 
-    if (relatedChanged || phaseCleared) {
+    const iRec = issue as Record<string, unknown>;
+    const badIssueFields = unrecognisedPriorityFields(iRec);
+    for (const field of badIssueFields) {
+      fixes.push({ entity: issue.id, field, description: `Unset unrecognised ${field}: ${JSON.stringify(iRec[field])}` });
+    }
+
+    if (relatedChanged || phaseCleared || badIssueFields.length > 0) {
       const set: Record<string, unknown> = {};
       if (relatedChanged) set.relatedTickets = relatedTickets;
       if (phaseCleared) set.phase = null;
-      patches.push({ id: issue.id, type: "issue", set, unset: [] });
+      patches.push({ id: issue.id, type: "issue", set, unset: badIssueFields });
     }
   }
 

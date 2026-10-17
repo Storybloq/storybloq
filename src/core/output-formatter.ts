@@ -6,7 +6,7 @@ import { arrangementCapacity, type ArrangementCapacity } from "./arrangement-com
 import { assignmentIdOf, isCompactedAssignment } from "../models/duet.js";
 import { displayIdOf } from "./resolver.js";
 import { ENABLE_GIT_REFS_REMEDY } from "./branch-allocation-warning.js";
-import type { OutputFormat, ErrorCode } from "../models/types.js";
+import { effectivePriority, effectiveWaitingOn, type OutputFormat, type ErrorCode } from "../models/types.js";
 import type { FederationState, FederationNodeEntry } from "../federation/state.js";
 import type { Config } from "../models/config.js";
 import type { Ticket } from "../models/ticket.js";
@@ -1526,6 +1526,20 @@ export function formatNextTicketsOutcome(
   }
 }
 
+/**
+ * T-481: the priority and waitingOn mark on an md list line, shown only when
+ * the item carries a non-default value, so a ledger that never sets either
+ * lists exactly as before.
+ */
+function priorityMark(item: { readonly priority?: unknown; readonly waitingOn?: unknown }): string {
+  const parts: string[] = [];
+  const priority = effectivePriority(item);
+  if (priority !== "p2") parts.push(priority);
+  const waitingOn = effectiveWaitingOn(item);
+  if (waitingOn !== "none") parts.push(`waiting on ${waitingOn}`);
+  return parts.length > 0 ? ` [${parts.join("; ")}]` : "";
+}
+
 export function formatTicketList(
   tickets: readonly Ticket[],
   format: OutputFormat,
@@ -1546,7 +1560,7 @@ export function formatTicketList(
     const status = t.status === "complete" ? "[x]" : t.status === "inprogress" ? "[~]" : "[ ]";
     const checkpoint = checkpointSummary(t);
     const mark = checkpoint ? ` [checkpoint ${checkpoint.state}]` : "";
-    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${withdrawnMark(t)}${mark} (${t.phase ?? "none"})`);
+    lines.push(`${status} ${displayIdOf(t)}: ${escapeMarkdownInline(t.title)}${withdrawnMark(t)}${mark}${priorityMark(t)} (${t.phase ?? "none"})`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByTicketId.get(t.id) ?? []);
     if (rulingsSection) lines.push(rulingsSection);
   }
@@ -1631,7 +1645,7 @@ export function formatIssueList(
     const status = i.status === "resolved" ? "[x]" : "[ ]";
     const kind = effectiveResolutionKind(i);
     const tags = `${kind ? ` (${kind})` : ""}${i.disposition ? ` {${i.disposition}}` : ""}`;
-    lines.push(`${status} ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownInline(i.title)} (${i.phase ?? "none"})${tags}`);
+    lines.push(`${status} ${displayIdOf(i)} [${i.severity}]: ${escapeMarkdownInline(i.title)} (${i.phase ?? "none"})${tags}${priorityMark(i)}`);
     const rulingsSection = formatCitedRulingsSection(citedRulingsByIssueId.get(i.id) ?? []);
     if (rulingsSection) lines.push(rulingsSection);
   }

@@ -227,6 +227,37 @@ export const ERROR_CODES = [
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
+// --- Priority and waitingOn (T-481) ---
+
+// Priority is how soon; severity (issues) is how bad. Absent reads as p2.
+export const PRIORITIES = ["p0", "p1", "p2", "p3"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+export const PRIORITY_RANK: Readonly<Record<Priority, number>> = { p0: 0, p1: 1, p2: 2, p3: 3 };
+
+// Who the item currently waits on. Absent reads as none.
+export const WAITING_ON = ["owner", "external", "none"] as const;
+export type WaitingOn = (typeof WAITING_ON)[number];
+
+/**
+ * The schemas load any stored value so repair can reach an invalid one; every
+ * reader goes through these views, where an unrecognised value reads as the
+ * default and never throws.
+ */
+export function effectivePriority(item: { readonly priority?: unknown }): Priority {
+  const v = item.priority;
+  return typeof v === "string" && (PRIORITIES as readonly string[]).includes(v) ? (v as Priority) : "p2";
+}
+
+export function effectiveWaitingOn(item: { readonly waitingOn?: unknown }): WaitingOn {
+  const v = item.waitingOn;
+  return typeof v === "string" && (WAITING_ON as readonly string[]).includes(v) ? (v as WaitingOn) : "none";
+}
+
+/** True when the item waits on the owner or an external party. */
+export function isWaiting(item: { readonly waitingOn?: unknown }): boolean {
+  return effectiveWaitingOn(item) !== "none";
+}
+
 // --- Date validation ---
 
 export const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;

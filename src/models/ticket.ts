@@ -66,6 +66,11 @@ export const TicketSchema = z
     // T-486 U2: why a complete ticket was not delivered. Any value loads, as
     // on issues; core/resolution-kind.ts reads it through its view only.
     resolutionKind: z.unknown().optional(),
+    // T-481: any value loads, so repair can unset an invalid one. Readers go
+    // through effectivePriority / effectiveWaitingOn (src/models/types.ts);
+    // writers that take a caller's value check it against the closed enums.
+    priority: z.unknown().optional(),
+    waitingOn: z.unknown().optional(),
   })
   .passthrough();
 

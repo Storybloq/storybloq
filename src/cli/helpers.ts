@@ -10,8 +10,12 @@ import {
   LessonIdSchema,
   DateSchema,
   OUTPUT_FORMATS,
+  PRIORITIES,
+  WAITING_ON,
   type OutputFormat,
   type ErrorCode,
+  type Priority,
+  type WaitingOn,
 } from "../models/types.js";
 import type { Argv } from "yargs";
 import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, ORCHESTRATOR_NODE_SENTINEL } from "../mcp/node-resolution.js";
@@ -69,6 +73,38 @@ export function parseOutputFormat(raw: string): OutputFormat {
 /** Returns today's date as YYYY-MM-DD using local date components. */
 export function todayISO(): string {
   return localDateOf(new Date());
+}
+
+/** T-481: a caller-supplied priority, refused unless it is one of the enum. */
+export function parsePriority(raw: unknown): Priority {
+  if (typeof raw !== "string" || !(PRIORITIES as readonly string[]).includes(raw)) {
+    throw new CliValidationError("invalid_input", `Unknown priority "${String(raw)}": must be one of ${PRIORITIES.join(", ")}`);
+  }
+  return raw as Priority;
+}
+
+/** T-481: a caller-supplied waitingOn, refused unless it is one of the enum. */
+export function parseWaitingOn(raw: unknown): WaitingOn {
+  if (typeof raw !== "string" || !(WAITING_ON as readonly string[]).includes(raw)) {
+    throw new CliValidationError("invalid_input", `Unknown waitingOn "${String(raw)}": must be one of ${WAITING_ON.join(", ")}`);
+  }
+  return raw as WaitingOn;
+}
+
+/**
+ * T-481: applies validated priority/waitingOn inputs to a record. An undefined
+ * input leaves the stored key alone; waitingOn "none" removes the key, since
+ * absent already reads as none.
+ */
+export function withPriorityFields<T extends object>(
+  record: T,
+  inputs: { priority?: Priority; waitingOn?: WaitingOn },
+): T {
+  const out = { ...record } as Record<string, unknown>;
+  if (inputs.priority !== undefined) out.priority = inputs.priority;
+  if (inputs.waitingOn === "none") delete out.waitingOn;
+  else if (inputs.waitingOn !== undefined) out.waitingOn = inputs.waitingOn;
+  return out as T;
 }
 
 /**

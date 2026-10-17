@@ -41,6 +41,12 @@ export function parseMetadataPath(raw: string): readonly string[] {
   return segments;
 }
 
+/** T-481: core fields that moved out of metadata name the flag that sets them now. */
+const CORE_FIELD_FLAGS: Readonly<Record<string, string>> = {
+  priority: "--priority",
+  waitingOn: "--waiting-on",
+};
+
 export function ensureCustomMetadataPath(
   rawPath: string,
   protectedKeys: ReadonlySet<string>,
@@ -48,9 +54,10 @@ export function ensureCustomMetadataPath(
   const segments = parseMetadataPath(rawPath);
   const rootKey = segments[0];
   if (rootKey && protectedKeys.has(rootKey)) {
+    const flag = CORE_FIELD_FLAGS[rootKey];
     throw new CliValidationError(
       "invalid_input",
-      `Metadata path "${rawPath}" targets protected core field "${rootKey}"`,
+      `Metadata path "${rawPath}" targets protected core field "${rootKey}"${flag ? `; set it with ${flag}` : ""}`,
     );
   }
   return segments;

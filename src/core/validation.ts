@@ -1,5 +1,6 @@
 import type { ProjectState } from "./project-state.js";
 import type { LoadWarning } from "./errors.js";
+import { PRIORITIES, WAITING_ON } from "../models/types.js";
 import { CROSS_NODE_REF_CAPTURE_REGEX } from "../models/ticket.js";
 import { hasConflicts, type ConflictedItem } from "./conflicts.js";
 import { displayIdOf } from "./resolver.js";
@@ -152,6 +153,20 @@ export function validateProject(
         code: "duplicate_issue_id",
         message: `Duplicate issue ID: ${id} appears ${count} times.`,
         entity: id,
+      });
+    }
+  }
+
+  // T-481: a priority or waitingOn outside the enums loads (repair must reach
+  // it) and reads as the default; validate names it so repair can unset it.
+  for (const item of [...state.tickets, ...state.issues] as Array<Record<string, unknown> & { id: string }>) {
+    for (const [field, allowed] of [["priority", PRIORITIES], ["waitingOn", WAITING_ON]] as const) {
+      if (!Object.hasOwn(item, field) || (allowed as readonly unknown[]).includes(item[field])) continue;
+      findings.push({
+        level: "warning",
+        code: "unrecognised_value",
+        message: `${displayIdOf(item)}: unrecognised ${field} ${JSON.stringify(item[field])} (one of ${allowed.join(", ")}); it reads as ${field === "priority" ? "p2" : "none"}. Run storybloq repair to unset it.`,
+        entity: item.id,
       });
     }
   }

@@ -32,6 +32,9 @@ export interface IssueCreateInput {
    */
   phase?: string | null;
   citesRuling?: string[];
+  /** T-481: validated against the enums before the lock; waitingOn "none" stores nothing. */
+  priority?: string;
+  waitingOn?: string;
   /**
    * ISS-1113: the reason this issue is not work, set by the path that FILES
    * it. Validated against `IssueSchema`'s enum before the ledger lock, the

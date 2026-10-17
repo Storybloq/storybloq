@@ -1175,6 +1175,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 .option("type", {
                   type: "string",
                   describe: "Filter by type",
+                })
+                .option("priority", {
+                  type: "string",
+                  describe: "Filter by priority (p0-p3; p2 includes tickets with none set)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Filter by who the ticket waits on (owner, external, none; none includes unset)",
                 }),
             )),
           async (argv) => {
@@ -1186,11 +1194,11 @@ export function registerTicketCommand(yargs: Argv): Argv {
               const eff = resolveRootWithNode(orchRoot, nodeName, false, format);
               if (!eff.ok) { writeOutput(eff.output, format); process.exitCode = ExitCode.USER_ERROR; return; }
               await runReadCommandWithRoot(format, eff.root, (ctx) =>
-                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined }, ctx),
+                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
               );
             } else {
               await runReadCommand(format, (ctx) =>
-                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined }, ctx),
+                handleTicketList({ status: argv.status as string | undefined, phase: argv.phase as string | undefined, type: argv.type as string | undefined, priority: argv.priority as string | undefined, waitingOn: argv["waiting-on"] as string | undefined }, ctx),
               );
             }
           },
@@ -1256,6 +1264,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   type: "string",
                   describe: "Phase ID (default: the current phase when the project has phases; \"\" leaves it unphased)",
                 })
+                .option("priority", {
+                  type: "string",
+                  describe: "Priority, how soon: p0, p1, p2, p3 (unset reads as p2)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Who the ticket waits on: owner, external, none (none removes it)",
+                })
                 .option("description", {
                   type: "string",
                   describe: "Ticket description",
@@ -1315,6 +1331,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   parentTicket:
                     argv["parent-ticket"] === "" ? null : (argv["parent-ticket"] as string | undefined) ?? null,
                   citesRuling: argv["cites-ruling"] as string[] | undefined,
+                  priority: argv.priority as string | undefined,
+                  waitingOn: argv["waiting-on"] as string | undefined,
                 },
                 format,
                 eff.root,
@@ -1368,6 +1386,14 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 .option("phase", {
                   type: "string",
                   describe: "New phase ID",
+                })
+                .option("priority", {
+                  type: "string",
+                  describe: "Priority, how soon: p0, p1, p2, p3 (unset reads as p2)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Who the ticket waits on: owner, external, none (none removes it)",
                 })
                 .option("order", {
                   type: "number",
@@ -1477,6 +1503,8 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   clearCitesRulings: argv["clear-cites-rulings"] as boolean | undefined,
                   resolutionKind: argv["resolution-kind"] as string | undefined,
                   reason: argv.reason as string | undefined,
+                  priority: argv.priority as string | undefined,
+                  waitingOn: argv["waiting-on"] as string | undefined,
                 },
                 format,
                 eff.root,
@@ -1927,6 +1955,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 .option("resolution-kind", {
                   type: "string",
                   describe: "Filter by effective resolution kind",
+                })
+                .option("priority", {
+                  type: "string",
+                  describe: "Filter by priority (p0-p3; p2 includes issues with none set)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Filter by who the issue waits on (owner, external, none; none includes unset)",
                 }),
             ),
           async (argv) => {
@@ -1942,6 +1978,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   disposition: argv.disposition as string | undefined,
                   actionable,
                   resolutionKind: argv["resolution-kind"] as string | undefined,
+                  priority: argv.priority as string | undefined,
+                  waitingOn: argv["waiting-on"] as string | undefined,
                 },
                 ctx,
               ),
@@ -1992,6 +2030,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 .option("phase", {
                   type: "string",
                   describe: "Phase ID",
+                })
+                .option("priority", {
+                  type: "string",
+                  describe: "Priority, how soon: p0, p1, p2, p3 (unset reads as p2; severity is how bad)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Who the issue waits on: owner, external, none (none removes it)",
                 })
                 .option("dedupe-key", {
                   type: "string",
@@ -2054,6 +2100,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   createdBy: argv["created-by"] as string | undefined,
                   phase: argv.phase === "" ? undefined : (argv.phase as string | undefined),
                   citesRuling: argv["cites-ruling"] as string[] | undefined,
+                  priority: argv.priority as string | undefined,
+                  waitingOn: argv["waiting-on"] as string | undefined,
                 },
                 format,
                 root,
@@ -2123,6 +2171,14 @@ export function registerIssueCommand(yargs: Argv): Argv {
                 .option("phase", {
                   type: "string",
                   describe: "New phase ID",
+                })
+                .option("priority", {
+                  type: "string",
+                  describe: "Priority, how soon: p0, p1, p2, p3 (unset reads as p2; severity is how bad)",
+                })
+                .option("waiting-on", {
+                  type: "string",
+                  describe: "Who the issue waits on: owner, external, none (none removes it)",
                 })
                 .option("clear-cites-rulings", {
                   type: "boolean",
@@ -2217,6 +2273,8 @@ export function registerIssueCommand(yargs: Argv): Argv {
                   disposition: argv["clear-disposition"] ? null : (argv.disposition as string | undefined),
                   dispositionReason: argv.reason as string | undefined,
                   dispositionRef: argv.ref as string | undefined,
+                  priority: argv.priority as string | undefined,
+                  waitingOn: argv["waiting-on"] as string | undefined,
                 },
                 format,
                 root,

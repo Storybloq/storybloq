@@ -14,7 +14,7 @@ import type { Arrangement } from "../../models/arrangement.js";
 import type { Ruling } from "../../models/ruling.js";
 import { loadRulingsSafe, writeRulingUnlocked } from "../../core/ruling-loader.js";
 import type { CommandResult } from "../types.js";
-import { CliValidationError } from "../helpers.js";
+import { CliValidationError, parsePriority, parseWaitingOn } from "../helpers.js";
 import { sanitizeDisplayText, MAX_PROSE_LENGTH } from "../../core/display-text.js";
 import { catalogOnlyFlags, handleCatalogResolve, type CatalogResolveInput } from "./resolve-catalog.js";
 
@@ -479,6 +479,17 @@ async function writeResolvedTicket(
   await writeTicketUnlocked(resolved as never, root);
 }
 
+/**
+ * T-481 D7: a --value that assigns priority or waitingOn must name one of the
+ * enum values. Only a changed value is checked, so an invalid value already
+ * stored round-trips on an unrelated resolve and repair can still unset it;
+ * --use picks a stored side and never comes here.
+ */
+function assertAssignedPriorityFields(prior: Record<string, unknown>, resolved: Record<string, unknown>): void {
+  if (resolved.priority !== undefined && resolved.priority !== prior.priority) parsePriority(resolved.priority);
+  if (resolved.waitingOn !== undefined && resolved.waitingOn !== prior.waitingOn) parseWaitingOn(resolved.waitingOn);
+}
+
 export async function handleResolve(
   id: string,
   root: string,
@@ -579,6 +590,9 @@ export async function handleResolve(
       const mutable = { ...target.entity };
       const before = ((target.entity as Record<string, unknown>)._conflicts ?? []) as ConflictEntry[];
       result = resolveConflicts(mutable, resolveOptions);
+      if ((target.kind === "ticket" || target.kind === "issue") && options.value !== undefined) {
+        assertAssignedPriorityFields(target.entity as Record<string, unknown>, mutable as Record<string, unknown>);
+      }
       if (target.kind === "ticket") await writeResolvedTicket(target.entity as Record<string, unknown>, mutable as Record<string, unknown>, before, result, resolveOptions, root);
       else if (target.kind === "issue") await writeIssueUnlocked(mutable as never, root);
       else if (target.kind === "note") await writeNoteUnlocked(mutable as never, root);

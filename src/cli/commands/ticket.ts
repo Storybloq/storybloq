@@ -46,8 +46,12 @@ import {
 import {
   TICKET_STATUSES,
   TICKET_TYPES,
+  effectivePriority,
+  effectiveWaitingOn,
+  type Priority,
   type TicketStatus,
   type TicketType,
+  type WaitingOn,
 } from "../../models/types.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { UpdateWriteHooks } from "../../core/update-write-hooks.js";
@@ -56,6 +60,9 @@ import {
   todayISO,
   CliValidationError,
   assertUpdateHasFields,
+  parsePriority,
+  parseWaitingOn,
+  withPriorityFields,
 } from "../helpers.js";
 import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
@@ -103,15 +110,21 @@ const TICKET_CORE_METADATA_KEYS = new Set([
   "resolutionKind",
   "effective",
   "stored",
+  // T-481: set through --priority / --waiting-on, never through meta set.
+  "priority",
+  "waitingOn",
 ]);
 
 // --- Read Handlers ---
 
 export function handleTicketList(
-  filters: { status?: string; phase?: string; type?: string },
+  filters: { status?: string; phase?: string; type?: string; priority?: string; waitingOn?: string },
   ctx: CommandContext,
 ): CommandResult {
   let tickets = [...ctx.state.leafTickets];
+  // T-481: both filters read through the views, so p2 and none include absent.
+  const priority = filters.priority !== undefined ? parsePriority(filters.priority) : undefined;
+  const waitingOn = filters.waitingOn !== undefined ? parseWaitingOn(filters.waitingOn) : undefined;
 
   if (filters.status) {
     if (!TICKET_STATUSES.includes(filters.status as TicketStatus)) {
@@ -133,6 +146,12 @@ export function handleTicketList(
       );
     }
     tickets = tickets.filter((t) => t.type === filters.type);
+  }
+  if (priority !== undefined) {
+    tickets = tickets.filter((t) => effectivePriority(t) === priority);
+  }
+  if (waitingOn !== undefined) {
+    tickets = tickets.filter((t) => effectiveWaitingOn(t) === waitingOn);
   }
 
   const rulingCtx = loadCitationContext(ctx.root);
@@ -357,6 +376,9 @@ export async function prepareNewTicketUnlocked(
     blockedBy: string[];
     parentTicket: string | null;
     citesRulings?: string[];
+    /** T-481: already validated by the caller; waitingOn "none" stores nothing. */
+    priority?: Priority;
+    waitingOn?: WaitingOn;
   },
   state: ProjectState,
   root: string,
@@ -385,7 +407,7 @@ export async function prepareNewTicketUnlocked(
   const order = nextOrder(args.phase, state);
   const instant = new Date();
   const createdAt = instant.toISOString();
-  return {
+  return withPriorityFields<Ticket>({
     id,
     ...(displayId != null && { displayId }),
     title: args.title,
@@ -401,7 +423,7 @@ export async function prepareNewTicketUnlocked(
     parentTicket: resolvedParent,
     ...(args.citesRulings !== undefined && args.citesRulings.length > 0
       && { citesRulings: args.citesRulings }),
-  };
+  }, { priority: args.priority, waitingOn: args.waitingOn });
 }
 
 /**
@@ -429,6 +451,8 @@ export async function handleTicketCreate(
     blockedBy: string[];
     parentTicket: string | null;
     citesRuling?: string[];
+    priority?: string;
+    waitingOn?: string;
   },
   format: string,
   root: string,
@@ -439,6 +463,8 @@ export async function handleTicketCreate(
       `Unknown ticket type "${args.type}": must be one of ${TICKET_TYPES.join(", ")}`,
     );
   }
+  const priority = args.priority !== undefined ? parsePriority(args.priority) : undefined;
+  const waitingOn = args.waitingOn !== undefined ? parseWaitingOn(args.waitingOn) : undefined;
   const citesRulingsResolution = resolveCitesRulingsInput(args.citesRuling, undefined);
   if (!citesRulingsResolution.ok) {
     throw new CliValidationError("invalid_input", citesRulingsResolution.message);
@@ -457,7 +483,7 @@ export async function handleTicketCreate(
         ? ` (phase ${phase}: defaulted to the current phase; pass phase null / --phase "" to leave it unphased)`
         : " (no current phase: ticket left unphased; assign a phase to schedule it)";
     }
-    const ticket = await prepareNewTicketUnlocked({ ...args, phase, citesRulings: citesRulingsResolution.citesRulings }, state, root);
+    const ticket = await prepareNewTicketUnlocked({ ...args, phase, citesRulings: citesRulingsResolution.citesRulings, priority, waitingOn }, state, root);
     validatePostWriteState(ticket, state, true);
     await writeTicketUnlocked(ticket, root, { createOnly: true });
     createdTicket = ticket;
@@ -548,8 +574,10 @@ export async function handleTicketUpdate(
   assertUpdateHasFields(
     updates,
     "ticket",
-    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings, resolutionKind (with reason)",
+    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings, resolutionKind (with reason), priority, waitingOn",
   );
+  const priority = updates.priority !== undefined ? parsePriority(updates.priority) : undefined;
+  const waitingOn = updates.waitingOn !== undefined ? parseWaitingOn(updates.waitingOn) : undefined;
   // ISS-1192: an agent that reads the md-rendered description back and
   // writes it verbatim carries the render fence into storage, growing by one
   // backtick every round trip. Applies to both the CLI --stdin/--description
@@ -614,7 +642,7 @@ export async function handleTicketUpdate(
       }
     }
 
-    const built: Ticket = {
+    const built: Ticket = withPriorityFields<Ticket>({
       ...existing,
       ...(updates.title !== undefined && { title: updates.title }),
       ...(updates.type !== undefined && { type: updates.type as TicketType }),
@@ -626,7 +654,7 @@ export async function handleTicketUpdate(
       ...(updates.parentTicket !== undefined && { parentTicket: resolvedParent }),
       ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
       ...statusChanges,
-    };
+    }, { priority, waitingOn });
 
     // T-486 U2-6: the withdrawal setter. With the flag, the ticket as updated
     // must be complete and must not be an owner checkpoint or an umbrella,

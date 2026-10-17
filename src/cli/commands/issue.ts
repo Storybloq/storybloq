@@ -38,6 +38,8 @@ import {
 import {
   ISSUE_STATUSES,
   ISSUE_SEVERITIES,
+  effectivePriority,
+  effectiveWaitingOn,
   type IssueStatus,
   type IssueSeverity,
 } from "../../models/types.js";
@@ -53,6 +55,9 @@ import {
   todayISO,
   CliValidationError,
   assertUpdateHasFields,
+  parsePriority,
+  parseWaitingOn,
+  withPriorityFields,
 } from "../helpers.js";
 import { localDateOf } from "../../core/local-date.js";
 import type { CommandContext, CommandResult } from "../types.js";
@@ -106,6 +111,9 @@ const ISSUE_CORE_METADATA_KEYS = new Set([
   // T-486 A6: reserved for derived values in JSON output.
   "effective",
   "stored",
+  // T-481: set through --priority / --waiting-on, never through meta set.
+  "priority",
+  "waitingOn",
 ]);
 
 function rethrowIssueResolutionError(err: unknown, fallbackMsg: string): never {
@@ -130,10 +138,16 @@ export function handleIssueList(
     actionable?: boolean;
     /** T-486: keeps issues whose resolution kind is effective and equal. */
     resolutionKind?: string;
+    /** T-481: through the view, so p2 includes absent. */
+    priority?: string;
+    /** T-481: through the view, so none includes absent. */
+    waitingOn?: string;
   },
   ctx: CommandContext,
 ): CommandResult {
   let issues = [...ctx.state.activeIssues];
+  const priority = filters.priority !== undefined ? parsePriority(filters.priority) : undefined;
+  const waitingOn = filters.waitingOn !== undefined ? parseWaitingOn(filters.waitingOn) : undefined;
 
   if (filters.disposition !== undefined) {
     const wanted = filters.disposition;
@@ -185,6 +199,12 @@ export function handleIssueList(
   // phase yields an empty list; the MCP tool closure validates like ticket_list.
   if (filters.phase) {
     issues = issues.filter((i) => i.phase === filters.phase);
+  }
+  if (priority !== undefined) {
+    issues = issues.filter((i) => effectivePriority(i) === priority);
+  }
+  if (waitingOn !== undefined) {
+    issues = issues.filter((i) => effectiveWaitingOn(i) === waitingOn);
   }
 
   return { output: formatIssueList(issues, ctx.format, citationMapFor(issues, loadCitationContext(ctx.root))) };
@@ -372,6 +392,8 @@ export async function handleIssueCreate(
 
   const metadataRefusal = validateIssueCreateMetadata(args);
   if (metadataRefusal) throw new CliValidationError("invalid_input", metadataRefusal.message);
+  const priority = args.priority !== undefined ? parsePriority(args.priority) : undefined;
+  const waitingOn = args.waitingOn !== undefined ? parseWaitingOn(args.waitingOn) : undefined;
 
   let createdIssue: Issue | undefined;
   let deduplicated = false;
@@ -424,7 +446,7 @@ export async function handleIssueCreate(
     }
     const instant = new Date();
     const createdAt = instant.toISOString();
-    const issue: Issue = {
+    const issue: Issue = withPriorityFields<Issue>({
       id,
       ...(displayId != null && { displayId }),
       title: args.title,
@@ -449,7 +471,7 @@ export async function handleIssueCreate(
       // so neither key appears rather than appearing as null or {}.
       ...(args.disposition !== undefined && { disposition: args.disposition as IssueDisposition }),
       ...(args.metadata !== undefined && { metadata: args.metadata }),
-    };
+    }, { priority, waitingOn });
 
     validatePostWriteIssueState(issue, state, true);
     await writeIssueUnlocked(issue, root, { createOnly: true });
@@ -488,9 +510,11 @@ export async function handleIssueUpdate(
   assertUpdateHasFields(
     updates,
     "issue",
-    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings, resolutionKind, duplicateOf, disposition, dispositionReason, dispositionRef",
+    "status, title, severity, impact, resolution, components, relatedTickets, location, sourceRefs, order, phase, citesRuling, clearCitesRulings, resolutionKind, duplicateOf, disposition, dispositionReason, dispositionRef, priority, waitingOn",
   );
   assertDispositionInput(updates);
+  const priority = updates.priority !== undefined ? parsePriority(updates.priority) : undefined;
+  const waitingOn = updates.waitingOn !== undefined ? parseWaitingOn(updates.waitingOn) : undefined;
   if (updates.resolutionKind !== undefined && !(ISSUE_RESOLUTION_KINDS as readonly string[]).includes(updates.resolutionKind)) {
     throw new CliValidationError(
       "invalid_input",
@@ -571,7 +595,7 @@ export async function handleIssueUpdate(
       }
     }
 
-    let issue: Issue = {
+    let issue: Issue = withPriorityFields<Issue>({
       ...existing,
       ...(updates.title !== undefined && { title: updates.title }),
       ...(updates.severity !== undefined && { severity: updates.severity as IssueSeverity }),
@@ -585,7 +609,7 @@ export async function handleIssueUpdate(
       ...(updates.phase !== undefined && { phase: updates.phase }),
       ...(citesRulingsResolution.citesRulings !== undefined && { citesRulings: citesRulingsResolution.citesRulings }),
       ...statusChanges,
-    };
+    }, { priority, waitingOn });
 
     if (updates.duplicateOf !== undefined) {
       issue = { ...issue, duplicateOf: resolveDuplicateTarget(state, updates.duplicateOf, existing.id) };

@@ -87,6 +87,8 @@ import {
   TICKET_TYPES,
   ISSUE_STATUSES,
   ISSUE_SEVERITIES,
+  PRIORITIES,
+  WAITING_ON,
   NOTE_STATUSES,
   LESSON_STATUSES,
   LESSON_SOURCES,
@@ -783,6 +785,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       status: z.enum(TICKET_STATUSES).optional(),
       phase: z.string().optional(),
       type: z.enum(TICKET_TYPES).optional(),
+      priority: z.enum(PRIORITIES).optional().describe("p2 includes unset"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("none includes unset"),
       node: nodeParam,
     },
   }, (args) => {
@@ -800,7 +804,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         }
       }
       return handleTicketList(
-        { status: args.status, phase: args.phase, type: args.type },
+        { status: args.status, phase: args.phase, type: args.type, priority: args.priority, waitingOn: args.waitingOn },
         ctx,
       );
     }, eff.root);
@@ -843,6 +847,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       disposition: z.string().optional().describe("Disposition value, or none"),
       actionable: z.boolean().optional().describe("true: actionable only; false: non-actionable only"),
       resolutionKind: z.string().optional().describe("Effective resolution kind"),
+      priority: z.enum(PRIORITIES).optional().describe("p2 includes unset"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("none includes unset"),
       format: z.enum(["md", "json"]).optional().describe("default: md"),
       node: nodeParam,
     },
@@ -863,7 +869,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         }
       }
       return handleIssueList(
-        { status: args.status, severity: args.severity, component: args.component, phase: args.phase, disposition: args.disposition, actionable: args.actionable, resolutionKind: args.resolutionKind },
+        { status: args.status, severity: args.severity, component: args.component, phase: args.phase, disposition: args.disposition, actionable: args.actionable, resolutionKind: args.resolutionKind, priority: args.priority, waitingOn: args.waitingOn },
         ctx,
       );
     }, eff.root, args.format ?? "md");
@@ -998,6 +1004,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       blockedBy: z.array(TicketRefSchema).optional(),
       parentTicket: TicketRefSchema.optional().describe("Makes this a sub-ticket"),
       citesRuling: z.array(RulingIdSchema).optional().describe("Ruling IDs this ticket cites"),
+      priority: z.enum(PRIORITIES).optional().describe("How soon; unset reads as p2"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("Who it waits on; none removes it"),
       node: nodeParam,
     },
   }, (args) => {
@@ -1013,6 +1021,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
         blockedBy: args.blockedBy ?? [],
         parentTicket: args.parentTicket ?? null,
         citesRuling: args.citesRuling,
+        priority: args.priority,
+        waitingOn: args.waitingOn,
       },
       format,
       root,
@@ -1040,6 +1050,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           "Refused while a live ticket waits on it or on an umbrella above it. Without it, status complete on a withdrawn ticket makes it delivered, and reopening drops the withdrawal.",
       ),
       reason: z.string().min(1).optional().describe("Why the ticket is withdrawn. Only with resolutionKind."),
+      priority: z.enum(PRIORITIES).optional().describe("How soon; unset reads as p2"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("Who it waits on; none removes it"),
       node: nodeParam,
     },
   }, async (args) => {
@@ -1064,6 +1076,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           clearCitesRulings: args.clearCitesRulings,
           resolutionKind: args.resolutionKind,
           reason: args.reason,
+          priority: args.priority,
+          waitingOn: args.waitingOn,
         },
         format,
         root,
@@ -1109,6 +1123,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       createdBy: z.string().min(1).max(256).optional(),
       phase: z.string().optional().describe("Phase ID"),
       citesRuling: z.array(RulingIdSchema).optional().describe("Ruling IDs this issue cites"),
+      priority: z.enum(PRIORITIES).optional().describe("How soon; unset reads as p2"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("Who it waits on; none removes it"),
       node: nodeParam,
     },
   }, (args) => {
@@ -1128,6 +1144,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           createdBy: args.createdBy,
           phase: args.phase,
           citesRuling: args.citesRuling,
+          priority: args.priority,
+          waitingOn: args.waitingOn,
         },
         format,
         root,
@@ -1157,6 +1175,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       disposition: z.enum(ISSUE_DISPOSITIONS).nullable().optional().describe("Why this issue is not work; needs dispositionReason and dispositionRef. null clears all three"),
       dispositionReason: z.string().optional().describe("Why the disposition holds"),
       dispositionRef: z.string().optional().describe("Where it was decided: an item id, git sha or https URL"),
+      priority: z.enum(PRIORITIES).optional().describe("How soon; unset reads as p2"),
+      waitingOn: z.enum(WAITING_ON).optional().describe("Who it waits on; none removes it"),
       node: nodeParam,
     },
   }, async (args) => {
@@ -1186,6 +1206,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           disposition: args.disposition,
           dispositionReason: args.dispositionReason,
           dispositionRef: args.dispositionRef,
+          priority: args.priority,
+          waitingOn: args.waitingOn,
         },
         format,
         root,

@@ -16,6 +16,8 @@ export interface TicketUpdateInput {
   /** T-486 U2-6: "withdrawn" closes the ticket as withdrawn rather than delivered. */
   resolutionKind?: string;
   reason?: string;
+  priority?: string;
+  waitingOn?: string;
 }
 
 export interface IssueUpdateInput {
@@ -38,6 +40,8 @@ export interface IssueUpdateInput {
   disposition?: string | null;
   dispositionReason?: string;
   dispositionRef?: string;
+  priority?: string;
+  waitingOn?: string;
 }
 
 export interface NoteUpdateInput {

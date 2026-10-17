@@ -912,12 +912,22 @@ test("cards and details show main's effective withdrawal, resolution kind and di
     assert.ok(card("ISS-005").tags.includes("Not reproducible"));
     assert.ok(card("ISS-006").tags.includes("Owner gated"));
     for (const id of ["T-002", "T-003"]) {
-      const t = state.ticketByID(id)!;
-      assert.deepEqual(detail(b, "tickets", id).effective, ticketEffectiveJson(t));
+      const view = ticketEffectiveJson(state.ticketByID(id)!);
+      assert.deepEqual(detail(b, "tickets", id).effective, {
+        ...view,
+        reasonTruncated: false,
+      });
     }
     for (const id of ["ISS-001", "ISS-002", "ISS-003", "ISS-004", "ISS-005", "ISS-006"]) {
-      const i = state.issueByID(id)!;
-      assert.deepEqual(detail(b, "issues", id).effective, issueEffectiveJson(i));
+      const view = issueEffectiveJson(state.issueByID(id)!);
+      assert.deepEqual(detail(b, "issues", id).effective, {
+        ...view,
+        dispositionEvidence: view.dispositionEvidence && {
+          ...view.dispositionEvidence,
+          reasonTruncated: false,
+          refTruncated: false,
+        },
+      });
     }
     assert.match(detail(b, "tickets", "T-002").description, /^Withdrawn: Superseded by the merged plan\n\n/);
     assert.match(detail(b, "issues", "ISS-002").description, /^Resolved \(wontfix\)\n\n/);
@@ -933,6 +943,83 @@ test("cards and details show main's effective withdrawal, resolution kind and di
       medium: 0,
       low: 0,
       ...Object.fromEntries(state.issuesBySeverity),
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+// T-566 Codex checkpoint 2: main sets no length limit on a withdrawal reason or
+// disposition evidence, so the board bounds them before they reach a response.
+test("list and detail responses bound withdrawal and disposition evidence text", async () => {
+  const f = await fixture();
+  const big = (c: string) => c.repeat(100_000);
+  try {
+    await f.put(
+      "tickets/T-002.json",
+      ticket("T-002", {
+        status: "complete",
+        completedDate: "2026-10-01",
+        description: "Ticket body stays visible",
+        resolutionKind: {
+          kind: "withdrawn",
+          closedOn: "2026-10-01",
+          reason: big("r"),
+        },
+      }),
+    );
+    await f.put(
+      "issues/ISS-006.json",
+      issue("ISS-006", {
+        severity: "medium",
+        impact: "Issue body stays visible",
+        disposition: "owner_gated",
+        dispositionReason: big("d"),
+        dispositionRef: big("f"),
+        dispositionFor: "owner_gated",
+      }),
+    );
+    const b = await readBoard(f.root);
+    const t = detail(b, "tickets", "T-002").effective as any;
+    assert.equal(t.resolutionKind, "withdrawn");
+    assert.equal(t.resolutionKindState, "effective");
+    assert.equal(t.reason, "r".repeat(2000) + "…");
+    assert.equal(t.reasonTruncated, true);
+    const i = detail(b, "issues", "ISS-006").effective as any;
+    assert.equal(i.dispositionEvidenceState, "effective");
+    assert.deepEqual(i.dispositionEvidence, {
+      reason: "d".repeat(2000) + "…",
+      ref: "f".repeat(300) + "…",
+      reasonTruncated: true,
+      refTruncated: true,
+    });
+    for (const [kind, id, body] of [
+      ["tickets", "T-002", "Ticket body stays visible"],
+      ["issues", "ISS-006", "Issue body stays visible"],
+    ] as const) {
+      const item = detail(b, kind, id);
+      assert.ok(JSON.stringify(item).length < 20_000, id);
+      assert.ok(item.description.includes(body), id);
+    }
+    for (const kind of ["tickets", "issues"] as const) {
+      const rows = page(b, {
+        kind,
+        query: "",
+        status: "all",
+        limit: 100,
+        offset: 0,
+      }).items;
+      assert.ok(rows.length > 0);
+      for (const row of rows) {
+        assert.ok(JSON.stringify(row).length < 2_000, row.id);
+        assert.equal("reason" in (row.effective ?? {}), false, row.id);
+        assert.equal("dispositionEvidence" in (row.effective ?? {}), false, row.id);
+      }
+    }
+    const row = page(b, { kind: "issues", query: "ISS-006", status: "all", limit: 1, offset: 0 }).items[0];
+    assert.deepEqual(row.effective, {
+      resolutionKind: null,
+      resolutionKindState: "absent",
+      dispositionEvidenceState: "effective",
     });
   } finally {
     await f.cleanup();

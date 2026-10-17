@@ -1,0 +1,75 @@
+{
+  "blockedBy": [],
+  "completedDate": null,
+  "createdDate": "2026-10-17",
+  "description": "",
+  "displayId": "T-003",
+  "id": "T-003",
+  "order": 30,
+  "ownerCheckpoint": {
+    "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+    "evidenceRefs": [],
+    "generation": 3,
+    "history": [
+      {
+        "at": "2026-10-17T04:33:25.841Z",
+        "by": "unknown",
+        "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+        "event": "created",
+        "evidenceRefs": [],
+        "generation": 1,
+        "kind": "decision",
+        "question": "Ship C?",
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:26.667Z",
+        "by": "unknown",
+        "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+        "event": "resolved",
+        "evidenceRefs": [],
+        "generation": 2,
+        "kind": "decision",
+        "question": "Ship C?",
+        "resolution": {
+          "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+          "generation": 2,
+          "respondedAt": "2026-10-17T04:33:26.667Z",
+          "respondedBy": "unknown",
+          "response": "yes",
+          "revision": 1
+        },
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:29.830Z",
+        "by": "unknown",
+        "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+        "event": "reopened",
+        "evidenceRefs": [],
+        "generation": 3,
+        "kind": "decision",
+        "question": "Ship C?",
+        "reason": "again",
+        "resolution": {
+          "digest": "948b3f36731353b3333f02f64362177957c98872656a04bae770f1b80f5a35e8",
+          "generation": 2,
+          "respondedAt": "2026-10-17T04:33:26.667Z",
+          "respondedBy": "unknown",
+          "response": "yes",
+          "revision": 1
+        },
+        "revision": 1
+      }
+    ],
+    "kind": "decision",
+    "lifecycle": "active",
+    "owner": "owner",
+    "question": "Ship C?",
+    "revision": 1
+  },
+  "phase": "p1",
+  "status": "open",
+  "title": "Gate C",
+  "type": "task"
+}

@@ -1,0 +1,63 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-16",
+  "createdDate": "2026-10-17",
+  "description": "",
+  "displayId": "T-001",
+  "id": "T-001",
+  "order": 10,
+  "ownerCheckpoint": {
+    "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+    "evidenceRefs": [],
+    "generation": 2,
+    "history": [
+      {
+        "at": "2026-10-17T04:33:25.321Z",
+        "by": "unknown",
+        "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+        "event": "created",
+        "evidenceRefs": [],
+        "generation": 1,
+        "kind": "decision",
+        "question": "Ship A?",
+        "revision": 1
+      },
+      {
+        "at": "2026-10-17T04:33:26.146Z",
+        "by": "unknown",
+        "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+        "event": "resolved",
+        "evidenceRefs": [],
+        "generation": 2,
+        "kind": "decision",
+        "question": "Ship A?",
+        "resolution": {
+          "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+          "generation": 2,
+          "respondedAt": "2026-10-17T04:33:26.146Z",
+          "respondedBy": "unknown",
+          "response": "yes",
+          "revision": 1
+        },
+        "revision": 1
+      }
+    ],
+    "kind": "decision",
+    "lifecycle": "active",
+    "owner": "owner",
+    "question": "Ship A?",
+    "resolution": {
+      "digest": "186e7b89d2ae72763eb26d3c4e79018231647645bd2e9af0bb68c5f0118c411b",
+      "generation": 2,
+      "respondedAt": "2026-10-17T04:33:26.146Z",
+      "respondedBy": "unknown",
+      "response": "yes",
+      "revision": 1
+    },
+    "revision": 1
+  },
+  "phase": "p1",
+  "status": "complete",
+  "title": "Gate A",
+  "type": "task"
+}

@@ -1,0 +1,18 @@
+{
+  "blockedBy": [],
+  "completedDate": "2026-10-16",
+  "createdDate": "2026-10-17",
+  "description": "Body",
+  "displayId": "T-007",
+  "id": "T-007",
+  "order": 70,
+  "phase": "p1",
+  "resolutionKind": {
+    "closedOn": "2026-10-16",
+    "kind": "withdrawn",
+    "reason": "Superseded by T-099"
+  },
+  "status": "complete",
+  "title": "Plain",
+  "type": "task"
+}

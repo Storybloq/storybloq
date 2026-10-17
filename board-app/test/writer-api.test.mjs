@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import ts from "typescript";
+import { execFileSync } from "node:child_process";
 import { signature, generateWriterTypes } from "../writer-api.mjs";
 
 const sample = `export async function write(id: string, updates: {title: string}, force = false, hooks?: {before: () => Promise<void>}): Promise<{output: string}> { throw new Error(); }`;
@@ -147,22 +148,91 @@ test("generated note API binds actual canonical inputs, optional hooks and typed
     await compile(
       "",
       prefix +
-        `const result = await handleNoteUpdate('N-001', {title:null, content:'Body', tags:[], status:'archived'}, 'json', '/project'); const output: string = result.output; await handleNoteUpdate('N-001', {title:'Title'}, 'json', '/project', {precondition: async (note, state) => { const body: string = note.content; const project: string = state.config.project; }, validatePreparedContent: async text => { const serialized: string = text; }});`,
+        `const result = await handleNoteUpdate('N-001', {title:null, content:'Body', tags:[], status:'archived'}, 'json', '/project'); const output: string = result.output; await handleNoteUpdate('N-001', {title:'Title'}, 'json', '/project', undefined, {precondition: async (note, state) => { const body: string = note.content; const project: string = state.config.project; }, validatePreparedContent: async text => { const serialized: string = text; }});`,
     ),
     [],
   );
   for (const invalid of [
     `await handleNoteUpdate('N-001', {title:42}, 'json', '/project');`,
     `await handleNoteUpdate('N-001', {tags:'tag'}, 'json', '/project');`,
-    `await handleNoteUpdate('N-001', {content:'Body'}, 'json', '/project', {precondition: () => 42});`,
+    `await handleNoteUpdate('N-001', {content:'Body'}, 'json', '/project', undefined, {precondition: () => 42});`,
+    `await handleNoteUpdate('N-001', {content:'Body'}, 'json', '/project', {precondition: async () => {}});`,
+    `await handleNoteUpdate('N-001', {content:'Body'}, 'json', '/project', {confirm: 'x'});`,
     `const number: number = (await handleNoteUpdate('N-001', {title:'Title'}, 'json', '/project')).output;`,
   ]) {
     const errors = await compile("", prefix + invalid);
     assert.equal(errors.length, 1, JSON.stringify(errors));
-    assert.ok([2322, 2345].includes(errors[0].code), JSON.stringify(errors));
+    assert.ok(
+      [2322, 2345, 2353, 2741].includes(errors[0].code),
+      JSON.stringify(errors),
+    );
   }
   assert.match(
     await readFile("src/canonical-writes.d.mts", "utf8"),
     /handleNoteUpdate/,
   );
+});
+
+// T-566 F1: main's note handler takes hatches in slot five and hooks in slot six.
+const noteUrl = new URL("../../src/cli/commands/note.ts", import.meta.url);
+test("the real six-argument note handler generates with hatches before hooks", async () => {
+  const generated = await generateWriterTypes();
+  assert.match(
+    generated,
+    /export declare function handleNoteUpdate\(id: string, updates: NoteUpdateInput, format: OutputFormat, root: string, hatches\?: NoteUpdateHatches, hooks\?: UpdateWriteHooks<Note>\): Promise<CommandResult>;/,
+  );
+  assert.match(
+    generated,
+    /import type \{ NoteUpdateHatches \} from "\.\.\/\.\.\/src\/core\/update-inputs\.js";/,
+  );
+  const api = JSON.stringify(resolve("src/canonical-writes.mjs"));
+  assert.deepEqual(
+    await compile(
+      "",
+      `import {handleNoteUpdate} from ${api}; await handleNoteUpdate('N-001', {content:'Body', confirmReplace: true}, 'json', '/project', {confirm: 'a', append: 'b'}, {validatePreparedContent: async () => {}});`,
+    ),
+    [],
+  );
+});
+test("a locally declared or misbound NoteUpdateHatches is refused", () => {
+  const bound = `import type {NoteUpdateHatches} from '../../core/update-inputs.js'; export function write(hatches: NoteUpdateHatches): void {}`;
+  assert.match(signature(bound, "write", noteUrl), /hatches: NoteUpdateHatches/);
+  assert.throws(
+    () =>
+      signature(
+        "export interface NoteUpdateHatches {confirm: string; append: string} export function write(hatches: NoteUpdateHatches): void {}",
+        "write",
+        noteUrl,
+      ),
+    /canonical module/,
+  );
+  assert.throws(
+    () =>
+      signature(
+        bound.replace("../../core/update-inputs.js", "./note-hatches.js"),
+        "write",
+        noteUrl,
+      ),
+    /canonical module/,
+  );
+  assert.throws(
+    () =>
+      signature(
+        bound.replace(
+          "{NoteUpdateHatches}",
+          "{NoteUpdateInput as NoteUpdateHatches}",
+        ),
+        "write",
+        noteUrl,
+      ),
+    /canonical module/,
+  );
+});
+test("the generated canonical API matches the committed file byte for byte", async () => {
+  const path = "src/canonical-writes.d.mts";
+  const committed = execFileSync("git", ["show", "HEAD:./" + path], {
+    encoding: "utf8",
+  });
+  assert.equal(await generateWriterTypes(), committed);
+  assert.equal(await readFile(path, "utf8"), committed);
 });

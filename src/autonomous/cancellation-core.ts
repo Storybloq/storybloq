@@ -970,16 +970,15 @@ export async function applyCancellationTransition(
     resumeBlocked: false,
     ticket: undefined,
     ...(published ? { cancellationTransition: published } : {}),
-    // THE C2 BARRIER (ruling ea611619). For a CANDIDATE transition write 4 is
-    // fsync'd through the durable variant, because commitCandidateCancel
-    // closes the durable intent on the strength of this write having
-    // happened: writes 1/3 route through the un-fsynced ordinary writer, so
-    // power loss can drop every state rename -- and if the intent's close
-    // survived while this write did not, the result would be a closed
-    // cancellation intent with no published transition, which is permanent
-    // foreclosure (the exact class B7 closes for takeovers). The ordinary
-    // path passes "ordinary" and is byte-unchanged.
-  } as FullSessionState, "always", common && common.authority.kind === "candidate" ? "durable" : "ordinary");
+    // THE C2 BARRIER (ruling ea611619). commitCandidateCancel closes the
+    // durable intent on the strength of this write having happened, so it
+    // must survive power loss: if the intent's close survived while this
+    // write did not, the result would be a closed cancellation intent with no
+    // published transition, which is permanent foreclosure (the exact class
+    // B7 closes for takeovers). ISS-958 makes the one state writer durable
+    // (descriptor fsync, rename, directory fsync), so this write and writes
+    // 1/3 all carry that guarantee and there is no variant to choose.
+  } as FullSessionState, "always");
   const tail = runCancellationTail(root, session, {
     published: published as Extract<CancellationTransition, { phase: "published" }> | undefined,
     disposition,

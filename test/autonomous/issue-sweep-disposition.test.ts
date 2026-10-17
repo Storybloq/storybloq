@@ -97,7 +97,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
   return {
     schemaVersion: 1, sessionId: "00000000-0000-0000-0000-0000000000e1",
     recipe: "coding", state: "ISSUE_SWEEP", revision: 1, status: "active",
-    reviews: { plan: [], code: [] }, completedTickets: [TICKET],
+    reviews: { plan: [], code: [] }, completedTickets: [{ id: TICKET }],
     finalizeCheckpoint: null,
     git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123" },
     lease: { workspaceId: "test", lastHeartbeat: now, expiresAt: now },
@@ -106,7 +106,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
     compactPending: false, compactPreparedAt: null, resumeBlocked: false,
     terminationReason: null, waitingForRetry: false, lastGuideCall: now, startedAt: now, guideCallCount: 5,
     config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["lenses"] },
-    ticket: null,
+    ticket: undefined,
     filedDeferrals: [], pendingDeferrals: [], deferralsUnfiled: false,
     resolvedIssues: [], currentIssue: null,
     codeReviewRoundCounter: null, pendingCeilingEscalation: null,

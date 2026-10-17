@@ -334,9 +334,9 @@ describe("T-251 session list", () => {
     // Plant outside directory containing a plausible state.json for symlinked UUID.
     const outside = join(root, "outside-target");
     mkdirSync(outside, { recursive: true });
-    const plantedDir = plantSession(root, { sessionId: "temp-for-copy", status: "active", leaseMinutesAgo: -30 });
+    const plantedDir = plantSession(root, { sessionId: "88888888-8888-8888-8888-888888888888", status: "active", leaseMinutesAgo: -30 });
     const copiedState = readFileSync(join(plantedDir, "state.json"), "utf-8")
-      .replace(/temp-for-copy/g, symlinked);
+      .replace(/88888888-8888-8888-8888-888888888888/g, symlinked);
     writeFileSync(join(outside, "state.json"), copiedState);
     rmSync(plantedDir, { recursive: true, force: true });
     const targetBefore = readFileSync(join(outside, "state.json"), "utf-8");

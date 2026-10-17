@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { StateWriteUndurableError, readSession, writeSessionSync } from "../../src/autonomous/session.js";
+import { StateWriteUndurableError, __stateWriteTesting, readSession, writeSessionSync } from "../../src/autonomous/session.js";
 import { deriveWorkspaceId, type FullSessionState } from "../../src/autonomous/session-types.js";
 import { StageContext } from "../../src/autonomous/stages/types.js";
 import { HandoverStage } from "../../src/autonomous/stages/handover.js";
@@ -131,6 +131,31 @@ describe("ISS-958 S2: StageContext.writeState adopts the published state (policy
     expect(next.revision).toBe(state.revision + 2);
     expect(readSession(dir)!.revision).toBe(state.revision + 2);
   });
+
+  for (const seam of ["state:renamed", "state:dir-fsynced"]) {
+    it(`S7 revision continuity through the real writer: a failure at ${seam} is adopted, and the next write continues from it`, () => {
+      const { root, dir, state } = setup();
+      const ctx = new StageContext(root, dir, state, recipe());
+      const original = __stateWriteTesting.at;
+      __stateWriteTesting.at = (p) => { if (p === seam) throw new Error(`injected failure at ${seam}`); };
+      let caught: unknown;
+      try {
+        ctx.writeState({ state: "PLAN" } as Partial<FullSessionState>);
+      } catch (err) {
+        caught = err;
+      } finally {
+        __stateWriteTesting.at = original;
+      }
+      expect(caught).toBeInstanceOf(StateWriteUndurableError);
+      expect(ctx.state.revision).toBe(state.revision + 1);
+      expect(ctx.state.state).toBe("PLAN");
+      expect(readSession(dir)!.revision).toBe(state.revision + 1);
+
+      const next = ctx.writeState({ state: "IMPLEMENT" } as Partial<FullSessionState>);
+      expect(next.revision).toBe(state.revision + 2);
+      expect(readSession(dir)!.revision).toBe(state.revision + 2);
+    });
+  }
 
   it("a plain pre-rename failure leaves ctx.state unchanged", () => {
     const { root, dir, state } = setup();

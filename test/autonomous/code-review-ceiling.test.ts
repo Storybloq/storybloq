@@ -903,11 +903,11 @@ describe("the ceiling, end to end through the stage", () => {
     }
 
     // A LATER session hits the identical findings on the identical ticket.
-    const laterSessionDir = join(root, ".story", "sessions", "s2");
+    const laterSessionDir = join(root, ".story", "sessions", "00000000-0000-0000-0000-0000000000c2");
     mkdirSync(laterSessionDir, { recursive: true });
     const { CodeReviewStage } = await import("../../src/autonomous/stages/code-review.js");
     const later = makeState({
-      sessionId: "s2",
+      sessionId: "00000000-0000-0000-0000-0000000000c2",
       codeReviewRoundCounter: { workItemId: TICKET, kind: "ticket", completedRounds: CEILING - 1 },
     } as Partial<FullSessionState>);
     const laterCtx = new StageContext(root, laterSessionDir, later, makeRecipe(CAP));

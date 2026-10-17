@@ -122,7 +122,7 @@ function contextFor(
   const now = new Date().toISOString();
   const head = git(root, ["rev-parse", "HEAD"]);
   const state = {
-    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-00000000t328",
+    schemaVersion: 1, sessionId: "00000000-0000-0000-0000-000000000328",
     recipe: "coding", state: "PICK_TICKET", revision: 1, status: "active", mode: "auto",
     reviews: { plan: [], code: [] }, completedTickets: [], finalizeCheckpoint: null,
     git: { branch: currentBranch(root), mergeBase: null, expectedHead: head, initHead: head },

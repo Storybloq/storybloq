@@ -102,8 +102,6 @@ function scan(): ScanResult {
     base: PKG,
     rootFile: "src/autonomous/session.ts",
     rootName: "writeSessionSync",
-    // S9: the durable writer performs its own write, not through writeSessionSync.
-    extraRootNames: ["writeSessionDurableSync"],
     lockName: "withSessionLock",
     // T2: the session lock is taken by proper-lockfile's lock, and by nothing else.
     lockAcquisitions: { "src/autonomous/session.ts#withSessionLock": { module: "proper-lockfile", name: "lock" } },

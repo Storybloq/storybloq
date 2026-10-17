@@ -365,7 +365,7 @@ describe("CodeReviewStage empty change-request guard (ISS-1114)", () => {
     // declining to park. The guard matches that rather than keying an attempt
     // record on `undefined`.
     const ctx = new StageContext(testRoot, sessionDir, makeState({
-      ticket: null, currentIssue: null,
+      ticket: undefined, currentIssue: null,
     } as Partial<FullSessionState>), makeRecipe(3));
 
     const advance = await stage.report(ctx, EMPTY_REPORT);
@@ -487,8 +487,8 @@ describe("CodeReviewStage empty change-request guard (ISS-1114)", () => {
     }));
 
     const ctx = new StageContext(testRoot, sessionDir, makeState({
-      ticket: null,
-      currentIssue: { id: ISSUE_ID, displayId: "ISS-500", title: "Issue under fix" },
+      ticket: undefined,
+      currentIssue: { id: ISSUE_ID, displayId: "ISS-500", title: "Issue under fix", severity: "medium" },
     } as Partial<FullSessionState>), makeRecipe(4));
 
     await stage.report(ctx, EMPTY_REPORT);

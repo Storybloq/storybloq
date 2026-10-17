@@ -74,7 +74,6 @@ import {
 import {
   createSession,
   writeSessionSync,
-  writeSessionDurableSync,
   withSessionLock,
   __stateWriteTesting,
   StateWriteUndurableError,
@@ -486,7 +485,7 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
         input, callerTask: CALLER,
       }, takeoverDeps({
         discardStaged: discard,
-        writeState: (next) => writeSessionDurableSync(sessDir, next),
+        writeState: (next) => writeSessionSync(sessDir, next),
       }));
     } finally {
       __stateWriteTesting.at = original;
@@ -548,7 +547,7 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
       },
       {
         name: "the rename itself fails",
-        at: (statePath) => unlinkSync(`${statePath}.${process.pid}.durable.tmp`),
+        at: (statePath) => unlinkSync(`${statePath}.${process.pid}.tmp`),
         check: (err) => expect((err as NodeJS.ErrnoException).code).toBe("ENOENT"),
       },
     ];
@@ -571,7 +570,7 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
           discardStaged: discard,
           writeState: (next) => {
             try {
-              return writeSessionDurableSync(sessDir, next);
+              return writeSessionSync(sessDir, next);
             } catch (err) {
               caught = err;
               throw err;
@@ -597,7 +596,7 @@ describe("T-450 6b: commitCandidateTakeover publishes one atomic postimage", () 
       // Nothing moved: the preimage is byte-identical and no temp is left.
       expect(readFileSync(join(sessDir, "state.json"), "utf-8"), mode.name).toBe(before);
       expect(currentState().revision, mode.name).toBe(state.revision);
-      expect(readdirSync(sessDir).filter((f) => f.endsWith(".durable.tmp")), mode.name).toEqual([]);
+      expect(readdirSync(sessDir).filter((f) => f.endsWith(".tmp")), mode.name).toEqual([]);
 
       // The intent this cycle created before the write is NOT closed.
       const intent = readCancellationIntent(sessDir);
@@ -1926,9 +1925,9 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     // and the resume is retryable". The second half is true; the first is FALSE,
     // and falsely reassuring in the one direction that matters.
     // `applyCancellationTransition` performs write 4 -- the state write carrying
-    // the published transition -- and routes it through the DURABLE writer for a
-    // candidate transition precisely because the intent's close depends on that
-    // write having happened. A throw AFTER that write leaves the cancellation
+    // the published transition -- through the durable state writer, which every
+    // write uses since ISS-958, and the intent's close depends on that write
+    // having happened. A throw AFTER that write leaves the cancellation
     // visible on disk while the call reports failure.
     //
     // An operator reading "unchanged" concludes nothing landed. The honest form
@@ -2029,8 +2028,6 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
 
   it("ISS-958 exception (iii), REAL write 4: a post-rename barrier failure keeps the intent open, and the retry finishes without repeating the stash or the audit", async () => {
     // The real durable writer, failing AFTER its rename: write 4 IS published.
-    // (Writes 1 and 3 ride the ordinary writer, which gains post-rename
-    // barriers only with the ISS-958 writer switch; their cases land there.)
     const pop = vi.mocked(gitStashPop);
     pop.mockClear();
     const state = plantLive({
@@ -2040,9 +2037,11 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     writeMarker();
     const input = inputFor(state);
 
+    // Every write is durable now, so the fault is keyed on write 4 itself: the
+    // rename that publishes SESSION_END.
     const original = __stateWriteTesting.at;
     __stateWriteTesting.at = (point) => {
-      if (point === "state:renamed") throw new Error("EIO: simulated dir fsync failure");
+      if (point === "state:renamed" && currentState().state === "SESSION_END") throw new Error("EIO: simulated dir fsync failure");
     };
     let first: Awaited<ReturnType<typeof commitCandidateCancelLocked>>;
     try {
@@ -2095,7 +2094,79 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     expect(eventCount("cancelled")).toBe(1);
   });
 
-  it("C2: write 4 rides the DURABLE writer for candidate authority, and the ordinary path never does", async () => {
+  for (const nth of [1, 2]) {
+    it(`ISS-958 S7, REAL write ${nth === 1 ? 1 : 3}: a post-rename barrier failure keeps the intent open, and the retry finishes with no second stash pop and one audit`, async () => {
+      const pop = vi.mocked(gitStashPop);
+      pop.mockClear();
+      const state = plantLive({
+        git: { branch: "main", mergeBase: "abc123", expectedHead: "abc123", initHead: "abc123",
+          autoStash: { ref: "stash@{0}", stashedAt: STALE_AT } },
+      });
+      writeMarker();
+      const input = inputFor(state);
+
+      let renames = 0;
+      const original = __stateWriteTesting.at;
+      __stateWriteTesting.at = (point) => {
+        if (point === "state:renamed" && ++renames === nth) throw new Error("EIO: simulated dir fsync failure");
+      };
+      let first: Awaited<ReturnType<typeof commitCandidateCancelLocked>>;
+      try {
+        first = await commitCandidateCancelLocked(root, sessDir, { input, callerTask: CALLER }, cancelDeps());
+      } finally {
+        __stateWriteTesting.at = original;
+      }
+
+      // The write was published, the call refused, and the intent stays open.
+      expect(first.kind).toBe("refused");
+      const published = currentState();
+      expect(published.state).not.toBe("SESSION_END");
+      expect(published.revision).toBe(state.revision + nth);
+      const t = CancellationTransitionSchema.safeParse(
+        (published as unknown as Record<string, unknown>).cancellationTransition,
+      );
+      expect(t.success && t.data.phase).toBe("stash_pending");
+      if (!t.success || t.data.phase !== "stash_pending") return;
+      expect(t.data.stash).toEqual({ outcome: nth === 1 ? null : "popped" });
+      const open = readCancellationIntent(sessDir);
+      expect(open.kind).toBe("valid");
+      if (open.kind === "valid") expect(open.intent.phase).not.toBe("closed");
+      expect(pop).toHaveBeenCalledTimes(nth === 1 ? 0 : 1);
+      expect(eventCount("cancelled")).toBe(0);
+
+      // The retry resumes the same transition and finishes it.
+      const retry = await commitCandidateCancelLocked(root, sessDir, { input, callerTask: CALLER }, cancelDeps());
+      expect(retry.kind).toBe("published");
+      if (retry.kind !== "published") return;
+      expect(retry.close.ok).toBe(true);
+      const after = currentState();
+      expect(after.state).toBe("SESSION_END");
+      expect((after as unknown as Record<string, { transitionId: string }>).cancellationTransition?.transitionId)
+        .toBe(t.data.transitionId);
+      const closed = readCancellationIntent(sessDir);
+      if (closed.kind === "valid") expect(closed.intent.phase).toBe("closed");
+      expect(closed.kind).toBe("valid");
+      // A resume never pops a second time: after a failed write 1 the pop is
+      // unknowable and the record says `indeterminate`, so the count stays 0.
+      expect(pop).toHaveBeenCalledTimes(nth === 1 ? 0 : 1);
+      expect(eventCount("cancelled")).toBe(1);
+    });
+  }
+
+  it("C2: every state write of a cancellation, candidate or ordinary, hits all five writer seams in order", async () => {
+    // ISS-958 made the one state writer durable, so there is no variant left
+    // to route write 4 through: write 4 keeps its barrier because EVERY write
+    // carries it. Pinned as the full seam sequence per write, so a write that
+    // skipped validation or either fsync would break the five-step rhythm.
+    const SEAMS = ["state:validated", "state:tmp-written", "state:tmp-fsynced", "state:renamed", "state:dir-fsynced"];
+    const perWrite = (points: string[]) => {
+      expect(points.length % SEAMS.length).toBe(0);
+      const groups: string[][] = [];
+      for (let i = 0; i < points.length; i += SEAMS.length) groups.push(points.slice(i, i + SEAMS.length));
+      for (const g of groups) expect(g).toEqual(SEAMS);
+      return groups.length;
+    };
+
     const state = plantLive();
     writeMarker();
     const points: string[] = [];
@@ -2109,14 +2180,10 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     } finally {
       __stateWriteTesting.at = original;
     }
-    // The durable barrier ran, all four seams, exactly once: write 4 and
-    // nothing else routed through it.
-    for (const seam of ["state:tmp-written", "state:tmp-fsynced", "state:renamed", "state:dir-fsynced"]) {
-      expect(points.filter((p) => p === seam)).toHaveLength(1);
-    }
+    expect(perWrite(points)).toBeGreaterThan(0);
 
     // The ordinary path: a fresh session cancelled through the shared core
-    // with NO init never touches the durable writer.
+    // with NO init takes the same barrier on every write.
     const ordinary = plantLive();
     points.length = 0;
     __stateWriteTesting.at = (p) => { points.push(p); };
@@ -2126,7 +2193,7 @@ describe("T-450 6b: commitCandidateCancel drives the phase table end to end", ()
     } finally {
       __stateWriteTesting.at = original;
     }
-    expect(points).toHaveLength(0);
+    expect(perWrite(points)).toBeGreaterThan(0);
   });
 
   it("TEST 11: a reused legacy pid is NOT signalled on the candidate's first pass", async () => {

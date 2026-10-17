@@ -50,7 +50,7 @@ function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState 
     compactPending: false, compactPreparedAt: null, resumeBlocked: false,
     terminationReason: null, waitingForRetry: false, lastGuideCall: now, startedAt: now, guideCallCount: 5,
     config: { maxTicketsPerSession: 5, compactThreshold: "high", reviewBackends: ["codex", "agent"] },
-    ticket: null,
+    ticket: undefined,
     filedDeferrals: [], pendingDeferrals: [], deferralsUnfiled: false,
     resolvedIssues: [],
     currentIssue: null,
@@ -473,7 +473,7 @@ describe("FINALIZE: issue-mode", () => {
     const state = makeState({
       state: "FINALIZE",
       currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" },
-      ticket: null,
+      ticket: undefined,
     });
     const ctx = new StageContext(testRoot, sessionDir, state, makeRecipe());
 
@@ -490,7 +490,7 @@ describe("FINALIZE: issue-mode", () => {
     const state = makeState({
       state: "FINALIZE",
       currentIssue: { id: "ISS-001", title: "Critical bug", severity: "critical" },
-      ticket: null,
+      ticket: undefined,
       resolvedIssues: [],
     });
     // Just verify the state fields exist and are typed correctly

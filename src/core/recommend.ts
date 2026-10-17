@@ -10,6 +10,7 @@ import { isActiveLifecycle } from "./project-state.js";
 import type { Ticket } from "../models/ticket.js";
 import type { Issue } from "../models/issue.js";
 import type { IssueSeverity } from "../models/types.js";
+import { effectiveWaitingOn } from "../models/types.js";
 import type { FederationState, FederationNodeEntry } from "../federation/state.js";
 import { withdrawnRefPhrase, type CrossNodeObservation } from "../federation/cross-node-observation.js";
 import type { TrajectoryDisposition, IdOccurrence, TrajectoryHandoverInput } from "./markdown-sections.js";
@@ -22,6 +23,8 @@ import {
   umbrellaProgress,
   descendantLeaves,
   isCrossNodeBlocked,
+  waitingInventory,
+  type WaitingInventory,
 } from "./queries.js";
 import { validateProject } from "./validation.js";
 import { notHiddenByEarmark } from "./earmarks.js";
@@ -96,6 +99,8 @@ export interface RecommendResult {
   readonly excluded: readonly ExcludedRecommendation[];
   /** `0` = window fully read; positive = that many handovers failed; `null` = directory listing itself failed. */
   readonly unreadableHandoverCount: number | null;
+  /** T-481: every unfinished item that waits on a role; never ranked, never truncated. */
+  readonly waiting: WaitingInventory;
 }
 
 // --- ISS-1154: actionability classification ---
@@ -141,6 +146,46 @@ export interface ActionabilityContext {
 const DUPLICATE_TEXT_RE = /\bdup(?:licate)?\s+of\b|\bsuperseded\s+by\b/i;
 
 /**
+ * A ticket's completion: the derived status for an umbrella (its stored
+ * status is ignored project-wide, see phaseStatus/umbrellaStatus), the stored
+ * status for a leaf.
+ */
+export function ticketCompletion(state: ProjectState, ticket: Ticket): string {
+  return state.isUmbrella(ticket) ? state.umbrellaStatus(ticket.id) : ticket.status;
+}
+
+/**
+ * T-481: whether an item is finished, for the waiting inventory. A different
+ * question from computeActionability's: it never looks at earmarks (they say
+ * who holds an item, not whether it is finished), and a ticket with an owner
+ * checkpoint is finished only when the checkpoint is approved or retired,
+ * whatever its stored status.
+ */
+export function isTerminalBacklogItem(kind: "ticket" | "issue", item: Ticket | Issue, state: ProjectState): boolean {
+  if (!isActiveLifecycle(item)) return true;
+  if (kind === "issue") return (item as Issue).status === "resolved";
+  const ticket = item as Ticket;
+  if (hasOwnerCheckpoint(ticket)) {
+    const cpState = checkpointState(ticket);
+    return cpState === "approved" || cpState === "retired";
+  }
+  return ticketCompletion(state, ticket) === "complete";
+}
+
+// T-481: the waitingOn check in tier 1, after completion and before any
+// dependency check.
+function waitingActionability(item: Ticket | Issue): Actionability | null {
+  const role = effectiveWaitingOn(item);
+  if (role === "owner") {
+    return { status: "owner_gated", reason: "waits on the owner (waitingOn)", source: "ledger" };
+  }
+  if (role === "external") {
+    return { status: "blocked", reason: "waits on an external party (waitingOn)", source: "ledger" };
+  }
+  return null;
+}
+
+/**
  * Four-tier actionability classifier: ledger > structured > handover >
  * heuristic. Tier 1 (ledger) is a universal precondition for both kinds,
  * checked first, so every caller (generators, the fresh-add branch, and the
@@ -178,14 +223,11 @@ export function computeActionability(
         source: "ledger",
       };
     }
-    // Umbrella stored status is ignored project-wide (see phaseStatus/umbrellaStatus);
-    // an umbrella's completion is derived from its descendant leaves instead.
-    const ticketStatus = ctx.state.isUmbrella(ticket)
-      ? ctx.state.umbrellaStatus(ticket.id)
-      : ticket.status;
-    if (ticketStatus === "complete") {
+    if (ticketCompletion(ctx.state, ticket) === "complete") {
       return { status: "complete", reason: "ticket is complete", source: "ledger" };
     }
+    const waiting = waitingActionability(ticket);
+    if (waiting) return waiting;
     const waitingOn = pendingCheckpointBlockers(ctx.state, ticket);
     if (waitingOn.length > 0) {
       const labels = waitingOn.map((c) => {
@@ -202,6 +244,8 @@ export function computeActionability(
     if (issue.status === "resolved") {
       return { status: "complete", reason: "issue is resolved", source: "ledger" };
     }
+    const waiting = waitingActionability(issue);
+    if (waiting) return waiting;
   }
 
   // Tier 2: structured (issues only). The list is shared rather than spelled
@@ -471,6 +515,7 @@ export function recommend(
     excluded,
     unreadableHandoverCount:
       options?.unreadableHandoverCount === undefined ? 0 : options.unreadableHandoverCount,
+    waiting: waitingInventory(state),
   };
 }
 

@@ -199,4 +199,11 @@ describe("T-481 T8: handleBlockerList lists waiting tickets and issues with thei
     expect(waiting.owner.map((x) => x.id).sort()).toEqual(["ISS-001", "T-001"]);
     expect(waiting.external.map((x) => x.id)).toEqual(["T-002"]);
   });
+
+  it("json: waiting is present with empty lists when nothing waits (pen ruling)", () => {
+    const quiet = makeState({ tickets: [makeTicket({ id: "T-003" })] });
+    const out = JSON.parse(handleBlockerList(makeCtx({ state: quiet, format: "json" })).output);
+    expect(Array.isArray(out.data)).toBe(true);
+    expect(out.waiting).toEqual({ owner: [], external: [] });
+  });
 });

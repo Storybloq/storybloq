@@ -3,14 +3,14 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { FullSessionState, GuideReportInput } from "../session-types.js";
 import type { Issue } from "../../models/issue.js";
 import type { ProjectState } from "../../core/project-state.js";
-import { isDeleted } from "../../core/project-state.js";
+import { isActiveLifecycle, isDeleted } from "../../core/project-state.js";
 import { isNonActionableDisposition } from "../../core/issue-disposition.js";
 import { tryAcquireEarmark, clearSameSessionEarmark, describeEarmarkHolder } from "../../core/earmarks.js";
 import { dispositionEvidenceView, effectiveResolutionKind } from "../../core/resolution-kind.js";
 import { entityFingerprint } from "../pending-artifacts.js";
 import { touchUpdated } from "../../core/metadata-touch.js";
 import { localDateOf } from "../../core/local-date.js";
-import { DateSchema } from "../../models/types.js";
+import { DateSchema, effectiveWaitingOn, isWaiting } from "../../models/types.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
 import { formatCitedRulingsSection, escapeMarkdownInline } from "../../core/output-formatter.js";
@@ -201,6 +201,21 @@ export function releaseImage(issue: Issue, outcome: SweepOutcome, sessionId: str
 const retry = (text: string, reminders?: string[]): SweepExit => ({ kind: "retry", text, ...(reminders && { reminders }) });
 
 /**
+ * T-481: a held issue that waits on a role stays held. The sweep writes
+ * nothing, invents no disposition and never releases it on its own; it
+ * explains the wait until the field is cleared.
+ */
+function waitingHeldText(issue: Issue): string | null {
+  // A deleted or archived issue takes its own path, whatever it carries.
+  if (!isActiveLifecycle(issue)) return null;
+  const role = effectiveWaitingOn(issue);
+  if (role === "none") return null;
+  const label = issue.displayId ?? issue.id;
+  const who = role === "owner" ? "the owner" : "an external party";
+  return `Issue ${label} waits on ${who} (waitingOn: ${role}). The sweep keeps holding it and records nothing while it waits. When the wait is over, run storybloq issue update ${label} --waiting-on none, then report again.`;
+}
+
+/**
  * T-486 U4 (5c): the exit the current issue's state allows, read inside the
  * sweep lock on the issue the caller is about to act on.
  */
@@ -219,6 +234,9 @@ export async function classifySweepExit(issue: Issue, state: ProjectState, root:
   if (isDeleted(issue)) {
     return retry(`Issue ${id} was deleted (tombstoned) instead of resolved. Set its status to "resolved" with a resolution description, then report again.`);
   }
+  // T-481: after the deleted check, so a tombstoned issue never reads as waiting.
+  const waiting = waitingHeldText(issue);
+  if (waiting) return retry(waiting);
 
   if (issue.status === "resolved") {
     const kind = effectiveResolutionKind(issue);
@@ -414,6 +432,7 @@ export class IssueSweepStage implements WorkflowStage {
             // lock, so a disposition set since then is caught here, on the
             // read the write acts on.
             if (isNonActionableDisposition(freshIssue.disposition)) continue;
+            if (isWaiting(freshIssue)) continue; // T-481
             const decision = tryAcquireEarmark(freshIssue.earmark, sessionId, "worker");
             if (!decision.ok) continue; // earmarked to someone else -- skip, do not retry within this sweep
             const transitionId = `issue-sweep-acquire-${id}-${randomUUID()}`;
@@ -539,7 +558,7 @@ export class IssueSweepStage implements WorkflowStage {
     // sweep had no disposition awareness at all, so `owner_gated` and
     // `escalate_only` issues were being handed out as work too.
     const allIssues = projectState.issues.filter(
-      i => i.status === "open" && !isNonActionableDisposition(i.disposition),
+      i => i.status === "open" && !isNonActionableDisposition(i.disposition) && !isWaiting(i),
     );
 
     if (allIssues.length === 0) {
@@ -595,6 +614,9 @@ export class IssueSweepStage implements WorkflowStage {
       if (!issue) {
         return { action: "retry", instruction: `Issue ${current} could not be found in .story/issues/. Check for corruption, then report again.` };
       }
+      // T-481: no work instructions for a held issue that waits.
+      const waiting = waitingHeldText(issue);
+      if (waiting) return { action: "retry", instruction: waiting };
       return this.enterInstruction(ctx, issue, sweep.remaining.length + 1);
     }
     if (sweep.remaining.length > 0) {

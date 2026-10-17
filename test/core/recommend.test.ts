@@ -1980,7 +1980,8 @@ describe("T-481 T6: waiting items in recommend", () => {
   });
 
   it("the default md shows the Waiting section even with zero recommendations; JSON always carries waiting", () => {
-    const state = makeState({ tickets: [makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) })] });
+    // The roadmap carries p1 so no validation action is recommended either.
+    const state = makeState({ tickets: [makeTicket({ id: "T-001", ...w({ waitingOn: "owner" }) })], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
     const result = recommend(state, 5);
     expect(result.recommendations).toHaveLength(0);
     const md = formatRecommendations(result, state, "md");

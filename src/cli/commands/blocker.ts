@@ -1,4 +1,4 @@
-import { isBlockerCleared } from "../../core/queries.js";
+import { isBlockerCleared, waitingInventory } from "../../core/queries.js";
 import {
   withProjectLock,
   writeRoadmapUnlocked,
@@ -17,7 +17,7 @@ import type { CommandContext, CommandResult } from "../types.js";
 // --- Read Handlers ---
 
 export function handleBlockerList(ctx: CommandContext): CommandResult {
-  return { output: formatBlockerList(ctx.state.roadmap, ctx.format) };
+  return { output: formatBlockerList(ctx.state.roadmap, ctx.format, waitingInventory(ctx.state)) };
 }
 
 // --- Write Handlers ---

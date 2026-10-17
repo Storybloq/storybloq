@@ -1,5 +1,5 @@
 import { displayIdOf } from "../../core/resolver.js";
-import { nextTicket, nextTickets, blockedTickets, currentPhase } from "../../core/queries.js";
+import { nextTicket, nextTickets, blockedTickets, currentPhase, waitingInventory } from "../../core/queries.js";
 import { nextTicketID, nextOrder, allocateTeamTicketId } from "../../core/id-allocation.js";
 import { reserveDisplayId } from "../../core/remote-refs.js";
 import { checkBranchAllocationWarning } from "../../core/branch-allocation-warning.js";
@@ -37,6 +37,7 @@ import {
   formatTicket,
   formatNextTicketOutcome,
   formatNextTicketsOutcome,
+  formatWaitingSummary,
   formatBlockedTickets,
   formatError,
   successEnvelope,
@@ -231,14 +232,26 @@ export function handleTicketNext(ctx: CommandContext, count: number = 1): Comman
     const outcome = nextTicket(ctx.state);
     const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
     const citedRulings = outcome.kind === "found" ? resolveEntityCitations(outcome.ticket, loadCitationContext(ctx.root)) : [];
-    return { output: formatNextTicketOutcome(outcome, ctx.state, ctx.format, citedRulings), exitCode };
+    return { output: withWaiting(formatNextTicketOutcome(outcome, ctx.state, ctx.format, citedRulings), ctx), exitCode };
   }
   // Multi-candidate path -- continues across blocked phases
   const outcome = nextTickets(ctx.state, count);
   const exitCode = outcome.kind === "found" ? ExitCode.OK : ExitCode.USER_ERROR;
   const citedRulingsByTicketId =
     outcome.kind === "found" ? citationMapFor(outcome.candidates.map((c) => c.ticket), loadCitationContext(ctx.root)) : new Map();
-  return { output: formatNextTicketsOutcome(outcome, ctx.state, ctx.format, citedRulingsByTicketId), exitCode };
+  return { output: withWaiting(formatNextTicketsOutcome(outcome, ctx.state, ctx.format, citedRulingsByTicketId), ctx), exitCode };
+}
+
+/**
+ * T-481: next never offers a waiting item but always names them, from the
+ * whole inventory rather than the phases it walked. JSON always carries the
+ * inventory beside data, empty lists included, so the field is never absent.
+ */
+function withWaiting(output: string, ctx: CommandContext): string {
+  const waiting = waitingInventory(ctx.state);
+  if (ctx.format === "json") return JSON.stringify({ ...JSON.parse(output), waiting }, null, 2);
+  const summary = formatWaitingSummary(waiting);
+  return summary ? `${output}\n\n${summary}` : output;
 }
 
 /**

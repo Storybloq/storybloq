@@ -4,6 +4,9 @@ import type { ProjectState, PhaseStatus } from "./project-state.js";
 import { notHiddenByEarmark } from "./earmarks.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { isEffectivelyWithdrawn } from "./resolution-kind.js";
+import type { Issue } from "../models/issue.js";
+import { effectiveWaitingOn, isWaiting } from "../models/types.js";
+import { isTerminalBacklogItem } from "./recommend.js";
 
 // --- Result Types ---
 
@@ -97,13 +100,63 @@ export function openUnphasedLeaves(state: ProjectState): readonly Ticket[] {
 }
 
 /**
+ * The one eligibility test every next-ticket candidate filter applies: not
+ * blocked, not hidden by an earmark, not an owner checkpoint (T-537: the owner
+ * answers those) and not waiting on a role (T-481).
+ */
+function isEligibleCandidate(state: ProjectState, t: Ticket): boolean {
+  return !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t) && !isWaiting(t);
+}
+
+export interface WaitingItem {
+  readonly id: string;
+  readonly displayId?: string;
+  readonly kind: "ticket" | "issue";
+  readonly title: string;
+  /** Present (true) only for an umbrella ticket; its children do not inherit the wait. */
+  readonly umbrella?: true;
+}
+
+export interface WaitingInventory {
+  readonly owner: readonly WaitingItem[];
+  readonly external: readonly WaitingItem[];
+}
+
+/**
+ * T-481: every unfinished active ticket and issue whose waitingOn names a
+ * role. It ignores blockers, phases, earmarks, claims and in-progress status
+ * and never truncates, so ticket next, recommend and blocker list all name
+ * the same items.
+ */
+export function waitingInventory(state: ProjectState): WaitingInventory {
+  const owner: WaitingItem[] = [];
+  const external: WaitingItem[] = [];
+  const add = (kind: "ticket" | "issue", item: Ticket | Issue): void => {
+    if (isTerminalBacklogItem(kind, item, state)) return;
+    const role = effectiveWaitingOn(item);
+    if (role === "none") return;
+    const entry: WaitingItem = {
+      id: item.id,
+      ...(item.displayId ? { displayId: item.displayId } : {}),
+      kind,
+      title: item.title,
+      ...(kind === "ticket" && state.isUmbrella(item as Ticket) ? { umbrella: true as const } : {}),
+    };
+    (role === "owner" ? owner : external).push(entry);
+  };
+  for (const t of state.activeTickets) add("ticket", t);
+  for (const i of state.activeIssues) add("issue", i);
+  return { owner, external };
+}
+
+/**
  * ISS-1112: the unphased leaves next-ticket may offer, in rank order, with
  * the same eligibility the phase loop applies. Offered only after phased work.
  */
 function eligibleUnphasedLeaves(state: ProjectState, excludeIds: ReadonlySet<string> = new Set()): Ticket[] {
   return openUnphasedLeaves(state)
     .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)))
-    .filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
+    .filter((t) => isEligibleCandidate(state, t));
 }
 
 function candidateFor(ticket: Ticket, state: ProjectState): NextTicketCandidate {
@@ -139,7 +192,7 @@ export function nextTicket(state: ProjectState): NextTicketOutcome {
     // Find first non-complete, unblocked leaf
     const incompleteLeaves = leaves.filter((t) => t.status !== "complete");
     // T-537: an owner checkpoint is answered by the owner, never picked as work.
-    const candidate = incompleteLeaves.find((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
+    const candidate = incompleteLeaves.find((t) => isEligibleCandidate(state, t));
 
     if (candidate) {
       const impact = ticketsUnblockedBy(candidate.id, state);
@@ -224,7 +277,7 @@ export function nextTickets(
     const incompleteLeaves = leaves
       .filter((t) => t.status !== "complete")
       .filter((t) => !excludeIds.has(t.id) && !(t.displayId && excludeIds.has(t.displayId)));
-    const unblocked = incompleteLeaves.filter((t) => !state.isBlocked(t) && notHiddenByEarmark(t) && !hasOwnerCheckpoint(t));
+    const unblocked = incompleteLeaves.filter((t) => isEligibleCandidate(state, t));
 
     if (unblocked.length === 0) {
       // T-486 U2-3a: the pool the picker examined (listing records), not a

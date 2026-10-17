@@ -1038,6 +1038,22 @@ describe("T-481 T5i: waitingInventory and the ticket next listing", () => {
     expect(ids(waitingInventory(state).owner)).toEqual(["T-002"]);
   });
 
+  it("ticket next JSON always carries waiting beside data, empty lists when nothing waits (pen ruling)", () => {
+    const quiet = makeState({ tickets: [makeTicket({ id: "T-001", phase: "p1", order: 10 })], roadmap: makeRoadmap([makePhase({ id: "p1" })]) });
+    for (const count of [1, 3]) {
+      const out = JSON.parse(handleTicketNext({ ...ctxOf(quiet), format: "json" as const }, count).output);
+      expect(out.waiting).toEqual({ owner: [], external: [] });
+      expect(out.data).toBeDefined();
+    }
+    const busy = makeState({
+      tickets: [makeTicket({ id: "T-001", phase: "p1", order: 10 }), makeTicket({ id: "T-002", phase: "p1", order: 20, ...w({ waitingOn: "external" }) })],
+      roadmap: makeRoadmap([makePhase({ id: "p1" })]),
+    });
+    const out = JSON.parse(handleTicketNext({ ...ctxOf(busy), format: "json" as const }, 1).output);
+    expect(out.waiting.owner).toEqual([]);
+    expect(out.waiting.external.map((x: { id: string }) => x.id)).toEqual(["T-002"]);
+  });
+
   it("complete tickets and resolved issues are not listed", () => {
     const state = makeState({
       tickets: [makeTicket({ id: "T-001", status: "complete", completedDate: "2026-01-02", ...w({ waitingOn: "owner" }) })],

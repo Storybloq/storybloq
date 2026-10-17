@@ -26,6 +26,7 @@ import { isNonActionableDisposition } from "../../core/issue-disposition.js";
 import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { Ticket } from "../../models/ticket.js";
 import type { Issue } from "../../models/issue.js";
+import { effectiveWaitingOn } from "../../models/types.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
 import { formatCitedRulingsSection } from "../../core/output-formatter.js";
@@ -51,6 +52,18 @@ type RevalidationResult<T> =
 function nonActionablePickRefusal(issue: Issue, label: string, targeted: boolean): string | null {
   if (targeted || !isNonActionableDisposition(issue.disposition)) return null;
   return `Issue ${label} has disposition ${issue.disposition} and is not actionable. Pick a different issue, or clear its disposition first.`;
+}
+
+/**
+ * T-481: an item whose waitingOn names a role is never picked, targeted or
+ * not: the wait is the current state of the item, not a triage verdict a run
+ * may override. Checked on the same reads as the refusals around it.
+ */
+function waitingPickRefusal(item: Ticket | Issue, kind: "Ticket" | "Issue", label: string): string | null {
+  const role = effectiveWaitingOn(item);
+  if (role === "none") return null;
+  const who = role === "owner" ? "the owner" : "an external party";
+  return `${kind} ${label} waits on ${who} (waitingOn: ${role}) and is not picked. Pick a different ${kind.toLowerCase()}, or clear the wait first with storybloq ${kind.toLowerCase()} update ${label} --waiting-on none.`;
 }
 
 /**
@@ -276,6 +289,8 @@ export class PickTicketStage implements WorkflowStage {
     if (eligibility.kind !== "eligible") {
       return { action: "retry", instruction: `${describeIneligible(projectState, ticket, "claim", eligibility)} Pick a different ticket.` };
     }
+    const waiting = waitingPickRefusal(ticket, "Ticket", ticketLabel);
+    if (waiting) return { action: "retry", instruction: waiting };
     if (projectState.isBlocked(ticket)) {
       return { action: "retry", instruction: `Ticket ${ticketLabel} is blocked. Pick an unblocked ticket.` };
     }
@@ -357,6 +372,11 @@ export class PickTicketStage implements WorkflowStage {
         const freshEligibility = assertCheckpointEligible(freshState, freshTicket, "claim");
         if (freshEligibility.kind !== "eligible") {
           refusal = `${describeIneligible(freshState, freshTicket, "claim", freshEligibility)} Pick a different ticket.`;
+          return;
+        }
+        const freshWaiting = waitingPickRefusal(freshTicket, "Ticket", ticketLabel);
+        if (freshWaiting) {
+          refusal = freshWaiting;
           return;
         }
         const decision = tryAcquireEarmark(freshTicket.earmark, ctx.state.sessionId, "worker");
@@ -498,6 +518,8 @@ export class PickTicketStage implements WorkflowStage {
     if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { action: "retry", instruction: `Issue ${issueLabel} is ${issue.status}. Pick an open issue.` };
     }
+    const waiting = waitingPickRefusal(issue, "Issue", issueLabel);
+    if (waiting) return { action: "retry", instruction: waiting };
     const notActionable = nonActionablePickRefusal(issue, issueLabel, targeted);
     if (notActionable) return { action: "retry", instruction: notActionable };
 
@@ -558,7 +580,8 @@ export class PickTicketStage implements WorkflowStage {
           refusal = `Issue ${issueLabel} no longer exists. Pick a different issue.`;
           return;
         }
-        const freshRefusal = nonActionablePickRefusal(freshIssue, issueLabel, targeted);
+        const freshRefusal = waitingPickRefusal(freshIssue, "Issue", issueLabel)
+          ?? nonActionablePickRefusal(freshIssue, issueLabel, targeted);
         if (freshRefusal) {
           refusal = freshRefusal;
           return;
@@ -961,6 +984,8 @@ export class PickTicketStage implements WorkflowStage {
     }
     const membership = this.enforceTargetMembership(ctx, ticket.id, label);
     if (membership) return { kind: "rejected", advance: membership };
+    const waiting = waitingPickRefusal(ticket, "Ticket", label);
+    if (waiting) return { kind: "rejected", advance: { action: "retry", instruction: waiting } };
     if (projectState.isBlocked(ticket)) {
       return { kind: "rejected", advance: { action: "retry", instruction: `Ticket ${label} became blocked while the branch mismatch was pending. Pick an unblocked item.` } };
     }
@@ -1005,6 +1030,8 @@ export class PickTicketStage implements WorkflowStage {
     if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
       return { kind: "rejected", advance: { action: "retry", instruction: `Issue ${label} is now ${issue.status}. Pick an open item.` } };
     }
+    const waiting = waitingPickRefusal(issue, "Issue", label);
+    if (waiting) return { kind: "rejected", advance: { action: "retry", instruction: waiting } };
     const notActionable = nonActionablePickRefusal(issue, label, targeted);
     if (notActionable) return { kind: "rejected", advance: { action: "retry", instruction: notActionable } };
     return { kind: "ok", item: issue };

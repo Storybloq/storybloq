@@ -20,7 +20,7 @@ import type { CrossNodeRefStatus } from "../federation/cross-node-resolver.js";
 import type { LoadWarning } from "./errors.js";
 import type { ValidationResult, ValidationFinding, ValidationLevel } from "./validation.js";
 import type { LedgerIntegrityResult } from "./ledger-integrity.js";
-import type { NextTicketOutcome, NextTicketsOutcome } from "./queries.js";
+import type { NextTicketOutcome, NextTicketsOutcome, WaitingInventory, WaitingItem } from "./queries.js";
 import type { RecommendResult } from "./recommend.js";
 import { isHandoverWindowIncomplete } from "./recommend.js";
 import { describeRepeatInterval } from "./session-intel/sampler.js";
@@ -1869,31 +1869,69 @@ export function formatLedgerIntegrity(
 export function formatBlockerList(
   roadmap: Roadmap,
   format: OutputFormat,
+  waiting?: WaitingInventory,
 ): string {
   if (format === "json") {
     return JSON.stringify(
-      successEnvelope(
-        roadmap.blockers.map((b) => ({
-          name: b.name,
-          cleared: isBlockerCleared(b),
-          note: b.note ?? null,
-          createdDate: b.createdDate ?? null,
-          clearedDate: b.clearedDate ?? null,
-        })),
-      ),
+      {
+        ...successEnvelope(
+          roadmap.blockers.map((b) => ({
+            name: b.name,
+            cleared: isBlockerCleared(b),
+            note: b.note ?? null,
+            createdDate: b.createdDate ?? null,
+            clearedDate: b.clearedDate ?? null,
+          })),
+        ),
+        // T-481: data stays the blocker array; the waiting inventory travels beside it.
+        ...(waiting ? { waiting } : {}),
+      },
       null,
       2,
     );
   }
 
-  if (roadmap.blockers.length === 0) return "No blockers.";
+  const waitingLines = waiting ? formatWaitingSection(waiting, "## Waiting on a role") : [];
+  if (roadmap.blockers.length === 0 && waitingLines.length === 0) return "No blockers.";
   const lines: string[] = [];
   for (const b of roadmap.blockers) {
     const status = isBlockerCleared(b) ? "[x]" : "[ ]";
     const note = b.note ? ` -- ${escapeMarkdownInline(b.note)}` : "";
     lines.push(`${status} ${escapeMarkdownInline(b.name)}${note}`);
   }
+  if (waitingLines.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...waitingLines);
+  }
   return lines.join("\n");
+}
+
+// --- T-481: the waiting inventory ---
+
+function waitingLabel(item: WaitingItem): string {
+  return `${escapeMarkdownInline(displayIdOf(item))}${item.umbrella ? " (umbrella)" : ""}`;
+}
+
+/** One line for ticket next, or null when nothing waits. */
+export function formatWaitingSummary(waiting: WaitingInventory): string | null {
+  const parts: string[] = [];
+  if (waiting.owner.length > 0) {
+    parts.push(`${waiting.owner.length} wait on the owner: ${waiting.owner.map(waitingLabel).join(", ")}`);
+  }
+  if (waiting.external.length > 0) {
+    const verb = parts.length > 0 ? "" : " wait";
+    parts.push(`${waiting.external.length}${verb} on an external party: ${waiting.external.map(waitingLabel).join(", ")}`);
+  }
+  return parts.length > 0 ? `Waiting, not offered: ${parts.join("; ")}.` : null;
+}
+
+/** A markdown section naming each waiting item under its role; empty when nothing waits. */
+export function formatWaitingSection(waiting: WaitingInventory, heading: string): string[] {
+  if (waiting.owner.length === 0 && waiting.external.length === 0) return [];
+  const lines = [heading, ""];
+  for (const item of waiting.owner) lines.push(`- ${waitingLabel(item)}: ${escapeMarkdownInline(item.title)} (waits on the owner)`);
+  for (const item of waiting.external) lines.push(`- ${waitingLabel(item)}: ${escapeMarkdownInline(item.title)} (waits on an external party)`);
+  return lines;
 }
 
 export function formatNote(
@@ -3772,7 +3810,12 @@ export function formatRecommendations(
   const hasNothingToShow = withActionability
     ? result.recommendations.length === 0 && result.excludedCount === 0 && !windowIncomplete
     : result.recommendations.length === 0;
+  // T-481: waiting items are never recommended, but always named.
+  const waitingLines = result.waiting ? formatWaitingSection(result.waiting, "## Waiting") : [];
 
+  if (hasNothingToShow && waitingLines.length > 0) {
+    return ["No recommendations.", "", ...waitingLines].join("\n");
+  }
   if (hasNothingToShow) {
     if (state.isEmptyScaffold) {
       return "No recommendations yet -- this project needs tickets and phases. Run the /story setup flow to get started.";
@@ -3827,6 +3870,11 @@ export function formatRecommendations(
         `- ${escapeMarkdownInline(displayIdOf(entry))}: ${escapeMarkdownInline(entry.title)} (${entry.actionability.status} -- ${escapeMarkdownInline(entry.actionability.reason)})`,
       );
     }
+  }
+
+  if (waitingLines.length > 0) {
+    lines.push("");
+    lines.push(...waitingLines);
   }
 
   return lines.join("\n");

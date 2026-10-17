@@ -387,6 +387,29 @@ describe("T-481 T7c: a held issue that starts to wait", () => {
   }
 });
 
+// T-481 T7d (pen ruling): the deleted check comes before the wait check, so a
+// held issue deleted while it waits takes the deleted path, never "waiting".
+describe("T-481 T7d: a held issue deleted while it waits", () => {
+  for (const wait of ["owner", "external"] as const) {
+    it(`${wait}: report gives the deleted explanation, not the waiting one`, async () => {
+      const { sessionId, dir } = plant(root, sweepOn());
+      writeIssue(root, "ISS-001", {
+        ...acquiredBy(sessionId), waitingOn: wait,
+        lifecycle: "deleted", deletedAt: "2026-10-16T00:00:00Z", deletedBy: "test",
+      });
+      const before = issueText(root, "ISS-001");
+
+      const r = await report(root, sessionId);
+
+      expect(r.thrown).toBeNull();
+      expect(r.text).toContain("was deleted (tombstoned)");
+      expect(r.text).not.toContain("--waiting-on none");
+      expect(issueText(root, "ISS-001")).toBe(before);
+      expect(readState(dir).issueSweepState?.current).toBe("ISS-001");
+    });
+  }
+});
+
 // T-481 T7b (sweep): a waiting issue is never acquired, at the source filter
 // or at the locked recheck.
 describe("T-481 T7b: the sweep never acquires a waiting issue", () => {

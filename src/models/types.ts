@@ -227,6 +227,7 @@ export const ERROR_CODES = [
   // T-538 S2: a locked handler called another locked handler on the same
   // project; the lock is not re-entrant, so this is refused at once.
   "nested_lock",
+  "setup_bootstrapping",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

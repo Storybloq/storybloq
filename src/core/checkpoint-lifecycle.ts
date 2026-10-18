@@ -324,6 +324,15 @@ export async function buildCheckpointTicketUnlocked(
   return { ...ticket, ...modeFields, ownerCheckpoint: record } as Ticket;
 }
 
+/**
+ * T-538 S2: the create write of a checkpoint ticket built by
+ * `buildCheckpointTicketUnlocked`, as a transaction operation under the held
+ * lock, carrying this module's write authority.
+ */
+export async function prepareCheckpointCreateWrite(ticket: Ticket, root: string): Promise<{ target: string; content: string }> {
+  return prepareTicketWrite(ticket, root, { authority: LIFECYCLE_AUTHORITY });
+}
+
 /** Makes an existing open, unclaimed, un-earmarked ticket a checkpoint. */
 export async function attachCheckpoint(
   root: string,

@@ -197,6 +197,7 @@ export async function loadProject(
   }
 
   // 3. Load config.json (critical)
+  await refuseWhileSetupBootstrapping(wrapDir);
   const config = await loadSingletonFile<Config>(
     "config.json",
     wrapDir,
@@ -1289,6 +1290,8 @@ export async function deleteLesson(
 
 export interface WithProjectLockOptions {
   strict?: boolean;
+  /** How long to wait for the lock before failing; the lock's own default when absent. */
+  deadlineMs?: number;
 }
 
 interface InternalLockOptions extends WithProjectLockOptions {
@@ -1344,7 +1347,7 @@ async function withProjectLockInternal(
     }
 
     await handler(result);
-  });
+  }, options.deadlineMs);
 }
 
 export async function withProjectLock(
@@ -1838,8 +1841,35 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
  * Internal load without lock acquisition or recovery -- used by deleteTicket
  * which already holds the lock.
  */
+/** T-538 S2: the manifest a setup bootstrap keeps until `config.json` is published (plan v5 1b). */
+export const SETUP_BOOTSTRAP_MANIFEST = ".setup-bootstrap.json";
+
+/**
+ * A `.story` holding a setup bootstrap manifest and no `config.json` is a
+ * setup being bootstrapped, not a project: refuse with how to resume it.
+ */
+async function refuseWhileSetupBootstrapping(wrapDir: string): Promise<void> {
+  if (existsSync(join(wrapDir, "config.json"))) return;
+  let raw: string;
+  try {
+    raw = await readFile(join(wrapDir, SETUP_BOOTSTRAP_MANIFEST), "utf-8");
+  } catch {
+    return;
+  }
+  let setupId = "(unreadable manifest)";
+  try {
+    const parsed = JSON.parse(raw) as { setupId?: unknown };
+    if (typeof parsed.setupId === "string") setupId = parsed.setupId;
+  } catch { /* named below as unreadable */ }
+  throw new ProjectLoaderError(
+    "setup_bootstrapping",
+    `Setup ${setupId} is bootstrapping this project; run storybloq setup-apply --resume --setup ${setupId}.`,
+  );
+}
+
 async function loadProjectUnlocked(absRoot: string): Promise<LoadResult> {
   const wrapDir = join(absRoot, ".story");
+  await refuseWhileSetupBootstrapping(wrapDir);
   const config = await loadSingletonFile<Config>("config.json", wrapDir, absRoot, ConfigSchema);
   const roadmap = await loadSingletonFile<Roadmap>("roadmap.json", wrapDir, absRoot, RoadmapSchema);
   const warnings: LoadWarning[] = [];
@@ -2317,6 +2347,15 @@ export function outsideProjectLock<T>(fn: () => T): T {
   return projectLockContext.exit(() => resolutionContextChain.exit(fn));
 }
 
+/**
+ * T-538 S2: holds the project lock on a folder that may not be an
+ * initialized project yet (setup's bootstrap, plan v5 1b). Every write inside
+ * `fn` is fenced like any other locked write; nothing is loaded.
+ */
+export async function withBootstrapLock<T>(root: string, fn: () => Promise<T>, options: { deadlineMs?: number } = {}): Promise<T> {
+  return withLock(join(resolve(root), ".story"), fn, options.deadlineMs);
+}
+
 /** A lock path with its directory resolved through symlinks (/tmp and /private/tmp are one lock). */
 function canonicalLockPath(lockPath: string): string {
   try {
@@ -2330,6 +2369,7 @@ function canonicalLockPath(lockPath: string): string {
 async function withLock<T>(
   wrapDir: string,
   fn: () => Promise<T>,
+  deadlineMs?: number,
 ): Promise<T> {
   const lockPath = join(wrapDir, ".lock");
   // T-538 S2: the lock is not re-entrant, so a locked handler calling another
@@ -2342,7 +2382,7 @@ async function withLock<T>(
       `This operation already holds the project lock (${lockPath}); a locked handler called another locked handler. Call its unlocked primitive instead.`,
     );
   }
-  const handle = await acquireProjectLockAsync(lockPath);
+  const handle = await acquireProjectLockAsync(lockPath, deadlineMs === undefined ? {} : { deadlineMs });
   // T-486 B6: the context exists only after the lock is acquired and is
   // released before the lock is, so detached work cannot outlive it.
   const ctx = createResolutionWriteContext(dirname(resolve(wrapDir)), undefined, () => verifyProjectLockOwnership(handle));

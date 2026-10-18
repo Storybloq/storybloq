@@ -799,6 +799,7 @@ export function buildCompactStatusData(
     activeLessons: state.activeLessonCount,
     handovers: state.handoverFilenames.length,
     isEmptyScaffold: state.isEmptyScaffold,
+    setupInProgress: state.setupInProgress,
     phases: phases.map((p) => ({
       id: p.phase.id,
       name: p.phase.name,
@@ -917,6 +918,7 @@ export function formatStatus(
     deprecatedLessons: state.deprecatedLessonCount,
     handovers: state.handoverFilenames.length,
     isEmptyScaffold: state.isEmptyScaffold,
+    setupInProgress: state.setupInProgress,
     phases: phases.map((p) => ({
       id: p.phase.id,
       name: p.phase.name,
@@ -1051,6 +1053,11 @@ export function formatStatus(
   lines.push(...expiredLeaseSessionsSection(expiredLeaseSessions));
   lines.push(...sessionDiagnosticLines(sessionDiagnostics ?? []));
   lines.push(...arrangementsSection(arrangements));
+
+  for (const setup of state.setupInProgress ?? []) {
+    lines.push("");
+    lines.push(`Setup ${setup.setupId} is in progress (progress note ${setup.noteId}); resume it with \`storybloq setup-apply --resume --setup ${setup.setupId}\`.`);
+  }
 
   if (state.isEmptyScaffold) {
     lines.push("");

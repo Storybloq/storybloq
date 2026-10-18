@@ -8,6 +8,7 @@ import type { OmittedTicketRecord } from "./project-loader.js";
 import type { IssueSeverity } from "../models/types.js";
 import { resolveRef, buildPrevDisplayIndex, type ResolveResult } from "./resolver.js";
 import { compareByRank } from "./fractional-index.js";
+import { parseSetupMeta } from "./setup-meta.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { checkpointReleases, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { isEffectivelyWithdrawn } from "./resolution-kind.js";
@@ -598,9 +599,24 @@ export class ProjectState {
     return this.countedLeafTickets.filter((t) => t.status !== "complete" && this.isBlocked(t)).length;
   }
 
-  /** True when the project has been initialized but not yet populated with tickets/issues/handovers. */
+  /**
+   * T-538 S2: every setup whose progress note is still active, in note order.
+   * Two or more is an ambiguity the owner resolves; none is ever auto-picked.
+   */
+  get setupInProgress(): Array<{ setupId: string; noteId: string }> {
+    const out: Array<{ setupId: string; noteId: string }> = [];
+    for (const note of this.notes) {
+      if (note.status !== "active") continue;
+      const meta = parseSetupMeta("note", note);
+      if (meta.kind === "record" && meta.meta.record === "progress") out.push({ setupId: meta.meta.setupId, noteId: note.id });
+    }
+    return out;
+  }
+
+  /** True when the project has been initialized but not yet populated with tickets/issues/handovers. A setup in progress is not empty. */
   get isEmptyScaffold(): boolean {
     return (
+      this.setupInProgress.length === 0 &&
       this.tickets.length === 0 &&
       this.issues.length === 0 &&
       this.handoverFilenames.length === 0 &&

@@ -9,6 +9,12 @@ export interface TicketUpdateInput {
   order?: number;
   description?: string;
   blockedBy?: string[];
+  /**
+   * T-538: added to the stored prerequisites under the project lock, so two
+   * concurrent additions both survive. Not with `blockedBy`; on a checkpoint,
+   * only while it is pending.
+   */
+  addBlockedBy?: string[];
   crossNodeBlockedBy?: string[] | null;
   parentTicket?: string | null;
   citesRuling?: string[];

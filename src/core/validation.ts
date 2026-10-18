@@ -12,7 +12,7 @@ import type { RulingScanCompleteness } from "./ruling-loader.js";
 import { buildSuccessorIndex, buildCitationResolutionContext, lifecycleMapFor, resolveCitation, type UpwardBoard } from "./ruling.js";
 import { classifyLifecycle, isEffectivelyAccepted } from "./ruling-lifecycle.js";
 import { RESERVED_RESPONSE_KEYS, dispositionEvidenceView, dispositionRefForm, effectiveResolutionKind, resolutionKindView, ticketResolutionKindView } from "./resolution-kind.js";
-import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { hasOwnerCheckpoint, parseEvidenceMode } from "./owner-checkpoint.js";
 import { RULING_CANONICAL_ID_REGEX } from "../models/types.js";
 
 const DEFAULT_EARMARK_STALE_THRESHOLD_HOURS = 48;
@@ -169,6 +169,19 @@ export function validateProject(
         entity: item.id,
       });
     }
+  }
+
+  // T-538: an evidence mode this CLI does not know refuses every resolve,
+  // change and evidence write on that checkpoint until the file is fixed.
+  for (const t of state.tickets) {
+    const mode = parseEvidenceMode(t);
+    if (mode.kind !== "unsupported") continue;
+    findings.push({
+      level: "error",
+      code: "checkpoint_evidence_mode_unsupported",
+      message: `${displayIdOf(t)}: checkpointEvidenceMode ${JSON.stringify(mode.value)} is not a mode this CLI knows (only "immutable"); the checkpoint cannot be resolved or changed until the file is fixed by hand or storybloq is updated.`,
+      entity: t.id,
+    });
   }
 
   // Dedupe keys are idempotency identities, so two issues may never share one.

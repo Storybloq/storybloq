@@ -16,7 +16,7 @@ import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { validateProject } from "../../core/validation.js";
 import { assertCheckpointEligible, completeDependent, describeCheckpointBlock, describeIneligible, evidenceFor } from "../../core/checkpoint-evidence.js";
-import { hasOwnerCheckpoint, pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
+import { checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
 import { assertWithdrawable } from "../../core/ticket-withdrawal.js";
 import { ticketJsonBody } from "../../core/resolution-kind.js";
 import { ProjectState } from "../../core/project-state.js";
@@ -589,8 +589,11 @@ export async function handleTicketUpdate(
   assertUpdateHasFields(
     updates,
     "ticket",
-    "status, title, type, phase, order, description, blockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings, resolutionKind (with reason), priority, waitingOn",
+    "status, title, type, phase, order, description, blockedBy, addBlockedBy, crossNodeBlockedBy, parentTicket, citesRuling, clearCitesRulings, resolutionKind (with reason), priority, waitingOn",
   );
+  if (updates.blockedBy !== undefined && updates.addBlockedBy !== undefined) {
+    throw new CliValidationError("invalid_input", "Use either --blocked-by (replaces the prerequisites) or --add-blocked-by (adds to them), not both");
+  }
   const priority = updates.priority !== undefined ? parsePriority(updates.priority) : undefined;
   const waitingOn = updates.waitingOn !== undefined ? parseWaitingOn(updates.waitingOn) : undefined;
   // ISS-1192: an agent that reads the md-rendered description back and
@@ -639,9 +642,35 @@ export async function handleTicketUpdate(
     if (updates.phase !== undefined) {
       validatePhase(updates.phase, { state });
     }
-    const resolvedBlockedBy = updates.blockedBy
+    let resolvedBlockedBy = updates.blockedBy
       ? validateAndResolveBlockedBy(updates.blockedBy, resolvedId, state)
       : undefined;
+    // T-538: the addition reads the stored set under this lock. A checkpoint
+    // takes new prerequisites only while pending: an approved or retired one
+    // has released its dependents, and an unrecognized one cannot be read.
+    if (updates.addBlockedBy !== undefined) {
+      const cpState = checkpointState(existing);
+      if (cpState !== null && cpState !== "pending") {
+        throw new CliValidationError(
+          "conflict",
+          `Cannot add prerequisites to ${displayIdOf(existing)}: the checkpoint is ${cpState}, and only a pending checkpoint takes new ones. ` +
+            (cpState === "unrecognized" ? "Fix the file by hand first." : "Reopen it first if the answer no longer stands."),
+        );
+      }
+      const added = validateAndResolveBlockedBy(updates.addBlockedBy, resolvedId, state);
+      // Stored refs are kept as written; a new one is skipped when a stored
+      // ref already resolves to the same ticket.
+      const held = new Set(existing.blockedBy.map((ref) => {
+        const r = state.resolveTicketRef(ref);
+        return r.kind === "found" ? r.item.id : ref;
+      }));
+      resolvedBlockedBy = [...existing.blockedBy];
+      for (const ref of added) {
+        if (held.has(ref)) continue;
+        held.add(ref);
+        resolvedBlockedBy.push(ref);
+      }
+    }
     const resolvedParent = updates.parentTicket
       ? validateAndResolveParentTicket(updates.parentTicket, resolvedId, state)
       : updates.parentTicket;

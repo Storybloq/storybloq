@@ -30,7 +30,7 @@ import { validateProject } from "./validation.js";
 import { notHiddenByEarmark } from "./earmarks.js";
 import { isNonActionableDisposition } from "./issue-disposition.js";
 import { applyClaimAnnotations } from "./claims.js";
-import { checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers, reassessCheckpoints } from "./owner-checkpoint.js";
+import { checkpointReady, checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers, reassessCheckpoints } from "./owner-checkpoint.js";
 import { isEffectivelyWithdrawn } from "./resolution-kind.js";
 import { displayIdOf } from "./resolver.js";
 import type { Claim } from "../models/types.js";
@@ -219,7 +219,9 @@ export function computeActionability(
         status: "owner_gated",
         reason: cpState === "unrecognized"
           ? "owner checkpoint this CLI cannot read; it blocks until the file is fixed by hand"
-          : "owner checkpoint awaiting the owner's answer",
+          : checkpointReady(ctx.state, ticket)
+            ? "owner checkpoint ready: prepare the evidence and ask the owner"
+            : "owner checkpoint awaiting the owner's answer",
         source: "ledger",
       };
     }

@@ -196,6 +196,7 @@ import {
 } from "../cli/commands/gate-ack.js";
 import {
   handleCheckpointAttach,
+  handleCheckpointEvidence,
   handleCheckpointChange,
   handleCheckpointCreate,
   handleCheckpointReopen,
@@ -1041,6 +1042,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       phase: z.string().nullable().optional().describe("Null to clear."),
       parentTicket: TicketRefSchema.nullable().optional().describe("Null to clear."),
       blockedBy: z.array(TicketRefSchema).optional(),
+      addBlockedBy: z.array(TicketRefSchema).optional().describe("Added to the existing blockedBy, under the lock. Not with blockedBy."),
       crossNodeBlockedBy: z.array(z.string().regex(CROSS_NODE_REF_REGEX)).nullable().optional().describe("e.g. engine:T-061. Null to clear."),
       force: z.boolean().optional().describe("Bypass the ownership guard: complete a ticket claimed by another session, or reopen a complete one (ISS-981). Does not take over a claim; reopening leaves existing claim material unchanged."),
       citesRuling: z.array(RulingIdSchema).optional().describe("Replaces existing cited rulings. Mutually exclusive with clearCitesRulings."),
@@ -1071,6 +1073,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
           phase: args.phase,
           parentTicket: args.parentTicket,
           blockedBy: args.blockedBy,
+          addBlockedBy: args.addBlockedBy,
           crossNodeBlockedBy: args.crossNodeBlockedBy,
           citesRuling: args.citesRuling,
           clearCitesRulings: args.clearCitesRulings,
@@ -1828,13 +1831,25 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
       blockedBy: z.array(TicketRefSchema).optional(),
       parentTicket: TicketRefSchema.optional(),
       actor: z.string().max(256).optional(),
+      evidenceMode: z.enum(["immutable"]).optional().describe("Needs `checkpoint enable --immutable-evidence`"),
     },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointCreate(args, format, root)));
 
   registerWriteTool(server, "storybloq_checkpoint_attach", {
     description: "Make an open, unclaimed ticket a checkpoint",
-    inputSchema: { id: TicketRefSchema, owner: z.string().min(1).max(256), ...checkpointContent, actor: z.string().max(256).optional() },
+    inputSchema: {
+      id: TicketRefSchema,
+      owner: z.string().min(1).max(256),
+      ...checkpointContent,
+      actor: z.string().max(256).optional(),
+      evidenceMode: z.enum(["immutable"]).optional().describe("Needs `checkpoint enable --immutable-evidence`"),
+    },
   }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointAttach(args.id, args, format, root)));
+
+  registerWriteTool(server, "storybloq_checkpoint_evidence", {
+    description: "Add an evidence revision to an immutable checkpoint; voids its answer",
+    inputSchema: { ...checkpointExpected, file: z.string().min(1).max(4096).describe("Evidence file inside the project, relative to its root") },
+  }, (args) => runMcpWriteTool(pinnedRoot, (root, format) => handleCheckpointEvidence(args.id, args, format, root)));
 
   registerWriteTool(server, "storybloq_checkpoint_resolve", {
     description: "Answer a checkpoint. An acceptance needs artifactRef.",

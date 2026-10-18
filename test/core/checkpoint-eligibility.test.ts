@@ -247,7 +247,8 @@ describe("recommend", () => {
     // The open, unblocked checkpoint is a candidate, so it must surface as excluded;
     // the dependent may be filtered earlier as blocked, which is also correct.
     expect(excluded.get(cp.id)?.status).toBe("owner_gated");
-    for (const [id, reason] of [[cp.id, /awaiting the owner's answer/], [dep, new RegExp(`waits on owner checkpoint ${cp.id}`)]] as const) {
+    // T-538: with no prerequisites the checkpoint is ready, which the reason names.
+    for (const [id, reason] of [[cp.id, /owner checkpoint ready: prepare the evidence and ask the owner/], [dep, new RegExp(`waits on owner checkpoint ${cp.id}`)]] as const) {
       const verdict = excluded.get(id);
       if (verdict) {
         expect(verdict.status).toBe("owner_gated");

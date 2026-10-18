@@ -521,6 +521,8 @@ describe("tool description contract (T-460)", () => {
     // CLI-only: enable changes how git merges the ledger, a conflict is the
     // merging person's to settle, and ticket get/list already show checkpoints.
     // ISS-1290 adds storybloq_arrangement_rebind (101 -> 102): the successor's new pen is an agent consumer; the spec names an MCP tool.
-    expect(result.tools.length).toBe(102);
+    // T-538 adds storybloq_checkpoint_evidence (102 -> 103): an agent prepares
+    // the evidence the owner reviews, so adding a revision is agent work.
+    expect(result.tools.length).toBe(103);
   });
 });

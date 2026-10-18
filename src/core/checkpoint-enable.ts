@@ -10,12 +10,17 @@
  * merging, and only then stamps. Each step is idempotent and the progress is
  * recorded in config, so an interrupted enable is finished by running it
  * again.
+ *
+ * T-538: `--immutable-evidence` is the same operation with target schema 5
+ * (IMMUTABLE_EVIDENCE_SCHEMA_VERSION), for team and non-team projects alike;
+ * on a team clone the binary git would run must also report schema 5. No
+ * enable ever lowers the version a project already has.
  */
 import { execFile, execFileSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { CliValidationError } from "../cli/helpers.js";
-import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
+import { CHECKPOINT_SCHEMA_VERSION, IMMUTABLE_EVIDENCE_SCHEMA_VERSION } from "./errors.js";
 import { withProjectLock, writeConfigUnlocked } from "./project-loader.js";
 import {
   CHECKPOINT_MERGE_DRIVERS,
@@ -149,7 +154,12 @@ export function checkpointDriverProblems(storyDir: string, gitRoot: string): {
 }
 
 /** Every reason this clone cannot merge checkpoints yet; empty when it can. Reads only. */
-export async function checkpointMergeProblems(root: string, gitRoot: string, deps: CheckpointEnableDeps): Promise<string[]> {
+export async function checkpointMergeProblems(
+  root: string,
+  gitRoot: string,
+  deps: CheckpointEnableDeps,
+  minSchemaVersion: number = CHECKPOINT_SCHEMA_VERSION,
+): Promise<string[]> {
   const { wrongAttributes, registrationProblems, protocols } = checkpointDriverProblems(join(root, ".story"), gitRoot);
   const problems = [...registrationProblems];
   // Ask the binary once per protocol a registration in use requires; with
@@ -159,6 +169,8 @@ export async function checkpointMergeProblems(root: string, gitRoot: string, dep
     const record = typeof caps === "object" && caps !== null ? (caps as Record<string, unknown>) : {};
     if (record.protocol !== protocol || record.checkpoints !== true || typeof record.maxSchemaVersion !== "number" || record.maxSchemaVersion < CHECKPOINT_SCHEMA_VERSION) {
       problems.push(`the storybloq binary git would run does not answer \`merge-driver --protocol ${protocol} --capabilities\` with owner checkpoints (it predates them, or is not on PATH)`);
+    } else if (record.maxSchemaVersion < minSchemaVersion) {
+      problems.push(`the storybloq binary git would run reads schema ${record.maxSchemaVersion} at most, not ${minSchemaVersion} (it predates immutable checkpoint evidence)`);
     }
   }
   for (const { path, driver } of wrongAttributes) {
@@ -174,7 +186,18 @@ function stepRecord(step: CheckpointEnableStep): { step: CheckpointEnableStep; a
 /** How many times enable re-decides when the config's team mode changed under it. */
 const DECISION_ATTEMPTS = 3;
 
-export async function enableCheckpoints(root: string, deps: CheckpointEnableDeps = defaultEnableDeps): Promise<CheckpointEnableResult> {
+export interface CheckpointEnableOptions {
+  /** T-538: enable immutable checkpoint evidence too, stamping schema 5. */
+  readonly immutableEvidence?: boolean;
+}
+
+export async function enableCheckpoints(
+  root: string,
+  deps: CheckpointEnableDeps = defaultEnableDeps,
+  opts: CheckpointEnableOptions = {},
+): Promise<CheckpointEnableResult> {
+  const target = opts.immutableEvidence === true ? IMMUTABLE_EVIDENCE_SCHEMA_VERSION : CHECKPOINT_SCHEMA_VERSION;
+  const what = opts.immutableEvidence === true ? "immutable checkpoint evidence" : "owner checkpoints";
   for (let attempt = 0; attempt < DECISION_ATTEMPTS; attempt++) {
     let teamEnabled = false;
     await withProjectLock(root, { strict: false }, async ({ state }) => {
@@ -184,24 +207,25 @@ export async function enableCheckpoints(root: string, deps: CheckpointEnableDeps
     const team = teamEnabled && gitRoot !== null;
     // Validation runs a subprocess, so it runs outside the lock; the lock
     // below re-reads the one input it decided on and starts over if it moved.
-    const problems = team ? await checkpointMergeProblems(root, gitRoot!, deps) : [];
+    const problems = team ? await checkpointMergeProblems(root, gitRoot!, deps, target) : [];
     await deps.afterDecision?.(root);
 
     let result: CheckpointEnableResult | "moved" = "moved";
     await withProjectLock(root, { strict: false }, async ({ state }) => {
       if ((state.config.team?.enabled === true) !== teamEnabled) return;
-      const done = state.config.schemaVersion !== undefined && state.config.schemaVersion >= CHECKPOINT_SCHEMA_VERSION
-        && state.config.checkpointEnable?.step === "complete";
+      const current = state.config.schemaVersion;
+      const done = current !== undefined && current >= target && state.config.checkpointEnable?.step === "complete";
+      const stamp = Math.max(current ?? 0, target);
       if (!team) {
         if (done) { result = { status: "already", team }; return; }
-        await writeConfigUnlocked({ ...state.config, schemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpointEnable: stepRecord("complete") }, root);
+        await writeConfigUnlocked({ ...state.config, schemaVersion: stamp, checkpointEnable: stepRecord("complete") }, root);
         result = { status: "enabled", team };
         return;
       }
       if (problems.length > 0) {
         throw new CliValidationError(
           "conflict",
-          `Cannot enable owner checkpoints: this clone cannot merge them yet. ${problems.map((p) => `- ${p}`).join(" ")} ` +
+          `Cannot enable ${what}: this clone cannot merge them yet. ${problems.map((p) => `- ${p}`).join(" ")} ` +
             "Run `storybloq team setup` (with a storybloq that supports owner checkpoints on PATH), then `storybloq team doctor`, then enable again. Nothing was written.",
         );
       }
@@ -214,10 +238,10 @@ export async function enableCheckpoints(root: string, deps: CheckpointEnableDeps
       const attributes = { ...state.config, checkpointEnable: stepRecord("attributes") };
       await writeConfigUnlocked(attributes, root);
       writeCheckpointGitattributes(join(root, ".story"));
-      await writeConfigUnlocked({ ...attributes, schemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpointEnable: stepRecord("complete") }, root);
+      await writeConfigUnlocked({ ...attributes, schemaVersion: stamp, checkpointEnable: stepRecord("complete") }, root);
       result = { status: "enabled", team };
     });
     if (result !== "moved") return result;
   }
-  throw new CliValidationError("conflict", "Cannot enable owner checkpoints: the project's team mode kept changing while enable ran. Nothing was written; run it again.");
+  throw new CliValidationError("conflict", `Cannot enable ${what}: the project's team mode kept changing while enable ran. Nothing was written; run it again.`);
 }

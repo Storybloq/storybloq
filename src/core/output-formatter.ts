@@ -1325,7 +1325,7 @@ const checkpointText = (s: string) => escapeMarkdownInline(sanitizeDisplayText(s
 /** One line for a checkpoint, as `checkpoint list` prints it. */
 export function formatCheckpointLine(s: CheckpointSummary): string {
   const what = s.kind === "acceptance" ? s.criteria : s.question;
-  const parts = [`${checkpointText(s.id)} [checkpoint ${s.state}]`, checkpointText(s.title)];
+  const parts = [`${checkpointText(s.id)} [checkpoint ${s.state}${s.ready ? ", ready" : ""}]`, checkpointText(s.title)];
   if (s.owner) parts.push(`owner ${checkpointText(s.owner)}`);
   if (what) parts.push(`${s.kind === "acceptance" ? "criteria" : "question"}: ${checkpointText(what)}`);
   if (s.expected) parts.push(`expected ${expectedFlags(s)}`);

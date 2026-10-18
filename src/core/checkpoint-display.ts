@@ -5,7 +5,7 @@
  * differ between them.
  */
 import type { Ticket } from "../models/ticket.js";
-import { checkpointState, parseOwnerCheckpoint, type CheckpointDisplayState } from "./owner-checkpoint.js";
+import { checkpointReady, checkpointState, parseEvidenceMode, parseOwnerCheckpoint, type CheckpointDisplayState } from "./owner-checkpoint.js";
 import type { ExpectedCheckpoint } from "./checkpoint-lifecycle.js";
 import { displayIdOf } from "./resolver.js";
 
@@ -19,9 +19,13 @@ export interface CheckpointSummary {
   readonly criteria?: string;
   readonly expected?: ExpectedCheckpoint;
   readonly reason?: string;
+  /** T-538: how a resolve accepts evidence; "unsupported" for a value this CLI does not know. */
+  readonly evidenceMode?: "legacy" | "immutable" | "unsupported";
+  /** T-538: pending with every prerequisite released; present only when the caller passed the project. */
+  readonly ready?: boolean;
 }
 
-export function checkpointSummary(ticket: Ticket): CheckpointSummary | null {
+export function checkpointSummary(ticket: Ticket, project?: { isBlocked(ticket: Ticket): boolean }): CheckpointSummary | null {
   const state = checkpointState(ticket);
   if (state === null) return null;
   const id = displayIdOf(ticket);
@@ -37,6 +41,8 @@ export function checkpointSummary(ticket: Ticket): CheckpointSummary | null {
     ...(cp.question !== undefined ? { question: cp.question } : {}),
     ...(cp.criteria !== undefined ? { criteria: cp.criteria } : {}),
     expected: { generation: cp.generation, revision: cp.revision, digest: cp.digest },
+    evidenceMode: parseEvidenceMode(ticket).kind,
+    ...(project !== undefined ? { ready: checkpointReady(project, ticket) } : {}),
   };
 }
 

@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
-import { CHECKPOINT_SCHEMA_VERSION } from "../../src/core/errors.js";
+import { CHECKPOINT_SCHEMA_VERSION, MAX_SUPPORTED_SCHEMA_VERSION } from "../../src/core/errors.js";
 import { loadProject } from "../../src/core/project-loader.js";
 import {
   CHECKPOINT_BLOCK_BEGIN,
@@ -96,8 +96,10 @@ describe("merge-driver protocols 4 and 5", () => {
   it("serves 4 and 5, 5 current, and reports each protocol's capabilities", () => {
     expect(SUPPORTED_MERGE_DRIVER_PROTOCOLS).toEqual([4, 5]);
     expect(MERGE_DRIVER_PROTOCOL).toBe(5);
-    expect(mergeDriverCapabilities()).toEqual({ protocol: 5, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
-    expect(mergeDriverCapabilities(4)).toEqual({ protocol: 4, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
+    // T-538: the build reads schema 5 (immutable checkpoint evidence), on both protocols.
+    expect(mergeDriverCapabilities()).toEqual({ protocol: 5, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true });
+    expect(mergeDriverCapabilities(4)).toEqual({ protocol: 4, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true });
+    expect(MAX_SUPPORTED_SCHEMA_VERSION).toBeGreaterThan(CHECKPOINT_SCHEMA_VERSION);
   });
 
   it("finds the ledger from %P, nested or not", () => {
@@ -112,7 +114,9 @@ describe("merge-driver protocols 4 and 5", () => {
     const path = join(root, ".story", "config.json");
     const c = config(root);
     writeFileSync(path, JSON.stringify({ ...c, schemaVersion: 5 }));
-    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(/schemaVersion 5.*supports up to 4/);
+    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toBeNull();
+    writeFileSync(path, JSON.stringify({ ...c, schemaVersion: 6 }));
+    expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(/schemaVersion 6.*supports up to 5/);
     writeFileSync(path, "<<<<<<< ours\n");
     expect(protocolRefusal(protocol, ".story/tickets/t-1.json", root)).toMatch(/cannot read the ledger config/);
   });
@@ -246,7 +250,7 @@ describe("team setup registers v4 and v5 for this clone and selects v5", () => {
     const { repo, root } = await project({ git: true, team: true });
     const infoAttributes = join(repo, git(repo, "rev-parse", "--git-path", "info/attributes"));
     const cases: [string, unknown, RegExp][] = [
-      ["a newer schemaVersion", { ...config(root), schemaVersion: 5 }, /schemaVersion 5/],
+      ["a newer schemaVersion", { ...config(root), schemaVersion: 6 }, /schemaVersion 6/],
       ["a schemaVersion string", { ...config(root), schemaVersion: "5" }, /not a valid config[\s\S]*schemaVersion/],
       ["a schemaVersion array", { ...config(root), schemaVersion: [5] }, /not a valid config[\s\S]*schemaVersion/],
       ["a config that is an array", [config(root)], /not a valid config/],

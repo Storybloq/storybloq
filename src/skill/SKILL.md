@@ -453,6 +453,7 @@ Additional skill documentation, loaded on demand:
 - **`session-guard-fallback.md`** -- Legacy session-guard path for a confirmed-absent guard tool (mode A) and multi-session conflicts with no `overallAction` (mode B)
 - **`duet-mode.md`** -- Duet mode: owner-paired manager/worker pairing, return-route proof before dispatch
 - **`bus-mode.md`** -- Storybloq Bus mode: polling and coordinating with the current task-bound bus endpoint
+- **`checkpoints.md`** -- Owner checkpoints: read it for a ready checkpoint or the owner's answer to one
 - **`autonomous-mode.md`** -- Autonomous mode, review, plan, and guided execution tiers
 - **`reference.md`** -- Full CLI command and MCP tool reference
 - **`review-contract-template.md`** -- The REVIEW.md review contract template, written verbatim by `setup-flow.md`

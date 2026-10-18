@@ -241,6 +241,39 @@ export function checkpointState(ticket: CheckpointTicket): CheckpointDisplayStat
   return "pending";
 }
 
+// --- evidence mode (T-538) ---------------------------------------------------------
+
+/** Ticket-level field, beside the record and outside its digest. */
+export const EVIDENCE_MODE_FIELD = "checkpointEvidenceMode";
+
+export type ParsedEvidenceMode =
+  | { readonly kind: "legacy" }
+  | { readonly kind: "immutable" }
+  | { readonly kind: "unsupported"; readonly value: unknown };
+
+/**
+ * Absent is legacy. "immutable" is the only other value this CLI knows; any
+ * other value, a typo or a mode from a newer CLI, is unsupported and never
+ * read as legacy, so no write applies the weaker rules to it.
+ */
+export function parseEvidenceMode(ticket: object): ParsedEvidenceMode {
+  if (!Object.prototype.hasOwnProperty.call(ticket, EVIDENCE_MODE_FIELD)) return { kind: "legacy" };
+  const value = (ticket as Record<string, unknown>)[EVIDENCE_MODE_FIELD];
+  if (value === undefined) return { kind: "legacy" };
+  if (value === "immutable") return { kind: "immutable" };
+  return { kind: "unsupported", value };
+}
+
+/**
+ * Ready: a pending checkpoint whose every prerequisite releases (a complete
+ * ticket, or a checkpoint approved or retired), so the evidence can be
+ * prepared and the owner asked. Approved, retired, unrecognized and
+ * non-checkpoint tickets are never ready.
+ */
+export function checkpointReady(project: { isBlocked(ticket: Ticket): boolean }, ticket: Ticket): boolean {
+  return checkpointState(ticket) === "pending" && !project.isBlocked(ticket);
+}
+
 /** What the predicates need from a project: resolving a blockedBy ref. */
 export interface CheckpointResolver {
   resolveTicketRef(ref: string): ResolveResult<Ticket>;

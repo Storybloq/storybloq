@@ -784,6 +784,16 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    key: "ticket update --add-blocked-by",
+    check: (dir) => {
+      seedTickets(dir, 4);
+      expect(run(dir, "ticket", "update", "T-004", "--blocked-by", "T-001").code).toBe(0);
+      const res = run(dir, "ticket", "update", "T-004", "--add-blocked-by", "T-002,T-003");
+      expect(res.code, res.out).toBe(0);
+      expect(byDisplayId(dir, "tickets", "T-004").blockedBy).toEqual(["T-001", "T-002", "T-003"]);
+    },
+  },
+  {
     key: "ticket update --blocked-by",
     check: (dir) => {
       seedTickets(dir, 3);

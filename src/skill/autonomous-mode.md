@@ -128,6 +128,7 @@ Before any guide call that could start, resume, or cancel a session, run SKILL.m
 - Invalid IDs cause a hard error before session creation
 - Compact/resume preserves targetWork -- the session continues where it left off
 - If all remaining targets are blocked by items outside the list, session ends with an explanation
+- A target that waits on an owner checkpoint is reported checkpoint-blocked and never worked; when the checkpoint is ready, prepare its evidence and ask the owner as `checkpoints.md` describes, and never answer it yourself
 
 **Use when:**
 - Triaging a specific set of high-priority items

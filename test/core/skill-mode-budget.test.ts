@@ -164,7 +164,11 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // ISS-1107: --commit on 68 CLI write routes and commit? on 44 MCP tools;
   // 51,369 at HEAD before the regeneration, 52,522 measured after. Generated
   // file; 53,000 by the same one-step rule.
-  "reference.md": 53000,
+  // T-538 S1: checkpoint evidence, --immutable-evidence, --evidence-mode,
+  // --add-blocked-by and storybloq_checkpoint_evidence; 52,995 at HEAD before
+  // the regeneration, 53,486 measured after. Generated file; 54,000 by the
+  // same one-step rule.
+  "reference.md": 54000,
   "federation-setup.md": 14000,
   // Was 47000 (measured 46,936 before this issue). ISS-1240 adds the roster
   // pointer to the pen priming order: live seats come from
@@ -189,6 +193,8 @@ const CEILINGS: Readonly<Record<string, number>> = {
   "duet-mode.md": 16000,
   "triage-mode.md": 17000,
   "bus-mode.md": 31000,
+  // T-538 S1: new file, measured 3,491 bytes at creation; ceiling leaves the usual headroom.
+  "checkpoints.md": 5000,
   "session-guard-fallback.md": 117000,
   "review-contract-template.md": 5000,
 };

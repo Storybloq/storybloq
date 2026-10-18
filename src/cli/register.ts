@@ -1439,6 +1439,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                 .conflicts("cites-ruling", "clear-cites-rulings"),
               {
                 "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" },
+                "add-blocked-by": { ...SPLIT_LIST, describe: "IDs to add to the blocking tickets, keeping the existing ones (not with --blocked-by)" },
                 "cross-node-blocked-by": {
                   ...LEGACY_SPLIT_LIST,
                   describe: "Cross-node blocking refs (e.g. engine:T-001). Bare flag clears.",
@@ -1497,6 +1498,7 @@ export function registerTicketCommand(yargs: Argv): Argv {
                   order: argv.order as number | undefined,
                   description,
                   blockedBy: argv["blocked-by"] as string[] | undefined,
+                  addBlockedBy: argv["add-blocked-by"] as string[] | undefined,
                   crossNodeBlockedBy,
                   parentTicket: argv["parent-ticket"] === "" ? null : argv["parent-ticket"] as string | undefined,
                   citesRuling: argv["cites-ruling"] as string[] | undefined,
@@ -7146,11 +7148,18 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
     "Owner checkpoints: decisions and acceptances only the owner answers",
     (y) =>
       y
-        .command("enable", "Turn owner checkpoints on for this project (stamps schemaVersion 4)", (y: Argv) => addCommitOption(((y2) => addFormatOption(y2))(y)), async (argv) => {
-          const format = parseOutputFormat(argv.format);
-          const { handleCheckpointEnable } = await import("./commands/checkpoint.js");
-          await runCheckpointCommand(argv, format, (root) => handleCheckpointEnable(format, root));
-        })
+        .command(
+          "enable",
+          "Turn owner checkpoints on for this project (stamps schemaVersion 4; 5 with --immutable-evidence)",
+          (y: Argv) => addCommitOption(((y2) => addFormatOption(
+            y2.option("immutable-evidence", { type: "boolean", describe: "Also allow checkpoints whose evidence is stored as content-addressed revisions (stamps schemaVersion 5)" }),
+          ))(y)),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { handleCheckpointEnable } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(argv, format, (root) => handleCheckpointEnable(format, root, { immutableEvidence: argv["immutable-evidence"] === true }));
+          },
+        )
         .command(
           "create",
           "Create a ticket that is an owner checkpoint",
@@ -7162,6 +7171,7 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
                 .option("phase", { type: "string", describe: "Phase ID" })
                 .option("description", { type: "string", describe: "Ticket description" })
                 .option("parent-ticket", { type: "string", describe: "Parent ticket ID" })
+                .option("evidence-mode", { type: "string", choices: ["immutable"], describe: "immutable: evidence is added with `checkpoint evidence` and a resolve must name one of its revisions (needs `checkpoint enable --immutable-evidence`)" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
               { "evidence-ref": EVIDENCE_REF, "blocked-by": { ...SPLIT_LIST, describe: "IDs of blocking tickets" } },
             )))(y)),
@@ -7177,6 +7187,7 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
               parentTicket: argv["parent-ticket"] as string | undefined,
               blockedBy: argv["blocked-by"] as string[] | undefined,
               actor: argv.actor as string | undefined,
+              evidenceMode: argv["evidence-mode"] as string | undefined,
             }, format, root));
           },
         )
@@ -7188,6 +7199,7 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
               contentOptions(y2, true)
                 .positional("id", { type: "string", demandOption: true, describe: "Ticket ID" })
                 .option("owner", { type: "string", demandOption: true, describe: "Who answers the checkpoint" })
+                .option("evidence-mode", { type: "string", choices: ["immutable"], describe: "immutable: evidence is added with `checkpoint evidence` and a resolve must name one of its revisions (needs `checkpoint enable --immutable-evidence`)" })
                 .option("actor", { type: "string", describe: "Who is acting (defaults to the configured actor)" }),
               { "evidence-ref": EVIDENCE_REF },
             )))(y)),
@@ -7195,7 +7207,29 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
             const format = parseOutputFormat(argv.format);
             const { handleCheckpointAttach } = await import("./commands/checkpoint.js");
             await runCheckpointCommand(argv, format, (root) =>
-              handleCheckpointAttach(argv.id as string, { ...contentOf(argv), owner: argv.owner as string, actor: argv.actor as string | undefined }, format, root));
+              handleCheckpointAttach(argv.id as string, {
+                ...contentOf(argv),
+                owner: argv.owner as string,
+                actor: argv.actor as string | undefined,
+                evidenceMode: argv["evidence-mode"] as string | undefined,
+              }, format, root));
+          },
+        )
+        .command(
+          "evidence <id>",
+          "Add an evidence revision to an immutable checkpoint (copied, content-addressed; an earlier answer no longer counts)",
+          (y: Argv) => addCommitOption(((y2) =>
+            addFormatOption(
+              expectedOptions(y2)
+                .positional("id", { type: "string", demandOption: true, describe: "Checkpoint ticket ID" })
+                .option("file", { type: "string", demandOption: true, describe: "The evidence file, inside the project; it is copied, never moved" }),
+            ))(y)),
+          async (argv) => {
+            const format = parseOutputFormat(argv.format);
+            const { resolve: resolvePath } = await import("node:path");
+            const { handleCheckpointEvidence } = await import("./commands/checkpoint.js");
+            await runCheckpointCommand(argv, format, (root) =>
+              handleCheckpointEvidence(argv.id as string, { ...expectedOf(argv), file: resolvePath(process.cwd(), argv.file as string) }, format, root));
           },
         )
         .command(
@@ -7318,7 +7352,7 @@ export function registerCheckpointCommand(yargs: Argv): Argv {
             });
           },
         )
-        .demandCommand(1, "Specify a checkpoint subcommand: enable, create, attach, resolve, change, reopen, retire, resolve-conflict, list")
+        .demandCommand(1, "Specify a checkpoint subcommand: enable, create, attach, evidence, resolve, change, reopen, retire, resolve-conflict, list")
         .strict(),
     () => {},
   );

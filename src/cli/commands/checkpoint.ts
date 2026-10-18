@@ -7,6 +7,7 @@
  */
 import { loadProject } from "../../core/project-loader.js";
 import {
+  addCheckpointEvidence,
   attachCheckpoint,
   changeCheckpoint,
   createCheckpoint,
@@ -14,6 +15,7 @@ import {
   resolveCheckpoint,
   retireCheckpoint,
   type CheckpointContentInput,
+  type CheckpointEvidenceMode,
   type ExpectedCheckpoint,
 } from "../../core/checkpoint-lifecycle.js";
 import { enableCheckpoints } from "../../core/checkpoint-enable.js";
@@ -61,11 +63,20 @@ export function expectedCheckpoint(input: { generation?: number; revision?: numb
   return { generation: generation!, revision: revision!, digest };
 }
 
-export async function handleCheckpointEnable(format: OutputFormat, root: string): Promise<CommandResult> {
-  const result = await enableCheckpoints(root);
+export async function handleCheckpointEnable(format: OutputFormat, root: string, opts: { immutableEvidence?: boolean } = {}): Promise<CommandResult> {
+  const immutable = opts.immutableEvidence === true;
+  const result = immutable ? await enableCheckpoints(root, undefined, { immutableEvidence: true }) : await enableCheckpoints(root);
   if (format === "json") return { output: JSON.stringify(successEnvelope(result), null, 2) };
-  if (result.status === "already") return { output: "Owner checkpoints are already enabled." };
-  return { output: result.team ? "Owner checkpoints enabled; commit .story/config.json and .story/.gitattributes together." : "Owner checkpoints enabled." };
+  const what = immutable ? "Owner checkpoints with immutable evidence" : "Owner checkpoints";
+  if (result.status === "already") return { output: `${what} are already enabled.` };
+  return { output: result.team ? `${what} enabled; commit .story/config.json and .story/.gitattributes together.` : `${what} enabled.` };
+}
+
+/** T-538: the one evidence mode a create or attach may name; anything else is refused. */
+function evidenceModeOf(value: string | undefined): CheckpointEvidenceMode | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "immutable") throw new CliValidationError("invalid_input", `Unknown checkpoint evidence mode "${value}": the only mode is immutable`);
+  return value;
 }
 
 export interface CheckpointCreateInput {
@@ -80,6 +91,8 @@ export interface CheckpointCreateInput {
   readonly criteria?: string;
   readonly evidenceRefs?: readonly string[];
   readonly actor?: string;
+  /** T-538: "immutable" stores evidence as content-addressed revisions (schema 5). */
+  readonly evidenceMode?: string;
 }
 
 export async function handleCheckpointCreate(input: CheckpointCreateInput, format: OutputFormat, root: string): Promise<CommandResult> {
@@ -92,17 +105,23 @@ export async function handleCheckpointCreate(input: CheckpointCreateInput, forma
     owner: input.owner,
     content: checkpointContent(input),
     ...(input.actor ? { actor: input.actor } : {}),
+    ...(input.evidenceMode !== undefined ? { evidenceMode: evidenceModeOf(input.evidenceMode) } : {}),
   });
   return done("Created checkpoint", ticket, format);
 }
 
 export async function handleCheckpointAttach(
   id: string,
-  input: { owner: string; kind?: string; question?: string; criteria?: string; evidenceRefs?: readonly string[]; actor?: string },
+  input: { owner: string; kind?: string; question?: string; criteria?: string; evidenceRefs?: readonly string[]; actor?: string; evidenceMode?: string },
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
-  const ticket = await attachCheckpoint(root, id, { owner: input.owner, content: checkpointContent(input), ...(input.actor ? { actor: input.actor } : {}) });
+  const ticket = await attachCheckpoint(root, id, {
+    owner: input.owner,
+    content: checkpointContent(input),
+    ...(input.actor ? { actor: input.actor } : {}),
+    ...(input.evidenceMode !== undefined ? { evidenceMode: evidenceModeOf(input.evidenceMode) } : {}),
+  });
   return done("Attached a checkpoint to", ticket, format);
 }
 
@@ -145,6 +164,19 @@ export async function handleCheckpointChange(
 ): Promise<CommandResult> {
   const ticket = await changeCheckpoint(root, id, expectedCheckpoint(input), checkpointContent(input), input.actor);
   return done("Changed checkpoint", ticket, format);
+}
+
+/** T-538: adds one content-addressed evidence revision to an immutable checkpoint. */
+export async function handleCheckpointEvidence(
+  id: string,
+  input: { generation?: number; revision?: number; digest?: string; file?: string; actor?: string },
+  format: OutputFormat,
+  root: string,
+): Promise<CommandResult> {
+  if (input.file === undefined || input.file.length === 0) throw new CliValidationError("invalid_input", "Name the evidence file (--file)");
+  const { ticket, ref, reused } = await addCheckpointEvidence(root, id, expectedCheckpoint(input), { file: input.file, ...(input.actor ? { actor: input.actor } : {}) });
+  if (format === "json") return done("Added evidence to", ticket, format, { evidenceRef: ref, reused });
+  return done(reused ? `Evidence ${ref} is already on` : `Added evidence ${ref} to`, ticket, format);
 }
 
 export async function handleCheckpointReopen(
@@ -190,7 +222,7 @@ export async function handleCheckpointResolveConflict(
 export async function handleCheckpointList(format: OutputFormat, root: string, opts: { state?: string } = {}): Promise<CommandResult> {
   const { state } = await loadProject(root);
   const all = state.tickets
-    .map((t) => checkpointSummary(t))
+    .map((t) => checkpointSummary(t, state))
     .filter((s): s is CheckpointSummary => s !== null)
     .filter((s) => opts.state === undefined || s.state === opts.state);
   if (format === "json") return { output: JSON.stringify(successEnvelope(all), null, 2) };

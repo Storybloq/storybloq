@@ -70,7 +70,9 @@ function refuse(message: string): never {
  *  - a claim, an earmark, a session claim or inprogress is refused with or
  *    without it: nobody works on a checkpoint, the owner answers it.
  * On ANY ticket, a `checkpointEvidence` change needs one of the two evidence
- * authorities (or the settlement).
+ * authorities (or the settlement), and a `checkpointEvidenceMode` change
+ * (set, changed or removed) needs LIFECYCLE_AUTHORITY (or the settlement):
+ * the mode decides which evidence a resolve accepts (T-538).
  */
 export function assertCheckpointWriteAllowed(prior: Raw | null, next: Raw, authority?: CheckpointWriteAuthority): void {
   const priorCheckpoint = prior !== null && hasOwnerCheckpoint(prior);
@@ -96,6 +98,12 @@ export function assertCheckpointWriteAllowed(prior: Raw | null, next: Raw, autho
         refuse(`${label(next)} is an owner checkpoint and cannot be started, claimed or earmarked (${worked.join(", ")}): the owner answers it.`);
       }
     }
+  }
+
+  if (!sameValue(prior?.checkpointEvidenceMode, next.checkpointEvidenceMode)
+    && authority !== LIFECYCLE_AUTHORITY
+    && authority !== CONFLICT_SETTLEMENT_AUTHORITY) {
+    refuse(`${label(next)}: checkpointEvidenceMode is set only when the checkpoint is created or attached; it cannot be edited, set or removed directly.`);
   }
 
   if (!sameValue(prior?.checkpointEvidence, next.checkpointEvidence)

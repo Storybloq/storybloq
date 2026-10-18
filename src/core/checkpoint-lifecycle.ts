@@ -16,7 +16,10 @@
  * checkpoint. The CLI and MCP surfaces are thin wrappers over these.
  */
 import { CONFLICT_SETTLEMENT_AUTHORITY, LIFECYCLE_AUTHORITY, sameValue } from "./checkpoint-guard.js";
-import { CHECKPOINT_SCHEMA_VERSION } from "./errors.js";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, realpath } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { CHECKPOINT_SCHEMA_VERSION, IMMUTABLE_EVIDENCE_SCHEMA_VERSION, ProjectLoaderError } from "./errors.js";
 import {
   MAX_CHECKPOINT_COUNTER,
   OwnerCheckpointSchema,
@@ -24,6 +27,7 @@ import {
   checkpointDigest,
   hasOwnerCheckpoint,
   isWellFormedText,
+  parseEvidenceMode,
   parseOwnerCheckpoint,
   type CheckpointHistoryEntry,
   type CheckpointKind,
@@ -31,6 +35,7 @@ import {
   type OwnerCheckpoint,
 } from "./owner-checkpoint.js";
 import {
+  atomicCreate,
   prepareTicketWrite,
   resolveActor,
   runTransactionUnlocked,
@@ -202,6 +207,40 @@ function assertCheckpointsEnabled(state: ProjectState): void {
   }
 }
 
+/** T-538: the only evidence mode a create or attach may request. */
+export type CheckpointEvidenceMode = "immutable";
+
+/** Immutable evidence needs a project stamped at schema 5; checked under the lock, never upgraded here. */
+function evidenceModeFields(state: ProjectState, mode: CheckpointEvidenceMode | undefined): Partial<Ticket> {
+  if (mode === undefined) return {};
+  if (mode !== "immutable") throw new CliValidationError("invalid_input", `Unknown checkpoint evidence mode "${String(mode)}": the only mode is immutable`);
+  const version = state.config.schemaVersion;
+  if (version === undefined || version < IMMUTABLE_EVIDENCE_SCHEMA_VERSION) {
+    throw new CliValidationError(
+      "conflict",
+      `Immutable checkpoint evidence is not enabled in this project (config schemaVersion ${version ?? "unset"}, needs ${IMMUTABLE_EVIDENCE_SCHEMA_VERSION}). ` +
+        "Run `storybloq checkpoint enable --immutable-evidence` first; nothing enables it implicitly.",
+    );
+  }
+  return { checkpointEvidenceMode: "immutable" } as Partial<Ticket>;
+}
+
+/**
+ * A mode this CLI does not know is never read as legacy: a write under the
+ * weaker rules could approve what the newer rules would refuse.
+ */
+function assertEvidenceModeSupported(ticket: Ticket, verb: string): "legacy" | "immutable" {
+  const mode = parseEvidenceMode(ticket);
+  if (mode.kind === "unsupported") {
+    throw new CliValidationError(
+      "conflict",
+      `Cannot ${verb} ${displayIdOf(ticket)}: its checkpoint evidence mode (${JSON.stringify(mode.value)}) is one this CLI does not know. ` +
+        "Update storybloq, or fix the file by hand.",
+    );
+  }
+  return mode.kind;
+}
+
 function assertActive(ticket: Ticket, cp: OwnerCheckpoint, verb: string): void {
   if (cp.lifecycle !== "active") throw new CliValidationError("conflict", `Cannot ${verb} ${displayIdOf(ticket)}: the checkpoint is retired`);
 }
@@ -227,12 +266,14 @@ export async function createCheckpoint(
     owner: string;
     content: CheckpointContentInput;
     actor?: string;
+    evidenceMode?: CheckpointEvidenceMode;
   },
 ): Promise<Ticket> {
   const by = await resolveActor(root, args.actor);
   let created: Ticket | undefined;
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     assertCheckpointsEnabled(state);
+    const modeFields = evidenceModeFields(state, args.evidenceMode);
     const ticket = await prepareNewTicketUnlocked({
       title: args.title,
       type: args.type ?? "task",
@@ -242,18 +283,23 @@ export async function createCheckpoint(
       parentTicket: args.parentTicket ?? null,
     }, state, root);
     const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
-    created = await writeCheckpoint(ticket, record, {}, state, root, true);
+    created = await writeCheckpoint(ticket, record, modeFields, state, root, true);
   });
   if (!created) throw new Error("Checkpoint not created");
   return created;
 }
 
 /** Makes an existing open, unclaimed, un-earmarked ticket a checkpoint. */
-export async function attachCheckpoint(root: string, id: string, args: { owner: string; content: CheckpointContentInput; actor?: string }): Promise<Ticket> {
+export async function attachCheckpoint(
+  root: string,
+  id: string,
+  args: { owner: string; content: CheckpointContentInput; actor?: string; evidenceMode?: CheckpointEvidenceMode },
+): Promise<Ticket> {
   const by = await resolveActor(root, args.actor);
   let updated: Ticket | undefined;
   await withProjectLock(root, { strict: true }, async ({ state }) => {
     assertCheckpointsEnabled(state);
+    const modeFields = evidenceModeFields(state, args.evidenceMode);
     const ticket = findTicket(state, id);
     const label = displayIdOf(ticket);
     if (hasOwnerCheckpoint(ticket)) throw new CliValidationError("conflict", `${label} is already an owner checkpoint`);
@@ -263,8 +309,11 @@ export async function attachCheckpoint(root: string, id: string, args: { owner: 
     if (raw.claim != null || raw.claimedBySession != null || raw.earmark != null) {
       throw new CliValidationError("conflict", `Cannot attach a checkpoint to ${label}: it is claimed or earmarked; release it first`);
     }
+    if ((ticket as Record<string, unknown>).checkpointEvidenceMode !== undefined) {
+      throw new CliValidationError("conflict", `Cannot attach a checkpoint to ${label}: it already carries checkpointEvidenceMode; fix the file by hand first`);
+    }
     const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
-    updated = await writeCheckpoint(ticket, record, {}, state, root);
+    updated = await writeCheckpoint(ticket, record, modeFields, state, root);
   });
   if (!updated) throw new Error("Checkpoint not attached");
   return updated;
@@ -296,12 +345,21 @@ export async function resolveCheckpoint(root: string, id: string, expected: Expe
     const cp = currentCheckpoint(ticket, expected);
     const label = displayIdOf(ticket);
     assertActive(ticket, cp, "resolve");
+    const mode = assertEvidenceModeSupported(ticket, "resolve");
     if (checkpointApproved(ticket)) throw new CliValidationError("conflict", `${label} is already approved at this revision; reopen or change it first`);
     if (checkpointDigest(cp) !== cp.digest) {
       throw new CliValidationError("conflict", `${label}: the stored digest does not match the checkpoint's content, so what would be approved is ambiguous. Change it to restate the content, then resolve.`);
     }
     if (cp.kind === "acceptance" && (args.artifactRef === undefined || args.artifactRef.length === 0)) {
       throw new CliValidationError("invalid_input", `${label} is an acceptance checkpoint: name the reviewed artifact (artifactRef)`);
+    }
+    // T-538: on immutable evidence, the reviewed artifact is one of the
+    // content-addressed revisions the record names, never free text.
+    if (mode === "immutable" && args.artifactRef !== undefined && args.artifactRef.length > 0 && !cp.evidenceRefs.includes(args.artifactRef)) {
+      throw new CliValidationError(
+        "invalid_input",
+        `${label} uses immutable evidence: artifactRef must be one of its evidence revisions (${cp.evidenceRefs.length > 0 ? cp.evidenceRefs.join(", ") : "none yet; add one with checkpoint evidence"}).`,
+      );
     }
 
     const generation = nextCounter(cp.generation, "generation");
@@ -365,25 +423,130 @@ export async function changeCheckpoint(root: string, id: string, expected: Expec
     const ticket = findTicket(state, id);
     const cp = currentCheckpoint(ticket, expected);
     assertActive(ticket, cp, "change");
-    assertWellFormed(content);
-    const next = contentOf(content);
-    const digest = checkpointDigest(next);
-    if (digest === cp.digest && checkpointDigest(cp) === cp.digest) {
-      throw new CliValidationError("invalid_input", `${displayIdOf(ticket)}: the content is unchanged`);
-    }
-    const at = new Date().toISOString();
-    const after = {
-      ...without(cp, ["resolution", "question", "criteria"]),
-      ...next,
-      revision: nextCounter(cp.revision, "revision"),
-      generation: nextCounter(cp.generation, "generation"),
-      digest,
-    } as OwnerCheckpoint;
-    const record = validated({ ...after, history: [...cp.history, historyEntry(after, "changed", by, at, { displaced: cp.resolution })] });
-    updated = await writeCheckpoint(ticket, record, { status: "open", completedDate: null }, state, root);
+    assertEvidenceModeSupported(ticket, "change");
+    updated = await writeChanged(ticket, cp, content, by, state, root);
   });
   if (!updated) throw new Error("Checkpoint not changed");
   return updated;
+}
+
+/**
+ * The `changed` write: revision and generation advance, the digest is
+ * recomputed, the displaced answer moves into history and the ticket reopens.
+ */
+async function writeChanged(ticket: Ticket, cp: OwnerCheckpoint, content: CheckpointContentInput, by: string, state: ProjectState, root: string): Promise<Ticket> {
+  assertWellFormed(content);
+  const next = contentOf(content);
+  const digest = checkpointDigest(next);
+  if (digest === cp.digest && checkpointDigest(cp) === cp.digest) {
+    throw new CliValidationError("invalid_input", `${displayIdOf(ticket)}: the content is unchanged`);
+  }
+  const at = new Date().toISOString();
+  const after = {
+    ...without(cp, ["resolution", "question", "criteria"]),
+    ...next,
+    revision: nextCounter(cp.revision, "revision"),
+    generation: nextCounter(cp.generation, "generation"),
+    digest,
+  } as OwnerCheckpoint;
+  const record = validated({ ...after, history: [...cp.history, historyEntry(after, "changed", by, at, { displaced: cp.resolution })] });
+  return writeCheckpoint(ticket, record, { status: "open", completedDate: null }, state, root);
+}
+
+// --- evidence (T-538) -------------------------------------------------------------------
+
+/** Lowercase letters and digits only; anything else (none, spaces, punctuation, overlong) is `bin`. */
+function evidenceExtension(file: string): string {
+  const ext = extname(file).slice(1).toLowerCase();
+  return /^[a-z0-9]{1,16}$/.test(ext) ? ext : "bin";
+}
+
+/** The source, refused unless it resolves (symlinks followed) inside the project. */
+async function evidenceSourceInside(root: string, file: string): Promise<string> {
+  const outside = () => new CliValidationError("invalid_input", `Evidence must be a file inside the project: ${file}`);
+  const inside = (base: string, p: string) => {
+    const rel = relative(base, p);
+    return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+  };
+  const base = await realpath(root);
+  const lexical = resolve(root, file);
+  if (!inside(resolve(root), lexical) && !inside(base, lexical)) throw outside();
+  let real: string;
+  try {
+    real = await realpath(lexical);
+  } catch {
+    throw new CliValidationError("not_found", `Evidence file not found: ${file}`);
+  }
+  if (!inside(base, real)) throw outside();
+  return real;
+}
+
+export interface EvidenceArgs {
+  readonly file: string;
+  readonly actor?: string;
+}
+
+export interface EvidenceResult {
+  readonly ticket: Ticket;
+  /** The project-relative path the record names. */
+  readonly ref: string;
+  /** True when the record already named this revision, so nothing was written. */
+  readonly reused: boolean;
+}
+
+/**
+ * Adds one immutable evidence revision to an immutable checkpoint. The file
+ * is copied to `docs/checkpoints/<id>/<sha256 prefix>.<ext>` by a no-replace
+ * create (the source is never moved or edited); a revision already there with
+ * the same bytes is reused, other bytes are refused. The ref is then appended
+ * by a `changed` write, which voids any approval: the owner answers against
+ * the evidence as it now stands. A ref already on the record writes nothing.
+ */
+export async function addCheckpointEvidence(root: string, id: string, expected: ExpectedCheckpoint, args: EvidenceArgs): Promise<EvidenceResult> {
+  const by = await resolveActor(root, args.actor);
+  let out: EvidenceResult | undefined;
+  await withProjectLock(root, { strict: true }, async ({ state }) => {
+    assertCheckpointsEnabled(state);
+    const ticket = findTicket(state, id);
+    const cp = currentCheckpoint(ticket, expected);
+    const label = displayIdOf(ticket);
+    assertActive(ticket, cp, "add evidence to");
+    const mode = assertEvidenceModeSupported(ticket, "add evidence to");
+    if (mode !== "immutable") {
+      throw new CliValidationError(
+        "conflict",
+        `${label} does not use immutable evidence; name its evidence with \`checkpoint change\` instead.`,
+      );
+    }
+    const source = await evidenceSourceInside(root, args.file);
+    const bytes = await readFile(source);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const ref = `docs/checkpoints/${ticket.id}/${digest.slice(0, 16)}.${evidenceExtension(source)}`;
+    const target = join(root, ...ref.split("/"));
+    await mkdir(join(root, "docs", "checkpoints", ticket.id), { recursive: true });
+    try {
+      await atomicCreate(target, bytes);
+    } catch (err) {
+      if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
+      const existing = createHash("sha256").update(await readFile(target)).digest("hex");
+      if (existing !== digest) {
+        throw new CliValidationError("conflict", `${ref} already holds other content; it is never replaced. Move it aside by hand if it is not evidence.`);
+      }
+    }
+    if (cp.evidenceRefs.includes(ref)) {
+      out = { ticket, ref, reused: true };
+      return;
+    }
+    const content: CheckpointContentInput = {
+      kind: cp.kind,
+      ...(cp.question !== undefined && { question: cp.question }),
+      ...(cp.criteria !== undefined && { criteria: cp.criteria }),
+      evidenceRefs: [...cp.evidenceRefs, ref],
+    };
+    out = { ticket: await writeChanged(ticket, cp, content, by, state, root), ref, reused: false };
+  });
+  if (!out) throw new Error("Checkpoint evidence not added");
+  return out;
 }
 
 /** Withdraws the answer: the resolution moves into a `reopened` event and the ticket reopens. */

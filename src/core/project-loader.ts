@@ -2024,7 +2024,7 @@ export function serializeJSON(obj: unknown): string {
 /** Atomic create: write to temp file, then link (fails if target exists). */
 export async function atomicCreate(
   targetPath: string,
-  content: string,
+  content: string | Uint8Array,
 ): Promise<void> {
   const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
   let fd: import("node:fs/promises").FileHandle | undefined;

@@ -439,9 +439,9 @@ describe("loadProject", () => {
       expect(result.state.config.schemaVersion).toBe(4);
     });
 
-    it("rejects schemaVersion 5 with version_mismatch (T-537 boundary)", async () => {
+    it("rejects schemaVersion 6 with version_mismatch (T-538 boundary)", async () => {
       testRoot = await createTestProject({
-        config: { ...minimalConfig, schemaVersion: 5 },
+        config: { ...minimalConfig, schemaVersion: 6 },
       });
       try {
         await loadProject(testRoot);

@@ -15,12 +15,13 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
 - **ticket blocked** (--format?) - List blocked tickets with their blocking dependencies
 - **ticket create** (--title, --type, --phase?, --description?, --stdin?, --parent-ticket?, --blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --node?, --commit?) - Create a new ticket
-- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --commit?) - Update a ticket
+- **ticket update <id>** (--status?, --title?, --type?, --phase?, --order?, --description?, --stdin?, --parent-ticket?, --node?, --force?, --clear-cites-rulings?, --resolution-kind?, --reason?, --blocked-by?, --add-blocked-by?, --cross-node-blocked-by?, --cites-ruling?, --priority?, --waiting-on?, --format?, --commit?) - Update a ticket
 - **ticket meta <operation> <id> [path] [value]** (--format?, --commit?) - Get, set, or unset custom passthrough metadata on a ticket
 - **ticket delete <id>** (--force?, --hard?, --format?, --commit?) - Delete a ticket
-- **checkpoint enable** (--format?, --commit?) - Turn owner checkpoints on (config schemaVersion 4; a team ledger must merge them first)
-- **checkpoint create** (--title, --owner, --kind, --question?, --criteria?, --evidence-ref?, --phase?, --description?, --blocked-by?, --parent-ticket?, --actor?, --format?, --commit?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
-- **checkpoint attach <id>** (--owner, --kind, --question?, --criteria?, --evidence-ref?, --actor?, --format?, --commit?) - Make an open, unclaimed ticket a checkpoint
+- **checkpoint enable** (--immutable-evidence?, --format?, --commit?) - Turn owner checkpoints on (schemaVersion 4; 5 with --immutable-evidence; a team ledger must merge them first)
+- **checkpoint create** (--title, --owner, --kind, --question?, --criteria?, --evidence-ref?, --phase?, --description?, --blocked-by?, --parent-ticket?, --evidence-mode?, --actor?, --format?, --commit?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
+- **checkpoint attach <id>** (--owner, --kind, --question?, --criteria?, --evidence-ref?, --evidence-mode?, --actor?, --format?, --commit?) - Make an open, unclaimed ticket a checkpoint
+- **checkpoint evidence <id>** (--generation, --revision, --digest, --file, --actor?, --format?, --commit?) - Add an evidence revision to an immutable checkpoint; voids its answer
 - **checkpoint resolve <id>** (--generation, --revision, --digest, --actor?, --response, --artifact-ref?, --ruling?, --ruling-scope-tag?, --client-task-id?, --format?, --commit?) - Answer a checkpoint. An acceptance needs artifactRef. Names the reviewed state; a stale one is refused
 - **checkpoint change <id>** (--generation, --revision, --digest, --actor?, --kind, --question?, --criteria?, --evidence-ref?, --format?, --commit?) - Change what a checkpoint asks; voids its answer
 - **checkpoint reopen <id>** (--generation, --revision, --digest, --actor?, --reason?, --format?, --commit?) - Withdraw a checkpoint's answer; kept in history
@@ -220,7 +221,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_note_create** (content, title?, tags?, commit?) - Create note
 - **storybloq_note_update** (id, content?, mode?, confirmReplace?, title?, tags?, status?, commit?) - Update note
 - **storybloq_ticket_create** (title, type, phase?, description?, blockedBy?, parentTicket?, citesRuling?, priority?, waitingOn?, node?, commit?) - Create ticket
-- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, resolutionKind?, reason?, priority?, waitingOn?, node?, commit?) - Update ticket
+- **storybloq_ticket_update** (id, status?, title?, type?, order?, description?, phase?, parentTicket?, blockedBy?, addBlockedBy?, crossNodeBlockedBy?, force?, citesRuling?, clearCitesRulings?, resolutionKind?, reason?, priority?, waitingOn?, node?, commit?) - Update ticket
 - **storybloq_ticket_meta_set** (id, path, value?, commit?) - Set custom passthrough metadata on a ticket
 - **storybloq_ticket_meta_unset** (id, path, commit?) - Unset custom passthrough metadata from a ticket
 - **storybloq_issue_create** (title, severity, impact, components?, relatedTickets?, location?, sourceRefs?, dedupeKey?, createdBy?, phase?, citesRuling?, priority?, waitingOn?, node?, commit?) - Create issue with optional persisted review provenance and retry deduplication
@@ -284,8 +285,9 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_gate_ack_get** (id) - Get a duet-mode gate-ack record by ID
 - **storybloq_gate_ack_create** (arrangement, gate, ticket, planFile?, fromStaged?, codexSessionId?, verdict?, rounds?, deltas?, commit?) - Pin acceptance of a declared plan-ack or pre-commit-ack gate. Exactly one of planFile/fromStaged is required; ackRole derives from the arrangement gate.
 - **storybloq_gate_ack_contest** (id, reason, commit?) - Record a contested acknowledgment and its reason; does not reopen the workflow.
-- **storybloq_checkpoint_create** (title, owner, kind, question?, criteria?, evidenceRefs?, phase?, description?, blockedBy?, parentTicket?, actor?, commit?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
-- **storybloq_checkpoint_attach** (id, owner, kind, question?, criteria?, evidenceRefs?, actor?, commit?) - Make an open, unclaimed ticket a checkpoint
+- **storybloq_checkpoint_create** (title, owner, kind, question?, criteria?, evidenceRefs?, phase?, description?, blockedBy?, parentTicket?, actor?, evidenceMode?, commit?) - Create an owner checkpoint ticket. Needs `checkpoint enable` first.
+- **storybloq_checkpoint_attach** (id, owner, kind, question?, criteria?, evidenceRefs?, actor?, evidenceMode?, commit?) - Make an open, unclaimed ticket a checkpoint
+- **storybloq_checkpoint_evidence** (id, generation, revision, digest, actor?, file, commit?) - Add an evidence revision to an immutable checkpoint; voids its answer
 - **storybloq_checkpoint_resolve** (id, generation, revision, digest, actor?, response, artifactRef?, rulingAttribution?, rulingScopeTags?, clientTaskId?, commit?) - Answer a checkpoint. An acceptance needs artifactRef.
 - **storybloq_checkpoint_change** (id, generation, revision, digest, actor?, kind, question?, criteria?, evidenceRefs?, commit?) - Change what a checkpoint asks; voids its answer
 - **storybloq_checkpoint_reopen** (id, generation, revision, digest, actor?, reason?, commit?) - Withdraw a checkpoint's answer

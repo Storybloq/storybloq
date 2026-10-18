@@ -1531,7 +1531,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   const skillContent = await readFile(join(srcSkillDir, "SKILL.md"), "utf-8");
   await writeFile(join(skillDir, "SKILL.md"), skillContent, "utf-8");
 
-  const supportFiles = ["setup-flow.md", "settings.md", "autonomous-mode.md", "reference.md", "federation-setup.md", "orchestrator-mode.md", "duet-mode.md", "triage-mode.md", "bus-mode.md", "session-guard-fallback.md", "session-guard.md", "review-contract-template.md"];
+  const supportFiles = ["setup-flow.md", "settings.md", "autonomous-mode.md", "reference.md", "federation-setup.md", "orchestrator-mode.md", "duet-mode.md", "triage-mode.md", "bus-mode.md", "checkpoints.md", "session-guard-fallback.md", "session-guard.md", "review-contract-template.md"];
   const writtenFiles = ["SKILL.md"];
   const missingFiles: string[] = [];
   for (const filename of supportFiles) {

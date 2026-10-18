@@ -20,7 +20,7 @@ import { initProject } from "../../src/core/init.js";
 import { MERGE_DRIVER_V4_NAME, MERGE_DRIVER_V5_NAME, effectiveMergeDriver, teamSetup } from "../../src/core/team-setup.js";
 import { enableCheckpoints } from "../../src/core/checkpoint-enable.js";
 import { mergeDriverCapabilities } from "../../src/cli/commands/merge-driver.js";
-import { CHECKPOINT_SCHEMA_VERSION } from "../../src/core/errors.js";
+import { MAX_SUPPORTED_SCHEMA_VERSION } from "../../src/core/errors.js";
 import { createCheckpoint, resolveCheckpoint, retireCheckpoint, type ExpectedCheckpoint } from "../../src/core/checkpoint-lifecycle.js";
 import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 
@@ -56,7 +56,7 @@ describe("merge-driver --capabilities through the CLI (A8-2)", () => {
   it("an omitted protocol answers for the current one", () => {
     const r = cli("merge-driver", "--capabilities");
     expect(r.status, r.stderr).toBe(0);
-    expect(JSON.parse(r.stdout.trim())).toEqual({ protocol: 5, maxSchemaVersion: CHECKPOINT_SCHEMA_VERSION, checkpoints: true });
+    expect(JSON.parse(r.stdout.trim())).toEqual({ protocol: 5, maxSchemaVersion: MAX_SUPPORTED_SCHEMA_VERSION, checkpoints: true });
   });
 
   it("an unsupported protocol is refused, naming what this build serves and team setup", () => {

@@ -50,6 +50,7 @@ export const BOARD_WRITE_TOOLS: readonly string[] = [
   "storybloq_checkpoint_attach",
   "storybloq_checkpoint_resolve",
   "storybloq_checkpoint_change",
+  "storybloq_checkpoint_evidence",
   "storybloq_checkpoint_reopen",
   "storybloq_checkpoint_retire",
   "storybloq_earmark_reserve",

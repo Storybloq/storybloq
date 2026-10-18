@@ -12,7 +12,7 @@ export const CURRENT_SCHEMA_VERSION = 2;
  * Maximum Config.schemaVersion this loader accepts, for both reads and writes.
  * schemaVersion > this → version_mismatch (hard fail, exit 1).
  */
-export const MAX_SUPPORTED_SCHEMA_VERSION = 4;
+export const MAX_SUPPORTED_SCHEMA_VERSION = 5;
 
 /**
  * T-537: stamped by `checkpoint enable`. Owner checkpoints are created,
@@ -21,6 +21,15 @@ export const MAX_SUPPORTED_SCHEMA_VERSION = 4;
  * can write the ledger that holds one.
  */
 export const CHECKPOINT_SCHEMA_VERSION = 4;
+
+/**
+ * T-538: stamped by `checkpoint enable --immutable-evidence` (and by setup's
+ * bootstrap). A checkpoint carries `checkpointEvidenceMode: "immutable"` only
+ * in a project at this version or later, so no client that would resolve it
+ * under the legacy evidence rules (every CLI that hard-fails on 5) can write
+ * the ledger that holds one.
+ */
+export const IMMUTABLE_EVIDENCE_SCHEMA_VERSION = 5;
 
 /**
  * Schema version stamped by team-init ONLY (the old-client fence, ISS-751).

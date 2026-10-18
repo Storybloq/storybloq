@@ -33,6 +33,11 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     expect(flow).toContain("copy its two lines into the package verbatim. Never write either line yourself and never state a review outcome anywhere else.");
     expect(flow).toContain("When it prints a failed, absent or unreadable line, the package cannot be shown: send the stop.");
     expect(flow).toContain("between two lines of its own: `Plan, revision <digest12>:` before it and `End of plan, revision <digest12>` after it");
+    // Only a reviewed revision has markers: a skipped package shows the proposed Plan bare.
+    expect(flow).toContain("**The Plan in the package.** With a completed or round-limit line, it is the `## Plan` section of the packet status was given");
+    expect(flow).toContain("After the owner's skip no revision was reviewed: show the proposed Plan with no markers and no digest.");
+    expect(flow).toContain("Then the Plan (1c2), marked when the status line names a revision:");
+    expect(flow).not.toContain("Then the marked Plan (1c2)");
     expect(flow).toContain("run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input");
     expect(flow).toContain("`storybloq setup-review run --setup <id> --new-cycle --reason \"<the owner's words>\"` on the adjusted packet, then status.");
     // The agent-run reviewer paths and the agent-written lines are gone.

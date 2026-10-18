@@ -214,7 +214,7 @@ describe("check set 6, rule 3 (T-536)", () => {
     expect(check(chained).failures.some((f) => f.startsWith("rule 3"))).toBe(true);
   });
 
-  it("exempts only a single-quoted here-document: an unquoted or double-quoted one expands its body in the shell", () => {
+  it("supports only a single-quoted here-document delimiter: an unquoted one expands its body, and the double-quoted form is rejected on purpose as a conservative choice", () => {
     const storeFile = join(store, "0123456789abcdef", SETUP, "setup.json");
     for (const delim of ["EOF", '"EOF"']) {
       const turns = completedRun(REVIEW_PACKET);

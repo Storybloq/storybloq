@@ -63,7 +63,8 @@
     "typecheck": "bash scripts/tsc-gate.sh",
     "prepublishOnly": "bash scripts/tsc-gate.sh && npm run build && STORYBLOQ_COMPAT_REQUIRED=1 npm test",
     "compat:fetch": "bash scripts/compat-fetch.sh",
-    "test:board-package": "node --test scripts/test-local-board.mjs"
+    "test:board-package": "node --test scripts/test-local-board.mjs",
+    "build:federation-harness": "node scripts/build-federation-harness.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFederationCache, writeFederationCache } from "../../src/federation/cache.js";
 import type { FederationState } from "../../src/federation/state.js";
+import type { CrossNodeRefStatus } from "../../src/federation/cross-node-resolver.js";
 
 const tmpDirs: string[] = [];
 
@@ -103,5 +104,55 @@ describe("writeFederationCache", () => {
     const parsed = JSON.parse(raw);
     expect(parsed.lastScanTimestamp).toBeTruthy();
     expect(parsed.nodes).toBeDefined();
+  });
+});
+
+// ISS-1393: the detail ids behind a withdrawn or withheld ref ride beside the
+// plain status strings, rebuilt from each observation.
+describe("crossNodeRefDetails", () => {
+  const observed = new Map<string, CrossNodeRefStatus>([
+    ["engine:T-001", { resolved: true, status: "complete" }],
+    ["engine:T-002", { resolved: true, status: "withdrawn", detail: ["T-002"] }],
+    ["engine:T-003", { resolved: true, status: "withheld", detail: ["T-004"] }],
+    ["engine:T-999", { resolved: false, reason: "item not found in node" }],
+  ]);
+
+  it("writes the detail of exactly the refs that carry one, statuses unchanged", async () => {
+    const storyDir = await createStoryDir();
+    writeFederationCache(storyDir, sampleState, observed);
+    const parsed = JSON.parse(await readFile(join(storyDir, "federation-cache.json"), "utf-8"));
+    expect(parsed.crossNodeRefStatuses).toEqual({
+      "engine:T-001": "complete", "engine:T-002": "withdrawn", "engine:T-003": "withheld", "engine:T-999": "unresolved",
+    });
+    expect(parsed.crossNodeRefDetails).toEqual({ "engine:T-002": ["T-002"], "engine:T-003": ["T-004"] });
+  });
+
+  it("is rebuilt on every write: a ref that releases drops its detail, no statuses means no key", async () => {
+    const storyDir = await createStoryDir();
+    writeFederationCache(storyDir, sampleState, observed);
+    const next = new Map(observed);
+    next.set("engine:T-003", { resolved: true, status: "complete" });
+    writeFederationCache(storyDir, sampleState, next);
+    const parsed = JSON.parse(await readFile(join(storyDir, "federation-cache.json"), "utf-8"));
+    expect(parsed.crossNodeRefDetails).toEqual({ "engine:T-002": ["T-002"] });
+    writeFederationCache(storyDir, sampleState);
+    const bare = JSON.parse(await readFile(join(storyDir, "federation-cache.json"), "utf-8"));
+    expect("crossNodeRefDetails" in bare).toBe(false);
+    expect("crossNodeRefStatuses" in bare).toBe(false);
+  });
+
+  it("is left out when no observed ref carries a detail", async () => {
+    const storyDir = await createStoryDir();
+    writeFederationCache(storyDir, sampleState, new Map([["engine:T-001", { resolved: true, status: "complete" }]]));
+    const parsed = JSON.parse(await readFile(join(storyDir, "federation-cache.json"), "utf-8"));
+    expect("crossNodeRefDetails" in parsed).toBe(false);
+  });
+
+  it("reads back with the statuses the CLI acts on unchanged", async () => {
+    const storyDir = await createStoryDir();
+    writeFederationCache(storyDir, sampleState, observed);
+    const cache = readFederationCache(storyDir);
+    expect(cache?.crossNodeRefStatuses?.["engine:T-003"]).toBe("withheld");
+    expect(cache?.crossNodeRefDetails?.["engine:T-003"]).toEqual(["T-004"]);
   });
 });

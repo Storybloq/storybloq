@@ -6,7 +6,8 @@ import {
   buildCreateURL,
 } from "../../../src/cli/commands/feedback.js";
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: vi.fn(() => ({ unref: vi.fn() })),
 }));
 

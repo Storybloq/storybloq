@@ -9,7 +9,8 @@
  * active keys under this setup are exactly the payload's (less the
  * checkpoints a successful drop-checkpoints removed), each once, of its
  * kind, with its payload title unless a committed accept-current or adopt
- * kept the owner's, and no ticket or issue without a setup key appeared beyond the
+ * kept the owner's (and its stated status, complete or open, under the same
+ * exemption), and no ticket or issue without a setup key appeared beyond the
  * fixture's own.
  * Rule 3: the payload the engine was given is the approved package the owner
  * saw: its tickets and checkpoints equal the package's marked Plan section.
@@ -155,7 +156,7 @@ const same = (a: readonly string[], b: readonly string[]) => a.length === b.leng
 
 interface PayloadShape {
   readonly ownerLabel?: string;
-  readonly tickets?: ReadonlyArray<{ key: string; title: string }>;
+  readonly tickets?: ReadonlyArray<{ key: string; title: string; status?: "open" | "complete" }>;
   readonly checkpoints?: ReadonlyArray<{ key: string; title: string; kind: string }>;
   readonly issues?: ReadonlyArray<{ key: string; title: string }>;
 }
@@ -178,23 +179,23 @@ type Cs7Kind = "ticket" | "checkpoint" | "issue";
 
 function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>, droppedCheckpoints: boolean): string[] {
   const failures: string[] = [];
-  const keyed = new Map<string, Array<{ id: string; title: string; kind: Cs7Kind }>>();
+  const keyed = new Map<string, Array<{ id: string; title: string; kind: Cs7Kind; status?: string }>>();
   const unkeyed: string[] = [];
   for (const [entity, items] of [["ticket", ledger.tickets], ["issue", ledger.issues]] as const) {
     for (const item of items) {
-      const it = item as { id: string; title: string; ownerCheckpoint?: unknown };
+      const it = item as { id: string; title: string; status?: string; ownerCheckpoint?: unknown };
       const meta = parseSetupMeta(entity, item);
       if (meta.kind === "item" && meta.meta.setupId === payload.setupId) {
         if (meta.meta.supersededBy !== undefined) continue;
         const kind: Cs7Kind = entity === "issue" ? "issue" : it.ownerCheckpoint !== undefined ? "checkpoint" : "ticket";
-        keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), { id: it.id, title: it.title, kind }]);
+        keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), { id: it.id, title: it.title, kind, status: it.status }]);
       } else if (!baseline.has(it.id)) {
         unkeyed.push(it.id);
       }
     }
   }
-  const expected: Array<{ key: string; title: string; kind: Cs7Kind }> = [
-    ...(payload.tickets ?? []).map((x) => ({ key: x.key, title: x.title, kind: "ticket" as const })),
+  const expected: Array<{ key: string; title: string; kind: Cs7Kind; status?: "open" | "complete" }> = [
+    ...(payload.tickets ?? []).map((x) => ({ key: x.key, title: x.title, kind: "ticket" as const, status: x.status })),
     ...(droppedCheckpoints ? [] : (payload.checkpoints ?? []).map((x) => ({ key: x.key, title: x.title, kind: "checkpoint" as const }))),
     ...(payload.issues ?? []).map((x) => ({ key: x.key, title: x.title, kind: "issue" as const })),
   ];
@@ -203,6 +204,10 @@ function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, 
     if (found.length !== 1) failures.push(`rule 2: payload key ${item.key} has ${found.length} records in the ledger; expected exactly one`);
     else if (found[0]!.kind !== item.kind) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is a ${found[0]!.kind}, the payload's a ${item.kind}`);
     else if (found[0]!.title !== item.title && !amended.has(item.key)) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is titled "${found[0]!.title}", the payload "${item.title}"`);
+    // T-538 S3a-1: a stated status is part of the record (already-built work is complete; an explicit open is not).
+    else if (item.status !== undefined && (found[0]!.status === "complete") !== (item.status === "complete") && !amended.has(item.key)) {
+      failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is ${found[0]!.status}, the payload ${item.status}`);
+    }
   }
   const wanted = new Set(expected.map((x) => x.key));
   const extra = [...keyed.entries()].filter(([key]) => !wanted.has(key)).map(([key, found]) => `${found.map((f) => f.id).join(", ")} (key ${key})`);

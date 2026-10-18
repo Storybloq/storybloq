@@ -61,6 +61,7 @@ import { parseSetupMeta } from "./setup-meta.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
   parseSetupPayload,
+  plannedStatus,
   renderSetupPayload,
   SetupPayloadError,
   validateSetupPayload,
@@ -146,9 +147,15 @@ export function effectiveRevision(p: SetupPayload): string {
 export const ownedDigest = {
   phase: (phase: { id: string; name: string; label: string; description: string }, position: number) =>
     digestOf({ id: phase.id, name: phase.name, label: phase.label, description: phase.description, position }),
-  ticket: (t: Ticket) => {
+  /**
+   * `planned` opts in (T-538 S3a-1): a planned ticket with an explicit status
+   * owns its status and completion date too. Without one the hashed object is
+   * exactly the legacy one, so every earlier receipt still matches.
+   */
+  ticket: (t: Ticket, planned?: { status?: "open" | "complete" }) => {
     const raw = t as Ticket & { setup?: unknown; ownerCheckpoint?: { digest?: string } };
-    return digestOf({ title: t.title, type: t.type, phase: t.phase, description: t.description, setup: raw.setup ?? null, checkpoint: raw.ownerCheckpoint?.digest ?? null });
+    const owned = { title: t.title, type: t.type, phase: t.phase, description: t.description, setup: raw.setup ?? null, checkpoint: raw.ownerCheckpoint?.digest ?? null };
+    return digestOf(planned?.status === undefined ? owned : { ...owned, status: t.status, completedDate: t.completedDate ?? null });
   },
   issue: (i: Issue) => digestOf({ title: i.title, impact: i.impact, components: i.components, setup: (i as Issue & { setup?: unknown }).setup ?? null }),
   config: (c: Config) => {
@@ -700,9 +707,11 @@ async function stepTicket(ctx: StepContext, key: string): Promise<void> {
   refuseTakenKey(ctx, key);
   const t = p.tickets.find((x) => x.key === key)!;
   const base = await prepareNewTicketUnlocked({ title: t.title, type: t.type, phase: phaseIdOf(p, t.phase), description: t.description, blockedBy: [], parentTicket: null }, ctx.lr.state, ctx.root);
-  const ticket = { ...base, setup: { setupId: p.setupId, key } } as Ticket;
+  // Already-built work is created complete, dated the day the setup began (stable across resumes and restores).
+  const done = plannedStatus(t) === "complete" ? { status: "complete" as const, completedDate: ctx.progress.note.createdDate } : {};
+  const ticket = { ...base, ...done, setup: { setupId: p.setupId, key } } as Ticket;
   const op = await prepareTicketWrite(ticket, ctx.root);
-  await commit(ctx, [op], { step: `item:${key}`, target: `ticket:${ticket.id}`, ownedPre: null, ownedPost: ownedDigest.ticket(ticket) });
+  await commit(ctx, [op], { step: `item:${key}`, target: `ticket:${ticket.id}`, ownedPre: null, ownedPost: ownedDigest.ticket(ticket, t) });
   ctx.out.push(`-> storybloq · ticket ${ticket.displayId ?? ticket.id} "${t.title}" created (${key})`);
 }
 
@@ -1013,7 +1022,19 @@ function itemDrift(plan: SetupPayload, planned: PlannedItem, current: Ticket | I
     t.type !== type ? "type" : null,
     t.phase !== phaseIdOf(plan, planned.item.phase) ? "phase" : null,
     t.description !== planned.item.description ? "description" : null,
+    ...(planned.kind === "ticket" && planned.item.status !== undefined ? [t.status !== planned.item.status ? "status" : null] : []),
   ].filter((x): x is string => x !== null);
+}
+
+/** The planned ticket whose explicit status the owned digest covers; checkpoints and issues never carry one. */
+function plannedOf(planned: PlannedItem): { status?: "open" | "complete" } | undefined {
+  return planned.kind === "ticket" ? planned.item : undefined;
+}
+
+/** The day the setup began: its progress note's creation date, which no resume or restore changes. */
+function setupDate(state: ProjectState, setupId: string): string {
+  const note = findProgress(state, setupId, "active")[0] ?? findProgress(state, setupId, "archived")[0];
+  return note!.createdDate;
 }
 
 const label = (x: { id: string; displayId?: string }) => x.displayId ?? x.id;
@@ -1114,12 +1135,12 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
       out.push(stopOnly("setup item removed", target, `no item carries ${key}`, "the item setup created"));
       continue;
     }
-    const digest = planned.kind === "issue" ? ownedDigest.issue(item as Issue) : ownedDigest.ticket(item as Ticket);
+    const digest = planned.kind === "issue" ? ownedDigest.issue(item as Issue) : ownedDigest.ticket(item as Ticket, plannedOf(planned));
     if (digest === r.ownedPost) continue;
     const fields = itemDrift(plan, planned, item);
     // Restoring the planned fields of a checkpoint must reach its create receipt: otherwise its own content changed.
     const contentChanged = planned.kind === "checkpoint"
-      && ownedDigest.ticket(restoredTicket(plan, planned, item as Ticket)) !== p.receipts.find((x) => x.step === `item:${key}`)!.ownedPost;
+      && ownedDigest.ticket(restoredTicket(plan, planned, item as Ticket, setupDate(state, p.setupId))) !== p.receipts.find((x) => x.step === `item:${key}`)!.ownedPost;
     out.push({
       kind: "edited", class: "owned field edited", target: `${key} (${label(item)})`,
       observed: fields.length > 0 ? `${fields.join(", ")} differ from the plan` : "the values differ from the accepted baseline",
@@ -1247,14 +1268,19 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
 }
 
 /** A ticket or checkpoint with its planned owned fields; everything else, the checkpoint content included, kept. */
-function restoredTicket(plan: SetupPayload, planned: PlannedItem, t: Ticket): Ticket {
+function restoredTicket(plan: SetupPayload, planned: PlannedItem, t: Ticket, date: string): Ticket {
   if (planned.kind === "issue") return t;
+  // An explicit planned status is restored with its date: complete on the setup's day, open with none.
+  const status = planned.kind === "ticket" && planned.item.status !== undefined
+    ? (planned.item.status === "complete" ? { status: "complete", completedDate: date } : { status: "open", completedDate: null })
+    : {};
   return {
     ...t,
     title: planned.item.title,
     ...(planned.kind === "ticket" && { type: planned.item.type }),
     phase: phaseIdOf(plan, planned.item.phase),
     description: planned.item.description,
+    ...status,
   } as Ticket;
 }
 
@@ -1282,6 +1308,7 @@ function userCounts(state: ProjectState, p: SetupPayload, adopted: ReadonlySet<s
   return {
     phases,
     tickets: p.tickets.filter((t) => keyed(t.key)).length,
+    built: p.tickets.filter((t) => keyed(t.key) && plannedStatus(t) === "complete").length,
     checkpoints: p.checkpoints.filter((c) => keyed(c.key)).length,
     issues: p.issues.filter((i) => !adopted.has(i.key) && keyedIssue(state, p.setupId, i.key)).length,
   };
@@ -1343,7 +1370,7 @@ export function setupReportLines(state: ProjectState, p: SetupPayload): string[]
   const lines = [
     `Setup ${p.setupId}: ${config.project} (${config.type}, ${config.language})`,
     ...(kept.length > 0 ? [`Kept current: ${kept.join(", ")}`] : []),
-    `Created: ${counts.phases} phases, ${counts.tickets} tickets, ${counts.checkpoints} checkpoints, ${counts.issues} issues${adopted.size > 0 ? `; adopted: ${adopted.size}` : ""}`,
+    `Created: ${counts.phases} phases, ${counts.tickets} tickets${counts.built > 0 ? ` (${counts.built} already built)` : ""}, ${counts.checkpoints} checkpoints, ${counts.issues} issues${adopted.size > 0 ? `; adopted: ${adopted.size}` : ""}`,
     `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}${keptStages.length > 0 ? `; kept current: ${keptStages.join(", ")}` : ""}`,
     ...pending.map((l) => `Pending: ${l.stage}${l.component === null ? "" : ` (${l.component})`}: ${l.command} (pending: ${l.reason})`),
     `Governance: ${p.governance.files.length > 0 ? p.governance.files.map((f) => f.path).join(", ") : "none"}; canonical facts: ${p.governance.canonicalFactsPath}`,
@@ -1855,9 +1882,9 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
           baseline(step, `issue:${next.id}`, ownedDigest.issue(next));
         } else {
           const planned = plannedItems(plan).find((x) => x.item.key === f.ref.key)!;
-          const next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, ticket(f.ref.id!)) : ticket(f.ref.id!);
+          const next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, ticket(f.ref.id!), progress.note.createdDate) : ticket(f.ref.id!);
           if (r.resolution === "restore-planned") tickets.set(next.id, next);
-          baseline(step, `ticket:${next.id}`, ownedDigest.ticket(next));
+          baseline(step, `ticket:${next.id}`, ownedDigest.ticket(next, plannedOf(planned)));
         }
         break;
       }
@@ -1882,7 +1909,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
         } else {
           const next = { ...ticket(id), setup } as Ticket;
           tickets.set(id, next);
-          receipts.push({ step: `item:${f.ref.key}`, target: `ticket:${id}`, ownedPre: null, ownedPost: ownedDigest.ticket(next) });
+          receipts.push({ step: `item:${f.ref.key}`, target: `ticket:${id}`, ownedPre: null, ownedPost: ownedDigest.ticket(next, plan.tickets.find((x) => x.key === f.ref.key)) });
         }
         break;
       }

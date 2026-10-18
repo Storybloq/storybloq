@@ -95,6 +95,20 @@ describe("check set 7", () => {
     ]);
   });
 
+  it("rule 2: a stated status is part of the record; an unstated one is not checked (T-538 S3a-1)", () => {
+    const stated = { ...payload, tickets: [{ key: "K2", title: "Sign in", status: "complete" }, { key: "K3", title: "Profile", status: "open" }] };
+    const runWith = (p: unknown) => run({ calls: [shell(heredoc(p), APPLIED)] });
+    const ledger = (s2: string, s3: string) => ({ tickets: [{ ...LEDGER.tickets[0]!, status: s2 }, { ...LEDGER.tickets[1]!, status: s3 }, LEDGER.tickets[2]!], issues: [] });
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "inprogress") })).failures).toEqual([]);
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("open", "open") })).failures).toEqual([
+      "rule 2: T-001 (key K2) is open, the payload complete",
+    ]);
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "complete") })).failures).toEqual([
+      "rule 2: T-002 (key K3) is complete, the payload open",
+    ]);
+    expect(checkSetupApply(run(), opts({ ledger: ledger("complete", "complete") })).failures).toEqual([]);
+  });
+
   it("rule 2: checkpoints a successful drop-checkpoints removed are not expected (review r1 #10)", () => {
     const stop = "Ambiguity: schema-5 enable refused · .story/config.json · observed team ledger below schema 5; expected schema 5 · resolutions: drop-checkpoints | stop";
     const turns = run(

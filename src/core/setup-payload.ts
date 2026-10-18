@@ -71,6 +71,8 @@ const Ticket = z.object({
   phase: key,
   description: z.string(),
   blockedBy: keys,
+  /** Already-built work is a complete ticket; absent means open (never defaulted here, so a payload without it renders unchanged). */
+  status: z.enum(["open", "complete"]).optional(),
 }).strict();
 
 const Checkpoint = z.object({
@@ -378,7 +380,23 @@ function referenceProblem(p: SetupPayload): string | null {
     const cycle = visit(k, []);
     if (cycle) return `the dependencies form a cycle: ${cycle}`;
   }
+  // Already-built work (T-538 S3a-1): nothing open holds it back, and no checkpoint gates it.
+  const complete = new Set(p.tickets.filter((t) => plannedStatus(t) === "complete").map((t) => t.key));
+  for (const cp of p.checkpoints) {
+    for (const g of cp.gates) if (complete.has(g)) return `${cp.key} gates ${g}, which is already complete`;
+  }
+  for (const t of p.tickets) {
+    if (!complete.has(t.key)) continue;
+    for (const k of prerequisites(p, t.key, edges)) {
+      if (!complete.has(k)) return `${t.key} is complete but depends on ${k}, which is not`;
+    }
+  }
   return null;
+}
+
+/** A ticket's planned status: an absent status is open. The only place that default applies. */
+export function plannedStatus(t: { status?: "open" | "complete" }): "open" | "complete" {
+  return t.status ?? "open";
 }
 
 /**

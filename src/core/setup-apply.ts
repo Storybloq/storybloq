@@ -1021,7 +1021,7 @@ interface Finding extends SetupAmbiguity {
   readonly ref: Readonly<Record<string, string>>;
 }
 
-function allKeyed(state: ProjectState, setupId: string, key: string): Array<Ticket | Issue> {
+export function allKeyed(state: ProjectState, setupId: string, key: string): Array<Ticket | Issue> {
   const mine = (kind: "ticket" | "issue") => (x: Ticket | Issue) => {
     const meta = parseSetupMeta(kind, x);
     return meta.kind === "item" && meta.meta.setupId === setupId && meta.meta.key === key && meta.meta.supersededBy === undefined;

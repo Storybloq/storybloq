@@ -3753,7 +3753,7 @@ export function formatReference(
   lines.push("");
   lines.push("## /story triage");
   lines.push("");
-  lines.push("`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for integrity checks, alias correlation, evidence requirements, and the report format.");
+  lines.push("`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for the checks and the report format.");
   lines.push("");
   lines.push("## /story bus");
   lines.push("");

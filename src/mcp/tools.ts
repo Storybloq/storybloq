@@ -743,6 +743,7 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   registerHealthTool(server, pinnedRoot, ctx?.launchDir ?? realpathSync(process.cwd()));
   registerSetupApplyTool(server, pinnedRoot);
   registerSetupReportTool(server, pinnedRoot);
+  registerSetupVerifyTool(server, pinnedRoot);
 
   server.registerTool("storybloq_validate", {
     description: "Reference integrity + schema checks. Works even when corrupt JSON blocks project loading.",
@@ -3057,6 +3058,24 @@ export function registerSetupReportTool(server: McpServer, root: string) {
       return { content: [{ type: "text" as const, text: `[exit ${result.exitCode}]\n${result.stdout}` }], ...(result.exitCode !== 0 ? { isError: true } : {}) };
     } catch (err: unknown) {
       return { content: [{ type: "text" as const, text: `[exit 3]\nSetup report: ${err instanceof Error ? err.message : String(err)}\n` }], isError: true };
+    }
+  });
+}
+
+/** T-538 S3a-2: `storybloq setup-verify`, the same handler. First line [exit N]. */
+export function registerSetupVerifyTool(server: McpServer, root: string) {
+  return server.registerTool("storybloq_setup_verify", {
+    description: "Run an establishment ticket's test command; verified completes it and turns its stages on. First line [exit N]; relay the rest verbatim.",
+    inputSchema: {
+      ticket: z.string().describe("The establishment ticket (T-...)"),
+    },
+  }, async (args) => {
+    try {
+      const { handleSetupVerify } = await import("../cli/commands/setup-verify.js");
+      const result = await handleSetupVerify({ cwd: root, env: process.env }, { ticket: args.ticket });
+      return { content: [{ type: "text" as const, text: `[exit ${result.exitCode}]\n${result.stdout}` }], ...(result.exitCode !== 0 ? { isError: true } : {}) };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `[exit 2]\nSetup-verify refused: ${err instanceof Error ? err.message : String(err)}\n` }], isError: true };
     }
   });
 }

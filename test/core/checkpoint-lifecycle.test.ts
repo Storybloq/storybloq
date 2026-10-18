@@ -780,7 +780,7 @@ describe("authority imports", () => {
     CONFLICT_EVIDENCE_AUTHORITY: ["core/checkpoint-guard.ts", "core/checkpoint-evidence.ts"],
     // T-538 S3a-2: establishment tickets.
     ESTABLISHMENT_CREATION_AUTHORITY: ["core/setup-verification-guard.ts", "core/setup-apply.ts"],
-    VERIFICATION_RESULT_AUTHORITY: ["core/setup-verification-guard.ts"],
+    VERIFICATION_RESULT_AUTHORITY: ["core/setup-verification-guard.ts", "core/setup-verify.ts"],
   };
 
   function files(dir: string): string[] {

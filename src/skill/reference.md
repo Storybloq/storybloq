@@ -9,7 +9,7 @@
 Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.
 
 - **init** (--name?, --force?, --type?, --language?, --node?, --format?) - Initialize a new .story/ project
-- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Other fields are kept whole.
+- **status** (--format?, --client-task-id?, --compact?) - Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.
 - **ticket list** (--status?, --phase?, --type?, --priority?, --waiting-on?, --format?, --node?) - List tickets with optional filters
 - **ticket get <id>** (--format?) - Get ticket details by ID
 - **ticket next** (--format?, --count?) - Suggest next ticket(s) to work on
@@ -99,11 +99,12 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **recommend** (--format?, --count?, --with-actionability?) - Context-aware work suggestions
 - **reference** (--format?) - Print CLI command and MCP tool reference
 - **selftest** (--format?) - Run integration smoke test: create/update/delete cycle across all entity types
-- **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it
+- **health** (--only?, --refresh?, --format?) - Tooling check: auto-compact window, CLI version, Codex review bridge, /story skill, cross-session messaging, duplicate hook rows
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
 - **setup-review <gate|run|status>** (--setup?, --backend?, --new-cycle?, --reason, --skipped?) - Setup plan review
 - **setup-apply** (--setup?, --resume?, --resolve?) - stdin payload; --setup with --resume/--resolve
 - **setup-report** (--setup, --historical?) - Live or frozen setup report
+- **setup-verify** (--ticket) - Run an establishment ticket's tests
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: <project>/<sessionId>.jsonl in Claude's projects dir, a regular file
@@ -261,6 +262,7 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_health** (format?, only?, refresh?) - Tooling check: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session message delivery. Works without .story/, read-only
 - **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) - Payload, resume or resolutions; no .story/. First line [exit N]
 - **storybloq_setup_report** (setup, historical?) - Live or frozen setup report. Read-only
+- **storybloq_setup_verify** (ticket) - Run an establishment ticket's tests. First line [exit N]
 - **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?, target?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts
 - **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route
 - **storybloq_review_lenses_judge** (reviewVerdict?, convergenceHistory?) - Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap
@@ -360,7 +362,7 @@ Drive a federation or large backlog with a persistent ledger, lower-tier impleme
 
 ## /story triage
 
-`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for integrity checks, alias correlation, evidence requirements, and the report format.
+`/story triage` reads the open issue backlog against pinned HEAD, validates source provenance, identifies fixed/duplicate findings and shared root causes, and reports priorities. It changes no issue or ticket. Saving the report as a handover is offered once and requires explicit confirmation, with a snapshot first. Read `triage-mode.md` for the checks and the report format.
 
 ## /story bus
 

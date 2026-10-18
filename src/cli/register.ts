@@ -5614,6 +5614,25 @@ export function registerSetupReportCommand(yargs: Argv): Argv {
   );
 }
 
+export function registerSetupVerifyCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "setup-verify",
+    "Run an establishment ticket's test command; a verified run completes it and turns its stages on",
+    (y) => y.option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" }),
+    async (argv) => {
+      const { handleSetupVerify } = await import("./commands/setup-verify.js");
+      try {
+        const result = await handleSetupVerify({ cwd: process.cwd(), env: process.env }, { ticket: argv.ticket as string });
+        process.stdout.write(result.stdout);
+        process.exitCode = result.exitCode;
+      } catch (err: unknown) {
+        process.stdout.write(`Setup-verify refused: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 2;
+      }
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // setup
 // ---------------------------------------------------------------------------

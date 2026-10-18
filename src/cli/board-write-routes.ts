@@ -105,6 +105,7 @@ export const CLI_NON_BOARD_HANDLERS: Readonly<Record<string, string>> = {
   handleSetupReviewStatus: "setup review store in the temp directory, outside the project",
   handleSetupApply: "T-538 setup engine: on an existing .story/ it reports through the board-write recorder and reportBoardWrite inside handleSetupApply (as runBoardWrite does); the bootstrap path, before .story/ exists, reports only the engine's own lines",
   handleSetupReport: "read",
+  handleSetupVerify: "T-538 S3a-2 setup-verify: reports through the board-write recorder and reportBoardWrite inside handleSetupVerify (as runBoardWrite does), only after exit 0",
   handleSetupSkill: "installs the skill outside the project",
   handleTeamConfigSet: "admin: team-mode configuration (CLI-only team workflow)",
   handleTeamInit: "admin: team-mode enablement (CLI-only team workflow)",

@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Other fields are kept whole.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -560,7 +560,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "health",
-    description: "Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it",
+    description: "Tooling check: auto-compact window, CLI version, Codex review bridge, /story skill, cross-session messaging, duplicate hook rows",
     usage: "storybloq health [--only <ids>] [--refresh] [--format json|md] [--raw]",
     flags: ["--only", "--refresh", "--format"],
   },
@@ -587,6 +587,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     description: "Live or frozen setup report",
     usage: "storybloq setup-report --setup <id> [--historical]",
     flags: ["--setup", "--historical"],
+  },
+  {
+    name: "setup-verify",
+    description: "Run an establishment ticket's tests",
+    usage: "storybloq setup-verify --ticket <id>",
+    flags: ["--ticket"],
   },
   {
     name: "session intel-start",
@@ -1161,6 +1167,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_health", description: "Tooling check: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session message delivery. Works without .story/, read-only", params: ["format?","only?","refresh?"] },
   { name: "storybloq_setup_apply", description: "Payload, resume or resolutions; no .story/. First line [exit N]", params: ["payload?","resume?","setup?","resolutions?"] },
   { name: "storybloq_setup_report", description: "Live or frozen setup report. Read-only", params: ["setup","historical?"] },
+  { name: "storybloq_setup_verify", description: "Run an establishment ticket's tests. First line [exit N]", params: ["ticket"] },
   { name: "storybloq_review_lenses_prepare", description: "Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts", params: ["stage","diff","changedFiles","ticketDescription?","reviewRound?","priorDeferrals?","sessionId?","target?"] },
   { name: "storybloq_review_lenses_synthesize", description: "Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
   { name: "storybloq_review_lenses_judge", description: "Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap", params: ["reviewVerdict?","convergenceHistory?"] },

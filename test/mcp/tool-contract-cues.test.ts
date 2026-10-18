@@ -525,6 +525,8 @@ describe("tool description contract (T-460)", () => {
     // the evidence the owner reviews, so adding a revision is agent work.
     // T-538 S2 adds storybloq_setup_apply and storybloq_setup_report (103 -> 105):
     // setup runs as one engine call, and the agent copies its report verbatim.
-    expect(result.tools.length).toBe(105);
+    // T-538 S3a-2 adds storybloq_setup_verify (105 -> 106): the agent runs an
+    // establishment ticket's tests when the scaffold it waits on is built.
+    expect(result.tools.length).toBe(106);
   });
 });

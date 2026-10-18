@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Every other top-level field is kept whole.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Drops archivedNotes, deprecatedLessons, issueFlow.semantics; reduces each record in activeSessions/resumableSessions/expiredLeaseSessions to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions. Other fields are kept whole.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -488,7 +488,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker session from the pen (N-131, T-530): mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role and handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce itself. Permission mode defaults to auto, or bypassPermissions when the pen runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print; --recover needs none and lists interrupted spawns read-only",
+    description: "Start a visible duet worker from the pen: mints the worker's task id, creates the arrangement and starts coordination (--arrangement auto, the default for a Claude pen; needs --bounds), writes the role and handshake facts under .story/spawn/ and opens the window with /story as its first prompt, so the worker sends the nonce itself. Permission mode defaults to auto, or bypassPermissions when the pen runs in bypass; --model defaults to opus (the hands tier). A --dir with no .story is launched against the pen's board (STORYBLOQ_PROJECT_ROOT). --name and --pen are needed to launch or --print; --recover needs none and lists interrupted spawns read-only",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
   },

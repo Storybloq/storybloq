@@ -195,12 +195,53 @@ describe("a component's test command is one invocation (S2a finding 3)", () => {
   });
 
   it("refuses a cd step and says to put a multi-step test behind one script", () => {
-    expect(() => validateSetupPayload(withTest("cd backend"))).toThrow(/uses a cd step.*one script, such as an npm script or a Makefile target/);
+    expect(() => validateSetupPayload(withTest("cd backend"))).toThrow(/uses the shell builtin `cd`.*one script, such as an npm script or a Makefile target/);
+  });
+
+  it.each([
+    ["npm test # frontend", /uses a comment \(`#`\)/],
+    ["npm test #", /uses a comment/],
+    ["'cd' ..", /uses the shell builtin `cd`/],
+    ["\"cd\" ..", /uses the shell builtin `cd`/],
+    ["c\\d ..", /uses the shell builtin `cd`/],
+    ["exit 0", /uses the shell builtin `exit`/],
+    [". ./env.sh", /uses the shell builtin `\.`/],
+    ["eval npm test", /uses the shell builtin `eval`/],
+    ["CI=1 npm test", /uses an environment assignment/],
+    ["npm test 'unclosed", /uses an unclosed quote/],
+    ["npm test \"$(x)\"", /uses `\$\(`/],
+  ])("refuses %j as the shell reads it", (command, reason) => {
+    expect(() => validateSetupPayload(withTest(command))).toThrow(reason);
   });
 
   it("accepts one invocation with arguments", () => {
-    for (const command of ["npm test -- --run", "python manage.py test", "go test ./...", "make test"]) {
+    for (const command of ["npm test -- --run", "python manage.py test", "go test ./...", "make test", "pytest -k 'a or b'", "npm test a#b", "pytest \"x # y\""]) {
       expect(() => validateSetupPayload(withTest(command))).not.toThrow();
+    }
+  });
+});
+
+describe("the chain a valid payload produces runs every component (S2a finding 6)", () => {
+  it("two components both run, in order", async () => {
+    const { mkdtempSync, mkdirSync, existsSync, rmSync } = await import("node:fs");
+    const { execFileSync } = await import("node:child_process");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { computeInitialStages } = await import("../../src/core/verification-activation.js");
+    const parsed = validateSetupPayload(payload({ quality: { level: "full", verifyApplies: false, components: [
+      { id: "web", workdir: "web app", test: { command: "touch ran-web", status: "established" }, build: null, verify: null },
+      { id: "api", workdir: "api", test: { command: "touch ran-api", status: "established" }, build: null, verify: null },
+    ] } } as Partial<SetupPayload>));
+    const command = computeInitialStages({ level: parsed.quality.level, verifyApplies: parsed.quality.verifyApplies, components: parsed.quality.components }).stages.TEST!.command as string;
+    const root = mkdtempSync(join(tmpdir(), "t538-s2-chain-"));
+    try {
+      mkdirSync(join(root, "web app"));
+      mkdirSync(join(root, "api"));
+      execFileSync("/bin/bash", ["-c", command], { cwd: root });
+      expect(existsSync(join(root, "web app", "ran-web"))).toBe(true);
+      expect(existsSync(join(root, "api", "ran-api"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

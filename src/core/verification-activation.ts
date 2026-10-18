@@ -101,7 +101,7 @@ type Step = { readonly workdir: string; readonly command: string };
  * from its component's directory, joined only by `&&`, with a plain `cd`
  * between directories (`cd 'frontend' && npm test && cd '../backend' &&
  * pytest`), in payload order. Every workdir is quoted; the payload refuses a
- * test command that could move the shell (`testCommandToken`).
+ * test command that could move the shell (`testCommandProblem`).
  */
 export function chainCommand(steps: readonly Step[]): string {
   const parts: string[] = [];

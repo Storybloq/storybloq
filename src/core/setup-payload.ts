@@ -186,27 +186,84 @@ function escapes(path: string): boolean {
 /**
  * Stage 1's test-command grammar: the recipe's test command is plain `cd`
  * steps and test invocations joined by `&&`, so each component's test command
- * must be one invocation that cannot move the shell or run anything else.
- * The first token that breaks it, named for the refusal, or null.
+ * must be one simple invocation that cannot move, end or silence the shell
+ * for the components after it. It is read as the shell reads it: quotes and
+ * escapes decoded, a `#` that starts a word is a comment (which would swallow
+ * every later step), and the executable is checked after decoding, so `'cd'`
+ * and `c\d` are both `cd`.
  */
-const TEST_COMMAND_TOKENS: ReadonlyArray<readonly [string, RegExp]> = [
-  ["a newline", /[\n\r]/],
-  ["&&", /&&/],
-  ["||", /\|\|/],
-  ["$(", /\$\(/],
-  ["`", /`/],
-  [";", /;/],
-  ["|", /\|/],
-  ["&", /&/],
-  ["(", /\(/],
-  [")", /\)/],
-  ["<", /</],
-  [">", />/],
-  ["cd", /(?:^|\s)cd(?:\s|$)/],
-];
+const SHELL_STATE_BUILTINS: ReadonlySet<string> = new Set([
+  "cd", "pushd", "popd", "exit", "exec", "source", ".", "eval", "set", "shopt", "trap", "return",
+  "{", "}", "!",
+]);
 
-export function testCommandToken(command: string): string | null {
-  for (const [token, pattern] of TEST_COMMAND_TOKENS) if (pattern.test(command)) return token;
+const BACKTICK = "`" + "`" + "`";
+
+/** Why `command` is not one simple invocation, as a phrase for the refusal, or null when it is. */
+export function testCommandProblem(command: string): string | null {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  const n = command.length;
+  let i = 0;
+  while (i < n) {
+    const c = command[i]!;
+    if (c === "\n" || c === "\r") return "a newline";
+    if (c === " " || c === "\t") {
+      if (inWord) { words.push(word); word = ""; inWord = false; }
+      i++;
+      continue;
+    }
+    if (c === "#" && !inWord) return "a comment (`#`)";
+    if (c === "\\") {
+      const d = command[i + 1];
+      if (d === undefined) return "a trailing backslash";
+      if (d === "\n" || d === "\r") return "a newline";
+      word += d;
+      inWord = true;
+      i += 2;
+      continue;
+    }
+    if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (close < 0) return "an unclosed quote";
+      const quoted = command.slice(i + 1, close);
+      if (/[\n\r]/.test(quoted)) return "a newline";
+      word += quoted;
+      inWord = true;
+      i = close + 1;
+      continue;
+    }
+    if (c === '"') {
+      inWord = true;
+      i++;
+      for (;;) {
+        const d = command[i];
+        if (d === undefined) return "an unclosed quote";
+        if (d === '"') { i++; break; }
+        if (d === "\n" || d === "\r") return "a newline";
+        if (d === "`") return BACKTICK;
+        if (d === "$" && command[i + 1] === "(") return "`$(`";
+        if (d === "\\" && i + 1 < n && '"\\$`'.includes(command[i + 1]!)) { word += command[i + 1]; i += 2; continue; }
+        word += d;
+        i++;
+      }
+      continue;
+    }
+    if (c === "$" && command[i + 1] === "(") return "`$(`";
+    if (c === "`") return BACKTICK;
+    if (c === "&") return command[i + 1] === "&" ? "`&&`" : "`&`";
+    if (c === "|") return command[i + 1] === "|" ? "`||`" : "`|`";
+    if (";()<>".includes(c)) return `\`${c}\``;
+    word += c;
+    inWord = true;
+    i++;
+  }
+  if (inWord) words.push(word);
+  const executable = words[0];
+  if (executable === undefined) return "no command";
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(executable)) return "an environment assignment";
+  if (SHELL_STATE_BUILTINS.has(executable)) return `the shell builtin \`${executable}\``;
   return null;
 }
 
@@ -261,9 +318,9 @@ function referenceProblem(p: SetupPayload): string | null {
     for (const stage of [comp.test, comp.build, comp.verify]) {
       if (stage && stage.status === "pending" && stage.reason === undefined) return `component ${comp.id} has a pending stage with no reason`;
     }
-    const token = comp.test ? testCommandToken(comp.test.command) : null;
-    if (token !== null) {
-      return `component ${comp.id}'s test command uses ${token === "cd" ? "a cd step" : token === "a newline" ? token : `\`${token}\``}, but a component's test command is one invocation run from its workdir. ` +
+    const problem = comp.test ? testCommandProblem(comp.test.command) : null;
+    if (problem !== null) {
+      return `component ${comp.id}'s test command uses ${problem}, but a component's test command is one invocation run from its workdir. ` +
         "Put a multi-step test behind one script, such as an npm script or a Makefile target, and name that";
     }
   }

@@ -125,6 +125,8 @@ export function mountEditor(
       "cancel-reopen",
       "reload-item",
       "back-to-draft",
+      "discard-edits",
+      "keep-editing",
     ])
       button(id).disabled = value;
     for (const [key, input] of fields)
@@ -358,6 +360,7 @@ export function mountEditor(
     else focusField();
   };
   button("discard-edits").onclick = () => {
+    if (disposed || pending) return;
     const action = deferred;
     if (record) show(record);
     else reset();
@@ -369,7 +372,18 @@ export function mountEditor(
       el("reopen-confirmation").hidden = false;
       button("confirm-reopen").focus();
     });
-  button("confirm-reopen").onclick = () => void save(true);
+  button("confirm-reopen").onclick = () => {
+    if (disposed || pending) return;
+    if (dirty()) {
+      el("reopen-confirmation").hidden = true;
+      guard(() => {
+        el("reopen-confirmation").hidden = false;
+        button("confirm-reopen").focus();
+      });
+      return;
+    }
+    void save(true);
+  };
   button("cancel-reopen").onclick = () => {
     el("reopen-confirmation").hidden = true;
     button("reopen-item").focus();

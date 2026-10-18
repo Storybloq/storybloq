@@ -322,6 +322,100 @@ test("a pending save prevents navigation and a disposed view ignores its late ac
     s.close();
   }
 });
+test("a discard prompt left open during a pending save cannot discard or navigate until the save settles", async () => {
+  let resolveSave: any;
+  const calls: string[] = [];
+  const s = await setup(async (name, args) => {
+    calls.push(name);
+    return name === "storybloq_item_save"
+      ? new Promise<any>((resolve) => {
+          resolveSave = resolve;
+        })
+      : basic(name, args);
+  });
+  try {
+    s.click("edit-item");
+    await tick();
+    s.change("edit-title", "Pending");
+    s.click("nav-timeline");
+    assert.equal(s.d.getElementById("edit-discard")!.hidden, false);
+    s.click("save-item");
+    assert.equal(
+      (s.d.getElementById("discard-edits") as HTMLButtonElement).disabled,
+      true,
+    );
+    s.click("discard-edits");
+    // The handler refuses on its own too, not only through the disabled control.
+    const discard = s.d.getElementById("discard-edits") as HTMLButtonElement;
+    discard.onclick!.call(discard, new s.dom.window.MouseEvent("click"));
+    await tick();
+    assert.equal(s.d.getElementById("board-screen")!.hidden, false);
+    assert.equal(s.d.getElementById("timeline-screen")!.hidden, true);
+    assert.equal(
+      (s.d.getElementById("edit-title") as HTMLInputElement).value,
+      "Pending",
+    );
+    resolveSave({
+      _meta: {
+        editor: { ...editor, fields: { ...editor.fields, title: "Pending" } },
+      },
+    });
+    await tick();
+    assert.equal(s.d.getElementById("timeline-screen")!.hidden, true);
+    assert.equal(calls.filter((c) => c === "storybloq_item_save").length, 1);
+  } finally {
+    s.close();
+  }
+});
+test("an edit made after the reopen confirmation opens is not silently dropped by confirming", async () => {
+  const calls: any[] = [];
+  const completed = {
+    ...editor,
+    canReopen: true,
+    fields: { ...editor.fields, status: "complete" },
+  };
+  const s = await setup(async (name, args) => {
+    calls.push({ name, args });
+    if (name === "storybloq_item_editor")
+      return { _meta: { editor: completed } };
+    if (name === "storybloq_ticket_reopen") return { _meta: { editor } };
+    return basic(name, args);
+  });
+  try {
+    s.click("edit-item");
+    await tick();
+    s.click("reopen-item");
+    assert.equal(s.d.getElementById("reopen-confirmation")!.hidden, false);
+    s.change("edit-title", "Late edit");
+    s.click("confirm-reopen");
+    await tick();
+    assert.equal(
+      calls.some((c) => c.name === "storybloq_ticket_reopen"),
+      false,
+    );
+    assert.equal(s.d.getElementById("edit-discard")!.hidden, false);
+    assert.equal(
+      (s.d.getElementById("edit-title") as HTMLInputElement).value,
+      "Late edit",
+    );
+    s.click("keep-editing");
+    assert.equal(
+      (s.d.getElementById("edit-title") as HTMLInputElement).value,
+      "Late edit",
+    );
+    s.click("reopen-item");
+    s.click("discard-edits");
+    assert.equal(s.d.getElementById("reopen-confirmation")!.hidden, false);
+    s.click("confirm-reopen");
+    await tick();
+    assert.deepEqual(
+      calls.find((c) => c.name === "storybloq_ticket_reopen").args,
+      { id: "T-001", revision },
+    );
+  } finally {
+    s.close();
+  }
+});
 test("ticket reopening is a separate deliberate action with no arbitrary update fields", async () => {
   const calls: any[] = [];
   const completed = {

@@ -5,7 +5,7 @@
  * verdict is the runner's own words; live runners come with the resolutions.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setupApply } from "../../src/core/setup-apply.js";
@@ -90,6 +90,26 @@ describe("a verified run", () => {
     expect(await setupVerify(root, { ticket: "T-002" })).toEqual({ exitCode: 2, lines: ["Setup-verify refused: app's test stage is already verified."] });
     await editTicket(root, "T-002", (r) => { r.status = "open"; r.completedDate = null; });
     expect((await setupVerify(root, { ticket: "T-002" })).lines).toEqual(["Setup-verify refused: app's test stage is already verified."]);
+  });
+
+  it("runs the spec's command through the shell, as written (the quotes are the shell's)", async () => {
+    const root = await ready(`sh '${REPLAY}' 'vitest-pass'`);
+    expect(await setupVerify(root, { ticket: "T-002" })).toEqual({ exitCode: 0, lines: ["Verified: app test (vitest, 2 tests); stages on: TEST"] });
+  });
+
+  it("rebuilds only the served stages: every other stage and every other field of a served one stay as they were", async () => {
+    const root = await ready(replay("vitest-pass"));
+    const path = join(root, ".story", "config.json");
+    const c = JSON.parse(await readFile(path, "utf-8")) as { recipeOverrides: { stages: Record<string, Record<string, unknown>> } };
+    const others = Object.keys(c.recipeOverrides.stages).filter((k) => k !== "TEST" && k !== "WRITE_TESTS");
+    expect(others.length).toBeGreaterThan(0);
+    for (const k of others) c.recipeOverrides.stages[k]!.enabled = !(c.recipeOverrides.stages[k]!.enabled === true);
+    c.recipeOverrides.stages.TEST = { ...(c.recipeOverrides.stages.TEST ?? {}), onExhaustion: "stop" };
+    await writeFile(path, JSON.stringify(c, null, 2) + "\n");
+    expect((await setupVerify(root, { ticket: "T-002" })).exitCode).toBe(0);
+    const after = (await configOf(root)) as unknown as typeof c;
+    for (const k of others) expect(after.recipeOverrides.stages[k]).toEqual(c.recipeOverrides.stages[k]);
+    expect(after.recipeOverrides.stages.TEST).toMatchObject({ enabled: true, onExhaustion: "stop" });
   });
 });
 
@@ -276,6 +296,21 @@ describe("freshness: a change during the run is exit 5 with nothing written", ()
     ["a dependency", (root) => editTicket(root, "T-002", (r) => { r.blockedBy = ["T-001", "T-003"]; })],
     ["a prerequisite's status", (root) => editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; })],
     ["the metadata", (root) => editTicket(root, "T-002", (r) => { ((r.setup as { verification: Record<string, unknown> }).verification.decision = { kind: "stop", ownerWords: "wait", at: "2026-10-18T00:00:00Z" }); })],
+    ["the setup unfinished again", async (root) => {
+      const dir = join(root, ".story", "notes");
+      for (const f of await readdir(dir)) {
+        const raw = JSON.parse(await readFile(join(dir, f), "utf-8")) as { status: string; setup?: { record?: string } };
+        if (raw.setup?.record !== "progress") continue;
+        raw.status = "active";
+        await writeFile(join(dir, f), JSON.stringify(raw, null, 2) + "\n");
+      }
+    }],
+    ["a prerequisite's own prerequisites, still released", async (root) => {
+      const raw = await ticketFile(root, "T-001");
+      const { setup: _setup, ...rest } = raw;
+      await writeFile(join(root, ".story", "tickets", "T-003.json"), JSON.stringify({ ...rest, id: "T-003", title: "an older piece of work" }, null, 2) + "\n");
+      await editTicket(root, "T-001", (r) => { r.blockedBy = ["T-003"]; });
+    }],
     ["a served stage", async (root) => {
       const path = join(root, ".story", "config.json");
       const c = JSON.parse(await readFile(path, "utf-8")) as { recipeOverrides: { stages: Record<string, Record<string, unknown>> } };

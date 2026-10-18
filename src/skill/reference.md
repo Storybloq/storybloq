@@ -265,10 +265,10 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route
 - **storybloq_review_lenses_judge** (reviewVerdict?, convergenceHistory?) - Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap
 - **storybloq_autonomous_guide** (sessionId, action, clientTaskId?, takeover?, ownerGoneCandidateTakeover?, ownerGoneCandidateCancel?, mode?, reviewEffort?, ticketId?, targetWork?, report?) - Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE
-- **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode
+- **storybloq_session_guard** (clientTaskId?) - Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load
 - **storybloq_session_milestone** (kind, gateName?, note?, clientTaskId?) - Self-reported implementing/gate-hold/blocked-external/reviewing milestone on this session's presence, never a computed verdict. gate-hold requires gateName. Lock contention or write failure returns a retryable error.
 - **storybloq_session_report** (sessionId) - Structured analysis of an autonomous session (works even if project state is corrupted)
-- **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) - Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed) and session facts. Works without .story/; sessionId or transcript inspects another session read-only. Also registered in degraded mode
+- **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) - Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed) and session facts. Works without .story/; sessionId or transcript inspects another session read-only
 - **storybloq_register_subprocess** (pid, cmd, category, sessionId) - Register a running subprocess so monitors can tell slow builds from hung agents
 - **storybloq_unregister_subprocess** (pid, sessionId) - Unregister a subprocess after it completes (idempotent)
 - **storybloq_bus_send** (endpointId, clientTaskId, threadId?, threadKind?, predecessorThreadId?, toRole?, messageKind, severity, body, refs?, inReplyTo?, idempotencyKey) - Send a task-bound advisory peer message; routes to the sole peer (toRole is deprecated, optional, and ignored)
@@ -305,10 +305,11 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 
 With no .story/ project on the path, the MCP server starts degraded and registers only:
 
-- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first
+- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict; the skill runs this Step 0.5 guard first
 - **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) -- context usage and session facts without a project
 - **storybloq_health** (format?, only?, refresh?) -- read-only tooling checks without a project
-- **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then dynamically register the full tool set
+- **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then register the full tool set
+- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows once the project exists
 - **storybloq_status** (format?) -- returns setup guidance instead of a project summary
 
 Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.

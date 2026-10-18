@@ -81,7 +81,7 @@ const PLAN_1B_FUNCTIONS: readonly string[] = [
   "src/cli/register.ts#runCatalogWrite",
   "src/core/limit-retirement.ts#runLimitRetirement",
   "src/mcp/index.ts#<module>",
-  "src/mcp/index.ts#registerDegradedTools",
+  "src/mcp/index.ts#swapToFullSurface",
 ];
 
 /**
@@ -94,7 +94,7 @@ const CONTAINED_CATCHES: readonly string[] = [
   "src/cli/commands/session-compact.ts#handleSessionLimitStop#catch#1",
   "src/cli/commands/session-compact.ts#handleSessionResumePrompt#catch#6",
   "src/cli/housekeeping.ts#preCommandHousekeeping#catch#4",
-  "src/mcp/index.ts#registerDegradedTools#catch#4",
+  "src/mcp/index.ts#swapToFullSurface#catch#3",
 ];
 
 let cached: ScanResult | undefined;

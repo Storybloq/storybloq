@@ -60,7 +60,8 @@ export const STATE_WRITE_CATCHES: Readonly<Record<string, string>> = {
   "src/cli/register.ts#registerSessionCommand#catch#8": "B",
   "src/cli/register.ts#registerSessionCommand#catch#11": "B",
   // Registration-time catches: tools are registered, no state is written here.
-  "src/mcp/index.ts#registerDegradedTools#catch#3": "B",
+  // T-538: the init/setup swap to the full surface (moved out of the init handler).
+  "src/mcp/index.ts#swapToFullSurface#catch#2": "B",
   "src/mcp/index.ts#<module>#promise#1": "B", // main().catch, process exit
   // The --local-cli entry: reports the error on stderr and sets exit code 2.
   "src/cli/index.ts#<module>#catch#1": "B",
@@ -113,6 +114,11 @@ export const STATE_WRITE_EDGES: Readonly<Record<string, string>> = {
   "src/cli/index.ts#<module>#edge#1": "src/cli/local-profile.ts#runLocalProjectCommand(dispatch)",
   // MCP tool callbacks; the SDK awaits the returned promise.
   "src/mcp/index.ts#registerDegradedTools#edge#1": "McpServer.registerTool(callback)",
+  // T-538: the swap after a setup-apply call; the setup_apply tool callback awaits it.
+  "src/mcp/index.ts#registerDegradedTools#edge#2": "src/mcp/tools.ts#registerSetupApplyTool(afterRun)",
+  "src/mcp/tools.ts#registerSetupApplyTool#edge#1": "McpServer.registerTool(callback)",
+  // afterRun is awaited inside that callback, so it reaches the same SDK await.
+  "src/mcp/tools.ts#registerSetupApplyTool#edge#2": "McpServer.registerTool(callback)",
   "src/mcp/tools.ts#registerAllTools#edge#1": "McpServer.registerTool(callback)",
   "src/mcp/tools.ts#registerAllTools#edge#2": "src/mcp/tools.ts#runGuideCallInOrder(task)",
   // The followed slot handed on to the guide queue's promise handlers.

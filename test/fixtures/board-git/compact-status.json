@@ -21,6 +21,7 @@
     "activeLessons": 0,
     "handovers": 0,
     "isEmptyScaffold": false,
+    "setupInProgress": [],
     "phases": [
       {
         "id": "p0",

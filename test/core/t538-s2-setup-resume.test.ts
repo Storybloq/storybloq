@@ -6,7 +6,7 @@
  * after the freeze brings finalization to the new revision without
  * replacing a file the user owns.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -27,6 +27,12 @@ import { setupPaths } from "../../src/core/setup-review.js";
 import { handleTicketCreate, handleTicketUpdate } from "../../src/cli/commands/ticket.js";
 import { handleIssueUpdate } from "../../src/cli/commands/issue.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
+
+// This file only: each case runs one or more whole setups (git, lock,
+// transactions). At machine load 10-12 (2026-10-18) cases passed 5s; one
+// apply measured 365 ms unloaded and the report 2 ms, so this is load, not
+// a slow path.
+vi.setConfig({ testTimeout: 30_000 });
 
 const SID = "SS-0123abcd";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");

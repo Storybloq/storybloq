@@ -3,7 +3,7 @@
  * approved payload to a finished, reported setup; an interruption at any
  * write leaves a setup that the same call finishes from the ledger alone.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { mkdtemp, rm, readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,12 @@ import { parseSetupPayload, type SetupPayload } from "../../src/core/setup-paylo
 import { computeInitialStages } from "../../src/core/verification-activation.js";
 import { handleTicketCreate, handleTicketUpdate } from "../../src/cli/commands/ticket.js";
 import { parseSetupMeta } from "../../src/core/setup-meta.js";
+
+// This file only: each case runs one or more whole setups (git, lock,
+// transactions). At machine load 10-12 (2026-10-18) cases passed 5s; one
+// apply measured 365 ms unloaded and the report 2 ms, so this is load, not
+// a slow path.
+vi.setConfig({ testTimeout: 30_000 });
 
 const SID = "SS-0123abcd";
 

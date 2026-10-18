@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { initProject } from "../../src/core/init.js";
 import {
   addCheckpointEvidence,
@@ -183,6 +184,42 @@ describe("the destination is never reached through a link", () => {
 });
 
 
+describe("a failed publication removes only the file it created", () => {
+  it("an unrelated file of the same name behind a swapped directory is kept, and the created file is reported as an orphan", async () => {
+    const dir = await project();
+    const cp = await immutable(dir);
+    const src = await source(dir, "demo.txt", "shown\n");
+    const cpDir = join(dir, "docs", "checkpoints", cp.id);
+    let name = "";
+    const failure = await addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }, {
+      async afterCreate() {
+        await rename(cpDir, `${cpDir}-moved`);
+        name = (await readdir(`${cpDir}-moved`))[0]!;
+        await mkdir(cpDir);
+        await writeFile(join(cpDir, name), "unrelated\n");
+      },
+    }).then(() => null, (err: unknown) => err);
+    expect(existsSync(join(cpDir, name))).toBe(true);
+    expect(await readFile(join(cpDir, name), "utf-8")).toBe("unrelated\n");
+    expect(String(failure)).toMatch(/orphan/);
+    expect(await readFile(join(`${cpDir}-moved`, name), "utf-8")).toBe("shown\n");
+  });
+
+  it("a swap that still reaches the created file removes it", async () => {
+    const dir = await project();
+    const cp = await immutable(dir);
+    const src = await source(dir, "demo.txt", "shown\n");
+    const cpDir = join(dir, "docs", "checkpoints", cp.id);
+    await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }, {
+      async afterCreate() {
+        await rename(cpDir, `${cpDir}-moved`);
+        await symlink(`${cpDir}-moved`, cpDir);
+      },
+    })).rejects.toThrow(/is a link or not a directory/);
+    await nothingIn(`${cpDir}-moved`);
+  });
+});
+
 describe("the source is read once, from the file that was checked", () => {
   it("a final component replaced between the check and the open is refused", async () => {
     const dir = await project();
@@ -190,7 +227,9 @@ describe("the source is read once, from the file that was checked", () => {
     const src = await source(dir, "demo.txt", "checked\n");
     await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }, {
       async afterSourceCheck() {
-        await unlink(src);
+        // Renamed, not removed, so the checked inode stays allocated and the
+        // replacement can never reuse it.
+        await rename(src, `${src}.checked`);
         await writeFile(src, "swapped\n");
       },
     })).rejects.toThrow(/changed while it was being read/);
@@ -406,5 +445,60 @@ describe("evidence --commit commits the copied file with the ticket", () => {
     expect(value.reused).toBe(true);
     expect(report.gitCommit?.[0]?.outcome).toBe("committed");
     expect(report.gitCommit?.[0]?.paths).toEqual([value.ref]);
+  });
+
+  it("an identical retry with --commit after a plain add commits the ticket's ref with the file", async () => {
+    const dir = await repo();
+    const cp = await immutable(dir);
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "checkpoint"], { cwd: dir });
+    const src = await source(dir, "demo.txt", "shown\n");
+    const first = await addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR });
+    const { value, report } = await evidenceWithCommit(dir, first.ticket, src);
+    expect(value.reused).toBe(true);
+    expect(report.gitCommit?.[0]?.outcome).toBe("committed");
+    const inHead = JSON.parse(execFileSync("git", ["show", `HEAD:.story/tickets/${cp.id}.json`], { cwd: dir, encoding: "utf-8" }));
+    expect(checkpointOf(inHead).evidenceRefs).toEqual([value.ref]);
+    expect(execFileSync("git", ["ls-tree", "--name-only", "HEAD", "--", value.ref], { cwd: dir, encoding: "utf-8" }).trim()).toBe(value.ref);
+  });
+
+  it("a hash-named checkpoint ticket is committed from its own file on reuse", async () => {
+    const dir = await repo();
+    const legacy = await immutable(dir);
+    const hashId = "t-0123456789abcdef";
+    const moved = { ...(await onDisk(dir, legacy.id)), id: hashId, displayId: legacy.id };
+    await unlink(ticketFile(dir, legacy.id));
+    await writeFile(ticketFile(dir, hashId), JSON.stringify(moved, null, 2) + "\n");
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "checkpoint"], { cwd: dir });
+    const src = await source(dir, "demo.txt", "shown\n");
+    const cp = await onDisk(dir, hashId);
+    const first = await addCheckpointEvidence(dir, hashId, expectedOf(cp), { file: src, actor: ACTOR });
+    const { value, report } = await evidenceWithCommit(dir, first.ticket, src);
+    expect(value.reused).toBe(true);
+    expect(report.gitCommit?.[0]?.outcome).toBe("committed");
+    expect(existsSync(ticketFile(dir, legacy.id))).toBe(false);
+    const inHead = JSON.parse(execFileSync("git", ["show", `HEAD:.story/tickets/${hashId}.json`], { cwd: dir, encoding: "utf-8" }));
+    expect(checkpointOf(inHead).evidenceRefs).toEqual([value.ref]);
+    expect(execFileSync("git", ["status", "--porcelain", "--", ".story"], { cwd: dir, encoding: "utf-8" })).toBe("");
+  });
+
+  it("evidence in a nested repository is never committed apart from its ticket", async () => {
+    const dir = await repo();
+    const cp = await immutable(dir);
+    execFileSync("git", ["add", "-A"], { cwd: dir });
+    execFileSync("git", ["commit", "-q", "-m", "checkpoint"], { cwd: dir });
+    await mkdir(join(dir, "docs"));
+    execFileSync("git", ["init", "-q"], { cwd: join(dir, "docs") });
+    const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8" });
+    const src = await source(dir, "demo.txt", "shown\n");
+    const { report } = await evidenceWithCommit(dir, cp, src);
+    expect(report.gitCommit?.length).toBeGreaterThan(0);
+    for (const entry of report.gitCommit ?? []) expect(entry.outcome).toBe("incomplete");
+    expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf-8" })).toBe(before);
+    expect(execFileSync("git", ["rev-list", "--all", "--count"], { cwd: join(dir, "docs"), encoding: "utf-8" }).trim()).toBe("0");
+    const line = report.lines.find((l) => l.startsWith("Git: commit incomplete")) ?? "";
+    expect(line).toContain(realpathSync(dir));
+    expect(line).toContain(realpathSync(join(dir, "docs")));
   });
 });

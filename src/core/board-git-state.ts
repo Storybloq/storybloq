@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
-import type { BoardTargetKind, BoardWriteContext } from "./board-write-recorder.js";
+import { isBoardPath, type BoardTargetKind, type BoardWriteContext } from "./board-write-recorder.js";
 
 /**
  * ISS-1107: whether a board write is committed, and which board files are not.
@@ -50,6 +50,10 @@ export const BOARD_GIT_TEXT = {
   committed: (sha: string) => `Git: committed ${sha}`,
   /** T-538: a file the write needs in the same commit (copied evidence) did not make it. */
   incomplete: (list: string) => `Git: commit incomplete (${list} not committed)`,
+  /** T-538: copied evidence in another repository than its ticket; nothing is committed. */
+  splitRepositories: (ledger: string, evidence: string) =>
+    `the ticket is in ${ledger} and its evidence in ${evidence}; they must be committed together in one repository`,
+  splitIncomplete: (reason: string) => `Git: commit incomplete (${reason}; nothing committed)`,
   sectionHeading: "## Board not committed",
   untrackedLine: (count: string, ids: string) => `Untracked (${count}): ${ids}`,
   modifiedLine: (count: string, ids: string) => `Modified (${count}): ${ids}`,
@@ -480,6 +484,22 @@ async function commitGroup(group: RepoGroup, tool: string, states: Map<string, s
 }
 
 /**
+ * T-538: a ledger file that names copied evidence must land in the same
+ * commit as that evidence. When they sit in different repositories (a nested
+ * repository or submodule under docs/, or evidence outside any repository),
+ * no commit can carry both, so none is made. Null when they share one.
+ */
+function repositorySplit(groups: readonly RepoGroup[], unplacedRequired: readonly Target[]): string | null {
+  const ledger = groups.filter((g) => g.targets.some((t) => isBoardPath(t.abs))).map((g) => g.top);
+  const evidence = groups.filter((g) => g.targets.some((t) => t.required && !isBoardPath(t.abs))).map((g) => g.top);
+  const unplaced = unplacedRequired.filter((t) => !isBoardPath(t.abs)).map((t) => `${t.display} (no repository)`);
+  if (ledger.length === 0 || (evidence.length === 0 && unplaced.length === 0)) return null;
+  const elsewhere = [...evidence.filter((top) => top !== ledger[0]), ...unplaced];
+  if (ledger.length === 1 && elsewhere.length === 0) return null;
+  return BOARD_GIT_TEXT.splitRepositories(ledger.join(", "), (elsewhere.length > 0 ? elsewhere : evidence).join(", "));
+}
+
+/**
  * The git report for one write call: a state line per recorded board file and,
  * when the caller asked, a path-scoped commit per repository. Called only after
  * an explicitly successful result. Never throws.
@@ -493,6 +513,7 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
   if (targets.length === 0) return { lines, git };
 
   const groups: RepoGroup[] = [];
+  const unplacedRequired: Target[] = [];
   const topByDir = new Map<string, GitRawResult>();
   for (const target of targets) {
     let dir = dirname(target.abs);
@@ -503,6 +524,7 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
       topByDir.set(dir, top);
     }
     if (!top.ok) {
+      if (target.required) unplacedRequired.push(target);
       const reason = noGitReason(top);
       if (reason !== null) {
         gitUnavailable ??= { reason };
@@ -526,10 +548,14 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
     group.targets.push(target);
   }
 
+  const split = context.commit ? repositorySplit(groups, unplacedRequired) : null;
   for (const group of groups) {
     let states = await readStates(group.top, group.targets);
     let commitLines: string[] = [];
-    if (context.commit) {
+    if (context.commit && split !== null) {
+      gitCommit.push({ repo: group.top, outcome: "incomplete", reason: split, paths: group.targets.map((t) => t.rel) });
+      if (group === groups[0]) commitLines = [BOARD_GIT_TEXT.splitIncomplete(split)];
+    } else if (context.commit) {
       let result = await commitGroup(group, context.tool, states);
       states = await readStates(group.top, group.targets);
       // A required file that is ignored, or otherwise not in HEAD now, leaves

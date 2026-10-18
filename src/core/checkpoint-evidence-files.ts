@@ -9,7 +9,12 @@
  *
  * Node has no openat, so a directory swapped between the last check and the
  * create can still receive the file for an instant; the check after the create
- * catches that, removes what was created through the swapped path and refuses.
+ * catches that, removes what was created through the swapped path only when
+ * that path still reaches the very file created (same device and inode), and
+ * otherwise leaves it and reports it as an orphan. Not detected: an ancestor
+ * directory swapped and restored by another process during the command. That
+ * process could rewrite the ledger itself; these checks guard against
+ * mistakes and planted links, not a concurrent writer in the project.
  */
 import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
@@ -29,6 +34,7 @@ export const STORED_REVISION_PATTERN = /^docs\/checkpoints\/([^/]+)\/([0-9a-f]{1
 export interface EvidenceIoHooks {
   afterSourceCheck?(): Promise<void>;
   afterDestinationCheck?(): Promise<void>;
+  afterCreate?(): Promise<void>;
 }
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -186,10 +192,10 @@ export async function publishEvidenceRevision(root: string, id: string, ref: str
   await hooks.afterDestinationCheck?.();
   if (!(await directoriesUnchanged(chain))) throw linkedDirectory(`docs/checkpoints/${id}`);
   const target = join(root, ...ref.split("/"));
-  let created = false;
+  let created: { dev: number; ino: number } | undefined;
   try {
-    await atomicCreate(target, bytes);
-    created = true;
+    created = await atomicCreate(target, bytes);
+    await hooks.afterCreate?.();
   } catch (err) {
     if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
     const existing = await readStoredFile(root, ref);
@@ -198,10 +204,25 @@ export async function publishEvidenceRevision(root: string, id: string, ref: str
     }
   }
   if (!(await directoriesUnchanged(chain))) {
-    if (created) {
-      try { await unlink(target); } catch { /* the swapped path no longer reaches it */ }
+    if (created && !(await removeIfSame(target, created))) {
+      throw new CliValidationError(
+        "conflict",
+        `docs/checkpoints/${id} changed while evidence was written there; nothing was recorded. The copy it created is now an orphan, left where ${target} pointed at the time; remove it by hand.`,
+      );
     }
     throw linkedDirectory(`docs/checkpoints/${id}`);
+  }
+}
+
+/** Unlinks `path` only while it is still the file `created` names; true when it was removed. */
+async function removeIfSame(path: string, created: { dev: number; ino: number }): Promise<boolean> {
+  try {
+    const now = await lstat(path);
+    if (now.dev !== created.dev || now.ino !== created.ino) return false;
+    await unlink(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

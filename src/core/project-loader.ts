@@ -393,6 +393,14 @@ function touchDate(touch: TouchOption | undefined): string | null {
   return touch.date;
 }
 
+/**
+ * The file a ticket is read from and written to: its `id` names the file in
+ * both ledger forms (`T-001.json`, or `t-<hash>.json` with the display id inside).
+ */
+export function ticketFilePath(root: string, id: string): string {
+  return join(resolve(root, ".story"), "tickets", `${id}.json`);
+}
+
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
@@ -407,7 +415,7 @@ export async function prepareTicketWrite(
     );
   }
   const wrapDir = resolve(root, ".story");
-  const target = join(wrapDir, "tickets", `${unstamped.id}.json`);
+  const target = ticketFilePath(root, unstamped.id);
   await ensureEntityDir(target, wrapDir);
   const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${unstamped.id}.json`);
   const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
@@ -2021,17 +2029,22 @@ export function serializeJSON(obj: unknown): string {
   return JSON.stringify(sortKeysDeep(obj), null, 2) + "\n";
 }
 
-/** Atomic create: write to temp file, then link (fails if target exists). */
+/**
+ * Atomic create: write to temp file, then link (fails if target exists).
+ * Returns the device and inode of the created file, so a caller can tell it
+ * apart from another file that later takes the same name.
+ */
 export async function atomicCreate(
   targetPath: string,
   content: string | Uint8Array,
-): Promise<void> {
+): Promise<{ dev: number; ino: number }> {
   const tempPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
   let fd: import("node:fs/promises").FileHandle | undefined;
   try {
     fd = await open(tempPath, "wx", 0o600);
     await fd.writeFile(content, "utf-8");
     await fd.sync();
+    const { dev, ino } = await fd.stat();
     await fd.close();
     fd = undefined;
     checkProjectLockFencing();
@@ -2049,6 +2062,7 @@ export async function atomicCreate(
       // be durable and the caller must know.
       if (!DIRECTORY_SYNC_UNSUPPORTED_CODES.has((syncErr as NodeJS.ErrnoException).code ?? "")) throw syncErr;
     }
+    return { dev, ino };
   } catch (err) {
     if (err instanceof ProjectLoaderError) throw err;
     const code = (err as NodeJS.ErrnoException).code;

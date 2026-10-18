@@ -39,6 +39,7 @@ import {
   prepareTicketWrite,
   resolveActor,
   runTransactionUnlocked,
+  ticketFilePath,
   TransactionRecoveryPendingError,
   withProjectLock,
   writeTicketUnlocked,
@@ -515,6 +516,9 @@ export async function addCheckpointEvidence(root: string, id: string, expected: 
     await publishEvidenceRevision(root, ticket.id, ref, source.bytes, hooks);
     const target = join(root, ...ref.split("/"));
     if (cp.evidenceRefs.includes(ref)) {
+      // Not rewritten, but committed with the file: an earlier add without
+      // --commit may have left the ref uncommitted.
+      recordRequiredCommitTarget(ticketFilePath(root, ticket.id));
       recordRequiredCommitTarget(target);
       out = { ticket, ref, reused: true };
       return;

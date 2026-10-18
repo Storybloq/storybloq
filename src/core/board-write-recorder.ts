@@ -75,3 +75,12 @@ export function recordRequiredCommitTarget(absPath: string): void {
   context.targets.set(absPath, "write");
   context.required?.add(absPath);
 }
+
+/**
+ * T-538 (review r1 #11): records a user-owned file outside `.story/` that the
+ * setup engine created, so its write report names every file the call wrote.
+ * Not required for a commit: setup-apply takes no `--commit`.
+ */
+export function recordUserFileTarget(absPath: string): void {
+  boardWriteContext.getStore()?.targets.set(absPath, "write");
+}

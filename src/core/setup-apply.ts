@@ -43,6 +43,7 @@ import {
   type LoadResult,
 } from "./project-loader.js";
 import { ProjectLoaderError, IMMUTABLE_EVIDENCE_SCHEMA_VERSION } from "./errors.js";
+import { recordUserFileTarget } from "./board-write-recorder.js";
 import { localDateOf } from "./local-date.js";
 import { STORY_GITIGNORE_ENTRIES } from "./init.js";
 import { allocateTeamIssueId, allocateTeamNoteId, nextIssueID, nextNoteID } from "./id-allocation.js";
@@ -339,6 +340,7 @@ async function createUserFile(root: string, path: string, content: string, setup
   await mkdir(dirname(target), { recursive: true });
   try {
     await atomicCreate(target, content);
+    recordUserFileTarget(target);
     return "created";
   } catch (err) {
     if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;

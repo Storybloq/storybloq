@@ -10,7 +10,8 @@ import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadProject } from "../../../src/core/project-loader.js";
 import { setupApplySeams } from "../../../src/core/setup-apply.js";
@@ -322,6 +323,22 @@ describe("storybloq_setup_apply and storybloq_setup_report (MCP, plan v5 1c)", (
   });
 });
 
+/** Every file under `root` but .git, with its bytes' digest. */
+async function listing(root: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const rel = relative(root, join(entry.parentPath, entry.name)).split(sep).join("/");
+    if (rel === ".git" || rel.startsWith(".git/")) continue;
+    out.set(rel, createHash("sha256").update(readFileSync(join(root, rel))).digest("hex"));
+  }
+  return out;
+}
+
+/** Paths created, changed or removed between two listings, sorted. */
+const changedPaths = (a: Map<string, string>, b: Map<string, string>): string[] =>
+  [...new Set([...a.keys(), ...b.keys()])].filter((p) => a.get(p) !== b.get(p)).sort();
+
 describe("write reporting, split by path (ISS-1107; pen ruling w9-a7 d)", () => {
   const gitLines = (stdout: string) => linesOf(stdout).filter((l) => l.startsWith("Git: "));
 
@@ -339,15 +356,19 @@ describe("write reporting, split by path (ISS-1107; pen ruling w9-a7 d)", () => 
     setupApplySeams.fault = (point) => { if (point === "step:item:K3") throw new Error("power cut"); };
     await handleSetupApply(io(root, JSON.stringify(payload())), {});
     setupApplySeams.fault = () => {};
+    // Review r1 #11: the expected paths come from the filesystem, not from the output under test.
+    const before = await listing(root);
     const resumed = await handleSetupApply(io(root), { resume: true, setup: SID });
     expect(resumed.exitCode).toBe(0);
+    const changed = changedPaths(before, await listing(root));
+    expect(changed).toEqual(expect.arrayContaining([".gitignore", "CLAUDE.md", expect.stringMatching(/^\.story\/tickets\/\S+\.json$/)]));
     const reported = gitLines(resumed.stdout);
-    expect(reported).toContainEqual(expect.stringMatching(/^Git: \.story\/tickets\/\S+\.json untracked$/));
+    expect(reported.map((l) => /^Git: (\S+) /.exec(l)![1]!).sort()).toEqual(changed);
     const lines = linesOf(resumed.stdout);
     expect(lines.indexOf(`Setup applied: ${SID}`)).toBeLessThan(lines.indexOf(reported[0]!));
-    const targets = new Map(reported.map((l) => [join(root, /^Git: (\S+) /.exec(l)![1]!), "write" as const]));
+    const targets = new Map(changed.map((p) => [join(root, p), "write" as const]));
     const same = await reportBoardWrite({ tool: "setup-apply", commit: false, targets, required: new Set() });
-    expect(reported).toEqual(same.lines);
+    expect([...reported].sort()).toEqual([...same.lines].sort());
   });
 
   it("a resume that writes and is then cut off reports nothing, as runBoardWrite reports only a success", { timeout: 30_000 }, async () => {

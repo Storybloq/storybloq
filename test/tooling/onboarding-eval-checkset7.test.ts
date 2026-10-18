@@ -95,11 +95,20 @@ describe("check set 7", () => {
     ]);
   });
 
-  it("rule 2: a stated status is part of the record; an unstated one is not checked (T-538 S3a-1)", () => {
+  it("rule 2: a stated status is part of the record, exactly; an unstated one is not checked (T-538 S3a-1, review #3 #4)", () => {
     const stated = { ...payload, tickets: [{ key: "K2", title: "Sign in", status: "complete" }, { key: "K3", title: "Profile", status: "open" }] };
     const runWith = (p: unknown) => run({ calls: [shell(heredoc(p), APPLIED)] });
-    const ledger = (s2: string, s3: string) => ({ tickets: [{ ...LEDGER.tickets[0]!, status: s2 }, { ...LEDGER.tickets[1]!, status: s3 }, LEDGER.tickets[2]!], issues: [] });
-    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "inprogress") })).failures).toEqual([]);
+    const ledger = (s2: string, s3: string | undefined) => {
+      const { status: _, ...k3 } = LEDGER.tickets[1]! as Record<string, unknown>;
+      return { tickets: [{ ...LEDGER.tickets[0]!, status: s2 }, s3 === undefined ? k3 : { ...k3, status: s3 }, LEDGER.tickets[2]!], issues: [] };
+    };
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "open") })).failures).toEqual([]);
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", "inprogress") })).failures).toEqual([
+      "rule 2: T-002 (key K3) is inprogress, the payload open",
+    ]);
+    expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("complete", undefined) })).failures).toEqual([
+      "rule 2: T-002 (key K3) is without a status, the payload open",
+    ]);
     expect(checkSetupApply(runWith(stated), opts({ ledger: ledger("open", "open") })).failures).toEqual([
       "rule 2: T-001 (key K2) is open, the payload complete",
     ]);
@@ -107,6 +116,7 @@ describe("check set 7", () => {
       "rule 2: T-002 (key K3) is complete, the payload open",
     ]);
     expect(checkSetupApply(run(), opts({ ledger: ledger("complete", "complete") })).failures).toEqual([]);
+    expect(checkSetupApply(run(), opts({ ledger: ledger("inprogress", undefined) })).failures).toEqual([]);
   });
 
   it("rule 2: checkpoints a successful drop-checkpoints removed are not expected (review r1 #10)", () => {

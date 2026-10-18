@@ -204,9 +204,9 @@ function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, 
     if (found.length !== 1) failures.push(`rule 2: payload key ${item.key} has ${found.length} records in the ledger; expected exactly one`);
     else if (found[0]!.kind !== item.kind) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is a ${found[0]!.kind}, the payload's a ${item.kind}`);
     else if (found[0]!.title !== item.title && !amended.has(item.key)) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is titled "${found[0]!.title}", the payload "${item.title}"`);
-    // T-538 S3a-1: a stated status is part of the record (already-built work is complete; an explicit open is not).
-    else if (item.status !== undefined && (found[0]!.status === "complete") !== (item.status === "complete") && !amended.has(item.key)) {
-      failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is ${found[0]!.status}, the payload ${item.status}`);
+    // T-538 S3a-1: a stated status is part of the record, exactly (already-built work is complete; an explicit open is open).
+    else if (item.status !== undefined && found[0]!.status !== item.status && !amended.has(item.key)) {
+      failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is ${found[0]!.status ?? "without a status"}, the payload ${item.status}`);
     }
   }
   const wanted = new Set(expected.map((x) => x.key));

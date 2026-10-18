@@ -128,6 +128,46 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /**
+ * ISS-1391: a signal's default action ends the CLI without running "exit"
+ * listeners, so while any group is live each terminating signal has a handler
+ * that kills every live group first. It is prepended, so it decides before the
+ * caller's own listeners run: a caller that listens for the signal owns the
+ * exit; otherwise the signal is raised again and ends the CLI as it would have.
+ */
+const liveGroups = new Set<ChildProcess>();
+const STOP_SIGNALS: NodeJS.Signals[] = OWN_GROUP ? ["SIGINT", "SIGTERM", "SIGHUP"] : ["SIGINT", "SIGTERM"];
+const stopHandlers = new Map<NodeJS.Signals, () => void>();
+
+function stopGroupsOnSignal(sig: NodeJS.Signals): void {
+  const ours = stopHandlers.get(sig);
+  const others = process.listeners(sig).some((l) => l !== ours);
+  for (const child of liveGroups) signalGroup(child, "SIGKILL");
+  liveGroups.clear();
+  removeStopHandlers();
+  if (!others) process.kill(process.pid, sig);
+}
+
+function removeStopHandlers(): void {
+  for (const [sig, handler] of stopHandlers) process.removeListener(sig, handler);
+  stopHandlers.clear();
+}
+
+function trackGroup(child: ChildProcess): void {
+  if (liveGroups.size === 0) {
+    for (const sig of STOP_SIGNALS) {
+      const handler = (): void => stopGroupsOnSignal(sig);
+      stopHandlers.set(sig, handler);
+      process.prependListener(sig, handler);
+    }
+  }
+  liveGroups.add(child);
+}
+
+function untrackGroup(child: ChildProcess): void {
+  if (liveGroups.delete(child) && liveGroups.size === 0) removeStopHandlers();
+}
+
+/**
  * Lets go of a child that will not close: its pipes are destroyed and it is
  * unref'd, so a process it started outside the group cannot keep this one
  * running.
@@ -148,6 +188,7 @@ function escalate(child: ChildProcess, timeoutMs: number, graceMs: number, onTim
   const timers: NodeJS.Timeout[] = [];
   const stopOnExit = (): void => signalGroup(child, "SIGKILL");
   process.once("exit", stopOnExit);
+  trackGroup(child);
   timers.push(setTimeout(() => {
     onTimeout();
     signalGroup(child, "SIGTERM");
@@ -159,6 +200,7 @@ function escalate(child: ChildProcess, timeoutMs: number, graceMs: number, onTim
   return () => {
     for (const t of timers) clearTimeout(t);
     process.removeListener("exit", stopOnExit);
+    untrackGroup(child);
   };
 }
 

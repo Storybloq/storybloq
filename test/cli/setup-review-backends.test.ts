@@ -9,8 +9,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
 import { makeFakeBin } from "../helpers/setup-review-fakes.js";
-import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { shouldSkipHousekeeping } from "../../src/cli/housekeeping.js";
 
@@ -134,4 +134,106 @@ describe("reviewer processes always end (T-536)", () => {
       }
     }, 20_000);
   }
+});
+
+describe.skipIf(process.platform === "win32")("a signal during a setup review ends the reviewer's group (ISS-1391)", () => {
+  type Ended = { code: number | null; signal: NodeJS.Signals | null };
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (cond()) return true; await sleep(25); }
+    return cond();
+  };
+  const groupAlive = (pgid: number): boolean => {
+    try { process.kill(-pgid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+  };
+  const pidIn = (file: string): number => (existsSync(file) ? Number(readFileSync(file, "utf-8").trim()) : 0);
+
+  /** Starts the signal worker, waits until the reviewer is up, sends `sig` (if any) and reports how the worker ended. */
+  async function run(mode: string, sig: NodeJS.Signals | null, listener?: string): Promise<{ ended: Ended | "hung"; stdout: string; groupGone: boolean }> {
+    const fake = makeFakeBin(["codex"]);
+    const project = mkdtempSync(join(tmpdir(), "sr-signal-project-"));
+    const store = mkdtempSync(join(tmpdir(), "sr-signal-store-"));
+    const pidFile = join(fake.stdinDir, "reviewer.pid");
+    const fixture = join(import.meta.dirname, "fixtures", "setup-review-signal-worker.ts");
+    const args = ["--import", "tsx", fixture, mode, project, store, fake.path, pidFile, ...(listener ? [listener] : [])];
+    const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "inherit"] });
+    let stdout = "";
+    child.stdout.on("data", (c) => { stdout += String(c); });
+    const exit = new Promise<Ended>((r) => child.once("exit", (code, signal) => r({ code, signal })));
+    let pgid = 0;
+    try {
+      // review-exit ends its own group at once, so the worker records the group id before it exits.
+      const pgidFile = `${pidFile}.pgid`;
+      const up = await until(() => (mode === "review-exit" ? pidIn(pgidFile) > 0 : pidIn(pidFile) > 0 && (mode !== "overlap" || stdout.includes("ready\n"))), 15_000);
+      expect(up).toBe(true);
+      pgid = mode === "review-exit" ? pidIn(pgidFile) : Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pidIn(pidFile))], { encoding: "utf-8" }).trim());
+      expect(pgid).toBeGreaterThan(0);
+      if (sig) child.kill(sig);
+      const ended = await within(exit, 8_000);
+      const groupGone = await until(() => !groupAlive(pgid), 3_000);
+      return { ended, stdout, groupGone };
+    } finally {
+      try { child.kill("SIGKILL"); } catch { /* gone */ }
+      if (pgid > 0) { try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }
+    }
+  }
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | "hung"> => Promise.race([p, new Promise<"hung">((r) => setTimeout(() => r("hung"), ms))]);
+  const count = (stdout: string, word: string): number => stdout.split("\n").filter((l) => l === word).length;
+
+  it.each([
+    ["review", "SIGINT"],
+    ["review", "SIGTERM"],
+    ["probe", "SIGINT"],
+    ["review", "SIGHUP"],
+  ] as const)("a %s that gets %s kills the reviewer's group and the CLI ends by that signal", async (mode, sig) => {
+    const { ended, groupGone } = await run(mode, sig);
+    expect(ended).toEqual({ code: null, signal: sig });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("a caller's synchronous SIGINT listener still owns the exit and the group is killed", async () => {
+    const { ended, stdout, groupGone } = await run("review", "SIGINT", "exit-sync");
+    expect(count(stdout, "own")).toBe(1);
+    expect(ended).toEqual({ code: 130, signal: null });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("the signal listeners are back at their pre-run count once a review settles", async () => {
+    const sigs = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    const before = sigs.map((s) => process.listenerCount(s));
+    const fake = makeFakeBin(["codex"]);
+    const env = { PATH: fake.path, FAKE_CODEX_MODE: "exit1" };
+    await runReviewer("codex", ["exec"], { cwd: fake.stdinDir, env, input: "packet", timeoutMs: 10_000, killGraceMs: 200 });
+    expect(sigs.map((s) => process.listenerCount(s))).toEqual(before);
+  }, 15_000);
+
+  it("a caller's persistent SIGINT listener runs once and finishes its own shutdown", async () => {
+    const { ended, stdout, groupGone } = await run("review", "SIGINT", "persistent-delayed");
+    expect(count(stdout, "own")).toBe(1);
+    expect(count(stdout, "cleanup-done")).toBe(1);
+    expect(ended).toEqual({ code: 130, signal: null });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("a caller's once SIGTERM listener finishes its async shutdown with its own code", async () => {
+    const { ended, stdout, groupGone } = await run("review", "SIGTERM", "once-async");
+    expect(count(stdout, "cleanup-done")).toBe(1);
+    expect(ended).toEqual({ code: 42, signal: null });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("a run that settles while another is live leaves the handler installed for the live one", async () => {
+    const { ended, stdout, groupGone } = await run("overlap", "SIGINT");
+    const baseline = Number(/^baseline:(\d+)$/m.exec(stdout)?.[1]);
+    expect(stdout).toMatch(new RegExp(`^listeners:${baseline + 1}$`, "m"));
+    expect(ended).toEqual({ code: null, signal: "SIGINT" });
+    expect(groupGone).toBe(true);
+  }, 30_000);
+
+  it("a CLI that exits normally while the reviewer runs kills the reviewer's group", async () => {
+    const { ended, groupGone } = await run("review-exit", null);
+    expect(ended).toEqual({ code: 130, signal: null });
+    expect(groupGone).toBe(true);
+  }, 30_000);
 });

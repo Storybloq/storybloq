@@ -876,17 +876,19 @@ describe("setup-skill", () => {
     expect(plan).toContain("Stage-1 limitation: nothing enforces the gate yet");
   });
 
-  it("setup-flow.md review: on by default, capability order, two rounds, a visible retry-or-continue stop", async () => {
+  it("setup-flow.md review: on by default, run by the CLI, two rounds, a visible retry-or-continue stop (T-536)", async () => {
     const plan = flowSection(await readSetupFlow(), "1c2");
-    expect(plan).toContain("**Independent review, by default.**");
+    expect(plan).toContain("**Independent review, by default.** Only the CLI runs the reviewer.");
     expect(plan).toContain("This runs before anything is shown for approval, every time.");
-    const codex = plan.indexOf("a native Codex CLI, when `command -v codex` prints a path, as a read-only review");
-    const mcp = plan.indexOf("`review_plan`", codex);
-    const agent = plan.indexOf("an independent agent", mcp);
-    expect(codex).toBeGreaterThanOrEqual(0);
-    expect(mcp).toBeGreaterThan(codex);
-    expect(agent).toBeGreaterThan(mcp);
-    expect(plan).toContain("Maximum 2 review rounds");
+    const gate = plan.indexOf("run `storybloq setup-review gate` as a shell call of its own");
+    const run = plan.indexOf("`storybloq setup-review run --setup <id> <<'STORYBLOQ_PACKET'`", gate);
+    const status = plan.indexOf("`storybloq setup-review status --setup <id>`", run);
+    expect(gate).toBeGreaterThanOrEqual(0);
+    expect(run).toBeGreaterThan(gate);
+    expect(status).toBeGreaterThan(run);
+    expect(plan).not.toContain("command -v codex");
+    expect(plan).not.toContain("review_plan");
+    expect(plan).toContain("the CLI allows two per cycle");
     expect(plan).toContain("never weakened");
     expect(plan).toContain("No supported reviewer is available to review this plan.\nHow should I proceed?\nRetry the review\nContinue without independent review\n");
     expect(plan).toContain("Stop there until the user answers");
@@ -1221,10 +1223,9 @@ describe("setup-skill", () => {
     // the allow-list it would simply not be installed, and the setup flow would
     // report a missing file instead of writing a review contract.
     expect(tsContent).toContain('"review-contract-template.md"');
-    // T-536: setup-flow.md's native Codex review passes this file as
-    // --output-schema. Left out of the allow-list it would not be installed
-    // for Claude Code, and the reviewer command would point at a missing file.
-    expect(tsContent).toContain('"setup-review-schema.json"');
+    // T-536 stage 1: the native Codex review left the flow with the CLI-run
+    // reviewer, and its --output-schema file left the allow-list with it.
+    expect(tsContent).not.toContain('"setup-review-schema.json"');
     // T-496 (ISS-1144 guard pattern): session-guard.md is the on-demand
     // reference the Step 0.5 stub points to. Left out of the allow-list it
     // would simply not be installed, and every exceptional-verdict pointer

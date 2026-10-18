@@ -81,20 +81,16 @@ Write the result as a concise product brief with observable acceptance condition
 
 This runs before anything is shown for approval, every time.
 
-**Probe the reviewers first**, in your first turn, before your first question. Run `command -v codex` as a shell call of its own, nothing else in that call, and keep exactly what it printed. Then check the other two reviewers in the order below. When none of the three can run (the probe printed nothing, `review_plan` is not in your tool list after one exact-name discovery call, and you cannot start an agent), send the unavailable stop below now as your whole first turn, with no discovery question, wait, draft or review; ask discovery questions only after the owner chooses Continue without independent review.
+**Open the review gate first**, in your first turn, before any question: run `storybloq setup-review gate` as a shell call of its own and follow its output. Keep the setup id it prints. When it prints the stop, send the four lines below as your whole first turn, with no discovery question, draft or review; ask discovery questions only after the owner chooses Continue without independent review.
 
-1. a native Codex CLI, when `command -v codex` prints a path, as a read-only review with the plan on standard input: `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --output-schema '<skill dir>/setup-review-schema.json' - <<'STORYBLOQ_PLAN'`, then the review request and the full plan, then a line `STORYBLOQ_PLAN`. `<skill dir>` is the absolute path of the directory you read this file from, kept in that one quoted argument. The schema must be that file: a schema from `<(...)`, a here-document or `/dev/fd` fails to load in some clients' shells;
-2. the `review_plan` MCP tool, when it is in your tool list (after one exact-name tool discovery call where the client defers tools);
-3. an independent agent, when the client can start one with a prompt you write and return its final message, either as the start call's own result or through a wait on that agent. A wait with no agent started, or a wait that returned no message, is a wait on nothing, not a review. A wait tool alone cannot start one.
-
-**When no reviewer can run**, or every reviewer call fails, send this stop and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
+**When no reviewer can run**, or a `setup-review` command ends with this stop, send it and nothing else (or ask the same two options with `AskUserQuestion`). Stop there until the user answers.
 
 No supported reviewer is available to review this plan.
 How should I proceed?
 Retry the review
 Continue without independent review
 
-A retry runs the probes again. Continuing records the skip for the whole setup: later adjustments carry the skip status line and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
+A retry runs `storybloq setup-review gate --setup <id>`, then the review again. Continuing records the skip for the whole setup: run `storybloq setup-review status --setup <id> --skipped`, with nothing on standard input, and later adjustments carry its lines and do not ask again. The skip also appears in the package, the setup summary and the initial handover.
 
 **Decompose the entire in-scope brief** by outcomes and real dependencies. There are no phase or ticket quotas: as many phases and tickets as the scope needs.
 
@@ -126,22 +122,13 @@ Every label carries content. Where one does not apply, write `none` (for example
 
 Each checkpoint is an ordinary ticket titled `Checkpoint: <what the owner reviews>`. Its description holds `Question:` for a decision, or `Criteria:` for a demonstration or acceptance, and names the artifact the owner reviews. The ticket is `blockedBy` the work that produces what it reviews, and only the follow-on work that the owner's decision actually affects is `blockedBy` the checkpoint; unrelated work stays unblocked. Stage-1 limitation: nothing enforces the gate yet, so a checkpoint ticket can be closed like any other ticket. Say so in the package.
 
-**Independent review, by default.** Review the full plan with the first reviewer whose probe passed, in the capability order above.
+**Independent review, by default.** Only the CLI runs the reviewer. Write the review packet: four sections in this order, each non-empty (`none` when there is nothing): `## Source requirements` (one `R<n>: <requirement> (source: <file>, <section>)` per line), `## Owner answers and decisions`, `## Existing-state evidence`, and `## Plan` (milestones; each ticket as `Ticket: <title>`, its template lines and `Blocked by: <titles or none>`; checkpoints; the coverage map). Run `storybloq setup-review run --setup <id> <<'STORYBLOQ_PACKET'`, then the packet, then a line `STORYBLOQ_PACKET`.
 
-Give every review a review id, `R1`, `R2` and so on in order, and put `Review id: R<n>` as the first line of the plan you send (the here-document body, the `review_plan` plan text, or the agent's prompt). Ask for the answer in the schema's shape, a `verdict` and `findings`. An id exists only once you send it as the first line of a reviewer call's input; a status line cites only an id you sent and whose response you captured, never an id for a review that did not run.
+The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Incorporate the findings; a second round runs on the revised packet, and the CLI allows two per cycle. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
 
-The review checks coverage and fidelity to the brief, journey completeness and usability, story boundaries and dependency correctness, early feasibility risks, domain correctness and applicable safety requirements, and whether the planned evidence can establish acceptance. Maximum 2 review rounds; incorporate the findings. Unresolved findings stay visible in the package, and mandatory acceptance conditions are never weakened to finish a round.
+**The package's review lines.** Run `storybloq setup-review status --setup <id>` with the current packet on standard input the same way, or with `--skipped` after the owner's skip, and copy its two lines into the package verbatim. Never write either line yourself and never state a review outcome anywhere else. When status prints the round-limit line, say above it what the round-2 findings were and what changed in response. When it prints a failed, absent or unreadable line, the package cannot be shown: send the stop.
 
-**The review status line.** Every package and the setup summary carries exactly one review status line, on its own line, in one of two forms, verbatim:
-
-- `Independent review: <verdict>, invocation R<n>`: `<verdict>` is the captured response's `verdict` value exactly, and `R<n>` is the review id of the call that returned it.
-- `Independent review: skipped at the owner's request`: only after the owner chose "Continue without independent review".
-
-Describe findings in your own words elsewhere if useful, but never state a review outcome outside the status line.
-
-**The probe line.** The line directly above every review status line, in each package and the setup summary, is the probe line, verbatim in one of two forms: `Reviewer probe: `command -v codex` printed <path>`, where `<path>` is exactly what your most recent probe printed, or `Reviewer probe: `command -v codex` printed nothing`. After a probe that printed nothing, a review result can only come from the `review_plan` tool or an agent you started after that probe. Unless the owner has already chosen Continue without independent review, if neither ran and returned a review, send the unavailable stop. After an authorised skip, continue with the probe line and the skip status line without asking again.
-
-**What counts as a review.** A review counts only when a supported reviewer returned a completed response with a verdict and findings about the plan you supplied, captured in this session and quoted in the package. Never narrate a review you have no captured output for: not "Independent review passed", not "I have sent it for review", not a verdict you inferred or remember. Error output, a launch acknowledgement, a refusal or incomplete output is not a review. An agent is reviewed only once its completed final message is captured, from the start call's own result or from a wait on it; keep waiting on a running agent rather than reporting it. When no supported reviewer returned such a response, the stop above is mandatory: never report a review as passed without one.
+**The Plan in the package** is the `## Plan` section of the packet status was given, unchanged, between two lines of its own: `Plan, revision <digest12>:` before it and `End of plan, revision <digest12>` after it, `<digest12>` being the revision in the status line (the first one in a round-limit line). No ticket, dependency, coverage row or checkpoint line appears outside them.
 
 #### 1d. Present Proposal
 
@@ -151,9 +138,9 @@ Present one setup package. A readable summary comes first:
 - the milestones and what each one demonstrates;
 - the important unresolved decisions and labelled assumptions;
 - the work that can begin immediately;
-- the review status line in its exact form (1c2), with findings incorporated or still open described above it in prose, and the stage-1 checkpoint limitation when checkpoints are planned.
+- the two review lines from `setup-review status` (1c2), with findings incorporated or still open described above it in prose, and the stage-1 checkpoint limitation when checkpoints are planned.
 
-Then the ticket inventory grouped by milestone. Each ticket shows its purpose, its dependencies and any checkpoint it waits on. Then what else the approval covers:
+Then the marked Plan (1c2): the tickets by milestone with their dependencies and checkpoints, and the coverage map. Then what else the approval covers:
 
 - **Project:** name, type, language (every part of a mixed stack).
 - **Governance files** to write: `CLAUDE.md` (or `AGENTS.md`), `RULES.md` and `REVIEW.md`, each previewed on request. Omit a file that already exists; it is never overwritten.
@@ -172,7 +159,7 @@ Then ONE `AskUserQuestion`:
   - "Adjust the plan" -- change scope, milestones, tickets, files, quality level or git
   - "Inspect details" -- expand a ticket, a file preview or the coverage map
 
-"Inspect details" shows what the user asks for, changes nothing in the plan, and re-asks the same question with the same status line; a change is an adjustment. "Adjust the plan" applies the change, classifies it, re-shows the package and re-asks. A change is **material** when it alters any ticket's scope (what it includes or excludes), its dependencies, or where a persistence, reliability, security or privacy responsibility sits, including moving work from one ticket to another. A material change reruns the reviewer on the adjusted plan with a new review id before the adjusted package is shown, and that package's status line cites the new id. For any other change, the package keeps the previous package's status line unchanged and carries one line above it, verbatim: `Review not rerun: <what changed> changes no ticket's scope, dependencies or responsibilities.` After an authorised skip, the adjusted package carries the skip status line instead (1c2). Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup". An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again: the same probe and status lines, the two fixed lines, one blank line, then the four lines, nothing after them.
+"Inspect details" shows what the user asks for, changes nothing in the plan, and re-asks the same question with the same status line; a change is an adjustment. "Adjust the plan" applies the change, classifies it, re-shows the package and re-asks. A change is **material** when it changes the review packet. A material change is reviewed before the adjusted package is shown: `storybloq setup-review run --setup <id> --new-cycle --reason "<the owner's words>"` on the adjusted packet, then status. For any other change, the package keeps the previous package's status line unchanged and carries one line above it, verbatim: `Review not rerun: <what changed> changes no ticket's scope, dependencies or responsibilities.` After an authorised skip, the adjusted package carries the skip status line instead (1c2). Ask again only for a material change or a genuinely new decision. Stop after asking and wait for the answer: nothing in 1e runs until the user explicitly chooses "Approve setup". An unambiguous affirmative reply to this question ("yes", "approve", "go ahead", "Approve setup") is approval. An answer that delegates judgement, says no preference, or answers a different question is not: ask the same question again: the same probe and status lines, the two fixed lines, one blank line, then the four lines, nothing after them.
 
 **Without a structured question tool**, end the package with exactly these four lines, one per line, no blank line between them and nothing after them:
 

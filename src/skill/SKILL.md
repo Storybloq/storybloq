@@ -456,7 +456,6 @@ Additional skill documentation, loaded on demand:
 - **`autonomous-mode.md`** -- Autonomous mode, review, plan, and guided execution tiers
 - **`reference.md`** -- Full CLI command and MCP tool reference
 - **`review-contract-template.md`** -- The REVIEW.md review contract template, written verbatim by `setup-flow.md`
-- **`setup-review-schema.json`** -- The `--output-schema` file for `setup-flow.md`'s native Codex plan review
 - **`design/design.md`** -- Frontend design evaluation and implementation guidance, with platform references in `design/references/`
 - **`federation-setup.md`** -- Federation setup flow for multi-repo orchestrator initialization
 - **`orchestrator-mode.md`** -- Orchestrator mode: tiered multi-agent backlog drive with enrichment pass, session-model review gates, and batched ships

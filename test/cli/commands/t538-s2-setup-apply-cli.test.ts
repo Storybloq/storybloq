@@ -7,10 +7,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadProject } from "../../../src/core/project-loader.js";
 import { setupApplySeams } from "../../../src/core/setup-apply.js";
 import { handleSetupApply, handleSetupReport } from "../../../src/cli/commands/setup-apply.js";
@@ -168,6 +169,13 @@ describe("storybloq setup-apply (CLI)", () => {
     expect(MCP_TOOLS.find((t) => t.name === "storybloq_setup_apply")?.params).toEqual(["payload?", "resume?", "setup?", "resolutions?"]);
     expect(MCP_TOOLS.find((t) => t.name === "storybloq_setup_report")?.params).toEqual(["setup", "historical?"]);
     expect(shouldSkipHousekeeping(["setup-apply"])).toBe(true);
+  });
+});
+
+describe("the reference entry (review r1 #8)", () => {
+  it("marks --setup optional: required only with --resume or --resolve, and refused with a stdin payload", () => {
+    const reference = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src", "skill", "reference.md"), "utf-8");
+    expect(reference).toContain("- **setup-apply** (--setup?, --resume?, --resolve?) - Setup: stdin payload; --setup only with --resume/--resolve\n");
   });
 });
 

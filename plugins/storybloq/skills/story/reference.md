@@ -102,8 +102,8 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
 - **setup-review <gate|run|status>** (--setup?, --backend?, --new-cycle?, --reason, --skipped?) - Setup plan review
-- **setup-apply** (--setup, --resume?, --resolve?) - Run setup: payload on stdin, --resume, or --resolve
-- **setup-report** (--setup, --historical?) - Live setup report, or the frozen one
+- **setup-apply** (--setup?, --resume?, --resolve?) - Setup: stdin payload; --setup only with --resume/--resolve
+- **setup-report** (--setup, --historical?) - Live or frozen setup report
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: ~/.claude/projects/<project>/<sessionId>.jsonl, a regular file

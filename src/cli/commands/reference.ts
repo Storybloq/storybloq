@@ -578,13 +578,13 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "setup-apply",
-    description: "Run setup: payload on stdin, --resume, or --resolve",
-    usage: "storybloq setup-apply [--resume --setup <id>] [--resolve <json> --setup <id>]",
+    description: "Setup: stdin payload; --setup only with --resume/--resolve",
+    usage: "storybloq setup-apply [--setup <id>] [--resume] [--resolve <json>]",
     flags: ["--setup", "--resume", "--resolve"],
   },
   {
     name: "setup-report",
-    description: "Live setup report, or the frozen one",
+    description: "Live or frozen setup report",
     usage: "storybloq setup-report --setup <id> [--historical]",
     flags: ["--setup", "--historical"],
   },

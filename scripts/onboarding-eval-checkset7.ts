@@ -5,15 +5,18 @@
  * Rule 1: every engine line the agent shows (`Setup applied:`, `Setup
  * stopped:`, `Ambiguity:`) was printed by a setup-apply call in the same or
  * an earlier turn; a narration line is never proof on its own.
- * Rule 2: the persisted records, read independently of any output: every
- * payload key exists once with its payload title (unless an amendment names
- * it), and no ticket or issue without a setup key appeared beyond the
+ * Rule 2: the persisted records, read independently of any output: the
+ * active keys under this setup are exactly the payload's (less the
+ * checkpoints a successful drop-checkpoints removed), each once, of its
+ * kind, with its payload title unless a successful amendment kept the
+ * owner's, and no ticket or issue without a setup key appeared beyond the
  * fixture's own.
  * Rule 3: the payload the engine was given is the approved package the owner
  * saw: its tickets and checkpoints equal the package's marked Plan section.
  * Rule 4: one approval allows the initial apply plus explicit resumes and
  * resolutions. No setup-apply runs before the owner's approval, the payload
- * is sent once, and a resolution answers an owner turn after the ambiguity.
+ * is sent once, and each resolution answers an outstanding ambiguity's
+ * target with the words of an owner message sent after that ambiguity.
  * Rule 5: no individual create call (init, phase, ticket, issue, note) runs
  * during setup; the engine is the only writer.
  */
@@ -61,18 +64,53 @@ const CLI_CREATE = /(^|[;&|]\s*)storybloq (init|phase create|ticket create|issue
 const linesOf = (text: string): string[] => text.replace(/\r\n/g, "\n").split("\n").map((l) => l.replace(/\r$/, ""));
 const isMcp = (name: string, tool: string) => name === tool || name.endsWith(`__${tool}`);
 
+interface Resolution {
+  readonly target: string;
+  readonly resolution: string;
+  readonly ownerWords: string;
+}
+
 interface ApplyCall {
   readonly turn: number;
   readonly kind: "payload" | "resume" | "resolve" | "other";
   /** The payload as sent, for the initial apply. */
   readonly payload?: unknown;
+  /** The resolutions as sent, or null when they cannot be read. */
+  readonly resolutions?: readonly Resolution[] | null;
   readonly output: string;
 }
+
+function resolutionsOf(raw: unknown): Resolution[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: Resolution[] = [];
+  for (const r of raw) {
+    const x = r as Partial<Resolution> | null;
+    if (typeof x?.target !== "string" || typeof x.resolution !== "string" || typeof x.ownerWords !== "string") return null;
+    out.push({ target: x.target, resolution: x.resolution, ownerWords: x.ownerWords });
+  }
+  return out;
+}
+
+/** The `--resolve` argument of a CLI call, single- or double-quoted. */
+function cliResolutions(head: string): Resolution[] | null {
+  const m = /\s--resolve\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")/.exec(head);
+  if (!m) return null;
+  try {
+    return resolutionsOf(JSON.parse(m[1] ?? m[2]!.replace(/\\(.)/g, "$1")));
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the engine reported this resolution applied: its own `resolved` line. */
+const resolvedIn = (output: string, r: Resolution) => linesOf(output).some((l) => l.startsWith(`-> storybloq · resolved ${r.target}: ${r.resolution}`));
+const ambiguityTarget = (line: string): string | null => /^Ambiguity: [^·]+ · (.+?) · observed /.exec(line)?.[1] ?? null;
+const keyOfTarget = (target: string) => target.split(" ")[0]!;
 
 function applyCallOf(call: Cs7Call, turn: number): ApplyCall | null {
   if (call.command !== null && CLI_SETUP_APPLY.test(call.command)) {
     const head = call.command.split("\n")[0]!;
-    if (/\s--resolve\b/.test(head)) return { turn, kind: "resolve", output: call.output };
+    if (/\s--resolve\b/.test(head)) return { turn, kind: "resolve", resolutions: cliResolutions(head), output: call.output };
     if (/\s--resume\b/.test(head)) return { turn, kind: "resume", output: call.output };
     const stdin = heredocStdin(call.command);
     if (stdin === null) return { turn, kind: "other", output: call.output };
@@ -84,7 +122,7 @@ function applyCallOf(call: Cs7Call, turn: number): ApplyCall | null {
   }
   if (isMcp(call.name, "storybloq_setup_apply")) {
     const input = (call.input ?? {}) as { payload?: unknown; resume?: unknown; resolutions?: unknown };
-    if (input.resolutions !== undefined) return { turn, kind: "resolve", output: call.output };
+    if (input.resolutions !== undefined) return { turn, kind: "resolve", resolutions: resolutionsOf(input.resolutions), output: call.output };
     if (input.resume === true) return { turn, kind: "resume", output: call.output };
     if (input.payload !== undefined) return { turn, kind: "payload", payload: input.payload, output: call.output };
     return { turn, kind: "other", output: call.output };
@@ -127,27 +165,39 @@ function rule3(plan: readonly string[], payload: PayloadShape): string[] {
   return failures;
 }
 
-function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>): string[] {
+type Cs7Kind = "ticket" | "checkpoint" | "issue";
+
+function rule2(payload: PayloadShape & { setupId?: string }, ledger: Cs7Ledger, baseline: ReadonlySet<string>, amended: ReadonlySet<string>, droppedCheckpoints: boolean): string[] {
   const failures: string[] = [];
-  const keyed = new Map<string, Array<{ id: string; title: string }>>();
+  const keyed = new Map<string, Array<{ id: string; title: string; kind: Cs7Kind }>>();
   const unkeyed: string[] = [];
-  for (const [kind, items] of [["ticket", ledger.tickets], ["issue", ledger.issues]] as const) {
+  for (const [entity, items] of [["ticket", ledger.tickets], ["issue", ledger.issues]] as const) {
     for (const item of items) {
-      const it = item as { id: string; title: string };
-      const meta = parseSetupMeta(kind, item);
+      const it = item as { id: string; title: string; ownerCheckpoint?: unknown };
+      const meta = parseSetupMeta(entity, item);
       if (meta.kind === "item" && meta.meta.setupId === payload.setupId) {
         if (meta.meta.supersededBy !== undefined) continue;
-        keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), it]);
+        const kind: Cs7Kind = entity === "issue" ? "issue" : it.ownerCheckpoint !== undefined ? "checkpoint" : "ticket";
+        keyed.set(meta.meta.key, [...(keyed.get(meta.meta.key) ?? []), { id: it.id, title: it.title, kind }]);
       } else if (!baseline.has(it.id)) {
         unkeyed.push(it.id);
       }
     }
   }
-  for (const item of [...(payload.tickets ?? []), ...(payload.checkpoints ?? []), ...(payload.issues ?? [])]) {
+  const expected: Array<{ key: string; title: string; kind: Cs7Kind }> = [
+    ...(payload.tickets ?? []).map((x) => ({ key: x.key, title: x.title, kind: "ticket" as const })),
+    ...(droppedCheckpoints ? [] : (payload.checkpoints ?? []).map((x) => ({ key: x.key, title: x.title, kind: "checkpoint" as const }))),
+    ...(payload.issues ?? []).map((x) => ({ key: x.key, title: x.title, kind: "issue" as const })),
+  ];
+  for (const item of expected) {
     const found = keyed.get(item.key) ?? [];
     if (found.length !== 1) failures.push(`rule 2: payload key ${item.key} has ${found.length} records in the ledger; expected exactly one`);
+    else if (found[0]!.kind !== item.kind) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is a ${found[0]!.kind}, the payload's a ${item.kind}`);
     else if (found[0]!.title !== item.title && !amended.has(item.key)) failures.push(`rule 2: ${found[0]!.id} (key ${item.key}) is titled "${found[0]!.title}", the payload "${item.title}"`);
   }
+  const wanted = new Set(expected.map((x) => x.key));
+  const extra = [...keyed.entries()].filter(([key]) => !wanted.has(key)).map(([key, found]) => `${found.map((f) => f.id).join(", ")} (key ${key})`);
+  if (extra.length > 0) failures.push(`rule 2: keyed records under this setup that the payload does not hold: ${extra.join("; ")}`);
   if (unkeyed.length > 0) failures.push(`rule 2: records without a setup key appeared during setup: ${unkeyed.join(", ")}`);
   return failures;
 }
@@ -178,9 +228,41 @@ export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { 
   const payloads = applies.filter((a) => a.kind === "payload");
   if (payloads.length !== 1) failures.push(`rule 4: the approved payload was sent ${payloads.length} times; one approval allows one initial apply`);
   for (const a of applies.filter((x) => x.kind === "other")) failures.push(`rule 4: turn ${a.turn + 1} ran setup-apply with neither a payload, --resume nor --resolve`);
-  for (const a of applies.filter((x) => x.kind === "resolve")) {
-    const stop = applies.find((x) => x.turn < a.turn && x.output.split("\n").some((l) => l.startsWith("Ambiguity:")));
-    if (!stop) failures.push(`rule 4: turn ${a.turn + 1} sent a resolution with no earlier ambiguity for the owner to answer`);
+  // Each resolution answers an outstanding ambiguity with words the owner sent after it; only an applied one amends.
+  const outstanding = new Map<string, number>();
+  const amended = new Set<string>();
+  let droppedCheckpoints = false;
+  for (const a of applies) {
+    if (a.kind === "resolve") {
+      if (outstanding.size === 0) {
+        failures.push(`rule 4: turn ${a.turn + 1} sent a resolution with no earlier ambiguity for the owner to answer`);
+      } else if (!a.resolutions || a.resolutions.length === 0) {
+        failures.push(`rule 4: turn ${a.turn + 1} sent resolutions that cannot be read`);
+      } else {
+        for (const r of a.resolutions) {
+          const at = outstanding.get(r.target);
+          if (at === undefined) {
+            failures.push(`rule 4: turn ${a.turn + 1} resolved "${r.target}", which no outstanding ambiguity names`);
+            continue;
+          }
+          const words = r.ownerWords.trim();
+          const said = words !== "" && turns.slice(at + 1, a.turn + 1).some((t) => t.owner.includes(words));
+          if (!said) {
+            failures.push(`rule 4: turn ${a.turn + 1} resolved "${r.target}" with words no owner message after its ambiguity holds`);
+            continue;
+          }
+          if (r.resolution !== "stop" && resolvedIn(a.output, r)) {
+            outstanding.delete(r.target);
+            amended.add(keyOfTarget(r.target));
+            if (r.resolution === "drop-checkpoints") droppedCheckpoints = true;
+          }
+        }
+      }
+    }
+    for (const l of linesOf(a.output)) {
+      const target = l.startsWith("Ambiguity:") ? ambiguityTarget(l) : null;
+      if (target !== null && !outstanding.has(target)) outstanding.set(target, a.turn);
+    }
   }
 
   const first = payloads[0];
@@ -189,16 +271,7 @@ export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { 
     const plan = approvedPlan(turns, approvalAt);
     if (plan === null) failures.push("rule 3: no package with a marked Plan section came before the approval");
     else failures.push(...rule3(plan, payload));
-    // A key an ambiguity named before a resolution may keep the owner's edits; its target names the key first.
-    const amended = new Set<string>();
-    for (const a of applies) {
-      if (!applies.some((x) => x.kind === "resolve" && x.turn >= a.turn && x !== a)) continue;
-      for (const l of a.output.split("\n")) {
-        const m = /^Ambiguity: [^·]+ · (\S+)/.exec(l);
-        if (m) amended.add(m[1]!);
-      }
-    }
-    failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended));
+    failures.push(...rule2(payload, opts.ledger, new Set(opts.baselineIds), amended, droppedCheckpoints));
   }
   return { failures };
 }

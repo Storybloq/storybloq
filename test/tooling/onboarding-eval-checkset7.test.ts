@@ -34,7 +34,8 @@ const shell = (command: string, output: string): Cs7Call => ({ name: "Bash", com
 const mcp = (name: string, input: unknown, output: string): Cs7Call => ({ name: `mcp__storybloq__${name}`, command: null, input, output });
 
 const item = (id: string, title: string, key?: string, extra: Record<string, unknown> = {}) => ({ id, title, ...(key ? { setup: { setupId: SID, key, ...extra } } : {}) });
-const LEDGER = { tickets: [item("T-001", "Sign in", "K2"), item("T-002", "Profile", "K3"), item("T-003", "Accept sign in", "K4")], issues: [] };
+const checkpoint = (id: string, title: string, key: string) => ({ ...item(id, title, key), ownerCheckpoint: { kind: "acceptance" } });
+const LEDGER = { tickets: [item("T-001", "Sign in", "K2"), item("T-002", "Profile", "K3"), checkpoint("T-003", "Accept sign in", "K4")], issues: [] };
 const opts = (over: Partial<Cs7Options> = {}): Cs7Options => ({ ledger: LEDGER, baselineIds: [], approval: APPROVE, ...over });
 
 function run(applyTurn: Partial<Cs7Turn> = {}, extra: Cs7Turn[] = [], before: Cs7Turn[] = []): Cs7Turn[] {
@@ -81,9 +82,57 @@ describe("check set 7", () => {
     const stop = `Ambiguity: owned field edited · K2 (T-001) · observed title; expected title · resolutions: accept-current | restore-planned | stop\nSetup stopped: the owner must resolve owned field edited at K2 (T-001).`;
     const turns = run(
       { calls: [shell(heredoc(payload), stop)], text: stop },
-      [{ owner: "keep my title", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":"K2 (T-001)","resolution":"accept-current","ownerWords":"keep my title"}]'`, `Setup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
+      [{ owner: "keep my title", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":"K2 (T-001)","resolution":"accept-current","ownerWords":"keep my title"}]'`, `-> storybloq · resolved K2 (T-001): accept-current\nSetup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
     );
     expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([]);
+  });
+
+  it("rule 2: an extra keyed record under this setup and a key of the wrong kind each fail (review r1 #10)", () => {
+    const ledger = { tickets: [...LEDGER.tickets.slice(0, 2), item("T-003", "Accept sign in", "K4"), item("T-011", "Billing", "K9")], issues: [] };
+    expect(checkSetupApply(run(), opts({ ledger })).failures).toEqual([
+      "rule 2: T-003 (key K4) is a ticket, the payload's a checkpoint",
+      "rule 2: keyed records under this setup that the payload does not hold: T-011 (key K9)",
+    ]);
+  });
+
+  it("rule 2: checkpoints a successful drop-checkpoints removed are not expected (review r1 #10)", () => {
+    const stop = "Ambiguity: schema-5 enable refused · .story/config.json · observed team ledger below schema 5; expected schema 5 · resolutions: drop-checkpoints | stop";
+    const turns = run(
+      { calls: [shell(heredoc(payload), stop)], text: stop },
+      [{ owner: "drop them", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":".story/config.json","resolution":"drop-checkpoints","ownerWords":"drop them"}]'`, `-> storybloq · resolved .story/config.json: drop-checkpoints (material, review recorded)\nSetup applied: ${SID}`)], text: `Setup applied: ${SID}` }],
+    );
+    expect(checkSetupApply(turns, opts({ ledger: { tickets: LEDGER.tickets.slice(0, 2), issues: [] } })).failures).toEqual([]);
+  });
+
+  describe("rule 4: a resolution must answer an outstanding ambiguity with the owner's words, and only an applied one amends (review r1 #9)", () => {
+    const ledger = { tickets: [item("T-001", "Log in", "K2"), ...LEDGER.tickets.slice(1)], issues: [] };
+    const stop = "Ambiguity: owned field edited · K2 (T-001) · observed title; expected title · resolutions: accept-current | restore-planned | stop";
+    const resolveTurns = (owner: string, target: string, output: string) => run(
+      { calls: [shell(heredoc(payload), stop)], text: stop },
+      [{ owner, calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":"${target}","resolution":"accept-current","ownerWords":"keep my title"}]'`, output)], text: "" }],
+    );
+    const titleFailure = 'rule 2: T-001 (key K2) is titled "Log in", the payload "Sign in"';
+
+    it("an owner message that does not hold the resolution's words fails, and the key is not exempted", () => {
+      const turns = resolveTurns("carry on", "K2 (T-001)", `-> storybloq · resolved K2 (T-001): accept-current\nSetup applied: ${SID}`);
+      expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([
+        'rule 4: turn 4 resolved "K2 (T-001)" with words no owner message after its ambiguity holds',
+        titleFailure,
+      ]);
+    });
+
+    it("a target no outstanding ambiguity names fails, and the key is not exempted", () => {
+      const turns = resolveTurns("keep my title", "K3 (T-002)", `-> storybloq · resolved K3 (T-002): accept-current\nSetup applied: ${SID}`);
+      expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([
+        'rule 4: turn 4 resolved "K3 (T-002)", which no outstanding ambiguity names',
+        titleFailure,
+      ]);
+    });
+
+    it("a refused resolution exempts nothing", () => {
+      const turns = resolveTurns("keep my title", "K2 (T-001)", "Setup refused: K2 (T-001): accept-current changes the approved package");
+      expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([titleFailure]);
+    });
   });
 
   it("rule 3: a payload that differs from the approved Plan fails", () => {

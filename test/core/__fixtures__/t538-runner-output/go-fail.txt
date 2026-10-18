@@ -1,0 +1,8 @@
+=== RUN   TestOne
+--- PASS: TestOne (0.00s)
+=== RUN   TestBad
+    m_test.go:4: bad
+--- FAIL: TestBad (0.00s)
+FAIL
+FAIL	example.com/gfail	0.151s
+FAIL

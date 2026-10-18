@@ -1,0 +1,4 @@
+# example.com/gbuild [example.com/gbuild.test]
+./m_test.go:3:30: undefined: undefinedThing
+FAIL	example.com/gbuild [build failed]
+FAIL

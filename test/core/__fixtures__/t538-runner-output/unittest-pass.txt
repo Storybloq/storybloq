@@ -1,0 +1,8 @@
+test_one (test_a.T) ... ok
+test_skip (test_a.T) ... skipped 'later'
+test_two (test_a.T) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.011s
+
+OK (skipped=1)

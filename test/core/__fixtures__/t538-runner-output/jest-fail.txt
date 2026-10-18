@@ -1,0 +1,23 @@
+FAIL ./a.test.js
+  ✓ one (1 ms)
+  ✕ bad (1 ms)
+
+  ● bad
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 1
+
+      1 | test("one", () => expect(1).toBe(1));
+    > 2 | test("bad", () => expect(1).toBe(2));
+        |                             ^
+      3 |
+
+      at Object.toBe (a.test.js:2:29)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 1 passed, 2 total
+Snapshots:   0 total
+Time:        0.25 s
+Ran all test suites.

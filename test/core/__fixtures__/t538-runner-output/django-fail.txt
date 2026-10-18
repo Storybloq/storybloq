@@ -1,0 +1,23 @@
+Found 3 test(s).
+System check identified no issues (0 silenced).
+FE.
+======================================================================
+ERROR: test_err (app1.tests.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/dj/app1/tests.py", line 5, in test_err
+    def test_err(self): raise RuntimeError("boom")
+RuntimeError: boom
+
+======================================================================
+FAIL: test_bad (app1.tests.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/dj/app1/tests.py", line 4, in test_bad
+    def test_bad(self): self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.002s
+
+FAILED (failures=1, errors=1)

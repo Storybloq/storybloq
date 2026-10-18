@@ -1,0 +1,25 @@
+   Compiling cfail v0.1.0 (/work/rs/cfail)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
+     Running unittests src/lib.rs (/work/cargo-target/debug/deps/cfail-6f63f03cba5eec41)
+
+running 2 tests
+test tests::one ... ok
+test tests::bad ... FAILED
+
+failures:
+
+---- tests::bad stdout ----
+
+thread 'tests::bad' panicked at src/lib.rs:4:24:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::bad
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

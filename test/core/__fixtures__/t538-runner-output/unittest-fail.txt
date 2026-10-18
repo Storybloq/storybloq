@@ -1,0 +1,24 @@
+test_bad (test_a.T) ... FAIL
+test_err (test_a.T) ... ERROR
+test_one (test_a.T) ... ok
+
+======================================================================
+ERROR: test_err (test_a.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/py/ufail/test_a.py", line 5, in test_err
+    def test_err(self): raise RuntimeError("boom")
+RuntimeError: boom
+
+======================================================================
+FAIL: test_bad (test_a.T)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/py/ufail/test_a.py", line 4, in test_bad
+    def test_bad(self): self.assertEqual(1, 2)
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.011s
+
+FAILED (failures=1, errors=1)

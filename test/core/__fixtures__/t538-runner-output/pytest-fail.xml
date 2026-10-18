@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="3" time="0.104" timestamp="2026-10-18T12:04:09.571582-07:00" hostname="host"><testcase classname="test_a" name="test_one" time="0.017" /><testcase classname="test_a" name="test_bad" time="0.029"><failure message="assert 1 == 2">&gt;   def test_bad(): assert 1 == 2
+                    ^^^^^^^^^^^^^
+E   assert 1 == 2
+
+test_a.py:2: AssertionError</failure></testcase><testcase classname="test_a" name="test_err" time="0.004"><failure message="RuntimeError: boom">&gt;   def test_err(): raise RuntimeError("boom")
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   RuntimeError: boom
+
+test_a.py:3: RuntimeError</failure></testcase></testsuite></testsuites>

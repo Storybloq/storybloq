@@ -1,0 +1,7 @@
+Found 3 test(s).
+System check identified no issues (0 silenced).
+.s.
+----------------------------------------------------------------------
+Ran 3 tests in 0.005s
+
+OK (skipped=1)

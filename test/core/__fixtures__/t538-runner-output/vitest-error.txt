@@ -1,0 +1,33 @@
+
+ RUN  v3.2.4 /work/js/verr
+
+ ✓ a.test.js (2 tests) 55ms
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 1 unhandled error during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+Error: late boom
+ ❯ Timeout._onTimeout a.test.js:2:44
+      1| import { it, expect } from "vitest";
+      2| it("one", () => { setTimeout(() => { throw new Error("late boom"); }, …
+       |                                            ^
+      3| it("two", async () => { await new Promise((r) => setTimeout(r, 50)); }…
+      4| 
+ ❯ listOnTimeout node:internal/timers:588:17
+ ❯ processTimers node:internal/timers:523:7
+
+This error originated in "a.test.js" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+The latest test that might've caused the error is "two". It might mean one of the following:
+- The error was thrown, while Vitest was running this test.
+- If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+     Errors  1 error
+   Start at  12:03:42
+   Duration  425ms (transform 27ms, setup 0ms, collect 41ms, tests 55ms, environment 0ms, prepare 61ms)
+

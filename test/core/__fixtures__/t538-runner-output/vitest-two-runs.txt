@@ -1,0 +1,24 @@
+
+> test
+> vitest run --root p1 && vitest run --root p2
+
+
+ RUN  v3.2.4 /work/js/vproj/p1
+
+ ✓ a.test.js (3 tests | 1 skipped) 1ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 1 skipped (3)
+   Start at  12:03:40
+   Duration  340ms (transform 22ms, setup 0ms, collect 24ms, tests 1ms, environment 0ms, prepare 67ms)
+
+
+ RUN  v3.2.4 /work/js/vproj/p2
+
+ ✓ b.test.js (3 tests | 1 skipped) 1ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 1 skipped (3)
+   Start at  12:03:41
+   Duration  342ms (transform 19ms, setup 0ms, collect 20ms, tests 1ms, environment 0ms, prepare 77ms)
+

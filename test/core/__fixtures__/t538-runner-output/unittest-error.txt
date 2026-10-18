@@ -1,0 +1,20 @@
+test_a (unittest.loader._FailedTest) ... ERROR
+
+======================================================================
+ERROR: test_a (unittest.loader._FailedTest)
+----------------------------------------------------------------------
+ImportError: Failed to import test module: test_a
+Traceback (most recent call last):
+  File "/python/lib/python3.9/unittest/loader.py", line 436, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/python/lib/python3.9/unittest/loader.py", line 377, in _get_module_from_name
+    __import__(name)
+  File "/work/py/uerr/test_a.py", line 2, in <module>
+    import no_such_module_xyz
+ModuleNotFoundError: No module named 'no_such_module_xyz'
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (errors=1)

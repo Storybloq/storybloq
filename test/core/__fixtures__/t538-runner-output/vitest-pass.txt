@@ -1,0 +1,10 @@
+
+ RUN  v3.2.4 /work/js/vpass
+
+ ✓ a.test.js (3 tests | 1 skipped) 2ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed | 1 skipped (3)
+   Start at  12:03:37
+   Duration  343ms (transform 15ms, setup 0ms, collect 22ms, tests 2ms, environment 0ms, prepare 79ms)
+

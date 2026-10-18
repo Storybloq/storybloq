@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-9.0.2, pluggy-1.6.0
+rootdir: /work/py/ppass
+plugins: anyio-4.12.1, cov-6.0.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items
+
+test_a.py ..s                                                            [100%]
+
+- generated xml file: /work/out/pytest-pass.xml -
+========================= 2 passed, 1 skipped in 0.12s =========================

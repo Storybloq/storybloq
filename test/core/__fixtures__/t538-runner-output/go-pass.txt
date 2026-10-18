@@ -1,0 +1,11 @@
+=== RUN   TestOne
+=== RUN   TestOne/sub
+--- PASS: TestOne (0.00s)
+    --- PASS: TestOne/sub (0.00s)
+=== RUN   TestTwo
+--- PASS: TestTwo (0.00s)
+=== RUN   TestSkip
+    m_test.go:5: later
+--- SKIP: TestSkip (0.00s)
+PASS
+ok  	example.com/gpass	0.172s

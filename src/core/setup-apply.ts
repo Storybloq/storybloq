@@ -1790,6 +1790,8 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   const receipts: Receipt[] = [];
   const amendments: SetupPayload["amendments"] = [];
   const cleanup: Array<() => Promise<void>> = [];
+  // A resolved line is printed only once its transaction commits, so a batch refused at a later answer prints none (review r2 #2).
+  const resolved: string[] = [];
   const ticket = (id: string) => tickets.get(id) ?? state.ticketByID(id)!;
   const issue = (id: string) => issues.get(id) ?? state.issues.find((i) => i.id === id)!;
 
@@ -1799,7 +1801,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       // The agent made the approved edit; the gitignore step verifies it byte for byte and receipts it.
       const missing = missingEntries(await readOrNull(join(root, ".gitignore")), plan.git.gitignore);
       if (hasReceipt(p, "gitignore") || missing.length > 0) return `.gitignore: applied, but it does not list ${missing.join(", ") || "the approved entries"} yet.`;
-      out.push(`-> storybloq · resolved .gitignore: applied`);
+      resolved.push(`-> storybloq · resolved .gitignore: applied`);
       continue;
     }
     if (!f) {
@@ -1905,7 +1907,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       default:
         break;
     }
-    out.push(`-> storybloq · resolved ${r.target}: ${r.resolution}${material ? " (material, review recorded)" : ""}`);
+    resolved.push(`-> storybloq · resolved ${r.target}: ${r.resolution}${material ? " (material, review recorded)" : ""}`);
   }
 
   const ops: Array<{ target: string; content: string }> = [];
@@ -1926,6 +1928,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
     await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
     if (config) invalidateResolutionWriteContext(root);
   }
+  out.push(...resolved);
   for (const c of cleanup) await c();
   await setupApplySeams.fault("resolved");
   return null;

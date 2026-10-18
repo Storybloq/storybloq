@@ -337,6 +337,19 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect((await resolve1(done, "K2 (T-001)", "restore-planned")).lines.at(-1)).toBe(`Setup refused: setup ${SID} is complete; there is nothing to resolve.`);
   });
 
+  it("a batch refused at a later answer prints no resolved line for an earlier one, and writes nothing (review r2 #2)", async () => {
+    const root = await stoppedAt("step:config");
+    await handleTicketUpdate("T-001", { description: "mine" }, "json", root);
+    const before = await readFile(join(root, ".story", "notes", "N-001.json"), "utf-8");
+    const result = await setupResolve(root, SID, [
+      { target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "put it back" },
+      { target: "K9 (T-009)", resolution: "restore-planned", ownerWords: "and this" },
+    ], { env: env() });
+    expect(result.exitCode).toBe(2);
+    expect(result.lines.filter((l) => l.startsWith("-> storybloq · resolved"))).toEqual([]);
+    expect(await readFile(join(root, ".story", "notes", "N-001.json"), "utf-8")).toBe(before);
+  });
+
   it("restore-planned writes the planned values back, records no amendment, and the setup finishes", async () => {
     const root = await stoppedAt("step:config");
     await handleTicketUpdate("T-001", { description: "mine" }, "json", root);

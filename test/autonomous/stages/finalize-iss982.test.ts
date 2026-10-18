@@ -23,6 +23,7 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   gitDiffNames: vi.fn().mockResolvedValue({ ok: false }),
   gitDiffCachedNames: vi.fn().mockResolvedValue({ ok: false }),
   gitDiffTreeNames: vi.fn(),
+  gitParentCount: vi.fn(),
   gitBlobHash: vi.fn().mockResolvedValue({ ok: false }),
   gitStash: vi.fn().mockResolvedValue({ ok: true }),
   gitStashPop: vi.fn().mockResolvedValue({ ok: true }),
@@ -38,6 +39,7 @@ import { FinalizeStage } from "../../../src/autonomous/stages/finalize.js";
 import {
   gitHead,
   gitDiffTreeNames,
+  gitParentCount,
   gitDiffCachedNames,
   gitResolveCommit,
   gitRevListAncestryPath,
@@ -49,6 +51,7 @@ import type { FullSessionState } from "../../../src/autonomous/session-types.js"
 
 const mockedGitHead = vi.mocked(gitHead);
 const mockedGitDiffTreeNames = vi.mocked(gitDiffTreeNames);
+const mockedGitParentCount = vi.mocked(gitParentCount);
 const mockedGitDiffCachedNames = vi.mocked(gitDiffCachedNames);
 const mockedGitResolveCommit = vi.mocked(gitResolveCommit);
 const mockedGitRevListAncestryPath = vi.mocked(gitRevListAncestryPath);
@@ -190,6 +193,12 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     mockedGitCommitterEmail.mockReset();
     mockedGitUserEmail.mockReset();
     mockedGitIsAncestor.mockReset();
+    // ISS-1396: every accepting route now reads the commit's parents and, for
+    // an item, its tree. By default the commit is a plain commit that carries
+    // the item's ledger file; a test about the tree sets its own.
+    mockedGitParentCount.mockReset();
+    mockedGitParentCount.mockResolvedValue({ ok: true, data: 1 });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json", ".story/issues/ISS-999.json"] });
   });
 
   afterEach(() => {
@@ -389,6 +398,9 @@ describe("ISS-982: FINALIZE commit-attribution check", () => {
     expect((advance as { instruction?: string }).instruction).toContain("could not be attributed");
     expect(mockedGitResolveCommit).not.toHaveBeenCalled();
     expect(mockedGitRevListAncestryPath).not.toHaveBeenCalled();
+    // ISS-1396: the abbreviated report is checked as the full HEAD commit.
+    expect(mockedGitParentCount).toHaveBeenCalledWith(testRoot, A40);
+    expect(mockedGitDiffTreeNames).toHaveBeenCalledWith(testRoot, A40);
   });
 
   // -------------------------------------------------------------------------

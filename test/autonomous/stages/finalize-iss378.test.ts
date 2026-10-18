@@ -23,7 +23,10 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   gitDiffStat: vi.fn().mockResolvedValue({ ok: false }),
   gitDiffNames: vi.fn().mockResolvedValue({ ok: false }),
   gitDiffCachedNames: vi.fn().mockResolvedValue({ ok: false }),
-  gitDiffTreeNames: vi.fn().mockResolvedValue({ ok: false }),
+  // ISS-1396: the commit_done fast path now reads the commit's parents and
+  // tree; beforeEach makes it a plain commit that carries the item's file.
+  gitDiffTreeNames: vi.fn(),
+  gitParentCount: vi.fn(),
   gitBlobHash: vi.fn().mockResolvedValue({ ok: false }),
   gitStash: vi.fn().mockResolvedValue({ ok: true }),
   gitStashPop: vi.fn().mockResolvedValue({ ok: true }),
@@ -44,6 +47,8 @@ import {
   gitRevListAncestryPath,
   gitCommitterEmail,
   gitUserEmail,
+  gitParentCount,
+  gitDiffTreeNames,
 } from "../../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 
@@ -146,6 +151,9 @@ describe("ISS-378: FINALIZE commit-hash HEAD-drift validation", () => {
     // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
     vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
     vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
+    // ISS-1396: likewise for the parents and tree the fast path now reads.
+    vi.mocked(gitParentCount).mockResolvedValue({ ok: true, data: 1 });
+    vi.mocked(gitDiffTreeNames).mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json", ".story/issues/ISS-999.json"] });
   });
 
   afterEach(() => {

@@ -13,6 +13,7 @@ import { writeEvent, markEnded } from "../telemetry-writer.js";
 import { refreshStatusForSession } from "../status-writer.js";
 import { loadProject } from "../../core/project-loader.js";
 import type { ProjectState } from "../../core/project-state.js";
+import type { LoadWarning } from "../../core/errors.js";
 
 // ---------------------------------------------------------------------------
 // Stage result -- returned by enter() when the stage needs Claude to act
@@ -213,8 +214,12 @@ export class StageContext {
     }
   }
 
-  /** Load the .story/ project state (tickets, issues, roadmap). */
-  async loadProject(): Promise<{ state: ProjectState }> {
+  /**
+   * Load the .story/ project state (tickets, issues, roadmap). ISS-1396: the
+   * load warnings ride along; a reader that needs them fails closed when a
+   * caller's stand-in omits them.
+   */
+  async loadProject(): Promise<{ state: ProjectState; warnings?: readonly LoadWarning[] }> {
     return loadProject(this.root);
   }
 

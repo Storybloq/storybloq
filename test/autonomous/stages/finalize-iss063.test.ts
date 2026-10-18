@@ -24,11 +24,17 @@ vi.mock("../../../src/autonomous/git-inspector.js", () => ({
   // need a resolved value even though the override makes it moot.
   gitCommitterEmail: vi.fn().mockResolvedValue({ ok: true, data: "unused@example.com" }),
   gitUserEmail: vi.fn().mockResolvedValue("unused@example.com"),
+  // ISS-1396: the commit_done fast path now reads the commit's parents and
+  // tree; beforeEach makes it a plain commit that carries the item's file.
+  gitParentCount: vi.fn(),
+  gitDiffTreeNames: vi.fn(),
 }));
 
 import { StageContext, type ResolvedRecipe } from "../../../src/autonomous/stages/types.js";
 import { FinalizeStage } from "../../../src/autonomous/stages/finalize.js";
-import { gitHead, gitCommitterEmail, gitUserEmail } from "../../../src/autonomous/git-inspector.js";
+import { gitHead, gitCommitterEmail, gitUserEmail, gitParentCount, gitDiffTreeNames } from "../../../src/autonomous/git-inspector.js";
+
+const TREE_WITH_ITEM_FILES = [".story/tickets/T-001.json", ".story/tickets/T-000.json", ".story/issues/ISS-001.json"];
 import type { FullSessionState } from "../../../src/autonomous/session-types.js";
 
 function makeState(overrides: Partial<FullSessionState> = {}): FullSessionState {
@@ -131,6 +137,9 @@ describe("T-187: per-ticket timing in completedTickets", () => {
     // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
     vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
     vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
+    // ISS-1396: likewise for the parents and tree the fast path now reads.
+    vi.mocked(gitParentCount).mockResolvedValue({ ok: true, data: 1 });
+    vi.mocked(gitDiffTreeNames).mockResolvedValue({ ok: true, data: TREE_WITH_ITEM_FILES });
   });
 
   afterEach(() => {
@@ -240,6 +249,9 @@ describe("T-450 7a: FINALIZE records the item it committed", () => {
     // ISS-982: re-establish after vi.restoreAllMocks() wipes the module-factory default.
     vi.mocked(gitCommitterEmail).mockResolvedValue({ ok: true, data: "unused@example.com" });
     vi.mocked(gitUserEmail).mockResolvedValue("unused@example.com");
+    // ISS-1396: likewise for the parents and tree the fast path now reads.
+    vi.mocked(gitParentCount).mockResolvedValue({ ok: true, data: 1 });
+    vi.mocked(gitDiffTreeNames).mockResolvedValue({ ok: true, data: TREE_WITH_ITEM_FILES });
   });
 
   afterEach(() => {

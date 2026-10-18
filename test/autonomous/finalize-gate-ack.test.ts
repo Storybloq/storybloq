@@ -28,12 +28,13 @@ vi.mock("../../src/autonomous/git-inspector.js", () => ({
   gitParentOf: vi.fn(),
   gitTreeOf: vi.fn(),
   gitWriteTree: vi.fn(),
+  gitParentCount: vi.fn(),
 }));
 
 import { StageContext, type ResolvedRecipe } from "../../src/autonomous/stages/types.js";
 import { FinalizeStage } from "../../src/autonomous/stages/finalize.js";
 import {
-  gitHead, gitDiffTreeNames, gitDiffCachedNames, gitResolveCommit, gitRevListAncestryPath,
+  gitHead, gitDiffTreeNames, gitParentCount, gitDiffCachedNames, gitResolveCommit, gitRevListAncestryPath,
   gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree,
 } from "../../src/autonomous/git-inspector.js";
 import type { FullSessionState } from "../../src/autonomous/session-types.js";
@@ -46,6 +47,7 @@ import { SessionStateSchema } from "../../src/autonomous/session-types.js";
 
 const mockedGitHead = vi.mocked(gitHead);
 const mockedGitDiffTreeNames = vi.mocked(gitDiffTreeNames);
+const mockedGitParentCount = vi.mocked(gitParentCount);
 const mockedGitDiffCachedNames = vi.mocked(gitDiffCachedNames);
 const mockedGitResolveCommit = vi.mocked(gitResolveCommit);
 const mockedGitRevListAncestryPath = vi.mocked(gitRevListAncestryPath);
@@ -195,6 +197,12 @@ describe("FINALIZE pre-commit-ack gate (T-474)", () => {
     mockedGitTreeOf.mockReset();
     mockedGitWriteTree.mockReset();
     mockedGitCommitterEmail.mockResolvedValue({ ok: true, data: CLAIM_EMAIL });
+    // ISS-1396: every accepting route now reads the commit's parents and, for
+    // an item, its tree. By default the commit is a plain one that carries the
+    // item's ledger file; a test about the tree sets its own.
+    mockedGitParentCount.mockReset();
+    mockedGitParentCount.mockResolvedValue({ ok: true, data: 1 });
+    mockedGitDiffTreeNames.mockResolvedValue({ ok: true, data: [".story/tickets/T-001.json", ".story/issues/ISS-1.json", ".story/issues/ISS-001.json"] });
   });
 
   afterEach(() => {

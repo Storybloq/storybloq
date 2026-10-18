@@ -2,19 +2,22 @@ import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./t
 import type { GuideReportInput, FullSessionState, IssueExit } from "../session-types.js";
 import { displayIdOf } from "../../core/resolver.js";
 import { isMalformedIssueExit } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree, gitPathDirty, gitChangedPaths, gitStatusAllUntracked } from "../git-inspector.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitParentCount, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree, gitPathDirty, gitChangedPaths, gitStatusAllUntracked } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
 import { effectiveReviewEffort, effortDisclosureLine, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, join, sep } from "node:path";
+import { filenameIdMismatchMessage } from "../../core/project-loader.js";
+import type { LoadWarning } from "../../core/errors.js";
 import { resolveOrReadFrozenGateStatus, renderUnresolvedHold, renderGateAckHold } from "./gate-enforcement.js";
 import { findGateAck } from "../../core/gate-ack-loader.js";
 import { PRECOMMIT_ACK_GATE_NAME, type GateAckPin } from "../../models/gate-ack.js";
 import { agentFallbackLines } from "./review-gate.js";
 import { arrangementGateRiskWarnings } from "../../core/arrangement-bounds.js";
 import { pendingKnowledgeReview, routeAfterFinalize } from "./knowledge-routing.js";
-import { finalizeEnterRoute, inspectLandedCommit, itemBaseline } from "../landed-commit.js";
+import { finalizeEnterRoute, inspectLandedCommit, issueLedgerPath, itemBaseline, ticketLedgerPath } from "../landed-commit.js";
 import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { ProjectState } from "../../core/project-state.js";
 import { classifySweepExit } from "./issue-sweep.js";
@@ -216,9 +219,9 @@ async function checkCommitAttribution(
 /** The ledger file this item's commit must contain, or null outside item work. */
 function itemArtifactPath(state: FullSessionState): string | null {
   const ticketId = state.ticket?.id;
-  if (ticketId) return `.story/tickets/${ticketId}.json`;
+  if (ticketId) return ticketLedgerPath(ticketId);
   const issueId = state.currentIssue?.id;
-  if (issueId) return `.story/issues/${issueId}.json`;
+  if (issueId) return issueLedgerPath(issueId);
   return null;
 }
 
@@ -265,7 +268,10 @@ export async function deferralLeftIssueUnchanged(ctx: StageContext, commit?: str
   const exit = ctx.state.currentIssueExit;
   const id = ctx.state.currentIssue?.id;
   if (!exit || exit.exit !== "deferred" || !id) return false;
-  const path = `.story/issues/${id}.json`;
+  // ISS-1396: a record loaded from another file is never proven unchanged;
+  // the git checks below would read the path the id names, not that file.
+  if (await itemLedgerFileMisplaced(ctx)) return false;
+  const path = issueLedgerPath(id);
   const dirty = await gitPathDirty(ctx.root, path);
   if (!dirty.ok || dirty.data) return false;
   const baseline = itemBaseline(ctx.state);
@@ -301,18 +307,113 @@ export async function deferralLeftIssueUnchanged(ctx: StageContext, commit?: str
  * ISS-1380: a deferral proven to have left its issue file unchanged is exempt.
  */
 async function itemFileNotStaged(ctx: StageContext, staged: readonly string[]): Promise<string | null> {
+  const misplaced = await itemLedgerFileMisplaced(ctx);
+  if (misplaced) return misplaced;
   const ticketId = ctx.state.ticket?.id;
   if (ticketId) {
-    const ticketPath = `.story/tickets/${ticketId}.json`;
+    const ticketPath = ticketLedgerPath(ticketId);
     if (!staged.includes(ticketPath)) {
       return `Ticket file ${ticketPath} is not staged. Run \`git add ${ticketPath}\` and call me again with completedAction: "files_staged".`;
     }
   }
   const issueId = ctx.state.currentIssue?.id;
   if (issueId) {
-    const issuePath = `.story/issues/${issueId}.json`;
+    const issuePath = issueLedgerPath(issueId);
     if (!staged.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx))) {
       return `Issue file ${issuePath} is not staged. Run \`git add ${issuePath}\` and call me again with completedAction: "files_staged".`;
+    }
+  }
+  return null;
+}
+
+/**
+ * ISS-1396: the session's ledger record must live in the file its id names.
+ * The loader keeps a record it found under another name and only warns, so
+ * every check of the canonical path would be looking at the wrong file.
+ * Returns the repair diagnostic, or null when each record is where its id
+ * says. A load that throws fails closed. The itemless shape has nothing to
+ * check and never loads the project.
+ */
+export async function itemLedgerFileMisplaced(ctx: StageContext): Promise<string | null> {
+  const items: Array<{ kind: "Ticket" | "Issue"; id: string; label: string; path: string }> = [];
+  const ticket = ctx.state.ticket;
+  if (ticket?.id) items.push({ kind: "Ticket", id: ticket.id, label: ticket.displayId ?? ticket.id, path: ticketLedgerPath(ticket.id) });
+  const issue = ctx.state.currentIssue;
+  if (issue?.id) {
+    const label = ((issue as Record<string, unknown>).displayId as string | undefined) ?? issue.id;
+    items.push({ kind: "Issue", id: issue.id, label, path: issueLedgerPath(issue.id) });
+  }
+  if (items.length === 0) return null;
+  let warnings: readonly LoadWarning[] | undefined;
+  try {
+    ({ warnings } = await ctx.loadProject());
+  } catch (err) {
+    return `Cannot verify which file holds this item's ledger record: the project did not load (${err instanceof Error ? err.message : String(err)}). Fix the .story/ files, then report again.`;
+  }
+  if (!warnings) {
+    return "Cannot verify which file holds this item's ledger record: the project load returned no warnings to check. Report again; if this repeats, escalate.";
+  }
+  for (const item of items) {
+    const misplaced = warnings
+      .filter((w) => w.type === "filename_id_mismatch" && w.message === filenameIdMismatchMessage(basename(w.file, ".json"), item.id))
+      .map((w) => `"${w.file.split(sep).join("/")}"`);
+    if (misplaced.length === 0) continue;
+    if (existsSync(join(ctx.root, item.path))) {
+      return `${item.kind} ${item.label} has two ledger records with id "${item.id}": "${item.path}" and ${misplaced.join(", ")}. ` +
+        `Reconcile them into "${item.path}" without overwriting either: compare the records, carry what belongs into the canonical file, then remove the other one and report again.`;
+    }
+    return `${item.kind} ${item.label}'s ledger record was loaded from ${misplaced.join(", ")}, but its id names "${item.path}". ` +
+      "FINALIZE checks the file the id names, so rename it to the canonical name, and if it is tracked, commit the rename. Then report again.";
+  }
+  return null;
+}
+
+/**
+ * ISS-1396: what makes a commit something other than this item's own commit,
+ * shared by every route that accepts one (the moved-HEAD route, and both
+ * commit_done paths after ISS-922's refusal). In order: a misplaced ledger
+ * record, a merge commit, then the ticket or issue file missing from the
+ * commit, where an unchanged deferral (ISS-1380) is exempt. A git error fails
+ * closed. `tree` says when the commit's tree is read:
+ * - "always": the moved-HEAD route, which has always refused an unreadable
+ *   tree, itemless sessions included;
+ * - "items": the commit_done fast path, where an itemless session has no file
+ *   to look for (T-534d);
+ * - "never": the slow path, whose ancestry query already proved the file.
+ * Null when the commit may proceed.
+ */
+async function itemCommitRefusal(ctx: StageContext, hash: string, tree: "always" | "items" | "never"): Promise<string | null> {
+  const sha7 = hash.slice(0, 7);
+  const misplaced = await itemLedgerFileMisplaced(ctx);
+  if (misplaced) return misplaced;
+  const parents = await gitParentCount(ctx.root, hash);
+  if (!parents.ok) {
+    return `Commit detected (${sha7}) but its parents could not be read (git error: ${parents.message ?? "unknown"}). Verify the commit yourself, then report completedAction: "commit_done" with the hash again.`;
+  }
+  if (parents.data > 1) {
+    return `Commit ${sha7} is a merge commit (${parents.data} parents). FINALIZE accepts only the item's own commit: commit the work as a plain commit on top, then report its hash.`;
+  }
+  const ticketId = ctx.state.ticket?.id;
+  const issueId = ctx.state.currentIssue?.id;
+  if (tree === "never" || (tree === "items" && !ticketId && !issueId)) return null;
+  const treeResult = await gitDiffTreeNames(ctx.root, hash);
+  // ISS-982/R2-F1: a git error here must NOT silently fall through to
+  // "commit is valid" -- its own diagnostic rather than the "amend the
+  // commit" message, which would misdescribe a git error as a missing file.
+  if (!treeResult.ok) {
+    return `Commit detected (${sha7}) but its contents could not be verified (git error: ${treeResult.message ?? "unknown"}). Verify the commit yourself, then report completedAction: "commit_done" with the hash again.`;
+  }
+  if (ticketId) {
+    const ticketPath = ticketLedgerPath(ticketId);
+    if (!treeResult.data.includes(ticketPath)) {
+      return `Commit detected (${sha7}) but ticket file ${ticketPath} is not in the commit. Amend the commit to include it: \`git add ${ticketPath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`;
+    }
+  }
+  // T-153: the issue file (issue-fix mode).
+  if (issueId) {
+    const issuePath = issueLedgerPath(issueId);
+    if (!treeResult.data.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx, hash))) {
+      return `Commit detected (${sha7}) but issue file ${issuePath} is not in the commit. Amend the commit to include it: \`git add ${issuePath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`;
     }
   }
   return null;
@@ -497,40 +598,10 @@ export class FinalizeStage implements WorkflowStage {
       const headResult = await gitHead(ctx.root);
       const previousHead = itemBaseline(ctx.state);
       if (headResult.ok && previousHead && headResult.data.hash !== previousHead) {
-        // HEAD advanced -- agent committed before reporting files_staged
-        // Validate commit contains ticket/issue file if applicable
-        const treeResult = await gitDiffTreeNames(ctx.root, headResult.data.hash);
-        // ISS-982/R2-F1: a git error here must NOT silently fall through to
-        // "commit is valid" -- hoisted into its own diagnostic rather than
-        // reusing the ticket/issue "amend the commit" message, which would
-        // misdescribe a git error as a missing file.
-        if (!treeResult.ok) {
-          return {
-            action: "retry",
-            instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but its contents could not be verified (git error: ${treeResult.message ?? "unknown"}). Verify the commit yourself, then report completedAction: "commit_done" with the hash again.`,
-          };
-        }
-        const ticketId = ctx.state.ticket?.id;
-        if (ticketId) {
-          const ticketPath = `.story/tickets/${ticketId}.json`;
-          if (!treeResult.data.includes(ticketPath)) {
-            return {
-              action: "retry",
-              instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but ticket file ${ticketPath} is not in the commit. Amend the commit to include it: \`git add ${ticketPath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`,
-            };
-          }
-        }
-        // T-153: Validate issue file in commit (issue-fix mode)
-        const earlyIssueId = ctx.state.currentIssue?.id;
-        if (earlyIssueId) {
-          const issuePath = `.story/issues/${earlyIssueId}.json`;
-          if (!treeResult.data.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx, headResult.data.hash))) {
-            return {
-              action: "retry",
-              instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but issue file ${issuePath} is not in the commit. Amend the commit to include it: \`git add ${issuePath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`,
-            };
-          }
-        }
+        // HEAD advanced -- agent committed before reporting files_staged.
+        // ISS-1396: the same check the commit_done fast path runs.
+        const refusal = await itemCommitRefusal(ctx, headResult.data.hash, "always");
+        if (refusal) return { action: "retry", instruction: refusal };
         // Commit is valid -- fast-forward checkpoint so handleCommit accepts it
         ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
         return this.handleCommit(ctx, { ...report, commitHash: headResult.data.hash });
@@ -591,10 +662,10 @@ export class FinalizeStage implements WorkflowStage {
     const baselineUntracked = ctx.state.git.baseline?.untrackedPaths ?? [];
     if (baselineUntracked.length > 0) {
       const sessionTicketPath = ctx.state.ticket?.id
-        ? `.story/tickets/${ctx.state.ticket.id}.json`
+        ? ticketLedgerPath(ctx.state.ticket.id)
         : null;
       const sessionIssuePath = ctx.state.currentIssue?.id
-        ? `.story/issues/${ctx.state.currentIssue.id}.json`
+        ? issueLedgerPath(ctx.state.currentIssue.id)
         : null;
       const overlap = stagedResult.data.filter(
         (f: string) => baselineUntracked.includes(f) && f !== sessionTicketPath && f !== sessionIssuePath,
@@ -678,10 +749,10 @@ export class FinalizeStage implements WorkflowStage {
       const baselineUntracked = ctx.state.git.baseline?.untrackedPaths ?? [];
       if (baselineUntracked.length > 0) {
         const sessionTicketPath = ctx.state.ticket?.id
-          ? `.story/tickets/${ctx.state.ticket.id}.json`
+          ? ticketLedgerPath(ctx.state.ticket.id)
           : null;
         const sessionIssuePath = ctx.state.currentIssue?.id
-          ? `.story/issues/${ctx.state.currentIssue.id}.json`
+          ? issueLedgerPath(ctx.state.currentIssue.id)
           : null;
         const overlap = stagedResult.data.filter(
           (f: string) => baselineUntracked.includes(f) && f !== sessionTicketPath && f !== sessionIssuePath,
@@ -696,7 +767,7 @@ export class FinalizeStage implements WorkflowStage {
     // ISS-047: Re-validate ticket file in staged set after hooks
     const ticketId = ctx.state.ticket?.id;
     if (ticketId) {
-      const ticketPath = `.story/tickets/${ticketId}.json`;
+      const ticketPath = ticketLedgerPath(ticketId);
       if (!stagedResult.data.includes(ticketPath)) {
         return {
           action: "retry",
@@ -708,7 +779,7 @@ export class FinalizeStage implements WorkflowStage {
     // T-153: Re-validate issue file after hooks (issue-fix mode)
     const precommitIssueId = ctx.state.currentIssue?.id;
     if (precommitIssueId) {
-      const issuePath = `.story/issues/${precommitIssueId}.json`;
+      const issuePath = issueLedgerPath(precommitIssueId);
       if (!stagedResult.data.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx))) {
         return {
           action: "retry",
@@ -791,9 +862,9 @@ export class FinalizeStage implements WorkflowStage {
       const ticketId = ctx.state.ticket?.id;
       const issueId = ctx.state.currentIssue?.id;
       const expectedPath = ticketId
-        ? `.story/tickets/${ticketId}.json`
+        ? ticketLedgerPath(ticketId)
         : issueId
-        ? `.story/issues/${issueId}.json`
+        ? issueLedgerPath(issueId)
         : null;
       if (!expectedPath) {
         return {
@@ -862,6 +933,13 @@ export class FinalizeStage implements WorkflowStage {
         ].join("\n"),
       };
     }
+
+    // ISS-1396: after ISS-922's refusal, which keeps precedence, and before
+    // attribution, which overrideAttribution can waive and this cannot. The
+    // fast path reads the commit's tree; the slow path's ancestry query has
+    // already proved the item's file is in it.
+    const commitRefusal = await itemCommitRefusal(ctx, normalizedHash, tookFastPath ? "items" : "never");
+    if (commitRefusal) return { action: "retry", instruction: commitRefusal };
 
     // ISS-982: attribution check, fast path only, override-gated. The
     // identity-resolution work runs whenever the fast path was taken; the
@@ -1095,12 +1173,12 @@ function malformedExitRefusal(ctx: StageContext): string | null {
  */
 async function issueStagingLine(ctx: StageContext, id: string): Promise<string> {
   const exit = ctx.state.currentIssueExit;
-  if (!exit) return `2. Ensure .story/issues/${id}.json is updated with status: "resolved"`;
+  if (!exit) return `2. Ensure ${issueLedgerPath(id)} is updated with status: "resolved"`;
   if (isMalformedIssueExit(exit)) return `2. ${malformedExitRefusal(ctx)}`;
   if (exit.exit === "deferred" && await deferralLeftIssueUnchanged(ctx)) {
     return `2. ${DEFERRAL_UNCHANGED_HINT(id)}`;
   }
-  return `2. Ensure .story/issues/${id}.json carries this exit: ${issueExitLine(id, exit)}`;
+  return `2. Ensure ${issueLedgerPath(id)} carries this exit: ${issueExitLine(id, exit)}`;
 }
 
 function ticketLabel(ctx: StageContext): string {

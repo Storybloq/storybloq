@@ -413,6 +413,19 @@ describe("ISS-1380: the ordinary guards stay (real git)", { timeout: 60000 }, ()
     expect(state(root).state).toBe("FINALIZE");
     expect(events(root, "commit")).toEqual([]);
   });
+
+  it("E22 (ISS-1396): the same restored baseline committed and reported as HEAD through commit_done is refused", async () => {
+    const root = buildRepo({});
+    await toFinalize(root, (rec) => ({ ...rec, ...DEFERRAL }));
+    git(root, ["checkout", "HEAD", "--", ISSUE]);
+    editSource(root);
+    git(root, ["add", "src/a.ts"]);
+    git(root, ["commit", "-qm", "work"]);
+    const r = await report(root, { completedAction: "commit_done", commitHash: git(root, ["rev-parse", "HEAD"]) });
+    expect(r.text).toContain(`issue file ${ISSUE} is not in the commit`);
+    expect(state(root).state).toBe("FINALIZE");
+    expect(events(root, "commit")).toEqual([]);
+  });
 });
 
 describe("ISS-1380: exits through a real commit (real git)", { timeout: 60000 }, () => {

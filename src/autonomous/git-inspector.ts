@@ -433,7 +433,7 @@ async function refuseUnlessSha1(cwd: string): Promise<{ ok: false; reason: strin
  * all (`<sha>^` always names exactly the first parent, silently, for any
  * parent count).
  */
-async function gitParentCount(cwd: string, commitSha: string): Promise<GitResult<number>> {
+export async function gitParentCount(cwd: string, commitSha: string): Promise<GitResult<number>> {
   return git(cwd, ["rev-list", "--parents", "-n", "1", commitSha], (out) => {
     const tokens = out.trim().split(/\s+/).filter(Boolean);
     if (tokens.length === 0) throw new Error("empty rev-list output");

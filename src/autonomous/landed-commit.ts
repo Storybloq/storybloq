@@ -9,8 +9,26 @@
  *
  * Read-only: nothing here writes session state or touches the index.
  */
+import { relative, resolve, sep } from "node:path";
 import type { FullSessionState } from "./session-types.js";
 import { gitDiffTreeNames, gitHead, gitIsAncestor } from "./git-inspector.js";
+import { issueFilePath, ticketFilePath } from "../core/project-loader.js";
+
+/**
+ * ISS-1396: a ledger record's repo-relative, slash-separated path, taken from
+ * the loader's own writer path for its id, never rebuilt from the display id.
+ * The id names the file in both ledger forms (`T-001`, or `t-<hash>`).
+ */
+const LEDGER_ANCHOR = resolve("/");
+function ledgerRelative(absolute: string): string {
+  return relative(LEDGER_ANCHOR, absolute).split(sep).join("/");
+}
+export function ticketLedgerPath(id: string): string {
+  return ledgerRelative(ticketFilePath(LEDGER_ANCHOR, id));
+}
+export function issueLedgerPath(id: string): string {
+  return ledgerRelative(issueFilePath(LEDGER_ANCHOR, id));
+}
 
 /**
  * The commit from which the CURRENT item must produce a new, validated commit
@@ -53,8 +71,8 @@ export interface LandedCommitEvidence {
 /** The ledger files a commit for this item may carry. */
 export function itemLedgerPaths(state: FullSessionState): string[] {
   const paths: string[] = [];
-  if (state.ticket?.id) paths.push(`.story/tickets/${state.ticket.id}.json`);
-  if (state.currentIssue?.id) paths.push(`.story/issues/${state.currentIssue.id}.json`);
+  if (state.ticket?.id) paths.push(ticketLedgerPath(state.ticket.id));
+  if (state.currentIssue?.id) paths.push(issueLedgerPath(state.currentIssue.id));
   return paths;
 }
 

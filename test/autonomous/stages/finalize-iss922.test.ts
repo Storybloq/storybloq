@@ -57,6 +57,16 @@ function buildRepo(): { root: string; initHead: string } {
     mkdirSync(join(root, ".story", sub), { recursive: true });
   }
   writeFileSync(join(root, "README.md"), "fixture\n");
+  // ISS-1396: FINALIZE loads the project to check where the item's ledger
+  // record lives, and refuses when it does not load.
+  writeFileSync(join(root, ".story", "config.json"), JSON.stringify({
+    version: 2, schemaVersion: 1, project: "iss922", type: "npm", language: "typescript",
+    features: { tickets: true, issues: true, handovers: true, roadmap: true, reviews: true },
+  }));
+  writeFileSync(join(root, ".story", "roadmap.json"), JSON.stringify({
+    title: "iss922", date: "2026-01-02",
+    phases: [{ id: "p1", label: "P1", name: "Phase 1", description: "Test" }], blockers: [],
+  }));
   git(root, ["init", "-q", "."]);
   git(root, ["config", "user.email", "t@t.t"]);
   git(root, ["config", "user.name", "t"]);

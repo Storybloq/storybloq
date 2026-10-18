@@ -401,6 +401,19 @@ export function ticketFilePath(root: string, id: string): string {
   return join(resolve(root, ".story"), "tickets", `${id}.json`);
 }
 
+/** The issue counterpart of `ticketFilePath`: `ISS-001.json` or `i-<hash>.json`. */
+export function issueFilePath(root: string, id: string): string {
+  return join(resolve(root, ".story"), "issues", `${id}.json`);
+}
+
+/**
+ * ISS-1396: the `filename_id_mismatch` warning text, exported so a reader
+ * that matches it (FINALIZE's misplaced-record guard) matches these bytes.
+ */
+export function filenameIdMismatchMessage(stem: string, id: string): string {
+  return `Filename stem "${stem}" does not match content id "${id}"`;
+}
+
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
@@ -535,7 +548,7 @@ export async function prepareIssueWrite(
     );
   }
   const wrapDir = resolve(root, ".story");
-  const target = join(wrapDir, "issues", `${unstamped.id}.json`);
+  const target = issueFilePath(root, unstamped.id);
   await ensureEntityDir(target, wrapDir);
   // Codex F1: the read comes first, and nothing awaits between obtaining the
   // context and the decision, so the lock cannot be released in between.
@@ -1995,7 +2008,7 @@ async function loadDirectory<T>(
         if (!stemMatchesId) {
           warnings.push({
             file: relPath,
-            message: `Filename stem "${stem}" does not match content id "${data.id}"`,
+            message: filenameIdMismatchMessage(stem, data.id),
             type: "filename_id_mismatch",
           });
         }

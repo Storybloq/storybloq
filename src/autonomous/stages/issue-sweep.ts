@@ -371,6 +371,79 @@ export async function recoverIssueSweepStep(root: string, state: FullSessionStat
   return result ?? { kind: "pending", reason: "the sweep lock returned no verdict" };
 }
 
+export type CancelSweepRelease =
+  | { kind: "released"; events: Array<{ type: string; data: Record<string, unknown> }>; notes: string[] }
+  | { kind: "refused"; text: string }
+  | { kind: "pending"; reason: string };
+
+const UNREADABLE_ISSUE = /^\.story[\\/]issues[\\/]/;
+
+/**
+ * ISS-1379: before a cancel ends the session, every issue its sweep still
+ * holds is released, so none is left stranded under an ended session. The
+ * targets are the issues stamped with this session's `sweepAcquisition`, never
+ * `current` or the marker, which recovery may already have cleared. All of it
+ * is decided and written inside one sweep lock:
+ *  - an issue file that cannot be read, parsed or validated has unknown
+ *    ownership, so the cancel refuses until it is repaired or removed;
+ *  - an issue of ours with merge conflicts refuses until they are resolved;
+ *  - an issue of ours earmarked to someone else keeps its stamp and is reported;
+ *  - every other issue of ours loses the stamp and our earmark, and is
+ *    reopened if the sweep left it in progress. Other edits are kept.
+ * Nothing is written unless nothing refuses. A thrown lock or IO error is
+ * pending, and the caller refuses as for an unconfirmed step.
+ */
+export async function releaseSweepAcquisitionsOnCancel(root: string, sessionId: string): Promise<CancelSweepRelease> {
+  let result = null as CancelSweepRelease | null;
+  try {
+    const { withProjectLockForIssueSweep, writeIssueUnlocked } = await import("../../core/project-loader.js");
+    await withProjectLockForIssueSweep(root, async ({ state: projectState, warnings }) => {
+      const unreadable = warnings.find((w) => (w.type === "parse_error" || w.type === "schema_error") && UNREADABLE_ISSUE.test(w.file));
+      if (unreadable) {
+        result = {
+          kind: "refused",
+          text: `Issue file ${unreadable.file} could not be read (${unreadable.message}), so whether this session's issue sweep still holds it is unknown. Repair the file, or remove it through the ledger, then cancel again.`,
+        };
+        return;
+      }
+      const held = projectState.issues.filter((issue) => {
+        const acquired = (issue as Record<string, unknown>).sweepAcquisition;
+        return isRecord(acquired) && acquired.sessionId === sessionId && isActiveLifecycle(issue);
+      });
+      const conflicted = held.find(hasIssueConflicts);
+      if (conflicted) {
+        result = {
+          kind: "refused",
+          text: `Issue ${conflicted.id} is still held by this session's issue sweep and has unresolved merge conflicts. Resolve them (\`storybloq conflicts\`, then \`storybloq resolve\`), then cancel again.`,
+        };
+        return;
+      }
+      const events: Array<{ type: string; data: Record<string, unknown> }> = [];
+      const notes: string[] = [];
+      const stampDate = localDateOf(new Date());
+      for (const issue of held) {
+        const earmark = issue.earmark;
+        if (earmark && !(earmark.stage === "assigned" && earmark.holderSession === sessionId)) {
+          const reason = `earmarked for ${describeEarmarkHolder(earmark)}`;
+          events.push({ type: "issue_sweep_conflict", data: { id: issue.id, reason } });
+          notes.push(`Issue ${issue.id} keeps this session's sweep acquisition: ${reason}.`);
+          continue;
+        }
+        if (issue.status === "inprogress") {
+          await writeIssueUnlocked(touchUpdated(releaseImage(issue, "deferred", sessionId), issue, stampDate), root, { touch: { date: stampDate } });
+        } else {
+          await writeIssueUnlocked(releaseImage(issue, "fixed", sessionId), root, { touch: false });
+        }
+        events.push({ type: "issue_sweep_cancel_release", data: { id: issue.id } });
+      }
+      result = { kind: "released", events, notes };
+    });
+  } catch (err) {
+    return { kind: "pending", reason: failureText(err) };
+  }
+  return result ?? { kind: "pending", reason: "the sweep lock returned no verdict" };
+}
+
 type Acquisition =
   | { kind: "acquired"; issue: Issue; count: number }
   | { kind: "exhausted" }

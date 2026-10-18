@@ -105,7 +105,7 @@ import { resolveRecipe } from "./recipes/loader.js";
 import { getStage, findNextStage, findFirstPostComplete, findNextPostComplete, type NextStageResult } from "./stages/registry.js";
 import { StageContext, isStageAdvance, type StageAdvance, type StageResult } from "./stages/types.js";
 import { PARK_ACTION, PARK_STAGES } from "./stages/park.js";
-import { recoverIssueSweepStep, sweepStepPendingText } from "./stages/issue-sweep.js";
+import { recoverIssueSweepStep, sweepStepPendingText, isSweepStepMarker, releaseSweepAcquisitionsOnCancel } from "./stages/issue-sweep.js";
 import "./stages/index.js"; // Register all extracted stages
 import { writeCheckpoint } from "./telemetry-writer.js";
 
@@ -4804,11 +4804,20 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // ticket that now belongs to someone else -- the exact ISS-784 hazard, reached
   // through the cancel path instead of the report path. The marker is dropped
   // instead, so the session still ends cleanly and nothing foreign is touched.
+  //
+  // ISS-1379: an issue-sweep step is recovered whatever the claim posture. It
+  // never writes a ticket, and its recovery proves itself against the issue's
+  // own fingerprints inside the sweep lock, so ISS-904's hazard does not
+  // apply. A step that cannot be confirmed refuses the cancel with the marker
+  // intact, as start, report and resume do: an ended session's marker is never
+  // recovered, and the issue it names would stay stranded.
+  const sweepMarker = isSweepStepMarker(info.state.pendingProjectMutation);
   if (resume) {
     // No ticket work is repeated. The first attempt already ran it, and its
     // result is what the transition record carries.
-  } else if (mayWriteTicket) {
+  } else if (mayWriteTicket || sweepMarker) {
     const cancelRecovery = await recoverPendingMutation(info.dir, info.state, root);
+    if (cancelRecovery.kind === "sweep-step-pending") return sweepStepPendingResult(cancelRecovery.reason);
     // T-537: a blocked pending completion never makes a session
     // uncancellable. The completion and its postMutation are suppressed, the
     // abandonment is recorded, the marker is cleared, and the release and
@@ -4823,6 +4832,21 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
       "if-active",
     );
   }
+  // ISS-1379: release every issue this session's sweep still holds, or refuse
+  // when its ownership cannot be settled, before anything else is written. A
+  // session that never swept holds none, and is not held up by the ledger.
+  let sweepNotes = "";
+  if (!resume && (sweepMarker || info.state.issueSweepState)) {
+    const swept = findSessionById(root, args.sessionId!) ?? info;
+    const release = await releaseSweepAcquisitionsOnCancel(root, swept.state.sessionId);
+    if (release.kind === "pending") return sweepStepPendingResult(release.reason);
+    if (release.kind === "refused") return guideError(new Error(release.text));
+    for (const event of release.events) {
+      appendEvent(swept.dir, { rev: swept.state.revision, type: event.type, timestamp: new Date().toISOString(), data: event.data });
+    }
+    sweepNotes = release.notes.map((note) => ` ${note}`).join("");
+  }
+
   // Re-read state after recovery
   const cancelInfo = findSessionById(root, args.sessionId!) ?? info;
 
@@ -4962,7 +4986,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     ? ` Shutdown is NOT yet complete: ${tail.unmet.join("; ")}. ${retryAdvice(cancelInfo.dir, resume.transitionId)}`
     : "";
   return {
-    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) were completed.${stashNote}${tailNote}${reportSection}` }],
+    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) were completed.${sweepNotes}${stashNote}${tailNote}${reportSection}` }],
   };
 }
 

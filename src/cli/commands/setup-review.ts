@@ -30,6 +30,8 @@ export interface SetupReviewDeps {
   readonly publish?: (from: string, to: string) => void;
   readonly beforePublish?: (lockPath: string) => void;
   readonly syncDir?: (path: string) => void;
+  /** Grace between SIGTERM, SIGKILL and giving up on a timed-out reviewer. */
+  readonly killGraceMs?: number;
 }
 
 export interface SetupReviewIo {
@@ -257,7 +259,7 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
 
   if (!verifyProjectLockOwnership(run.lock)) return lockLost();
   const startedAt = now();
-  const result = await runReviewer(backend, args, { cwd: run.staging, env: reviewerEnv(backend, run.env), input: prompt, timeoutMs });
+  const result = await runReviewer(backend, args, { cwd: run.staging, env: reviewerEnv(backend, run.env), input: prompt, timeoutMs, ...(run.deps.killGraceMs !== undefined ? { killGraceMs: run.deps.killGraceMs } : {}) });
 
   let raw: Buffer | null = null;
   let failure: { kind: FailureKind; error: string } | null = null;
@@ -451,6 +453,28 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
     if (u) return u;
     throw e;
   }
+  // Under the run lock: a record a run has renamed in but not yet synced is never read as published.
+  let lock: ProjectLockHandle;
+  try {
+    lock = await acquireProjectLockAsync(paths.lock, LOCK_WAIT);
+  } catch {
+    return lockBusy();
+  }
+  try {
+    try {
+      setup = readSetup(paths);
+    } catch (e) {
+      const u = asUsage(e);
+      if (u) return u;
+      throw e;
+    }
+    return statusLines(paths, setup, packet);
+  } finally {
+    releaseProjectLock(lock);
+  }
+}
+
+function statusLines(paths: SetupPaths, setup: SetupState, packet: ReviewPacket): SetupReviewResult {
   try {
     persistRevision(paths, packet);
   } catch (e) {

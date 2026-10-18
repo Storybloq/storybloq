@@ -128,6 +128,18 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 }
 
 /**
+ * Lets go of a child that will not close: its pipes are destroyed and it is
+ * unref'd, so a process it started outside the group cannot keep this one
+ * running.
+ */
+function release(child: ChildProcess): void {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.unref();
+}
+
+/**
  * At the timeout: SIGTERM to the group, SIGKILL after the grace period, and
  * after one more grace period `giveUp` settles the caller even if something
  * still holds the pipes open. Returns the canceller for a settled run.
@@ -168,7 +180,7 @@ function runProbe(backend: SetupReviewBackend, args: string[], env: NodeJS.Proce
       cancel();
       resolve(value);
     };
-    const cancel = escalate(child, limits.timeoutMs ?? PROBE_TIMEOUT_MS, limits.killGraceMs ?? KILL_GRACE_MS, () => { timedOut = true; }, () => finish(null));
+    const cancel = escalate(child, limits.timeoutMs ?? PROBE_TIMEOUT_MS, limits.killGraceMs ?? KILL_GRACE_MS, () => { timedOut = true; }, () => { release(child); finish(null); });
     child.stdout!.setEncoding("utf-8");
     child.stdout!.on("data", (c: string) => { stdout += c; });
     child.on("error", () => finish(null));
@@ -227,7 +239,7 @@ export function runReviewer(command: string, args: string[], opts: { cwd: string
       resolve(r);
     };
     const cancel = escalate(child, opts.timeoutMs, opts.killGraceMs ?? KILL_GRACE_MS, () => { timedOut = true; },
-      () => finish({ exitCode: null, timedOut, stdout: Buffer.concat(out), stderr, spawnError: null }));
+      () => { release(child); finish({ exitCode: null, timedOut, stdout: Buffer.concat(out), stderr, spawnError: null }); });
     child.stdout.on("data", (c: Buffer) => out.push(c));
     child.stderr.on("data", (c) => { stderr += String(c); });
     child.stdin.on("error", () => { /* a reviewer that exits before reading its prompt fails below */ });

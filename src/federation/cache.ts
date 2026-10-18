@@ -33,6 +33,12 @@ export interface FederationCache {
   lastScanTimestamp: string;
   nodes: Record<string, CachedNodeSummary>;
   crossNodeRefStatuses?: Record<string, string>;
+  /**
+   * ISS-1393: the withdrawn ticket ids behind each withdrawn or withheld ref,
+   * keyed like crossNodeRefStatuses and rebuilt with it on every write, so the
+   * Mac app can name them as `ticket blocked` does.
+   */
+  crossNodeRefDetails?: Record<string, string[]>;
 }
 
 const CACHE_FILENAME = "federation-cache.json";
@@ -96,10 +102,13 @@ export function writeFederationCache(
 
   if (refStatuses && refStatuses.size > 0) {
     const statuses: Record<string, string> = {};
+    const details: Record<string, string[]> = {};
     for (const [ref, s] of refStatuses) {
       statuses[ref] = s.resolved ? s.status : "unresolved";
+      if (s.resolved && "detail" in s) details[ref] = [...s.detail];
     }
     cache.crossNodeRefStatuses = statuses;
+    if (Object.keys(details).length > 0) cache.crossNodeRefDetails = details;
   }
 
   writeFederationCacheObject(storyDir, cache);

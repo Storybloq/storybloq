@@ -750,18 +750,55 @@ function activationInput(p: SetupPayload) {
   return { level: p.quality.level, verifyApplies: p.quality.verifyApplies, components: p.quality.components };
 }
 
-/** The config with setup's owned values written over it: project facts and the matrix's stages (plan v5 5b). */
+const PROJECT_FACTS = ["project", "type", "language"] as const;
+type ProjectFact = (typeof PROJECT_FACTS)[number];
+/** init's values for a fact nobody stated; a scaffold holding one takes the package's value. */
+const INIT_PLACEHOLDER: Partial<Record<ProjectFact, string>> = { type: "generic", language: "unknown" };
+const proposedFact = (p: SetupPayload, f: ProjectFact): string => (f === "project" ? p.project.name : p.project[f]);
+const stagesOf = (c: Config): Record<string, unknown> => ((c as Config & { recipeOverrides?: { stages?: Record<string, unknown> } }).recipeOverrides?.stages) ?? {};
+
+/** The reused scaffold's config as setup recorded it before its first change, or null on a fresh folder. */
+function scaffoldConfig(p: SetupPayload): Config | null {
+  const pre = p.preImages.find((x) => x.target === ".story/config.json");
+  return pre ? (JSON.parse(pre.content) as Config) : null;
+}
+
+/**
+ * The config with setup's owned values written over it (plan v5 5b): the
+ * matrix's stages, and the project facts only where the scaffold stated none
+ * (review r1 #2: a reused scaffold keeps its own project, type and language).
+ */
 function plannedConfig(p: SetupPayload, config: Config): Config {
   const { stages } = computeInitialStages(activationInput(p));
   const overrides = (config as Config & { recipeOverrides?: Record<string, unknown> }).recipeOverrides ?? {};
-  const existing = (overrides.stages as Record<string, unknown> | undefined) ?? {};
-  return {
-    ...config,
-    project: p.project.name,
-    type: p.project.type,
-    language: p.project.language,
-    recipeOverrides: { ...overrides, stages: { ...existing, ...stages } },
-  } as Config;
+  const scaffold = scaffoldConfig(p);
+  const facts = Object.fromEntries(PROJECT_FACTS.map((f) => {
+    const own = scaffold?.[f];
+    return [f, typeof own === "string" && own.trim() !== "" && own !== INIT_PLACEHOLDER[f] ? own : proposedFact(p, f)];
+  }));
+  return { ...config, ...facts, recipeOverrides: { ...overrides, stages: { ...stagesOf(config), ...stages } } } as Config;
+}
+
+/**
+ * After the owner accepted the scaffold config as it stood (accept-current on
+ * a pre-image drift), what they changed from the pre-image is what the config
+ * step writes; the rest is planned (review r1 #2).
+ */
+function withAccepted(p: SetupPayload, config: Config, planned: Config): Config {
+  const scaffold = scaffoldConfig(p);
+  if (scaffold === null || !lastReceipt(p, "config-baseline")) return planned;
+  const next = { ...planned } as Config & Record<string, unknown>;
+  for (const f of PROJECT_FACTS) if (config[f] !== scaffold[f]) next[f] = config[f];
+  const now = stagesOf(config);
+  const was = stagesOf(scaffold);
+  const stages = { ...stagesOf(planned) };
+  for (const name of new Set([...Object.keys(now), ...Object.keys(was)])) {
+    if (digestOf(now[name] ?? null) === digestOf(was[name] ?? null)) continue;
+    if (now[name] === undefined) delete stages[name];
+    else stages[name] = now[name];
+  }
+  const overrides = (planned as Config & { recipeOverrides?: Record<string, unknown> }).recipeOverrides ?? {};
+  return { ...next, recipeOverrides: { ...overrides, stages } } as Config;
 }
 
 /** Whether a config turns any recipe stage on or off differently from the approved quality level. */
@@ -775,11 +812,12 @@ async function stepConfig(ctx: StepContext): Promise<void> {
   const p = ctx.progress.payload;
   const config = ctx.lr.state.config;
   const { stages } = computeInitialStages(activationInput(p));
-  const next = plannedConfig(p, config);
+  const next = withAccepted(p, config, plannedConfig(p, config));
   const op = await prepareConfigWrite(next, ctx.root);
   await commit(ctx, [op], { step: "config", target: "config", ownedPre: ownedDigest.config(config), ownedPost: ownedDigest.config(next) });
   invalidateResolutionWriteContext(ctx.root);
-  const on = Object.entries(stages).filter(([, s]) => s.enabled === true).map(([name]) => name);
+  const written = stagesOf(next) as Record<string, { enabled?: unknown } | undefined>;
+  const on = Object.keys(stages).filter((name) => written[name]?.enabled === true);
   ctx.out.push(`-> storybloq · recipe stages written (${p.quality.level}; on: ${on.length > 0 ? on.join(", ") : "none"})`);
 }
 
@@ -1217,8 +1255,12 @@ export function setupReportLines(state: ProjectState, p: SetupPayload): string[]
   );
   const ready = partitionByActionability(recommend(state, 10).recommendations).actionablePool.filter((r) => r.kind === "ticket" && keyedIds.has(r.id));
   const label = (r: { id: string; displayId?: string; title: string }) => `${r.displayId ?? r.id} "${r.title}"`;
+  const config = state.config;
+  // Review r1 #2: the facts are the ledger's; where they are not the package's, one line says so.
+  const kept = PROJECT_FACTS.filter((f) => config[f] !== proposedFact(p, f)).map((f) => `${f} "${config[f]}" (proposed "${proposedFact(p, f)}")`);
   const lines = [
-    `Setup ${p.setupId}: ${p.project.name} (${p.project.type}, ${p.project.language})`,
+    `Setup ${p.setupId}: ${config.project} (${config.type}, ${config.language})`,
+    ...(kept.length > 0 ? [`Kept current: ${kept.join(", ")}`] : []),
     `Created: ${counts.phases} phases, ${counts.tickets} tickets, ${counts.checkpoints} checkpoints, ${counts.issues} issues${adopted.size > 0 ? `; adopted: ${adopted.size}` : ""}`,
     `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}`,
     ...pending.map((l) => `Pending: ${l.stage}${l.component === null ? "" : ` (${l.component})`}: ${l.command} (pending: ${l.reason})`),

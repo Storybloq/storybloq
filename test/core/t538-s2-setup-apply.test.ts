@@ -229,7 +229,7 @@ describe("refusals before any write", () => {
 describe("an empty scaffold", () => {
   it("is reused: its config and roadmap are kept as pre-images before the first change", async () => {
     const root = await folder();
-    await initProject(root, { name: "scaffold" });
+    await initProject(root, { name: "scaffold", type: "cargo", language: "rust" });
     const config = await readFile(join(root, ".story", "config.json"), "utf-8");
     const roadmap = await readFile(join(root, ".story", "roadmap.json"), "utf-8");
     const result = await setupApply(root, payload());
@@ -239,6 +239,29 @@ describe("an empty scaffold", () => {
     const view = await ownedView(root);
     expect(view.phases.map((p) => p[0])).toEqual(["p0", "build", "polish"]);
     expect(view.schema).toBe(5);
+  });
+
+  it("keeps the scaffold's own project, type and language, writes only the stages, and says so on one report line (review r1 #2)", async () => {
+    const root = await folder();
+    await initProject(root, { name: "scaffold", type: "cargo", language: "rust" });
+    const result = await setupApply(root, payload());
+    expect(result.exitCode).toBe(0);
+    const { config } = (await loadProject(root)).state;
+    expect([config.project, config.type, config.language]).toEqual(["scaffold", "cargo", "rust"]);
+    expect((await ownedView(root)).stages).toMatchObject({ TEST: { enabled: true } });
+    expect(result.lines).toContain("Setup SS-0123abcd: scaffold (cargo, rust)");
+    expect(result.lines.filter((l) => l.startsWith("Kept current:"))).toEqual(['Kept current: project "scaffold" (proposed "demo"), type "cargo" (proposed "npm"), language "rust" (proposed "typescript")']);
+  });
+
+  it("fills init's placeholder type and language from the package, and a fresh folder has no kept-current line", async () => {
+    const root = await folder();
+    await initProject(root, { name: "demo" });
+    const result = await setupApply(root, payload());
+    const { config } = (await loadProject(root)).state;
+    expect([config.project, config.type, config.language]).toEqual(["demo", "npm", "typescript"]);
+    expect(result.lines.some((l) => l.startsWith("Kept current:"))).toBe(false);
+    const fresh = await setupApply(await folder(), payload());
+    expect(fresh.lines.some((l) => l.startsWith("Kept current:"))).toBe(false);
   });
 });
 

@@ -439,11 +439,24 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect(stages.TEST.enabled).toBe(true);
   });
 
-  it("a scaffold config the owner changed is accepted as the new baseline, and the config step then writes setup's values over it", async () => {
+  it("a scaffold config the owner changed and accepted is what the config step writes, with the approved stages applied (review r1 #2)", async () => {
     const root = await stoppedAt("step:phase:K1", {}, true);
     await editJson(configPath(root), (raw) => { raw.language = "go"; });
+    const result = await resolve1(root, ".story/config.json", "accept-current");
+    expect(result.exitCode).toBe(0);
+    const config = (await loadProject(root)).state.config as unknown as { language: string; recipeOverrides: { stages: { TEST: { enabled: boolean } } } };
+    expect(config.language).toBe("go");
+    expect(config.recipeOverrides.stages.TEST.enabled).toBe(true);
+    expect(result.lines).toContainEqual(expect.stringMatching(/^Kept current: .*language "go" \(proposed "typescript"\)$/));
+  });
+
+  it("an accepted scaffold stage edit is kept by the config step, not overwritten (review r1 #2)", async () => {
+    const root = await stoppedAt("step:phase:K1", {}, true);
+    await editJson(configPath(root), (raw) => { raw.recipeOverrides = { stages: { TEST: { enabled: false } } }; });
+    await reviewStore(root, { skipped: true });
     expect((await resolve1(root, ".story/config.json", "accept-current")).exitCode).toBe(0);
-    expect((await loadProject(root)).state.config.language).toBe("typescript");
+    const config = (await loadProject(root)).state.config as unknown as { recipeOverrides: { stages: { TEST: { enabled: boolean }; BUILD?: unknown } } };
+    expect(config.recipeOverrides.stages.TEST.enabled).toBe(false);
   });
 
   it("keep-current on a governance file setup never wrote is material and removes setup's .proposed copy; on drift it is not", async () => {

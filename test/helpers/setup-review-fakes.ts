@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output" | "tamper" | "wrapper";
+export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output" | "tamper" | "wrapper" | "escape";
 
 const FAKE_SOURCE = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
@@ -62,9 +62,10 @@ process.stdin.on("end", () => {
     process.exit(0);
   };
   if (mode === "tamper") fs.appendFileSync("packet.md", "tampered while the reviewer ran\n");
-  if (mode === "wrapper") {
-    // A child that ignores SIGTERM and holds this process's stdout and stderr open.
-    const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], { stdio: ["ignore", "inherit", "inherit"] });
+  if (mode === "wrapper" || mode === "escape") {
+    // A child that ignores SIGTERM and holds this process's stdout and stderr open;
+    // in "escape" it also leaves the reviewer's process group, so no group signal reaches it.
+    const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], { stdio: ["ignore", "inherit", "inherit"], detached: mode === "escape" });
     fs.writeFileSync(process.env.FAKE_PID_FILE, String(child.pid));
     setInterval(() => {}, 1000);
     return;

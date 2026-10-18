@@ -89,4 +89,16 @@ describe("reviewer processes always end (T-536)", () => {
     expect(run).toMatchObject({ timedOut: true });
     expect(gone).toBe(true);
   }, 15_000);
+
+  it("a review timeout settles a bounded time after SIGKILL even when a process outside the group holds the pipes", async () => {
+    const fake = makeFakeBin(["codex"]);
+    const pidFile = join(fake.stdinDir, "escaped.pid");
+    const env = { PATH: fake.path, FAKE_CODEX_MODE: "escape", FAKE_PID_FILE: pidFile };
+    const started = Date.now();
+    const run = await within(runReviewer("codex", ["exec"], { cwd: fake.stdinDir, env, input: "packet", timeoutMs: 300, killGraceMs: 200 }), 8_000);
+    const elapsed = Date.now() - started;
+    try { process.kill(Number(readFileSync(pidFile, "utf-8")), "SIGKILL"); } catch { /* gone */ }
+    expect(run).toMatchObject({ timedOut: true, exitCode: null });
+    expect(elapsed).toBeLessThan(3_000);
+  }, 15_000);
 });

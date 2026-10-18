@@ -22,7 +22,7 @@
  * not look" lead somewhere different.
  */
 
-import type { WorkflowState, FinalizeCheckpoint, FullSessionState, IssueExit } from "./session-types.js";
+import type { WorkflowState, FinalizeCheckpoint, FullSessionState, RecordedIssueExit } from "./session-types.js";
 import { isNonActionableDisposition } from "../core/issue-disposition.js";
 import { WORKFLOW_STATES } from "./session-types.js";
 import type { ClaimEpoch, ClaimReconciliation } from "./claim-reconciliation.js";
@@ -356,7 +356,7 @@ export function authorityLedgerTargets(state: FullSessionState): AuthorityLedger
  * Before `committed` it is `currentIssueExit`; the committed write clears that
  * and records the exit on `finalizedItem`, which is read from then on.
  */
-export function finalizingIssueExit(state: FullSessionState): IssueExit | null {
+export function finalizingIssueExit(state: FullSessionState): RecordedIssueExit | null {
   if (state.finalizeCheckpoint === "committed") {
     const recorded = state.finalizedItem;
     return recorded && recorded.kind === "issue" ? recorded.exit ?? null : null;
@@ -632,6 +632,10 @@ export function decideTakeoverAuthority(input: TakeoverAuthorityInput): Takeover
         // ISS-1380: a deferral leaves the issue open with its disposition, so
         // that shape is accepted only for a recorded deferred exit.
         const exit = finalizingIssueExit(state);
+        if (exit?.exit === "malformed") {
+          return refuse(posture, "finalize-shape-inconsistent",
+            `the exit recorded for issue ${item.id} is malformed, so it is not known whether the issue was fixed, closed or deferred`);
+        }
         const deferredShape = exit?.exit === "deferred"
           && (issue.value.status === "open" || issue.value.status === "inprogress")
           && isNonActionableDisposition(issue.value.disposition);

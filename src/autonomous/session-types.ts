@@ -1067,6 +1067,21 @@ export const IssueExitSchema = z.discriminatedUnion("exit", [
 ]);
 export type IssueExit = z.infer<typeof IssueExitSchema>;
 
+/**
+ * ISS-1380: what a recorded exit that fails `IssueExitSchema` parses to. A
+ * malformed exit must never read as "no exit", because no exit is the legacy
+ * shape that books the issue as fixed. Refusing the whole state would make
+ * the session unreadable to every caller instead, so the damage is kept as
+ * this marker and FINALIZE and COMPLETE refuse it by name.
+ */
+export const MALFORMED_ISSUE_EXIT = { exit: "malformed" } as const;
+export const RecordedIssueExitSchema = z.union([IssueExitSchema, z.object({ exit: z.literal("malformed") })]);
+export type RecordedIssueExit = z.infer<typeof RecordedIssueExitSchema>;
+
+export function isMalformedIssueExit(exit: RecordedIssueExit | null | undefined): exit is { exit: "malformed" } {
+  return exit?.exit === "malformed";
+}
+
 export const SessionStateSchema = z.object({
   schemaVersion: z.literal(CURRENT_SESSION_SCHEMA_VERSION),
   sessionId: z.string().uuid(),
@@ -1191,7 +1206,9 @@ export const SessionStateSchema = z.object({
 
   // ISS-1380: the exit ISSUE_FIX took for the current issue. Cleared by the
   // committed write, which moves it onto `finalizedItem`, and by every pick.
-  currentIssueExit: IssueExitSchema.nullable().catch(null).default(null),
+  // Absent reads as null (a legacy session); a malformed value reads as the
+  // malformed marker, never as null.
+  currentIssueExit: RecordedIssueExitSchema.nullable().catch(MALFORMED_ISSUE_EXIT).default(null),
 
   // ISS-1380: issues this session finished with a deferral. Kept apart from
   // `resolvedIssues`, which only ever names issues that actually resolved.
@@ -1281,7 +1298,7 @@ export const SessionStateSchema = z.object({
       commitHash: z.string().min(1).nullable(),
       // ISS-1380: the exit, kept here because `currentIssue` and
       // `currentIssueExit` are cleared by the same committed write.
-      exit: IssueExitSchema.optional(),
+      exit: RecordedIssueExitSchema.optional().catch(MALFORMED_ISSUE_EXIT),
     }),
     // The re-entry shape: FINALIZE reached `committed` with neither a ticket
     // nor an issue to attribute. Recorded POSITIVELY rather than as null,

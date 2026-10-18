@@ -248,9 +248,61 @@ describe("ISS-1380 path A: a deferral with nothing else changed (real git)", { t
     writeFileSync(join(root, "test", "b.test.ts"), "// new\n");
     const r = await report(root, { completedAction: "files_staged" });
     expect(r.text).toContain("the working tree is not clean");
-    expect(r.text).toContain("?? test/");
+    expect(r.text).toContain("?? test/b.test.ts");
     expect(state(root).state).toBe("FINALIZE");
     expect(events(root, "issue_fix_no_commit")).toEqual([]);
+  });
+
+  it("E19s: an untracked file stays visible when the repository hides untracked files", async () => {
+    const root = buildRepo(DEFERRAL);
+    await toFinalize(root);
+    git(root, ["config", "status.showUntrackedFiles", "no"]);
+    writeFileSync(join(root, "src", "b.ts"), "export const b = 1;\n");
+    const r = await report(root, { completedAction: "files_staged" });
+    expect(r.text).toContain("the working tree is not clean");
+    expect(r.text).toContain("?? src/b.ts");
+    expect(state(root).state).toBe("FINALIZE");
+    expect(events(root, "issue_fix_no_commit")).toEqual([]);
+  });
+});
+
+/** Rewrites currentIssueExit in state.json by hand, as damage would. */
+function setRecordedExit(root: string, exit: unknown): void {
+  const file = join(sessionDir(root), "state.json");
+  const raw = JSON.parse(readFileSync(file, "utf-8")) as Record<string, unknown>;
+  if (exit === undefined) delete raw.currentIssueExit;
+  else raw.currentIssueExit = exit;
+  writeFileSync(file, JSON.stringify(raw, null, 2));
+}
+const NO_REF_DEFERRAL = { exit: "deferred", disposition: "owner_gated", reason: DEFERRAL.dispositionReason };
+
+describe("ISS-1380: a malformed recorded exit fails closed (real git)", { timeout: 60000 }, () => {
+  it("E23: an absent exit still loads as null; a malformed one loads, and never as null", async () => {
+    const root = buildRepo(DEFERRAL);
+    await toFinalize(root);
+    setRecordedExit(root, undefined);
+    expect(session.readSession(sessionDir(root))?.currentIssueExit).toBeNull();
+    setRecordedExit(root, NO_REF_DEFERRAL);
+    const loaded = session.readSession(sessionDir(root));
+    expect(loaded).not.toBeNull();
+    expect(loaded!.currentIssueExit).not.toBeNull();
+    expect(loaded!.currentIssueExit?.exit).not.toBe("deferred");
+  });
+
+  it("E23: FINALIZE refuses a deferral with no ref by name and never books the open issue as resolved", async () => {
+    const root = buildRepo(DEFERRAL);
+    await toFinalize(root);
+    setRecordedExit(root, NO_REF_DEFERRAL);
+    editSource(root);
+    const hash = commitAll(root, ["src/a.ts"]);
+    const r = await report(root, { completedAction: "commit_done", commitHash: hash });
+    expect(r.text).toContain("`currentIssueExit`");
+    expect(r.text).toContain("is malformed");
+    const s = state(root);
+    expect(s.state).toBe("FINALIZE");
+    expect(s.finalizeCheckpoint).not.toBe("committed");
+    expect(s.resolvedIssues ?? []).not.toContain("ISS-001");
+    expect(s.deferredIssues ?? []).not.toContain("ISS-001");
   });
 });
 

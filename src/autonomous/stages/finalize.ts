@@ -1,6 +1,8 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput, FullSessionState } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree, gitPathDirty, gitChangedPaths, gitStatus } from "../git-inspector.js";
+import type { GuideReportInput, FullSessionState, IssueExit } from "../session-types.js";
+import { displayIdOf } from "../../core/resolver.js";
+import { isMalformedIssueExit } from "../session-types.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree, gitPathDirty, gitChangedPaths, gitStatusAllUntracked } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
 import { effectiveReviewEffort, effortDisclosureLine, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
@@ -16,7 +18,7 @@ import { finalizeEnterRoute, inspectLandedCommit, itemBaseline } from "../landed
 import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { ProjectState } from "../../core/project-state.js";
 import { classifySweepExit } from "./issue-sweep.js";
-import { issueExitLine, DEFERRAL_UNCHANGED_HINT } from "./issue-fix.js";
+import { issueExitLine, DEFERRAL_UNCHANGED_HINT, malformedIssueExitRefusal } from "./issue-fix.js";
 
 // itemBaseline (ISS-922) lives in landed-commit.ts (T-534), shared with the retirement.
 
@@ -342,6 +344,9 @@ export class FinalizeStage implements WorkflowStage {
       return routeAfterFinalize(ctx, { action: "advance" });
     }
 
+    const malformedAtEnter = malformedExitRefusal(ctx);
+    if (malformedAtEnter) return { instruction: malformedAtEnter };
+
     const blockedAtEnter = await checkpointFinalizeBlock(ctx, "enter");
     if (blockedAtEnter) return { instruction: blockedAtEnter };
 
@@ -425,6 +430,9 @@ export class FinalizeStage implements WorkflowStage {
     if (checkpoint === "committed") {
       return routeAfterFinalize(ctx, { action: "advance" });
     }
+
+    const malformed = malformedExitRefusal(ctx);
+    if (malformed) return { action: "retry", instruction: malformed };
 
     const busBlockers = await busShipBlockers(ctx);
     if (busBlockers.length > 0) {
@@ -533,7 +541,7 @@ export class FinalizeStage implements WorkflowStage {
       // unstaged or untracked work finish uncommitted.
       if (stagedResult.ok && headResult.ok && previousHead && headResult.data.hash === previousHead
         && await deferralLeftIssueUnchanged(ctx)) {
-        const status = await gitStatus(ctx.root);
+        const status = await gitStatusAllUntracked(ctx.root);
         if (!status.ok) {
           return { action: "retry", instruction: `Could not confirm the working tree is clean (git error: ${status.message ?? "unknown"}). Check \`git status\`, then call me again with completedAction: "files_staged".` };
         }
@@ -630,7 +638,8 @@ export class FinalizeStage implements WorkflowStage {
     const blocked = await checkpointFinalizeBlock(ctx, "commit");
     if (blocked) return { action: "retry", instruction: blocked };
     const currentIssue = ctx.state.currentIssue!;
-    const exit = ctx.state.currentIssueExit!;
+    const exit = ctx.state.currentIssueExit;
+    if (!exit || isMalformedIssueExit(exit)) return { action: "retry", instruction: malformedExitRefusal(ctx) ?? "No recorded exit to complete without a commit." };
     const issueDisplayId = (currentIssue as Record<string, unknown>).displayId as string | undefined;
     ctx.writeState({
       finalizeCheckpoint: "committed",
@@ -925,6 +934,9 @@ export class FinalizeStage implements WorkflowStage {
     if (currentIssue) {
       const issueDisplayId = (currentIssue as Record<string, unknown>).displayId as string | undefined;
       const exit = ctx.state.currentIssueExit ?? null;
+      // ISS-1380: report() refuses a malformed exit first; this keeps it from
+      // ever being booked even if a route reaches here around that check.
+      if (isMalformedIssueExit(exit)) return { action: "retry", instruction: malformedExitRefusal(ctx)! };
       ctx.writeState({
         finalizeCheckpoint: "committed",
         // T-450 step 7a: recorded in the SAME write that clears currentIssue
@@ -1052,7 +1064,7 @@ export class FinalizeStage implements WorkflowStage {
 function issueExitBookkeeping(
   state: FullSessionState,
   id: string,
-  exit: FullSessionState["currentIssueExit"],
+  exit: IssueExit | null,
   commitHash: string | null,
 ): Partial<FullSessionState> {
   const deferred = exit?.exit === "deferred";
@@ -1068,12 +1080,23 @@ function issueExitBookkeeping(
 }
 
 /**
+ * ISS-1380: a malformed recorded exit is refused before anything is
+ * committed or booked, so it can never fall through to fixed bookkeeping.
+ */
+function malformedExitRefusal(ctx: StageContext): string | null {
+  const issue = ctx.state.currentIssue;
+  if (!issue || !isMalformedIssueExit(ctx.state.currentIssueExit)) return null;
+  return malformedIssueExitRefusal("FINALIZE", "currentIssueExit", displayIdOf(issue), ctx.state.sessionId);
+}
+
+/**
  * ISS-1380: FINALIZE's step-2 line for an issue. A deferral proven to have
  * left its file unchanged is told so; every other exit names itself.
  */
 async function issueStagingLine(ctx: StageContext, id: string): Promise<string> {
   const exit = ctx.state.currentIssueExit;
   if (!exit) return `2. Ensure .story/issues/${id}.json is updated with status: "resolved"`;
+  if (isMalformedIssueExit(exit)) return `2. ${malformedExitRefusal(ctx)}`;
   if (exit.exit === "deferred" && await deferralLeftIssueUnchanged(ctx)) {
     return `2. ${DEFERRAL_UNCHANGED_HINT(id)}`;
   }

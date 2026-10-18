@@ -1,6 +1,7 @@
 import type { WorkflowStage, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
-import { issuesFinished } from "../session-types.js";
+import { issuesFinished, isMalformedIssueExit } from "../session-types.js";
+import { malformedIssueExitRefusal } from "./issue-fix.js";
 import { dispositionLabel } from "./issue-sweep.js";
 import { evaluatePressure, pressureMeetsThreshold } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
@@ -33,6 +34,11 @@ export class CompleteStage implements WorkflowStage {
   readonly id = "COMPLETE";
 
   async enter(ctx: StageContext): Promise<StageAdvance> {
+    // ISS-1380: a malformed recorded exit never completes, here as at FINALIZE.
+    const finalized = ctx.state.finalizedItem;
+    if (finalized?.kind === "issue" && isMalformedIssueExit(finalized.exit)) {
+      return { action: "retry", instruction: malformedIssueExitRefusal("COMPLETE", "finalizedItem.exit", ctx.state.resolvedIssueDisplayIds?.[finalized.id] ?? finalized.id, ctx.state.sessionId) };
+    }
     // T-527: BEFORE the write below, which clears the item's attempt and
     // implementer. A review still pending is owed before the item completes.
     if (knowledgeReviewPending(ctx.state)) {

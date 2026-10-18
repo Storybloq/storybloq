@@ -386,6 +386,37 @@ describe("ISS-1380: takeover in the FINALIZE window", () => {
     expect(legacy.kind).toBe("refused");
     if (legacy.kind === "refused") expect(legacy.reason).toBe("finalize-shape-inconsistent");
   });
+
+  it("E23: a malformed recorded exit is refused even on a resolved issue, before and after the commit", async () => {
+    const malformed = { exit: "malformed" } as unknown as IssueExit;
+    const resolved = { id: "ISS-001", status: "resolved" };
+    const before = await decide(fin({ currentIssueExit: malformed }), resolved);
+    expect(before.kind).toBe("refused");
+    if (before.kind === "refused") expect(before.reason).toBe("finalize-shape-inconsistent");
+    const after = await decide(fin({
+      finalizeCheckpoint: "committed", currentIssue: null, currentIssueExit: null,
+      finalizedItem: { kind: "issue", id: "ISS-001", commitHash: "beef", exit: malformed },
+    } as unknown as Partial<FullSessionState>), resolved);
+    expect(after.kind).toBe("refused");
+  });
+});
+
+describe("ISS-1380: a malformed exit at COMPLETE", () => {
+  it("E23: COMPLETE refuses a malformed finalizedItem.exit by name and completes nothing", async () => {
+    writeIssue({ status: "open" });
+    const { CompleteStage } = await import("../../../src/autonomous/stages/complete.js");
+    const s = makeState({
+      state: "COMPLETE", currentIssue: null, finalizeCheckpoint: "committed",
+      finalizedItem: { kind: "issue", id: "ISS-001", commitHash: "abc123", exit: { exit: "malformed" } },
+      resolvedIssues: ["ISS-001"],
+    } as unknown as Partial<FullSessionState>);
+    const ctx = new StageContext(testRoot, sessionDir, s, makeRecipe());
+    const advance = await new CompleteStage().enter(ctx);
+    expect(advance.action).toBe("retry");
+    expect((advance as { instruction?: string }).instruction).toContain("`finalizedItem.exit`");
+    expect((advance as { instruction?: string }).instruction).toContain("is malformed");
+    expect(ctx.state.finalizedItem).not.toBeNull();
+  });
 });
 
 describe("ISS-1380: park after an exit", () => {
@@ -442,6 +473,12 @@ describe("ISS-1380: reports name the exit", () => {
   it("E14: a session with no exit records keeps '(resolved)'", async () => {
     const { finishedIssueLines } = await import("../../../src/autonomous/stages/issue-fix.js");
     expect(finishedIssueLines({ resolvedIssues: ["ISS-9"] } as never)).toEqual(["- ISS-9 (resolved)"]);
+  });
+
+  it("E14: a deferral with no exit record says its details are unavailable, never resolved", async () => {
+    const { finishedIssueLines } = await import("../../../src/autonomous/stages/issue-fix.js");
+    expect(finishedIssueLines({ resolvedIssues: ["ISS-9"], deferredIssues: ["ISS-4"], issueExits: [] } as never))
+      .toEqual(["- ISS-9 (resolved)", "- ISS-4 (deferred; details unavailable)"]);
   });
 
   it("E14: the checkpoint labels closures by kind and lists deferrals on their own line", async () => {

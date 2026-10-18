@@ -20,21 +20,37 @@ export const DEFERRAL_UNCHANGED_HINT = (id: string): string =>
 
 /**
  * ISS-1380: one handover line per finished issue, naming its exit from the
- * record captured when it finished, never from the issue file. An issue with
- * no record (an older session) reads as resolved.
+ * record captured when it finished, never from the issue file. A resolved
+ * issue with no record (an older session) reads as resolved; a deferred one
+ * with no record says its details are unavailable, never resolved.
  */
 export function finishedIssueLines(state: Pick<FullSessionState, "resolvedIssues" | "deferredIssues" | "issueExits" | "resolvedIssueDisplayIds">): string[] {
   const exits = new Map((state.issueExits ?? []).map((e) => [e.id, e]));
+  const deferred = new Set(state.deferredIssues ?? []);
   return [...(state.resolvedIssues ?? []), ...(state.deferredIssues ?? [])].map((id) => {
     const label = state.resolvedIssueDisplayIds?.[id] ?? id;
     const e = exits.get(id);
-    const what = !e || e.exit === "fixed"
+    const what = !e
+      ? deferred.has(id) ? "deferred; details unavailable" : "resolved"
+      : e.exit === "fixed"
       ? "resolved"
       : e.exit === "disposed"
         ? `closed as ${inlineField(e.kind ?? "")}: ${inlineField(e.reason ?? "")}`
         : `deferred: ${inlineField(dispositionLabel(e.disposition ?? ""))}, ${inlineField(e.reason ?? "")}; evidence ${inlineField(e.ref ?? "")}`;
     return `- ${label} (${what}${e && e.commitHash === null ? ", no commit" : ""})`;
   });
+}
+
+/**
+ * ISS-1380: the refusal FINALIZE and COMPLETE give for a malformed recorded
+ * exit. Nothing is booked: a malformed exit is never read as fixed.
+ */
+export function malformedIssueExitRefusal(stage: "FINALIZE" | "COMPLETE", field: string, label: string, sessionId: string): string {
+  return [
+    `${stage} refuses: the exit recorded for ${label} (\`${field}\` in this session's state.json) is malformed, so this session cannot tell whether the issue was fixed, closed or deferred.`,
+    "",
+    `${stage === "FINALIZE" ? "Nothing was committed or booked for it." : "This item is not completed."} Park here: an operator must restore \`${field}\` to the exit ISSUE_FIX recorded, or end session ${sessionId}. Setting it to null would book the issue as fixed.`,
+  ].join("\n");
 }
 
 /** ISS-1380: one line naming the exit an issue took, for FINALIZE and the reports. */

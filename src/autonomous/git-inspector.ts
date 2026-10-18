@@ -44,6 +44,17 @@ export async function gitStatus(cwd: string): Promise<GitResult<string[]>> {
   );
 }
 
+/**
+ * ISS-1380: `git status --porcelain` that lists every untracked file whatever
+ * the repository's `status.showUntrackedFiles` says. `gitStatus` follows that
+ * setting, so with `no` an untracked file prints nothing and reads as clean.
+ */
+export async function gitStatusAllUntracked(cwd: string): Promise<GitResult<string[]>> {
+  return git(cwd, ["status", "--porcelain", "--untracked-files=all"], (out) =>
+    out.split("\n").filter((l) => l.length > 0),
+  );
+}
+
 /** Get current HEAD hash and branch name (two git calls). */
 export async function gitHead(cwd: string): Promise<GitResult<{ hash: string; branch: string | null }>> {
   const hashResult = await git(cwd, ["rev-parse", "HEAD"], (out) => out.trim());

@@ -102,7 +102,7 @@ export function makeFakeBin(names: ReadonlyArray<"codex" | "claude">): FakeBin {
     dir,
     log,
     stdinDir,
-    path: [dir, "/usr/bin", "/bin"].join(":"),
+    path: dir,
     invocations() {
       if (!existsSync(log)) return [];
       return readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));

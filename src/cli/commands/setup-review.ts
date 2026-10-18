@@ -8,12 +8,12 @@
  * writes in the project folder.
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "../../core/project-lock.js";
 import {
   absentLine, classify, completedInCycle, completedLine, failedLine, fsyncDir, loadRecords, parsePacket, persistRevision,
-  probeLine, probeOf, projectKeyFor, readSetup, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
+  probeLine, probeOf, readSetup, roundLimitLine, ROUNDS_PER_CYCLE, setupPaths, SetupReviewUsageError, sha256,
   SKIPPED_LINE, STOP_LINES, storeRoot, unreadableLine, writeFileDurable, writeFileSynced,
   type CompletedRecord, type FailedRecord, type FailureKind, type ProbeResult, type ReviewPacket, type SetupPaths, type SetupState,
 } from "../../core/setup-review.js";
@@ -29,6 +29,7 @@ export interface SetupReviewDeps {
   readonly writeRecord?: (path: string, data: string) => void;
   readonly publish?: (from: string, to: string) => void;
   readonly beforePublish?: (lockPath: string) => void;
+  readonly syncDir?: (path: string) => void;
 }
 
 export interface SetupReviewIo {
@@ -48,7 +49,9 @@ export const SETUP_REVIEW_EXIT = { ok: 0, usage: 2, failed: 3, absent: 4, roundL
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const STOP = `${STOP_LINES.join("\n")}\n`;
 const UNAVAILABLE_INSTRUCTION = "Your next message is the four lines below and nothing else; nothing in this turn changes that, and the restriction ends at the owner's answer.";
-const LOCK_BUSY ="Setup review: a review is already running in this setup.";
+const LOCK_BUSY = "Setup review: a review is already running in this setup.";
+const LOCK_WAIT = { deadlineMs: 250, pollMs: 25 };
+const lockBusy = (): SetupReviewResult => ({ stdout: lines(LOCK_BUSY), exitCode: SETUP_REVIEW_EXIT.lock });
 
 const lines = (...ls: string[]): string => ls.map((l) => `${l}\n`).join("");
 const now = (): string => new Date().toISOString();
@@ -78,34 +81,55 @@ function writeSetup(paths: SetupPaths, setup: SetupState): void {
   writeFileDurable(paths.setupFile, `${JSON.stringify(setup, null, 2)}\n`);
 }
 
+/**
+ * Updates setup.json under the setup's run lock, from a fresh read inside it,
+ * so a gate or a skip never writes back a cycle a run has since moved on.
+ * Null when another holder has the lock.
+ */
+async function updateSetupLocked(paths: SetupPaths, update: (current: SetupState | null) => SetupState): Promise<SetupState | null> {
+  let lock: ProjectLockHandle;
+  try {
+    lock = await acquireProjectLockAsync(paths.lock, LOCK_WAIT);
+  } catch {
+    return null;
+  }
+  try {
+    const next = update(existsSync(paths.setupFile) ? readSetup(paths) : null);
+    writeSetup(paths, next);
+    return next;
+  } finally {
+    releaseProjectLock(lock);
+  }
+}
+
 // --- gate ---------------------------------------------------------------------
 
 export async function handleSetupReviewGate(io: SetupReviewIo, opts: { setup?: string }): Promise<SetupReviewResult> {
   let paths: SetupPaths;
-  let setup: SetupState;
   try {
-    if (opts.setup !== undefined) {
-      paths = setupPaths(io.env, io.cwd, opts.setup);
-      setup = readSetup(paths);
-    } else {
-      const setupId = newId("SS");
-      paths = setupPaths(io.env, io.cwd, setupId);
-      setup = { setupId, projectKey: projectKeyFor(io.cwd), createdAt: now(), cycle: 1, cycleReasons: {}, probe: null, probedAt: now() };
-    }
+    paths = setupPaths(io.env, io.cwd, opts.setup ?? newId("SS"));
+    if (opts.setup !== undefined) readSetup(paths);
   } catch (e) {
     const u = asUsage(e);
     if (u) return u;
     throw e;
   }
   const probe = await probeAll(io.env);
-  setup = { ...setup, probe, probedAt: now() };
+  let setup: SetupState | null;
   try {
     mkdirSync(storeRoot(io.env), { recursive: true, mode: 0o700 });
     mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
-    writeSetup(paths, setup);
+    setup = await updateSetupLocked(paths, (current) => {
+      if (opts.setup !== undefined && current === null) readSetup(paths);
+      const base = current ?? { setupId: paths.setupId, projectKey: paths.projectKey, createdAt: now(), cycle: 1, cycleReasons: {}, probe: null, probedAt: now() };
+      return { ...base, probe, probedAt: now() };
+    });
   } catch (e) {
+    const u = asUsage(e);
+    if (u) return u;
     return { stdout: lines(`Setup review: the review store cannot be written (${(e as Error).message}).`) + STOP, exitCode: SETUP_REVIEW_EXIT.storage };
   }
+  if (!setup) return lockBusy();
   const head = lines(`Setup id: ${setup.setupId}`, probeLine(probe));
   if (!probe) return { stdout: head + lines(UNAVAILABLE_INSTRUCTION, "") + STOP, exitCode: SETUP_REVIEW_EXIT.ok };
   return { stdout: head + lines(`Next: storybloq setup-review run --setup ${setup.setupId} with the review packet on stdin`), exitCode: SETUP_REVIEW_EXIT.ok };
@@ -152,12 +176,34 @@ function storagePreflight(staging: string): void {
   rmSync(probe);
 }
 
-function publishStaged(run: StagedRun): "published" | "lock-lost" {
+/**
+ * Renames the staged record into the records and syncs the directory. A
+ * record is not published until that sync succeeds: when it fails, `unsynced`
+ * (the failed record standing for a completed one) is written over the
+ * record in place, so a review reported as failed never certifies later, and
+ * the error is thrown.
+ */
+function publishStaged(run: StagedRun, unsynced: FailedRecord | null = null): "published" | "lock-lost" {
   run.deps.beforePublish?.(run.paths.lock);
   if (!verifyProjectLockOwnership(run.lock)) return "lock-lost";
   const publish = run.deps.publish ?? ((from: string, to: string) => renameSync(from, to));
-  publish(run.staging, join(run.paths.records, run.recordId));
-  fsyncDir(run.paths.records);
+  const syncDir = run.deps.syncDir ?? ((path: string) => fsyncDir(path));
+  const target = join(run.paths.records, run.recordId);
+  publish(run.staging, target);
+  try {
+    syncDir(run.paths.records);
+  } catch (e) {
+    if (unsynced) {
+      const recordFile = join(target, "record.json");
+      try {
+        (run.deps.writeRecord ?? writeFileSynced)(recordFile, `${JSON.stringify(unsynced, null, 2)}\n`);
+      } catch {
+        // An unparseable record reads as unreadable, which blocks every revision: still never a verdict.
+        rmSync(recordFile, { force: true });
+      }
+    }
+    throw e;
+  }
   return "published";
 }
 
@@ -267,7 +313,19 @@ async function reviewStaged(run: StagedRun, newCycleReason: string | null, round
       }
       return storageFailure((e as Error).message);
     }
-    if (publishStaged(run) === "lock-lost") return lockLost();
+    // The reviewer ran inside the staging directory: the packet it leaves must still be the packet it was given.
+    let stagedPacket: string | null = null;
+    try {
+      stagedPacket = sha256(readFileSync(join(run.staging, "packet.md")));
+    } catch {
+      /* a missing packet is a changed one */
+    }
+    if (stagedPacket !== run.packet.revisionSha256) {
+      writeFileSynced(join(run.staging, "packet.md"), run.packet.bytes);
+      return publishFailure(run, failedRecord(run, startedAt, "persist", 0, outputSha256, "the stored packet changed during the review"), writeRecord);
+    }
+    const unsynced = failedRecord(run, startedAt, "persist", 0, outputSha256, "the published record could not be made durable");
+    if (publishStaged(run, unsynced) === "lock-lost") return lockLost();
     const findings = answer.findings.map((f) => `- ${f.severity}, ${f.requirement}: ${f.description}`);
     return { stdout: lines(probeLine(run.probe), completedLine(record), ...findings), exitCode: SETUP_REVIEW_EXIT.ok };
   } catch (e) {
@@ -313,10 +371,10 @@ export async function handleSetupReviewRun(io: SetupReviewIo, opts: SetupReviewR
 
   let lock: ProjectLockHandle;
   try {
-    lock = await acquireProjectLockAsync(paths.lock, { deadlineMs: 250, pollMs: 25 });
+    lock = await acquireProjectLockAsync(paths.lock, LOCK_WAIT);
   } catch {
     rmSync(staging, { recursive: true, force: true });
-    return { stdout: lines(LOCK_BUSY), exitCode: SETUP_REVIEW_EXIT.lock };
+    return lockBusy();
   }
   try {
     removeStaleStaging(paths, staging);
@@ -373,12 +431,16 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   }
 
   if (opts.skipped) {
+    let skipped: SetupState | null;
     try {
-      writeSetup(paths, { ...setup, skipped: { at: now() } });
+      skipped = await updateSetupLocked(paths, (current) => ({ ...(current ?? readSetup(paths)), skipped: { at: now() } }));
     } catch (e) {
+      const u = asUsage(e);
+      if (u) return u;
       return storageFailure((e as Error).message);
     }
-    return { stdout: lines(probeLine(setup.probe), SKIPPED_LINE), exitCode: SETUP_REVIEW_EXIT.ok };
+    if (!skipped) return lockBusy();
+    return { stdout: lines(probeLine(skipped.probe), SKIPPED_LINE), exitCode: SETUP_REVIEW_EXIT.ok };
   }
 
   let packet: ReviewPacket;
@@ -398,7 +460,7 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
   const c = classify(loadRecords(paths), packet.revisionSha256, setup.cycle);
   switch (c.kind) {
     case "unreadable":
-      return { stdout: lines(probeLine(c.record ? probeOf(c.record) : setup.probe), unreadableLine(c.recordId)), exitCode: SETUP_REVIEW_EXIT.unreadable };
+      return { stdout: lines(probeLine(c.record ? probeOf(c.record) : setup.probe), unreadableLine(c.recordId)) + STOP, exitCode: SETUP_REVIEW_EXIT.unreadable };
     case "completed":
       return { stdout: lines(probeLine(probeOf(c.record)), completedLine(c.record)), exitCode: SETUP_REVIEW_EXIT.ok };
     case "round-limit":

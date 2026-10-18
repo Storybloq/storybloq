@@ -17,7 +17,7 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isUtf8 } from "node:buffer";
 import { parseReviewerOutput, type SetupReviewBackend } from "./setup-review-backends.js";
 
@@ -127,6 +127,8 @@ export function projectKeyFor(cwd: string): string {
 }
 
 export interface SetupPaths {
+  readonly setupId: string;
+  readonly projectKey: string;
   readonly dir: string;
   readonly setupFile: string;
   readonly records: string;
@@ -136,8 +138,9 @@ export interface SetupPaths {
 
 export function setupPaths(env: NodeJS.ProcessEnv, cwd: string, setupId: string): SetupPaths {
   if (!SETUP_ID_PATTERN.test(setupId)) throw new SetupReviewUsageError(`"${setupId}" is not a setup id.`);
-  const dir = join(storeRoot(env), projectKeyFor(cwd), setupId);
-  return { dir, setupFile: join(dir, "setup.json"), records: join(dir, "records"), revisions: join(dir, "revisions"), lock: join(dir, "run.lock") };
+  const projectKey = projectKeyFor(cwd);
+  const dir = join(storeRoot(env), projectKey, setupId);
+  return { setupId, projectKey, dir, setupFile: join(dir, "setup.json"), records: join(dir, "records"), revisions: join(dir, "revisions"), lock: join(dir, "run.lock") };
 }
 
 export interface ProbeResult {
@@ -164,23 +167,29 @@ export function readSetup(paths: SetupPaths): SetupState {
     throw new SetupReviewUsageError("No such setup. Run storybloq setup-review gate first and keep its setup id.");
   }
   const s = raw as SetupState;
-  if (!s || typeof s !== "object" || typeof s.cycle !== "number" || !Number.isInteger(s.cycle) || s.cycle < 1) {
+  if (!s || typeof s !== "object" || typeof s.cycle !== "number" || !Number.isInteger(s.cycle) || s.cycle < 1
+    || s.setupId !== paths.setupId || s.projectKey !== paths.projectKey) {
     throw new SetupReviewUsageError("The setup record is damaged. Run storybloq setup-review gate to open a new setup.");
   }
   return s;
 }
 
-/** Write, fsync, then rename into place, so a reader sees the old file or the new one. */
-export function writeFileDurable(path: string, data: string | Buffer): void {
+/**
+ * Write, fsync, rename into place, then fsync the directory, so a reader sees
+ * the old file or the new one and the new one survives a crash once this
+ * returns. `sync` is the fsync used for both, a seam for tests.
+ */
+export function writeFileDurable(path: string, data: string | Buffer, sync: (fd: number) => void = fsyncSync): void {
   const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
   const fd = openSync(tmp, "w", 0o600);
   try {
     writeFileSync(fd, data);
-    fsyncSync(fd);
+    sync(fd);
   } finally {
     closeSync(fd);
   }
   renameSync(tmp, path);
+  fsyncDir(dirname(path), sync);
 }
 
 export function writeFileSynced(path: string, data: string | Buffer): void {
@@ -193,16 +202,20 @@ export function writeFileSynced(path: string, data: string | Buffer): void {
   }
 }
 
-export function fsyncDir(path: string): void {
+/** The codes a filesystem that cannot sync a directory at all answers with; any other failure is real. */
+const DIR_SYNC_UNSUPPORTED: readonly string[] = process.platform === "win32" ? ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EISDIR", "EPERM"] : ["EINVAL", "ENOTSUP", "EOPNOTSUPP"];
+
+export function fsyncDir(path: string, sync: (fd: number) => void = fsyncSync): void {
   try {
     const fd = openSync(path, "r");
     try {
-      fsyncSync(fd);
+      sync(fd);
     } finally {
       closeSync(fd);
     }
-  } catch {
-    /* directory fsync is unsupported on some filesystems; the rename stands */
+  } catch (e) {
+    if (DIR_SYNC_UNSUPPORTED.includes((e as NodeJS.ErrnoException).code ?? "")) return;
+    throw e;
   }
 }
 
@@ -217,7 +230,6 @@ export function persistRevision(paths: SetupPaths, packet: ReviewPacket): void {
     if (sha256(readFileSync(file)) === packet.revisionSha256) return;
   }
   writeFileDurable(file, packet.bytes);
-  fsyncDir(paths.revisions);
 }
 
 // --- Records ----------------------------------------------------------------
@@ -333,7 +345,11 @@ export type LoadedRecord =
   | { readonly recordId: string; readonly kind: "invalid"; readonly record: SetupReviewRecord }
   | { readonly recordId: string; readonly kind: "unparsed" };
 
-/** Every published record; staging directories are never records. */
+/**
+ * Every published record; staging directories are never records. A record
+ * naming another setup was copied here and is checked like a damaged one: it
+ * neither certifies nor counts.
+ */
 export function loadRecords(paths: SetupPaths): LoadedRecord[] {
   let names: string[];
   try {
@@ -357,7 +373,7 @@ export function loadRecords(paths: SetupPaths): LoadedRecord[] {
       out.push({ recordId, kind: "unparsed" });
       continue;
     }
-    out.push({ recordId, kind: artifactsValid(dir, record) ? "valid" : "invalid", record });
+    out.push({ recordId, kind: record.setupId === paths.setupId && artifactsValid(dir, record) ? "valid" : "invalid", record });
   }
   return out;
 }

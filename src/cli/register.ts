@@ -5455,6 +5455,7 @@ export function registerSetupReviewCommand(yargs: Argv): Argv {
         .option("skipped", { type: "boolean", default: false, describe: "Record the owner's choice to continue without review (status only)" }),
     async (argv) => {
       const { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus } = await import("./commands/setup-review.js");
+      const { STOP_LINES } = await import("../core/setup-review.js");
       const { readFileSync } = await import("node:fs");
       const io = { cwd: process.cwd(), env: process.env, stdin: () => readFileSync(0), deps: {} };
       const setup = argv.setup as string | undefined;
@@ -5477,7 +5478,7 @@ export function registerSetupReviewCommand(yargs: Argv): Argv {
         process.stdout.write(result.stdout);
         process.exitCode = result.exitCode;
       } catch (err: unknown) {
-        process.stdout.write(`Setup review: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.stdout.write(`Setup review: ${err instanceof Error ? err.message : String(err)}\n${STOP_LINES.join("\n")}\n`);
         process.exitCode = 6;
       }
     },

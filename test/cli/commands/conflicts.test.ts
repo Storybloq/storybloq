@@ -495,7 +495,7 @@ describe("ISS-1304: conflicts show, list and resolve print no file-supplied cont
   const UNSAFE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\p{Default_Ignorable_Code_Point}\p{Surrogate}]/u;
   // ESC/OSC/BEL, C1 CSI, line separator, zero-width space, soft hyphen, an
   // astral tag character and a lone surrogate.
-  const H = "\u001b]0;owned\u0007\u009b31m\u2028​­\u{E0041}\ud800";
+  const H = "\u001b]0;owned\u0007\u009b31m\u2028\u200b\u00ad\u{E0041}\ud800";
   const canonical = "t-1111111111111111";
   const other = "t-2222222222222222";
 
@@ -554,7 +554,7 @@ describe("ISS-1304: conflicts show, list and resolve print no file-supplied cont
     expect(json.data.items).toContainEqual(expect.objectContaining({ type: "ticket", id: canonical }));
   });
 
-  const badName = "T-1\u001b]0;x\u0007\u2028​.json";
+  const badName = "T-1\u001b]0;x\u0007\u2028\u200b.json";
 
   it("T5: a damaged file's name is escaped reversibly beside a real conflict", async () => {
     const dir = makeProject();

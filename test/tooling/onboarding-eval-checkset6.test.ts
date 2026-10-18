@@ -12,11 +12,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkSetupReview, heredocStdin, type Cs6Turn } from "../../scripts/onboarding-eval-checkset6.js";
 import { STOP_LINES } from "../../src/core/setup-review.js";
+import { hiddenReviewers, pathWithout } from "../../scripts/onboarding-eval-run.js";
 import { REVIEW_PACKET } from "../helpers/setup-review-fakes.js";
 
 const sha = (s: string): string => createHash("sha256").update(s).digest("hex");
@@ -198,5 +199,21 @@ describe("heredocStdin (T-536)", () => {
     expect(heredocStdin("storybloq setup-review status --setup SS-1 <<'EOF'\na\nb\nEOF")).toBe("a\nb\n");
     expect(heredocStdin("storybloq setup-review status --setup SS-1 <<EOF\na\nEOF")).toBe("a\n");
     expect(heredocStdin("storybloq setup-review status --setup SS-1 --skipped")).toBeNull();
+  });
+});
+
+describe("check set 6, the reviewer-unavailable arm (T-536)", () => {
+  it("hides both reviewers the setup review can start, and only codex before check set 6", () => {
+    expect(hiddenReviewers(6)).toEqual(["codex", "claude"]);
+    expect(hiddenReviewers(5)).toEqual(["codex"]);
+  });
+
+  it("leaves neither codex nor claude on the stripped PATH, and keeps their neighbours", () => {
+    const bin = join(store, "bin"); const scratch = join(store, "scratch");
+    mkdirSync(bin);
+    for (const n of ["codex", "claude", "node"]) writeFileSync(join(bin, n), "#!/bin/sh\n", { mode: 0o755 });
+    const path = pathWithout(bin, scratch, hiddenReviewers(6));
+    expect(path).toBe(scratch);
+    expect(readdirSync(scratch).sort()).toEqual(["node"]);
   });
 });

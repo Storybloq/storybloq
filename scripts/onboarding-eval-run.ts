@@ -192,6 +192,11 @@ export function pathWithout(path: string, scratchBin: string, names: readonly st
   return out.join(delimiter);
 }
 
+/** The reviewers the reviewer-unavailable arm hides from the evaluated model's shell under a check set. */
+export function hiddenReviewers(checkSet: number): string[] {
+  return checkSet >= 6 ? ["codex", "claude"] : ["codex"];
+}
+
 /** The absolute path `bin` resolves to on `path`, or null. Resolved once, before any PATH filtering. */
 export function resolveOnPath(bin: string, path: string): string | null {
   for (const dir of path.split(delimiter).filter(Boolean)) {
@@ -445,7 +450,7 @@ async function main(): Promise<void> {
   if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== env.CODEX_HOME) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
   if (o.variant === "reviewer-unavailable") {
     // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin.
-    const reviewers = CHECK_SET_VERSION >= 6 ? ["codex", "claude"] : ["codex"];
+    const reviewers = hiddenReviewers(CHECK_SET_VERSION);
     env.PATH = pathWithout(env.PATH ?? "", join(work, "bin"), reviewers);
     for (const name of reviewers) {
       const probe = spawnSync("/bin/sh", ["-c", `command -v ${name}`], { env, encoding: "utf-8" });

@@ -51,7 +51,7 @@ import { reserveDisplayId } from "./remote-refs.js";
 import { prepareNewTicketUnlocked } from "../cli/commands/ticket.js";
 import { buildCheckpointTicketUnlocked, prepareCheckpointCreateWrite } from "./checkpoint-lifecycle.js";
 import { enableCheckpointsStampUnlocked } from "./checkpoint-enable.js";
-import { computeInitialStages } from "./verification-activation.js";
+import { computeInitialStages, STAGES_USED, type PendingStageLine } from "./verification-activation.js";
 import { resolveRecipe } from "../autonomous/recipes/loader.js";
 import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
@@ -61,8 +61,9 @@ import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-ev
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import { hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
 import { parseSetupMeta, type VerificationSpec } from "./setup-meta.js";
-import { ESTABLISHMENT_CREATION_AUTHORITY } from "./setup-verification-guard.js";
-import { initialRecord } from "./setup-verification-record.js";
+import { ESTABLISHMENT_CREATION_AUTHORITY, isEstablishment } from "./setup-verification-guard.js";
+import { initialRecord, readRecord } from "./setup-verification-record.js";
+import { displayIdOf } from "./resolver.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
   parseSetupPayload,
@@ -1365,12 +1366,13 @@ function userCounts(state: ProjectState, p: SetupPayload, adopted: ReadonlySet<s
   };
 }
 
-const WAIT_ORDER = ["the owner", "other work"] as const;
+const WAIT_ORDER = ["the owner", "verification", "other work"] as const;
 
 /**
  * Why nothing in the setup is ready (plan v5 6c): every open item is an owner
  * checkpoint or waits on an open blocker. Empty when something open waits on
  * nothing, or nothing is open, so the line never claims more than the ledger shows.
+ * An open establishment ticket (T-538 S3a-2) is waited on as verification.
  */
 function waitingOn(state: ProjectState, keyedIds: ReadonlySet<string>): string {
   const reasons = new Set<(typeof WAIT_ORDER)[number]>();
@@ -1389,6 +1391,7 @@ function waitingOn(state: ProjectState, keyedIds: ReadonlySet<string>): string {
     if (blockers.length === 0) return "";
     for (const b of blockers) {
       if (hasOwnerCheckpoint(b)) reasons.add("the owner");
+      else if (isEstablishment(b as unknown as Record<string, unknown>)) reasons.add("verification");
       else if (!keyedIds.has(b.id)) reasons.add("other work");
     }
   }
@@ -1396,11 +1399,59 @@ function waitingOn(state: ProjectState, keyedIds: ReadonlySet<string>): string {
   return named.length > 0 ? ` (everything open waits on ${named.join(" and ")})` : "";
 }
 
-/** The core report lines (plan v5 6c), computed once at the freeze from the ledger and kept verbatim. */
-export function setupReportLines(state: ProjectState, p: SetupPayload): string[] {
+/**
+ * The live report's pending lines (T-538 S3a-2), from the setup verification
+ * record when it is this setup's: a verified stage drops out, a left-off one
+ * says so, and a test stage whose establishment ticket a writer outside the
+ * guard closed without a result names the reopen. Null when the record is
+ * absent, unreadable or another setup's: the payload's lines stand, as for a
+ * legacy setup.
+ */
+function recordPendingLines(state: ProjectState, p: SetupPayload): PendingStageLine[] | null {
+  const read = readRecord(state.config);
+  if (read.kind !== "ok" || read.record.setupId !== p.setupId) return null;
+  const record = read.record;
+  const several = record.components.length > 1;
+  const closedWithoutResult = (component: string): string | null => {
+    for (const t of p.tickets) {
+      if (t.establishes?.component !== component) continue;
+      const ticket = keyedTicket(state, p.setupId, t.key);
+      if (ticket === undefined || ticket.status !== "complete") continue;
+      const meta = parseSetupMeta("ticket", ticket);
+      if (meta.kind === "item" && meta.meta.verification !== undefined && meta.meta.verification.result === undefined) return displayIdOf(ticket);
+    }
+    return null;
+  };
+  const lines: PendingStageLine[] = [];
+  for (const stage of STAGES_USED[record.level]) {
+    if (stage === "VERIFY" && !record.verifyApplies) continue;
+    for (const c of record.components) {
+      const ev = stage === "VERIFY" ? c.verify : stage === "BUILD" ? c.build : c.test;
+      if (ev === null || (ev.status !== "pending" && ev.status !== "left-off")) continue;
+      const command = "command" in ev ? ev.command : ev.startCommand;
+      const closed = ev.status === "pending" && stage !== "BUILD" && stage !== "VERIFY" ? closedWithoutResult(c.id) : null;
+      const reason = ev.status === "left-off"
+        ? "left off by the owner"
+        : closed !== null
+          ? `closed without verification; run storybloq setup-verify --ticket ${closed} --reopen`
+          : ev.reason ?? "pending";
+      lines.push({ stage, component: several ? c.id : null, command, reason });
+    }
+  }
+  return lines;
+}
+
+/**
+ * The core report lines (plan v5 6c), computed once at the freeze from the
+ * ledger and kept verbatim. The live report (`live`) reads its pending lines
+ * from the setup verification record.
+ */
+export function setupReportLines(state: ProjectState, p: SetupPayload, options: { live?: boolean } = {}): string[] {
   const adopted = adoptedKeys(p);
   const counts = userCounts(state, p, adopted);
-  const { stages, pending } = computeInitialStages(activationInput(p));
+  const initial = computeInitialStages(activationInput(p));
+  const stages = initial.stages;
+  const pending = (options.live === true ? recordPendingLines(state, p) : null) ?? initial.pending;
   // Review r1 #6: enablement is the ledger config's; a stage an accepted amendment changed says so.
   // Review r2 #3: through the recipe's defaults-and-overrides merge execution uses, so a missing override reads the default.
   const effective = effectiveStages(state.config);
@@ -1727,7 +1778,7 @@ export async function setupReport(root: string, setupId: string, opts: { histori
   const payloads = [...findProgress(state, setupId, "active"), ...findProgress(state, setupId, "archived")].map((n) => parseSetupPayload(n.content));
   if (payloads.length === 0) return stop(`no setup ${setupId} in this project.`);
   const p = payloads.find((x) => hasReceipt(x, "archive")) ?? payloads[0]!;
-  if (opts.historical !== true) return { exitCode: 0, lines: setupReportLines(state, effectivePlan(p)), setupId };
+  if (opts.historical !== true) return { exitCode: 0, lines: setupReportLines(state, effectivePlan(p), { live: true }), setupId };
   const frozen = p.frozen?.historicalReport;
   if (frozen === undefined) return stop(`setup ${setupId} has no frozen report yet; it is frozen when the setup finalizes.`);
   return { exitCode: 0, lines: frozen.split("\n"), setupId };

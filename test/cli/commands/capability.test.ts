@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import {
@@ -858,3 +858,77 @@ describe("catalog text reaches every sink inert, and legitimate content survives
   });
 });
 
+
+/** Every byte under `.story/`, so a write anywhere in the ledger is visible (term.test.ts's pattern). */
+function storyBytes(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (rel: string): void => {
+    for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+      const next = join(rel, entry.name);
+      if (entry.isDirectory()) walk(next);
+      else out[next] = readFileSync(join(root, next), "utf-8");
+    }
+  };
+  walk(".story");
+  return out;
+}
+
+/**
+ * ISS-1286: `mutate` writes whatever its function returns, so a refusal
+ * decided inside the transaction must abort it. The inventory is rewritten as
+ * compact JSON first: the catalog writes 2-space JSON, so a refusal that
+ * rewrote the file would show up as a byte change even with no content change.
+ */
+describe("capability refused writes leave the ledger byte-identical (ISS-1286)", () => {
+  async function compactInventory(): Promise<string> {
+    const root = await newRepo();
+    await handleCapabilityAdd(BASE, "md", root);
+    await handleCapabilityAdd({ ...BASE, id: "cap-other", name: "The other thing" }, "md", root);
+    editCatalog(root, () => {}, 0);
+    expect(readFileSync(catalogPath(root), "utf-8")).not.toContain("\n");
+    return root;
+  }
+
+  it("update of an unknown id creates no inventory file on a project that has none", async () => {
+    const root = await newRepo();
+    const before = storyBytes(root);
+    const res = await handleCapabilityUpdate({ id: "cap-nope", summary: "x" }, "md", root);
+    expect(res.errorCode).toBe("not_found");
+    expect(res.exitCode).toBe(ExitCode.USER_ERROR);
+    expect(existsSync(catalogPath(root))).toBe(false);
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("update of an unknown id leaves an existing hand-formatted inventory untouched", async () => {
+    const root = await compactInventory();
+    const before = storyBytes(root);
+    const res = await handleCapabilityUpdate({ id: "cap-nope", summary: "x" }, "md", root);
+    expect(res.errorCode).toBe("not_found");
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("add with a duplicate id leaves the inventory untouched", async () => {
+    const root = await compactInventory();
+    const before = storyBytes(root);
+    const res = await handleCapabilityAdd({ ...BASE, name: "A new name" }, "md", root);
+    expect(res.errorCode).toBe("invalid_input");
+    expect(res.output).toContain("already exists");
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("add with a name another entry uses leaves the inventory untouched", async () => {
+    const root = await compactInventory();
+    const before = storyBytes(root);
+    const res = await handleCapabilityAdd({ ...BASE, id: "cap-third" }, "md", root);
+    expect(res.errorCode).toBe("invalid_input");
+    expect(res.output).toContain("cap-thing");
+    expect(storyBytes(root)).toEqual(before);
+  });
+
+  it("a real failure inside the transaction still rejects as itself, not as a refusal result", async () => {
+    const root = await compactInventory();
+    const before = storyBytes(root);
+    await expect(handleCapabilityUpdate({ id: "cap-thing", contract: "" }, "md", root)).rejects.toBeInstanceOf(CliValidationError);
+    expect(storyBytes(root)).toEqual(before);
+  });
+});

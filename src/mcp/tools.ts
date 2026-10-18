@@ -9,6 +9,7 @@ import { z } from "zod";
 import { ISSUE_RESOLUTION_KINDS } from "../core/resolution-kind.js";
 import { readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { ExitCode } from "../core/exit-codes.js";
 import { NODE_NAME_REGEX } from "../models/federation-config.js";
 import { CROSS_NODE_REF_REGEX } from "../models/ticket.js";
 import { resolveNodeRoot, checkNodeWritePermission, readOrchestratorConfig, detectNodeCollision, ORCHESTRATOR_NODE_SENTINEL, type McpToolResult } from "./node-resolution.js";
@@ -390,6 +391,13 @@ export async function runMcpWriteTool(
 
     // ISS-1107 / node_init: a handler-level error result keeps its own text.
     if (result.isError) {
+      return { content: [{ type: "text", text: result.output }], isError: true };
+    }
+
+    // ISS-1286: a refusal a handler RETURNS (exit code USER_ERROR, as the
+    // catalog, term and node writers do) is a failure. Without this branch it
+    // reached an MCP caller as a success that had written nothing.
+    if (result.exitCode !== undefined && result.exitCode !== ExitCode.OK) {
       return { content: [{ type: "text", text: result.output }], isError: true };
     }
 

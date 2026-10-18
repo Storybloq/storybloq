@@ -594,25 +594,22 @@ export async function handleCapabilityAdd(
   // The duplicate check runs INSIDE the transaction rather than against a
   // document read beforehand: two adds racing on the same id would both see an
   // absent entry outside the lock and the second would silently replace the
-  // first.
-  let duplicate = false;
+  // first. The refusal throws: `mutate` writes whatever its function returns,
+  // so returning `current` would rewrite (or, with no file, create) the
+  // catalog to report a refusal (ISS-1286).
   return refusing(async () => {
     const doc = await capabilityCatalog.mutate(root, (current) => {
       if (current.capabilities.some((c) => c.id === entry.id)) {
-        duplicate = true;
-        return current;
+        throw new CapabilityRefusal({
+          output: formatError("invalid_input", `Capability ${catalogText(entry.id)} already exists. Use \`capability update\` to change it.`, format),
+          exitCode: ExitCode.USER_ERROR,
+          errorCode: "invalid_input",
+        });
       }
       const refusal = nameRefusal(current.capabilities, entry, format);
       if (refusal !== null) throw refusal;
       return { ...current, capabilities: [...current.capabilities, entry] };
     });
-    if (duplicate) {
-      return {
-        output: formatError("invalid_input", `Capability ${catalogText(entry.id)} already exists. Use \`capability update\` to change it.`, format),
-        exitCode: ExitCode.USER_ERROR,
-        errorCode: "invalid_input",
-      };
-    }
     if (format === "json") {
       return { output: JSON.stringify(successEnvelope({ capability: entry, inventorySize: doc.capabilities.length }), null, 2) };
     }
@@ -630,14 +627,16 @@ export async function handleCapabilityUpdate(
   format: OutputFormat,
   root: string,
 ): Promise<CommandResult> {
-  let missing = false;
-  let updated: Capability | null = null;
   return refusing(async () => {
-    await capabilityCatalog.mutate(root, (current) => {
+    const doc = await capabilityCatalog.mutate(root, (current) => {
       const index = current.capabilities.findIndex((c) => c.id === input.id);
+      // Thrown, never "return current": a refusal must not write (ISS-1286).
       if (index === -1) {
-        missing = true;
-        return current;
+        throw new CapabilityRefusal({
+          output: formatError("not_found", `Capability ${catalogText(input.id)} not found.`, format),
+          exitCode: ExitCode.USER_ERROR,
+          errorCode: "not_found",
+        });
       }
       const previous = current.capabilities[index]!;
       // `checkedAt` is carried forward untouched. An update is an edit to the
@@ -662,19 +661,11 @@ export async function handleCapabilityUpdate(
       );
       const refusal = nameRefusal(current.capabilities, next, format);
       if (refusal !== null) throw refusal;
-      updated = next;
       const capabilities = [...current.capabilities];
       capabilities[index] = next;
       return { ...current, capabilities };
     });
-    if (missing || updated === null) {
-      return {
-        output: formatError("not_found", `Capability ${catalogText(input.id)} not found.`, format),
-        exitCode: ExitCode.USER_ERROR,
-        errorCode: "not_found",
-      };
-    }
-    const entry: Capability = updated;
+    const entry = doc.capabilities.find((c) => c.id === input.id)!;
     if (format === "json") return { output: JSON.stringify(successEnvelope({ capability: entry }), null, 2) };
     return {
       output: `Updated ${catalogText(entry.id)}. Checkpoint unchanged at ${catalogText(entry.checkedAt.sha.slice(0, 12))} (${catalogText(entry.checkedAt.date)}); run \`capability check --stamp ${catalogText(entry.id)}\` after re-reading its entry points.`,

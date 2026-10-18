@@ -767,6 +767,25 @@ export function guide(d: string) {
     expect(lockedDirect(inLock(body))).toBe(true);
   });
 
+  it("a writer call in another file at the same offsets as a clean closure does not make it a contract closure (T-538 rebase)", () => {
+    const code = LOCK_IMPORTS + `
+export async function run(d: string, items: number[], stage: WorkflowStage) {
+  await withSessionLock(d, async () => {
+    const ctx = new StageContext(d);
+    const names = ctx.dir;
+    const out = items.map((i) => \`\${names}\${i}\${names}\${i}\${names}\${i}\${names}\${i}\${names}\`).join(",");
+  });
+}`;
+    const start = code.indexOf("(i) =>");
+    const head = `import { writeSessionSync as w } from "./session.js";\nconst pad = "`;
+    // other.ts's top-level call starts (with its leading newline) just inside the closure's span in user.ts.
+    const other = head + "x".repeat(start - head.length - 1) + `";\nw("", { revision: 1 });\n`;
+    expect(other.indexOf("\nw(")).toBeGreaterThanOrEqual(start);
+    expect(other.indexOf("\nw(") + `\nw("", { revision: 1 })`.length).toBeLessThanOrEqual(code.indexOf(").join"));
+    const r = lockScan(code, { contextConstructions: ["user.ts#run#new#1"] }, { "/fx/other.ts": other });
+    expect(lifetime(r.errors)).toEqual([]);
+  });
+
   it("R3-1: a context read hoisted out of the callback passes; unhoisted it errors and names the remedy", () => {
     expect(inLock("const names = ctx.dir;\n    const out = items.map((i) => `${names}${i}`).join(\",\");").errors).toEqual([]);
     const unhoisted = lifetime(inLock("const out = items.map((i) => `${ctx.dir}${i}`).join(\",\");").errors);

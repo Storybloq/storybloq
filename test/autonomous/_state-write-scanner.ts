@@ -2201,11 +2201,15 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (ts.isFunctionLike(target) && holdsStructurally(target)) return k ?? `<context function ${where(target)}>`;
     return null;
   }
+  /** n lies inside b: the same source file and b's span (offsets alone match across files). */
+  const fileOf = new Map<ts.Node, ts.SourceFile>();
+  const sourceOf = (n: ts.Node) => fileOf.get(n) ?? (fileOf.set(n, n.getSourceFile()), fileOf.get(n)!);
+  const within = (n: ts.Node, b: ts.Node) => n.pos >= b.pos && n.end <= b.end && sourceOf(n) === sourceOf(b);
   const capturesCtx = (cl: Closure): boolean => subtreeHas(cl.body, (x) => {
     if (x.kind === ts.SyntaxKind.ThisKeyword && ts.isArrowFunction(cl)) return isCtxType(checker.getTypeAtLocation(x));
     if (!ts.isIdentifier(x)) return false;
     const d = declOf(checker.getSymbolAtLocation(x));
-    if (!d || (d.pos >= cl.pos && d.end <= cl.end)) return false;
+    if (!d || within(d, cl)) return false;
     return (ts.isVariableDeclaration(d) || ts.isParameter(d)) && isCtxValueRef(x);
   });
   let grewC = true;
@@ -2217,7 +2221,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         for (let p: ts.Node | undefined = x.parent; p && p !== cl; p = p.parent) if (ts.isFunctionLike(p)) return false;
         return true;
       };
-      const hit = capturesCtx(cl) || calls.some((c) => c.pos >= cl.pos && c.end <= cl.end && own(c)
+      const hit = capturesCtx(cl) || calls.some((c) => within(c, cl) && own(c)
         && (isWriterCall(c) || contractCallee(c) !== null));
       if (hit) { contractClosures.add(cl); grewC = true; }
     }

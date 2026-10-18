@@ -4,11 +4,14 @@ import { BoardError } from "./errors.js";
 import { fileStamp, readStampedText, createReadBudget } from "./safe-files.js";
 export interface RuntimeScope {
   text(parts: string[], limit: number): Promise<string | undefined>;
+  /** Like text, but an oversized or non-UTF-8 file reads as undefined instead of failing the screen. */
+  optionalText(parts: string[], limit: number): Promise<string | undefined>;
   marker(parts: string[]): Promise<boolean>;
   presenceFiles(): Promise<{ names: string[]; unread: number }>;
 }
 const missing = (error: unknown) =>
   (error as NodeJS.ErrnoException).code === "ENOENT";
+const OPTIONAL_UNREADABLE = "optional runtime record unreadable";
 const changed = () =>
   new BoardError(
     "Session records changed while loading. Refresh to try again.",
@@ -76,6 +79,24 @@ export async function readRuntime<T>(
       if (!before) return undefined;
       const full = path(parts),
         result = await readStampedText(full, limit, reserve);
+      if (result.stamp !== fileStamp(before)) throw changed();
+      return result.text;
+    },
+    async optionalText(parts, limit) {
+      const before = await regular(parts);
+      if (!before || before.size > BigInt(limit)) return undefined;
+      const full = path(parts);
+      let result;
+      try {
+        result = await readStampedText(full, limit, reserve, {
+          limit: OPTIONAL_UNREADABLE,
+          utf8: OPTIONAL_UNREADABLE,
+        });
+      } catch (e) {
+        if (e instanceof BoardError && e.message === OPTIONAL_UNREADABLE)
+          return undefined;
+        throw e;
+      }
       if (result.stamp !== fileStamp(before)) throw changed();
       return result.text;
     },

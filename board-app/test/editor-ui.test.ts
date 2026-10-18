@@ -347,7 +347,10 @@ test("a discard prompt left open during a pending save cannot discard or navigat
     s.click("discard-edits");
     // The handler refuses on its own too, not only through the disabled control.
     const discard = s.d.getElementById("discard-edits") as HTMLButtonElement;
-    discard.onclick!.call(discard, new s.dom.window.MouseEvent("click"));
+    discard.onclick!.call(
+      discard,
+      new s.dom.window.MouseEvent("click") as unknown as PointerEvent,
+    );
     await tick();
     assert.equal(s.d.getElementById("board-screen")!.hidden, false);
     assert.equal(s.d.getElementById("timeline-screen")!.hidden, true);

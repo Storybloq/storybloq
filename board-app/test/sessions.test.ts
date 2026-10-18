@@ -69,9 +69,15 @@ async function setup() {
     alive?: string,
     lastMcpCall = new Date().toISOString(),
     shutdown = false,
+    state: unknown = { sessionId: id },
   ) => {
     const dir = join(f.root, ".story/sessions", id, "telemetry");
     await mkdir(dir, { recursive: true });
+    if (state !== null)
+      await writeFile(
+        join(f.root, ".story/sessions", id, "state.json"),
+        typeof state === "string" ? state : JSON.stringify(state),
+      );
     await writeFile(join(dir, "lastMcpCall"), lastMcpCall);
     if (alive !== undefined) await writeFile(join(dir, "alive"), alive);
     if (shutdown)
@@ -324,6 +330,68 @@ test("shutdown wins without alive, but telemetry requires nonempty lastMcpCall",
     await s.telemetry(undefined, new Date().toISOString(), true);
     assert.equal((await s.read()).status.record.alive, false);
     await s.telemetry(undefined, "   ", true);
+    const r = (await s.read()).status.record;
+    assert.equal(r.alive, true);
+    assert.equal(r.telemetryAvailable, false);
+  } finally {
+    await s.close();
+  }
+});
+const generation = "0123456789abcdef";
+const generationDir = (root: string) =>
+  join(root, ".story/sessions", id, "telemetry/generations", generation);
+test("a taken-over session reads alive and shutdown from the current owner's generation, lastMcpCall from its canonical path", async () => {
+  const s = await setup();
+  try {
+    const last = new Date().toISOString();
+    await s.put("status.json", active({ alive: true }));
+    // The displaced owner left a legacy shutdown marker behind.
+    await s.telemetry(undefined, last, true, {
+      sessionId: id,
+      heartbeatGeneration: generation,
+    });
+    await mkdir(generationDir(s.root), { recursive: true });
+    await writeFile(join(generationDir(s.root), "alive"), "123");
+    let r = (await s.read()).status.record;
+    assert.equal(r.alive, true);
+    assert.equal(r.telemetryAvailable, true);
+    assert.equal(r.lastMcpCall, last);
+    await writeFile(join(generationDir(s.root), "shutdown"), "1");
+    r = (await s.read()).status.record;
+    assert.equal(r.alive, false);
+    assert.equal(r.telemetryAvailable, true);
+  } finally {
+    await s.close();
+  }
+});
+for (const [label, state] of [
+  ["a malformed generation id", { sessionId: id, heartbeatGeneration: "../x" }],
+  ["a non-string generation id", { sessionId: id, heartbeatGeneration: 7 }],
+  ["an empty generation id", { sessionId: id, heartbeatGeneration: "" }],
+  ["an unparsable session state", "{"],
+  ["a non-object session state", "[]"],
+  ["a missing session state", null],
+] as const)
+  test("telemetry falls back to the status signals for " + label, async () => {
+    const s = await setup();
+    try {
+      await s.put("status.json", active({ alive: true }));
+      await s.telemetry("0", new Date().toISOString(), true, state);
+      const r = (await s.read()).status.record;
+      assert.equal(r.alive, true);
+      assert.equal(r.telemetryAvailable, false);
+    } finally {
+      await s.close();
+    }
+  });
+test("an oversized session state falls back to the status signals", async () => {
+  const s = await setup();
+  try {
+    await s.put("status.json", active({ alive: true }));
+    await s.telemetry("0", new Date().toISOString(), true, {
+      sessionId: id,
+      pad: "x".repeat(300 * 1024),
+    });
     const r = (await s.read()).status.record;
     assert.equal(r.alive, true);
     assert.equal(r.telemetryAvailable, false);

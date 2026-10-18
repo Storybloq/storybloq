@@ -82,6 +82,10 @@ test("built stdio sessions tool reads private runtime state without changing any
       ],
       milestone: { kind: "reviewing", at: now },
     });
+    await writeFile(
+      join(root, ".story/sessions", id, "state.json"),
+      JSON.stringify({ sessionId: id }),
+    );
     await writeFile(join(root, ".story/sessions", id, "telemetry/alive"), "0");
     await writeFile(
       join(root, ".story/sessions", id, "telemetry/lastMcpCall"),
@@ -91,6 +95,7 @@ test("built stdio sessions tool reads private runtime state without changing any
       "config.json",
       "status.json",
       "telemetry/presence/interactive.json",
+      `sessions/${id}/state.json`,
       `sessions/${id}/telemetry/alive`,
       `sessions/${id}/telemetry/lastMcpCall`,
     ];

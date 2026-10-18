@@ -6,6 +6,7 @@ import {
   presenceFileBase,
   PRESENCE_SCHEMA_VERSION,
 } from "../../src/presence/types.js";
+import { CROCKFORD_CLASS } from "../../src/models/types.js";
 import { createRootCheck } from "./edit-policy.js";
 import type { RootAccess } from "./federation.js";
 import { readRuntime, type RuntimeScope } from "./runtime-reader.js";
@@ -22,10 +23,42 @@ import type {
   SessionRecord,
 } from "./sessions-types.js";
 
+const GENERATION_ID = new RegExp(`^${CROCKFORD_CLASS}{16}$`);
+/**
+ * The directory holding the CURRENT owner's alive and shutdown files, resolved
+ * the way the CLI's resolveOwnerTelemetry does: an absent generation is the
+ * legacy directory, and anything that cannot be read or validated is no
+ * answer at all, since after a takeover the legacy directory belongs to the
+ * displaced owner.
+ */
+async function ownerTelemetry(scope: RuntimeScope, sessionId: string) {
+  const session = ["sessions", sessionId];
+  const text = await scope.optionalText([...session, "state.json"], 256 * 1024);
+  if (text === undefined) return undefined;
+  let state;
+  try {
+    state = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state))
+    return undefined;
+  const generation = state.heartbeatGeneration;
+  if (generation === undefined || generation === null)
+    return [...session, "telemetry"];
+  if (typeof generation !== "string" || !GENERATION_ID.test(generation))
+    return undefined;
+  return [...session, "telemetry", "generations", generation];
+}
 async function applyTelemetry(scope: RuntimeScope, record: SessionRecord) {
-  const dir = ["sessions", record.sessionId, "telemetry"];
-  const last = await scope.text([...dir, "lastMcpCall"], 128);
+  const last = await scope.text(
+    ["sessions", record.sessionId, "telemetry", "lastMcpCall"],
+    128,
+  );
   if (!last?.trim()) return;
+  // Unresolvable ownership keeps the status payload's own health signals.
+  const dir = await ownerTelemetry(scope, record.sessionId);
+  if (!dir) return;
   if (await scope.marker([...dir, "shutdown"])) {
     record.alive = false;
     record.lastMcpCall = last.trim();

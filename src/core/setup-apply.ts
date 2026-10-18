@@ -17,6 +17,7 @@
  * commits itself.
  */
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -53,6 +54,7 @@ import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
 import { recommend } from "./recommend.js";
 import { parseSetupMeta } from "./setup-meta.js";
+import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
   parseSetupPayload,
   renderSetupPayload,
@@ -79,6 +81,8 @@ export interface SetupApplyResult {
 export interface SetupApplyOptions {
   /** How long each lock acquisition waits before the run exits 7. */
   readonly lockDeadlineMs?: number;
+  /** Where the setup-review store is found, for a material amendment's review (default process.env). */
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -124,8 +128,8 @@ export const sha256 = (text: string): string => createHash("sha256").update(text
 const digestOf = (value: unknown): string => sha256(serializeJSON(value));
 
 /** The approved package alone: what the owner approved, without what the engine records later. */
-export function approvedPayload(p: SetupPayload): Omit<SetupPayload, "receipts" | "amendments" | "preImages" | "frozen"> {
-  const { receipts: _r, amendments: _a, preImages: _p, frozen: _f, ...approved } = p;
+export function approvedPayload(p: SetupPayload): Omit<SetupPayload, "receipts" | "amendments" | "preImages" | "frozen" | "frozenHistory"> {
+  const { receipts: _r, amendments: _a, preImages: _p, frozen: _f, frozenHistory: _h, ...approved } = p;
   return approved;
 }
 
@@ -209,6 +213,42 @@ function withReceipt(p: SetupPayload, receipt: SetupPayload["receipts"][number])
 
 const hasReceipt = (p: SetupPayload, step: string) => p.receipts.some((r) => r.step === step);
 
+type Receipt = SetupPayload["receipts"][number];
+
+/** The receipt that decides a step's state: its last one (an accepted amendment appends a new baseline). */
+function lastReceipt(p: SetupPayload, step: string): Receipt | undefined {
+  for (let i = p.receipts.length - 1; i >= 0; i--) if (p.receipts[i]!.step === step) return p.receipts[i];
+  return undefined;
+}
+
+/** Finalization steps whose receipt counts only at the current frozen revision (plan v5 6a). */
+const REVISIONED_STEPS = new Set(["setup-note", "handover", "validate", "snapshot"]);
+
+function stepDone(p: SetupPayload, step: string): boolean {
+  const current = p.frozen !== null && p.frozen.revision === effectiveRevision(p);
+  if (step === "freeze") return current && hasReceipt(p, "freeze");
+  if (REVISIONED_STEPS.has(step)) return current && lastReceipt(p, step)?.revision === p.frozen!.revision;
+  return hasReceipt(p, step);
+}
+
+/** The approved plan with its amendments applied: a dropped checkpoint set leaves the plan, and so do its gates. */
+export function effectivePlan(p: SetupPayload): SetupPayload {
+  const dropped = p.amendments.some((a) => a.class === "schema-5 enable refused" && a.resolution === "drop-checkpoints");
+  return dropped ? { ...p, checkpoints: [] } : p;
+}
+
+/** The frozen block a receipt's revision names, current or superseded. */
+function frozenAt(p: SetupPayload, revision: string | undefined): NonNullable<SetupPayload["frozen"]> | undefined {
+  return [...(p.frozen ? [p.frozen] : []), ...p.frozenHistory].find((f) => f.revision === revision);
+}
+
+/** The handover of the current revision (plan v5 12.3): selected by receipt revision, never by digest order. */
+export function setupHandoverPath(p: SetupPayload): string | null {
+  const revision = effectiveRevision(p);
+  const r = [...p.receipts].reverse().find((x) => x.step === "handover" && x.revision === revision);
+  return r ? r.target.slice("file:".length) : null;
+}
+
 // --- Lookup by key -----------------------------------------------------------
 
 function keyedTicket(state: ProjectState, setupId: string, key: string): Ticket | undefined {
@@ -238,6 +278,15 @@ function insideProject(root: string, path: string): string {
 }
 
 const proposedPath = (target: string, setupId: string) => `${target}.storybloq-${setupId}.proposed`;
+
+/** The `.proposed` copy is setup's only durable version until its step is receipted (1f); after that it goes. */
+async function removeProposed(target: string, setupId: string): Promise<void> {
+  try {
+    await fencedUnlink(proposedPath(target, setupId));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+}
 
 /**
  * A user-owned file (plan v5 1f): created, never replaced. Absent: created.
@@ -443,6 +492,13 @@ async function allocateNoteId(state: ProjectState, root: string): Promise<{ id: 
 
 type Start = { kind: "run" } | { kind: "complete"; report: string };
 
+/** An archived progress note is a completed setup only when its archive step is receipted; otherwise the owner set it aside. */
+function completedSetup(archived: readonly Note[]): Start {
+  const done = archived.map((n) => parseSetupPayload(n.content)).find((x) => hasReceipt(x, "archive"));
+  if (!done) throw new SetupStop(2, `setup ${parseSetupPayload(archived[0]!.content).setupId} was set aside: its progress note was archived before it finished`);
+  return { kind: "complete", report: done.frozen?.historicalReport ?? "" };
+}
+
 /**
  * With a project in place: continue this setup's progress note, report a
  * completed setup, or start one on an empty scaffold, recording the
@@ -468,8 +524,7 @@ async function startOnProject(root: string, p: SetupPayload, out: string[], opti
     }
     const archived = findProgress(state, p.setupId, "archived");
     if (archived.length > 0) {
-      const done = parseSetupPayload(archived[0]!.content);
-      start = { kind: "complete", report: done.frozen?.historicalReport ?? "" };
+      start = completedSetup(archived);
       return;
     }
     if (!state.isEmptyScaffold) {
@@ -560,8 +615,8 @@ async function stepEnable(ctx: StepContext): Promise<void> {
       class: "schema-5 enable refused",
       target: ".story/config.json",
       observed: `a team ledger at schema ${config.schemaVersion ?? "unset"}`,
-      expected: `schema ${IMMUTABLE_EVIDENCE_SCHEMA_VERSION} with immutable checkpoint evidence enabled`,
-      resolutions: ["run `storybloq checkpoint enable --immutable-evidence`, then resume", "amend the checkpoints out of the setup", "stop"],
+      expected: `schema ${IMMUTABLE_EVIDENCE_SCHEMA_VERSION}: run storybloq checkpoint enable --immutable-evidence and resume, or drop the checkpoints`,
+      resolutions: ["drop-checkpoints", "stop"],
     });
   }
   const op = await prepareConfigWrite(stamp.config, ctx.root);
@@ -630,7 +685,6 @@ async function stepIssue(ctx: StepContext, key: string): Promise<void> {
   } else {
     id = nextIssueID(state.issues);
   }
-  const impact = i.source === null ? i.body : `${i.body}${i.body === "" ? "" : "\n\n"}Imported from GitHub issue #${i.source}.`;
   const issue = {
     id,
     ...(displayId !== undefined && { displayId }),
@@ -638,7 +692,7 @@ async function stepIssue(ctx: StepContext, key: string): Promise<void> {
     status: "open",
     severity: "medium",
     components: i.labels,
-    impact: impact === "" ? i.title : impact,
+    impact: plannedImpact(i),
     resolution: null,
     location: [],
     discoveredDate: ctx.today,
@@ -672,19 +726,32 @@ function activationInput(p: SetupPayload) {
   return { level: p.quality.level, verifyApplies: p.quality.verifyApplies, components: p.quality.components };
 }
 
-async function stepConfig(ctx: StepContext): Promise<void> {
-  const p = ctx.progress.payload;
-  const config = ctx.lr.state.config;
+/** The config with setup's owned values written over it: project facts and the matrix's stages (plan v5 5b). */
+function plannedConfig(p: SetupPayload, config: Config): Config {
   const { stages } = computeInitialStages(activationInput(p));
   const overrides = (config as Config & { recipeOverrides?: Record<string, unknown> }).recipeOverrides ?? {};
   const existing = (overrides.stages as Record<string, unknown> | undefined) ?? {};
-  const next = {
+  return {
     ...config,
     project: p.project.name,
     type: p.project.type,
     language: p.project.language,
     recipeOverrides: { ...overrides, stages: { ...existing, ...stages } },
   } as Config;
+}
+
+/** Whether a config turns any recipe stage on or off differently from the approved quality level. */
+function stagesDiffer(p: SetupPayload, config: Config): boolean {
+  const { stages } = computeInitialStages(activationInput(p));
+  const current = ((config as Config & { recipeOverrides?: { stages?: Record<string, { enabled?: unknown }> } }).recipeOverrides?.stages) ?? {};
+  return Object.entries(stages).some(([name, s]) => current[name]?.enabled !== s.enabled);
+}
+
+async function stepConfig(ctx: StepContext): Promise<void> {
+  const p = ctx.progress.payload;
+  const config = ctx.lr.state.config;
+  const { stages } = computeInitialStages(activationInput(p));
+  const next = plannedConfig(p, config);
   const op = await prepareConfigWrite(next, ctx.root);
   await commit(ctx, [op], { step: "config", target: "config", ownedPre: ownedDigest.config(config), ownedPost: ownedDigest.config(next) });
   invalidateResolutionWriteContext(ctx.root);
@@ -697,6 +764,7 @@ async function stepGovernance(ctx: StepContext, path: string, content: string): 
   const outcome = await createUserFile(ctx.root, path, content, p.setupId, "user-owned target occupied");
   await setupApplySeams.fault(`governance-created:${posix.normalize(path)}`);
   await commit(ctx, [], { step: `governance:${posix.normalize(path)}`, target: `file:${posix.normalize(path)}`, ownedPre: null, ownedPost: ownedDigest.bytes(content) });
+  await removeProposed(insideProject(ctx.root, path), p.setupId);
   ctx.out.push(`-> file · ${path} ${outcome === "created" ? "created" : "already present with setup's content"} (${content.length} chars)`);
 }
 
@@ -745,7 +813,322 @@ async function stepGitignore(ctx: StepContext): Promise<void> {
     throw ambiguity({ class: "pointer edit owed", target: ".gitignore", observed: `missing ${missing.join(", ")}`, expected: `the entries in .gitignore.storybloq-${p.setupId}.proposed`, resolutions: ["applied", "keep-current", "stop"] });
   }
   await commit(ctx, [], { step: "gitignore", target: "file:.gitignore", ownedPre: null, ownedPost: digestOf([...wanted].sort()) });
+  await removeProposed(target, p.setupId);
   ctx.out.push("-> git · .gitignore already lists the setup entries");
+}
+
+// --- Resume classification (plan v5 1d, 2) ----------------------------------
+
+/** Digest of a user-owned file that is gone, and of a step the owner kept as it is. */
+const ABSENT = sha256("\u0000absent");
+const KEPT = sha256("\u0000kept-current");
+
+type FindingKind =
+  | "edited" | "removed" | "duplicate" | "unkeyed" | "edge" | "config" | "config-pre"
+  | "governance-drift" | "occupied" | "gitignore-drift" | "pointer" | "enable" | "progress" | "stop-only";
+
+/** One ambiguity plus what `--resolve` needs to act on it. */
+interface Finding extends SetupAmbiguity {
+  readonly kind: FindingKind;
+  readonly ref: Readonly<Record<string, string>>;
+}
+
+function allKeyed(state: ProjectState, setupId: string, key: string): Array<Ticket | Issue> {
+  const mine = (kind: "ticket" | "issue") => (x: Ticket | Issue) => {
+    const meta = parseSetupMeta(kind, x);
+    return meta.kind === "item" && meta.meta.setupId === setupId && meta.meta.key === key && meta.meta.supersededBy === undefined;
+  };
+  return [...state.tickets.filter(mine("ticket")), ...state.issues.filter(mine("issue"))];
+}
+
+function plannedImpact(i: SetupPayload["issues"][number]): string {
+  const impact = i.source === null ? i.body : `${i.body}${i.body === "" ? "" : "\n\n"}Imported from GitHub issue #${i.source}.`;
+  return impact === "" ? i.title : impact;
+}
+
+type PlannedItem =
+  | { readonly kind: "ticket"; readonly item: SetupPayload["tickets"][number] }
+  | { readonly kind: "checkpoint"; readonly item: SetupPayload["checkpoints"][number] }
+  | { readonly kind: "issue"; readonly item: SetupPayload["issues"][number] };
+
+function plannedItems(plan: SetupPayload): PlannedItem[] {
+  return [
+    ...plan.tickets.map((item): PlannedItem => ({ kind: "ticket", item })),
+    ...plan.checkpoints.map((item): PlannedItem => ({ kind: "checkpoint", item })),
+    ...plan.issues.map((item): PlannedItem => ({ kind: "issue", item })),
+  ];
+}
+
+/** The owned fields of an item that differ from the plan, by name. */
+function itemDrift(plan: SetupPayload, planned: PlannedItem, current: Ticket | Issue): string[] {
+  if (planned.kind === "issue") {
+    const i = current as Issue;
+    return [
+      i.title !== planned.item.title ? "title" : null,
+      i.impact !== plannedImpact(planned.item) ? "impact" : null,
+      JSON.stringify(i.components) !== JSON.stringify(planned.item.labels) ? "components" : null,
+    ].filter((x): x is string => x !== null);
+  }
+  const t = current as Ticket;
+  const type = planned.kind === "checkpoint" ? t.type : planned.item.type;
+  return [
+    t.title !== planned.item.title ? "title" : null,
+    t.type !== type ? "type" : null,
+    t.phase !== phaseIdOf(plan, planned.item.phase) ? "phase" : null,
+    t.description !== planned.item.description ? "description" : null,
+  ].filter((x): x is string => x !== null);
+}
+
+const label = (x: { id: string; displayId?: string }) => x.displayId ?? x.id;
+
+async function readOrNull(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+async function leaveProposed(target: string, setupId: string, content: string): Promise<void> {
+  try {
+    await atomicCreate(proposedPath(target, setupId), content);
+  } catch (err) {
+    if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
+  }
+}
+
+function missingEntries(current: string | null, wanted: readonly string[]): string[] {
+  const lines = new Set((current ?? "").split(/\r?\n/).map((l) => l.trim()));
+  return wanted.filter((w) => !lines.has(w));
+}
+
+/**
+ * Every entity setup has written or is about to write, against its permitted
+ * cumulative states (plan v5 1d): its last receipt's owned digest, or, before
+ * its first receipt, absent. Runs under the lock in every step's hold, so
+ * each step's write is a compare-and-set against the state classified here.
+ * The only writes are `.proposed` copies beside user-owned files (1f).
+ */
+async function classifySetup(root: string, state: ProjectState, p: SetupPayload): Promise<Finding[]> {
+  const plan = effectivePlan(p);
+  const out: Finding[] = [];
+  const stopOnly = (klass: string, target: string, observed: string, expected: string): Finding =>
+    ({ kind: "stop-only", class: klass, target, observed, expected, resolutions: ["stop"], ref: {} });
+
+  const duplicated = new Set<string>();
+  for (const { item } of plannedItems(plan)) {
+    const items = allKeyed(state, p.setupId, item.key);
+    if (items.length < 2) continue;
+    duplicated.add(item.key);
+    out.push({
+      kind: "duplicate", class: "key on two items", target: `${item.key} (${items.map(label).join(", ")})`,
+      observed: `${items.length} items carry ${item.key}`, expected: "one item per key",
+      resolutions: [...items.map((x) => `keep ${x.id}`), "stop"], ref: { key: item.key },
+    });
+  }
+
+  for (const ph of plan.phases) {
+    const r = lastReceipt(p, `phase:${ph.key}`);
+    if (!r) continue;
+    const target = `phase ${ph.id} (${ph.key})`;
+    const at = state.roadmap.phases.findIndex((x) => x.id === ph.id);
+    if (at < 0) {
+      out.push(stopOnly("setup item removed", target, "no phase with this id", "the phase setup created"));
+      continue;
+    }
+    const current = state.roadmap.phases[at]!;
+    if (ownedDigest.phase({ ...current, description: current.description ?? "" }, at) === r.ownedPost) continue;
+    const fields = (["name", "label", "description"] as const).filter((f) => (current[f] ?? "") !== ph[f]);
+    out.push({
+      kind: "edited", class: "owned field edited", target,
+      observed: fields.length > 0 ? `${fields.join(", ")} differ from the plan` : "the position or values differ from the accepted baseline",
+      expected: "the values setup wrote", resolutions: ["accept-current", "restore-planned", "stop"],
+      ref: { entity: "phase", key: ph.key, step: `phase:${ph.key}` },
+    });
+  }
+
+  for (const planned of plannedItems(plan)) {
+    const key = planned.item.key;
+    if (duplicated.has(key)) continue;
+    const r = lastReceipt(p, `item:${key}`);
+    const [item] = allKeyed(state, p.setupId, key);
+    if (!r) {
+      if (item) {
+        out.push(stopOnly("corrupted receipt state", `${key} (${item.id})`, `an item carrying ${key} with no receipt`, "no item before its create receipt"));
+        continue;
+      }
+      if (p.amendments.some((a) => a.resolution === "replace" && a.target.startsWith(`${key} `))) continue;
+      const pool: Array<Ticket | Issue> = planned.kind === "issue"
+        ? [...state.issues]
+        : state.tickets.filter((t) => ((t as Ticket & { ownerCheckpoint?: unknown }).ownerCheckpoint !== undefined) === (planned.kind === "checkpoint"));
+      const matches = pool.filter((x) => x.title === planned.item.title && parseSetupMeta(planned.kind === "issue" ? "issue" : "ticket", x).kind === "none");
+      if (matches.length > 0) {
+        out.push({
+          kind: "unkeyed", class: "unkeyed item matches a planned item", target: `${key} (${matches.map(label).join(", ")})`,
+          observed: `an item titled "${planned.item.title}" that no setup owns`, expected: `setup to create ${key}`,
+          resolutions: [...matches.map((x) => `adopt ${x.id}`), "replace", "stop"], ref: { key, kind: planned.kind },
+        });
+      }
+      continue;
+    }
+    const target = `${key} (${r.target.slice(r.target.indexOf(":") + 1)})`;
+    if (!item) {
+      out.push(stopOnly("setup item removed", target, `no item carries ${key}`, "the item setup created"));
+      continue;
+    }
+    const digest = planned.kind === "issue" ? ownedDigest.issue(item as Issue) : ownedDigest.ticket(item as Ticket);
+    if (digest === r.ownedPost) continue;
+    const fields = itemDrift(plan, planned, item);
+    // Restoring the planned fields of a checkpoint must reach its create receipt: otherwise its own content changed.
+    const contentChanged = planned.kind === "checkpoint"
+      && ownedDigest.ticket(restoredTicket(plan, planned, item as Ticket)) !== p.receipts.find((x) => x.step === `item:${key}`)!.ownedPost;
+    out.push({
+      kind: "edited", class: "owned field edited", target: `${key} (${label(item)})`,
+      observed: fields.length > 0 ? `${fields.join(", ")} differ from the plan` : "the values differ from the accepted baseline",
+      expected: "the values setup wrote",
+      // A checkpoint's own content changes only through the checkpoint commands, never by restoring it here.
+      resolutions: contentChanged ? ["accept-current", "stop"] : ["accept-current", "restore-planned", "stop"],
+      ref: { entity: planned.kind, key, step: `item:${key}`, id: item.id },
+    });
+  }
+
+  for (const [key] of setupBlockers(plan)) {
+    const r = lastReceipt(p, `wire:${key}`);
+    for (const [itemId, blockerId] of r?.edges ?? []) {
+      const t = state.ticketByID(itemId);
+      if (!t || t.blockedBy.includes(blockerId)) continue;
+      out.push({
+        kind: "edge", class: "setup edge removed", target: `${label(t)} -> ${blockerId}`,
+        observed: `${label(t)} is no longer blocked by ${blockerId}`, expected: "the edge setup wired",
+        resolutions: ["accept-removal", "restore-edge", "stop"], ref: { key, item: itemId, blocker: blockerId },
+      });
+    }
+  }
+
+  const configNow = ownedDigest.config(state.config);
+  const configReceipt = lastReceipt(p, "config");
+  if (configReceipt) {
+    if (configNow !== configReceipt.ownedPost) {
+      out.push({
+        kind: "config", class: "config drifted", target: ".story/config.json",
+        observed: "project, type, language or recipe stages changed after setup wrote them", expected: "the values setup wrote",
+        resolutions: ["accept-current", "restore-planned", "stop"], ref: {},
+      });
+    }
+  } else {
+    const pre = p.preImages.find((x) => x.target === ".story/config.json");
+    const base = lastReceipt(p, "config-baseline")?.ownedPost ?? (pre ? ownedDigest.config(JSON.parse(pre.content) as Config) : null);
+    if (base !== null && configNow !== base) {
+      out.push({
+        kind: "config-pre", class: "config drifted", target: ".story/config.json",
+        observed: "project, type, language or recipe stages changed after setup recorded the scaffold's config", expected: "the recorded pre-image",
+        resolutions: ["accept-current", "stop"], ref: {},
+      });
+    }
+  }
+
+  for (const f of plan.governance.files) {
+    const path = posix.normalize(f.path);
+    const target = insideProject(root, f.path);
+    const current = await readOrNull(target);
+    const r = lastReceipt(p, `governance:${path}`);
+    if (r) {
+      if ((current === null ? ABSENT : sha256(current)) === r.ownedPost) continue;
+      out.push({
+        kind: "governance-drift", class: "governance file drifted", target: f.path,
+        observed: current === null ? "the file is gone" : "bytes setup did not write", expected: "the bytes setup wrote or the owner kept",
+        resolutions: ["keep-current", "stop"], ref: { path },
+      });
+    } else if (current !== null && current !== f.content) {
+      await leaveProposed(target, p.setupId, f.content);
+      out.push({
+        kind: "occupied", class: "user-owned target occupied", target: f.path,
+        observed: `${current.length} bytes that are not setup's`,
+        expected: `setup's ${f.content.length} bytes, left beside it as ${posix.basename(f.path)}.storybloq-${p.setupId}.proposed`,
+        resolutions: ["keep-current", "stop"], ref: { path },
+      });
+    }
+  }
+
+  if (plan.git.gitignore.length > 0) {
+    const target = join(root, ".gitignore");
+    const current = await readOrNull(target);
+    const missing = missingEntries(current, plan.git.gitignore);
+    const r = lastReceipt(p, "gitignore");
+    if (r) {
+      if (r.ownedPost !== KEPT && missing.length > 0) {
+        out.push({
+          kind: "gitignore-drift", class: "governance file drifted", target: ".gitignore",
+          observed: current === null ? "the file is gone" : `missing ${missing.join(", ")}`, expected: "setup's entries",
+          resolutions: ["keep-current", "stop"], ref: {},
+        });
+      }
+    } else if (current !== null && missing.length > 0) {
+      // A change to a file the user owns is never made by the engine (plan v5 1f).
+      await leaveProposed(target, p.setupId, `${current}${current.endsWith("\n") || current === "" ? "" : "\n"}${missing.join("\n")}\n`);
+      out.push({
+        kind: "pointer", class: "pointer edit owed", target: ".gitignore",
+        observed: `missing ${missing.join(", ")}`, expected: `the entries in .gitignore.storybloq-${p.setupId}.proposed`,
+        resolutions: ["applied", "keep-current", "stop"], ref: {},
+      });
+    }
+  }
+
+  const config = state.config;
+  if (plan.checkpoints.length > 0 && !hasReceipt(p, "enable") && config.team?.enabled === true
+    && enableCheckpointsStampUnlocked(config, IMMUTABLE_EVIDENCE_SCHEMA_VERSION).status !== "already") {
+    out.push({
+      kind: "enable", class: "schema-5 enable refused", target: ".story/config.json",
+      observed: `a team ledger at schema ${config.schemaVersion ?? "unset"}`,
+      expected: `schema ${IMMUTABLE_EVIDENCE_SCHEMA_VERSION}: run storybloq checkpoint enable --immutable-evidence and resume, or drop the checkpoints`,
+      resolutions: ["drop-checkpoints", "stop"], ref: {},
+    });
+  }
+
+  const noteReceipt = lastReceipt(p, "setup-note");
+  if (noteReceipt) {
+    const block = frozenAt(p, noteReceipt.revision);
+    const note = state.notes.find((n) => {
+      const meta = parseSetupMeta("note", n);
+      return meta.kind === "record" && meta.meta.record === "final" && meta.meta.setupId === p.setupId;
+    });
+    if (!block || !note || note.content !== block.setupNote) {
+      out.push(stopOnly("setup note edited", noteReceipt.target.slice("note:".length), note ? "content setup did not write" : "the setup note is gone", "the frozen setup note"));
+    }
+  }
+  const handoverReceipt = lastReceipt(p, "handover");
+  if (handoverReceipt) {
+    const path = handoverReceipt.target.slice("file:".length);
+    const block = frozenAt(p, handoverReceipt.revision);
+    const current = await readOrNull(insideProject(root, path));
+    if (!block || current !== block.handover.content) {
+      out.push(stopOnly("handover edited", path, current === null ? "the handover is gone" : "content setup did not write", "the frozen handover"));
+    }
+  }
+  return out;
+}
+
+/** A ticket or checkpoint with its planned owned fields; everything else, the checkpoint content included, kept. */
+function restoredTicket(plan: SetupPayload, planned: PlannedItem, t: Ticket): Ticket {
+  if (planned.kind === "issue") return t;
+  return {
+    ...t,
+    title: planned.item.title,
+    ...(planned.kind === "ticket" && { type: planned.item.type }),
+    phase: phaseIdOf(plan, planned.item.phase),
+    description: planned.item.description,
+  } as Ticket;
+}
+
+function restoredIssue(planned: SetupPayload["issues"][number], i: Issue): Issue {
+  return { ...i, title: planned.title, impact: plannedImpact(planned), components: planned.labels } as Issue;
+}
+
+function ambiguities(findings: readonly Finding[]): SetupStop {
+  const reason = findings.length === 1
+    ? `the owner must resolve ${findings[0]!.class} at ${findings[0]!.target}`
+    : `the owner must resolve ${findings.length} ambiguities`;
+  return new SetupStop(4, reason, findings.map(ambiguityLine));
 }
 
 // --- Finalization (plan v5 6a) ------------------------------------------------
@@ -797,9 +1180,9 @@ function setupNoteContent(p: SetupPayload, report: string): string {
   ].join("\n");
 }
 
-function handoverContent(p: SetupPayload, report: string): string {
+function handoverContent(p: SetupPayload, report: string, supersedes?: { revision: string; file: string }): string {
   return [
-    `Setup record: ${p.setupId} handover`,
+    supersedes ? `Setup record: ${p.setupId} handover, revision ${digest12(supersedes.revision)}, supersedes ${supersedes.file}` : `Setup record: ${p.setupId} handover`,
     "",
     `# Setup ${p.setupId}`,
     "",
@@ -810,16 +1193,41 @@ function handoverContent(p: SetupPayload, report: string): string {
   ].join("\n");
 }
 
+/**
+ * Freezes the finalization contents for the current revision. After an
+ * amendment (plan v5 6a): contents byte-equal to the old block re-stamp its
+ * receipts to the new revision; otherwise the old block is kept as history
+ * and the finalization steps run again at the new one, the handover as a new
+ * file that names the one it supersedes.
+ */
 async function stepFreeze(ctx: StepContext): Promise<void> {
   const p = ctx.progress.payload;
-  const report = setupReportLines(ctx.lr.state, p).join("\n");
-  const frozen = {
-    revision: effectiveRevision(p),
-    setupNote: setupNoteContent(p, report),
-    handover: { path: `.story/handovers/${ctx.today}-setup-${p.setupId.toLowerCase()}.md`, content: handoverContent(p, report) },
-    historicalReport: report,
-  };
-  const payload = withReceipt({ ...p, frozen }, { step: "freeze", target: "frozen", ownedPre: null, ownedPost: digestOf(frozen), revision: frozen.revision });
+  const revision = effectiveRevision(p);
+  const report = setupReportLines(ctx.lr.state, effectivePlan(p)).join("\n");
+  const setupNote = setupNoteContent(p, report);
+  const old = p.frozen;
+  let next: SetupPayload;
+  if (old && old.setupNote === setupNote && old.historicalReport === report) {
+    const frozen = { ...old, revision };
+    const receipts = p.receipts.map((r) => (r.revision === old.revision ? { ...r, revision } : r));
+    next = { ...p, frozen, receipts };
+    ctx.out.push(`-> storybloq · finalization re-stamped to revision ${digest12(revision)} (contents unchanged)`);
+  } else {
+    const prior = lastReceipt(p, "handover");
+    const priorFile = prior ? posix.basename(prior.target.slice("file:".length)) : null;
+    const slug = `${ctx.today}-setup-${p.setupId.toLowerCase()}`;
+    const frozen = {
+      revision,
+      setupNote,
+      handover: priorFile === null
+        ? { path: `.story/handovers/${slug}.md`, content: handoverContent(p, report) }
+        : { path: `.story/handovers/${slug}-${digest12(revision)}.md`, content: handoverContent(p, report, { revision, file: priorFile }) },
+      historicalReport: report,
+    };
+    next = { ...p, frozen, frozenHistory: old ? [...p.frozenHistory, { ...old, superseded: true }] : p.frozenHistory };
+    if (old) ctx.out.push(`-> storybloq · finalization frozen again at revision ${digest12(revision)}`);
+  }
+  const payload = withReceipt(next, { step: "freeze", target: "frozen", ownedPre: null, ownedPost: digestOf(next.frozen), revision });
   await commit(ctx, [], payload.receipts.at(-1)!, payload);
 }
 
@@ -836,7 +1244,18 @@ async function stepSetupNote(ctx: StepContext): Promise<void> {
     return meta.kind === "record" && meta.meta.record === "final" && meta.meta.setupId === p.setupId;
   });
   if (existing) {
-    throw ambiguity({ class: "corrupted receipt state", target: existing.id, observed: "a setup note with no receipt", expected: "no setup note before its receipt", resolutions: ["stop"] });
+    const prior = lastReceipt(p, "setup-note");
+    if (!prior) {
+      throw ambiguity({ class: "corrupted receipt state", target: existing.id, observed: "a setup note with no receipt", expected: "no setup note before its receipt", resolutions: ["stop"] });
+    }
+    // Brought to the new revision only while it still holds the bytes of the revision it was written at.
+    if (existing.content !== frozenAt(p, prior.revision)?.setupNote) {
+      throw ambiguity({ class: "setup note edited", target: existing.id, observed: "content setup did not write", expected: "the frozen setup note", resolutions: ["stop"] });
+    }
+    const op = await prepareNoteWrite({ ...existing, content: frozen.setupNote, updatedDate: ctx.today } as Note, ctx.root);
+    await commit(ctx, [op], { step: "setup-note", target: `note:${existing.id}`, ownedPre: ownedDigest.bytes(existing.content), ownedPost: ownedDigest.bytes(frozen.setupNote), revision: frozen.revision });
+    ctx.out.push(`-> storybloq · setup note ${label(existing)} brought to revision ${digest12(frozen.revision)}`);
+    return;
   }
   const { id, displayId } = await allocateNoteId(ctx.lr.state, ctx.root);
   const note = {
@@ -908,7 +1327,7 @@ async function stepArchive(ctx: StepContext): Promise<void> {
   const fail = (why: string) => new SetupStop(3, `the finalization gate refused: ${why}`);
   if (effectiveRevision(p) !== frozen.revision) throw fail("the payload revision is not the frozen one");
   for (const step of FINALIZATION_STEPS) {
-    const r = p.receipts.find((x) => x.step === step);
+    const r = lastReceipt(p, step);
     if (!r || r.revision !== frozen.revision) throw fail(`${step} has no receipt at the frozen revision`);
   }
   const setupNote = ctx.lr.state.notes.find((n) => {
@@ -930,10 +1349,13 @@ async function runSteps(root: string, setupId: string, out: string[], options: S
   await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
     payload = readProgress(state, setupId).payload;
   });
-  for (const step of planSteps(payload!)) {
+  for (const step of planSteps(effectivePlan(payload!))) {
     await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async (lr) => {
       const progress = readProgress(lr.state, setupId);
-      if (hasReceipt(progress.payload, step.id)) return;
+      if (stepDone(progress.payload, step.id)) return;
+      // The whole plan, classified in the same hold as the step's write: its compare-and-set.
+      const findings = await classifySetup(root, lr.state, progress.payload);
+      if (findings.length > 0) throw ambiguities(findings);
       await step.run({ root, lr, progress, today: localDateOf(new Date()), out });
     });
     await setupApplySeams.fault(`step:${step.id}`);
@@ -950,6 +1372,31 @@ async function runSteps(root: string, setupId: string, out: string[], options: S
 
 const isLockBusy = (err: unknown) => err instanceof ProjectLoaderError && /Timed out acquiring project lock|legacy-format lock/.test(err.message);
 
+/** Runs one entry and turns a stop, a busy lock or any other failure into its exit code and lines. */
+async function guarded(setupId: string, out: string[], run: () => Promise<SetupApplyResult>): Promise<SetupApplyResult> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof SetupStop) {
+      const resume = err.exitCode === 2 ? "" : ` Resume with storybloq setup-apply --resume --setup ${setupId}.`;
+      return { exitCode: err.exitCode, lines: [...out, ...err.detail, `Setup stopped: ${err.reason}.${resume}`], setupId };
+    }
+    if (isLockBusy(err)) {
+      return { exitCode: 7, lines: [...out, "Setup stopped: the project lock is busy (another storybloq writer holds it); retry when it finishes."], setupId };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { exitCode: 3, lines: [...out, `Setup stopped: ${message}. Resume with storybloq setup-apply --resume --setup ${setupId}.`], setupId };
+  }
+}
+
+async function finish(root: string, setupId: string, out: string[], options: SetupApplyOptions, start: Start): Promise<SetupApplyResult> {
+  if (start.kind === "complete") {
+    return { exitCode: 0, lines: [...out, ...start.report.split("\n"), `Setup applied: ${setupId} (already complete; nothing written)`], setupId };
+  }
+  const report = await runSteps(root, setupId, out, options);
+  return { exitCode: 0, lines: [...out, ...report.split("\n"), `Setup applied: ${setupId}`], setupId };
+}
+
 /**
  * Applies an approved setup payload to `root`. Safe to call again with the
  * same payload after any interruption: it continues the setup from its
@@ -965,31 +1412,318 @@ export async function setupApply(root: string, raw: unknown, options: SetupApply
     if (err instanceof SetupPayloadError) return { exitCode: 2, lines: [`Setup refused: ${err.message}`], setupId: null };
     throw err;
   }
-  if (payload.receipts.length > 0 || payload.amendments.length > 0 || payload.preImages.length > 0 || payload.frozen !== null) {
+  if (payload.receipts.length > 0 || payload.amendments.length > 0 || payload.preImages.length > 0 || payload.frozen !== null || payload.frozenHistory.length > 0) {
     return { exitCode: 2, lines: ["Setup refused: a new setup payload carries no receipts, amendments, pre-images or frozen block; resume an existing setup instead."], setupId: payload.setupId };
   }
   const out: string[] = [];
-  try {
+  return guarded(payload.setupId, out, async () => {
     const wrap = join(absRoot, ".story");
     let start: Start = { kind: "run" };
     if (existsSync(join(wrap, "config.json")) || !(await bootstrap(absRoot, payload, out, options))) {
       if (existsSync(join(wrap, SETUP_BOOTSTRAP_MANIFEST))) await finishPublishedBootstrap(absRoot, payload, options);
       start = await startOnProject(absRoot, payload, out, options);
     }
-    if (start.kind === "complete") {
-      return { exitCode: 0, lines: [...start.report.split("\n"), `Setup applied: ${payload.setupId} (already complete; nothing written)`], setupId: payload.setupId };
+    return finish(absRoot, payload.setupId, out, options, start);
+  });
+}
+
+/** This setup in an existing project: in progress, completed, or not here at all. */
+async function locate(root: string, setupId: string, options: SetupApplyOptions): Promise<Start | null> {
+  let found: Start | null = null;
+  await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
+    if (findProgress(state, setupId, "active").length > 0) {
+      found = { kind: "run" };
+      return;
     }
-    const report = await runSteps(absRoot, payload.setupId, out, options);
-    return { exitCode: 0, lines: [...out, ...report.split("\n"), `Setup applied: ${payload.setupId}`], setupId: payload.setupId };
-  } catch (err) {
-    if (err instanceof SetupStop) {
-      const resume = err.exitCode === 2 ? "" : ` Resume with storybloq setup-apply --resume --setup ${payload.setupId}.`;
-      return { exitCode: err.exitCode, lines: [...out, ...err.detail, `Setup stopped: ${err.reason}.${resume}`], setupId: payload.setupId };
+    const archived = findProgress(state, setupId, "archived");
+    if (archived.length > 0) found = completedSetup(archived);
+  });
+  return found;
+}
+
+const refused = (setupId: string | null, why: string): SetupApplyResult => ({ exitCode: 2, lines: [`Setup refused: ${why}`], setupId });
+
+/**
+ * `setup-apply --resume --setup <id>`: continues a setup from the ledger
+ * alone, finishing a bootstrap from its manifest when the project was never
+ * published. After completion it returns the frozen report with nothing
+ * written.
+ */
+export async function setupResume(root: string, setupId: string, options: SetupApplyOptions = {}): Promise<SetupApplyResult> {
+  const absRoot = resolve(root);
+  if (!SETUP_ID_PATTERN.test(setupId)) return refused(null, `"${setupId}" is not a setup id (SS-<8 hex>).`);
+  const out: string[] = [];
+  return guarded(setupId, out, async () => {
+    const wrap = join(absRoot, ".story");
+    const manifest = await readManifest(wrap);
+    if (manifest) {
+      if (manifest.setupId !== setupId) {
+        throw ambiguity({ class: "bootstrap manifest of another setup", target: `.story/${SETUP_BOOTSTRAP_MANIFEST}`, observed: `setup ${manifest.setupId}`, expected: `setup ${setupId}`, resolutions: [`resume ${manifest.setupId}`, "remove it by hand", "stop"] });
+      }
+      let approved: SetupPayload;
+      try {
+        approved = validateSetupPayload(manifest.payload);
+      } catch {
+        throw ambiguity({ class: "corrupted bootstrap manifest", target: `.story/${SETUP_BOOTSTRAP_MANIFEST}`, observed: "a payload that does not validate", expected: "the approved package", resolutions: ["stop"] });
+      }
+      if (existsSync(join(wrap, "config.json")) || !(await bootstrap(absRoot, approved, out, options))) {
+        await finishPublishedBootstrap(absRoot, approved, options);
+      }
+    } else if (!existsSync(join(wrap, "config.json"))) {
+      return refused(setupId, `no setup ${setupId} in this folder.`);
     }
-    if (isLockBusy(err)) {
-      return { exitCode: 7, lines: [...out, "Setup stopped: the project lock is busy (another storybloq writer holds it); retry when it finishes."], setupId: payload.setupId };
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    return { exitCode: 3, lines: [...out, `Setup stopped: ${message}. Resume with storybloq setup-apply --resume --setup ${payload.setupId}.`], setupId: payload.setupId };
+    const start = await locate(absRoot, setupId, options);
+    if (!start) return refused(setupId, `no setup ${setupId} in this project.`);
+    return finish(absRoot, setupId, out, options, start);
+  });
+}
+
+// --- Resolutions (plan v5 2a) -------------------------------------------------
+
+const ResolutionsSchema = z.array(z.object({
+  target: z.string().min(1),
+  resolution: z.string().min(1),
+  ownerWords: z.string().min(1),
+  reviewRevision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+}).strict()).min(1);
+
+export type SetupResolution = z.infer<typeof ResolutionsSchema>[number];
+
+/**
+ * A material amendment changes the reviewed package (plan v5 2a), so it
+ * needs a completed or round-limit review of the amended packet's revision
+ * in this setup's review store, or a recorded skip for this setup.
+ */
+function reviewProblem(root: string, p: SetupPayload, r: SetupResolution, env: NodeJS.ProcessEnv): string | null {
+  const how = "run storybloq setup-review run --new-cycle on the amended packet, get the owner's approval, and pass its revision as reviewRevision";
+  let setup;
+  let paths;
+  try {
+    paths = setupPaths(env, root, p.setupId);
+    setup = readSetup(paths);
+  } catch {
+    return `${r.target}: ${r.resolution} changes the approved package and this setup has no review record; ${how}`;
   }
+  if (setup.skipped) return null;
+  if (r.reviewRevision === undefined) return `${r.target}: ${r.resolution} changes the approved package; ${how}`;
+  if (p.review.lines.some((l) => l.includes(digest12(r.reviewRevision!)))) {
+    return `${r.target}: revision ${digest12(r.reviewRevision)} is the approved package's, not the amended one; ${how}`;
+  }
+  const verdict = classifyReview(loadRecords(paths), r.reviewRevision, setup.cycle);
+  if (verdict.kind === "completed" || verdict.kind === "round-limit") return null;
+  return `${r.target}: no completed or round-limit review for revision ${digest12(r.reviewRevision)}; ${how}`;
+}
+
+function isMaterial(f: Finding, resolution: string, plan: SetupPayload, state: ProjectState): boolean {
+  switch (f.kind) {
+    case "edited": return resolution === "accept-current";
+    case "edge": return resolution === "accept-removal";
+    case "occupied":
+    case "enable": return true;
+    case "config": return resolution === "accept-current" && stagesDiffer(plan, state.config);
+    case "unkeyed": {
+      if (!resolution.startsWith("adopt ")) return false;
+      const id = resolution.slice("adopt ".length);
+      const planned = plannedItems(plan).find((x) => x.item.key === f.ref.key)!;
+      const item = state.ticketByID(id) ?? state.issues.find((i) => i.id === id)!;
+      return itemDrift(plan, planned, item).length > 0;
+    }
+    default: return false;
+  }
+}
+
+/** Resolutions that persist an amendment (plan v5 2a "What is persisted"); the others persist a receipt or a write. */
+const AMENDS = new Set(["accept-current", "accept-removal", "keep-current", "replace", "drop-checkpoints"]);
+
+/**
+ * `setup-apply --resolve '<json>'`: records the owner's resolution of each
+ * open ambiguity, with any write it needs, in one transaction under the
+ * lock, then continues the setup. A resolution that names no open
+ * ambiguity, or a material amendment without its review, is refused with
+ * nothing written. `stop` writes nothing.
+ */
+export async function setupResolve(root: string, setupId: string, raw: unknown, options: SetupApplyOptions = {}): Promise<SetupApplyResult> {
+  const absRoot = resolve(root);
+  if (!SETUP_ID_PATTERN.test(setupId)) return refused(null, `"${setupId}" is not a setup id (SS-<8 hex>).`);
+  const parsed = ResolutionsSchema.safeParse(Array.isArray(raw) ? raw : (raw as { resolutions?: unknown } | null)?.resolutions);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    return refused(setupId, `the resolutions are not valid: ${issue.path.join(".") || "(root)"} ${issue.message}. Pass [{"target", "resolution", "ownerWords", "reviewRevision"?}].`);
+  }
+  const resolutions = parsed.data;
+  if (resolutions.some((r) => r.resolution === "stop")) {
+    return { exitCode: 3, lines: [`Setup stopped: the owner chose stop; nothing was written. Resume with storybloq setup-apply --resume --setup ${setupId}.`], setupId };
+  }
+  const env = options.env ?? process.env;
+  const out: string[] = [];
+  return guarded(setupId, out, async () => {
+    let refusal: string | null = null;
+    await withProjectLock(absRoot, { strict: true, deadlineMs: options.lockDeadlineMs }, async (lr) => {
+      refusal = await resolveUnderLock(absRoot, lr, setupId, resolutions, env, out);
+    });
+    if (refusal !== null) return { exitCode: 2, lines: [...out, `Setup refused: ${refusal}`], setupId };
+    return finish(absRoot, setupId, out, options, { kind: "run" });
+  });
+}
+
+async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, resolutions: readonly SetupResolution[], env: NodeJS.ProcessEnv, out: string[]): Promise<string | null> {
+  const state = lr.state;
+  const active = findProgress(state, setupId, "active");
+  if (active.length === 0) {
+    return findProgress(state, setupId, "archived").length > 0 ? `setup ${setupId} is complete; there is nothing to resolve.` : `no setup ${setupId} in this project.`;
+  }
+  const today = localDateOf(new Date());
+  if (active.length > 1) {
+    // Two progress notes for one setup: keep one, archive the rest unfinished.
+    const [r, ...rest] = resolutions;
+    const keep = r!.resolution.startsWith("keep ") ? r!.resolution.slice("keep ".length) : null;
+    if (rest.length > 0 || r!.target !== setupId || keep === null || !active.some((n) => n.id === keep)) {
+      return `the open ambiguity is ${active.length} active progress notes for ${setupId}; resolve it alone with target ${setupId} and one of: ${active.map((n) => `keep ${n.id}`).join(", ")}.`;
+    }
+    const ops = await Promise.all(active.filter((n) => n.id !== keep).map((n) => prepareNoteWrite({ ...n, status: "archived", updatedDate: today } as Note, root)));
+    await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
+    out.push(`-> storybloq · resolved ${setupId}: ${r!.resolution}`);
+    return null;
+  }
+
+  const progress = readProgress(state, setupId);
+  const p = progress.payload;
+  const plan = effectivePlan(p);
+  const findings = await classifySetup(root, state, p);
+  const tickets = new Map<string, Ticket>();
+  const issues = new Map<string, Issue>();
+  let roadmap: Roadmap | null = null;
+  let config: Config | null = null;
+  const receipts: Receipt[] = [];
+  const amendments: SetupPayload["amendments"] = [];
+  const cleanup: Array<() => Promise<void>> = [];
+  const ticket = (id: string) => tickets.get(id) ?? state.ticketByID(id)!;
+  const issue = (id: string) => issues.get(id) ?? state.issues.find((i) => i.id === id)!;
+
+  for (const r of resolutions) {
+    const f = findings.find((x) => x.target === r.target && x.resolutions.includes(r.resolution));
+    if (r.resolution === "applied" && r.target === ".gitignore") {
+      // The agent made the approved edit; the gitignore step verifies it byte for byte and receipts it.
+      const missing = missingEntries(await readOrNull(join(root, ".gitignore")), plan.git.gitignore);
+      if (hasReceipt(p, "gitignore") || missing.length > 0) return `.gitignore: applied, but it does not list ${missing.join(", ") || "the approved entries"} yet.`;
+      out.push(`-> storybloq · resolved .gitignore: applied`);
+      continue;
+    }
+    if (!f) {
+      const open = findings.map((x) => `${x.target} (${x.resolutions.join(" | ")})`);
+      return `no open ambiguity at ${r.target} takes ${r.resolution}; open: ${open.length > 0 ? open.join("; ") : "none"}.`;
+    }
+    const material = isMaterial(f, r.resolution, plan, state);
+    if (material) {
+      const problem = reviewProblem(root, p, r, env);
+      if (problem !== null) return problem;
+    }
+    if (AMENDS.has(r.resolution) || r.resolution.startsWith("adopt ")) {
+      amendments.push({ class: f.class, target: f.target, resolution: r.resolution, ownerWords: r.ownerWords, at: new Date().toISOString(), material, ...(r.reviewRevision !== undefined && material && { reviewRevision: r.reviewRevision }) });
+    }
+    const baseline = (step: string, target: string, ownedPost: string, extra: Partial<Receipt> = {}) =>
+      receipts.push({ step, target, ownedPre: lastReceipt(p, step)?.ownedPost ?? null, ownedPost, ...extra });
+
+    switch (f.kind) {
+      case "edited": {
+        const step = f.ref.step!;
+        if (f.ref.entity === "phase") {
+          const ph = plan.phases.find((x) => x.key === f.ref.key)!;
+          const rm = roadmap ?? state.roadmap;
+          const at = rm.phases.findIndex((x) => x.id === ph.id);
+          const phase = r.resolution === "restore-planned" ? { ...rm.phases[at]!, name: ph.name, label: ph.label, description: ph.description } : rm.phases[at]!;
+          if (r.resolution === "restore-planned") roadmap = { ...rm, phases: rm.phases.map((x, j) => (j === at ? phase : x)) } as Roadmap;
+          baseline(step, `phase:${ph.id}`, ownedDigest.phase({ ...phase, description: phase.description ?? "" }, at));
+        } else if (f.ref.entity === "issue") {
+          const planned = plan.issues.find((x) => x.key === f.ref.key)!;
+          const next = r.resolution === "restore-planned" ? restoredIssue(planned, issue(f.ref.id!)) : issue(f.ref.id!);
+          if (r.resolution === "restore-planned") issues.set(next.id, next);
+          baseline(step, `issue:${next.id}`, ownedDigest.issue(next));
+        } else {
+          const planned = plannedItems(plan).find((x) => x.item.key === f.ref.key)!;
+          const next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, ticket(f.ref.id!)) : ticket(f.ref.id!);
+          if (r.resolution === "restore-planned") tickets.set(next.id, next);
+          baseline(step, `ticket:${next.id}`, ownedDigest.ticket(next));
+        }
+        break;
+      }
+      case "duplicate": {
+        const keep = r.resolution.slice("keep ".length);
+        for (const other of allKeyed(state, setupId, f.ref.key!).filter((x) => x.id !== keep)) {
+          const setup = { setupId, key: f.ref.key!, supersededBy: keep };
+          if (state.ticketByID(other.id)) tickets.set(other.id, { ...ticket(other.id), setup } as Ticket);
+          else issues.set(other.id, { ...issue(other.id), setup } as Issue);
+          receipts.push({ step: `supersede:${other.id}`, target: other.id, ownedPre: null, ownedPost: sha256(keep) });
+        }
+        break;
+      }
+      case "unkeyed": {
+        if (r.resolution === "replace") break;
+        const id = r.resolution.slice("adopt ".length);
+        const setup = { setupId, key: f.ref.key! };
+        if (f.ref.kind === "issue") {
+          const next = { ...issue(id), setup } as Issue;
+          issues.set(id, next);
+          receipts.push({ step: `item:${f.ref.key}`, target: `issue:${id}`, ownedPre: null, ownedPost: ownedDigest.issue(next) });
+        } else {
+          const next = { ...ticket(id), setup } as Ticket;
+          tickets.set(id, next);
+          receipts.push({ step: `item:${f.ref.key}`, target: `ticket:${id}`, ownedPre: null, ownedPost: ownedDigest.ticket(next) });
+        }
+        break;
+      }
+      case "edge": {
+        const step = `wire:${f.ref.key}`;
+        if (r.resolution === "restore-edge") {
+          const t = ticket(f.ref.item!);
+          tickets.set(t.id, { ...t, blockedBy: [...t.blockedBy, f.ref.blocker!] } as Ticket);
+          break;
+        }
+        const last = [...receipts].reverse().find((x) => x.step === step) ?? lastReceipt(p, step)!;
+        const edges = (last.edges ?? []).filter(([, b]) => b !== f.ref.blocker);
+        receipts.push({ step, target: last.target, ownedPre: last.ownedPost, ownedPost: ownedDigest.edges(edges.map(([, b]) => b)), edges });
+        break;
+      }
+      case "config": {
+        const next: Config = r.resolution === "restore-planned" ? plannedConfig(p, config ?? state.config) : state.config;
+        if (r.resolution === "restore-planned") config = next;
+        baseline("config", "config", ownedDigest.config(next));
+        break;
+      }
+      case "config-pre":
+        baseline("config-baseline", "config", ownedDigest.config(state.config));
+        break;
+      case "governance-drift":
+      case "occupied": {
+        const target = insideProject(root, f.ref.path!);
+        const current = await readOrNull(target);
+        baseline(`governance:${f.ref.path}`, `file:${f.ref.path}`, current === null ? ABSENT : sha256(current));
+        if (f.kind === "occupied") cleanup.push(() => removeProposed(target, setupId));
+        break;
+      }
+      case "gitignore-drift":
+      case "pointer":
+        baseline("gitignore", "file:.gitignore", KEPT);
+        if (f.kind === "pointer") cleanup.push(() => removeProposed(join(root, ".gitignore"), setupId));
+        break;
+      default:
+        break;
+    }
+    out.push(`-> storybloq · resolved ${r.target}: ${r.resolution}${material ? " (material, review recorded)" : ""}`);
+  }
+
+  const ops: Array<{ target: string; content: string }> = [];
+  for (const t of tickets.values()) ops.push(await prepareTicketWrite(t, root));
+  for (const i of issues.values()) ops.push(await prepareIssueWrite(i, root));
+  if (roadmap) ops.push(await prepareRoadmapWrite(roadmap, root));
+  if (config) ops.push(await prepareConfigWrite(config, root));
+  const payload = { ...p, receipts: [...p.receipts, ...receipts], amendments: [...p.amendments, ...amendments] };
+  if (ops.length > 0 || receipts.length > 0 || amendments.length > 0) {
+    ops.push(await progressWrite(root, progress, payload, today));
+    await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
+    if (config) invalidateResolutionWriteContext(root);
+  }
+  for (const c of cleanup) await c();
+  await setupApplySeams.fault("resolved");
+  return null;
 }

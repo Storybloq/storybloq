@@ -202,7 +202,8 @@ export function validateProject(
     } else if (parsed.kind === "item" && parsed.meta.supersededBy === undefined) {
       const k = `${parsed.meta.setupId} ${parsed.meta.key}`;
       keyOwners.set(k, [...(keyOwners.get(k) ?? []), displayIdOf(item)]);
-    } else if (parsed.kind === "record") {
+    } else if (parsed.kind === "record" && !(parsed.meta.record === "progress" && (item as { status?: string }).status === "archived")) {
+      // An archived progress note no longer holds its setup's progress: one the owner set aside beside the kept one is history.
       const k = `${parsed.meta.setupId} ${parsed.meta.record}`;
       recordOwners.set(k, [...(recordOwners.get(k) ?? []), displayIdOf(item)]);
     }

@@ -165,6 +165,8 @@ export const SetupPayloadSchema = z.object({
   amendments: z.array(Amendment).default([]),
   preImages: z.array(PreImage).default([]),
   frozen: Frozen.nullable().default(null),
+  /** Frozen blocks an amendment after the freeze superseded, oldest first (plan v5 6a). */
+  frozenHistory: z.array(Frozen).default([]),
 }).strict();
 
 export type SetupPayload = z.infer<typeof SetupPayloadSchema>;
@@ -359,7 +361,9 @@ function referenceProblem(p: SetupPayload): string | null {
     if (earlier !== undefined) return `governance files ${earlier} and ${f.path} are the same file`;
     destinations.set(dest, f.path);
   }
-  if (p.frozen && escapes(p.frozen.handover.path)) return `the frozen handover path leaves the project: ${p.frozen.handover.path}`;
+  for (const block of [...(p.frozen ? [p.frozen] : []), ...p.frozenHistory]) {
+    if (escapes(block.handover.path)) return `the frozen handover path leaves the project: ${block.handover.path}`;
+  }
   // A cycle in blockedBy (gates included) can never be worked.
   const state = new Map<string, 1 | 2>();
   const visit = (k: string, path: string[]): string | null => {

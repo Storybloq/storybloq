@@ -385,7 +385,7 @@ describe("steps resume from their receipts", () => {
   });
 
   it.each([
-    ["the handover", async (root: string, frozen: NonNullable<SetupPayload["frozen"]>) => writeFile(join(root, frozen.handover.path), "edited\n"), /the handover is not the frozen one/],
+    ["the handover", async (root: string, frozen: NonNullable<SetupPayload["frozen"]>) => writeFile(join(root, frozen.handover.path), "edited\n"), /^Ambiguity: handover edited · \.story\/handovers\/.* · resolutions: stop$/],
     ["the setup note", async (root: string) => {
       const { state } = await loadProject(root);
       const note = state.notes.find((n) => (n as { setup?: { record?: string } }).setup?.record === "final")!;
@@ -393,16 +393,16 @@ describe("steps resume from their receipts", () => {
       const raw = JSON.parse(await readFile(path, "utf-8")) as { content: string };
       raw.content = "edited";
       await writeFile(path, JSON.stringify(raw, null, 2) + "\n");
-    }, /the setup note is not the frozen one/],
-  ] as const)("the gate refuses to archive when %s is not the frozen bytes, and the setup stays in progress", async (_name, edit, reason) => {
+    }, /^Ambiguity: setup note edited · N-\d+ · .* · resolutions: stop$/],
+  ] as const)("%s edited after it was written stops before the archive, and the setup stays in progress", async (_name, edit, line) => {
     const root = await folder();
     faultAt("step:snapshot");
     await setupApply(root, payload());
     setupApplySeams.fault = () => {};
     await edit(root, (await progressPayload(root, "active")).frozen!);
     const result = await setupApply(root, payload());
-    expect(result.exitCode).toBe(3);
-    expect(result.lines.at(-1)).toMatch(reason);
+    expect(result.exitCode).toBe(4);
+    expect(result.lines).toContainEqual(expect.stringMatching(line));
     expect((await loadProject(root)).state.setupInProgress).toHaveLength(1);
   });
 

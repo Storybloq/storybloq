@@ -162,9 +162,9 @@ describe("ISS-1278: the entry mode end to end", () => {
     expect(result.error).toBeUndefined();
     expect(result.stderr).not.toContain("MCP server running");
     // The CLI's own answer, probed on the sniff-free entry: yargs refuses the
-    // flag, and no note is written.
+    // flag on stdout, and no note is written.
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Unknown argument: mcp");
+    expect(result.stdout).toContain("Unknown argument: mcp");
     expect(readdirSync(join(project, ".story", "notes")).filter((n) => n.endsWith(".json"))).toEqual([]);
   });
 });

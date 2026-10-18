@@ -5,6 +5,8 @@
  * byte so the record can be checked against it later.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+// ISS-1391's process-group machinery, shared with setup-verify (T-538 S3a-2).
+import { escalate, KILL_GRACE_MS, OWN_GROUP, release } from "./process-group.js";
 
 export type SetupReviewBackend = "codex" | "claude";
 export const SETUP_REVIEW_BACKENDS: readonly SetupReviewBackend[] = ["codex", "claude"];
@@ -104,104 +106,11 @@ export function parseReviewerOutput(backend: SetupReviewBackend, raw: Buffer): S
 }
 
 export const PROBE_TIMEOUT_MS = 5000;
-export const KILL_GRACE_MS = 5000;
+export { KILL_GRACE_MS };
 
 export interface ProcessLimits {
   readonly timeoutMs?: number;
   readonly killGraceMs?: number;
-}
-
-/**
- * Each backend runs in its own process group, so a timeout reaches whatever it
- * started too. Windows has no process groups to signal; there the child alone
- * is signalled.
- */
-const OWN_GROUP = process.platform !== "win32";
-
-function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  try {
-    if (OWN_GROUP && child.pid !== undefined) process.kill(-child.pid, signal);
-    else child.kill(signal);
-  } catch {
-    /* already gone */
-  }
-}
-
-/**
- * ISS-1391: a signal's default action ends the CLI without running "exit"
- * listeners, so while any group is live each terminating signal has a handler
- * that kills every live group first. It is prepended, so it decides before the
- * caller's own listeners run: a caller that listens for the signal owns the
- * exit; otherwise the signal is raised again and ends the CLI as it would have.
- */
-const liveGroups = new Set<ChildProcess>();
-const STOP_SIGNALS: NodeJS.Signals[] = OWN_GROUP ? ["SIGINT", "SIGTERM", "SIGHUP"] : ["SIGINT", "SIGTERM"];
-const stopHandlers = new Map<NodeJS.Signals, () => void>();
-
-function stopGroupsOnSignal(sig: NodeJS.Signals): void {
-  const ours = stopHandlers.get(sig);
-  const others = process.listeners(sig).some((l) => l !== ours);
-  for (const child of liveGroups) signalGroup(child, "SIGKILL");
-  liveGroups.clear();
-  removeStopHandlers();
-  if (!others) process.kill(process.pid, sig);
-}
-
-function removeStopHandlers(): void {
-  for (const [sig, handler] of stopHandlers) process.removeListener(sig, handler);
-  stopHandlers.clear();
-}
-
-function trackGroup(child: ChildProcess): void {
-  if (liveGroups.size === 0) {
-    for (const sig of STOP_SIGNALS) {
-      const handler = (): void => stopGroupsOnSignal(sig);
-      stopHandlers.set(sig, handler);
-      process.prependListener(sig, handler);
-    }
-  }
-  liveGroups.add(child);
-}
-
-function untrackGroup(child: ChildProcess): void {
-  if (liveGroups.delete(child) && liveGroups.size === 0) removeStopHandlers();
-}
-
-/**
- * Lets go of a child that will not close: its pipes are destroyed and it is
- * unref'd, so a process it started outside the group cannot keep this one
- * running.
- */
-function release(child: ChildProcess): void {
-  child.stdin?.destroy();
-  child.stdout?.destroy();
-  child.stderr?.destroy();
-  child.unref();
-}
-
-/**
- * At the timeout: SIGTERM to the group, SIGKILL after the grace period, and
- * after one more grace period `giveUp` settles the caller even if something
- * still holds the pipes open. Returns the canceller for a settled run.
- */
-function escalate(child: ChildProcess, timeoutMs: number, graceMs: number, onTimeout: () => void, giveUp: () => void): () => void {
-  const timers: NodeJS.Timeout[] = [];
-  const stopOnExit = (): void => signalGroup(child, "SIGKILL");
-  process.once("exit", stopOnExit);
-  trackGroup(child);
-  timers.push(setTimeout(() => {
-    onTimeout();
-    signalGroup(child, "SIGTERM");
-    timers.push(setTimeout(() => {
-      signalGroup(child, "SIGKILL");
-      timers.push(setTimeout(giveUp, graceMs));
-    }, graceMs));
-  }, timeoutMs));
-  return () => {
-    for (const t of timers) clearTimeout(t);
-    process.removeListener("exit", stopOnExit);
-    untrackGroup(child);
-  };
 }
 
 function runProbe(backend: SetupReviewBackend, args: string[], env: NodeJS.ProcessEnv, limits: ProcessLimits): Promise<string | null> {

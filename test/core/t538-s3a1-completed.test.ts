@@ -5,7 +5,7 @@
  * states a status, and restored with its date.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -258,5 +258,70 @@ describe("the status as an owned field", () => {
     expect(result.exitCode).toBe(4);
     const { state } = await loadProject(root);
     expect(parseSetupMeta("ticket", state.ticketByID("T-001")!).kind).toBe("item");
+  });
+});
+
+describe("restore-planned meets the ordinary lifecycle authorisation (review S3a-1 #1)", () => {
+  /** Every ledger file's bytes, so a refusal can be shown to write nothing. */
+  async function ledger(root: string): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const dir of ["tickets", "notes", "issues"]) {
+      const at = join(root, ".story", dir);
+      for (const f of (await readdir(at).catch(() => [] as string[])).sort()) out[`${dir}/${f}`] = await readFile(join(at, f), "utf-8");
+    }
+    out["config.json"] = await readFile(join(root, ".story", "config.json"), "utf-8");
+    return out;
+  }
+
+  async function interrupted(over: Parameters<typeof payload>[0] = {}): Promise<string> {
+    const root = await folder();
+    clock("2026-10-20T12:00:00Z");
+    faultOnce("step:config");
+    expect((await setupApply(root, payload(over))).exitCode).toBe(3);
+    setupApplySeams.fault = () => {};
+    return root;
+  }
+
+  async function refusedWithoutWrite(root: string, reason: RegExp): Promise<void> {
+    expect((await setupResume(root, SID)).exitCode).toBe(4);
+    const before = await ledger(root);
+    const result = await setupResolve(root, SID, [{ target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "it is built" }]);
+    expect(result.exitCode).toBe(2);
+    expect(result.lines.at(-1)).toMatch(reason);
+    expect(await ledger(root)).toEqual(before);
+  }
+
+  it("refuses to complete work another user has claimed", async () => {
+    const root = await interrupted();
+    await editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; r.claim = { user: "rival@example.com", branch: "rival", since: "2026-10-21" }; });
+    await refusedWithoutWrite(root, /^Setup refused: K2 \(T-001\): restore-planned refused: Cannot complete T-001: it is claimed by rival@example\.com and this caller cannot prove ownership/);
+  });
+
+  it("refuses to complete work a session has claimed", async () => {
+    const root = await interrupted();
+    await editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; r.claimedBySession = "11111111-2222-3333-4444-555555555555"; });
+    await refusedWithoutWrite(root, /^Setup refused: K2 \(T-001\): restore-planned refused: Cannot complete T-001: it is claimed by another session/);
+  });
+
+  it("refuses to complete work that now waits on an owner checkpoint not yet answered", async () => {
+    const root = await interrupted({ checkpoints: [cp("K4", ["K7"], [])] });
+    const { state } = await loadProject(root);
+    const checkpoint = state.tickets.find((x) => (x as { setup?: { key?: string } }).setup?.key === "K4")!;
+    await editTicket(root, "T-001", (r) => { r.status = "open"; r.completedDate = null; r.blockedBy = [checkpoint.id]; });
+    await refusedWithoutWrite(root, new RegExp(`^Setup refused: K2 \\(T-001\\): restore-planned refused: Cannot complete T-001: it waits on owner checkpoint ${checkpoint.id}, not yet approved or retired`));
+  });
+
+  it("completes work the caller's own claim holds, and the claim goes with the completion", async () => {
+    await writeFile(join(scratchHome, "gitconfig"), "[user]\n\temail = sam@example.com\n");
+    try {
+      const root = await interrupted();
+      await editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; r.claim = { user: "sam@example.com", branch: "main", since: "2026-10-21" }; });
+      expect((await setupResume(root, SID)).exitCode).toBe(4);
+      expect((await setupResolve(root, SID, [{ target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "it is built" }])).exitCode).toBe(0);
+      const restored = await ticketFile(root, "T-001");
+      expect([restored.status, restored.completedDate, "claim" in restored]).toEqual(["complete", "2026-10-20", false]);
+    } finally {
+      await rm(join(scratchHome, "gitconfig"), { force: true });
+    }
   });
 });

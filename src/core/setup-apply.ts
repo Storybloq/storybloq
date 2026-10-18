@@ -57,6 +57,9 @@ import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
 import { partitionByActionability, recommend, ticketCompletion } from "./recommend.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
+import { COMPLETION_EVIDENCE_AUTHORITY } from "./checkpoint-guard.js";
+import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
+import type { CompletionGuardOptions } from "./claims.js";
 import { parseSetupMeta } from "./setup-meta.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
@@ -1840,6 +1843,10 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   const resolved: string[] = [];
   const ticket = (id: string) => tickets.get(id) ?? state.ticketByID(id)!;
   const issue = (id: string) => issues.get(id) ?? state.issues.find((i) => i.id === id)!;
+  // A restore that moves a ticket into or out of complete is a lifecycle change: it meets the ordinary
+  // completion and reopen authorisation here, in this hold, and a refusal writes nothing (review S3a-1 #1).
+  const completing = new Set<string>();
+  let ownership: CompletionGuardOptions | null = null;
 
   for (const r of resolutions) {
     const f = findings.find((x) => x.target === r.target && x.resolutions.includes(r.resolution));
@@ -1882,7 +1889,21 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
           baseline(step, `issue:${next.id}`, ownedDigest.issue(next));
         } else {
           const planned = plannedItems(plan).find((x) => x.item.key === f.ref.key)!;
-          const next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, ticket(f.ref.id!), progress.note.createdDate) : ticket(f.ref.id!);
+          const current = ticket(f.ref.id!);
+          let next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, current, progress.note.createdDate) : current;
+          if (next.status !== current.status) {
+            try {
+              ownership ??= await collectCompletionOwnership(root);
+            } catch (err) {
+              if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
+              return `${r.target}: restore-planned changes its status, and ownership cannot be verified: local session state could not be read (${err.message}).`;
+            }
+            // The setup's own planned open may be restored on a claim-free ticket; any claim must be the caller's.
+            const decision = authoriseStatusChange(state, current, next, ownership, { claimFreeReopen: true }, label(current));
+            if (!decision.ok) return `${r.target}: restore-planned refused: ${decision.reason}`;
+            next = decision.ticket;
+            if (next.status === "complete") completing.add(next.id);
+          }
           if (r.resolution === "restore-planned") tickets.set(next.id, next);
           baseline(step, `ticket:${next.id}`, ownedDigest.ticket(next, plannedOf(planned)));
         }
@@ -1957,7 +1978,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   }
 
   const ops: Array<{ target: string; content: string }> = [];
-  for (const t of tickets.values()) ops.push(await prepareTicketWrite(t, root));
+  for (const t of tickets.values()) ops.push(await prepareTicketWrite(t, root, completing.has(t.id) ? { authority: COMPLETION_EVIDENCE_AUTHORITY } : undefined));
   for (const i of issues.values()) ops.push(await prepareIssueWrite(i, root));
   if (roadmap) ops.push(await prepareRoadmapWrite(roadmap, root));
   if (config) ops.push(await prepareConfigWrite(config, root));

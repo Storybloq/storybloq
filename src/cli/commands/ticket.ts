@@ -12,8 +12,8 @@ import {
   canClaim,
   type CompletionGuardOptions,
 } from "../../core/claims.js";
-import type { ClaimEpoch } from "../../autonomous/claim-reconciliation.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
+import { collectCompletionOwnership, CompletionOwnershipUnavailable } from "../../core/status-authority.js";
 import { validateProject } from "../../core/validation.js";
 import { assertCheckpointEligible, completeDependent, describeCheckpointBlock, describeIneligible, evidenceFor } from "../../core/checkpoint-evidence.js";
 import { checkpointState, hasOwnerCheckpoint, pendingCheckpointBlockers } from "../../core/owner-checkpoint.js";
@@ -533,38 +533,20 @@ async function resolveCompletionGuard(
     return { completingUser: ticket.claim?.user ?? null, activeEpochs: [], authorized: true };
   }
 
-  let completingUser: string | null = null;
   try {
-    const { gitUserEmail } = await import("../../autonomous/git-inspector.js");
-    completingUser = await gitUserEmail(root);
-  } catch {
-    // Identity unavailable counts as unproven, not as permission.
-  }
-
-  const activeEpochs: ClaimEpoch[] = [];
-  try {
-    const { findActiveSessionFull } = await import("../../autonomous/session.js");
-    const active = findActiveSessionFull(root);
-    // Only status "active" records veto. Archived and superseded ones retain a
-    // stale epoch for the ticket forever, and scanning them would block every
-    // later legitimate claimant.
-    const epoch = active && active.state.status === "active"
-      ? (active.state as Record<string, unknown>).claimEpoch as ClaimEpoch | undefined
-      : undefined;
-    if (epoch) activeEpochs.push(epoch);
+    return await collectCompletionOwnership(root);
   } catch (err) {
+    if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
     // An unreadable or malformed session store is NOT proof that no session is
     // running. Treating it as an empty veto set would let a completion clear a
     // live session's claim on email evidence alone, which is the exact ISS-784
     // harm. Fail closed and require the explicit administrative bypass.
     throw new CliValidationError(
       "invalid_input",
-      `Cannot verify ticket ownership: local session state could not be read (${err instanceof Error ? err.message : String(err)}). ` +
+      `Cannot verify ticket ownership: local session state could not be read (${err.message}). ` +
       "Re-run with --force to complete anyway.",
     );
   }
-
-  return { completingUser, activeEpochs };
 }
 
 export async function handleTicketUpdate(

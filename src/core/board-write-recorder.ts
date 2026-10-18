@@ -24,6 +24,11 @@ export interface BoardWriteContext {
   readonly commit: boolean;
   /** Absolute path to final kind, in first-recorded order. */
   readonly targets: Map<string, BoardTargetKind>;
+  /**
+   * T-538: targets outside `.story/` that a commit must include for the write
+   * to be whole (a checkpoint's copied evidence file). Absent means none.
+   */
+  readonly required?: Set<string>;
 }
 
 const boardWriteContext = new AsyncLocalStorage<BoardWriteContext>();
@@ -34,7 +39,7 @@ export async function runWithBoardWriteContext<T>(
   commit: boolean,
   fn: () => Promise<T>,
 ): Promise<{ value: T; context: BoardWriteContext }> {
-  const context: BoardWriteContext = { tool, commit, targets: new Map() };
+  const context: BoardWriteContext = { tool, commit, targets: new Map(), required: new Set() };
   const value = await boardWriteContext.run(context, fn);
   return { value, context };
 }
@@ -57,4 +62,16 @@ export function recordBoardTarget(absPath: string, kind: BoardTargetKind): void 
   const context = boardWriteContext.getStore();
   if (!context || !isBoardPath(absPath)) return;
   context.targets.set(absPath, kind);
+}
+
+/**
+ * T-538: records a file outside `.story/` that this write made part of the
+ * board's state, so `--commit` commits it with the ledger file that names it
+ * and reports the commit incomplete if it could not.
+ */
+export function recordRequiredCommitTarget(absPath: string): void {
+  const context = boardWriteContext.getStore();
+  if (!context) return;
+  context.targets.set(absPath, "write");
+  context.required?.add(absPath);
 }

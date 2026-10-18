@@ -48,6 +48,8 @@ export const BOARD_GIT_TEXT = {
   shaLookupFailed: (detail: string) => `commit created; SHA lookup failed: ${detail}`,
   verificationFailedReason: (reason: string) => `Git: commit verification failed (${reason})`,
   committed: (sha: string) => `Git: committed ${sha}`,
+  /** T-538: a file the write needs in the same commit (copied evidence) did not make it. */
+  incomplete: (list: string) => `Git: commit incomplete (${list} not committed)`,
   sectionHeading: "## Board not committed",
   untrackedLine: (count: string, ids: string) => `Untracked (${count}): ${ids}`,
   modifiedLine: (count: string, ids: string) => `Modified (${count}): ${ids}`,
@@ -100,8 +102,8 @@ export const COMMIT_VERBS: Readonly<Record<string, string>> = {
   rotate: "rotated",
   compact: "compacted",
   rebase: "rebased",
-  // T-538: `checkpoint evidence` commits the ticket's new revision ref only;
-  // the copied file under docs/checkpoints is the user's, outside `.story/`.
+  // T-538: `checkpoint evidence` commits the ticket and the one file it copied
+  // under docs/checkpoints, so a fresh clone has what the ref names.
   evidence: "evidence added",
   // CLI command leaves whose last token is not a verb.
   meta: "updated",
@@ -285,7 +287,7 @@ export interface BoardGitEntry {
 
 export interface BoardGitCommitOutcome {
   readonly repo: string;
-  readonly outcome: "committed" | "skipped" | "verification_failed";
+  readonly outcome: "committed" | "skipped" | "verification_failed" | "incomplete";
   readonly sha?: string;
   readonly reason?: string;
   readonly paths: string[];
@@ -306,6 +308,8 @@ interface Target {
   rel: string;
   /** Project-relative fallback for a path outside any repository. */
   readonly display: string;
+  /** T-538: must be in the commit for the write to be whole. */
+  readonly required: boolean;
 }
 
 interface RepoGroup {
@@ -481,7 +485,7 @@ async function commitGroup(group: RepoGroup, tool: string, states: Map<string, s
  * an explicitly successful result. Never throws.
  */
 export async function reportBoardWrite(context: BoardWriteContext): Promise<BoardWriteReport> {
-  const targets: Target[] = [...context.targets.entries()].map(([abs, kind]) => ({ abs: realPathOf(abs), kind, rel: "", display: projectRelative(abs) }));
+  const targets: Target[] = [...context.targets.entries()].map(([abs, kind]) => ({ abs: realPathOf(abs), kind, rel: "", display: projectRelative(abs), required: context.required?.has(abs) === true }));
   const lines: string[] = [];
   const git: BoardGitEntry[] = [];
   const gitCommit: BoardGitCommitOutcome[] = [];
@@ -526,10 +530,21 @@ export async function reportBoardWrite(context: BoardWriteContext): Promise<Boar
     let states = await readStates(group.top, group.targets);
     let commitLines: string[] = [];
     if (context.commit) {
-      const result = await commitGroup(group, context.tool, states);
+      let result = await commitGroup(group, context.tool, states);
+      states = await readStates(group.top, group.targets);
+      // A required file that is ignored, or otherwise not in HEAD now, leaves
+      // the ledger naming something a fresh clone does not have.
+      const missing = group.targets.filter((t) => t.required && states.get(t.rel) !== "committed").map((t) => `${t.rel} (${states.get(t.rel) ?? "unknown"})`);
+      const whole = result.outcome.outcome === "committed" || (result.outcome.outcome === "skipped" && result.outcome.reason === BOARD_GIT_TEXT.nothingToCommit);
+      if (missing.length > 0 && whole) {
+        const list = missing.join(", ");
+        result = {
+          outcome: { repo: result.outcome.repo, outcome: "incomplete", ...(result.outcome.sha ? { sha: result.outcome.sha } : {}), reason: `${list} not committed`, paths: result.outcome.paths },
+          lines: [...(result.outcome.outcome === "committed" ? result.lines : []), BOARD_GIT_TEXT.incomplete(list)],
+        };
+      }
       gitCommit.push(result.outcome);
       commitLines = result.lines;
-      states = await readStates(group.top, group.targets);
       // A deletion the commit just took is in neither the worktree nor HEAD,
       // which reads like a file that was never tracked; it is committed.
       if (result.outcome.outcome !== "skipped") {

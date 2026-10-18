@@ -420,7 +420,8 @@ describe("checkpoint evidence", () => {
     const target = join(outside, "secret.txt");
     await writeFile(target, "secret\n");
     await symlink(target, join(dir, "demo.txt"));
-    await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: join(dir, "demo.txt"), actor: ACTOR })).rejects.toThrow(/inside the project/);
+    // Refused before anything is read: the last component is never followed.
+    await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: join(dir, "demo.txt"), actor: ACTOR })).rejects.toThrow(/is a link/);
     expect(existsSync(join(dir, "docs", "checkpoints"))).toBe(false);
   });
 

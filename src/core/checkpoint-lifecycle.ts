@@ -17,9 +17,10 @@
  */
 import { CONFLICT_SETTLEMENT_AUTHORITY, LIFECYCLE_AUTHORITY, sameValue } from "./checkpoint-guard.js";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
-import { CHECKPOINT_SCHEMA_VERSION, IMMUTABLE_EVIDENCE_SCHEMA_VERSION, ProjectLoaderError } from "./errors.js";
+import { extname, join } from "node:path";
+import { CHECKPOINT_SCHEMA_VERSION, IMMUTABLE_EVIDENCE_SCHEMA_VERSION } from "./errors.js";
+import { recordRequiredCommitTarget } from "./board-write-recorder.js";
+import { publishEvidenceRevision, readEvidenceSource, verifyStoredRevision, type EvidenceIoHooks } from "./checkpoint-evidence-files.js";
 import {
   MAX_CHECKPOINT_COUNTER,
   OwnerCheckpointSchema,
@@ -35,7 +36,6 @@ import {
   type OwnerCheckpoint,
 } from "./owner-checkpoint.js";
 import {
-  atomicCreate,
   prepareTicketWrite,
   resolveActor,
   runTransactionUnlocked,
@@ -241,6 +241,11 @@ function assertEvidenceModeSupported(ticket: Ticket, verb: string): "legacy" | "
   return mode.kind;
 }
 
+/** On an immutable checkpoint every evidence ref is one of its stored revisions. */
+async function assertStoredRevisions(root: string, ticket: Ticket, refs: readonly string[]): Promise<void> {
+  for (const ref of refs) await verifyStoredRevision(root, ticket.id, ref, displayIdOf(ticket));
+}
+
 function assertActive(ticket: Ticket, cp: OwnerCheckpoint, verb: string): void {
   if (cp.lifecycle !== "active") throw new CliValidationError("conflict", `Cannot ${verb} ${displayIdOf(ticket)}: the checkpoint is retired`);
 }
@@ -282,6 +287,7 @@ export async function createCheckpoint(
       blockedBy: args.blockedBy ?? [],
       parentTicket: args.parentTicket ?? null,
     }, state, root);
+    if (args.evidenceMode === "immutable") await assertStoredRevisions(root, ticket, args.content.evidenceRefs ?? []);
     const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
     created = await writeCheckpoint(ticket, record, modeFields, state, root, true);
   });
@@ -312,6 +318,7 @@ export async function attachCheckpoint(
     if ((ticket as Record<string, unknown>).checkpointEvidenceMode !== undefined) {
       throw new CliValidationError("conflict", `Cannot attach a checkpoint to ${label}: it already carries checkpointEvidenceMode; fix the file by hand first`);
     }
+    if (args.evidenceMode === "immutable") await assertStoredRevisions(root, ticket, args.content.evidenceRefs ?? []);
     const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
     updated = await writeCheckpoint(ticket, record, modeFields, state, root);
   });
@@ -355,11 +362,15 @@ export async function resolveCheckpoint(root: string, id: string, expected: Expe
     }
     // T-538: on immutable evidence, the reviewed artifact is one of the
     // content-addressed revisions the record names, never free text.
-    if (mode === "immutable" && args.artifactRef !== undefined && args.artifactRef.length > 0 && !cp.evidenceRefs.includes(args.artifactRef)) {
-      throw new CliValidationError(
-        "invalid_input",
-        `${label} uses immutable evidence: artifactRef must be one of its evidence revisions (${cp.evidenceRefs.length > 0 ? cp.evidenceRefs.join(", ") : "none yet; add one with checkpoint evidence"}).`,
-      );
+    if (mode === "immutable" && args.artifactRef !== undefined && args.artifactRef.length > 0) {
+      if (!cp.evidenceRefs.includes(args.artifactRef)) {
+        throw new CliValidationError(
+          "invalid_input",
+          `${label} uses immutable evidence: artifactRef must be one of its evidence revisions (${cp.evidenceRefs.length > 0 ? cp.evidenceRefs.join(", ") : "none yet; add one with checkpoint evidence"}).`,
+        );
+      }
+      // The owner approves bytes, so the file must still be the bytes its name records.
+      await verifyStoredRevision(root, ticket.id, args.artifactRef, label);
     }
 
     const generation = nextCounter(cp.generation, "generation");
@@ -423,7 +434,7 @@ export async function changeCheckpoint(root: string, id: string, expected: Expec
     const ticket = findTicket(state, id);
     const cp = currentCheckpoint(ticket, expected);
     assertActive(ticket, cp, "change");
-    assertEvidenceModeSupported(ticket, "change");
+    if (assertEvidenceModeSupported(ticket, "change") === "immutable") await assertStoredRevisions(root, ticket, content.evidenceRefs ?? []);
     updated = await writeChanged(ticket, cp, content, by, state, root);
   });
   if (!updated) throw new Error("Checkpoint not changed");
@@ -461,26 +472,6 @@ function evidenceExtension(file: string): string {
   return /^[a-z0-9]{1,16}$/.test(ext) ? ext : "bin";
 }
 
-/** The source, refused unless it resolves (symlinks followed) inside the project. */
-async function evidenceSourceInside(root: string, file: string): Promise<string> {
-  const outside = () => new CliValidationError("invalid_input", `Evidence must be a file inside the project: ${file}`);
-  const inside = (base: string, p: string) => {
-    const rel = relative(base, p);
-    return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
-  };
-  const base = await realpath(root);
-  const lexical = resolve(root, file);
-  if (!inside(resolve(root), lexical) && !inside(base, lexical)) throw outside();
-  let real: string;
-  try {
-    real = await realpath(lexical);
-  } catch {
-    throw new CliValidationError("not_found", `Evidence file not found: ${file}`);
-  }
-  if (!inside(base, real)) throw outside();
-  return real;
-}
-
 export interface EvidenceArgs {
   readonly file: string;
   readonly actor?: string;
@@ -502,7 +493,7 @@ export interface EvidenceResult {
  * by a `changed` write, which voids any approval: the owner answers against
  * the evidence as it now stands. A ref already on the record writes nothing.
  */
-export async function addCheckpointEvidence(root: string, id: string, expected: ExpectedCheckpoint, args: EvidenceArgs): Promise<EvidenceResult> {
+export async function addCheckpointEvidence(root: string, id: string, expected: ExpectedCheckpoint, args: EvidenceArgs, hooks: EvidenceIoHooks = {}): Promise<EvidenceResult> {
   const by = await resolveActor(root, args.actor);
   let out: EvidenceResult | undefined;
   await withProjectLock(root, { strict: true }, async ({ state }) => {
@@ -518,22 +509,13 @@ export async function addCheckpointEvidence(root: string, id: string, expected: 
         `${label} does not use immutable evidence; name its evidence with \`checkpoint change\` instead.`,
       );
     }
-    const source = await evidenceSourceInside(root, args.file);
-    const bytes = await readFile(source);
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const ref = `docs/checkpoints/${ticket.id}/${digest.slice(0, 16)}.${evidenceExtension(source)}`;
+    const source = await readEvidenceSource(root, args.file, hooks);
+    const digest = createHash("sha256").update(source.bytes).digest("hex");
+    const ref = `docs/checkpoints/${ticket.id}/${digest.slice(0, 16)}.${evidenceExtension(source.path)}`;
+    await publishEvidenceRevision(root, ticket.id, ref, source.bytes, hooks);
     const target = join(root, ...ref.split("/"));
-    await mkdir(join(root, "docs", "checkpoints", ticket.id), { recursive: true });
-    try {
-      await atomicCreate(target, bytes);
-    } catch (err) {
-      if (!(err instanceof ProjectLoaderError) || err.code !== "file_exists") throw err;
-      const existing = createHash("sha256").update(await readFile(target)).digest("hex");
-      if (existing !== digest) {
-        throw new CliValidationError("conflict", `${ref} already holds other content; it is never replaced. Move it aside by hand if it is not evidence.`);
-      }
-    }
     if (cp.evidenceRefs.includes(ref)) {
+      recordRequiredCommitTarget(target);
       out = { ticket, ref, reused: true };
       return;
     }
@@ -544,6 +526,8 @@ export async function addCheckpointEvidence(root: string, id: string, expected: 
       evidenceRefs: [...cp.evidenceRefs, ref],
     };
     out = { ticket: await writeChanged(ticket, cp, content, by, state, root), ref, reused: false };
+    // After the ticket, so the commit message names the checkpoint.
+    recordRequiredCommitTarget(target);
   });
   if (!out) throw new Error("Checkpoint evidence not added");
   return out;

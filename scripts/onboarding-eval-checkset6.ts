@@ -1,19 +1,21 @@
 /**
  * T-536 check set 6: the evaluation rules for the CLI-run setup reviewer.
  *
- * Rule 1: every probe and review line a package shows is byte-equal to the
- * output of a `storybloq setup-review status` call earlier in the run.
+ * Rule 1: a package shows exactly one probe line directly above one review
+ * line, and the pair is byte-equal to the output of a `storybloq setup-review
+ * status` call earlier in the run.
  * Rule 2 dispatches on the review line's type. A completed or round-limit
  * package shows exactly one marked Plan section, `Plan, revision <d12>:` to
  * `End of plan, revision <d12>`, equal under the defined normalisation to the
  * named revision's `## Plan` section; that revision is the one store file
  * whose name starts with the digest, its sha256 is its name, and it is
  * byte-equal to the matched status call's stdin; and no ticket-template line
- * appears outside the markers. A skipped package needs a preceding owner skip
- * and a `status --skipped` call with no stdin. Absent, failed and unreadable
+ * appears outside the markers. A skipped package needs an owner skip that
+ * answers the agent's stop turn, then a `status --skipped` call with no stdin. Absent, failed and unreadable
  * lines fail the run.
  * Rule 3: no agent command or file tool touches the review store except a
- * plain `storybloq setup-review` call.
+ * plain `storybloq setup-review` call, whose only stdin is a single-quoted
+ * here-document.
  * Rule 4: in the unavailable arm, the turn after the unavailable gate is the
  * four stop lines alone.
  */
@@ -61,13 +63,14 @@ const linesOf = (text: string): string[] => text.replace(/\r\n/g, "\n").split("\
 
 /**
  * The stdin a here-document feeds a command, newline-terminated, or null when
- * the command has none. Only a simple delimiter word is read (bare, or in one
- * pair of quotes); anything else is null.
+ * the command has none. Only a single-quoted delimiter word is read: any
+ * other here-document lets the shell expand its body, so the bytes the
+ * command received are not the bytes in the transcript.
  */
 export function heredocStdin(command: string): string | null {
-  const m = /<<-?\s*(?:'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)"|([A-Za-z0-9_]+))[^\n]*\n/.exec(command);
+  const m = /<<-?\s*'([A-Za-z0-9_]+)'[^\n]*\n/.exec(command);
   if (!m) return null;
-  const delimiter = m[1] ?? m[2] ?? m[3]!;
+  const delimiter = m[1]!;
   const body = command.slice(m.index + m[0].length).split("\n");
   const end = body.indexOf(delimiter);
   return end < 0 ? null : body.slice(0, end).map((l) => `${l}\n`).join("");
@@ -77,15 +80,22 @@ const hasStdin = (command: string): boolean => /<</.test(command) || /(^|[^<])<(
 
 /**
  * One `storybloq setup-review` call and nothing else: no chaining, pipe,
- * substitution or redirect on its first line beyond one here-document, and,
- * when the command spans lines, nothing after that here-document's terminator.
+ * substitution or redirect on its first line beyond one single-quoted
+ * here-document, and, when the command spans lines, nothing after that
+ * here-document's terminator.
  */
 function plainCall(command: string): boolean {
   const lines = command.split("\n");
-  const head = lines[0]!.replace(/<<-?\s*('[A-Za-z0-9_]+'|"[A-Za-z0-9_]+"|[A-Za-z0-9_]+)\s*$/, "");
+  const head = lines[0]!.replace(/<<-?\s*'[A-Za-z0-9_]+'\s*$/, "");
   if (/[;&|`$()<>]/.test(head)) return false;
   if (lines.length === 1) return true;
-  return heredocStdin(command) !== null && command.endsWith(`\n${/<<-?\s*['"]?([A-Za-z0-9_]+)/.exec(lines[0]!)![1]}`);
+  return heredocStdin(command) !== null && command.endsWith(`\n${/<<-?\s*'([A-Za-z0-9_]+)'/.exec(lines[0]!)![1]}`);
+}
+
+/** The agent's turn ends with the four stop lines. */
+function isStopTurn(text: string): boolean {
+  const ls = text.replace(/\r\n/g, "\n").trimEnd().split("\n");
+  return ls.length >= STOP_LINES.length && STOP_LINES.every((l, i) => ls[ls.length - STOP_LINES.length + i] === l);
 }
 
 interface StatusCall {
@@ -167,19 +177,26 @@ export function checkSetupReview(turns: readonly Cs6Turn[], opts: Cs6Options): {
   });
 
   turns.forEach((turn, t) => {
-    if (turn.owner.trim() === SKIP_CHOICE && ownerSkipAt < 0) ownerSkipAt = t;
+    // The owner's skip counts only as the answer to the agent's stop turn.
+    if (turn.owner.trim() === SKIP_CHOICE && ownerSkipAt < 0 && t > 0 && isStopTurn(turns[t - 1]!.text)) ownerSkipAt = t;
     for (const call of turn.calls) if (call.command !== null && STATUS_COMMAND.test(call.command)) statusCalls.push({ turn: t, command: call.command, output: call.output });
 
     const ls = linesOf(turn.text);
-    const reviewAt = ls.findIndex((l) => l.startsWith("Independent review:"));
-    if (reviewAt < 0) return;
-    const review = ls[reviewAt]!;
-    const probe = reviewAt > 0 ? ls[reviewAt - 1]! : "";
+    const reviewLines = ls.flatMap((l, i) => (l.startsWith("Independent review:") ? [i] : []));
+    const probeLines = ls.flatMap((l, i) => (l.startsWith("Reviewer probe:") ? [i] : []));
+    if (reviewLines.length === 0 && probeLines.length === 0) return;
+    // Rule 1 covers every line of either kind: a package shows exactly one probe line directly above one review line.
+    if (reviewLines.length !== 1 || probeLines.length !== 1 || probeLines[0] !== reviewLines[0]! - 1) {
+      failures.push(`rule 1: turn ${t + 1} shows ${probeLines.length} probe and ${reviewLines.length} review lines; a package shows one probe line directly above one review line`);
+      return;
+    }
+    const review = ls[reviewLines[0]!]!;
+    const probe = ls[probeLines[0]!]!;
 
     // Rule 1: the latest earlier status call whose output starts with exactly these two lines.
     const pair = `${probe}\n${review}\n`;
     const matched = [...statusCalls].reverse().find((c) => c.output.startsWith(pair));
-    if (!probe.startsWith("Reviewer probe:") || !matched) {
+    if (!matched) {
       failures.push(`rule 1: turn ${t + 1}'s review lines were not printed by an earlier setup-review status call`);
       return;
     }
@@ -192,7 +209,7 @@ export function checkSetupReview(turns: readonly Cs6Turn[], opts: Cs6Options): {
       const f = rule2Plan(turn.text, m[1]!, matched, opts.storeRoot);
       if (f) failures.push(f);
     } else if (SKIPPED.test(review)) {
-      if (ownerSkipAt < 0 || ownerSkipAt > matched.turn) failures.push("rule 2: a skipped package with no owner message choosing to continue without independent review before the skip");
+      if (ownerSkipAt < 0 || ownerSkipAt > matched.turn) failures.push("rule 2: a skipped package with no owner message choosing to continue without independent review, answering a stop turn, before the skip");
       if (!/\s--skipped\b/.test(matched.command)) failures.push("rule 2: the skipped line was not printed by status --skipped");
       if (hasStdin(matched.command)) failures.push("rule 2: the status --skipped call was given stdin");
       if (matched.output !== pair) failures.push("rule 2: the skipped package's lines differ from its status --skipped output");

@@ -72,7 +72,11 @@ async function reviewStore(root: string, packet: string): Promise<string> {
   return revision;
 }
 
-const clock = (iso: string) => vi.useFakeTimers({ toFake: ["Date"], now: new Date(iso) });
+/** Sets the date; a second call moves it (useFakeTimers alone keeps the first time once installed). */
+const clock = (iso: string) => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(iso));
+};
 
 type Ticket = { key: string; title: string; type: string; phase: string; description: string; blockedBy: string[]; status?: string };
 
@@ -170,10 +174,11 @@ describe("applying already-built work", () => {
     expect(result.lines.find((l) => l.startsWith("Ready to build:"))).not.toContain("Export");
   });
 
-  it("keeps the first day's date when the apply finishes on a later day", async () => {
+  it("dates the ticket the setup's first day when it is created on a later day", async () => {
     const root = await folder();
     clock("2026-10-20T12:00:00");
-    faultOnce("step:item:K2");
+    // The fault fires after the phase step, so the complete ticket is first written by the resume.
+    faultOnce("step:phase:K1");
     expect((await setupApply(root, payload())).exitCode).toBe(3);
     setupApplySeams.fault = () => {};
     clock("2026-10-23T12:00:00");

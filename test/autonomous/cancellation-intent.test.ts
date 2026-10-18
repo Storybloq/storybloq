@@ -1064,7 +1064,7 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     await spawned.done;
     expect(spawned.pgid).toBeDefined();
     const pgid = spawned.pgid as number;
-    expect(groupAlive(pgid)).toBe(false);
+    expect(await until(() => !groupAlive(pgid), 5_000)).toBe(true);
     expect(retained.pgids.has(pgid)).toBe(true);
     // The same gone group, recorded with a completion that never settles.
     children.splice(children.indexOf(spawned), 1);

@@ -520,6 +520,48 @@ describe("checkpoint enable --immutable-evidence", () => {
     expect((await configOf(dir)).schemaVersion).toBe(CHECKPOINT_SCHEMA_VERSION);
   });
 
+  async function teamProject(schema: number): Promise<string> {
+    const { execFileSync } = await import("node:child_process");
+    const { teamSetup } = await import("../../src/core/team-setup.js");
+    const dir = await project(schema);
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    const path = join(dir, ".story", "config.json");
+    const config = await configOf(dir);
+    config.team = { enabled: true };
+    await writeFile(path, JSON.stringify(config, null, 2) + "\n");
+    await teamSetup(dir);
+    return dir;
+  }
+  const SCHEMA4_DRIVER: CheckpointEnableDeps = { capabilities: async (_root, protocol) => ({ ...mergeDriverCapabilities(protocol), maxSchemaVersion: 4 }) };
+
+  it("a plain enable on a team schema-5 project checks the driver against 5, not 4: refused, nothing written", async () => {
+    const dir = await teamProject(5);
+    const path = join(dir, ".story", "config.json");
+    const before = await readFile(path, "utf-8");
+    await expect(enableCheckpoints(dir, SCHEMA4_DRIVER)).rejects.toThrow(/reads schema 4 at most, not 5[\s\S]*Nothing was written/);
+    expect(await readFile(path, "utf-8")).toBe(before);
+  });
+
+  it("an upgrade to 5 landing during a plain enable's preflight is decided again against 5: refused, the upgrade kept", async () => {
+    const dir = await teamProject(2);
+    const path = join(dir, ".story", "config.json");
+    let upgraded = false;
+    const deps: CheckpointEnableDeps = {
+      ...SCHEMA4_DRIVER,
+      async afterDecision(root) {
+        if (upgraded) return;
+        upgraded = true;
+        const config = JSON.parse(await readFile(join(root, ".story", "config.json"), "utf-8"));
+        config.schemaVersion = 5;
+        await writeFile(join(root, ".story", "config.json"), JSON.stringify(config, null, 2) + "\n");
+      },
+    };
+    await expect(enableCheckpoints(dir, deps)).rejects.toThrow(/reads schema 4 at most, not 5[\s\S]*Nothing was written/);
+    const config = JSON.parse(await readFile(path, "utf-8"));
+    expect(config.schemaVersion).toBe(5);
+    expect(config.checkpointEnable).toBeUndefined();
+  });
+
   it("a team clone whose binary reports only schema 4 is refused for immutable evidence, nothing written", async () => {
     const { execFileSync } = await import("node:child_process");
     const { teamSetup } = await import("../../src/core/team-setup.js");

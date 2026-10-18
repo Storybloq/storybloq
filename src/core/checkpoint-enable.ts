@@ -200,19 +200,24 @@ export async function enableCheckpoints(
   const what = opts.immutableEvidence === true ? "immutable checkpoint evidence" : "owner checkpoints";
   for (let attempt = 0; attempt < DECISION_ATTEMPTS; attempt++) {
     let teamEnabled = false;
+    // The driver must read the schema the stamp keeps, which is the project's
+    // own when it is already above the target (a plain enable keeps 5).
+    let required: number = target;
     await withProjectLock(root, { strict: false }, async ({ state }) => {
       teamEnabled = state.config.team?.enabled === true;
+      required = Math.max(state.config.schemaVersion ?? 0, target);
     });
     const gitRoot = teamEnabled ? gitRootOf(root) : null;
     const team = teamEnabled && gitRoot !== null;
     // Validation runs a subprocess, so it runs outside the lock; the lock
-    // below re-reads the one input it decided on and starts over if it moved.
-    const problems = team ? await checkpointMergeProblems(root, gitRoot!, deps, target) : [];
+    // below re-reads the inputs it decided on and starts over if they moved.
+    const problems = team ? await checkpointMergeProblems(root, gitRoot!, deps, required) : [];
     await deps.afterDecision?.(root);
 
     let result: CheckpointEnableResult | "moved" = "moved";
     await withProjectLock(root, { strict: false }, async ({ state }) => {
       if ((state.config.team?.enabled === true) !== teamEnabled) return;
+      if (team && Math.max(state.config.schemaVersion ?? 0, target) > required) return;
       const current = state.config.schemaVersion;
       const done = current !== undefined && current >= target && state.config.checkpointEnable?.step === "complete";
       const stamp = Math.max(current ?? 0, target);
@@ -243,5 +248,5 @@ export async function enableCheckpoints(
     });
     if (result !== "moved") return result;
   }
-  throw new CliValidationError("conflict", `Cannot enable ${what}: the project's team mode kept changing while enable ran. Nothing was written; run it again.`);
+  throw new CliValidationError("conflict", `Cannot enable ${what}: the project's team mode or schema version kept changing while enable ran. Nothing was written; run it again.`);
 }

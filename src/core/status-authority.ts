@@ -91,9 +91,9 @@ export function authoriseStatusChange(
   policy: StatusPolicy,
   label: string,
 ): StatusDecision {
-  if (existing.status === next.status) return { ok: true, ticket: next };
-
   if (next.status === "complete") {
+    // A no-op touches nothing; any other write to complete work is authorised, as the ticket updater does.
+    if (existing.status === "complete" && JSON.stringify(existing) === JSON.stringify(next)) return { ok: true, ticket: next };
     const completion = clearClaimOnComplete(next, guard);
     if (completion.rejected) {
       return { ok: false, reason: `Cannot complete ${label}: it is claimed by ${next.claim?.user ?? "another session"} and this caller cannot prove ownership${guard.completingUser === null ? " (git user.email is not configured)" : ""}.` };

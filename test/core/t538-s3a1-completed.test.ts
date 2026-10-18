@@ -348,6 +348,19 @@ describe("restore-planned meets the ordinary lifecycle authorisation (review S3a
     expect((restored.checkpointEvidence as Array<{ checkpoint: string; state: string }>).map((e) => [e.checkpoint, e.state])).toEqual([[checkpoint.id, "retired"]]);
   });
 
+  // Review r2 #1: a restore that keeps work complete still writes it, so a claim on it must be the caller's.
+  const RIVAL = { claim: { user: "rival@example.com", branch: "rival", since: "2026-10-21" } };
+  const SESSION = { claimedBySession: "11111111-2222-3333-4444-555555555555" };
+  for (const [name, edit] of [["date-only", (r: Record<string, unknown>) => { r.completedDate = "2026-10-01"; }], ["title-only", (r: Record<string, unknown>) => { r.title = "the owner's title"; }]] as const) {
+    for (const [holder, mark, reason] of [["another user", RIVAL, /claimed by rival@example\.com/], ["a session", SESSION, /claimed by another session/]] as const) {
+      it(`refuses a ${name} restore of complete work ${holder} has claimed`, async () => {
+        const root = await interrupted();
+        await editTicket(root, "T-001", (r) => { edit(r); Object.assign(r, mark); });
+        await refusedWithoutWrite(root, new RegExp(`^Setup refused: K2 \\(T-001\\): restore-planned refused: Cannot complete T-001: it is ${reason.source}`));
+      });
+    }
+  }
+
   it("completes work the caller's own claim holds, and the claim goes with the completion", async () => {
     await writeFile(join(scratchHome, "gitconfig"), "[user]\n\temail = sam@example.com\n");
     try {

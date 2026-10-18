@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { withPlanContext } from "../plan-context.js";
 import { join } from "node:path";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput, PendingProjectMutation } from "../session-types.js";
+import { readIssuePickContinuation, type GuideReportInput, type PendingProjectMutation, type FullSessionState } from "../session-types.js";
 import { isDeleted } from "../../core/project-state.js";
 import { isTargetedMode, getRemainingTargets, buildTargetedCandidatesText, buildTargetedPickInstruction, buildTargetedStuckHandover } from "../target-work.js";
 import {
@@ -416,6 +416,7 @@ export class PickTicketStage implements WorkflowStage {
     });
 
     ctx.updateDraft({
+      issuePickContinuation: null,
       ticket: {
         id: ticket.id,
         displayId: ticket.displayId,
@@ -515,13 +516,22 @@ export class PickTicketStage implements WorkflowStage {
 
     // T-188: Targeted mode allows inprogress issues (resume from prior session)
     const targeted = isTargetedMode(ctx.state);
-    if (issue.status !== "open" && !(targeted && issue.status === "inprogress")) {
+    // T-481: recovery confirmed this session's own status write for exactly
+    // this issue after the pick could not tell; the pick adopts it instead of
+    // refusing it as not open. Any refusal consumes the receipt.
+    const receipt = readIssuePickContinuation(ctx.state);
+    const adopting = receipt !== null && receipt.issueId === issue.id && issue.status === "inprogress";
+    const refuse = (instruction: string): StageAdvance => {
+      if (adopting) ctx.writeState({ issuePickContinuation: null });
+      return { action: "retry", instruction };
+    };
+    if (issue.status !== "open" && !(targeted && issue.status === "inprogress") && !adopting) {
       return { action: "retry", instruction: `Issue ${issueLabel} is ${issue.status}. Pick an open issue.` };
     }
     const waiting = waitingPickRefusal(issue, "Issue", issueLabel);
-    if (waiting) return { action: "retry", instruction: waiting };
+    if (waiting) return refuse(waiting);
     const notActionable = nonActionablePickRefusal(issue, issueLabel, targeted);
-    if (notActionable) return { action: "retry", instruction: notActionable };
+    if (notActionable) return refuse(notActionable);
 
     // T-328: same order as the ticket path -- eligibility, then affinity, then
     // the strategy that actually moves the repository.
@@ -570,6 +580,8 @@ export class PickTicketStage implements WorkflowStage {
     // T-481 D2a: the record as it stands after the conversion, and the stamped
     // status image the marker fingerprints and the status write writes.
     let picked: { pre: Issue; post: Issue; stampDate: string } | null = null;
+    let adopted = false;
+    let refusedAdoption = false;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
       const { issueStatusImage } = await import("../../cli/commands/issue.js");
@@ -584,6 +596,21 @@ export class PickTicketStage implements WorkflowStage {
           ?? nonActionablePickRefusal(freshIssue, issueLabel, targeted);
         if (freshRefusal) {
           refusal = freshRefusal;
+          refusedAdoption = adopting;
+          return;
+        }
+        if (adopting) {
+          // The very record recovery confirmed, held by no one else: an
+          // absent earmark, or one assigned to this session.
+          const held = freshIssue.earmark;
+          if (entityFingerprint(freshIssue) !== receipt!.postimageFingerprint) {
+            refusal = `Issue ${issueLabel} changed after its status write was confirmed. Pick a different issue.`;
+          } else if (held && !(held.stage === "assigned" && held.holderSession === ctx.state.sessionId)) {
+            refusal = `Issue ${issueLabel} is earmarked for ${describeEarmarkHolder(held)}. Pick a different issue.`;
+          } else {
+            adopted = true;
+          }
+          refusedAdoption = !adopted;
           return;
         }
         const decision = tryAcquireEarmark(freshIssue.earmark, ctx.state.sessionId, "worker");
@@ -603,11 +630,56 @@ export class PickTicketStage implements WorkflowStage {
       earmarkRefusal = `Could not verify earmark status for ${issueLabel} due to a lock or read error. Try again.`;
     }
     if (earmarkRefusal) {
-      return { action: "retry", instruction: earmarkRefusal };
+      return refusedAdoption ? refuse(earmarkRefusal) : { action: "retry", instruction: earmarkRefusal };
     }
+
+    // The tail every start shares. The adoption's receipt consumption and the
+    // counter reset ride in the draft, so the goto's transition write commits
+    // them together with ISSUE_FIX (processAdvance skips its own reset write
+    // when the counter reads 0).
+    const startIssue = (extra: Partial<FullSessionState>): StageAdvance => {
+      // T-461: same resolution for issues, by severity instead of type.
+      const issueEffort = reviewEffortForIssue(
+        issue as unknown as Record<string, unknown>,
+        sessionEffortFromState(ctx.state),
+      );
+      ctx.appendEvent("review_effort_resolved", {
+        item: issue.displayId ?? issue.id,
+        level: issueEffort.level,
+        source: issueEffort.source,
+        basis: { severity: issue.severity ?? null },
+      });
+
+      ctx.updateDraft({
+        currentIssue: { id: issue.id, displayId: issue.displayId, title: issue.title, severity: issue.severity },
+        ticket: undefined,
+        currentReviewEffort: issueEffort.level,
+        currentReviewEffortSource: issueEffort.source,
+        reviews: { plan: [], code: [] },
+        git: { ...ctx.state.git, itemBaseHead: issueBaseHead },
+        finalizeCheckpoint: null,
+        finalizedItem: null,
+        landingDecision: null,
+        // T-474 section 7 (ISS-1032-shaped descope) closed by ISS-1049: an
+        // issue-fix session now resolves its OWN gate coverage, same as a
+        // ticket pick -- also clears any stale hold left over from a prior
+        // item in the same session.
+        frozenGate: resolveGateStatus(ctx.root, { kind: "issue", id: issue.id }, projectState),
+        pendingPlanAck: null,
+        approvedPlanAckDeltas: null,
+        approvedPlanSnapshot: null,
+        issuePickContinuation: null,
+        ...extra,
+      });
+
+      return { action: "goto", target: "ISSUE_FIX" };
+    };
+    if (adopted) return startIssue({ stuckRetryCount: 0 } as Partial<FullSessionState>);
+
     if (!picked) return { action: "retry", instruction: `Could not read ${issueLabel} to start it. Try again.` };
     const { pre, post, stampDate } = picked as { pre: Issue; post: Issue; stampDate: string };
     const preimageFingerprint = entityFingerprint(pre);
+    const postimageFingerprint = entityFingerprint(post);
 
     // ISS-090: Mark issue as inprogress with pendingProjectMutation for crash recovery
     // ISS-112: Include expectedCurrent for 3-way recovery check (matches ticket_update pattern)
@@ -646,18 +718,17 @@ export class PickTicketStage implements WorkflowStage {
         // record after the earmark conversion, and its stamped status image,
         // with the stamp day recorded so a replay writes that same day.
         preimageFingerprint,
-        postimageFingerprint: entityFingerprint(post),
+        postimageFingerprint,
         stampDate,
       } satisfies PendingProjectMutation,
     });
+    const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
+    let written = false as boolean;
     try {
-      const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
       const { validatePostWriteIssueState } = await import("../../cli/commands/issue.js");
-      let written = false;
       // Under the same strict lock and post-write validation as
       // handleIssueUpdate. An issue that changed since the marker (a waiting
-      // flag set in between, say) is left alone, and the marker stays for
-      // recovery to settle.
+      // flag set in between, say) is left alone.
       await withProjectLock(ctx.root, { strict: true }, async ({ state: freshState }) => {
         const fresh = freshState.issues.find(i => i.id === issue.id);
         if (!fresh || entityFingerprint(fresh) !== preimageFingerprint) return;
@@ -665,57 +736,41 @@ export class PickTicketStage implements WorkflowStage {
         await writeIssueUnlocked(post, ctx.root, { touch: { date: stampDate } });
         written = true;
       });
-      if (!written) throw new Error(`${issueLabel} changed before its status write`);
-    } catch {
-      // T-481: a refused or failed status write does not start the issue. The
-      // marker stays set for recovery and the pick is retried; the issue is
-      // never made current over a write that did not land.
-      return {
-        action: "retry",
-        instruction: `Could not start ${issueLabel}: it changed or could not be written. Try again.`,
-      };
+    } catch { /* classified from disk below */ }
+    if (!written) {
+      // T-481: what landed decides, never how the write failed. The postimage
+      // means the write landed: start the issue, and recovery recognises it.
+      // The preimage means nothing landed: clear the marker durably and retry.
+      // Anything else is uncertain: keep the marker and retry; recovery
+      // settles it and leaves a receipt the next pick may adopt.
+      let seen = null as string | null;
+      try {
+        await withProjectLock(ctx.root, { strict: false }, async ({ state: freshState }) => {
+          const fresh = freshState.issues.find(i => i.id === issue.id);
+          seen = fresh ? entityFingerprint(fresh) : null;
+        });
+      } catch { seen = null; }
+      if (seen === preimageFingerprint) {
+        ctx.writeState({ pendingProjectMutation: null });
+        return { action: "retry", instruction: `Could not start ${issueLabel}: its status write was refused. Try again.` };
+      }
+      if (seen !== postimageFingerprint) {
+        return {
+          action: "retry",
+          instruction: `Could not confirm the status write for ${issueLabel}; the next call settles it. Try again.`,
+        };
+      }
+    } else {
+      try {
+        // ISS-1052: only clear the marker on confirmed success. A thrown error
+        // here must leave the marker SET, not cleared -- the marker is what lets
+        // `recoverPendingMutation` (guide.ts) recognize this write, which has
+        // landed, on the next entry point.
+        ctx.writeState({ pendingProjectMutation: null });
+      } catch { /* best-effort -- the status write landed; the marker stays set for recovery */ }
     }
-    try {
-      // ISS-1052: only clear the marker on confirmed success. A thrown error
-      // here must leave the marker SET, not cleared -- the marker is what lets
-      // `recoverPendingMutation` (guide.ts) recognize this write, which has
-      // landed, on the next entry point.
-      ctx.writeState({ pendingProjectMutation: null });
-    } catch { /* best-effort -- the status write landed; the marker stays set for recovery */ }
 
-    // T-461: same resolution for issues, by severity instead of type.
-    const issueEffort = reviewEffortForIssue(
-      issue as unknown as Record<string, unknown>,
-      sessionEffortFromState(ctx.state),
-    );
-    ctx.appendEvent("review_effort_resolved", {
-      item: issue.displayId ?? issue.id,
-      level: issueEffort.level,
-      source: issueEffort.source,
-      basis: { severity: issue.severity ?? null },
-    });
-
-    ctx.updateDraft({
-      currentIssue: { id: issue.id, displayId: issue.displayId, title: issue.title, severity: issue.severity },
-      ticket: undefined,
-      currentReviewEffort: issueEffort.level,
-      currentReviewEffortSource: issueEffort.source,
-      reviews: { plan: [], code: [] },
-      git: { ...ctx.state.git, itemBaseHead: issueBaseHead },
-      finalizeCheckpoint: null,
-      finalizedItem: null,
-      landingDecision: null,
-      // T-474 section 7 (ISS-1032-shaped descope) closed by ISS-1049: an
-      // issue-fix session now resolves its OWN gate coverage, same as a
-      // ticket pick -- also clears any stale hold left over from a prior
-      // item in the same session.
-      frozenGate: resolveGateStatus(ctx.root, { kind: "issue", id: issue.id }, projectState),
-      pendingPlanAck: null,
-      approvedPlanAckDeltas: null,
-      approvedPlanSnapshot: null,
-    });
-
-    return { action: "goto", target: "ISSUE_FIX" };
+    return startIssue({});
   }
 
   // -------------------------------------------------------------------------

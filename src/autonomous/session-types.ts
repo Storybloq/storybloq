@@ -1377,6 +1377,14 @@ export const SessionStateSchema = z.object({
   pendingProjectMutation: z.any().nullable().default(null),
 
   /**
+   * T-481: the receipt recovery leaves when it confirms this session's own
+   * issue-pick status write, after the pick could not tell whether it had
+   * landed. The next pick may adopt exactly that issue. `z.unknown()` like its
+   * neighbours; read through `readIssuePickContinuation`.
+   */
+  issuePickContinuation: z.unknown().optional(),
+
+  /**
    * ISS-965: set when claimPreflightBlock terminalizes a session that observed
    * its own consistent completion (status "complete", claim keys stripped).
    * Marks the HANDOVER transition as ISS-965 terminal routing rather than an
@@ -3308,3 +3316,20 @@ export type BranchValidation =
   | { status: "head_ahead_unknown"; commitHash: string }
   | { status: "head_diverged" }
   | { status: "branch_mismatch"; expected: string; actual: string };
+
+/** T-481: the issue-pick continuation receipt (see `issuePickContinuation`). */
+export interface IssuePickContinuation {
+  readonly issueId: string;
+  readonly transitionId: string;
+  readonly postimageFingerprint: string;
+}
+
+/** The receipt, or null for any other shape. */
+export function readIssuePickContinuation(state: { readonly issuePickContinuation?: unknown }): IssuePickContinuation | null {
+  const v = state.issuePickContinuation;
+  if (v === null || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  const ok = (x: unknown): x is string => typeof x === "string" && x.length > 0;
+  if (!ok(r.issueId) || !ok(r.transitionId) || !ok(r.postimageFingerprint)) return null;
+  return { issueId: r.issueId, transitionId: r.transitionId, postimageFingerprint: r.postimageFingerprint };
+}

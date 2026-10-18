@@ -902,6 +902,7 @@ async function recoverPendingMutation(
 
     let conflict = false;
     let replayStamped = false;
+    let confirmed = false as boolean;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../core/project-loader.js");
       const { entityFingerprint } = await import("./pending-artifacts.js");
@@ -922,13 +923,13 @@ async function recoverPendingMutation(
         if (badStamp) return fail("malformed-marker");
         if (bothValid && stampDate !== null) {
           const current = entityFingerprint(issue);
-          if (current === rawPostimage) return; // already applied
+          if (current === rawPostimage) { confirmed = true; return; } // already applied
           if (current === rawPreimage) { replayStamped = true; return; }
           return fail();
         }
         if (bothValid) {
           const current = entityFingerprint(issue);
-          if (current === rawPostimage) return; // already applied
+          if (current === rawPostimage) { confirmed = true; return; } // already applied
           if (current === rawPreimage) {
             // A pre-T-481 marker (no stampDate) from here on.
             // AM3 (T-478, codex round-1 finding): a valid preimage match only
@@ -948,6 +949,7 @@ async function recoverPendingMutation(
             if (entityFingerprint(candidate) !== rawPostimage) return fail("inconsistent-marker");
             // T-481: a pre-T-481 marker fingerprinted an unstamped image.
             await writeIssueUnlocked(candidate, root, { touch: false });
+            confirmed = true;
             return;
           }
           return fail();
@@ -979,12 +981,21 @@ async function recoverPendingMutation(
           if (entityFingerprint(candidate) !== rawPostimage) return conflictEvent(issue.status, "inconsistent-marker");
           validatePostWriteIssueState(candidate, projectState, false);
           await writeIssueUnlocked(candidate, root, { touch: { date: stampDate } });
+          confirmed = true;
         });
       }
     } catch {
       return recovered(state); // Lock/IO failure -- leave marker for next attempt, same as ticket_update branch
     }
-    const cleared = { ...state, pendingProjectMutation: null };
+    // T-481: recovery confirmed this session's own issue-pick write (already
+    // applied, or replayed just now) while the issue is not yet current: leave
+    // a receipt naming exactly that issue and image, so the next pick adopts
+    // it instead of refusing it as not open. Written with the marker's clear.
+    const pickMarker = typeof m.transitionId === "string" && m.transitionId.startsWith("issue-pick-");
+    const receipt = confirmed && pickMarker && isValidFp(rawPostimage) && state.currentIssue?.id !== targetId
+      ? { issueId: targetId, transitionId: m.transitionId as string, postimageFingerprint: rawPostimage }
+      : null;
+    const cleared = { ...state, pendingProjectMutation: null, ...(receipt && { issuePickContinuation: receipt }) };
     return recovered(writeSessionAndRefresh(root, dir, cleared, "if-active"));
   }
 

@@ -43,9 +43,17 @@ const hoisted = vi.hoisted(() => ({
   failLock: false,
   lockCallCount: 0,
   currentLockInvocation: null as number | null,
-  writeIssueCalls: [] as Array<{ lockInvocation: number | null }>,
+  writeIssueCalls: [] as Array<{ lockInvocation: number | null; id?: string; status?: string }>,
   issueUpdateCalls: 0,
   injectInprogressError: false,
+  // T-481: the pick's status writer fails before writing, or after it landed
+  // (`afterWrite` runs between the landed write and the throw).
+  throwBeforeWrite: false,
+  throwAfterWrite: false,
+  afterWrite: null as (() => void) | null,
+  // T-481: every session write while set; `crashWhen` throws before a matching write lands.
+  sessionWrites: null as Array<Record<string, unknown>> | null,
+  crashWhen: null as ((next: Record<string, unknown>) => boolean) | null,
 }));
 
 // T-481: the pen's replay test needs a project that loads strictly and still
@@ -87,8 +95,30 @@ vi.mock("../../src/core/project-loader.js", async (importOriginal) => {
       }
     },
     writeIssueUnlocked: async (...args: Parameters<typeof actual.writeIssueUnlocked>) => {
-      hoisted.writeIssueCalls.push({ lockInvocation: hoisted.currentLockInvocation });
-      return actual.writeIssueUnlocked(...args);
+      const inprogress = args[0].status === "inprogress";
+      if (inprogress && hoisted.throwBeforeWrite) throw new Error("simulated refusal before the write");
+      hoisted.writeIssueCalls.push({ lockInvocation: hoisted.currentLockInvocation, id: args[0].id, status: args[0].status });
+      await actual.writeIssueUnlocked(...args);
+      if (inprogress && hoisted.throwAfterWrite) {
+        hoisted.afterWrite?.();
+        throw new Error("simulated failure after the write landed");
+      }
+    },
+  };
+});
+
+vi.mock("../../src/autonomous/session.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/autonomous/session.js")>();
+  return {
+    ...actual,
+    writeSessionSync: (...args: Parameters<typeof actual.writeSessionSync>) => {
+      const next = args[1] as unknown as Record<string, unknown>;
+      if (hoisted.sessionWrites) hoisted.sessionWrites.push(JSON.parse(JSON.stringify(next)) as Record<string, unknown>);
+      if (hoisted.crashWhen?.(next)) {
+        hoisted.crashWhen = null;
+        throw new Error("simulated crash before the session write landed");
+      }
+      return actual.writeSessionSync(...args);
     },
   };
 });
@@ -234,6 +264,11 @@ beforeEach(() => {
   hoisted.writeIssueCalls = [];
   hoisted.issueUpdateCalls = 0;
   hoisted.injectInprogressError = false;
+  hoisted.throwBeforeWrite = false;
+  hoisted.throwAfterWrite = false;
+  hoisted.afterWrite = null;
+  hoisted.sessionWrites = null;
+  hoisted.crashWhen = null;
   root = mkdtempSync(join(tmpdir(), "guide-recover-issue-"));
   setupProject(root);
 });
@@ -552,6 +587,8 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
   const issuePath = () => join(root, ".story", "issues", "ISS-001.json");
   const issueBytes = () => readFileSync(issuePath(), "utf-8");
   const corruptTicket = () => join(root, ".story", "tickets", "T-999.json");
+  /** Landed or attempted inprogress status writes of ISS-001. */
+  const statusWrites = () => hoisted.writeIssueCalls.filter((c) => c.id === "ISS-001" && c.status === "inprogress").length;
 
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
   // restoreAllMocks above also clears the module mock's resolved values, so
@@ -721,11 +758,55 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
     });
   }
 
-  it("T13e live: another ticket made unreadable after the marker refuses the status write, and the marker stays", async () => {
+  it("T13e live: another ticket made unreadable after the marker refuses the status write, and the marker is cleared", async () => {
     const pick = await livePick({ status: "open" }, () => { writeFileSync(corruptTicket(), "{ not json"); }, "retry");
     expect(pick.final).toBe(pick.atMarker);
-    expect(pick.ctx.state.pendingProjectMutation).not.toBeNull();
+    // Nothing landed (the issue still holds the preimage): the marker is cleared durably.
+    expect(pick.ctx.state.pendingProjectMutation ?? null).toBeNull();
+    expect(readState(pick.sessDir).pendingProjectMutation ?? null).toBeNull();
     expect(pick.ctx.state.currentIssue ?? null).toBeNull();
+  });
+
+  it("T13f: a pick refused by a transient strict-load failure, once repaired, is started by the next report", async () => {
+    const pick = await livePick({ status: "open" }, () => { writeFileSync(corruptTicket(), "{ not json"); }, "retry");
+    expect(readState(pick.sessDir).state).toBe("PICK_TICKET");
+    rmSync(corruptTicket());
+    const out = await handleAutonomousGuide(root, {
+      action: "report", sessionId: pick.sessionId,
+      report: { completedAction: "issue_picked", issueId: "ISS-001" },
+    } as Parameters<typeof handleAutonomousGuide>[1]);
+    const text = out.content.map((c) => (c as { text?: string }).text ?? "").join("\n");
+    const s = readState(pick.sessDir);
+    expect(s.pendingProjectMutation ?? null, text).toBeNull();
+    expect(s.state, text).toBe("ISSUE_FIX");
+    expect(s.currentIssue?.id, text).toBe("ISS-001");
+    expect(readIssue(root, "ISS-001").status).toBe("inprogress");
+    expect(statusWrites()).toBe(1);
+  });
+
+  it("T13g: a writer that throws before writing is refusal arm (a): the marker is cleared and the pick retried", async () => {
+    const pick = await livePick({ status: "open" }, () => { hoisted.throwBeforeWrite = true; }, "retry");
+    expect(pick.final).toBe(pick.atMarker);
+    expect(pick.ctx.state.pendingProjectMutation ?? null).toBeNull();
+    expect(readState(pick.sessDir).pendingProjectMutation ?? null).toBeNull();
+    expect(pick.ctx.state.currentIssue ?? null).toBeNull();
+    expect(statusWrites()).toBe(0);
+  });
+
+  it("T13h: a writer that throws after the write landed is arm (b): the issue starts and recovery recognises the write", async () => {
+    const pick = await livePick({ status: "open" }, () => { hoisted.throwAfterWrite = true; });
+    hoisted.throwAfterWrite = false;
+    expect(pick.ctx.state.currentIssue?.id).toBe("ISS-001");
+    expect(pick.ctx.state.pendingProjectMutation).toMatchObject({ type: "issue_update", target: "ISS-001" });
+    expect(await loadedIssueFingerprint(root, "ISS-001")).toBe(pick.marker?.postimageFingerprint);
+    // The goto's transition write, as processAdvance makes it.
+    pick.ctx.writeState({ state: "ISSUE_FIX", previousState: "PICK_TICKET" } as Partial<FullSessionState>);
+    await driveRecovery(root);
+    const s = readState(pick.sessDir) as unknown as Record<string, unknown>;
+    expect(s.pendingProjectMutation ?? null).toBeNull();
+    expect(s.issuePickContinuation ?? null).toBeNull();
+    expect(eventsOfType(pick.sessDir, "mutation_conflict").length).toBe(0);
+    expect(statusWrites()).toBe(1);
   });
 
   it("T13e recovery: at the preimage with an unreadable ticket it refuses and keeps the marker; once repaired it replays", async () => {
@@ -789,6 +870,143 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
       expect(conflicts.length).toBe(1);
       expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
+    });
+  }
+
+  /** A planted session in PICK_TICKET on disk, picked through the guide. */
+  function pickSession(): { sessionId: string; sessDir: string } {
+    writeTicket(root, "T-001", { status: "inprogress" });
+    const { sessionId, sessDir } = plantSession(root, null);
+    const planted = readState(sessDir);
+    writeSessionSync(sessDir, {
+      ...planted, state: "PICK_TICKET", ticket: undefined, claimEpoch: undefined,
+    } as unknown as FullSessionState);
+    vi.spyOn(PickTicketStage.prototype as unknown as { applyStrategy: () => Promise<unknown> }, "applyStrategy")
+      .mockResolvedValue(null);
+    return { sessionId, sessDir };
+  }
+  async function guidePick(sessionId: string, issueId = "ISS-001"): Promise<string> {
+    const out = await handleAutonomousGuide(root, {
+      action: "report", sessionId, report: { completedAction: "issue_picked", issueId },
+    } as Parameters<typeof handleAutonomousGuide>[1]);
+    return out.content.map((c) => (c as { text?: string }).text ?? "").join("\n");
+  }
+  const loose = (dir: string) => readState(dir) as unknown as Record<string, unknown>;
+
+  /**
+   * Case (c): the write lands, then ISS-001 is unreadable when the pick re-reads it,
+   * so the pick keeps the marker and retries. Returns the landed bytes, for the repair.
+   */
+  async function uncertainPick(snapshot: Record<string, unknown>) {
+    writeIssue(root, "ISS-001", { updatedDate: "2020-01-01", ...snapshot });
+    const session = pickSession();
+    let landed = "";
+    hoisted.throwAfterWrite = true;
+    hoisted.afterWrite = () => { landed = issueBytes(); writeFileSync(issuePath(), "{ not json"); };
+    const text = await guidePick(session.sessionId);
+    hoisted.throwAfterWrite = false;
+    hoisted.afterWrite = null;
+    const s = loose(session.sessDir);
+    expect(s.state, text).toBe("PICK_TICKET");
+    expect(s.currentIssue ?? null).toBeNull();
+    expect(s.pendingProjectMutation).toMatchObject({ type: "issue_update", target: "ISS-001" });
+    expect(s.issuePickContinuation ?? null).toBeNull();
+    expect(Number(s.stuckRetryCount ?? 0)).toBeGreaterThan(0);
+    return { ...session, landed, marker: s.pendingProjectMutation as Record<string, unknown> };
+  }
+
+  for (const [name, snapshot] of [["no earmark", {}], ["a converted reservation", { earmark: reserved }]] as const) {
+    it(`T13i (${name}): an uncertain write is settled by recovery and the next pick adopts it through the receipt`, async () => {
+      const u = await uncertainPick({ status: "open", ...snapshot });
+      writeFileSync(issuePath(), u.landed);
+      const text = await guidePick(u.sessionId);
+      const s = loose(u.sessDir);
+      expect(s.state, text).toBe("ISSUE_FIX");
+      expect((s.currentIssue as { id?: string } | null)?.id).toBe("ISS-001");
+      expect(s.pendingProjectMutation ?? null).toBeNull();
+      expect(s.issuePickContinuation ?? null).toBeNull();
+      expect(statusWrites()).toBe(1);
+      expect(issueBytes()).toBe(u.landed);
+      if (!("earmark" in snapshot)) expect(readIssue(root, "ISS-001").earmark).toBeUndefined();
+    });
+  }
+
+  it("T13j: repeated recovery failure never reaches ISSUE_FIX and writes no receipt", async () => {
+    const u = await uncertainPick({ status: "open" });
+    writeFileSync(issuePath(), u.landed);
+    hoisted.failLock = true;
+    for (let i = 0; i < 2; i++) {
+      const text = await guidePick(u.sessionId);
+      const s = loose(u.sessDir);
+      expect(s.state, text).toBe("PICK_TICKET");
+      expect(s.currentIssue ?? null).toBeNull();
+      expect(s.pendingProjectMutation).toMatchObject({ transitionId: u.marker.transitionId });
+      expect(s.issuePickContinuation ?? null).toBeNull();
+    }
+    hoisted.failLock = false;
+    expect(statusWrites()).toBe(1);
+  });
+
+  it("T13k: an unrelated inprogress issue is refused, with no receipt and with a receipt for another issue", async () => {
+    writeIssue(root, "ISS-001", { status: "open" });
+    writeIssue(root, "ISS-003", { status: "inprogress" });
+    const { sessionId, sessDir } = pickSession();
+    const refused = async () => {
+      const text = await guidePick(sessionId, "ISS-003");
+      expect(text).toContain("is inprogress. Pick an open issue.");
+      expect(loose(sessDir).state).toBe("PICK_TICKET");
+      expect(loose(sessDir).currentIssue ?? null).toBeNull();
+    };
+    await refused();
+    const fp = await loadedIssueFingerprint(root, "ISS-003");
+    writeSessionSync(sessDir, {
+      ...readState(sessDir),
+      issuePickContinuation: { issueId: "ISS-001", transitionId: "issue-pick-ISS-001-1", postimageFingerprint: fp },
+    } as unknown as FullSessionState);
+    await refused();
+    expect(hoisted.writeIssueCalls.filter((c) => c.id === "ISS-003").length).toBe(0);
+  });
+
+  for (const via of ["report", "compact resume"] as const) {
+    it(`T13l (${via}): a crash at the adoption boundary leaves the receipt, and the next entry adopts with no second status write`, async () => {
+      const u = await uncertainPick({ status: "open" });
+      writeFileSync(issuePath(), u.landed);
+      hoisted.sessionWrites = [];
+      hoisted.crashWhen = (next) => next.state === "ISSUE_FIX";
+      await guidePick(u.sessionId);
+      const writes = hoisted.sessionWrites;
+      hoisted.sessionWrites = null;
+      // No PICK_TICKET write ever carries the adoption: once the receipt is on
+      // disk it stays until the ISSUE_FIX write, and ISS-001 is never current.
+      let sawReceipt = false;
+      for (const w of writes) {
+        if (w.state !== "PICK_TICKET") continue;
+        expect((w.currentIssue as { id?: string } | null | undefined)?.id).not.toBe("ISS-001");
+        const has = w.issuePickContinuation != null;
+        if (sawReceipt) expect(has).toBe(true);
+        sawReceipt ||= has;
+      }
+      expect(sawReceipt).toBe(true);
+      const crashed = loose(u.sessDir);
+      expect(crashed.state).toBe("PICK_TICKET");
+      expect(crashed.issuePickContinuation).toMatchObject({ issueId: "ISS-001" });
+      expect(readIssue(root, "ISS-001").status).toBe("inprogress");
+
+      if (via === "compact resume") {
+        writeSessionSync(u.sessDir, {
+          ...readState(u.sessDir), state: "COMPACT", preCompactState: "PICK_TICKET",
+          compactPending: true, compactPreparedAt: new Date().toISOString(),
+        } as unknown as FullSessionState);
+        const resumed = await handleAutonomousGuide(root, { action: "resume", sessionId: u.sessionId } as Parameters<typeof handleAutonomousGuide>[1]);
+        expect(resumed.isError ?? false, JSON.stringify(resumed.content)).toBe(false);
+        expect(loose(u.sessDir).state).toBe("PICK_TICKET");
+      }
+      const text = await guidePick(u.sessionId);
+      const s = loose(u.sessDir);
+      expect(s.state, text).toBe("ISSUE_FIX");
+      expect((s.currentIssue as { id?: string } | null)?.id).toBe("ISS-001");
+      expect(s.issuePickContinuation ?? null).toBeNull();
+      expect(statusWrites()).toBe(1);
     });
   }
 

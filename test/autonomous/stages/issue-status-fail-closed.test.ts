@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const hoisted = vi.hoisted(() => ({ failUpdate: false }));
+const hoisted = vi.hoisted(() => ({ failUpdate: false, refuseUpdate: false }));
 vi.mock("../../../src/cli/commands/issue.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../src/cli/commands/issue.js")>();
   return {
@@ -23,12 +23,23 @@ vi.mock("../../../src/cli/commands/issue.js", async (importOriginal) => {
       if (hoisted.failUpdate) throw new Error("simulated issue-update failure");
       return actual.handleIssueUpdate(...args);
     },
-    // T-481 D2a: the pick's status write is now a prepared, stamped write that
-    // runs this validation under the lock instead of calling handleIssueUpdate,
-    // so the simulated failure is injected here as well.
+    // T-481: a refusal before anything is written.
     validatePostWriteIssueState: (...args: Parameters<typeof actual.validatePostWriteIssueState>) => {
-      if (hoisted.failUpdate) throw new Error("simulated issue-update failure");
+      if (hoisted.refuseUpdate) throw new Error("simulated issue-update refusal");
       return actual.validatePostWriteIssueState(...args);
+    },
+  };
+});
+// T-481 D2a: the pick's status write is now a prepared, stamped write under the
+// project lock instead of handleIssueUpdate, so the failure that may have
+// landed is injected at its writer: the write lands, then the call throws.
+vi.mock("../../../src/core/project-loader.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/core/project-loader.js")>();
+  return {
+    ...actual,
+    writeIssueUnlocked: async (...args: Parameters<typeof actual.writeIssueUnlocked>) => {
+      await actual.writeIssueUnlocked(...args);
+      if (hoisted.failUpdate) throw new Error("simulated issue-update failure");
     },
   };
 });
@@ -113,6 +124,7 @@ describe("PickTicketStage.handleIssuePick leaves pendingProjectMutation set on a
 
   afterEach(() => {
     hoisted.failUpdate = false;
+    hoisted.refuseUpdate = false;
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -126,6 +138,22 @@ describe("PickTicketStage.handleIssuePick leaves pendingProjectMutation set on a
 
     expect(ctx.state.pendingProjectMutation).not.toBeNull();
     expect((ctx.state.pendingProjectMutation as Record<string, unknown> | null)?.type).toBe("issue_update");
+  });
+
+  it("T-481: a refusal before anything is written clears the marker durably and retries", async () => {
+    writeIssue(root, "ISS-001");
+    hoisted.refuseUpdate = true;
+    const stage = new PickTicketStage();
+    const ctx = new StageContext(root, sessionDir, makeState(), makeRecipe());
+
+    const result = await stage.report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
+
+    expect(result.action).toBe("retry");
+    expect(ctx.state.pendingProjectMutation).toBeNull();
+    const onDisk = JSON.parse(readFileSync(join(sessionDir, "state.json"), "utf-8"));
+    expect(onDisk.pendingProjectMutation ?? null).toBeNull();
+    const raw = JSON.parse(readFileSync(join(root, ".story", "issues", "ISS-001.json"), "utf-8"));
+    expect(raw.status).toBe("open");
   });
 
   it("control: with the update succeeding normally, the marker IS cleared", async () => {

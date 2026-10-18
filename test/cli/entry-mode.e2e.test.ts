@@ -93,8 +93,11 @@ async function initializeExchange(args: string[], env: Record<string, string> = 
   let stderr = "";
   child.stderr.setEncoding("utf-8");
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+  // stderr is its own pipe: it is complete only once the child has closed.
+  const closed = new Promise<void>((resolve) => child.on("close", () => resolve()));
+  let serverName: string | undefined;
   try {
-    const serverName = await new Promise<string | undefined>((resolve, reject) => {
+    serverName = await new Promise<string | undefined>((resolve, reject) => {
       let buffer = "";
       const timer = setTimeout(() => reject(new Error(`no initialize response within 20 s; stderr:\n${stderr}`)), 20_000);
       child.on("error", (err) => { clearTimeout(timer); reject(err); });
@@ -121,11 +124,13 @@ async function initializeExchange(args: string[], env: Record<string, string> = 
         params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "iss1278", version: "1" } },
       })}\n`);
     });
-    return { serverName, stderr };
   } finally {
     child.stdin.end();
     await stopGroup(pgid);
   }
+  const closedInTime = await Promise.race([closed.then(() => true), sleep(5_000).then(() => false)]);
+  if (!closedInTime) throw new Error(`server ${pgid} did not close its pipes within 5 s of stopping`);
+  return { serverName, stderr };
 }
 
 describe("ISS-1278: the entry mode end to end", () => {

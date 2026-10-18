@@ -891,13 +891,14 @@ describe("setup-skill wires the Mods copy (T-507 D)", () => {
 
 describe("modsDir follows CLAUDE_CONFIG_DIR (ISS-1270)", () => {
   let home: string;
-  let saved: { HOME?: string; CLAUDE_CONFIG_DIR?: string };
+  let saved: { HOME?: string; USERPROFILE?: string; CLAUDE_CONFIG_DIR?: string };
 
   beforeEach(async () => {
     home = join(tmpdir(), `storybloq-mods-1270-${randomUUID()}`);
     await mkdir(home, { recursive: true });
-    saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     delete process.env.CLAUDE_CONFIG_DIR;
   });
 

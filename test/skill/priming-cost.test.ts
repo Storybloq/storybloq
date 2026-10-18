@@ -3049,7 +3049,7 @@ describe("live mode hashes the skill in Claude's config dir (ISS-1270)", () => {
   it("reads HOME's copy unset and the override's copy when CLAUDE_CONFIG_DIR is set", async () => {
     const { readInstalledSkillHash } = await import("../../scripts/priming-cost.js");
     const base = await mkdtemp(join(tmpdir(), "priming-1270-"));
-    const saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
     const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
     try {
       await mkdir(join(base, ".claude", "skills", "story"), { recursive: true });
@@ -3057,6 +3057,7 @@ describe("live mode hashes the skill in Claude's config dir (ISS-1270)", () => {
       await mkdir(join(base, "cfg", "skills", "story"), { recursive: true });
       await writeFile(join(base, "cfg", "skills", "story", "SKILL.md"), "override copy\n");
       process.env.HOME = base;
+      process.env.USERPROFILE = base;
       delete process.env.CLAUDE_CONFIG_DIR;
       expect(await readInstalledSkillHash()).toBe(sha("home copy\n"));
       process.env.CLAUDE_CONFIG_DIR = join(base, "cfg");

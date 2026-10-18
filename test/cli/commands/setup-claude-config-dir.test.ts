@@ -20,8 +20,9 @@ let out: string[];
 beforeEach(() => {
   home = realpathSync(mkdtempSync(join(tmpdir(), "iss1270-setup-")));
   cfg = join(home, "cfg");
-  for (const k of ["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
+  for (const k of ["HOME", "USERPROFILE", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   // Empty PATH: no storybloq or claude binary, so setup registers nothing
   // with a real client and the bridge registration reports `claude` missing.
   process.env.PATH = "";

@@ -15,8 +15,9 @@ let home: string;
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), "iss1270-home-"));
-  for (const k of ["HOME", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
+  for (const k of ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   delete process.env.CLAUDE_CONFIG_DIR;
 });
 

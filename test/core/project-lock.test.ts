@@ -764,13 +764,24 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     // then restore the lock body IN PLACE (writeFile truncates the existing
     // file rather than unlinking it, so the inode -- and thus the still-held
     // handle's fencing -- stays valid) before the next attempt.
+    // ISS-1399: the transaction checks ownership before its journal write, so
+    // a lock corrupted up front leaves no journal. The check that fails is
+    // taken from a passing run instead: its last check is the journal
+    // removal's and the one before is the first rename's, so failing that one
+    // leaves the committed journal behind.
     async function forceFailureAndCaptureEpisode(target: string, content: string): Promise<string | undefined> {
-      const validBody = await readFile(lockPath, "utf-8");
-      await writeFile(lockPath, JSON.stringify({ ...JSON.parse(validBody), token: "corrupted-for-test" }));
-      await expect(runTransactionUnlocked(testRoot, [{ op: "write", target, content }])).rejects.toThrow(/Lock ownership lost/);
+      fencingOverride.calls = 0;
+      await runTransactionUnlocked(testRoot, [{ op: "write", target: `${target}.probe`, content }]);
+      const checks = fencingOverride.calls;
+      fencingOverride.calls = 0;
+      fencingOverride.failAfterCalls = checks - 2;
+      try {
+        await expect(runTransactionUnlocked(testRoot, [{ op: "write", target, content }])).rejects.toThrow(/Lock ownership lost/);
+      } finally {
+        fencingOverride.failAfterCalls = null;
+      }
       const journal = JSON.parse(await readFile(join(wrapDir, ".txn.json"), "utf-8"));
       const episodeId: string | undefined = journal?.owner?.episodeId;
-      await writeFile(lockPath, validBody); // restore, same inode
       await rm(join(wrapDir, ".txn.json"), { force: true });
       return episodeId;
     }
@@ -862,8 +873,13 @@ describe("project-lock integration (project-loader.ts wiring)", () => {
     await mkdir(join(wrapDir, "notes"), { recursive: true });
 
     await withProjectLock(testRoot, { strict: false }, async () => {
+      // ISS-1399: the last ownership check of a passing transaction is its
+      // journal removal's; fail only that one.
       fencingOverride.calls = 0;
-      fencingOverride.failAfterCalls = 1;
+      await runTransactionUnlocked(testRoot, [{ op: "write", target: join(wrapDir, "notes", "N-023.json"), content }]);
+      const checks = fencingOverride.calls;
+      fencingOverride.calls = 0;
+      fencingOverride.failAfterCalls = checks - 1;
       try {
         await expect(runTransactionUnlocked(testRoot, [{ op: "write", target, content }])).resolves.toBeUndefined();
       } finally {

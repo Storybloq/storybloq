@@ -5,6 +5,7 @@ import {
   runTransactionUnlocked,
   prepareTicketWrite,
   prepareIssueWrite,
+  TransactionCommittedUnconfirmedError,
   TransactionRecoveryPendingError,
 } from "../../core/project-loader.js";
 import {
@@ -444,6 +445,26 @@ export async function handleRulingCreate(
       // items-first ordering the citations already on disk point at THIS id. So
       // the id is in the message -- it is the only handle the operator has on
       // what recovery will finish.
+      // ISS-1399: the marker may not have reached disk, so recovery can roll
+      // this create back as well as finish it.
+      if (err instanceof TransactionRecoveryPendingError && err.phase === "marker-unconfirmed") {
+        throw new CliValidationError(
+          "io_error",
+          `Ruling ${ruling.id}: the create may or may not have been applied; the next storybloq command finishes or rolls it back. `
+            + `Then run \`storybloq ruling get ${ruling.id}\` and \`storybloq validate\` before any retry: a retry after it was applied adds a second ruling. `
+            + `Underlying failure: ${err.message}`,
+        );
+      }
+      // ISS-1399: applied; only the journal removal's durability is unconfirmed.
+      if (err instanceof TransactionCommittedUnconfirmedError) {
+        throw new CliValidationError(
+          "io_error",
+          `Ruling ${ruling.id} was created, but its final durability step could not be confirmed. `
+            + `Do NOT retry this create: it would add a second ruling. `
+            + `Run \`storybloq ruling get ${ruling.id}\` and \`storybloq validate\` to confirm. `
+            + `Underlying failure: ${err.message}`,
+        );
+      }
       if (err instanceof TransactionRecoveryPendingError) {
         throw new CliValidationError(
           "io_error",
@@ -805,6 +826,26 @@ export async function handleRulingAccept(
         { op: "write", target: rulingPrepared.target, content: rulingPrepared.content },
       ]);
     } catch (err) {
+      // ISS-1399: the marker may not have reached disk, so recovery can roll
+      // this accept back as well as finish it.
+      if (err instanceof TransactionRecoveryPendingError && err.phase === "marker-unconfirmed") {
+        throw new CliValidationError(
+          "io_error",
+          `Ruling ${accepted.id}: the accept may or may not have been applied; the next storybloq command finishes or rolls it back. `
+            + `Then run \`storybloq ruling get ${accepted.id}\` and \`storybloq validate\` before any retry. `
+            + `Underlying failure: ${err.message}`,
+        );
+      }
+      // ISS-1399: applied; only the journal removal's durability is unconfirmed.
+      if (err instanceof TransactionCommittedUnconfirmedError) {
+        throw new CliValidationError(
+          "io_error",
+          `Ruling ${accepted.id} was accepted, but its final durability step could not be confirmed. `
+            + `Do NOT re-run with different arguments; run \`storybloq ruling get ${accepted.id}\` and \`storybloq validate\` to confirm. `
+            + `A repeat \`ruling accept ${accepted.id} --revision ${args.revision}\` is a safe no-op. `
+            + `Underlying failure: ${err.message}`,
+        );
+      }
       if (err instanceof TransactionRecoveryPendingError) {
         throw new CliValidationError(
           "io_error",

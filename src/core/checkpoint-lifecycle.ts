@@ -40,6 +40,7 @@ import {
   resolveActor,
   runTransactionUnlocked,
   ticketFilePath,
+  TransactionCommittedUnconfirmedError,
   TransactionRecoveryPendingError,
   withProjectLock,
   writeTicketUnlocked,
@@ -441,6 +442,25 @@ export async function resolveCheckpoint(root: string, id: string, expected: Expe
     try {
       await runTransactionUnlocked(root, [prepared.op, { op: "write", ...ticketOp }]);
     } catch (err) {
+      // ISS-1399: the marker may not have reached disk, so recovery can roll
+      // this resolution back as well as finish it.
+      if (err instanceof TransactionRecoveryPendingError && err.phase === "marker-unconfirmed") {
+        throw new CliValidationError(
+          "io_error",
+          `Resolving ${label} with ruling ${prepared.ruling.id}: the resolution may or may not have been applied; the next storybloq command finishes or rolls it back. ` +
+            `Then check ${label} and ruling ${prepared.ruling.id} before any retry. ` +
+            `Underlying failure: ${err.message}`,
+        );
+      }
+      // ISS-1399: applied; only the journal removal's durability is unconfirmed.
+      if (err instanceof TransactionCommittedUnconfirmedError) {
+        throw new CliValidationError(
+          "io_error",
+          `Resolving ${label} with ruling ${prepared.ruling.id}: the resolution was applied, but its final durability step could not be confirmed. ` +
+            "Do NOT retry. " +
+            `Underlying failure: ${err.message}`,
+        );
+      }
       if (err instanceof TransactionRecoveryPendingError) {
         throw new CliValidationError(
           "io_error",

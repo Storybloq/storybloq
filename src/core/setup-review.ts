@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isUtf8 } from "node:buffer";
 import { parseReviewerOutput, type SetupReviewBackend } from "./setup-review-backends.js";
+import { isDirSyncUnsupported } from "./durable-dir.js";
 
 export const PACKET_SECTIONS = ["Source requirements", "Owner answers and decisions", "Existing-state evidence", "Plan"] as const;
 export type PacketSection = (typeof PACKET_SECTIONS)[number];
@@ -202,8 +203,6 @@ export function writeFileSynced(path: string, data: string | Buffer): void {
   }
 }
 
-/** The codes a filesystem that cannot sync a directory at all answers with; any other failure is real. */
-const DIR_SYNC_UNSUPPORTED: readonly string[] = process.platform === "win32" ? ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EISDIR", "EPERM"] : ["EINVAL", "ENOTSUP", "EOPNOTSUPP"];
 
 export function fsyncDir(path: string, sync: (fd: number) => void = fsyncSync): void {
   try {
@@ -214,7 +213,7 @@ export function fsyncDir(path: string, sync: (fd: number) => void = fsyncSync): 
       closeSync(fd);
     }
   } catch (e) {
-    if (DIR_SYNC_UNSUPPORTED.includes((e as NodeJS.ErrnoException).code ?? "")) return;
+    if (isDirSyncUnsupported(e)) return;
     throw e;
   }
 }

@@ -16,6 +16,7 @@ import { existsSync, realpathSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
 import { recordBoardTarget } from "./board-write-recorder.js";
+import { syncDir } from "./durable-dir.js";
 import { acquireProjectLockAsync, releaseProjectLock, verifyProjectLockOwnership, type ProjectLockHandle } from "./project-lock.js";
 import { TicketSchema, type Ticket } from "../models/ticket.js";
 import { IssueSchema, type Issue } from "../models/issue.js";
@@ -1458,7 +1459,15 @@ interface TxnJournal {
  * handle the operator has on what recovery is going to complete.
  */
 export class TransactionRecoveryPendingError extends ProjectLoaderError {
-  constructor(cause: unknown) {
+  /**
+   * ISS-1399: "marker-unconfirmed" when the commit marker's rename or its
+   * directory sync failed, so `.txn.json` may hold either journal and the next
+   * recovery may roll the change back or finish it; "committed" once the
+   * marker is durable, so recovery finishes it.
+   */
+  readonly phase: "marker-unconfirmed" | "committed";
+
+  constructor(cause: unknown, phase: "marker-unconfirmed" | "committed" = "committed") {
     // The underlying failure is carried in the MESSAGE and not only in `cause`.
     // It is what an operator needs to know ("lock ownership lost" and "EIO on a
     // rename" call for different responses), and it keeps the phase wrapper
@@ -1466,9 +1475,26 @@ export class TransactionRecoveryPendingError extends ProjectLoaderError {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(
       "io_error",
-      `Transaction failed after it began committing; forward recovery is pending: ${detail}`,
+      phase === "committed"
+        ? `Transaction failed after it began committing; forward recovery is pending: ${detail}`
+        : `Transaction may or may not have been applied; the next storybloq command finishes or rolls it back: ${detail}`,
       cause,
     );
+    this.phase = phase;
+  }
+}
+
+/**
+ * ISS-1399: every target is applied and the journal is removed, but the sync
+ * of `.story` after that removal failed, so the removal may not survive a
+ * power loss. Not a recovery-pending failure: the change is in place, and a
+ * journal that reappears only replays what is already there. A retry would
+ * apply the change a second time.
+ */
+export class TransactionCommittedUnconfirmedError extends ProjectLoaderError {
+  constructor(cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super("io_error", `Transaction applied, but the removal of its journal could not be confirmed durable: ${detail}`, cause);
   }
 }
 
@@ -1479,6 +1505,19 @@ export class TransactionRecoveryPendingError extends ProjectLoaderError {
  *
  * The journal persists a `commitStarted` flag so recovery can distinguish
  * "prepared" (safe to roll back) from "committing" (must complete forward).
+ *
+ * ISS-1399: the sequence the Mac app's NativeTransaction also writes, so the
+ * CLI's recovery finishes either writer's crash:
+ * 1. fence; the journal with commitStarted false; sync `.story`;
+ * 2. per write, fence, then its temp, exclusive;
+ * 3. sync every temp's directory;
+ * 4. remove a stale marker sidecar; fence; write the journal with
+ *    commitStarted true to the sidecar, exclusive;
+ * 5. fence; rename the sidecar over the journal; sync `.story`;
+ * 6. the renames and deletes, fenced each;
+ * 7. sync every target's directory;
+ * 8. remove the journal; sync `.story`.
+ * A torn marker write tears only the sidecar, never the journal.
  */
 export async function runTransactionUnlocked(
   root: string,
@@ -1489,8 +1528,18 @@ export async function runTransactionUnlocked(
 ): Promise<void> {
   const wrapDir = resolve(root, ".story");
   const journalPath = join(wrapDir, ".txn.json");
+  const sidecarPath = join(wrapDir, TXN_MARKER_SIDECAR);
   const entries: TxnEntry[] = [];
+  // Set just before the sidecar rename: from then on `.txn.json` may be the
+  // marker whatever the rename reports, so nothing is rolled back here.
   let commitStarted = false;
+  // ISS-1399: the marker's rename and its `.story` sync both returned.
+  let markerDurable = false;
+  // Each temp from the moment its exclusive open succeeds, so a failure while
+  // writing it still removes it; a failed open never names a file it did not create.
+  const createdTemps: string[] = [];
+  let sidecarCreated = false;
+  let journalRemoved = false;
   // ISS-1107: the logical targets this commit applied, recorded only once the
   // whole transaction succeeded (an ENOENT delete applied nothing).
   const applied: Array<{ target: string; kind: "write" | "delete" }> = [];
@@ -1507,16 +1556,59 @@ export async function runTransactionUnlocked(
   // documents the identical rationale -- the commit path should match its
   // own recovery path's posture.
   async function removeJournal(): Promise<void> {
-    try {
-      await fencedUnlink(journalPath);
-    } catch (err) {
-      const code =
-        err instanceof ProjectLoaderError
-          ? (err.cause as NodeJS.ErrnoException | undefined)?.code
-          : (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return;
-      throw err;
+    await fencedUnlinkIfPresent(journalPath);
+  }
+
+  // ISS-1399: the cleanup of a transaction that failed before its marker. Every
+  // removal is fenced, so a lost lock stops it at once and its fencing error
+  // propagates: the files may now belong to the new holder. The journal goes
+  // only once every temp is gone and their directories are synced; otherwise
+  // it stays, so the next recovery removes what is left.
+  async function cleanUpBeforeMarker(cause: unknown): Promise<never> {
+    const left: string[] = [];
+    for (const temp of createdTemps) {
+      try {
+        await fencedUnlinkIfPresent(temp);
+      } catch (err) {
+        if (isProjectLockFencingError(err)) throw err;
+        left.push(temp);
+      }
     }
+    if (sidecarCreated) {
+      try {
+        await fencedUnlinkIfPresent(sidecarPath);
+      } catch (err) {
+        // Anything but a lost lock: the next transaction removes it before its own.
+        if (isProjectLockFencingError(err)) throw err;
+      }
+    }
+    let synced = left.length === 0;
+    if (synced) {
+      try {
+        await syncParents(createdTemps);
+      } catch {
+        synced = false;
+      }
+    }
+    if (!synced) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      const rest = left.length > 0 ? ` and removes ${left.join(", ")}` : "";
+      throw new ProjectLoaderError("io_error", `Transaction failed (${detail}); its cleanup is pending: the next storybloq command finishes it${rest}`, cause);
+    }
+    try {
+      await removeJournal();
+    } catch (err) {
+      // A journal that cannot be removed is rolled back by the next recovery.
+      if (isProjectLockFencingError(err)) throw err;
+    }
+    try {
+      await syncDir(wrapDir);
+    } catch {
+      // Not reported: if the removal is lost, a journal whose temps are gone
+      // reappears and the next recovery rolls it back with no effect.
+    }
+    if (cause instanceof ProjectLoaderError) throw cause;
+    throw new ProjectLoaderError("io_error", "Transaction failed", cause);
   }
 
   // T-486 A7: each issue's boundary check compared its write against the file
@@ -1549,20 +1641,33 @@ export async function runTransactionUnlocked(
 
     // 2. Write journal with commitStarted=false (fsync'd for durability)
     const journal: TxnJournal = { entries, commitStarted: false, owner };
+    checkProjectLockFencing();
     await fsyncWrite(journalPath, JSON.stringify(journal, null, 2));
+    await syncDir(wrapDir);
 
     // 3. Write temp files
     for (const op of operations) {
       if (op.op === "write") {
         const tempPath = `${op.target}.${process.pid}.tmp`;
-        await fsyncWrite(tempPath, op.content, true);
+        checkProjectLockFencing();
+        await fsyncWrite(tempPath, op.content, true, () => createdTemps.push(tempPath));
       }
     }
+    await syncParents(createdTemps);
 
-    // 4. Mark commit started in journal (durable marker for recovery)
+    // 4. Mark commit started: the marker is written whole beside the journal
+    // and renamed over it, so `.txn.json` is always one complete journal.
     journal.commitStarted = true;
-    await fsyncWrite(journalPath, JSON.stringify(journal, null, 2));
+    await fencedUnlinkIfPresent(sidecarPath);
+    checkProjectLockFencing();
+    await fsyncWrite(sidecarPath, JSON.stringify(journal, null, 2), true, () => {
+      sidecarCreated = true;
+    });
+    checkProjectLockFencing();
     commitStarted = true;
+    await rename(sidecarPath, journalPath);
+    await syncDir(wrapDir);
+    markerDurable = true;
 
     // 5. Commit: rename all temps, delete targets. Fenced per-entry (ISS-942):
     // on ownership loss, stop immediately -- don't attempt the current or
@@ -1597,10 +1702,12 @@ export async function runTransactionUnlocked(
         }
       }
     }
+    await syncParents(entries.map((entry) => entry.target));
 
     // 6. Remove journal
     try {
       await removeJournal();
+      journalRemoved = true;
     } catch (err) {
       if (!isProjectLockFencingError(err)) throw err;
       // Every entry is already applied and durable. Keep the journal for the
@@ -1608,23 +1715,7 @@ export async function runTransactionUnlocked(
     }
     for (const { target, kind } of applied) recordBoardTarget(target, kind);
   } catch (err) {
-    if (!commitStarted) {
-      // Safe to clean up -- no renames have happened
-      for (const entry of entries) {
-        if (entry.tempPath) {
-          try {
-            await unlink(entry.tempPath);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      try {
-        await removeJournal();
-      } catch {
-        /* best-effort cleanup; the original error above is what propagates */
-      }
-    }
+    if (!commitStarted) await cleanUpBeforeMarker(err);
     // If commitStarted, leave journal for recovery on next load.
     //
     // T-494: the PHASE is part of the answer, not an implementation detail. A
@@ -1640,9 +1731,45 @@ export async function runTransactionUnlocked(
     // fencing throws a `ProjectLoaderError` from inside the rename loop, so a
     // caller lost the ruling id and the do-not-retry warning in exactly the
     // case that most needs them.
-    if (commitStarted) throw new TransactionRecoveryPendingError(err);
-    if (err instanceof ProjectLoaderError) throw err;
-    throw new ProjectLoaderError("io_error", "Transaction failed", err);
+    throw new TransactionRecoveryPendingError(err, markerDurable ? "committed" : "marker-unconfirmed");
+  }
+
+  // 7. ISS-1399: outside the catch above, so this outcome is never reported
+  // as recovery pending. Skipped when a lost lock kept the journal.
+  if (journalRemoved) {
+    try {
+      await syncDir(wrapDir);
+    } catch (err) {
+      throw new TransactionCommittedUnconfirmedError(err);
+    }
+  }
+}
+
+/** ISS-1399: the commit marker's sidecar, renamed over `.txn.json` (the Mac app's NativeTransaction writes the same name). */
+const TXN_MARKER_SIDECAR = ".txn.json.marker.tmp";
+
+/** fencedUnlink that treats an already-missing file as removed. */
+async function fencedUnlinkIfPresent(path: string): Promise<void> {
+  try {
+    await fencedUnlink(path);
+  } catch (err) {
+    const code =
+      err instanceof ProjectLoaderError
+        ? (err.cause as NodeJS.ErrnoException | undefined)?.code
+        : (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return;
+    throw err;
+  }
+}
+
+/** ISS-1399: syncs each distinct parent directory of `paths`, in first-seen order. */
+async function syncParents(paths: readonly string[]): Promise<void> {
+  const seen = new Set<string>();
+  for (const path of paths) {
+    const dir = dirname(path);
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+    await syncDir(dir);
   }
 }
 
@@ -1698,6 +1825,35 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return; // nothing to recover
     throw new ProjectLoaderError("io_error", "Transaction recovery failed reading journal; journal preserved for retry", err);
+  }
+
+  // ISS-1399: a commit marker sidecar is never read. A crash before its rename
+  // left the false journal (rolled back below); after it, the true journal
+  // (finished below). Removed here only beside a journal, so a load with no
+  // journal does no new work; one that cannot be removed is left for the next
+  // transaction, which removes it before writing its own.
+  try {
+    await fencedUnlinkIfPresent(join(wrapDir, TXN_MARKER_SIDECAR));
+  } catch (err) {
+    if (isProjectLockFencingError(err)) throw err;
+  }
+
+  // ISS-1399: a directory barrier in recovery; a failure keeps the journal.
+  async function syncOrThrow(dirs: () => Promise<void>, what: string): Promise<void> {
+    try {
+      await dirs();
+    } catch (err) {
+      throw new ProjectLoaderError("io_error", `Transaction recovery failed syncing ${what}; journal preserved for retry`, err);
+    }
+  }
+  // ISS-1399: the `.story` barrier after the journal is removed. The recovery
+  // is complete; only the removal's durability is unconfirmed.
+  async function syncAfterRemoval(): Promise<void> {
+    try {
+      await syncDir(wrapDir);
+    } catch (err) {
+      throw new ProjectLoaderError("io_error", "Transaction recovery completed, but the removal of its journal could not be confirmed durable; the command can be rerun", err);
+    }
   }
 
   // ISS-942 code-review fix: a malformed-journal delete that fails for a
@@ -1779,7 +1935,10 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
         }
       }
     }
+    // Every temp's directory, including temps an earlier run already removed.
+    await syncOrThrow(() => syncParents(entries.flatMap((entry) => (entry.op === "write" && entry.tempPath ? [entry.tempPath] : []))), "the temp directories");
     await unlinkJournalOrThrow("journal");
+    await syncAfterRemoval();
     return;
   }
 
@@ -1832,9 +1991,15 @@ async function doRecoverTransaction(wrapDir: string): Promise<void> {
     }
   }
 
+  // ISS-1399: every target's directory, not only what this run changed: an
+  // earlier commit or recovery may have renamed or deleted it without its
+  // directory reaching disk.
+  await syncOrThrow(() => syncParents(entries.map((entry) => entry.target)), "the target directories");
+
   // Delete journal -- only reached once every entry above has genuinely
   // succeeded (or was already applied).
   await unlinkJournalOrThrow("journal after successful replay");
+  await syncAfterRemoval();
 }
 
 /**
@@ -2211,17 +2376,23 @@ export async function fencedLink(tempPath: string, targetPath: string): Promise<
   await link(tempPath, targetPath);
 }
 
-/** Write with fsync for durability (used for journal files). */
+/**
+ * Write with fsync for durability (used for journal files). `onOpen` runs once
+ * the open succeeded and before any byte is written (ISS-1399: the caller
+ * owns the file from then on, so a later failure still removes it).
+ */
 async function fsyncWrite(
   filePath: string,
   content: string,
   exclusive = false,
+  onOpen?: () => void,
 ): Promise<void> {
   // Transaction staging must never follow a preplanted link or truncate a
   // preexisting file. Journal rewrites also reject links (ISS-1155 review).
   const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW |
     (exclusive ? fsConstants.O_EXCL : fsConstants.O_TRUNC);
   const fh = await open(filePath, flags);
+  onOpen?.();
   try {
     await fh.writeFile(content, "utf-8");
     await fh.sync();

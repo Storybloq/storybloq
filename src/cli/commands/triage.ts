@@ -7,6 +7,7 @@
 import {
   prepareIssueWrite,
   runTransactionUnlocked,
+  TransactionCommittedUnconfirmedError,
   TransactionRecoveryPendingError,
   withProjectLockForIssueTriage,
 } from "../../core/project-loader.js";
@@ -257,6 +258,8 @@ export async function handleTriage(
   // Assigned inside the lock callback, which control-flow narrowing does not follow.
   let applied = "none" as TriageApplied;
   let pending: string | undefined;
+  // ISS-1399: why the outcome needs a warning (pending, or applied but unconfirmed).
+  let note: string | undefined;
   await withProjectLockForIssueTriage(root, async ({ state }) => {
     const ids = flags.ids !== undefined ? resolveIds(state, flags.ids) : undefined;
     action = resolveActionRefs(state, root, parsedAction);
@@ -277,16 +280,24 @@ export async function handleTriage(
       await runTransactionUnlocked(root, operations);
       applied = "all";
     } catch (err) {
+      if (err instanceof TransactionCommittedUnconfirmedError) {
+        applied = "all";
+        note = `The writes were applied, but their final durability step could not be confirmed: ${err.message}. Do not re-run this triage.`;
+        return;
+      }
       if (!(err instanceof TransactionRecoveryPendingError)) throw err;
       applied = "recovery-pending";
       pending = err.message;
+      if (err.phase === "marker-unconfirmed") {
+        note = `The write may or may not have been applied: ${pending}. The next storybloq write finishes or rolls it back; check the issues before any re-run.`;
+      }
     }
   });
   if (!plan) throw new Error("triage computed no plan");
   const output = formatTriagePlan(plan, action ?? null, applied, !flags.apply, format);
-  if (applied === "recovery-pending") {
-    const note = `The write began and did not finish: ${pending}. The next storybloq write completes it; do not re-run this triage.`;
-    return { output, exitCode: ExitCode.USER_ERROR, warnings: [note] };
+  if (applied === "recovery-pending" && note === undefined) {
+    note = `The write began and did not finish: ${pending}. The next storybloq write completes it; do not re-run this triage.`;
   }
+  if (note !== undefined) return { output, exitCode: ExitCode.USER_ERROR, warnings: [note] };
   return { output };
 }

@@ -311,14 +311,11 @@ function referenceProblem(p: SetupPayload): string | null {
     phaseIds.add(ph.id);
   }
   const workItem = (k: string) => kinds.get(k) === "ticket" || kinds.get(k) === "checkpoint";
-  const edges = new Map<string, string[]>();
-  const addEdge = (from: string, to: string) => edges.set(from, [...(edges.get(from) ?? []), to]);
   for (const item of [...p.tickets, ...p.checkpoints]) {
     if (kinds.get(item.phase) !== "phase") return `${item.key} names phase ${item.phase}, which is not a phase key`;
     for (const b of item.blockedBy) {
       if (!workItem(b)) return `${item.key} is blocked by ${b}, which is not a ticket or checkpoint key`;
       if (b === item.key) return `${item.key} is blocked by itself`;
-      addEdge(item.key, b);
     }
   }
   for (const cp of p.checkpoints) {
@@ -328,7 +325,6 @@ function referenceProblem(p: SetupPayload): string | null {
     for (const g of cp.gates) {
       if (!workItem(g)) return `${cp.key} gates ${g}, which is not a ticket or checkpoint key`;
       if (g === cp.key) return `${cp.key} gates itself`;
-      addEdge(g, cp.key);
     }
   }
   for (const c of p.coverage) {
@@ -365,6 +361,7 @@ function referenceProblem(p: SetupPayload): string | null {
     if (escapes(block.handover.path)) return `the frozen handover path leaves the project: ${block.handover.path}`;
   }
   // A cycle in blockedBy (gates included) can never be worked.
+  const edges = effectiveEdges(p);
   const state = new Map<string, 1 | 2>();
   const visit = (k: string, path: string[]): string | null => {
     if (state.get(k) === 2) return null;
@@ -382,6 +379,33 @@ function referenceProblem(p: SetupPayload): string | null {
     if (cycle) return `the dependencies form a cycle: ${cycle}`;
   }
   return null;
+}
+
+/**
+ * The payload's dependency graph as execution sees it: each ticket or
+ * checkpoint key to the keys it waits on, its blockedBy plus every
+ * checkpoint that gates it. Every rule over dependencies reads this, never a
+ * literal blockedBy.
+ */
+export function effectiveEdges(p: Pick<SetupPayload, "tickets" | "checkpoints">): Map<string, string[]> {
+  const edges = new Map<string, string[]>();
+  const addEdge = (from: string, to: string) => edges.set(from, [...(edges.get(from) ?? []), to]);
+  for (const item of [...p.tickets, ...p.checkpoints]) for (const b of item.blockedBy) addEdge(item.key, b);
+  for (const cp of p.checkpoints) for (const g of cp.gates) addEdge(g, cp.key);
+  return edges;
+}
+
+/** Every key `key` waits on, directly or through others, on the effective graph. */
+export function prerequisites(p: Pick<SetupPayload, "tickets" | "checkpoints">, key: string, edges = effectiveEdges(p)): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...(edges.get(key) ?? [])];
+  while (stack.length > 0) {
+    const k = stack.pop()!;
+    if (seen.has(k) || k === key) continue;
+    seen.add(k);
+    stack.push(...(edges.get(k) ?? []));
+  }
+  return seen;
 }
 
 /** Validates a payload object, refusing with the first problem. */

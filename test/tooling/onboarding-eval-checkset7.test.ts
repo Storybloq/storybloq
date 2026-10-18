@@ -129,6 +129,24 @@ describe("check set 7", () => {
       ]);
     });
 
+    it("restore-planned reported resolved exempts no title: the edited title that remains fails (review r2 #1)", () => {
+      const turns = run(
+        { calls: [shell(heredoc(payload), stop)], text: stop },
+        [{ owner: "put it back", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '[{"target":"K2 (T-001)","resolution":"restore-planned","ownerWords":"put it back"}]'`, `-> storybloq · resolved K2 (T-001): restore-planned\nSetup applied: ${SID}`)], text: "" }],
+      );
+      expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([titleFailure]);
+    });
+
+    it("a batch the engine refused grants nothing, even for an answer it printed as resolved first (review r2 #2)", () => {
+      const two = `${stop}\nAmbiguity: owned field edited · K3 (T-002) · observed title; expected title · resolutions: accept-current | restore-planned | stop`;
+      const answers = '[{"target":"K2 (T-001)","resolution":"accept-current","ownerWords":"keep my title"},{"target":"K3 (T-002)","resolution":"accept-current","ownerWords":"keep my title"}]';
+      const turns = run(
+        { calls: [shell(heredoc(payload), two)], text: two },
+        [{ owner: "keep my title", calls: [shell(`storybloq setup-apply --setup ${SID} --resolve '${answers}'`, "-> storybloq · resolved K2 (T-001): accept-current\nSetup refused: K3 (T-002): accept-current changes the approved package")], text: "" }],
+      );
+      expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([titleFailure]);
+    });
+
     it("a refused resolution exempts nothing", () => {
       const turns = resolveTurns("keep my title", "K2 (T-001)", "Setup refused: K2 (T-001): accept-current changes the approved package");
       expect(checkSetupApply(turns, opts({ ledger })).failures).toEqual([titleFailure]);

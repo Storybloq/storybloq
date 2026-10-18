@@ -8,8 +8,8 @@
  * Rule 2: the persisted records, read independently of any output: the
  * active keys under this setup are exactly the payload's (less the
  * checkpoints a successful drop-checkpoints removed), each once, of its
- * kind, with its payload title unless a successful amendment kept the
- * owner's, and no ticket or issue without a setup key appeared beyond the
+ * kind, with its payload title unless a committed accept-current or adopt
+ * kept the owner's, and no ticket or issue without a setup key appeared beyond the
  * fixture's own.
  * Rule 3: the payload the engine was given is the approved package the owner
  * saw: its tickets and checkpoints equal the package's marked Plan section.
@@ -102,8 +102,17 @@ function cliResolutions(head: string): Resolution[] | null {
   }
 }
 
-/** Whether the engine reported this resolution applied: its own `resolved` line. */
-const resolvedIn = (output: string, r: Resolution) => linesOf(output).some((l) => l.startsWith(`-> storybloq · resolved ${r.target}: ${r.resolution}`));
+/**
+ * Whether the engine committed this resolution: its own `resolved` line, which
+ * the engine prints only after the batch's transaction commits, in an output
+ * the engine did not end by refusing the batch (review r2 #2).
+ */
+const resolvedIn = (output: string, r: Resolution) => {
+  const lines = linesOf(output);
+  return !lines.some((l) => l.startsWith("Setup refused:")) && lines.some((l) => l.startsWith(`-> storybloq · resolved ${r.target}: ${r.resolution}`));
+};
+/** Resolutions that keep content differing from the payload, so its title may stand (review r2 #1). */
+const keepsOwnContent = (resolution: string) => resolution === "accept-current" || resolution.startsWith("adopt ");
 const ambiguityTarget = (line: string): string | null => /^Ambiguity: [^·]+ · (.+?) · observed /.exec(line)?.[1] ?? null;
 const keyOfTarget = (target: string) => target.split(" ")[0]!;
 
@@ -253,7 +262,7 @@ export function checkSetupApply(turns: readonly Cs7Turn[], opts: Cs7Options): { 
           }
           if (r.resolution !== "stop" && resolvedIn(a.output, r)) {
             outstanding.delete(r.target);
-            amended.add(keyOfTarget(r.target));
+            if (keepsOwnContent(r.resolution)) amended.add(keyOfTarget(r.target));
             if (r.resolution === "drop-checkpoints") droppedCheckpoints = true;
           }
         }

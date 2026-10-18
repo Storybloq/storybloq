@@ -1202,7 +1202,7 @@ export async function withProjectLock(d: string, handler: (r: number) => Promise
 const GOOD_CHAIN = projectChain("return await als.run(handle, fn);");
 const PRIM = { awaitedCallbackPrimitives: ["project.ts#withProjectLock"] };
 const PROJECT_IMPORT = `import { withProjectLock } from "./project.js";\n`;
-function add2Scan(body: string, top = "", registry: Partial<ScannerRegistry> = {}, project = GOOD_CHAIN) {
+function add2Scan(body: string, top = "", registry: Partial<ScannerRegistry> = {}, project = GOOD_CHAIN, extra: Record<string, string> = {}) {
   const program = inMemoryProgram({
     "/fx/session.ts": SESSION, "/fx/types.ts": TYPES, "/fx/project.ts": project, "/fx/als.d.ts": NODE_ALS,
     "/fx/user.ts": LOCK_IMPORTS + PROJECT_IMPORT + top + `
@@ -1212,6 +1212,7 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
     ${body}
   });
 }`,
+    ...extra,
   });
   return scanStateWrites(program, {
     base: "/fx", rootFile: ROOT_FILE, rootName: "writeSessionSync", lockName: "withSessionLock",
@@ -1809,5 +1810,75 @@ export async function run(d: string, items: number[], stage: WorkflowStage) {
     ["a non-literal handler", "const h: ProxyHandler<{ a: number }> = {};\n" + PROXY("{ a: number }", "h", "{ a: number }"), "handler is not an object literal"],
   ])("a Proxy with %s is UNRESOLVED", (_n, top, why, body = "") => {
     expect(proxyErrors(body ? inLockOwned(body, top) : inLock("", top))).toEqual([expect.stringMatching(new RegExp(`^UNRESOLVED Proxy at user\\.ts:\\d+ \\(${why}\\)$`))]);
+  });
+});
+
+// ---- ISS-1401: containment compares source files where candidates can cross files ----
+
+describe("ISS-1401: a node in another file at a container's offsets is not inside it", () => {
+  /**
+   * Another file whose `token` starts at offset `at`: `head` ends inside a
+   * string literal that the padding fills, and the token follows on the next line.
+   */
+  function foreignAt(head: string, at: number, token: string, tail = "\n"): string {
+    const lead = "\";\n";
+    const other = head + "x".repeat(at - head.length - lead.length) + lead + token + tail;
+    expect(other.indexOf(token)).toBe(at);
+    return other;
+  }
+  const PAD = "y".repeat(300);
+
+  it("1321: an unresolved call in another file is not a destructured lock entry callback's invocation", () => {
+    const code = `function acquire(dir: string): () => void { return () => {}; }
+export async function lockB(d: string, { cb }: { (): void; cb: () => Promise<void> }) {
+  const release = acquire(d);
+  const pad = "${PAD}";
+  try { return await cb(); } finally { release(); }
+}
+`;
+    const at = code.indexOf(PAD) + 100;
+    const other = foreignAt(`const pad = "`, at, "missing();");
+    expect(at + "missing()".length).toBeLessThan(code.lastIndexOf("}"));
+    const entry = (errors: string[]) => errors.filter((e) => e.includes("lock entry user.ts#lockB"));
+    const want = ["lock-lifetime: lock entry user.ts#lockB must invoke its callback exactly once and nowhere else use it"];
+    expect(entry(lockScan(code, { lockEntries: ["user.ts#lockB"] }).errors)).toEqual(want);
+    expect(entry(lockScan(code, { lockEntries: ["user.ts#lockB"] }, { "/fx/other.ts": other }).errors)).toEqual(want);
+    // In the entry's own file too: an unresolved call has no symbol, and neither has the destructured callback.
+    const local = code.replace("const release = acquire(d);", "const release = acquire(d);\n  notDeclared();");
+    expect(entry(lockScan(local, { lockEntries: ["user.ts#lockB"] }).errors)).toEqual(want);
+  });
+
+  it("2026: another file's read of the bound slot's property does not refuse a valid bind edge", () => {
+    const top = `import type { Slot } from "./slot.js";
+function acc(o: Slot): void { const pad = "${PAD}"; o.writeState({ revision: o.dir.length + pad.length }); }
+`;
+    const slot = "export interface Slot { readonly dir: string; writeState: (s: { revision: number }) => unknown }\n";
+    const edge = { edges: { "user.ts#run#edge#1": "user.ts#<anon>.writeState" } };
+    const body = "acc({ dir: d, writeState: ctx.writeState.bind(ctx) });";
+    const user = LOCK_IMPORTS + PROJECT_IMPORT + top;
+    const at = user.indexOf(PAD) + 100;
+    const other = foreignAt(`import type { Slot } from "./slot.js";\ndeclare const s: Slot;\nconst pad = "`, at - "export const keep = s.".length,
+      "export const keep = s.writeState;");
+    expect(other.indexOf("writeState")).toBeGreaterThan(user.indexOf(PAD));
+    expect(other.indexOf("writeState") + "writeState".length).toBeLessThan(user.indexOf(PAD) + PAD.length);
+    expect(lifetime(add2Scan(body, top, edge, GOOD_CHAIN, { "/fx/slot.ts": slot }).errors)).toEqual([]);
+    expect(lifetime(add2Scan(body, top, edge, GOOD_CHAIN, { "/fx/slot.ts": slot, "/fx/other.ts": other }).errors)).toEqual([]);
+  });
+
+  it("2480: an imported context whose declaration sits at a deferred closure's offsets is still captured", () => {
+    const code = LOCK_IMPORTS + `import { shared } from "./ctxsrc.js";
+const queue: Array<() => void> = [];
+export function later() { queue.push(() => { const pad = "${PAD}"; void shared.dir; }); }
+`;
+    const at = code.indexOf(PAD) + 100;
+    const decl = `shared = new StageContext("x");`;
+    const src = foreignAt(`import { StageContext } from "./types.js";\nconst pad = "`, at - "export const ".length, `export const ${decl}`);
+    expect(src.indexOf(decl) + decl.length).toBeLessThan(code.indexOf(PAD) + PAD.length);
+    const errors = lifetime(lockScan(code, {}, { "/fx/ctxsrc.ts": src }).errors);
+    // The import binding is reported as before; the capture inside the deferred closure is reported too.
+    expect(errors.some((e) => /^lock-lifetime: context held by ImportSpecifier at user\.ts:\d+/.test(e))).toBe(true);
+    const line = code.slice(0, code.indexOf("void shared")).split("\n").length;
+    expect(errors.filter((e) => e.startsWith("lock-lifetime: context captured by a function that may run outside the lock")))
+      .toEqual([expect.stringContaining(`at user.ts:${line};`)]);
   });
 });

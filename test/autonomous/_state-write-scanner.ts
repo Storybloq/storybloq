@@ -137,6 +137,12 @@ export interface ScanResult {
 type Fn = ts.FunctionLikeDeclaration;
 type Closure = ts.ArrowFunction | ts.FunctionExpression;
 
+/** Each node's source file, cached: getSourceFile walks the parent chain (ISS-1401). */
+const fileOf = new WeakMap<ts.Node, ts.SourceFile>();
+const sourceOf = (n: ts.Node): ts.SourceFile => fileOf.get(n) ?? (fileOf.set(n, n.getSourceFile()), fileOf.get(n)!);
+/** n lies inside b: the same source file and b's span (offsets alone match across files). */
+const within = (n: ts.Node, b: ts.Node): boolean => n.pos >= b.pos && n.end <= b.end && sourceOf(n) === sourceOf(b);
+
 export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanResult {
   const checker = program.getTypeChecker();
   const errors: string[] = [];
@@ -1318,7 +1324,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     const cbs = decl.parameters.filter((p) => checker.getSignaturesOfType(checker.getTypeAtLocation(p), ts.SignatureKind.Call).length > 0);
     if (cbs.length !== 1) { errors.push(`lock entry ${key} must take exactly one callback parameter`); continue; }
     const cbSym = checker.getSymbolAtLocation(cbs[0]!.name);
-    const uses = refs.filter((r) => r.pos >= decl!.pos && r.end <= decl!.end && r !== cbs[0]!.name && checker.getSymbolAtLocation(r) === cbSym);
+    // ISS-1401: a destructured callback has no symbol, and neither has an unresolved identifier in any file.
+    const uses = cbSym === undefined ? [] : refs.filter((r) => within(r, decl!) && r !== cbs[0]!.name && checker.getSymbolAtLocation(r) === cbSym);
     const invocations = uses.filter((u) => ts.isCallExpression(u.parent) && u.parent.expression === u);
     if (uses.length !== 1 || invocations.length !== 1) { errors.push(`lock-lifetime: lock entry ${key} must invoke its callback exactly once and nowhere else use it`); continue; }
     const inv = invocations[0]!.parent as ts.CallExpression;
@@ -1339,6 +1346,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     for (let child: ts.Node = inv, p = inv.parent; p && p !== decl; child = p, p = p.parent) {
       if (ts.isTryStatement(p) && p.tryBlock === child && p.finallyBlock) finals.push(p.finallyBlock);
     }
+    // One file: calls also need containingFunction(c) === decl, refs a local of decl (both parent-bound).
     const inside = (n: ts.Node, b: ts.Node) => n.pos >= b.pos && n.end <= b.end;
     // T2: exactly one acquisition, a call in the entry's own body before the
     // callback whose (awaited) result is callable; the release is its value.
@@ -1347,6 +1355,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       return (a.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
         || (a.isUnion() ? a.types : [a]).some((x) => checker.getSignaturesOfType(x, ts.SignatureKind.Call).length > 0);
     };
+    // One file: containingFunction(c) === decl walks c's parents to decl.
     const acquisitions = calls.filter((c) => c.end <= inv.pos && containingFunction(c) === decl && c.pos >= decl.pos && c.end <= decl.end
       && callable(checker.getTypeAtLocation(c)));
     if (acquisitions.length !== 1) return `must make exactly one acquisition before its callback, found ${acquisitions.length}`;
@@ -1531,6 +1540,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (!body) return `${path}: no body to verify`;
     if (!ts.isIdentifier(param.name) || param.dotDotDotToken) return `${path}: the callback parameter is not a plain identifier`;
     const sym = checker.getSymbolAtLocation(param.name);
+    // One file: the parameter name is an identifier (checked above), so sym is its parameter, local to fn.
     const uses = refs.filter((r) => r.pos >= body.pos && r.end <= body.end && checker.getSymbolAtLocation(r) === sym);
     if (uses.length > 1) return `${path}: the callback is referenced ${uses.length} times`;
     for (const u of uses) {
@@ -1584,6 +1594,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (isTrustedAdapterCall(call)) {
       if (!inCallbackSlot(call, index)) return `${path}: the adapter at ${where(call)} receives the callback in the wrong position`;
       const releasing = ownTries(owner).find((t) => t.finallyBlock);
+      // One file: call consumes a use inside owner's body, and the try is one of owner's own.
       if (releasing && !(call.pos >= releasing.tryBlock.pos && call.end <= releasing.tryBlock.end)) {
         return `${path}: the adapter call at ${where(call)} is outside the try whose finally releases`;
       }
@@ -1976,6 +1987,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (!param || !ts.isIdentifier(param.name)) return false;
     const sym = checker.getSymbolAtLocation(param.name);
     const body = (sig as Fn).body!;
+    // One file: the parameter name is an identifier (checked above), so sym is its parameter, local to sig.
     const uses = refs.filter((r) => r.pos >= body.pos && r.end <= body.end && checker.getSymbolAtLocation(r) === sym);
     if (!uses.every((u) => isDirectCallRef(u) && nearestFn(u) === sig && !ts.isAwaitExpression(consumerOf(u.parent)))) return false;
     noteReceiver(call, sig as Fn);
@@ -2023,7 +2035,8 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (!param || !ts.isIdentifier(param.name) || param.dotDotDotToken) return false;
     const psym = checker.getSymbolAtLocation(param.name);
     const body = (sig as Fn).body!;
-    const inBody = (r: ts.Node) => r.pos >= body.pos && r.end <= body.end;
+    // ISS-1401: msym is a property of the parameter's type, which any file can reference.
+    const inBody = (r: ts.Node) => within(r, body);
     const directCall = (u: ts.Identifier): boolean => {
       const at: ts.Node = prop === null ? u : u.parent;
       if (prop !== null && !(ts.isPropertyAccessExpression(at) && at.name === u)) return false;
@@ -2201,10 +2214,6 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
     if (ts.isFunctionLike(target) && holdsStructurally(target)) return k ?? `<context function ${where(target)}>`;
     return null;
   }
-  /** n lies inside b: the same source file and b's span (offsets alone match across files). */
-  const fileOf = new Map<ts.Node, ts.SourceFile>();
-  const sourceOf = (n: ts.Node) => fileOf.get(n) ?? (fileOf.set(n, n.getSourceFile()), fileOf.get(n)!);
-  const within = (n: ts.Node, b: ts.Node) => n.pos >= b.pos && n.end <= b.end && sourceOf(n) === sourceOf(b);
   const capturesCtx = (cl: Closure): boolean => subtreeHas(cl.body, (x) => {
     if (x.kind === ts.SyntaxKind.ThisKeyword && ts.isArrowFunction(cl)) return isCtxType(checker.getTypeAtLocation(x));
     if (!ts.isIdentifier(x)) return false;
@@ -2477,7 +2486,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       if (!ts.isFunctionLike(p)) continue;
       if (ts.isIdentifier(v)) {
         const d = declOf(checker.getSymbolAtLocation(v));
-        if (d && d.pos >= p.pos && d.end <= p.end) break; // declared in this function: not a capture
+        if (d && within(d, p)) break; // declared in this function: not a capture (ISS-1401: declOf follows imports to other files)
       } else break;
       if (isClosure(p) && (inheritsInPlace(p) || isIIFE(p) || isLockEntryCallback(p) || isAwaitedCallbackArg(p)
         || localFnOf(p) || edgeCallbackOk(p))) continue;
@@ -2561,6 +2570,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
       const param = fn?.parameters.find((q) => ts.isIdentifier(q.name) && q.name.text === hop.param);
       if (!fn || !param) { errors.push(`unfollowed sink chain ${key}: hop ${hop.fn}(${hop.param}) not found`); return; }
       const sym = checker.getSymbolAtLocation(param.name);
+      // One file: the parameter was found by ts.isIdentifier(q.name), so sym is its parameter, local to fn.
       const uses = refs.filter((r) => r.pos >= fn.body!.pos && r.end <= fn.body!.end && checker.getSymbolAtLocation(r) === sym);
       if (uses.length === 0) errors.push(`unfollowed sink chain ${key}: ${hop.fn} never uses ${hop.param}`);
       for (const u of uses) {
@@ -2586,6 +2596,7 @@ export function scanStateWrites(program: ts.Program, opts: ScanOptions): ScanRes
         const next = hops[i + 1];
         const nextFn = next && fnDecls.get(next.fn);
         // The slot the use travels in: the next hop's parameter, or the trusted adapter's callback (run's second argument).
+        // One file: call is u's consumer, reached by walking u's parents.
         const slot = call.arguments.findIndex((a) => u.pos >= a.pos && u.end <= a.end);
         const wantSlot = next ? (nextFn?.parameters.findIndex((q) => ts.isIdentifier(q.name) && q.name.text === next.param) ?? -1) : 1;
         if (next ? calleeDecl(call) !== nextFn || slot !== wantSlot : !isTrustedAdapterCall(call) || slot !== wantSlot) {

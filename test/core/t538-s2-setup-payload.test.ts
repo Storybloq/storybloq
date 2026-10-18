@@ -214,8 +214,32 @@ describe("a component's test command is one invocation (S2a finding 3)", () => {
     expect(() => validateSetupPayload(withTest(command))).toThrow(reason);
   });
 
+  it.each([
+    ["builtin exit 0", /uses the shell builtin `builtin`/],
+    ["command exec npm test", /uses the shell builtin `command`/],
+    ["command cd ..", /uses the shell builtin `command`/],
+    ["kill $PPID", /uses the shell builtin `kill`/],
+    ["time npm test", /uses the shell keyword `time`/],
+    ["coproc npm test", /uses the shell keyword `coproc`/],
+    ["mapfile x", /uses the shell builtin `mapfile`/],
+    ["$RUNNER test", /uses an executable that is not a plain word \(`\$RUNNER`\)/],
+    ["\"$RUNNER\" test", /uses an executable that is not a plain word/],
+    ["${RUNNER} test", /uses an executable that is not a plain word/],
+    ["~/bin/run test", /uses an executable that is not a plain word/],
+    ["np* test", /uses an executable that is not a plain word/],
+    ["{npm,yarn} test", /uses an executable that is not a plain word/],
+  ])("refuses %j in the executable position (S2a finding 7)", (command, reason) => {
+    expect(() => validateSetupPayload(withTest(command))).toThrow(reason);
+  });
+
+  it("keeps true, false, test and [, which cannot move or end the shell", () => {
+    for (const command of ["true", "false x", "test -f package.json", "[ -f package.json ]"]) {
+      expect(() => validateSetupPayload(withTest(command))).not.toThrow();
+    }
+  });
+
   it("accepts one invocation with arguments", () => {
-    for (const command of ["npm test -- --run", "python manage.py test", "go test ./...", "make test", "pytest -k 'a or b'", "npm test a#b", "pytest \"x # y\""]) {
+    for (const command of ["npm test -- --run", "python manage.py test", "go test ./...", "make test", "pytest -k 'a or b'", "npm test a#b", "pytest \"x # y\"", "./node_modules/.bin/vitest run", "npm test $CI_ARGS", "'npm' test", "g++-13 --version"]) {
       expect(() => validateSetupPayload(withTest(command))).not.toThrow();
     }
   });
@@ -238,6 +262,33 @@ describe("the chain a valid payload produces runs every component (S2a finding 6
       mkdirSync(join(root, "web app"));
       mkdirSync(join(root, "api"));
       execFileSync("/bin/bash", ["-c", command], { cwd: root });
+      expect(existsSync(join(root, "web app", "ran-web"))).toBe(true);
+      expect(existsSync(join(root, "api", "ran-api"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the strongest accepted first command still lets the second component run (S2a finding 7)", async () => {
+    const { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync, chmodSync } = await import("node:fs");
+    const { execFileSync } = await import("node:child_process");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { computeInitialStages } = await import("../../src/core/verification-activation.js");
+    // Quoted operators, a quoted comment, an escaped space, a mid-word `#` and an unset $VAR argument.
+    const strongest = "./run.sh \"$T538_UNSET\" 'exit 1; cd ..' \"x # y\" a\\ b c#d";
+    const parsed = validateSetupPayload(payload({ quality: { level: "full", verifyApplies: false, components: [
+      { id: "web", workdir: "web app", test: { command: strongest, status: "established" }, build: null, verify: null },
+      { id: "api", workdir: "api", test: { command: "touch ran-api", status: "established" }, build: null, verify: null },
+    ] } } as Partial<SetupPayload>));
+    const command = computeInitialStages({ level: parsed.quality.level, verifyApplies: parsed.quality.verifyApplies, components: parsed.quality.components }).stages.TEST!.command as string;
+    const root = mkdtempSync(join(tmpdir(), "t538-s2-chain-"));
+    try {
+      mkdirSync(join(root, "web app"));
+      mkdirSync(join(root, "api"));
+      writeFileSync(join(root, "web app", "run.sh"), "#!/bin/bash\nprintf '%s\\n' \"$@\" > ran-web\n");
+      chmodSync(join(root, "web app", "run.sh"), 0o755);
+      execFileSync("/bin/bash", ["-c", command], { cwd: root, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
       expect(existsSync(join(root, "web app", "ran-web"))).toBe(true);
       expect(existsSync(join(root, "api", "ran-api"))).toBe(true);
     } finally {

@@ -191,11 +191,31 @@ function escapes(path: string): boolean {
  * escapes decoded, a `#` that starts a word is a comment (which would swallow
  * every later step), and the executable is checked after decoding, so `'cd'`
  * and `c\d` are both `cd`.
+ *
+ * The executable position is strict rather than a denylist chase: it must be
+ * a plain word (no `$`, glob, tilde or brace expansion; `$VAR` stays allowed
+ * in the arguments), and never a bash builtin or keyword, since a builtin
+ * runs inside the shell and `builtin`/`command` reach every other one.
  */
-const SHELL_STATE_BUILTINS: ReadonlySet<string> = new Set([
-  "cd", "pushd", "popd", "exit", "exec", "source", ".", "eval", "set", "shopt", "trap", "return",
-  "{", "}", "!",
+const PLAIN_EXECUTABLE = /^[A-Za-z0-9._/+-]+$/;
+
+/** The union of `compgen -b` from bash 3.2.57 and 5.3, less the four that cannot move or end the shell. */
+const SHELL_BUILTINS: ReadonlySet<string> = new Set([
+  ".", ":", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete",
+  "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export",
+  "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile",
+  "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt",
+  "source", "suspend", "times", "trap", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait",
 ]);
+
+/** The union of `compgen -k` from bash 3.2.57 and 5.3. */
+const SHELL_KEYWORDS: ReadonlySet<string> = new Set([
+  "if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do", "done",
+  "in", "function", "time", "{", "}", "!", "[[", "]]", "coproc",
+]);
+
+/** Builtins that only compute an exit status; `[` is not a plain word but is kept with `test`. */
+const HARMLESS_BUILTINS: ReadonlySet<string> = new Set(["true", "false", "test", "["]);
 
 const BACKTICK = "`" + "`" + "`";
 
@@ -263,7 +283,10 @@ export function testCommandProblem(command: string): string | null {
   const executable = words[0];
   if (executable === undefined) return "no command";
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(executable)) return "an environment assignment";
-  if (SHELL_STATE_BUILTINS.has(executable)) return `the shell builtin \`${executable}\``;
+  if (HARMLESS_BUILTINS.has(executable)) return null;
+  if (SHELL_KEYWORDS.has(executable)) return `the shell keyword \`${executable}\``;
+  if (!PLAIN_EXECUTABLE.test(executable)) return `an executable that is not a plain word (\`${executable}\`)`;
+  if (SHELL_BUILTINS.has(executable)) return `the shell builtin \`${executable}\``;
   return null;
 }
 

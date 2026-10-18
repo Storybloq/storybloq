@@ -582,10 +582,17 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
   type Pick = {
     sessionId: string; sessDir: string; planted: FullSessionState; ctx: StageContext;
     marker: Record<string, unknown> | null; atMarker: string | null; final: string;
+    result: { action: string; target?: string };
   };
 
-  /** Runs the real issue pick in a planted session; `onMarker` runs right after the marker is written. */
-  async function livePick(snapshot: Record<string, unknown>, onMarker?: () => void): Promise<Pick> {
+  /**
+   * Runs the real issue pick in a planted session; `onMarker` runs right after the marker is written.
+   * `outcome` is what the stage must return: "start" (goto ISSUE_FIX) when the status write lands,
+   * "retry" when it is refused.
+   */
+  async function livePick(
+    snapshot: Record<string, unknown>, onMarker?: () => void, outcome: "start" | "retry" = "start",
+  ): Promise<Pick> {
     writeTicket(root, "T-001", { status: "inprogress" });
     writeIssue(root, "ISS-001", { updatedDate: "2020-01-01", ...snapshot });
     const { sessionId, sessDir } = plantSession(root, null);
@@ -595,7 +602,7 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
     } as unknown as FullSessionState, makeRecipe());
     vi.spyOn(PickTicketStage.prototype as unknown as { applyStrategy: () => Promise<unknown> }, "applyStrategy")
       .mockResolvedValue(null);
-    const out: Pick = { sessionId, sessDir, planted, ctx, marker: null, atMarker: null, final: "" };
+    const out: Pick = { sessionId, sessDir, planted, ctx, marker: null, atMarker: null, final: "", result: { action: "" } };
     const original = ctx.writeState.bind(ctx);
     vi.spyOn(ctx, "writeState").mockImplementation(((patch: Record<string, unknown>) => {
       const written = original(patch as never);
@@ -607,7 +614,12 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       return written;
     }) as never);
     const result = await new PickTicketStage().report(ctx, { completedAction: "issue_picked", issueId: "ISS-001" });
-    expect(result.action, JSON.stringify(result)).not.toBe("retry");
+    if (outcome === "start") {
+      expect(result, JSON.stringify(result)).toMatchObject({ action: "goto", target: "ISSUE_FIX" });
+    } else {
+      expect(result.action, JSON.stringify(result)).toBe("retry");
+    }
+    out.result = result as Pick["result"];
     vi.mocked(ctx.writeState).mockRestore();
     out.final = issueBytes();
     return out;
@@ -688,15 +700,32 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
     const pick = await livePick({ status: "open" }, () => {
       writeIssue(root, "ISS-001", { status: "open", updatedDate: "2020-01-01", title: "Edited by someone else" });
       changed = issueBytes();
-    });
+    }, "retry");
     expect(pick.final).toBe(changed);
     expect(pick.ctx.state.pendingProjectMutation).not.toBeNull();
+    expect(pick.ctx.state.currentIssue ?? null).toBeNull();
   });
 
+  for (const wait of ["owner", "external"] as const) {
+    it(`an issue set to wait on ${wait} between the marker and the status write is not started: the pick is retried`, async () => {
+      let changed = "";
+      const pick = await livePick({ status: "open" }, () => {
+        writeIssue(root, "ISS-001", { status: "open", updatedDate: "2020-01-01", waitingOn: wait });
+        changed = issueBytes();
+      }, "retry");
+      expect(pick.final).toBe(changed);
+      expect(pick.ctx.state.state).toBe("PICK_TICKET");
+      expect(pick.ctx.state.currentIssue ?? null).toBeNull();
+      expect(pick.ctx.state.pendingProjectMutation).toMatchObject({ type: "issue_update", target: "ISS-001" });
+      expect(readState(pick.sessDir).pendingProjectMutation).not.toBeNull();
+    });
+  }
+
   it("T13e live: another ticket made unreadable after the marker refuses the status write, and the marker stays", async () => {
-    const pick = await livePick({ status: "open" }, () => { writeFileSync(corruptTicket(), "{ not json"); });
+    const pick = await livePick({ status: "open" }, () => { writeFileSync(corruptTicket(), "{ not json"); }, "retry");
     expect(pick.final).toBe(pick.atMarker);
     expect(pick.ctx.state.pendingProjectMutation).not.toBeNull();
+    expect(pick.ctx.state.currentIssue ?? null).toBeNull();
   });
 
   it("T13e recovery: at the preimage with an unreadable ticket it refuses and keeps the marker; once repaired it replays", async () => {
@@ -740,6 +769,25 @@ describe("T-481 T13c/T13e: the stamped issue-pick marker and its recovery", () =
       const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
       expect(conflicts.length).toBe(1);
       // Refused as malformed at recognition, never reaching the replay.
+      expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
+    });
+  }
+
+  for (const missing of [["preimageFingerprint", "postimageFingerprint"], ["preimageFingerprint"], ["postimageFingerprint"]] as const) {
+    it(`T13d: a stamped marker without ${missing.join(" and ")} is malformed: no replay, nothing written`, async () => {
+      const pick = await livePick({ status: "open", earmark: reserved });
+      expect(typeof pick.marker?.stampDate).toBe("string");
+      writeFileSync(issuePath(), pick.atMarker!);
+      const marker = { ...pick.marker! };
+      for (const key of missing) delete marker[key];
+      pick.marker = marker;
+      replant(pick);
+      hoisted.writeIssueCalls = [];
+      await driveRecovery(root);
+      expect(issueBytes()).toBe(pick.atMarker);
+      expect(hoisted.writeIssueCalls.length).toBe(0);
+      const conflicts = eventsOfType(pick.sessDir, "mutation_conflict");
+      expect(conflicts.length).toBe(1);
       expect((conflicts[0].data as Record<string, unknown>).reason).toBe("malformed-marker");
     });
   }

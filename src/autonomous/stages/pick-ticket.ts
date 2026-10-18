@@ -655,8 +655,9 @@ export class PickTicketStage implements WorkflowStage {
       const { validatePostWriteIssueState } = await import("../../cli/commands/issue.js");
       let written = false;
       // Under the same strict lock and post-write validation as
-      // handleIssueUpdate. An issue that changed since the marker is left
-      // alone, and the marker stays for recovery to settle.
+      // handleIssueUpdate. An issue that changed since the marker (a waiting
+      // flag set in between, say) is left alone, and the marker stays for
+      // recovery to settle.
       await withProjectLock(ctx.root, { strict: true }, async ({ state: freshState }) => {
         const fresh = freshState.issues.find(i => i.id === issue.id);
         if (!fresh || entityFingerprint(fresh) !== preimageFingerprint) return;
@@ -665,13 +666,22 @@ export class PickTicketStage implements WorkflowStage {
         written = true;
       });
       if (!written) throw new Error(`${issueLabel} changed before its status write`);
+    } catch {
+      // T-481: a refused or failed status write does not start the issue. The
+      // marker stays set for recovery and the pick is retried; the issue is
+      // never made current over a write that did not land.
+      return {
+        action: "retry",
+        instruction: `Could not start ${issueLabel}: it changed or could not be written. Try again.`,
+      };
+    }
+    try {
       // ISS-1052: only clear the marker on confirmed success. A thrown error
-      // here (lock/IO failure) must leave the marker SET, not cleared -- the
-      // marker is what lets `recoverPendingMutation` (guide.ts) recognize and
-      // recover this write on the next entry point. Clearing it unconditionally
-      // regardless of outcome is the exact fail-open ISS-1052 exists to close.
+      // here must leave the marker SET, not cleared -- the marker is what lets
+      // `recoverPendingMutation` (guide.ts) recognize this write, which has
+      // landed, on the next entry point.
       ctx.writeState({ pendingProjectMutation: null });
-    } catch { /* best-effort -- don't block on status update; marker stays set for recovery */ }
+    } catch { /* best-effort -- the status write landed; the marker stays set for recovery */ }
 
     // T-461: same resolution for issues, by severity instead of type.
     const issueEffort = reviewEffortForIssue(

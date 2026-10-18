@@ -16,7 +16,9 @@ const NOT_CONTENT = new Set(["updatedDate", "earmark", "sweepAcquisition"]);
 function sortedDeep(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedDeep);
   if (value !== null && typeof value === "object") {
-    const out: Rec = {};
+    // Null-prototype, so an own `__proto__` key (JSON.parse makes one) is
+    // copied as content instead of being eaten by the prototype setter.
+    const out: Rec = Object.create(null) as Rec;
     for (const key of Object.keys(value as Rec).sort()) {
       const member = (value as Rec)[key];
       if (member !== undefined) out[key] = sortedDeep(member);
@@ -33,7 +35,7 @@ function sortedDeep(value: unknown): unknown {
  * undefined members removed.
  */
 export function contentProjection(entity: Readonly<Rec>): string {
-  const copy: Rec = {};
+  const copy: Rec = Object.create(null) as Rec;
   for (const [key, member] of Object.entries(entity)) {
     if (!NOT_CONTENT.has(key)) copy[key] = member;
   }

@@ -881,7 +881,10 @@ async function recoverPendingMutation(
     const rawPreimage = m.preimageFingerprint;
     const rawPostimage = m.postimageFingerprint;
     const isValidFp = (v: unknown): v is string => typeof v === "string" && v.length > 0;
-    const bothAbsent = rawPreimage === undefined && rawPostimage === undefined;
+    // T-481: only an unstamped marker can be legacy. A stamped marker that
+    // lacks a fingerprint is malformed, never a status-only replay.
+    const bothAbsent = rawPreimage === undefined && rawPostimage === undefined
+      && (m as { stampDate?: unknown }).stampDate === undefined;
     const bothValid = isValidFp(rawPreimage) && isValidFp(rawPostimage);
     // Anything else -- one present/one absent, present-but-malformed (non-string,
     // empty, null) -- is neither a genuine legacy marker nor a trustworthy modern

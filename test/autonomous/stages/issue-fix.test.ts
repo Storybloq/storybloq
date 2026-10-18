@@ -85,7 +85,7 @@ function setupProject(root: string): void {
   }));
   writeFileSync(join(storyDir, "tickets", "T-001.json"), JSON.stringify({
     id: "T-001", title: "Test ticket", type: "task", status: "open",
-    phase: "p1", order: 10, description: "", createdDate: "2026-03-30",
+    phase: "p1", order: 10, description: "", createdDate: "2026-03-30", completedDate: null,
     blockedBy: [], parentTicket: null,
   }));
   writeFileSync(join(storyDir, "issues", "ISS-001.json"), JSON.stringify({

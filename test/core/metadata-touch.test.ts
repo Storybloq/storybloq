@@ -101,3 +101,22 @@ describe("T-481 T2: contentProjection", () => {
     expect(Object.keys(parsed)).toEqual([...Object.keys(parsed)].sort());
   });
 });
+
+describe("T-481: an own __proto__ key is content", () => {
+  // JSON.parse makes `__proto__` an own key; a plain-object copy would eat it.
+  it("a change under a top-level __proto__ key stamps", () => {
+    const before = JSON.parse('{"id":"T-001","title":"T","updatedDate":"2020-01-01","__proto__":{"a":1}}') as Rec;
+    const after = JSON.parse('{"id":"T-001","title":"T","updatedDate":"2020-01-01","__proto__":{"a":2}}') as Rec;
+    expect(contentProjection(after)).not.toBe(contentProjection(before));
+    expect(touchUpdated(after, before, DAY).updatedDate).toBe(DAY);
+    expect(touchUpdated(before, before, DAY).updatedDate).toBe("2020-01-01");
+  });
+
+  it("a change under a nested __proto__ key stamps", () => {
+    const before = JSON.parse('{"id":"T-001","updatedDate":"2020-01-01","metadata":{"__proto__":{"x":1}}}') as Rec;
+    const after = JSON.parse('{"id":"T-001","updatedDate":"2020-01-01","metadata":{"__proto__":{"x":2}}}') as Rec;
+    expect(contentProjection(after)).not.toBe(contentProjection(before));
+    expect(touchUpdated(after, before, DAY).updatedDate).toBe(DAY);
+    expect(touchUpdated(before, before, DAY).updatedDate).toBe("2020-01-01");
+  });
+});

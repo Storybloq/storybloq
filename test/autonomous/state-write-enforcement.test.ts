@@ -90,7 +90,7 @@ const PLAN_1B_FUNCTIONS: readonly string[] = [
  */
 const CONTAINED_CATCHES: readonly string[] = [
   "src/autonomous/stages/complete.ts#CompleteStage.tryCheckpoint#catch#2",
-  "src/autonomous/stages/pick-ticket.ts#PickTicketStage.handleIssuePick#catch#3",
+  "src/autonomous/stages/pick-ticket.ts#PickTicketStage.handleIssuePick#catch#4",
   "src/cli/commands/session-compact.ts#handleSessionLimitStop#catch#1",
   "src/cli/commands/session-compact.ts#handleSessionResumePrompt#catch#6",
   "src/cli/housekeeping.ts#preCommandHousekeeping#catch#4",

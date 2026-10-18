@@ -278,22 +278,50 @@ export async function createCheckpoint(
   const by = await resolveActor(root, args.actor);
   let created: Ticket | undefined;
   await withProjectLock(root, { strict: true }, async ({ state }) => {
-    assertCheckpointsEnabled(state);
-    const modeFields = evidenceModeFields(state, args.evidenceMode);
-    const ticket = await prepareNewTicketUnlocked({
-      title: args.title,
-      type: args.type ?? "task",
-      phase: args.phase,
-      description: args.description,
-      blockedBy: args.blockedBy ?? [],
-      parentTicket: args.parentTicket ?? null,
-    }, state, root);
-    if (args.evidenceMode === "immutable") await assertStoredRevisions(root, ticket, args.content.evidenceRefs ?? []);
-    const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
-    created = await writeCheckpoint(ticket, record, modeFields, state, root, true);
+    const next = await buildCheckpointTicketUnlocked(state, root, args, by);
+    validatePostWriteState(next, state, true);
+    await writeTicketUnlocked(next, root, { createOnly: true, authority: LIFECYCLE_AUTHORITY });
+    created = next;
   });
   if (!created) throw new Error("Checkpoint not created");
   return created;
+}
+
+/**
+ * T-538 S2: the new checkpoint ticket `createCheckpoint` writes, built under
+ * a lock the caller already holds: checkpoints enabled, the evidence mode
+ * allowed, a fresh id, immutable refs verified as stored revisions. Nothing
+ * is written; the caller validates and commits it with LIFECYCLE_AUTHORITY.
+ */
+export async function buildCheckpointTicketUnlocked(
+  state: ProjectState,
+  root: string,
+  args: {
+    title: string;
+    description: string;
+    phase: string | null;
+    type?: string;
+    blockedBy?: string[];
+    parentTicket?: string | null;
+    owner: string;
+    content: CheckpointContentInput;
+    evidenceMode?: CheckpointEvidenceMode;
+  },
+  by: string,
+): Promise<Ticket> {
+  assertCheckpointsEnabled(state);
+  const modeFields = evidenceModeFields(state, args.evidenceMode);
+  const ticket = await prepareNewTicketUnlocked({
+    title: args.title,
+    type: args.type ?? "task",
+    phase: args.phase,
+    description: args.description,
+    blockedBy: args.blockedBy ?? [],
+    parentTicket: args.parentTicket ?? null,
+  }, state, root);
+  if (args.evidenceMode === "immutable") await assertStoredRevisions(root, ticket, args.content.evidenceRefs ?? []);
+  const record = freshRecord(args.owner, args.content, by, new Date().toISOString());
+  return { ...ticket, ...modeFields, ownerCheckpoint: record } as Ticket;
 }
 
 /** Makes an existing open, unclaimed, un-earmarked ticket a checkpoint. */

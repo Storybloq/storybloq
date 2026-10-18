@@ -758,12 +758,23 @@ export async function writeRoadmapUnlocked(
   roadmap: Roadmap,
   root: string,
 ): Promise<void> {
+  const { target, content } = await prepareRoadmapWrite(roadmap, root);
+  await atomicWrite(target, content);
+}
+
+/**
+ * T-538 S2: the roadmap write as a transaction operation, for a caller that
+ * commits it with other writes in one `runTransactionUnlocked` under the lock.
+ */
+export async function prepareRoadmapWrite(
+  roadmap: Roadmap,
+  root: string,
+): Promise<{ target: string; content: string }> {
   const parsed = RoadmapSchema.parse(roadmap);
   const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "roadmap.json");
-  await guardPath(targetPath, wrapDir);
-  const json = serializeJSON(parsed);
-  await atomicWrite(targetPath, json);
+  const target = join(wrapDir, "roadmap.json");
+  await guardPath(target, wrapDir);
+  return { target, content: serializeJSON(parsed) };
 }
 
 export async function writeRoadmap(
@@ -777,16 +788,28 @@ export async function writeRoadmap(
   });
 }
 
+/**
+ * T-538 S2: the config write as a transaction operation. A caller that
+ * commits it must call `invalidateResolutionWriteContext(root)` after the
+ * commit, as `writeConfigUnlocked` does.
+ */
+export async function prepareConfigWrite(
+  config: Config,
+  root: string,
+): Promise<{ target: string; content: string }> {
+  const parsed = ConfigSchema.parse(config);
+  const wrapDir = resolve(root, ".story");
+  const target = join(wrapDir, "config.json");
+  await guardPath(target, wrapDir);
+  return { target, content: serializeJSON(parsed) };
+}
+
 export async function writeConfigUnlocked(
   config: Config,
   root: string,
 ): Promise<void> {
-  const parsed = ConfigSchema.parse(config);
-  const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "config.json");
-  await guardPath(targetPath, wrapDir);
-  const json = serializeJSON(parsed);
-  await atomicWrite(targetPath, json);
+  const { target, content } = await prepareConfigWrite(config, root);
+  await atomicWrite(target, content);
   // T-486 B6: decisions derived from the old config (the fence) must not
   // outlive it within this operation.
   invalidateResolutionWriteContext(root);
@@ -1037,6 +1060,24 @@ export async function writeNoteUnlocked(
   root: string,
   options?: { createOnly?: boolean } & PreparedContentValidation,
 ): Promise<void> {
+  const { target, content } = await prepareNoteWrite(note, root);
+  await options?.validatePreparedContent?.(content);
+  if (options?.createOnly) {
+    await atomicCreate(target, content);
+  } else {
+    await atomicWrite(target, content);
+  }
+}
+
+/**
+ * T-538 S2: the note write as a transaction operation (the counterpart of
+ * `prepareTicketWrite`), for a caller that commits it with other writes in
+ * one `runTransactionUnlocked` under the lock.
+ */
+export async function prepareNoteWrite(
+  note: Note,
+  root: string,
+): Promise<{ target: string; content: string }> {
   const parsed = NoteSchema.parse(note);
   if (!NOTE_ID_REGEX.test(parsed.id) && !NOTE_CANONICAL_ID_REGEX.test(parsed.id)) {
     throw new ProjectLoaderError(
@@ -1045,16 +1086,10 @@ export async function writeNoteUnlocked(
     );
   }
   const wrapDir = resolve(root, ".story");
-  const targetPath = join(wrapDir, "notes", `${parsed.id}.json`);
-  await mkdir(dirname(targetPath), { recursive: true });
-  await guardPath(targetPath, wrapDir);
-  const json = serializeJSON(parsed);
-  await options?.validatePreparedContent?.(json);
-  if (options?.createOnly) {
-    await atomicCreate(targetPath, json);
-  } else {
-    await atomicWrite(targetPath, json);
-  }
+  const target = join(wrapDir, "notes", `${parsed.id}.json`);
+  await mkdir(dirname(target), { recursive: true });
+  await guardPath(target, wrapDir);
+  return { target, content: serializeJSON(parsed) };
 }
 
 export async function writeNote(
@@ -2264,6 +2299,16 @@ async function withLock<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const lockPath = join(wrapDir, ".lock");
+  // T-538 S2: the lock is not re-entrant, so a locked handler calling another
+  // one would wait out the acquisition deadline against itself. Fail at once
+  // with a named error instead; the caller should use the unlocked primitive.
+  const held = projectLockContext.getStore();
+  if (held && resolve(held.lockPath) === resolve(lockPath) && verifyProjectLockOwnership(held)) {
+    throw new ProjectLoaderError(
+      "nested_lock",
+      `This operation already holds the project lock (${lockPath}); a locked handler called another locked handler. Call its unlocked primitive instead.`,
+    );
+  }
   const handle = await acquireProjectLockAsync(lockPath);
   // T-486 B6: the context exists only after the lock is acquired and is
   // released before the lock is, so detached work cannot outlive it.

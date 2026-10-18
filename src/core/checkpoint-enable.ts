@@ -19,6 +19,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
+import type { Config } from "../models/config.js";
 import { CliValidationError } from "../cli/helpers.js";
 import { CHECKPOINT_SCHEMA_VERSION, IMMUTABLE_EVIDENCE_SCHEMA_VERSION } from "./errors.js";
 import { withProjectLock, writeConfigUnlocked } from "./project-loader.js";
@@ -198,6 +199,22 @@ function stepRecord(step: CheckpointEnableStep): { step: CheckpointEnableStep; a
   return { step, at: new Date().toISOString() };
 }
 
+/**
+ * T-538 S2: the non-team enable stamp as a pure step, so a caller already
+ * holding the lock (the setup engine) can commit it with its own writes.
+ * `already` when the config is at `target` or above with a completed enable;
+ * otherwise the config stamped at max(current, target), enable complete.
+ * A team ledger's enable stays with the public `enableCheckpoints`.
+ */
+export function enableCheckpointsStampUnlocked(
+  config: Config,
+  target: number,
+): { status: "already" } | { status: "stamp"; config: Config } {
+  const current = config.schemaVersion;
+  if (current !== undefined && current >= target && config.checkpointEnable?.step === "complete") return { status: "already" };
+  return { status: "stamp", config: { ...config, schemaVersion: Math.max(current ?? 0, target), checkpointEnable: stepRecord("complete") } };
+}
+
 /** How many times enable re-decides when the config's team mode changed under it. */
 const DECISION_ATTEMPTS = 3;
 
@@ -237,8 +254,9 @@ export async function enableCheckpoints(
       const done = current !== undefined && current >= target && state.config.checkpointEnable?.step === "complete";
       const stamp = Math.max(current ?? 0, target);
       if (!team) {
-        if (done) { result = { status: "already", team }; return; }
-        await writeConfigUnlocked({ ...state.config, schemaVersion: stamp, checkpointEnable: stepRecord("complete") }, root);
+        const plain = enableCheckpointsStampUnlocked(state.config, target);
+        if (plain.status === "already") { result = { status: "already", team }; return; }
+        await writeConfigUnlocked(plain.config, root);
         result = { status: "enabled", team };
         return;
       }

@@ -224,6 +224,9 @@ export const ERROR_CODES = [
   // T-526 (D4): a restore refused before its write (expect-mismatch, conflict,
   // absent-source, invariant, accepted-ruling).
   "restore_unsafe",
+  // T-538 S2: a locked handler called another locked handler on the same
+  // project; the lock is not re-entrant, so this is refused at once.
+  "nested_lock",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

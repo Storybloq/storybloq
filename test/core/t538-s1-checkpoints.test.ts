@@ -25,6 +25,7 @@ import {
   createCheckpoint,
   reopenCheckpoint,
   resolveCheckpoint,
+  retireCheckpoint,
   type ExpectedCheckpoint,
 } from "../../src/core/checkpoint-lifecycle.js";
 import { assertCheckpointWriteAllowed } from "../../src/core/checkpoint-guard.js";
@@ -169,7 +170,7 @@ describe("ready state", () => {
     expect(checkpointReady(state, state.ticketByID(cp.id)!)).toBe(true);
   });
 
-  it("a prerequisite that is a pending checkpoint makes it not ready; an approved or retired one does not", async () => {
+  it("a prerequisite that is a pending checkpoint makes it not ready; an approved one does not", async () => {
     const dir = await project(CHECKPOINT_SCHEMA_VERSION);
     const first = await newCheckpoint(dir);
     const second = await newCheckpoint(dir, { blockedBy: [first.id] });
@@ -180,7 +181,29 @@ describe("ready state", () => {
     expect(checkpointReady(state, state.ticketByID(second.id)!)).toBe(true);
   });
 
-  it("an approved, retired or non-checkpoint ticket is never ready", async () => {
+  it("a retired prerequisite releases a pending checkpoint", async () => {
+    const dir = await project(CHECKPOINT_SCHEMA_VERSION);
+    const first = await newCheckpoint(dir);
+    const second = await newCheckpoint(dir, { blockedBy: [first.id] });
+    let state = await stateOf(dir);
+    expect(checkpointReady(state, state.ticketByID(second.id)!)).toBe(false);
+    await retireCheckpoint(dir, first.id, expectedOf(first), "no longer needed", ACTOR);
+    state = await stateOf(dir);
+    expect(checkpointOf(state.ticketByID(first.id)!).lifecycle).toBe("retired");
+    expect(checkpointReady(state, state.ticketByID(second.id)!)).toBe(true);
+  });
+
+  it("a retired checkpoint is never ready, even with nothing before it", async () => {
+    const dir = await project(CHECKPOINT_SCHEMA_VERSION);
+    const cp = await newCheckpoint(dir);
+    let state = await stateOf(dir);
+    expect(checkpointReady(state, state.ticketByID(cp.id)!)).toBe(true);
+    await retireCheckpoint(dir, cp.id, expectedOf(cp), "no longer needed", ACTOR);
+    state = await stateOf(dir);
+    expect(checkpointReady(state, state.ticketByID(cp.id)!)).toBe(false);
+  });
+
+  it("an approved or non-checkpoint ticket is never ready", async () => {
     const dir = await project(CHECKPOINT_SCHEMA_VERSION);
     const cp = await newCheckpoint(dir);
     await resolveCheckpoint(dir, cp.id, expectedOf(cp), { response: "yes", actor: ACTOR });

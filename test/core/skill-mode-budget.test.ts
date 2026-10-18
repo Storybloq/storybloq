@@ -164,11 +164,10 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // ISS-1107: --commit on 68 CLI write routes and commit? on 44 MCP tools;
   // 51,369 at HEAD before the regeneration, 52,522 measured after. Generated
   // file; 53,000 by the same one-step rule.
-  // T-538 S1: checkpoint evidence, --immutable-evidence, --evidence-mode,
-  // --add-blocked-by and storybloq_checkpoint_evidence; 52,995 at HEAD before
-  // the regeneration, 53,486 measured after. Generated file; 54,000 by the
-  // same one-step rule.
-  "reference.md": 54000,
+  // T-538 S1 added checkpoint evidence, --immutable-evidence, --evidence-mode,
+  // --add-blocked-by and storybloq_checkpoint_evidence, and trimmed eight
+  // descriptions at their source (reference.ts) to stay under: 52,930.
+  "reference.md": 53000,
   "federation-setup.md": 14000,
   // Was 47000 (measured 46,936 before this issue). ISS-1240 adds the roster
   // pointer to the pen priming order: live seats come from

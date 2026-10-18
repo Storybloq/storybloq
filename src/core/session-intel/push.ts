@@ -24,6 +24,7 @@ import { usageAdvisoryFrom } from "./sampler.js";
 import type { UsageAdvisory } from "./types.js";
 import { locateTranscript } from "./transcript-locate.js";
 import { scanTail } from "./transcript-scan.js";
+import { claudeConfigDisplay } from "../claude-config-dir.js";
 
 export const BANNER_SOFT_BUDGET_MS = 150;
 
@@ -246,11 +247,10 @@ function bannerFromSample(sample: SessionIntelSample, surface: "mcp" | "cli", cl
 // ---------------------------------------------------------------------------
 
 /** Where a source's value was set, as a user can find it. Null names no file. */
-const SETTINGS_FILE: Record<"user" | "project" | "local", string> = {
-  user: "~/.claude/settings.json",
-  project: ".claude/settings.json",
-  local: ".claude/settings.local.json",
-};
+function settingsFile(source: "user" | "project" | "local"): string {
+  if (source === "user") return claudeConfigDisplay("settings.json");
+  return source === "project" ? ".claude/settings.json" : ".claude/settings.local.json";
+}
 
 /** Locale-independent thousands grouping: the rendered text is pinned in tests. */
 function grouped(n: number): string {
@@ -267,9 +267,9 @@ export function renderUsageAdvisory(advisory: UsageAdvisory): string {
   const max = grouped(advisory.recommendedMax);
   const tail = "It takes effect on the next Claude Code start.";
   if (advisory.kind === "model") {
-    return `This session runs a 1M-context model, and Storybloq did not observe an \`autoCompactWindow\` setting, so context can grow toward ${grouped(advisory.nativeWindow)} tokens and usage rises with it on every turn. Set \`autoCompactWindow\` to ${max} or lower in ${SETTINGS_FILE.user} (see /story settings). ${tail}`;
+    return `This session runs a 1M-context model, and Storybloq did not observe an \`autoCompactWindow\` setting, so context can grow toward ${grouped(advisory.nativeWindow)} tokens and usage rises with it on every turn. Set \`autoCompactWindow\` to ${max} or lower in ${settingsFile("user")} (see /story settings). ${tail}`;
   }
-  const where = advisory.source === null ? "your Claude Code settings" : SETTINGS_FILE[advisory.source];
+  const where = advisory.source === null ? "your Claude Code settings" : settingsFile(advisory.source);
   const setIn = advisory.source === null ? "your Claude Code settings" : "that file";
   return `Your Claude Code auto-compact window is ${grouped(advisory.observed)} tokens, set in ${where}. Larger contexts increase usage on every turn. Set \`autoCompactWindow\` to ${max} or lower in ${setIn} (see /story settings). ${tail}`;
 }

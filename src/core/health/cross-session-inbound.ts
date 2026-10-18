@@ -34,7 +34,6 @@ const ID = "cross-session-inbound" as const;
 const KEY = "crossSessionInbound";
 const SETTINGS_MAX_BYTES = 1024 * 1024;
 
-const USER_FILE = "~/.claude/settings.json";
 const PROJECT_FILE = ".claude/settings.json";
 const LOCAL_FILE = ".claude/settings.local.json";
 
@@ -59,7 +58,7 @@ export function managedSettingsPath(platform: string): string {
 export function inboundLayerPaths(deps: HealthDeps, projectDir: string): ReadonlyArray<{ id: LayerId; path: string; display: string }> {
   return [
     { id: "managed", path: managedSettingsPath(deps.platform), display: managedSettingsPath(deps.platform) },
-    { id: "user", path: join(deps.homeDir, ".claude", "settings.json"), display: USER_FILE },
+    { id: "user", path: join(deps.claudeConfigDir, "settings.json"), display: deps.claudeSettingsDisplay },
     { id: "project", path: join(projectDir, ".claude", "settings.json"), display: PROJECT_FILE },
     { id: "local", path: join(projectDir, ".claude", "settings.local.json"), display: LOCAL_FILE },
   ];
@@ -99,8 +98,8 @@ const OPENERS: Readonly<Record<"unset" | "hold" | "refuse", string>> = {
 };
 
 const STEP = {
-  addToUser: `Add \`"${KEY}": "accept"\` to ${USER_FILE}.`,
-  userChange: (value: string) => `Change ${KEY} from ${value} to accept in ${USER_FILE}.`,
+  addToUser: (userFile: string) => `Add \`"${KEY}": "accept"\` to ${userFile}.`,
+  userChange: (userFile: string, value: string) => `Change ${KEY} from ${value} to accept in ${userFile}.`,
   setToAccept: (file: string, raw: string) =>
     `Set ${KEY} to accept in ${file} (its current value ${raw} is not one of accept, hold, refuse; hold and refuse are valid but keep messages from being delivered).`,
   repository: (file: string) => `Remove ${KEY} from ${file} or set it to accept there.`,
@@ -182,7 +181,7 @@ export async function checkCrossSessionInbound(ctx: HealthContext, deps: HealthD
     effectiveRank === RANK.refuse ? "refuse" : effectiveRank === RANK.hold ? "hold" : "unset";
 
   const steps: string[] = [];
-  steps.push(...baseStep(baseSource, baseReading));
+  steps.push(...baseStep(baseSource, baseReading, deps.claudeSettingsDisplay));
   steps.push(...repositoryStep(project, PROJECT_FILE));
   steps.push(...repositoryStep(local, LOCAL_FILE));
 
@@ -194,15 +193,15 @@ export async function checkCrossSessionInbound(ctx: HealthContext, deps: HealthD
  * inspecting managed and user separately: a shadowed user value must
  * contribute nothing, valid or invalid.
  */
-function baseStep(baseSource: "managed" | "user" | null, reading: LayerReading): string[] {
-  if (baseSource === null) return [STEP.addToUser];
+function baseStep(baseSource: "managed" | "user" | null, reading: LayerReading, userFile: string): string[] {
+  if (baseSource === null) return [STEP.addToUser(userFile)];
   if (baseSource === "managed") {
     if (reading.kind === "invalid") return [STEP.admin(reading.raw)];
     if (reading.kind === "ok" && reading.value !== "accept") return [STEP.admin(reading.value)];
     return [];
   }
-  if (reading.kind === "invalid") return [STEP.setToAccept(USER_FILE, reading.raw)];
-  if (reading.kind === "ok" && reading.value !== "accept") return [STEP.userChange(reading.value)];
+  if (reading.kind === "invalid") return [STEP.setToAccept(userFile, reading.raw)];
+  if (reading.kind === "ok" && reading.value !== "accept") return [STEP.userChange(userFile, reading.value)];
   return [];
 }
 

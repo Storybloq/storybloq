@@ -163,7 +163,7 @@ describe("sampleSession", () => {
       const r1 = sampleSession({ root: null, cwd: f.base, sampledBy: "query", transcriptPath: outside, sessionId: SID, projectsDir: f.projects });
       expect(r1.usable).toBe(false);
       expect(r1.transcriptPath).toBeNull();
-      expect(r1.unusableReason).toBe("transcript refused: it is not exactly one directory below the Claude projects directory (~/.claude/projects/<project>/<sessionId>.jsonl)");
+      expect(r1.unusableReason).toBe("transcript refused: it is not exactly one directory below the Claude projects directory (~/.claude/projects/<project>/<sessionId>.jsonl, or under $CLAUDE_CONFIG_DIR/projects when set)");
       expect(r1.unusableReason).not.toContain(f.base);
 
       // Rule 2: inside the root, but the basename is not the session id.

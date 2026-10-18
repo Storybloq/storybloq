@@ -133,3 +133,24 @@ describe("explainTranscriptRefusal (ISS-1224)", () => {
     });
   });
 });
+
+describe("the default projects dir follows CLAUDE_CONFIG_DIR (ISS-1270)", () => {
+  it("is ~/.claude/projects unset, and <override>/projects when set", async () => {
+    const { defaultProjectsDir } = await import("../../src/core/session-intel/transcript-locate.js");
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "si-locate-1270-")));
+    const saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    try {
+      process.env.HOME = base;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(defaultProjectsDir()).toBe(join(base, ".claude", "projects"));
+      process.env.CLAUDE_CONFIG_DIR = join(base, "cfg");
+      expect(defaultProjectsDir()).toBe(join(base, "cfg", "projects"));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

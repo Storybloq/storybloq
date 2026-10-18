@@ -23,6 +23,7 @@ import { jsonShapePreserved,
 } from "./continuity-lib.js";
 import { killSidecar } from "../src/autonomous/liveness.js";
 import { loadRulingsSafe } from "../src/core/ruling-loader.js";
+import { claudeConfigDir } from "../src/core/claude-config-dir.js";
 import { buildSuccessorIndex } from "../src/core/ruling.js";
 import { classifyLifecycle } from "../src/core/ruling-lifecycle.js";
 import { loadProject } from "../src/core/project-loader.js";
@@ -398,7 +399,7 @@ export function preflight(o: RunOptions): Preflight {
     cfg = effectiveConfigHash(template);
     rmSync(template, { recursive: true, force: true });
   } else {
-    sharedConfigDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+    sharedConfigDir = claudeConfigDir();
     const d = skillPayloadDiff(join(sharedConfigDir, "skills", "story"), join(PKG_ROOT, "src", "skill"));
     if (!d.ok) throw new Error(`continuity-run: installed skill differs from src/skill (extra ${d.extra.join(",")}; missing ${d.missing.join(",")}; changed ${d.changed.join(",")}); run storybloq setup --client claude`);
     skillMarker = d.marker;

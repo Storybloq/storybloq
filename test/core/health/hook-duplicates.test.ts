@@ -78,3 +78,13 @@ describe("hook-duplicates health check (ISS-1222)", () => {
     expect(c.detail.reason).toBe("hooks are Claude Code settings");
   });
 });
+
+describe("hook-duplicates reads Claude's config dir (ISS-1270)", () => {
+  it("reads and names the override's settings.json, not HOME's", async () => {
+    const files = { "/cfg/settings.json": JSON.stringify(liveSettings()), [SETTINGS]: JSON.stringify({}) };
+    const c = await checkHookDuplicates(ctxFor({ client: "claude" }), stubDeps({ files, claudeConfigDir: "/cfg", claudeSettingsDisplay: "/cfg/settings.json" }));
+    expect(c.status).toBe("advise");
+    expect(c.message).toMatch(/^\/cfg\/settings\.json runs the same storybloq hook more than once: /);
+    expect(c.detail).toMatchObject({ path: "/cfg/settings.json" });
+  });
+});

@@ -1,10 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { skillTargets } from "../../src/core/skill-version-marker.js";
 import {
   auditedPaths,
+  claudeConfigPaths,
   snapshotAuditedPaths,
   diffAuditedPaths,
   classifyDiffs,
@@ -17,7 +18,7 @@ import {
 describe("auditedPaths (anti-staleness -- F10)", () => {
   it("names exactly the current skillTargets(), not a hardcoded copy", () => {
     const real = skillTargets();
-    const audited = auditedPaths().filter((p) => p.kind === "dir");
+    const audited = auditedPaths().filter((p) => p.kind === "dir" && p.label.startsWith("skill dir"));
     expect(audited).toHaveLength(real.length);
     for (const target of real) {
       const entry = audited.find((p) => p.label === `skill dir (${target.id})`);
@@ -40,6 +41,31 @@ describe("auditedPaths (anti-staleness -- F10)", () => {
     for (const target of skillTargets()) {
       expect(hardLabels).toContain(`skill dir (${target.id})`);
     }
+  });
+
+  it("ISS-1270: audits the real HOME's Claude skill, Mods copy and settings.json as hard", () => {
+    const byLabel = new Map(auditedPaths().map((p) => [p.label, p]));
+    const claude = join(homedir(), ".claude");
+    expect(byLabel.get("skill dir (claude)")).toMatchObject({ path: join(claude, "skills", "story"), kind: "dir", severity: "hard" });
+    expect(byLabel.get("mods dir (claude)")).toMatchObject({ path: join(claude, "skills", "storybloq"), kind: "dir", severity: "hard" });
+    expect(byLabel.get("claude settings.json")).toMatchObject({ path: join(claude, "settings.json"), kind: "file", severity: "hard" });
+  });
+
+  it("ISS-1270: adds the override's three paths as hard only when CLAUDE_CONFIG_DIR resolves elsewhere", () => {
+    const home = "/home/tester";
+    expect(claudeConfigPaths({}, home).map((p) => p.path)).toEqual([
+      "/home/tester/.claude/skills/story",
+      "/home/tester/.claude/skills/storybloq",
+      "/home/tester/.claude/settings.json",
+    ]);
+    expect(claudeConfigPaths({ CLAUDE_CONFIG_DIR: "" }, home)).toHaveLength(3);
+    expect(claudeConfigPaths({ CLAUDE_CONFIG_DIR: "/home/tester/.claude" }, home)).toHaveLength(3);
+    const both = claudeConfigPaths({ CLAUDE_CONFIG_DIR: "/scratch/cfg" }, home);
+    expect(both.slice(3)).toEqual([
+      { label: "skill dir (claude) (CLAUDE_CONFIG_DIR)", path: "/scratch/cfg/skills/story", kind: "dir", severity: "hard" },
+      { label: "mods dir (claude) (CLAUDE_CONFIG_DIR)", path: "/scratch/cfg/skills/storybloq", kind: "dir", severity: "hard" },
+      { label: "claude settings.json (CLAUDE_CONFIG_DIR)", path: "/scratch/cfg/settings.json", kind: "file", severity: "hard" },
+    ]);
   });
 
   it("includes one entry per named non-skill-dir write target", () => {

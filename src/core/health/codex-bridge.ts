@@ -109,7 +109,7 @@ export async function checkCodexBridge(ctx: HealthContext, deps: HealthDeps): Pr
     );
   }
 
-  const claudeJsonPath = join(deps.homeDir, ".claude.json");
+  const claudeJsonPath = deps.claudeJsonPath;
   const mcpJsonPath = join(ctx.projectDir, ".mcp.json");
   const claudeJson = readJsonObject(deps, claudeJsonPath, CLAUDE_JSON_MAX_BYTES);
   const mcpJson = readJsonObject(deps, mcpJsonPath, CLAUDE_JSON_MAX_BYTES);

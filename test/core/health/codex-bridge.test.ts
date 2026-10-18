@@ -571,3 +571,18 @@ describe("T-509 codex-bridge check: no registered bridge, the bundle decides", (
     expect(probe.mock.calls[0]![0]!.argv).toEqual(["npx", "-y", "codex-claude-bridge@latest"]);
   });
 });
+
+describe("codex-bridge reads the selected .claude.json (ISS-1270)", () => {
+  const over = { claudeJsonPath: "/cfg/.claude.json" };
+
+  it("finds the registration in the override's registry", async () => {
+    const check = await checkCodexBridge(ctxFor(), bridgeDeps({ "/cfg/.claude.json": claudeJson({ mcpServers: { "codex-bridge": NODE_BRIDGE } }), [CLAUDE_JSON]: claudeJson({}) }, over));
+    expect(check.status).toBe("ok");
+    expect(check.detail).toMatchObject({ scope: "user" });
+  });
+
+  it("does not count a registration that exists only in HOME's registry", async () => {
+    const check = await checkCodexBridge(ctxFor(), bridgeDeps({ "/cfg/.claude.json": claudeJson({}), [CLAUDE_JSON]: claudeJson({ mcpServers: { "codex-bridge": NODE_BRIDGE } }) }, over));
+    expect(check.status).not.toBe("ok");
+  });
+});

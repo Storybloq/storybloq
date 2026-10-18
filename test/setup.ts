@@ -73,6 +73,11 @@ function clearAmbientProjectRoot(): void {
 clearAmbientClientIdentity();
 clearAmbientGitRepository();
 clearAmbientProjectRoot();
+// ISS-1270: storybloq resolves Claude's config dir from CLAUDE_CONFIG_DIR before
+// HOME, so an inherited value would send every scratch-HOME test's writes to
+// that directory. Cleared once per file, not per test: a test that sets it on
+// purpose keeps it for its own duration.
+delete process.env.CLAUDE_CONFIG_DIR;
 beforeEach(clearAmbientClientIdentity);
 afterEach(clearAmbientClientIdentity);
 beforeEach(clearAmbientGitRepository);

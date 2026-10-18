@@ -10,7 +10,7 @@
  * PATH the client has, which is not the shell's, so the bare name the
  * repository copy answers is not enough there.
  *
- * WHERE. ~/.claude/skills/storybloq/, beside the /story skill at
+ * WHERE. ~/.claude/skills/storybloq/ (under CLAUDE_CONFIG_DIR when set), beside the /story skill at
  * ~/.claude/skills/story/. The client loads it with
  * `claude --plugin-dir ~/.claude/skills/storybloq` under
  * CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1; the Mod stays off until its
@@ -38,17 +38,20 @@ import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm, stat, writeFile } f
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
+import { claudeConfigDir, claudeConfigDisplay } from "./claude-config-dir.js";
 import { assertNoSelfOverlap, resolveSymlinkTarget } from "./symlink-write.js";
 
 export const MODS_DIR_NAME = "storybloq";
 
-/** The Mods copy's directory: ~/.claude/skills/storybloq/. */
+/** The Mods copy's directory: ~/.claude/skills/storybloq/, under CLAUDE_CONFIG_DIR when it is set (ISS-1270). */
 export function modsDir(): string {
-  return join(homedir(), ".claude", "skills", MODS_DIR_NAME);
+  return join(claudeConfigDir(), "skills", MODS_DIR_NAME);
 }
 
-export const MODS_DISPLAY_PATH = "~/.claude/skills/storybloq/";
+/** modsDir() as a user reads it, so a message never names a directory the copy did not use. */
+export function modsDisplayPath(): string {
+  return `${claudeConfigDisplay("skills", MODS_DIR_NAME)}/`;
+}
 
 /**
  * Sidecar beside the generated install.ts recording the binary path the copy

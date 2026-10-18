@@ -179,6 +179,12 @@ export interface HealthDeps {
   readonly now: () => number;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly homeDir: string;
+  /** ISS-1270: Claude Code's config dir (CLAUDE_CONFIG_DIR, else ~/.claude); the user settings layer lives here. */
+  readonly claudeConfigDir: string;
+  /** ISS-1270: the user-scope MCP registry, `~/.claude.json` or `$CLAUDE_CONFIG_DIR/.claude.json`. */
+  readonly claudeJsonPath: string;
+  /** How the user settings file is named in a message, from the same resolution as claudeConfigDir. */
+  readonly claudeSettingsDisplay: string;
   readonly platform: string;
   readonly settings: {
     readonly autoCompactWindow: (projectDir: string) => AutoCompactWindowDiagnostic;

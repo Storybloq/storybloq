@@ -13,7 +13,7 @@
  * that the list still matches those functions.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { skillTargets, codexConfigPath as skillMarkerCodexConfigPath } from "../../src/core/skill-version-marker.js";
@@ -60,20 +60,40 @@ export { skillMarkerCodexConfigPath, setupSkillCodexConfigPath };
  */
 export function auditedPaths(): AuditedPath[] {
   return [
-    ...skillTargets().map((target) => ({
+    ...skillTargets().filter((target) => target.id !== "claude").map((target) => ({
       label: `skill dir (${target.id})`,
       path: target.dir,
       kind: "dir" as const,
       severity: "hard" as const,
     })),
+    ...claudeConfigPaths(),
     { label: "codex config.toml", path: setupSkillCodexConfigPath(), kind: "file" as const, severity: "hard" as const },
     { label: "codex hooks.json", path: codexHooksPath(), kind: "file" as const, severity: "hard" as const },
-    { label: "claude settings.json", path: join(homedir(), ".claude", "settings.json"), kind: "file" as const, severity: "hard" as const },
     { label: "update-check cache", path: cachePath(), kind: "file" as const, severity: "warn" as const },
     { label: "limit ledger", path: join(storybloqGlobalDir(), "limit-ledger.json"), kind: "file" as const, severity: "warn" as const },
     { label: "waker lock", path: join(storybloqGlobalDir(), "waker.lock"), kind: "file" as const, severity: "warn" as const },
     { label: "limit retirement marker", path: join(storybloqGlobalDir(), RETIREMENT_MARKER_BASENAME), kind: "file" as const, severity: "warn" as const },
   ];
+}
+
+/**
+ * ISS-1270: the Claude config-dir targets housekeeping writes (the /story
+ * skill, the Mods copy, settings.json). The real HOME copies are listed as
+ * literals, because the resolvers follow CLAUDE_CONFIG_DIR and this probe runs
+ * in the developer's own environment; when the variable is set and resolves
+ * elsewhere, the same three paths under it are audited too.
+ */
+export function claudeConfigPaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): AuditedPath[] {
+  const roots = [{ suffix: "", dir: join(home, ".claude") }];
+  const override = env.CLAUDE_CONFIG_DIR;
+  if (typeof override === "string" && override.length > 0 && resolve(override) !== join(home, ".claude")) {
+    roots.push({ suffix: " (CLAUDE_CONFIG_DIR)", dir: resolve(override) });
+  }
+  return roots.flatMap(({ suffix, dir }) => [
+    { label: `skill dir (claude)${suffix}`, path: join(dir, "skills", "story"), kind: "dir" as const, severity: "hard" as const },
+    { label: `mods dir (claude)${suffix}`, path: join(dir, "skills", "storybloq"), kind: "dir" as const, severity: "hard" as const },
+    { label: `claude settings.json${suffix}`, path: join(dir, "settings.json"), kind: "file" as const, severity: "hard" as const },
+  ]);
 }
 
 function hashFile(path: string): string {

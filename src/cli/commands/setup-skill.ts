@@ -43,6 +43,7 @@ import {
   type HookEntry,
   type MatcherGroup,
 } from "../../core/hook-migration.js";
+import { claudeConfigDir, claudeConfigDisplay, claudeJsonPath, claudeSettingsPath } from "../../core/claude-config-dir.js";
 
 // Re-exported for external callers and test imports that still reach for
 // these symbols through setup-skill.
@@ -467,7 +468,7 @@ async function registerHook(
   matcher?: string,
   opts?: RegisterHookOptions,
 ): Promise<"registered" | "exists" | "skipped"> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   return withSettingsWriteLock(path, "skipped", () => registerHookLocked(hookType, hookEntry, path, matcher, opts));
 }
 
@@ -789,7 +790,7 @@ export async function registerSessionIntelStartHook(
 ): Promise<"registered" | "exists" | "skipped"> {
   const bin = binPath ?? resolveStorybloqBin() ?? "storybloq";
   const command = formatHookCommand(bin, INTELSTART_SUBCOMMAND);
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   const found = await intelStartEntries(command, path);
   if (found.total === 1 && found.inFullCoverageGroup === 1) return "exists";
   // Normalize: every other arrangement of OUR command (a partial matcher,
@@ -865,7 +866,7 @@ export async function enableClaudeBusHooks(
   settingsPath?: string,
   binPath?: string,
 ): Promise<{ changed: boolean; skipped: boolean }> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   const bin = binPath ?? resolveStorybloqBin();
   if (!bin) return { changed: false, skipped: true };
 
@@ -992,7 +993,7 @@ async function upgradeClaudeBusHookRows(
  * live Claude setup cannot mutate Bus state and then fail at hook enablement.
  */
 export async function claudeBaseHooksPresent(
-  settingsPath: string = join(homedir(), ".claude", "settings.json"),
+  settingsPath: string = claudeSettingsPath(),
 ): Promise<{ ok: boolean; reason?: string }> {
   if (!existsSync(settingsPath)) {
     return { ok: false, reason: `${settingsPath} does not exist` };
@@ -1054,7 +1055,7 @@ export async function removeHook(
   command: string,
   settingsPath?: string,
 ): Promise<"removed" | "not_found" | "skipped"> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   return withSettingsWriteLock(path, "skipped", () => removeHookLocked(hookType, command, path));
 }
 
@@ -1165,7 +1166,7 @@ async function readSettingsObject(
 export async function enableFunctionHooksEnv(
   settingsPath?: string,
 ): Promise<"set" | "exists" | "skipped"> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   return withSettingsWriteLock(path, "skipped", () => enableFunctionHooksEnvLocked(path));
 }
 
@@ -1211,7 +1212,7 @@ async function enableFunctionHooksEnvLocked(
 export async function removeFunctionHooksEnv(
   settingsPath?: string,
 ): Promise<"removed" | "not_found" | "skipped"> {
-  const path = settingsPath ?? join(homedir(), ".claude", "settings.json");
+  const path = settingsPath ?? claudeSettingsPath();
   return withSettingsWriteLock(path, "skipped", () => removeFunctionHooksEnvLocked(path));
 }
 
@@ -1505,7 +1506,7 @@ export function registerBridgeMcp(opts: RegisterBridgeOptions): BridgeRegistrati
  */
 async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void> {
   const { skipHooks = false } = options;
-  const skillDir = join(homedir(), ".claude", "skills", "story");
+  const skillDir = join(claudeConfigDir(), "skills", "story");
   await mkdir(skillDir, { recursive: true });
 
   let srcSkillDir: string;
@@ -1520,7 +1521,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   }
 
   // Clean up old /prime skill (migrated to /story)
-  const oldPrimeDir = join(homedir(), ".claude", "skills", "prime");
+  const oldPrimeDir = join(claudeConfigDir(), "skills", "prime");
   if (existsSync(oldPrimeDir)) {
     await rm(oldPrimeDir, { recursive: true, force: true });
     log("Removed old /prime skill (migrated to /story)");
@@ -1588,10 +1589,10 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   // binary. Non-fatal: the skill and hooks above do not depend on it, and
   // the version-marker refresh retries it on the next upgrade.
   try {
-    const { installMods, MODS_DISPLAY_PATH } = await import("../../core/mods-install.js");
+    const { installMods, modsDisplayPath } = await import("../../core/mods-install.js");
     const modsBin = resolveStorybloqBin();
     const mods = await installMods({ bin: modsBin });
-    log(`Installed Mods (function hooks) at ${MODS_DISPLAY_PATH}`);
+    log(`Installed Mods (function hooks) at ${modsDisplayPath()}`);
     log(`  ${mods.written.length} files written; storybloq resolved to ${modsBin ?? "the bare name (not found on PATH)"}`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1603,7 +1604,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   // whether or not the copy succeeded (a later upgrade refreshes the copy and
   // finds the switch already written) and is silent on every rerun.
   try {
-    const settingsFile = join(homedir(), ".claude", "settings.json");
+    const settingsFile = claudeSettingsPath();
     const envState = await enableFunctionHooksEnv();
     if (envState === "set") {
       log(`  Set env.${FUNCTION_HOOKS_ENV_KEY}=1 in ${settingsFile} (draws the ledger dashboard)`);
@@ -1659,7 +1660,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
   // T-509: the bundled Codex review bridge, registered beside the storybloq server.
   registerBridgeMcp({
     bundled: resolveBundledBridge(),
-    claudeJsonPath: join(homedir(), ".claude.json"),
+    claudeJsonPath: claudeJsonPath(),
     exec: defaultBridgeExec,
     log,
   });
@@ -1692,7 +1693,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
     // ISS-1222: the same hook through two launcher paths (an npx cache copy
     // beside the global install) runs twice. Collapse each collision to the
     // validated global launcher's row and say exactly what was removed.
-    const duplicates = await reconcileDuplicateHookRows(join(homedir(), ".claude", "settings.json"), globalHookCommandFor());
+    const duplicates = await reconcileDuplicateHookRows(claudeSettingsPath(), globalHookCommandFor());
     for (const r of duplicates.reconciled) {
       for (const d of r.dropped) {
         log(`  Removed duplicate ${r.hookType} hook row: ${d.command} (matcher "${d.matcher}"); kept ${r.kept.command} (matcher "${r.kept.matcher}")`);
@@ -1705,7 +1706,7 @@ async function handleSetupClaude(options: SetupSkillOptions = {}): Promise<void>
       log(`  Removed empty ${p.hookType} hook group (matcher "${p.matcher}")`);
     }
     if (duplicates.changed) {
-      log("  Rewrote ~/.claude/settings.json to drop the duplicate rows or empty groups; the file is re-serialised as two-space JSON, so any hand formatting is normalised");
+      log(`  Rewrote ${claudeConfigDisplay("settings.json")} to drop the duplicate rows or empty groups; the file is re-serialised as two-space JSON, so any hand formatting is normalised`);
     }
 
     const precompactResult = await registerPreCompactHook(undefined, resolvedBin);

@@ -21,15 +21,15 @@
 
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
 import { atomicWriteFollowingSymlink } from "./symlink-write.js";
 import { withSettingsWriteLock } from "./settings-write-lock.js";
+import { claudeSettingsPath } from "./claude-config-dir.js";
 
-/** `~/.claude/settings.json`. Exported for T-499's autoCompactWindow reader, which merges it with the project layers. */
+/** `~/.claude/settings.json`, under CLAUDE_CONFIG_DIR when set (ISS-1270). Exported for T-499's autoCompactWindow reader, which merges it with the project layers. */
 export function defaultSettingsPath(): string {
-  return join(homedir(), ".claude", "settings.json");
+  return claudeSettingsPath();
 }
 
 // ---------------------------------------------------------------------------

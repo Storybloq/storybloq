@@ -60,6 +60,9 @@ async function pinnedDeps(): Promise<Partial<HealthDeps>> {
   return {
     env: {},
     homeDir: home,
+    claudeConfigDir: join(home, ".claude"),
+    claudeJsonPath: join(home, ".claude.json"),
+    claudeSettingsDisplay: "~/.claude/settings.json",
     globalConfig: () => null,
     // Real project layers, isolated user layer.
     settings: {

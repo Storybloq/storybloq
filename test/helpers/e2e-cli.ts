@@ -78,8 +78,12 @@ export class E2ECliFixture {
         );
       }
     }
+    // ISS-1270: an ambient CLAUDE_CONFIG_DIR would outrank the fixture HOME for
+    // Claude's config dir. Dropped from the inherited env only, so an explicit
+    // override still reaches the child.
+    const { CLAUDE_CONFIG_DIR: _ambientClaudeConfigDir, ...inherited } = process.env;
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...inherited,
       ...overrides,
       HOME: this.home,
       USERPROFILE: this.home,

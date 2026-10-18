@@ -29,6 +29,30 @@ describe("E2ECliFixture", () => {
     expect(fixture.home).not.toBe(homedir());
   });
 
+  it("ISS-1270: drops an ambient CLAUDE_CONFIG_DIR from the child env", async () => {
+    fixture = await E2ECliFixture.create();
+    const before = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(fixture.root, "ambient-cfg");
+    try {
+      expect("CLAUDE_CONFIG_DIR" in fixture.env()).toBe(false);
+    } finally {
+      if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = before;
+    }
+  });
+
+  it("ISS-1270: keeps an explicit CLAUDE_CONFIG_DIR override, even over an ambient one", async () => {
+    fixture = await E2ECliFixture.create();
+    const before = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(fixture.root, "ambient-cfg");
+    try {
+      expect(fixture.env({ CLAUDE_CONFIG_DIR: join(fixture.root, "explicit-cfg") }).CLAUDE_CONFIG_DIR).toBe(join(fixture.root, "explicit-cfg"));
+    } finally {
+      if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = before;
+    }
+  });
+
   it("merges caller-supplied overrides that aren't protected vars", async () => {
     fixture = await E2ECliFixture.create();
     const env = fixture.env({ SHIM_LOG: "/tmp/whatever.log" });

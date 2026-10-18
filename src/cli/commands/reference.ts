@@ -602,7 +602,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "session intel",
-    description: "Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: ~/.claude/projects/<project>/<sessionId>.jsonl, a regular file",
+    description: "Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: <project>/<sessionId>.jsonl in Claude's projects dir, a regular file",
     usage: "storybloq session intel [--session-id <id>] [--transcript <path>] [--caller-model <model>] [--full] [--client-task-id <id>] [--format json|md]",
     flags: ["--session-id", "--transcript", "--caller-model", "--full", "--client-task-id", "--format"],
   },

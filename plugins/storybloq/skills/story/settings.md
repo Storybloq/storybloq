@@ -206,7 +206,7 @@ Claude Code merges it from three files, last DEFINED wins:
 
 | Layer | File |
 |-------|------|
-| user | `~/.claude/settings.json` |
+| user | `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` if set |
 | project | `.claude/settings.json` |
 | project-local | `.claude/settings.local.json` |
 
@@ -252,12 +252,12 @@ The six checks, with the advice each one pins:
 | `cli-version` | A newer `@storybloq/storybloq` is published | "Update with `storybloq update` (installs it and re-runs setup)." |
 | `codex-bridge` | Codex is installed and the registered bridge does not answer an MCP `initialize`, or none is registered while the bundled copy is installed or unusable | Not registered, bundle installed: "Run `storybloq setup-skill`". Bundle unusable: reinstall with `npm install -g @storybloq/storybloq@latest`. Bundle absent: the check skips. Not answering: the advice names the failing registration by scope and name with the fix: the rebuild command for a native-module failure, a registered command not found, or the remove-and-setup steps |
 | `skill-version` | An installed `/story` skill is older than the running CLI | "Run `storybloq setup --client <claude\|codex\|all>` to refresh it." |
-| `cross-session-inbound` | Claude Code's `crossSessionInbound` is unset, or resolves to `hold` or `refuse` | Set it to `accept` in `~/.claude/settings.json`; remove it from, or set it to `accept` in, any repository file that tightens it; if managed settings set it, ask your admin |
-| `hook-duplicates` | `~/.claude/settings.json` registers the same storybloq hook more than once for one event and source (two launcher paths, or two overlapping matcher groups) | "Run `storybloq setup-skill` to keep the global binary's row and drop the rest." |
+| `cross-session-inbound` | Claude Code's `crossSessionInbound` is unset, or resolves to `hold` or `refuse` | Set it to `accept` in the user file; remove it from, or set it to `accept` in, any repository file that tightens it; if managed settings set it, ask your admin |
+| `hook-duplicates` | The user settings file registers the same storybloq hook more than once for one event and source (two launcher paths, or two overlapping matcher groups) | "Run `storybloq setup-skill` to keep the global binary's row and drop the rest." |
 
 `cross-session-inbound` is a Claude Code setting, so it is skipped under Codex. It merges four layers (managed, user, project, project-local); every layer must be readable or the check skips. When unset, a session running without permission prompts holds messages from your other sessions for manual review, which stalls pen/worker messaging. A session started with a `--settings` flag can replace the user value but not a managed one, and repository files only ever tighten.
 
-`hook-duplicates` reads only `~/.claude/settings.json` (project, local and managed layers are not inspected) and identifies a row by its semantic command, the storybloq binary basename plus subcommand, never by the full path. Two rows collide when their matcher groups can fire for the same source; the deliberate `compact` plus `resume` pair does not. The check reports and picks no keeper: `storybloq setup-skill` keeps the row of the global launcher (the one `npm root -g` and `which storybloq` agree on) and prints each row it removed. It is skipped under Codex.
+`hook-duplicates` reads only the user settings file (no project, local or managed layer) and identifies a row by its semantic command, the storybloq binary basename plus subcommand, never by the full path. Two rows collide when their matcher groups can fire for the same source; the deliberate `compact` plus `resume` pair does not. The check reports and picks no keeper: `storybloq setup-skill` keeps the row of the global launcher (the one `npm root -g` and `which storybloq` agree on) and prints each row it removed. It is skipped under Codex.
 
 `codex-bridge` resolves the registration by name across local, project, and user scope, highest precedence first, and only trusts a winner when no higher scope was unreadable. A server whose name looks like the bridge but whose launch command Storybloq does not recognise produces a `skip`, not a false `ok`.
 

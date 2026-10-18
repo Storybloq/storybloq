@@ -332,3 +332,22 @@ describe("T-502 cross-session-inbound: evidence and platform", () => {
     }
   });
 });
+
+describe("cross-session-inbound reads Claude's config dir (ISS-1270)", () => {
+  const over = { claudeConfigDir: "/cfg", claudeSettingsDisplay: "/cfg/settings.json" };
+
+  it("reads the user layer from the override, not HOME", async () => {
+    const files: FileMap = { "/cfg/settings.json": JSON.stringify({ crossSessionInbound: "accept" }), [USER]: JSON.stringify({ crossSessionInbound: "refuse" }) };
+    const check = await checkCrossSessionInbound(ctxFor(), stubDeps({ files, ...over }));
+    expect(check.status).toBe("ok");
+  });
+
+  it("names the override's file in the user steps", async () => {
+    const unset = await checkCrossSessionInbound(ctxFor(), stubDeps({ files: {}, ...over }));
+    expect(unset.message).toContain('Add `"crossSessionInbound": "accept"` to /cfg/settings.json.');
+    const hold = await checkCrossSessionInbound(ctxFor(), stubDeps({ files: { "/cfg/settings.json": JSON.stringify({ crossSessionInbound: "hold" }) }, ...over }));
+    expect(hold.message).toContain("Change crossSessionInbound from hold to accept in /cfg/settings.json.");
+    const bad = await checkCrossSessionInbound(ctxFor(), stubDeps({ files: { "/cfg/settings.json": JSON.stringify({ crossSessionInbound: "nope" }) }, ...over }));
+    expect(bad.message).toContain("Set crossSessionInbound to accept in /cfg/settings.json");
+  });
+});

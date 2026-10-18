@@ -18,6 +18,7 @@ import { realTimers, spawnTaskkill, teardownProcessTree } from "../process-tree.
 import { readAutoCompactWindowDiagnostic } from "../claude-settings.js";
 import { readBoundedFileDetailed } from "../bounded-read.js";
 import { isHealthCheckGloballyDisabled } from "../global-config.js";
+import { claudeConfigDir, claudeConfigDisplay, claudeJsonPath } from "../claude-config-dir.js";
 import { readPresenceRecord, resolveCallerBinding } from "../session-intel/presence-bridge.js";
 import { readSessionIntelConfig, resolveSessionIntelConfig } from "../session-intel/config.js";
 import { SKILL_MARKER_FILE, SKILL_MARKER_MAX_BYTES, skillTargets } from "../skill-version-marker.js";
@@ -340,6 +341,9 @@ export function defaultHealthDeps(opts: { ledgerRoot: string | null }): HealthDe
     now: () => Date.now(),
     env: process.env,
     homeDir: homedir(),
+    claudeConfigDir: claudeConfigDir(),
+    claudeJsonPath: claudeJsonPath(),
+    claudeSettingsDisplay: claudeConfigDisplay("settings.json"),
     platform: process.platform,
     settings: {
       autoCompactWindow: (projectDir) => readAutoCompactWindowDiagnostic(projectDir),

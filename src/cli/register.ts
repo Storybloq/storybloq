@@ -5880,7 +5880,7 @@ export function registerSessionCommand(yargs: Argv): Argv {
             y2
               .option("format", { type: "string", choices: ["md", "json"] as const, default: "md" as const, describe: "Output format" })
               .option("session-id", { type: "string", describe: "Inspect another session read-only (never captures, persists or classifies)" })
-              .option("transcript", { type: "string", describe: "Explicit transcript path, read-only: must be ~/.claude/projects/<project>/<sessionId>.jsonl, a regular file, not a symlink; a refusal names the rule that failed" })
+              .option("transcript", { type: "string", describe: "Explicit transcript path, read-only: must be ~/.claude/projects/<project>/<sessionId>.jsonl, or under $CLAUDE_CONFIG_DIR/projects when set, a regular file, not a symlink; a refusal names the rule that failed" })
               .option("caller-model", { type: "string", describe: "Cross-check against the transcript's last model; a mismatch is reported, never overridden" })
               .option("full", { type: "boolean", default: false, describe: "Stream the whole transcript (64 MiB budget) for session-wide counts" })
               .option("client-task-id", { type: "string", describe: "Explicit caller identity, if not resolvable from the session" }),

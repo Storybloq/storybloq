@@ -841,6 +841,89 @@ describe("the Mods refresh writes the function-hooks switch (ISS-1233)", () => {
   });
 });
 
+// ISS-1270: a fresh benchmark cell sets only CLAUDE_CONFIG_DIR and keeps the
+// real HOME. The refresh must rewrite the override's skill, Mods copy and
+// settings.json, and leave the HOME copies byte-identical.
+describe("the refresh follows CLAUDE_CONFIG_DIR (ISS-1270)", () => {
+  let home: string;
+  let cfg: string;
+  const saved: Record<string, string | undefined> = {};
+  let err: string[];
+  let stderrSpy: { mockRestore: () => void } | undefined;
+
+  function treeDigest(dir: string): string {
+    const lines: string[] = [];
+    const walk = (d: string): void => {
+      for (const name of readdirSync(d).sort()) {
+        const full = join(d, name);
+        if (statSync(full).isDirectory()) { lines.push(`D ${full.slice(dir.length)}`); walk(full); }
+        else lines.push(`F ${full.slice(dir.length)} ${readFileSync(full, "utf-8")}`);
+      }
+    };
+    walk(dir);
+    return lines.join("\n");
+  }
+
+  async function stale(root: string): Promise<void> {
+    const skillDir = join(root, "skills", "story");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "# stub\n", "utf-8");
+    await writeFile(join(skillDir, ".storybloq-version"), "1.1.0\n", "utf-8");
+    const modsHooks = join(root, "skills", "storybloq", "hooks");
+    await mkdir(modsHooks, { recursive: true });
+    await writeFile(join(modsHooks, "mod.ts"), "// stub\n", "utf-8");
+    await writeFile(join(modsHooks, "stray.ts"), "// left by an older version\n", "utf-8");
+    await writeFile(join(root, "settings.json"), "{}\n", "utf-8");
+  }
+
+  beforeEach(async () => {
+    home = join(tmpdir(), `storybloq-marker-1270-${randomUUID()}`);
+    cfg = join(home, "cfg");
+    for (const k of ["HOME", "PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR"]) saved[k] = process.env[k];
+    process.env.HOME = home;
+    process.env.CODEX_HOME = join(home, ".codex");
+    const emptyBin = join(home, "empty-bin");
+    await mkdir(emptyBin, { recursive: true });
+    process.env.PATH = emptyBin;
+    await stale(join(home, ".claude"));
+    await stale(cfg);
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    err = [];
+    const { vi } = await import("vitest");
+    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    }) as never);
+  });
+
+  afterEach(async () => {
+    stderrSpy?.mockRestore();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("rewrites the override's skill, Mods copy and settings.json, and leaves HOME's byte-identical", async () => {
+    const before = treeDigest(join(home, ".claude"));
+    const { autoRefreshSkillIfStale, refreshOwner } = await import("../../src/core/skill-version-marker.js");
+    refreshOwner.override = () => "owner"; // ISS-1323: run as the global install
+    expect(await autoRefreshSkillIfStale("1.1.6"), err.join("")).toBe(true);
+
+    expect(readFileSync(join(cfg, "skills", "story", "SKILL.md"), "utf-8"), err.join("")).not.toBe("# stub\n");
+    expect(readFileSync(join(cfg, "skills", "story", ".storybloq-version"), "utf-8").trim()).toBe("1.1.6");
+    expect(readFileSync(join(cfg, "skills", "storybloq", "hooks", "mod.ts"), "utf-8"), err.join("")).not.toBe("// stub\n");
+    expect(existsSync(join(cfg, "skills", "storybloq", "hooks", "stray.ts"))).toBe(false);
+    const settings = JSON.parse(readFileSync(join(cfg, "settings.json"), "utf-8")) as { env?: Record<string, unknown> };
+    expect(settings.env?.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, err.join("")).toBe("1");
+
+    expect(treeDigest(join(home, ".claude"))).toBe(before);
+    expect(err.join("")).toContain(`refreshed Mods at ${join(cfg, "skills", "storybloq")}/`);
+    expect(err.join("")).toContain(`in ${join(cfg, "settings.json")} (draws the ledger dashboard)`);
+  });
+});
+
 // ISS-1302: the package version does not move on a rebuild (the build injects
 // package.json's version), so a copy refreshed only on a version change kept a
 // day-old procedure after `duet spawn` shipped. The copy now follows a content

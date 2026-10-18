@@ -32,6 +32,7 @@ import { createHash } from "node:crypto";
 import { compareVersionStrings } from "./team-capabilities.js";
 import { readBoundedFile } from "./bounded-read.js";
 import { sanitizeDisplayPath } from "./display-text.js";
+import { claudeConfigDir, claudeConfigDisplay, claudeSettingsPath } from "./claude-config-dir.js";
 
 /** T-502: exported so the health check's default adapter reads the same file name. */
 export const SKILL_MARKER_FILE = ".storybloq-version";
@@ -56,8 +57,8 @@ function targetInfo(target: SkillInstallTarget): SkillTargetInfo {
       return {
         id: target,
         client: "claude",
-        dir: join(homedir(), ".claude", "skills", "story"),
-        displayPath: "~/.claude/skills/story/",
+        dir: join(claudeConfigDir(), "skills", "story"),
+        displayPath: `${claudeConfigDisplay("skills", "story")}/`,
       };
     case "codex":
       return {
@@ -328,7 +329,7 @@ async function ensureFunctionHooksSwitch(): Promise<void> {
     const { enableFunctionHooksEnv, FUNCTION_HOOKS_ENV_KEY } = await import("../cli/commands/setup-skill.js");
     if ((await enableFunctionHooksEnv()) !== "set") return;
     process.stderr.write(
-      `storybloq: set env.${FUNCTION_HOOKS_ENV_KEY}=1 in ${join(homedir(), ".claude", "settings.json")} (draws the ledger dashboard)\n`,
+      `storybloq: set env.${FUNCTION_HOOKS_ENV_KEY}=1 in ${claudeSettingsPath()} (draws the ledger dashboard)\n`,
     );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -422,7 +423,7 @@ async function mayAutoRefresh(): Promise<boolean> {
 
 async function refreshModsIfBinMoved(): Promise<void> {
   try {
-    const { installMods, modsInstalled, readModsBin, MODS_DISPLAY_PATH } = await import("./mods-install.js");
+    const { installMods, modsInstalled, readModsBin, modsDisplayPath } = await import("./mods-install.js");
     if (!modsInstalled()) return;
     const { resolveStorybloqBin } = await import("../cli/commands/setup-skill.js");
     const bin = resolveStorybloqBin();
@@ -435,7 +436,7 @@ async function refreshModsIfBinMoved(): Promise<void> {
     try {
       await installMods({ bin });
       process.stderr.write(
-        `storybloq: the storybloq binary moved; refreshed Mods at ${MODS_DISPLAY_PATH} (storybloq at ${bin ?? "the bare name, not found on PATH"})\n`,
+        `storybloq: the storybloq binary moved; refreshed Mods at ${modsDisplayPath()} (storybloq at ${bin ?? "the bare name, not found on PATH"})\n`,
       );
     } catch (copyErr: unknown) {
       const copyMsg = copyErr instanceof Error ? copyErr.message : String(copyErr);
@@ -546,7 +547,7 @@ export async function autoRefreshSkillIfStale(
     // refresh is not a setup. Best-effort, logged, never blocking.
     if (refreshedClaude) {
       try {
-        const { installMods, modsInstalled, MODS_DISPLAY_PATH } = await import("./mods-install.js");
+        const { installMods, modsInstalled, modsDisplayPath } = await import("./mods-install.js");
         if (modsInstalled()) {
           // ISS-1233: the switch follows the copy EXISTING, not this refresh
           // succeeding, so its own try. A copy already on disk is loadable
@@ -557,7 +558,7 @@ export async function autoRefreshSkillIfStale(
           try {
             await installMods({ bin });
             process.stderr.write(
-              `storybloq: refreshed Mods at ${MODS_DISPLAY_PATH} (storybloq at ${bin ?? "the bare name, not found on PATH"})\n`,
+              `storybloq: refreshed Mods at ${modsDisplayPath()} (storybloq at ${bin ?? "the bare name, not found on PATH"})\n`,
             );
           } catch (copyErr: unknown) {
             const copyMsg = copyErr instanceof Error ? copyErr.message : String(copyErr);

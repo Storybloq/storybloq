@@ -202,6 +202,22 @@ describe("T-502 default health adapters", () => {
       ).resolves.toEqual(info);
     });
 
+    it("ISS-1270: resolves Claude's config dir, its settings display and .claude.json from CLAUDE_CONFIG_DIR", () => {
+      const before = process.env.CLAUDE_CONFIG_DIR;
+      try {
+        delete process.env.CLAUDE_CONFIG_DIR;
+        const plain = defaultHealthDeps({ ledgerRoot: null });
+        expect([plain.claudeConfigDir, plain.claudeJsonPath, plain.claudeSettingsDisplay]).toEqual([join(home, ".claude"), join(home, ".claude.json"), "~/.claude/settings.json"]);
+        const cfg = join(home, "cfg");
+        process.env.CLAUDE_CONFIG_DIR = cfg;
+        const over = defaultHealthDeps({ ledgerRoot: null });
+        expect([over.claudeConfigDir, over.claudeJsonPath, over.claudeSettingsDisplay]).toEqual([cfg, join(cfg, ".claude.json"), join(cfg, "settings.json")]);
+      } finally {
+        if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = before;
+      }
+    });
+
     it("reports the home directory, platform and env it will use", () => {
       const deps = defaultHealthDeps({ ledgerRoot: null });
       expect(deps.homeDir).toBe(home);

@@ -3044,3 +3044,29 @@ describe("buildFailedRecommendReport (unit level: the real tool cannot produce t
     expect(report.requestCarriesCountTen).toBe(true);
   });
 });
+
+describe("live mode hashes the skill in Claude's config dir (ISS-1270)", () => {
+  it("reads HOME's copy unset and the override's copy when CLAUDE_CONFIG_DIR is set", async () => {
+    const { readInstalledSkillHash } = await import("../../scripts/priming-cost.js");
+    const base = await mkdtemp(join(tmpdir(), "priming-1270-"));
+    const saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+    try {
+      await mkdir(join(base, ".claude", "skills", "story"), { recursive: true });
+      await writeFile(join(base, ".claude", "skills", "story", "SKILL.md"), "home copy\n");
+      await mkdir(join(base, "cfg", "skills", "story"), { recursive: true });
+      await writeFile(join(base, "cfg", "skills", "story", "SKILL.md"), "override copy\n");
+      process.env.HOME = base;
+      delete process.env.CLAUDE_CONFIG_DIR;
+      expect(await readInstalledSkillHash()).toBe(sha("home copy\n"));
+      process.env.CLAUDE_CONFIG_DIR = join(base, "cfg");
+      expect(await readInstalledSkillHash()).toBe(sha("override copy\n"));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+});

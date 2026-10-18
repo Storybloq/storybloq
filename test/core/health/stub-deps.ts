@@ -36,6 +36,9 @@ export interface StubOptions {
   now?: () => number;
   env?: Record<string, string | undefined>;
   homeDir?: string;
+  claudeConfigDir?: string;
+  claudeJsonPath?: string;
+  claudeSettingsDisplay?: string;
   platform?: string;
   settings?: HealthDeps["settings"];
   callerSample?: HealthDeps["callerSample"];
@@ -60,6 +63,9 @@ export function stubDeps(opts: StubOptions = {}): HealthDeps {
     now: opts.now ?? (() => 1_000),
     env: opts.env ?? {},
     homeDir: opts.homeDir ?? HOME,
+    claudeConfigDir: opts.claudeConfigDir ?? `${opts.homeDir ?? HOME}/.claude`,
+    claudeJsonPath: opts.claudeJsonPath ?? `${opts.homeDir ?? HOME}/.claude.json`,
+    claudeSettingsDisplay: opts.claudeSettingsDisplay ?? "~/.claude/settings.json",
     platform: opts.platform ?? "darwin",
     settings: opts.settings ?? { autoCompactWindow: () => ({ layers: [] }) },
     callerSample: opts.callerSample ?? (() => null),

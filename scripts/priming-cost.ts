@@ -17,7 +17,6 @@
 import { readFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { execFile as execFileCb } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -25,6 +24,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerAllTools } from "../src/mcp/tools.js";
+import { claudeConfigDir } from "../src/core/claude-config-dir.js";
 import {
   parseHandoverMarkdown,
   type SectionRecord,
@@ -1959,6 +1959,16 @@ async function runFixtureMode(fixtureRoot: string): Promise<PrimingCostReport> {
 // Same step sequence and parsing logic as fixture mode (see runReplaySequence
 // above). Never throws; always exits 0.
 
+/** sha256 of the installed /story SKILL.md in Claude's config dir (ISS-1270: CLAUDE_CONFIG_DIR when set), or null. */
+export async function readInstalledSkillHash(): Promise<string | null> {
+  try {
+    const content = await readFile(join(claudeConfigDir(), "skills", "story", "SKILL.md"), "utf-8");
+    return createHash("sha256").update(content, "utf8").digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 async function runLiveMode(root: string): Promise<PrimingCostReport> {
   const absRoot = resolve(root);
   const normalize = buildNormalizer(absRoot);
@@ -2009,14 +2019,7 @@ async function runLiveMode(root: string): Promise<PrimingCostReport> {
       .filter((id): id is string => typeof id === "string"),
   };
 
-  let installedSkillHash: string | null = null;
-  try {
-    const skillPath = join(homedir(), ".claude", "skills", "story", "SKILL.md");
-    const content = await readFile(skillPath, "utf-8");
-    installedSkillHash = createHash("sha256").update(content, "utf8").digest("hex");
-  } catch {
-    installedSkillHash = null;
-  }
+  const installedSkillHash = await readInstalledSkillHash();
 
   return {
     mode: "live",

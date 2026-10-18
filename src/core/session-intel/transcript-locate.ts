@@ -14,9 +14,9 @@
  */
 
 import * as fs from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { SESSION_ID_PATTERN } from "../../presence/types.js";
+import { claudeConfigDir } from "../claude-config-dir.js";
 
 export type TranscriptLocateSource = "hint" | "cwd" | "glob";
 
@@ -36,7 +36,7 @@ export interface LocateRequest {
 }
 
 export function defaultProjectsDir(): string {
-  return join(homedir(), ".claude", "projects");
+  return join(claudeConfigDir(), "projects");
 }
 
 /** Claude Code's project-directory encoding of a cwd: every non-alphanumeric byte becomes `-`. */
@@ -88,7 +88,7 @@ export function authorizeTranscriptPath(
  */
 export const REFUSAL_NO_SESSION_ID = "transcript refused: no session id given; pass --session-id or name the file <sessionId>.jsonl";
 export const REFUSAL_NOT_A_FILE = "transcript refused: the path is not an existing regular file (a symlink, directory or absent path is never read)";
-export const REFUSAL_OUTSIDE_PROJECTS = "transcript refused: it is not exactly one directory below the Claude projects directory (~/.claude/projects/<project>/<sessionId>.jsonl)";
+export const REFUSAL_OUTSIDE_PROJECTS = "transcript refused: it is not exactly one directory below the Claude projects directory (~/.claude/projects/<project>/<sessionId>.jsonl, or under $CLAUDE_CONFIG_DIR/projects when set)";
 export const refusalBasename = (expectedSessionId: string): string => `transcript refused: its basename is not ${expectedSessionId}.jsonl`;
 
 export function explainTranscriptRefusal(

@@ -888,3 +888,49 @@ describe("setup-skill wires the Mods copy (T-507 D)", () => {
     expect(existsSync(join(tempDir, ".claude", "skills", "story", "SKILL.md"))).toBe(true);
   });
 });
+
+describe("modsDir follows CLAUDE_CONFIG_DIR (ISS-1270)", () => {
+  let home: string;
+  let saved: { HOME?: string; CLAUDE_CONFIG_DIR?: string };
+
+  beforeEach(async () => {
+    home = join(tmpdir(), `storybloq-mods-1270-${randomUUID()}`);
+    await mkdir(home, { recursive: true });
+    saved = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    process.env.HOME = home;
+    delete process.env.CLAUDE_CONFIG_DIR;
+  });
+
+  afterEach(async () => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    await rm(home, { recursive: true, force: true });
+  });
+
+  it("unset: ~/.claude/skills/storybloq, shown as the ~ path", async () => {
+    const { modsDir, modsDisplayPath } = await import("../../src/core/mods-install.js");
+    expect(modsDir()).toBe(join(home, ".claude", "skills", "storybloq"));
+    expect(modsDisplayPath()).toBe("~/.claude/skills/storybloq/");
+  });
+
+  it("set: under the override, shown as the override's absolute path", async () => {
+    const { modsDir, modsDisplayPath } = await import("../../src/core/mods-install.js");
+    const cfg = join(home, "cfg");
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    expect(modsDir()).toBe(join(cfg, "skills", "storybloq"));
+    expect(modsDisplayPath()).toBe(`${join(cfg, "skills", "storybloq")}/`);
+  });
+
+  it("installMods with the override set writes only under it", async () => {
+    const { installMods, modsInstalled } = await import("../../src/core/mods-install.js");
+    const cfg = join(home, "cfg");
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    const result = await installMods({ bin: await fakeBin(join(home, "bin")) });
+    expect(result.dir).toBe(join(cfg, "skills", "storybloq"));
+    expect(existsSync(join(cfg, "skills", "storybloq", "hooks", "mod.ts"))).toBe(true);
+    expect(modsInstalled()).toBe(true);
+    expect(existsSync(join(home, ".claude"))).toBe(false);
+  });
+});

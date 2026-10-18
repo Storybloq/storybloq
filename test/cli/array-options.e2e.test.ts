@@ -752,6 +752,32 @@ const MATRIX: Coverage[] = [
     },
   },
   {
+    key: "term update --clear",
+    check: (dir) => {
+      expect(addTerm(dir, "--distinction", "Not the manager.", "--added-by", "pen").code, "seed").toBe(0);
+      // One comma-split value clears both optional fields (ISS-1287).
+      const res = run(dir, "term", "update", "term-pen", "--clear", "distinction,addedBy");
+      expect(res.code, res.out).toBe(0);
+      expect("distinction" in terms(dir)[0]!).toBe(false);
+      expect("addedBy" in terms(dir)[0]!).toBe(false);
+      expectRejected(run(dir, "term", "update", "term-pen", "--clear", ",", "--format", "json"), "contains separators but no values");
+    },
+  },
+  {
+    key: "capability update --clear",
+    check: (dir) => {
+      gitify(dir);
+      expect(addCap(dir, "--entry", "src/core/thing.ts", "--example", "thing()").code, "seed").toBe(0);
+      // The split is real: the second value is checked, and refused, on its own.
+      const both = run(dir, "capability", "update", "cap-thing", "--clear", "example,summary", "--format", "json");
+      expectRejected(both, "summary cannot be cleared");
+      expect(capabilities(dir)[0]!).toHaveProperty("example", "thing()");
+      const res = run(dir, "capability", "update", "cap-thing", "--clear", "example");
+      expect(res.code, res.out).toBe(0);
+      expect("example" in capabilities(dir)[0]!).toBe(false);
+    },
+  },
+  {
     key: "resolve --rename",
     check: (dir) => {
       seedWordCollision(dir);

@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { CLI_PATH, E2ECliFixture } from "../helpers/e2e-cli.js";
 import { STOP_LINES } from "../../src/core/setup-review.js";
 
@@ -29,13 +29,13 @@ afterAll(async () => {
   rmSync(store, { recursive: true, force: true });
 });
 
-/** Runs the bundle with stdin left OPEN (never written, never ended) and a PATH with no reviewer on it. */
+/** Runs the bundle with stdin left OPEN (never written, never ended) and a PATH with no reviewer on it (node's own directory can hold a real one). */
 function runOpenStdin(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd: project,
       stdio: ["pipe", "pipe", "pipe"],
-      env: fixture.env({ PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(":"), STORYBLOQ_SETUP_REVIEW_DIR: store }),
+      env: fixture.env({ PATH: ["/usr/bin", "/bin"].join(":"), STORYBLOQ_SETUP_REVIEW_DIR: store }),
     });
     let stdout = "";
     let stderr = "";

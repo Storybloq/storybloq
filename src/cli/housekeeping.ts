@@ -83,6 +83,9 @@ export function shouldSkipHousekeeping(argv: string[]): boolean {
   // command silently repair what it was asked to describe, and the user would
   // be told everything was fine.
   if (command === "health") return true;
+  // T-536: setup-review runs during setup, before any project exists, and its
+  // output is the package's review lines; nothing may print or fetch first.
+  if (command === "setup-review") return true;
   if (
     command === "session" &&
     (subcommand === "compact-prepare" || subcommand === "resume-prompt" ||

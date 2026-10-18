@@ -2,15 +2,16 @@
  * T-536: fake `codex` and `claude` binaries for the setup reviewer tests.
  *
  * Each fake is a small node script placed in a scratch bin directory that the
- * test puts first on PATH (and alone, apart from node's own directory and the
- * system bin directories, so the real binaries are never reached). A fake's
+ * test puts first on PATH, beside a link to this node, with only the system
+ * bin directories after it: node's own directory is never on PATH, because a
+ * Homebrew or nvm node shares it with a real `claude` or `codex`. A fake's
  * behaviour comes from FAKE_<NAME>_MODE in its environment, and every review
  * invocation appends one line to FAKE_LOG, so a test can count how many
  * backends actually started.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output";
 
@@ -54,7 +55,7 @@ export interface FakeBin {
   readonly dir: string;
   readonly log: string;
   readonly stdinDir: string;
-  /** PATH holding the fakes that exist, node's directory and the system bin directories. */
+  /** PATH holding the fakes that exist, a link to node, and the system bin directories. */
   readonly path: string;
   invocations(): Array<{ name: string; args: string[]; cwd: string; claudecode: string | null; claudeSession: string[] }>;
   stdins(): Buffer[];
@@ -66,6 +67,7 @@ export function makeFakeBin(names: ReadonlyArray<"codex" | "claude">): FakeBin {
   const stdinDir = join(root, "stdin");
   mkdirSync(dir);
   mkdirSync(stdinDir);
+  symlinkSync(process.execPath, join(dir, "node"));
   for (const name of names) {
     const file = join(dir, name);
     writeFileSync(file, FAKE_SOURCE.replace("__FAKE_NAME__", JSON.stringify(name)));
@@ -76,7 +78,7 @@ export function makeFakeBin(names: ReadonlyArray<"codex" | "claude">): FakeBin {
     dir,
     log,
     stdinDir,
-    path: [dir, dirname(process.execPath), "/usr/bin", "/bin"].join(":"),
+    path: [dir, "/usr/bin", "/bin"].join(":"),
     invocations() {
       if (!existsSync(log)) return [];
       return readFileSync(log, "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l));

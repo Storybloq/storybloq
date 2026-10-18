@@ -5433,6 +5433,58 @@ export function registerCodexReviewCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// setup-review (T-536)
+// ---------------------------------------------------------------------------
+
+export function registerSetupReviewCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "setup-review <action>",
+    "Run the setup flow's independent plan review and print the package's review lines",
+    (y) =>
+      y
+        .positional("action", {
+          type: "string",
+          choices: ["gate", "run", "status"] as const,
+          demandOption: true,
+          describe: "gate opens a setup and probes for a reviewer; run reviews the packet on stdin; status prints the review lines",
+        })
+        .option("setup", { type: "string", describe: "Setup id from gate (SS-...)" })
+        .option("backend", { type: "string", choices: ["codex", "claude"] as const, describe: "Reviewer to start (run only)" })
+        .option("new-cycle", { type: "boolean", default: false, describe: "Open a new review cycle after an owner adjustment (run only)" })
+        .option("reason", { type: "string", describe: "The owner's adjustment that opens the new cycle" })
+        .option("skipped", { type: "boolean", default: false, describe: "Record the owner's choice to continue without review (status only)" }),
+    async (argv) => {
+      const { handleSetupReviewGate, handleSetupReviewRun, handleSetupReviewStatus } = await import("./commands/setup-review.js");
+      const { readFileSync } = await import("node:fs");
+      const io = { cwd: process.cwd(), env: process.env, stdin: () => readFileSync(0), deps: {} };
+      const setup = argv.setup as string | undefined;
+      try {
+        let result;
+        if (argv.action === "gate") {
+          result = await handleSetupReviewGate(io, setup !== undefined ? { setup } : {});
+        } else if (setup === undefined) {
+          result = { stdout: "Setup review: --setup <id> is required; run storybloq setup-review gate first.\n", exitCode: 2 };
+        } else if (argv.action === "run") {
+          result = await handleSetupReviewRun(io, {
+            setup,
+            ...(argv.backend !== undefined ? { backend: argv.backend as "codex" | "claude" } : {}),
+            newCycle: argv["new-cycle"] === true,
+            ...(argv.reason !== undefined ? { reason: argv.reason as string } : {}),
+          });
+        } else {
+          result = await handleSetupReviewStatus(io, { setup, skipped: argv.skipped === true });
+        }
+        process.stdout.write(result.stdout);
+        process.exitCode = result.exitCode;
+      } catch (err: unknown) {
+        process.stdout.write(`Setup review: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 6;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // setup
 // ---------------------------------------------------------------------------
 

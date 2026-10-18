@@ -100,6 +100,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **selftest** (--format?) - Run integration smoke test: create/update/delete cycle across all entity types
 - **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
+- **setup-review <gate|run|status>** (--setup?, --backend?, --new-cycle?, --reason, --skipped?) - Run the setup flow's independent plan review and print the package's review lines
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
 - **session intel** (--session-id?, --transcript?, --caller-model?, --full?, --client-task-id?, --format?) - Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink)

@@ -565,6 +565,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--session", "--format"],
   },
   {
+    name: "setup-review",
+    description: "Run the setup flow's independent plan review and print the package's review lines",
+    usage: "storybloq setup-review <gate|run|status> [--setup <id>] [--backend <codex|claude>] [--new-cycle --reason <text>] [--skipped]",
+    flags: ["--setup", "--backend", "--new-cycle", "--reason", "--skipped"],
+  },
+  {
     name: "session intel-start",
     description: "Capture the auto-compact setting for the current process era (SessionStart hook)",
     usage: "storybloq session intel-start [--client <claude|codex>]",

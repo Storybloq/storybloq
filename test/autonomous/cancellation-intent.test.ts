@@ -243,8 +243,8 @@ function spawnTsx(args: readonly string[], env: Record<string, string> = {}, run
   const tmp = shortChildTmp();
   const posix = process.platform !== "win32";
   const child = spawn(runner, [...args], {
-    env: { ...process.env, ...env },
-    stdio: ["ignore", "ignore", "ignore"],
+    env: { ...process.env, ...env, TMPDIR: tmp },
+    stdio: ["ignore", "ignore", "pipe"],
     detached: posix,
   });
   // A failed spawn has no pid: nothing to signal, only `done` to await.
@@ -253,8 +253,18 @@ function spawnTsx(args: readonly string[], env: Record<string, string> = {}, run
   let error: NodeJS.ErrnoException | undefined;
   let stderr = "";
   const done = new Promise<Completion>((resolve) => {
-    child.on("error", () => {});
-    child.on("exit", (code, signal) => resolve({ code, signal, error }));
+    let settled = false;
+    const settle = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, signal, error });
+    };
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      error = err;
+      // `close` usually follows a failed spawn; it wins when it comes.
+      setTimeout(() => settle(null, null), 250);
+    });
+    child.on("close", (code, signal) => settle(code, signal));
   });
   child.stderr?.setEncoding("utf-8");
   child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
@@ -265,8 +275,10 @@ function spawnTsx(args: readonly string[], env: Record<string, string> = {}, run
 
 /** Polls for `marker` until it appears, the child finishes, or 30 s pass. */
 async function waitForMarker(marker: string, spawned: Spawned): Promise<MarkerResult> {
+  let finished = false;
+  void spawned.done.then(() => { finished = true; });
   const deadline = Date.now() + 30_000;
-  while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
+  while (!existsSync(marker) && !finished && Date.now() < deadline) await sleep(25);
   // A child can write the marker and exit within one poll interval.
   return { found: existsSync(marker), stderr: spawned.stderr(), spawnError: spawned.spawnError() };
 }
@@ -346,9 +358,13 @@ beforeEach(() => {
   __intentTesting.tempSuffix = null;
 });
 
-afterEach(() => {
-  __intentTesting.at = () => undefined;
-  __intentTesting.tempSuffix = null;
+afterEach(async () => {
+  try {
+    await teardownChildren();
+  } finally {
+    __intentTesting.at = () => undefined;
+    __intentTesting.tempSuffix = null;
+  }
   rmSync(sessDir, { recursive: true, force: true });
 });
 

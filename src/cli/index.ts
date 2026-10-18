@@ -113,6 +113,8 @@ async function runCli(taskLocal = false): Promise<void> {
     registerHealthCommand,
     registerCodexReviewCommand,
     registerSetupReviewCommand,
+    registerSetupApplyCommand,
+    registerSetupReportCommand,
     registerSetupCommand,
     registerUpdateCommand,
     registerSetupSkillCommand,
@@ -298,6 +300,8 @@ async function runCli(taskLocal = false): Promise<void> {
   cli = registerHealthCommand(cli);
   cli = registerCodexReviewCommand(cli);
   cli = registerSetupReviewCommand(cli);
+  cli = registerSetupApplyCommand(cli);
+  cli = registerSetupReportCommand(cli);
   cli = registerSetupCommand(cli);
   cli = registerUpdateCommand(cli);
   cli = registerSetupSkillCommand(cli);

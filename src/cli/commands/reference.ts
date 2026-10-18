@@ -494,7 +494,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "duet spawn",
-    description: "Start a visible duet worker from the pen: mints its task id, creates the arrangement and starts coordination (--arrangement auto, the Claude-pen default; needs --bounds), writes the role and handshake facts under .story/spawn/ and opens the window with /story first, so the worker sends the nonce. Permission mode defaults to auto (bypassPermissions when the pen runs in bypass); --model defaults to opus (the hands tier). A --dir with no .story runs against the pen's board. --name and --pen are needed to launch or --print; --recover needs neither and lists interrupted spawns read-only",
+    description: "Start a visible duet worker: mints its task id, creates the arrangement and coordination (--arrangement auto, needs --bounds), writes role and handshake facts under .story/spawn/, opens the window with /story first. Permission mode defaults to auto (bypassPermissions under a bypass pen); --model defaults to opus (the hands tier). A --dir with no .story uses the pen's board. --name and --pen launch or --print; --recover lists interrupted spawns read-only",
     usage: "storybloq duet spawn [--name <value>] [--pen <value>] [--bounds <refs>] [--arrangement auto|none] [--model <value>] [--dir <value>] [--role <value>] [--permission-mode <mode>] [--terminal <app>] [--auto-load=false] [--pen-task-id <id>] [--print] [--recover] [--format <json|md>]",
     flags: ["--name", "--pen", "--bounds", "--arrangement", "--model", "--dir", "--role", "--permission-mode", "--terminal", "--auto-load", "--pen-task-id", "--print", "--recover", "--format"],
   },
@@ -577,6 +577,18 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: ["--setup", "--backend", "--new-cycle", "--reason", "--skipped"],
   },
   {
+    name: "setup-apply",
+    description: "Run setup: payload on stdin, --resume, or --resolve",
+    usage: "storybloq setup-apply [--resume --setup <id>] [--resolve <json> --setup <id>]",
+    flags: ["--setup", "--resume", "--resolve"],
+  },
+  {
+    name: "setup-report",
+    description: "Live setup report, or the frozen one",
+    usage: "storybloq setup-report --setup <id> [--historical]",
+    flags: ["--setup", "--historical"],
+  },
+  {
     name: "session intel-start",
     description: "Capture the auto-compact setting for the current process era (SessionStart hook)",
     usage: "storybloq session intel-start [--client <claude|codex>]",
@@ -590,7 +602,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "session intel",
-    description: "Context usage, expected auto-compaction point with provenance, pressure state (ok/advisory/imperative/compact-needed), session facts. Works without .story/. --transcript must be ~/.claude/projects/<project>/<sessionId>.jsonl (a regular file, not a symlink)",
+    description: "Context usage, expected auto-compact point and its source, pressure (ok/advisory/imperative/compact-needed), session facts. No .story/ needed. --transcript: ~/.claude/projects/<project>/<sessionId>.jsonl, a regular file",
     usage: "storybloq session intel [--session-id <id>] [--transcript <path>] [--caller-model <model>] [--full] [--client-task-id <id>] [--format json|md]",
     flags: ["--session-id", "--transcript", "--caller-model", "--full", "--client-task-id", "--format"],
   },
@@ -614,7 +626,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "triage",
-    description: "Bulk issue triage: selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
+    description: "Bulk issue triage: selectors pick open issues for one action; dry run unless --apply (one transaction; over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
     usage: "storybloq triage [--older-than <days>] [--severity <list>] [--component <list>] [--status <list>] [--orphan] [--unphased] [--disposition <value|none>] [--title-matches <regex>] [--resolution-matches <regex>] [--ids <list>] [--resolve] [--reason <text>] [--kind <kind>] [--set-disposition <value|none>] [--ref <ref>] [--relate <ticket>] [--set-phase <phase|none>] [--set-resolution-kind <kind>] [--apply] [--force] [--format <json|md>]",
     flags: ["--older-than", "--severity", "--component", "--status", "--orphan", "--unphased", "--disposition", "--title-matches", "--resolution-matches", "--ids", "--resolve", "--reason", "--kind", "--set-disposition", "--ref", "--relate", "--set-phase", "--set-resolution-kind", "--apply", "--force", "--format"],
   },
@@ -704,13 +716,13 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "bus setup",
-    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint and, when hook delivery is on, enables this client's guarded on-boundary hooks; one endpoint ends with a handoff line. --replace <endpoint-id> takes over a proven-offline incumbent's endpoint and its undelivered mail. --force-archive overrides unread noncritical v1 delivery during a v1->v2 upgrade only, never a ship-gate blocker.",
+    description: "Connect this task to the Bus (idempotent, resumable): initializes or upgrades the runtime, joins this task's endpoint, enables guarded on-boundary hooks when hook delivery is on. --replace <endpoint-id> takes over a proven-offline endpoint and its mail. --force-archive overrides unread noncritical v1 delivery in a v1->v2 upgrade only.",
     usage: "storybloq bus setup [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--delivery <live|poll>] [--wake <never|idle>] [--session-name <value>] [--transport-address <value>] [--replace <value>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--delivery", "--wake", "--session-name", "--transport-address", "--replace", "--force-archive", "--format"],
   },
   {
     name: "bus auto-attach",
-    description: "Turn per-session Bus auto-attach on or off (opt-in, default off). `on` runs `bus setup` once and sets the flag; every new session then auto-attaches at SessionStart with its delivery tiers, and one that finds a proven-dead peer takes its slot and mail. `off` clears the flag and keeps the runtime and endpoints.",
+    description: "Turn per-session Bus auto-attach on or off (default off). `on` runs `bus setup` once and sets the flag; each new session then attaches at SessionStart, taking a proven-dead peer's slot and mail. `off` clears the flag, keeping runtime and endpoints.",
     usage: "storybloq bus auto-attach <state> [--client <claude|codex>] [--task-id <value>] [--surface <claude_cli|codex_cli|codex_desktop>] [--force-archive] [--format <md|json>]",
     flags: ["--client", "--task-id", "--surface", "--force-archive", "--format"],
   },
@@ -1147,8 +1159,10 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_ruling_withdraw", description: "Withdraw a proposed ruling; proposed records only", params: ["id","reason?","clientTaskId?","commit?"] },
   { name: "storybloq_selftest", description: "Integration smoke test: create/update/delete cycle", params: [] },
   { name: "storybloq_health", description: "Tooling check: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session message delivery. Works without .story/, read-only", params: ["format?","only?","refresh?"] },
+  { name: "storybloq_setup_apply", description: "Run setup: payload, resume or resolutions; no .story/ needed. First line [exit N]", params: ["payload?","resume?","setup?","resolutions?"] },
+  { name: "storybloq_setup_report", description: "Live setup report, or the frozen one. Read-only", params: ["setup","historical?"] },
   { name: "storybloq_review_lenses_prepare", description: "Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts", params: ["stage","diff","changedFiles","ticketDescription?","reviewRound?","priorDeferrals?","sessionId?","target?"] },
-  { name: "storybloq_review_lenses_synthesize", description: "Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope (no merger agent). Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
+  { name: "storybloq_review_lenses_synthesize", description: "Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route", params: ["stage?","lensResults","activeLenses","skippedLenses","reviewRound?","reviewId?","diff?","changedFiles?","sessionId?","citedRulingsUndelivered?"] },
   { name: "storybloq_review_lenses_judge", description: "Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap", params: ["reviewVerdict?","convergenceHistory?"] },
   { name: "storybloq_autonomous_guide", description: "Autonomous session orchestrator -- call at every decision point to drive PICK_TICKET through COMPLETE", params: ["sessionId","action","clientTaskId?","takeover?","ownerGoneCandidateTakeover?","ownerGoneCandidateCancel?","mode?","reviewEffort?","ticketId?","targetWork?","report?"] },
   { name: "storybloq_session_guard", description: "Session ownership verdict: is anything running, and may I write? Reads only .story/sessions/, no ledger load. Also registered in degraded mode", params: ["clientTaskId?"] },

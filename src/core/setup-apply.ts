@@ -28,6 +28,7 @@ import {
   fencedUnlink,
   guardPath,
   invalidateResolutionWriteContext,
+  loadProject,
   prepareConfigWrite,
   prepareIssueWrite,
   prepareNoteWrite,
@@ -52,7 +53,8 @@ import { enableCheckpointsStampUnlocked } from "./checkpoint-enable.js";
 import { computeInitialStages } from "./verification-activation.js";
 import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
-import { recommend } from "./recommend.js";
+import { partitionByActionability, recommend, ticketCompletion } from "./recommend.js";
+import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { parseSetupMeta } from "./setup-meta.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
@@ -1133,36 +1135,73 @@ function ambiguities(findings: readonly Finding[]): SetupStop {
 
 // --- Finalization (plan v5 6a) ------------------------------------------------
 
-function userCounts(state: ProjectState, p: SetupPayload) {
+/** Keys whose item the owner adopted from the existing ledger rather than setup creating it. */
+function adoptedKeys(p: SetupPayload): Set<string> {
+  return new Set(p.amendments.filter((a) => a.resolution.startsWith("adopt ")).map((a) => a.target.split(" ")[0]!));
+}
+
+function userCounts(state: ProjectState, p: SetupPayload, adopted: ReadonlySet<string>) {
   const phases = p.phases.filter((ph) => state.roadmap.phases.some((x) => x.id === ph.id)).length;
-  const keyed = (key: string) => keyedTicket(state, p.setupId, key);
+  const keyed = (key: string) => !adopted.has(key) && keyedTicket(state, p.setupId, key) !== undefined;
   return {
     phases,
     tickets: p.tickets.filter((t) => keyed(t.key)).length,
     checkpoints: p.checkpoints.filter((c) => keyed(c.key)).length,
-    issues: p.issues.filter((i) => keyedIssue(state, p.setupId, i.key)).length,
+    issues: p.issues.filter((i) => !adopted.has(i.key) && keyedIssue(state, p.setupId, i.key)).length,
   };
+}
+
+const WAIT_ORDER = ["the owner", "other work"] as const;
+
+/**
+ * Why nothing in the setup is ready (plan v5 6c): every open item is an owner
+ * checkpoint or waits on an open blocker. Empty when something open waits on
+ * nothing, or nothing is open, so the line never claims more than the ledger shows.
+ */
+function waitingOn(state: ProjectState, keyedIds: ReadonlySet<string>): string {
+  const reasons = new Set<(typeof WAIT_ORDER)[number]>();
+  const open = (id: string) => {
+    const t = state.ticketByID(id);
+    return t !== undefined && ticketCompletion(state, t) !== "complete" ? t : undefined;
+  };
+  for (const id of keyedIds) {
+    const t = open(id);
+    if (!t) continue;
+    if (hasOwnerCheckpoint(t)) {
+      reasons.add("the owner");
+      continue;
+    }
+    const blockers = t.blockedBy.map(open).filter((b): b is Ticket => b !== undefined);
+    if (blockers.length === 0) return "";
+    for (const b of blockers) {
+      if (hasOwnerCheckpoint(b)) reasons.add("the owner");
+      else if (!keyedIds.has(b.id)) reasons.add("other work");
+    }
+  }
+  const named = WAIT_ORDER.filter((r) => reasons.has(r));
+  return named.length > 0 ? ` (everything open waits on ${named.join(" and ")})` : "";
 }
 
 /** The core report lines (plan v5 6c), computed once at the freeze from the ledger and kept verbatim. */
 export function setupReportLines(state: ProjectState, p: SetupPayload): string[] {
-  const counts = userCounts(state, p);
+  const adopted = adoptedKeys(p);
+  const counts = userCounts(state, p, adopted);
   const { stages, pending } = computeInitialStages(activationInput(p));
   const on = Object.entries(stages).filter(([, s]) => s.enabled === true).map(([name]) => name);
   const keyedIds = new Set(
     [...p.tickets, ...p.checkpoints].map((t) => keyedTicket(state, p.setupId, t.key)?.id).filter((id): id is string => id !== undefined),
   );
-  const ready = recommend(state, 10).recommendations.filter((r) => r.kind === "ticket" && keyedIds.has(r.id));
+  const ready = partitionByActionability(recommend(state, 10).recommendations).actionablePool.filter((r) => r.kind === "ticket" && keyedIds.has(r.id));
   const label = (r: { id: string; displayId?: string; title: string }) => `${r.displayId ?? r.id} "${r.title}"`;
   const lines = [
     `Setup ${p.setupId}: ${p.project.name} (${p.project.type}, ${p.project.language})`,
-    `Created: ${counts.phases} phases, ${counts.tickets} tickets, ${counts.checkpoints} checkpoints, ${counts.issues} issues`,
+    `Created: ${counts.phases} phases, ${counts.tickets} tickets, ${counts.checkpoints} checkpoints, ${counts.issues} issues${adopted.size > 0 ? `; adopted: ${adopted.size}` : ""}`,
     `Quality: ${p.quality.level}; stages on: ${on.length > 0 ? on.join(", ") : "none"}`,
     ...pending.map((l) => `Pending: ${l.stage}${l.component === null ? "" : ` (${l.component})`}: ${l.command} (pending: ${l.reason})`),
     `Governance: ${p.governance.files.length > 0 ? p.governance.files.map((f) => f.path).join(", ") : "none"}; canonical facts: ${p.governance.canonicalFactsPath}`,
     ...p.review.lines.map((l) => `Review: ${l}`),
     `Ready to build: ${ready.length > 0 ? ready.map(label).join(", ") : "none"}`,
-    `First story: ${ready.length > 0 ? label(ready[0]!) : "none"}`,
+    `First story: ${ready.length > 0 ? label(ready[0]!) : `none${waitingOn(state, keyedIds)}`}`,
   ];
   return lines;
 }
@@ -1442,6 +1481,26 @@ async function locate(root: string, setupId: string, options: SetupApplyOptions)
 }
 
 const refused = (setupId: string | null, why: string): SetupApplyResult => ({ exitCode: 2, lines: [`Setup refused: ${why}`], setupId });
+
+/**
+ * `setup-report --setup <id>` (plan v5 6c): the live report from the ledger as
+ * it is now, or with `historical` the report frozen at finalization. Takes no
+ * lock and writes nothing.
+ */
+export async function setupReport(root: string, setupId: string, opts: { historical?: boolean } = {}): Promise<SetupApplyResult> {
+  const stop = (why: string): SetupApplyResult => ({ exitCode: 2, lines: [`Setup report: ${why}`], setupId });
+  if (!SETUP_ID_PATTERN.test(setupId)) return stop(`"${setupId}" is not a setup id (SS-<8 hex>).`);
+  const absRoot = resolve(root);
+  if (!existsSync(join(absRoot, ".story", "config.json"))) return stop(`no setup ${setupId} in this folder.`);
+  const { state } = await loadProject(absRoot);
+  const payloads = [...findProgress(state, setupId, "active"), ...findProgress(state, setupId, "archived")].map((n) => parseSetupPayload(n.content));
+  if (payloads.length === 0) return stop(`no setup ${setupId} in this project.`);
+  const p = payloads.find((x) => hasReceipt(x, "archive")) ?? payloads[0]!;
+  if (opts.historical !== true) return { exitCode: 0, lines: setupReportLines(state, effectivePlan(p)), setupId };
+  const frozen = p.frozen?.historicalReport;
+  if (frozen === undefined) return stop(`setup ${setupId} has no frozen report yet; it is frozen when the setup finalizes.`);
+  return { exitCode: 0, lines: frozen.split("\n"), setupId };
+}
 
 /**
  * `setup-apply --resume --setup <id>`: continues a setup from the ledger

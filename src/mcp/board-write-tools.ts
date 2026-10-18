@@ -89,6 +89,8 @@ export const MCP_CUSTOM_HANDLERS: Readonly<Record<string, string>> = {
   storybloq_session_intel: "session intelligence read and presence state (gitignored)",
   storybloq_health: "read-only tooling check",
   storybloq_session_milestone: "records a milestone in gitignored session state",
+  storybloq_setup_apply: "T-538 setup engine: on an existing .story/ it reports through the board-write recorder and reportBoardWrite inside handleSetupApply (as runBoardWrite does); the bootstrap path, before .story/ exists, reports only the engine's own lines",
+  storybloq_setup_report: "read-only setup report",
 };
 
 /**

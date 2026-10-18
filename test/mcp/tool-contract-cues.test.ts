@@ -523,6 +523,8 @@ describe("tool description contract (T-460)", () => {
     // ISS-1290 adds storybloq_arrangement_rebind (101 -> 102): the successor's new pen is an agent consumer; the spec names an MCP tool.
     // T-538 adds storybloq_checkpoint_evidence (102 -> 103): an agent prepares
     // the evidence the owner reviews, so adding a revision is agent work.
-    expect(result.tools.length).toBe(103);
+    // T-538 S2 adds storybloq_setup_apply and storybloq_setup_report (103 -> 105):
+    // setup runs as one engine call, and the agent copies its report verbatim.
+    expect(result.tools.length).toBe(105);
   });
 });

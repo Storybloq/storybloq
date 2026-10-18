@@ -86,6 +86,9 @@ export function shouldSkipHousekeeping(argv: string[]): boolean {
   // T-536: setup-review runs during setup, before any project exists, and its
   // output is the package's review lines; nothing may print or fetch first.
   if (command === "setup-review") return true;
+  // T-538: setup-apply runs before any project exists too, and bootstraps one;
+  // a skill refresh or hook reconcile must not race its writes.
+  if (command === "setup-apply") return true;
   if (
     command === "session" &&
     (subcommand === "compact-prepare" || subcommand === "resume-prompt" ||

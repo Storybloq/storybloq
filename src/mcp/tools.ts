@@ -741,6 +741,8 @@ export function registerAllTools(rawServer: McpServer, pinnedRoot: string, ctx?:
   registerRosterGetTool(server, pinnedRoot);
   registerSessionIntelTool(server, pinnedRoot);
   registerHealthTool(server, pinnedRoot, ctx?.launchDir ?? realpathSync(process.cwd()));
+  registerSetupApplyTool(server, pinnedRoot);
+  registerSetupReportTool(server, pinnedRoot);
 
   server.registerTool("storybloq_validate", {
     description: "Reference integrity + schema checks. Works even when corrupt JSON blocks project loading.",
@@ -2995,6 +2997,66 @@ export function registerHealthTool(server: McpServer, ledgerRoot: string | null,
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       return { content: [{ type: "text" as const, text: formatMcpError("io_error", message, format) }], isError: true };
+    }
+  });
+}
+
+/**
+ * T-538: the setup engine, the same call as `storybloq setup-apply`. The
+ * first line is `[exit N]` (the engine's exit code); the rest is the engine's
+ * output verbatim. Registered in the degraded surface too: a setup creates
+ * the project, and `afterRun` lets the degraded server swap to the full
+ * surface once it exists.
+ */
+export function registerSetupApplyTool(server: McpServer, root: string, afterRun?: () => Promise<void>) {
+  return server.registerTool("storybloq_setup_apply", {
+    description:
+      "Apply an approved setup payload, resume a setup (resume + setup), or record the owner's resolutions (resolutions + setup). First line [exit N]; relay the rest verbatim.",
+    inputSchema: {
+      payload: z.unknown().optional().describe("The approved setup payload (a new setup)"),
+      resume: z.boolean().optional(),
+      setup: z.string().optional().describe("Setup id (SS-...)"),
+      resolutions: z.array(z.unknown()).optional().describe("[{target, resolution, ownerWords, reviewRevision?}]"),
+    },
+  }, async (args) => {
+    let text: string;
+    let failed = false;
+    try {
+      const { handleSetupApply } = await import("../cli/commands/setup-apply.js");
+      const result = await handleSetupApply(
+        { cwd: root, env: process.env, stdin: () => Buffer.from(args.payload === undefined ? "" : JSON.stringify(args.payload)) },
+        {
+          resume: args.resume === true,
+          ...(args.setup !== undefined ? { setup: args.setup } : {}),
+          ...(args.resolutions !== undefined ? { resolve: JSON.stringify(args.resolutions) } : {}),
+        },
+      );
+      text = `[exit ${result.exitCode}]\n${result.stdout}`;
+      failed = result.exitCode !== 0;
+    } catch (err: unknown) {
+      text = `[exit 3]\nSetup stopped: ${err instanceof Error ? err.message : String(err)}\n`;
+      failed = true;
+    }
+    if (afterRun) await afterRun();
+    return { content: [{ type: "text" as const, text }], ...(failed ? { isError: true } : {}) };
+  });
+}
+
+/** T-538: `storybloq setup-report`, read-only. */
+export function registerSetupReportTool(server: McpServer, root: string) {
+  return server.registerTool("storybloq_setup_report", {
+    description: "A setup's live report (readiness, first story), or the frozen one with historical. Read-only. First line [exit N].",
+    inputSchema: {
+      setup: z.string().describe("Setup id (SS-...)"),
+      historical: z.boolean().optional(),
+    },
+  }, async (args) => {
+    try {
+      const { handleSetupReport } = await import("../cli/commands/setup-apply.js");
+      const result = await handleSetupReport({ cwd: root, env: process.env, stdin: () => Buffer.alloc(0) }, { setup: args.setup, historical: args.historical === true });
+      return { content: [{ type: "text" as const, text: `[exit ${result.exitCode}]\n${result.stdout}` }], ...(result.exitCode !== 0 ? { isError: true } : {}) };
+    } catch (err: unknown) {
+      return { content: [{ type: "text" as const, text: `[exit 3]\nSetup report: ${err instanceof Error ? err.message : String(err)}\n` }], isError: true };
     }
   });
 }

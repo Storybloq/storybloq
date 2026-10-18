@@ -5546,6 +5546,62 @@ export function registerSetupReviewCommand(yargs: Argv): Argv {
 }
 
 // ---------------------------------------------------------------------------
+// setup-apply, setup-report (T-538)
+// ---------------------------------------------------------------------------
+
+export function registerSetupApplyCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "setup-apply",
+    "Apply an approved setup payload (standard input), resume a setup, or record the owner's resolutions",
+    (y) =>
+      y
+        .option("setup", { type: "string", describe: "Setup id (SS-...), with --resume or --resolve" })
+        .option("resume", { type: "boolean", default: false, describe: "Continue the setup from the ledger" })
+        .option("resolve", { type: "string", describe: "JSON array of {target, resolution, ownerWords, reviewRevision?}" }),
+    async (argv) => {
+      const { handleSetupApply } = await import("./commands/setup-apply.js");
+      const { readFileSync } = await import("node:fs");
+      const io = { cwd: process.cwd(), env: process.env, stdin: () => readFileSync(0) };
+      try {
+        const result = await handleSetupApply(io, {
+          resume: argv.resume === true,
+          ...(argv.setup !== undefined ? { setup: argv.setup as string } : {}),
+          ...(argv.resolve !== undefined ? { resolve: argv.resolve as string } : {}),
+        });
+        process.stdout.write(result.stdout);
+        process.exitCode = result.exitCode;
+      } catch (err: unknown) {
+        process.stdout.write(`Setup stopped: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 3;
+      }
+    },
+  );
+}
+
+export function registerSetupReportCommand(yargs: Argv): Argv {
+  return yargs.command(
+    "setup-report",
+    "Print a setup's live report, or the frozen one with --historical",
+    (y) =>
+      y
+        .option("setup", { type: "string", demandOption: true, describe: "Setup id (SS-...)" })
+        .option("historical", { type: "boolean", default: false, describe: "The report frozen at completion" }),
+    async (argv) => {
+      const { handleSetupReport } = await import("./commands/setup-apply.js");
+      const io = { cwd: process.cwd(), env: process.env, stdin: () => Buffer.alloc(0) };
+      try {
+        const result = await handleSetupReport(io, { setup: argv.setup as string, historical: argv.historical === true });
+        process.stdout.write(result.stdout);
+        process.exitCode = result.exitCode;
+      } catch (err: unknown) {
+        process.stdout.write(`Setup report: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 3;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // setup
 // ---------------------------------------------------------------------------
 

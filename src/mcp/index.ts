@@ -21,7 +21,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { serverRegistryBinder } from "../autonomous/mcp-binding.js";
 
 import { discoverProjectRoot } from "../core/project-root-discovery.js";
-import { registerAllTools, registerHealthTool, registerSessionGuardTool, registerSessionIntelTool } from "./tools.js";
+import { registerAllTools, registerHealthTool, registerSessionGuardTool, registerSessionIntelTool, registerSetupApplyTool } from "./tools.js";
 import type { RegistrationContext } from "./registration-context.js";
 import { withStrictToolSchemas } from "./strict-schemas.js";
 import { initProject } from "../core/init.js";
@@ -135,6 +135,69 @@ export function registerDegradedTools(rawServer: McpServer, root?: string, ctx?:
   const degradedLaunchDir = ctx?.launchDir ?? realpathSync(process.cwd());
   const degradedHealth = registerHealthTool(server, null, degradedLaunchDir);
 
+  // T-538: the setup engine creates the project itself, so it is in the
+  // degraded surface; once a run has published `.story/config.json` the server
+  // swaps to the full surface exactly as after init.
+  let swapped = false;
+  const degradedSetupApply = registerSetupApplyTool(server, degradedLaunchDir, async () => {
+    if (swapped || !existsSync(join(degradedLaunchDir, ".story", "config.json"))) return;
+    if (await swapToFullSurface(degradedLaunchDir) === null) await startWatcher(degradedLaunchDir);
+  });
+
+  /**
+   * Swaps the degraded tools for the full set at `projectRoot`. Returns null
+   * on success, or the failure message after re-registering the degraded
+   * surface so the server is never left toolless.
+   */
+  async function swapToFullSurface(projectRoot: string): Promise<string | null> {
+    swapped = true;
+    try {
+      degradedStatus.remove();
+      degradedInit.remove();
+      degradedGuard.remove();
+      degradedIntel.remove();
+      degradedHealth.remove();
+      degradedSetupApply.remove();
+      // The inspected directory does NOT change on init: it is where this
+      // server was launched, which an init does not move.
+      registerAllTools(server, projectRoot, { launchDir: degradedLaunchDir });
+      // T-450: this server now serves a project it did not know about at
+      // startup. Without binding here it would stamp its pid on guide calls
+      // while staying absent from that project's registry, so it could never
+      // be seen as a live successor until the client restarted.
+      bindServerRegistry(projectRoot);
+      // Explicit tool-list-changed notification after the full swap. Each
+      // underlying registerTool / remove call already emits its own
+      // notification, but firing 49 notifications in rapid succession can
+      // cause some MCP clients (notably Claude Code app) to miss the
+      // coalesced final state. One final explicit notification is a
+      // belt-and-suspenders signal that the tool list is now complete
+      // so the client can do a single clean refetch.
+      try {
+        server.sendToolListChanged();
+      } catch (notifyErr: unknown) {
+        process.stderr.write(`storybloq: sendToolListChanged after init failed (non-fatal): ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}\n`);
+      }
+      return null;
+    } catch (swapErr: unknown) {
+      const message = swapErr instanceof Error ? swapErr.message : String(swapErr);
+      process.stderr.write(`storybloq: tool-swap failed after init: ${message}\n`);
+      // Re-register degraded tools so the server isn't completely toolless.
+      // The project was created -- user can restart for full access.
+      try { registerDegradedTools(server, undefined, { launchDir: degradedLaunchDir }); } catch { /* best effort */ }
+      return message;
+    }
+  }
+
+  // Start inbox watcher separately -- failure here should not roll back tools.
+  async function startWatcher(projectRoot: string): Promise<void> {
+    try {
+      await startInboxWatcher(projectRoot, server);
+    } catch (watchErr: unknown) {
+      process.stderr.write(`storybloq: inbox watcher failed after init: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}\n`);
+    }
+  }
+
   const degradedInit = server.registerTool("storybloq_init", {
     description: "Initialize a new .story/ project in the current directory",
     inputSchema: {
@@ -157,48 +220,13 @@ export function registerDegradedTools(rawServer: McpServer, root?: string, ctx?:
       return { content: [{ type: "text" as const, text: `[init_error] ${msg}` }], isError: true };
     }
 
-    // Swap degraded tools for full tool set. Separate try/catch so a swap
+    // Swap degraded tools for full tool set. Separate from the init so a swap
     // failure doesn't mask the successful init or strand the server toolless.
-    try {
-      degradedStatus.remove();
-      degradedInit.remove();
-      degradedGuard.remove();
-      degradedIntel.remove();
-      degradedHealth.remove();
-      // The inspected directory does NOT change on init: it is where this
-      // server was launched, which an init does not move.
-      registerAllTools(server, result.root, { launchDir: degradedLaunchDir });
-      // T-450: this server now serves a project it did not know about at
-      // startup. Without binding here it would stamp its pid on guide calls
-      // while staying absent from that project's registry, so it could never
-      // be seen as a live successor until the client restarted.
-      bindServerRegistry(result.root);
-      // Explicit tool-list-changed notification after the full swap. Each
-      // underlying registerTool / remove call already emits its own
-      // notification, but firing 49 notifications in rapid succession can
-      // cause some MCP clients (notably Claude Code app) to miss the
-      // coalesced final state. One final explicit notification is a
-      // belt-and-suspenders signal that the tool list is now complete
-      // so the client can do a single clean refetch.
-      try {
-        server.sendToolListChanged();
-      } catch (notifyErr: unknown) {
-        process.stderr.write(`storybloq: sendToolListChanged after init failed (non-fatal): ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}\n`);
-      }
-    } catch (swapErr: unknown) {
-      process.stderr.write(`storybloq: tool-swap failed after init: ${swapErr instanceof Error ? swapErr.message : String(swapErr)}\n`);
-      // Re-register degraded tools so the server isn't completely toolless.
-      // The project was created -- user can restart for full access.
-      try { registerDegradedTools(server, undefined, { launchDir: degradedLaunchDir }); } catch { /* best effort */ }
+    if (await swapToFullSurface(result.root) !== null) {
       return { content: [{ type: "text" as const, text: `Initialized .story/ project "${args.name}" at ${result.root}\n\nWarning: tool registration failed. Restart the MCP server for full tool access.` }] };
     }
 
-    // Start inbox watcher separately -- failure here should not roll back tools.
-    try {
-      await startInboxWatcher(result.root, server);
-    } catch (watchErr: unknown) {
-      process.stderr.write(`storybloq: inbox watcher failed after init: ${watchErr instanceof Error ? watchErr.message : String(watchErr)}\n`);
-    }
+    await startWatcher(result.root);
 
     process.stderr.write(`storybloq: initialized at ${result.root}\n`);
 

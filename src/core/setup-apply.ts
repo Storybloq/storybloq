@@ -1479,8 +1479,11 @@ const FINALIZATION_STEPS = ["setup-note", "handover", "validate", "snapshot"];
 async function stepArchive(ctx: StepContext): Promise<void> {
   const p = ctx.progress.payload;
   const frozen = frozenOf(p);
-  const fail = (why: string) => new SetupStop(3, `the finalization gate refused: ${why}`);
+  const fail = (why: string, detail: readonly string[] = []) => new SetupStop(3, `the finalization gate refused: ${why}`, detail);
   if (effectiveRevision(p) !== frozen.revision) throw fail("the payload revision is not the frozen one");
+  // The ledger as it is in this hold, not as the validation receipt saw it (review r1 #5).
+  const errors = validateProject(ctx.lr.state).findings.filter((f) => f.level === "error");
+  if (errors.length > 0) throw fail(`validation found ${errors.length} error(s); fix them and resume`, errors.map((e) => `Validation error: ${e.message}`));
   for (const step of FINALIZATION_STEPS) {
     const r = lastReceipt(p, step);
     if (!r || r.revision !== frozen.revision) throw fail(`${step} has no receipt at the frozen revision`);

@@ -419,6 +419,16 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect(await progressPayload(root, "active")).toEqual(before);
   });
 
+  it("a dangling dependency added after the validation receipt keeps the archive gate shut (review r1 #5)", async () => {
+    const root = await stoppedAt("step:snapshot");
+    await editJson(join(root, ".story", "tickets", "T-002.json"), (raw) => { (raw.blockedBy as string[]).push("T-999"); });
+    const result = await setupResume(root, SID);
+    expect(result.exitCode).toBe(3);
+    expect(result.lines).toContainEqual(expect.stringMatching(/^Validation error: .*T-999/));
+    expect(result.lines.at(-1)).toMatch(/^Setup stopped: the finalization gate refused: validation found 1 error/);
+    expect((await loadProject(root)).state.setupInProgress).toEqual([{ setupId: SID, noteId: "N-001" }]);
+  });
+
   it("keep <id> supersedes the other item's key and leaves its content as it was", async () => {
     const root = await stoppedAt("step:config");
     const dup = JSON.parse(await readFile(join(root, ".story", "tickets", "T-001.json"), "utf-8")) as Record<string, unknown>;

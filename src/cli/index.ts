@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 
 import type { FailUsageYargs, FailUsageOptionsSource } from "./fail-usage.js";
+import { entryDeprecationLine, resolveEntryMode } from "./entry-mode.js";
 
 export {};
 
 // --mcp flag: start MCP server instead of CLI.
 // Enables one-line registration: claude mcp add storybloq -- npx -y @storybloq/storybloq --mcp
-if (process.argv[2] === "--local-cli") {
+// ISS-1278: the mode is resolved once, from the first argument (see entry-mode.ts).
+const entryMode = process.argv[2] === "--local-cli" ? undefined : resolveEntryMode(process.argv.slice(2));
+const entryDeprecation = entryMode === undefined ? null : entryDeprecationLine(entryMode);
+if (entryMode === undefined) {
   try {
     const { runLocalProjectCommand } = await import("./local-profile.js");
     await runLocalProjectCommand(process.argv.slice(3), process.cwd(), async (root, args) => {
@@ -21,7 +25,8 @@ if (process.argv[2] === "--local-cli") {
     process.stderr.write(`Storybloq local command: ${(error as Error).message}\n`);
     process.exitCode = 2;
   }
-} else if (process.argv.includes("--board-mcp")) {
+} else if (entryMode.kind === "board") {
+  if (entryDeprecation) process.stderr.write(entryDeprecation);
   // Keep the board SDK out of ordinary CLI startup and preserve the task cwd.
   const { spawn } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
@@ -36,9 +41,10 @@ if (process.argv[2] === "--local-cli") {
     process.exitCode = 1;
   });
   board.on("exit", (code) => { process.exitCode = code ?? 1; });
-} else if (!process.argv.includes("--mcp")) {
+} else if (entryMode.kind === "cli") {
   await runCli();
 } else {
+  if (entryDeprecation) process.stderr.write(entryDeprecation);
   await import("../mcp/index.js");
 }
 

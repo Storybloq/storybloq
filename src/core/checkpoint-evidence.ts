@@ -19,7 +19,7 @@ import {
   type CheckpointEvidenceEntry,
   type CheckpointResolver,
 } from "./owner-checkpoint.js";
-import { writeTicketUnlocked } from "./project-loader.js";
+import { prepareTicketWrite, writeTicketUnlocked } from "./project-loader.js";
 import { displayIdOf } from "./resolver.js";
 import type { Ticket } from "../models/ticket.js";
 import type { PreparedContentValidation } from "./update-write-hooks.js";
@@ -78,6 +78,28 @@ export async function completeDependent(state: CheckpointResolver, candidate: Ti
   const ticket = next as Ticket;
   await writeTicketUnlocked(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY, validatePreparedContent: options?.validatePreparedContent });
   return { kind: "completed", ticket };
+}
+
+/**
+ * `completeDependent`'s refusal and evidence as a prepared write, for a caller
+ * that commits the completion in its own transaction (T-538 S3a-1:
+ * setup-apply's restore-planned). Nothing is written here.
+ */
+export async function prepareCompletionWrite(state: CheckpointResolver, candidate: Ticket, root: string): Promise<
+  | { readonly kind: "prepared"; readonly ticket: Ticket; readonly op: { target: string; content: string } }
+  | { readonly kind: "checkpoint-blocked"; readonly checkpoints: readonly string[] }
+> {
+  if (candidate.status !== "complete") {
+    throw new Error(`prepareCompletionWrite: ${candidate.id} is not being completed (status ${candidate.status})`);
+  }
+  const blocked = pendingCheckpointBlockers(state, candidate);
+  if (blocked.length > 0) return { kind: "checkpoint-blocked", checkpoints: blocked };
+  const evidence = evidenceFor(state, candidate);
+  const next: Record<string, unknown> = { ...candidate };
+  if (evidence.length > 0) next.checkpointEvidence = evidence;
+  else delete next.checkpointEvidence;
+  const ticket = next as Ticket;
+  return { kind: "prepared", ticket, op: await prepareTicketWrite(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY }) };
 }
 
 /**

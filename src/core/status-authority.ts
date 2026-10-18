@@ -8,9 +8,10 @@
  * It applies the same rules `storybloq ticket update` applies, without a
  * force path:
  * - completing: `clearClaimOnComplete` against the caller's ownership
- *   evidence (both `claim.user` and `claimedBySession`), then the owner
- *   checkpoint rule (a ticket waiting on a checkpoint that has not released
- *   cannot complete), recording the checkpoint evidence it relied on;
+ *   evidence (both `claim.user` and `claimedBySession`); the caller then
+ *   writes it through `prepareCompletionWrite` (checkpoint-evidence.ts), which
+ *   applies the owner checkpoint rule and records the evidence, as
+ *   `completeDependent` does for the ticket CLI;
  * - reopening: `guardCompletedTicketMutation` when the ticket carries claim
  *   material; a claim-free reopen only when the caller's policy names it.
  */
@@ -18,8 +19,6 @@ import type { Ticket } from "../models/ticket.js";
 import type { ClaimEpoch } from "../autonomous/claim-reconciliation.js";
 import { clearClaimOnComplete, guardCompletedTicketMutation, hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
 import { clearSameSessionEarmark } from "./earmarks.js";
-import { evidenceFor, describeCheckpointBlock } from "./checkpoint-evidence.js";
-import { pendingCheckpointBlockers, type CheckpointResolver } from "./owner-checkpoint.js";
 
 /** The session store could not be read: no proof that no session is running. */
 export class CompletionOwnershipUnavailable extends Error {}
@@ -68,11 +67,10 @@ export interface StatusPolicy {
 /**
  * Decides whether `existing` may become `next` (every other change already
  * applied by the caller), returning the ticket to write: a completion strips
- * the claim and records checkpoint evidence. A change that keeps the status
+ * the claim (and still goes through `prepareCompletionWrite`). A change that keeps the status
  * is not a lifecycle change and passes unchanged.
  */
 export function authoriseStatusChange(
-  resolver: CheckpointResolver,
   existing: Ticket,
   next: Ticket,
   guard: CompletionGuardOptions,
@@ -86,15 +84,9 @@ export function authoriseStatusChange(
     if (completion.rejected) {
       return { ok: false, reason: `Cannot complete ${label}: it is claimed by ${next.claim?.user ?? "another session"} and this caller cannot prove ownership${guard.completingUser === null ? " (git user.email is not configured)" : ""}.` };
     }
-    const pending = pendingCheckpointBlockers(resolver, completion.ticket);
-    if (pending.length > 0) return { ok: false, reason: describeCheckpointBlock(label, pending) };
     let ticket = completion.ticket;
     if (existing.claimedBySession) ticket = clearSameSessionEarmark(ticket, existing.claimedBySession).item;
-    const evidence = evidenceFor(resolver, ticket);
-    const out: Record<string, unknown> = { ...ticket };
-    if (evidence.length > 0) out.checkpointEvidence = evidence;
-    else delete out.checkpointEvidence;
-    return { ok: true, ticket: out as Ticket };
+    return { ok: true, ticket };
   }
 
   if (existing.status === "complete") {

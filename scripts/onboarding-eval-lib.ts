@@ -2755,8 +2755,9 @@ export function setupRecordText(storyDir: string): string {
  * The check set a run is graded under. Version 1 is every record written before check set 2 existed (they carry no
  * version); a replay runs each record under its own version, so a record never meets checks it was not graded by.
  */
-export const CHECK_SET_VERSION = 5;
-export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4, 5];
+export const CHECK_SET_VERSION = 6;
+/** Check set 6 (T-536) replays from the run's copy of its setup review store, and is refused without it. */
+export const KNOWN_CHECK_SETS: readonly number[] = [1, 2, 3, 4, 5, 6];
 
 /**
  * A fixture rubric as a check set reads it. Check set 1 drops the `checkSet2` overlay, so the rubric serialises

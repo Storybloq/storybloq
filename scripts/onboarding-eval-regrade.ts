@@ -18,10 +18,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { join } from "node:path";
 
 import {
-  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, stopRuleFor, subshellOnly, writeRuleFor,
+  claudeTurn, codexTurn, KNOWN_CHECK_SETS, runVerdict, stopRuleFor, subshellOnly, treeDigest, writeRuleFor,
   type EvalTurn, type JudgeLine, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
 import { parseStream, sha256 } from "./continuity-lib.js";
+import { applySetupReviewChecks, STORE_COPY, STORE_COPY_MISSING } from "./onboarding-eval-checkset6.js";
 import {
   inventoryFor,
   driveFlow, finishDrive, inspectAfter, newDriveState, packetText as buildPacketText, setupRecordFrom, writesAfterApprovalOf,
@@ -89,6 +90,8 @@ export interface RegradeInput {
   readonly readRaw: (name: string) => Buffer;
   /** The raw copy of the project's `.story/` after the run, or null when it has none. */
   readonly story: StoryBytes | null;
+  /** Check set 6: the run's copy of its setup review store, or null when the raw directory has none. */
+  readonly setupReviewStore?: string | null;
   readonly fixture: FixtureInputs;
   readonly reviewLine: string;
   /** The runner's `runSemanticLines`, for the fixture's variant. */
@@ -240,10 +243,12 @@ function regradeOrThrow(input: RegradeInput): Regraded {
   if (input.fixture.checkSet !== checkSet) refuse(`the fixture inputs were read for check set ${input.fixture.checkSet}, the record names ${String(checkSet)}`);
   const cs = checkSet as number;
   const recFailures = failures!;
+  // Check set 6: rule 2 reads the store the run's turns wrote, so the run's copy of it is an input.
+  if (cs >= 6 && (input.setupReviewStore ?? null) === null) refuse(STORE_COPY_MISSING);
 
   // Turn identity: position is identity, the file name is fixed by it, and nothing else may sit beside them.
   const manifest: ManifestEntry[] = [];
-  const expected = new Set<string>(["project.after"]);
+  const expected = new Set<string>(cs >= 6 ? ["project.after", STORE_COPY] : ["project.after"]);
   recTurns.forEach((t, i) => {
     if (typeof t.label !== "string" || !/^[a-z0-9-]+$/.test(t.label)) refuse(`turn ${i} has no valid label`);
     const f = turnFile(i, t.label);
@@ -280,6 +285,11 @@ function regradeOrThrow(input: RegradeInput): Regraded {
     step = flow.next(response);
   }
   if (consumed !== recTurns.length) refuse(`the record has ${recTurns.length} turns, the flow ends after ${consumed}`);
+  if (cs >= 6) {
+    const store = input.setupReviewStore!;
+    applySetupReviewChecks(state, store, variant);
+    for (const [k, v] of Object.entries(treeDigest(store)).sort(([a], [b]) => a.localeCompare(b))) manifest.push({ path: `${STORE_COPY}/${k}`, sha256: v });
+  }
 
   const evidence = finishDrive(state, input.reviewLine);
   const semanticLines = input.semanticLines(state.reviewSkipped, state.turns, exclusion, input.fixture.afterPackage.some((x) => x.label === "adjust"), cs, evidence.reviewLines, evidence.judgeLines ?? []);

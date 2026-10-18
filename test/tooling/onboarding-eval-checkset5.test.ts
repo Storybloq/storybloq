@@ -162,7 +162,7 @@ const OPENING = "the reviewer-unavailable stop did not open the run";
 
 describe("check set 5: version and rule text", () => {
   it("V1: check set 5 is current and known; its rules extend check set 4's, which are unchanged", () => {
-    expect(lib.CHECK_SET_VERSION).toBe(5);
+    expect(lib.CHECK_SET_VERSION).toBe(6);
     expect(lib.KNOWN_CHECK_SETS).toContain(5);
     expect(createHash("sha256").update(lib.WRITE_RULE_VERSION_4).digest("hex")).toBe("ffba587587ca1a9407bf098df6d60e2ef73514d2a629d1f3c1771a28cb7e54fd");
     expect(createHash("sha256").update(lib.STOP_RULE_VERSION_4).digest("hex")).toBe("2e39b1aba90f59eb8408bb93d374f9524afd9aec2a11668ef5865c90401d3aa9");

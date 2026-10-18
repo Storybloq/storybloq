@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { checkRecipe, codexTurn as codexTurnOf, shellSequence, STOP_RULE_VERSION, type ExpectedRecipe, type JudgeLine, type RuntimeExclusion } from "../../scripts/onboarding-eval-lib.js";
 import { sha256 } from "../../scripts/continuity-lib.js";
 import {
-  driveFlow, finishDrive, inspectAfter, MAX_DISCOVERY_ROUNDS, newDriveState, packetText, setupRecordFrom, writesAfterApprovalOf,
+  driveFlow, finishDrive, inspectAfter, inventoryFor, MAX_DISCOVERY_ROUNDS, newDriveState, packetText, setupRecordFrom, writesAfterApprovalOf,
   type DriveState, type Rubric, type StoryReader, type TurnResponse, type Variant,
 } from "../../scripts/onboarding-eval-drive.js";
 import { diskReader, diskStoryBytes, ownerScript, packageTurns, regradeCli, regradeInputFrom, REVIEW_LINE, runSemanticLines } from "../../scripts/onboarding-eval-run.js";
@@ -20,6 +20,8 @@ import {
   canonical, evidenceHash, G1, judgeable, judgeVerdict, OPAQUE_LIMIT, readRevisions, recipeSubshell, regrade, runRegrade, turnFile,
   type Candidate, type RegradeInput, type RegradeJudge, type Regraded,
 } from "../../scripts/onboarding-eval-regrade.js";
+import { applySetupReviewChecks, checkSetupReview, cs6TurnsFrom, STORE_COPY, STORE_COPY_MISSING } from "../../scripts/onboarding-eval-checkset6.js";
+import { createHash } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNS = join(HERE, "..", "fixtures", "onboarding-eval-runs", "regrade");
@@ -161,13 +163,14 @@ interface Synth {
 }
 
 /** A run the runner would have recorded, without spawning a client: the same flow, record fields and packet. */
-function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null): Synth {
+function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string | null = null, cs6: { readonly store: string } | null = null): Synth {
+  const cs = cs6 === null ? 1 : 6;
   const story: StoryReader | null = storyDir === null ? null : diskReader(storyDir);
   const runId = "synthetic";
   const exclusion = RUN6_RECORD.treeExclusion;
   const afterPackage = packageTurns(variant, SCRIPT);
   const raw = new Map<string, string>();
-  const state = newDriveState();
+  const state = newDriveState(cs);
   const flow = driveFlow({ variant, firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, exclusion }, state);
   let n = 0;
   for (let step = flow.next(); !step.done;) {
@@ -176,47 +179,106 @@ function synth(variant: Variant, script: readonly SynthTurn[], storyDir: string 
     const file = turnFile(n, step.value.label);
     const text = codexRaw(t);
     raw.set(`${file}.jsonl`, text).set(`${file}.stderr.txt`, "");
-    const parsed = regradeTurn(text);
+    const parsed = regradeTurn(text, cs);
     const infra = t.infra !== undefined ? t.infra : parsed.terminal.status !== "completed" ? `terminal ${parsed.terminal.status}: ${parsed.terminal.detail}` : null;
     const response: TurnResponse = { turn: parsed, exitCode: infra?.startsWith("exit ") ? Number(infra.slice(5)) : 0, infraFailure: infra, stderrPath: `/raw/${runId}/${file}.stderr.txt`, treeChanges: () => [...(t.tree ?? [])] };
     n++;
     step = flow.next(response);
   }
   if (n !== script.length) throw new Error(`the flow ended after ${n} of ${script.length} scripted turns`);
+  if (cs6 !== null) applySetupReviewChecks(state, cs6.store, variant);
   const evidence = finishDrive(state, REVIEW_LINE);
   const adjusted = afterPackage.some((x) => x.label === "adjust");
-  const semanticLines = runSemanticLines(state.reviewSkipped, state.turns, exclusion, adjusted);
+  const semanticLines = runSemanticLines(state.reviewSkipped, state.turns, exclusion, adjusted, cs, evidence.reviewLines, evidence.judgeLines ?? []);
   const reader = story ?? NO_STORY;
   const { inspection, ledgerRecords } = inspectAfter(state, reader, RUBRIC, () => ({}), variant);
   const text = packetText({
     runId, semanticLines, reviewSkipped: state.reviewSkipped, exclusion, rubric: RUBRIC, briefs: {}, projectFiles: {}, turns: state.turns, evidence, ledgerRecords,
-    setupRecord: story ? setupRecordFrom(story) : "", final: state.final,
+    setupRecord: story ? setupRecordFrom(story) : "", final: state.final, ...(cs6 !== null ? { checkSet: cs } : {}),
   });
   const record = JSON.parse(JSON.stringify({
     runId, client: "codex", fixture: "mixed-stack", variant, turns: state.turns, discoveryRounds: state.rounds, reviewSkipped: state.reviewSkipped,
     reviewEvidence: evidence.reviewEvidence, writesAfterApproval: writesAfterApprovalOf(state), unparsed: evidence.unparsed, inspection, failures: state.failures,
     infraFailed: state.infraFailed, treeExclusion: exclusion, semanticLines, bound: evidence.bound, packetSha256: sha256(text), verdict: "FAIL",
+    ...(cs6 !== null ? {
+      checkSetVersion: cs, ...(evidence.reviewerCapability !== undefined ? { reviewerCapability: evidence.reviewerCapability } : {}),
+      reviewerInventory: inventoryFor(variant), skillCitations: evidence.skillCitations ?? [], instructionContext: { status: "unknown" },
+    } : {}),
   })) as Record<string, any>;
   const input: RegradeInput = {
-    recordBytes: Buffer.from(JSON.stringify(record, null, 2)), packetBytes: Buffer.from(text), rawNames: [...raw.keys(), "project.after"],
+    recordBytes: Buffer.from(JSON.stringify(record, null, 2)), packetBytes: Buffer.from(text), rawNames: [...raw.keys(), "project.after", ...(cs6 !== null ? [STORE_COPY] : [])],
     readRaw: (name) => { const t = raw.get(name); if (t === undefined) throw new Error(`no raw ${name}`); return Buffer.from(t); },
     story: storyDir === null ? null : diskStoryBytes(storyDir),
-    fixture: { firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: RUBRIC, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [], checkSet: 1 },
+    ...(cs6 !== null ? { setupReviewStore: cs6.store } : {}),
+    fixture: { firstPrompt: "$story set it up", discoveryPrompt: SCRIPT.discovery, afterPackage, rubric: RUBRIC, beforeConfig: () => ({}), briefs: {}, projectFiles: {}, files: [], checkSet: cs },
     reviewLine: REVIEW_LINE, semanticLines: runSemanticLines,
   };
   return { input, state, record, packet: JSON.parse(text) as Record<string, any> };
 }
 
 /** The codex turn parser the regrade uses, with the runner's (empty) rollout models. */
-function regradeTurn(text: string) {
+function regradeTurn(text: string, cs = 1) {
   const lines = text.split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
-  return { ...codexTurnOf(lines), models: [] as string[] };
+  return { ...codexTurnOf(lines, cs), models: [] as string[] };
 }
 
 /** A clean run: reviewed before the package, then inspect, adjust and approve, on run 6's approved ledger. */
 const CLEAN: SynthTurn[] = [
   { text: PACKAGE, commands: [REVIEW] }, { text: PACKAGE }, { text: PACKAGE }, { text: "Setup is approved and written." },
 ];
+
+describe("regrade: check set 6 reads the run's copy of its setup review store (T-536)", () => {
+  const SETUP = "SS-0a1b2c3d";
+  const PROBE = "Reviewer probe: codex codex-cli 9.9.9";
+  const sha = (x: string): string => createHash("sha256").update(x).digest("hex");
+  const packet = "## Context\nA club board.\n\n## Plan\nT-001 Board\nT-002 Members\n";
+  const lines = `${PROBE}\nIndependent review: approve, invocation SR-11112222, revision ${sha(packet).slice(0, 12)}`;
+  const shown = `Here is the package.\n\nPlan, revision ${sha(packet).slice(0, 12)}:\nT-001 Board\nT-002 Members\nEnd of plan, revision ${sha(packet).slice(0, 12)}\n\n${lines}\n- Approve setup\n- Adjust the plan\n- Inspect details`;
+  const heredoc = (verb: string): string => `storybloq setup-review ${verb} --setup ${SETUP} <<'STORYBLOQ_PACKET'\n${packet}STORYBLOQ_PACKET`;
+  const SCRIPT6: SynthTurn[] = [
+    { text: shown, commands: [{ command: "storybloq setup-review gate", output: `Setup id: ${SETUP}\n${PROBE}\n` }, { command: heredoc("run"), output: `${lines}\n` }, { command: heredoc("status"), output: `${lines}\n` }] },
+    { text: shown }, { text: shown }, { text: "Setup is approved and written." },
+  ];
+  function withStore<T>(f: (store: string, revision: string) => T): T {
+    const store = mkdtempSync(join(tmpdir(), "regrade6-"));
+    try {
+      const dir = join(store, "0123456789abcdef", SETUP, "revisions");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${sha(packet)}.md`), packet);
+      return f(store, join(dir, `${sha(packet)}.md`));
+    } finally { rmSync(store, { recursive: true, force: true }); }
+  }
+
+  it("a check set 6 run regrades from the copy, rule 2 included, and pins the copy's files", () => {
+    withStore((store) => {
+      const s = synth("none", SCRIPT6, RUN6_STORY, { store });
+      const turns = cs6TurnsFrom(s.state.turns, s.state.allCalls);
+      // Rule 2 passes on this package only because the copy holds its revision.
+      expect(checkSetupReview(turns, { storeRoot: store, unavailableArm: false }).failures.filter((f) => /revision|Plan/.test(f))).toEqual([]);
+      const g = accepted(s.input);
+      expect(g.checkSet).toBe(6);
+      expect(g.manifest.map((m) => m.path)).toContain(`${STORE_COPY}/0123456789abcdef/${SETUP}/revisions/${sha(packet)}.md`);
+    });
+  });
+
+  it("a check set 6 run whose copy is gone is refused by name", () => {
+    withStore((store) => {
+      const s = synth("none", SCRIPT6, RUN6_STORY, { store });
+      const r = regrade({ ...s.input, setupReviewStore: null, rawNames: s.input.rawNames.filter((x) => x !== STORE_COPY) });
+      expect(r.ok ? "accepted" : r.reason).toBe(STORE_COPY_MISSING);
+      expect(STORE_COPY_MISSING).toBe("the run's setup review store copy (setup-review-store) is missing");
+    });
+  });
+
+  it("a copy that lost the revision the run read replays different failures and is refused", () => {
+    withStore((store, revision) => {
+      const s = synth("none", SCRIPT6, RUN6_STORY, { store });
+      rmSync(revision);
+      const r = regrade(s.input);
+      expect(r.ok ? "accepted" : r.reason).toBe("the record's failures differ from the replayed run's (a failure was added, removed, reordered or changed)");
+    });
+  });
+});
 
 describe("regrade: the replay is the runner's flow", () => {
   it("accepts an unaltered synthetic run and derives the same record", () => {

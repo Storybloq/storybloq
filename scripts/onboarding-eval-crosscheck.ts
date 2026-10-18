@@ -21,6 +21,7 @@ import { parseStream, sha256 } from "./continuity-lib.js";
 import { driveFlow, finishDrive, inspectAfter, newDriveState, type DriveState, type StoryReader, type Variant } from "./onboarding-eval-drive.js";
 import { regradeInputFrom } from "./onboarding-eval-run.js";
 import { turnFile } from "./onboarding-eval-regrade.js";
+import { applySetupReviewChecks, STORE_COPY_MISSING } from "./onboarding-eval-checkset6.js";
 
 export interface CrosscheckReport {
   readonly source: string;
@@ -83,6 +84,10 @@ function replay(recordDir: string, rawDir: string, checkSet: number): Replayed {
     const changes = rec.treeChanges;
     step = flow.next({ turn, exitCode: rec.exitCode, infraFailure: rec.infraFailure, stderrPath, treeChanges: () => changes });
     n++;
+  }
+  if (checkSet >= 6) {
+    if (!input.setupReviewStore) throw new Error(STORE_COPY_MISSING);
+    applySetupReviewChecks(state, input.setupReviewStore, record.variant);
   }
   const evidence = finishDrive(state, input.reviewLine);
   const semanticLines = input.semanticLines(state.reviewSkipped, state.turns, record.treeExclusion, input.fixture.afterPackage.some((x) => x.label === "adjust"), checkSet, evidence.reviewLines, evidence.judgeLines ?? []);

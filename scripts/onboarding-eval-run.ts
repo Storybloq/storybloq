@@ -58,6 +58,7 @@ import {
   CHECK_SET_VERSION, claudeTurn, codexRolloutModels, rolloutInstructions, codexTurn, digestChanges, rubricFor, runtimeExclusion, runVerdict, semanticStopLine, TREE_EXCLUSION_LINE, shellQuote, treeDigest, turnArgs,
   type EvalTurn, type ExpectedRecipe, type JudgeResult, type RunVerdict, type RuntimeExclusion, type StopCheck,
 } from "./onboarding-eval-lib.js";
+import { applySetupReviewChecks, STORE_COPY } from "./onboarding-eval-checkset6.js";
 import { runRegrade, type ManifestEntry, type RegradeInput, type RegradeJudge, type StoryBytes } from "./onboarding-eval-regrade.js";
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,13 +168,23 @@ export function materializeFixture(fixture: string, dest: string): string {
 
 /** PATH with every `codex` executable removed: its directories are replaced by a scratch bin of links to their other executables. */
 export function pathWithoutCodex(path: string, scratchBin: string): string {
+  return pathWithout(path, scratchBin, ["codex"]);
+}
+
+/**
+ * PATH with every directory holding one of `names` replaced by one scratch
+ * directory of links to its other entries. Check set 6 (T-536) removes claude
+ * too: the setup reviewer starts either, so an arm with claude left on PATH
+ * would never be unavailable.
+ */
+export function pathWithout(path: string, scratchBin: string, names: readonly string[]): string {
   mkdirSync(scratchBin, { recursive: true });
   const out: string[] = [];
   let linked = false;
   for (const dir of path.split(delimiter).filter(Boolean)) {
-    if (!existsSync(join(dir, "codex"))) { out.push(dir); continue; }
+    if (!names.some((n) => existsSync(join(dir, n)))) { out.push(dir); continue; }
     for (const name of readdirSync(dir)) {
-      if (name === "codex" || existsSync(join(scratchBin, name))) continue;
+      if (names.includes(name) || existsSync(join(scratchBin, name))) continue;
       try { symlinkSync(join(dir, name), join(scratchBin, name)); } catch { /* unreadable entry: skipped */ }
     }
     if (!linked) { out.push(scratchBin); linked = true; }
@@ -400,6 +411,10 @@ async function main(): Promise<void> {
   const env: NodeJS.ProcessEnv = scrubClientEnv(process.env);
   for (const k of ALTERNATE_AUTH_ENV_VARS) delete env[k];
   env.STORYBLOQ_GLOBAL_DIR = join(work, "storybloq-global");
+  // Check set 6 (T-536): the setup reviewer's store, per run, so rule 2 reads this run's revisions only.
+  // The name carries the default store's prefix, so a turn that touches it reads as touching the store in a replay too.
+  const setupReviewStore = join(work, "storybloq-setup-review-store");
+  env.STORYBLOQ_SETUP_REVIEW_DIR = setupReviewStore;
   // The client binary is resolved on the ORIGINAL path, before any filtering below touches PATH.
   const clientBin = resolveOnPath(o.client, process.env.PATH ?? "");
   if (clientBin === null) throw new Error(`onboarding-eval: ${o.client} is not on PATH`);
@@ -430,9 +445,12 @@ async function main(): Promise<void> {
   if (effectivePaths.home !== env.HOME || effectivePaths.codexHome !== env.CODEX_HOME) throw new Error(`onboarding-eval: effective paths differ from the provisioned ones: ${JSON.stringify(effectivePaths)}`);
   if (o.variant === "reviewer-unavailable") {
     // Only the evaluated model's shell loses `codex`; the client itself runs from clientBin.
-    env.PATH = pathWithoutCodex(env.PATH ?? "", join(work, "bin"));
-    const probe = spawnSync("/bin/sh", ["-c", "command -v codex"], { env, encoding: "utf-8" });
-    if (probe.status === 0) throw new Error(`onboarding-eval: codex is still on the eval PATH (${probe.stdout.trim()})`);
+    const reviewers = CHECK_SET_VERSION >= 6 ? ["codex", "claude"] : ["codex"];
+    env.PATH = pathWithout(env.PATH ?? "", join(work, "bin"), reviewers);
+    for (const name of reviewers) {
+      const probe = spawnSync("/bin/sh", ["-c", `command -v ${name}`], { env, encoding: "utf-8" });
+      if (probe.status === 0) throw new Error(`onboarding-eval: ${name} is still on the eval PATH (${probe.stdout.trim()})`);
+    }
   }
   const resolvedCli = spawnSync("/bin/sh", ["-c", "command -v storybloq"], { env, encoding: "utf-8" }).stdout.trim();
   if (resolvedCli !== launcher) throw new Error(`onboarding-eval: storybloq resolves to ${resolvedCli || "nothing"}, not this checkout's launcher ${launcher}`);
@@ -453,6 +471,12 @@ async function main(): Promise<void> {
     writeFileSync(`${stem}.stderr.txt`, r.stderr);
     const response: TurnResponse = { turn: r.turn, exitCode: r.exitCode, infraFailure: r.infraFailure, stderrPath: `${stem}.stderr.txt`, treeChanges: () => digestChanges(before, treeDigest(project), exclusion) };
     step = flow.next(response);
+  }
+  if (CHECK_SET_VERSION >= 6) {
+    applySetupReviewChecks(state, setupReviewStore, o.variant);
+    // Always present for check set 6, empty when nothing ran, so a missing copy is a loss the regrade names.
+    if (existsSync(setupReviewStore)) cpSync(setupReviewStore, join(rawDir, STORE_COPY), { recursive: true, verbatimSymlinks: true });
+    else mkdirSync(join(rawDir, STORE_COPY));
   }
   const { turns, failures, reviewSkipped } = state;
   const evidence = finishDrive(state, REVIEW_LINE);
@@ -646,6 +670,7 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
   const beforePath = join("project", ".story", "config.json");
   const beforeText = existsSync(join(fixtureDir, beforePath)) ? pinned(beforePath) : null;
   const story = join(rawDir, "project.after", ".story");
+  const storeCopy = join(rawDir, STORE_COPY);
   const evidence = fixtureEvidence(join(fixtureDir, "project"));
   return {
     recordBytes,
@@ -653,6 +678,7 @@ export function regradeInputFrom(recordDir: string, rawDir: string, fixtures = F
     rawNames: readdirSync(rawDir),
     readRaw: (name) => readFileSync(join(rawDir, name)),
     story: existsSync(story) ? diskStoryBytes(story) : null,
+    setupReviewStore: existsSync(storeCopy) ? storeCopy : null,
     fixture: {
       firstPrompt, discoveryPrompt: script.discovery, afterPackage: packageTurns(record.variant as Variant, script), rubric,
       beforeConfig: () => { if (beforeText === null) throw new Error("the fixture has no .story/config.json"); return JSON.parse(beforeText) as Record<string, unknown>; },

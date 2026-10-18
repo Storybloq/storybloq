@@ -12,13 +12,13 @@
  * one (proceed), and absence stays unambiguous permission to create. Archives
  * are evidence, never authority: exactly one transitionId is ever LIVE.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, afterAll, onTestFinished, vi } from "vitest";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, existsSync, linkSync, statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync, spawn } from "node:child_process";
+import { spawnSync, spawn, type ChildProcess } from "node:child_process";
 
 import {
   readCancellationIntent,
@@ -151,8 +151,197 @@ function assertCanonicalInvariants(liveTids: readonly string[]): void {
   if (read.kind === "valid") expect(liveTids).toContain(read.intent.transitionId);
 }
 
+// ISS-1386: tsx children. tsx opens an IPC socket under the child's TMPDIR,
+// and macOS caps a socket path at 103 bytes, so a long TMPDIR killed the child
+// before its script loaded, behind `stdio: "ignore"` and a 30 s poll. Every
+// child now gets a short TMPDIR of its own, its stderr is kept for the failure
+// message, its completion is one promise registered at spawn, and the file's
+// teardown stops its whole process group before any directory is removed.
+
+const tsxRunner = join(process.cwd(), "node_modules", ".bin", "tsx");
+const fixture = (name: string) => join(process.cwd(), "test", "autonomous", "fixtures", name);
+const SOCKET_PATH_LIMIT = 103;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+interface Completion {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly error: NodeJS.ErrnoException | undefined;
+}
+
+interface Spawned {
+  readonly child: ChildProcess;
+  /** The launcher's process group; absent when the spawn failed or groups do not exist. */
+  readonly pgid: number | undefined;
+  readonly tmp: string;
+  stderr(): string;
+  spawnError(): NodeJS.ErrnoException | undefined;
+  /** Settles on `close` (stdio drained), or on an `error` whose `close` never comes. Never rejects. */
+  readonly done: Promise<Completion>;
+}
+
+interface MarkerResult {
+  readonly found: boolean;
+  readonly stderr: string;
+  readonly spawnError: NodeJS.ErrnoException | undefined;
+}
+
+const children: Spawned[] = [];
+const childTmpDirs: string[] = [];
+/** Read only by the emergency `afterAll`, which sits outside every helper. */
+const retained = { pgids: new Set<number>(), paths: new Set<string>() };
+
+function isErrno(err: unknown, code: string): boolean {
+  return (err as NodeJS.ErrnoException | undefined)?.code === code;
+}
+
+/** True while any process in the group exists (EPERM still means it exists). */
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    if (isErrno(err, "ESRCH")) return false;
+    if (isErrno(err, "EPERM")) return true;
+    throw err;
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (isErrno(err, "ESRCH")) return false;
+    if (isErrno(err, "EPERM")) return true;
+    throw err;
+  }
+}
+
+async function until(predicate: () => boolean, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (!predicate()) {
+    if (Date.now() >= deadline) return false;
+    await sleep(25);
+  }
+  return true;
+}
+
+/** A fresh TMPDIR for one child, short enough for tsx's socket path. */
+function shortChildTmp(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const fits = (base: string) =>
+    Buffer.byteLength(join(base, "sbq-XXXXXX", `tsx-${uid}`, "9999999.pipe")) <= SOCKET_PATH_LIMIT;
+  const base = process.platform === "win32" || fits(tmpdir()) ? tmpdir() : "/tmp";
+  const dir = mkdtempSync(join(base, "sbq-"));
+  childTmpDirs.push(dir);
+  retained.paths.add(dir);
+  return dir;
+}
+
+function spawnTsx(args: readonly string[], env: Record<string, string> = {}, runner = tsxRunner): Spawned {
+  const tmp = shortChildTmp();
+  const posix = process.platform !== "win32";
+  const child = spawn(runner, [...args], {
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "ignore", "ignore"],
+    detached: posix,
+  });
+  // A failed spawn has no pid: nothing to signal, only `done` to await.
+  const pgid = posix && Number.isInteger(child.pid) && (child.pid as number) > 0 ? child.pid : undefined;
+  if (pgid !== undefined) retained.pgids.add(pgid);
+  let error: NodeJS.ErrnoException | undefined;
+  let stderr = "";
+  const done = new Promise<Completion>((resolve) => {
+    child.on("error", () => {});
+    child.on("exit", (code, signal) => resolve({ code, signal, error }));
+  });
+  child.stderr?.setEncoding("utf-8");
+  child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+  const spawned: Spawned = { child, pgid, tmp, stderr: () => stderr, spawnError: () => error, done };
+  children.push(spawned);
+  return spawned;
+}
+
+/** Polls for `marker` until it appears, the child finishes, or 30 s pass. */
+async function waitForMarker(marker: string, spawned: Spawned): Promise<MarkerResult> {
+  const deadline = Date.now() + 30_000;
+  while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
+  // A child can write the marker and exit within one poll interval.
+  return { found: existsSync(marker), stderr: spawned.stderr(), spawnError: spawned.spawnError() };
+}
+
+function markerMessage(marker: string, result: MarkerResult): string {
+  return `marker ${marker} never appeared; spawn error: ${result.spawnError?.code ?? "none"}; child stderr:\n${result.stderr || "(empty)"}`;
+}
+
+/**
+ * Stops every child's process group (SIGTERM, then SIGKILL, each bounded),
+ * requires the group gone and the child's completion settled, and only then
+ * removes the children's temp directories.
+ */
+async function teardownChildren(): Promise<void> {
+  const survivors: string[] = [];
+  for (const spawned of children.splice(0)) {
+    const { pgid } = spawned;
+    if (pgid !== undefined) {
+      for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+        if (!groupAlive(pgid)) break;
+        try {
+          process.kill(-pgid, signal);
+        } catch (err) {
+          if (!isErrno(err, "ESRCH")) throw err;
+        }
+        await until(() => !groupAlive(pgid), 2_000);
+      }
+    } else if (process.platform === "win32" && spawned.child.exitCode === null) {
+      spawned.child.kill("SIGKILL");
+    }
+    const settled = await Promise.race([spawned.done.then(() => true), sleep(2_000).then(() => false)]);
+    if ((pgid !== undefined && groupAlive(pgid)) || !settled) survivors.push(String(pgid ?? spawned.child.pid));
+  }
+  if (survivors.length > 0) throw new Error(`teardown left children alive: ${survivors.join(", ")}`);
+  for (const dir of childTmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * The emergency net: whatever a test or a broken teardown left behind, every
+ * retained group is killed and polled to ESRCH, and every retained path is
+ * removed. It keeps going past any one failure and reports them all.
+ */
+afterAll(async () => {
+  const failures: string[] = [];
+  for (const pgid of retained.pgids) {
+    try {
+      process.kill(-pgid, "SIGKILL");
+    } catch (err) {
+      if (!isErrno(err, "ESRCH")) failures.push(`kill ${pgid}: ${String(err)}`);
+    }
+  }
+  const deadline = Date.now() + 5_000;
+  for (const pgid of retained.pgids) {
+    try {
+      while (groupAlive(pgid) && Date.now() < deadline) await sleep(25);
+      if (groupAlive(pgid)) failures.push(`group ${pgid} survived`);
+    } catch (err) {
+      failures.push(`probe ${pgid}: ${String(err)}`);
+    }
+  }
+  for (const path of retained.paths) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch (err) {
+      failures.push(`remove ${path}: ${String(err)}`);
+    }
+  }
+  retained.pgids.clear();
+  retained.paths.clear();
+  if (failures.length > 0) throw new Error(`emergency cleanup: ${failures.join("; ")}`);
+});
+
 beforeEach(() => {
   sessDir = mkdtempSync(join(tmpdir(), "t450-intent-"));
+  retained.paths.add(sessDir);
   __intentTesting.at = () => undefined;
   __intentTesting.tempSuffix = null;
 });
@@ -598,39 +787,32 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     // name last resolved to, so releasing A makes A link B'S INODE to the
     // canonical: A reports success while the record on disk is B's. Under
     // per-attempt names A can only ever link its own.
-    const runner = join(process.cwd(), "node_modules", ".bin", "tsx");
-    const script = join(process.cwd(), "test", "autonomous", "fixtures", "t450-concurrent-writer.ts");
+    const script = fixture("t450-concurrent-writer.ts");
     const spawnParked = (role: string, out: string, tid: string, sig: string, go: string) =>
-      spawn(runner, [script, sessDir, role, out], {
-        env: {
-          ...process.env,
-          INTENT: JSON.stringify(intentFixture({ transitionId: tid })),
-          PARK_SEAM: "create:tmp-fsynced",
-          PARK_SIGNAL: sig,
-          PARK_GO: go,
-        },
-        stdio: "ignore",
+      spawnTsx([script, sessDir, role, out], {
+        INTENT: JSON.stringify(intentFixture({ transitionId: tid })),
+        PARK_SEAM: "create:tmp-fsynced",
+        PARK_SIGNAL: sig,
+        PARK_GO: go,
       });
-    const await_ = async (name: string) => {
-      const deadline = Date.now() + 30_000;
-      while (!existsSync(join(sessDir, name)) && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      expect(existsSync(join(sessDir, name))).toBe(true);
+    const await_ = async (name: string, spawned: Spawned) => {
+      const marker = join(sessDir, name);
+      const result = await waitForMarker(marker, spawned);
+      expect(result.found, markerMessage(marker, result)).toBe(true);
     };
 
     const a = spawnParked("a", "result-a", TID, "a-parked", "a-go");
-    await await_("a-parked");
+    await await_("a-parked", a);
     // B parks with ITS temp durable. This is the instant the shared name would
     // have stopped meaning what A wrote.
     const bProc = spawnParked("b", "result-b", TID2, "b-parked", "b-go");
-    await await_("b-parked");
+    await await_("b-parked", bProc);
 
     // Release A first: it publishes through the name it claimed.
     writeFileSync(join(sessDir, "a-go"), "1");
-    await new Promise((r) => a.on("exit", r));
+    await a.done;
     writeFileSync(join(sessDir, "b-go"), "1");
-    await new Promise((r) => bProc.on("exit", r));
+    await bProc.done;
 
     const ra = JSON.parse(readFileSync(join(sessDir, "result-a"), "utf-8"));
     const rb = JSON.parse(readFileSync(join(sessDir, "result-b"), "utf-8"));
@@ -689,19 +871,13 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     expect(createCancellationIntent(sessDir, intentFixture()).ok).toBe(true);
     const canonicalBytes = readFileSync(join(sessDir, CANCELLATION_INTENT_FILE), "utf-8");
 
-    const runner = join(process.cwd(), "node_modules", ".bin", "tsx");
-    const script = join(process.cwd(), "test", "autonomous", "fixtures", "t450-concurrent-writer.ts");
+    const script = fixture("t450-concurrent-writer.ts");
     const spawnParked = (mode: string, out: string, intent: unknown, seam: string, sig: string, go: string) =>
-      spawn(runner, [script, sessDir, mode, out], {
-        env: { ...process.env, INTENT: JSON.stringify(intent), PARK_SEAM: seam, PARK_SIGNAL: sig, PARK_GO: go },
-        stdio: "ignore",
-      });
-    const await_ = async (name: string) => {
-      const deadline = Date.now() + 30_000;
-      while (!existsSync(join(sessDir, name)) && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      expect(existsSync(join(sessDir, name))).toBe(true);
+      spawnTsx([script, sessDir, mode, out], { INTENT: JSON.stringify(intent), PARK_SEAM: seam, PARK_SIGNAL: sig, PARK_GO: go });
+    const await_ = async (name: string, spawned: Spawned) => {
+      const marker = join(sessDir, name);
+      const result = await waitForMarker(marker, spawned);
+      expect(result.found, markerMessage(marker, result)).toBe(true);
     };
 
     // The ARCHIVE writer parks first, holding the canonical's bytes staged.
@@ -713,7 +889,7 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
       }),
       "supersede:archive:tmp-fsynced", "sup-parked", "sup-go",
     );
-    await await_("sup-parked");
+    await await_("sup-parked", superseder);
 
     // The CREATE writer then stages its own bytes. Under one shared name this
     // is the instant the archive writer's staged content stops being the
@@ -722,12 +898,12 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
       "create", "result-cre", intentFixture({ transitionId: TID3 }),
       "create:tmp-fsynced", "cre-parked", "cre-go",
     );
-    await await_("cre-parked");
+    await await_("cre-parked", creator);
 
     writeFileSync(join(sessDir, "sup-go"), "1");
-    await new Promise((r) => superseder.on("exit", r));
+    await superseder.done;
     writeFileSync(join(sessDir, "cre-go"), "1");
-    await new Promise((r) => creator.on("exit", r));
+    await creator.done;
 
     // THE DECISIVE ASSERTION: the archive holds the record it superseded, not
     // the concurrent create's intent.
@@ -736,6 +912,105 @@ describe("T-450 6b: a stale temp can never reach through to a published record",
     expect(readFileSync(archive, "utf-8")).toBe(canonicalBytes);
     expect(JSON.parse(readFileSync(archive, "utf-8")).transitionId).toBe(TID);
   }, 90_000);
+
+  // ISS-1386: the tsx children themselves.
+
+  it("a tsx child starts under a TMPDIR too long for its socket", async () => {
+    const holder = mkdtempSync("/tmp/sbq-long-");
+    retained.paths.add(holder);
+    const long = join(holder, "p".repeat(110 - holder.length - 1));
+    mkdirSync(long);
+    expect(Buffer.byteLength(long)).toBe(110);
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = long;
+    try {
+      // An over-long socket path is truncated, not refused, so one child alone
+      // still starts; the truncated paths of two live children are the same
+      // file, and the second fails to listen (EADDRINUSE), as the two parked
+      // writers did. So a first child stays parked while the second starts.
+      const firstMarker = join(sessDir, "first-pid");
+      const first = spawnTsx([fixture("tsx-park.ts"), firstMarker]);
+      const firstResult = await waitForMarker(firstMarker, first);
+      expect(firstResult.found, markerMessage(firstMarker, firstResult)).toBe(true);
+      const marker = join(sessDir, "started");
+      const spawned = spawnTsx([fixture("tsx-marker.ts"), marker]);
+      const result = await waitForMarker(marker, spawned);
+      expect(result.found, markerMessage(marker, result)).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+      rmSync(holder, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("a child that fails shows its stderr in the failure message", async () => {
+    const marker = join(sessDir, "never");
+    const began = Date.now();
+    const result = await waitForMarker(marker, spawnTsx([fixture("tsx-fail.ts")]));
+    expect(result.found).toBe(false);
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(markerMessage(marker, result)).toContain("t450-stderr-sentinel");
+  }, 40_000);
+
+  it("a child that cannot spawn reports its spawn error, without waiting out the deadline", async () => {
+    const marker = join(sessDir, "never");
+    const began = Date.now();
+    const spawned = spawnTsx([fixture("tsx-marker.ts"), marker], {}, join(sessDir, "no-such-runner"));
+    const result = await waitForMarker(marker, spawned);
+    expect(result.found).toBe(false);
+    expect(Date.now() - began).toBeLessThan(10_000);
+    expect(spawned.spawnError()?.code).toBe("ENOENT");
+    expect(markerMessage(marker, result)).toContain("ENOENT");
+  }, 40_000);
+
+  /**
+   * Registers, for this attempt only, a check that runs after the file's real
+   * `afterEach` teardown: every recorded group and pid is gone and every
+   * recorded directory removed.
+   */
+  const checkAfterTeardown = (rec: { pgids: number[]; pids: number[]; dirs: string[] }) => {
+    onTestFinished(() => {
+      expect(rec.pgids.length + rec.pids.length).toBeGreaterThan(0);
+      expect(rec.dirs.length).toBeGreaterThan(0);
+      for (const pgid of rec.pgids) expect(groupAlive(pgid), `group ${pgid} survived teardown`).toBe(false);
+      for (const pid of rec.pids) expect(pidAlive(pid), `pid ${pid} survived teardown`).toBe(false);
+      for (const dir of rec.dirs) expect(existsSync(dir), `${dir} survived teardown`).toBe(false);
+    });
+  };
+  const groups = (...spawned: Spawned[]) => spawned.flatMap((x) => (x.pgid === undefined ? [] : [x.pgid]));
+
+  it.skipIf(process.platform === "win32")("a writer still parked when its partner fails is stopped by the registered teardown", async () => {
+    const parkedMarker = join(sessDir, "park-pid");
+    const parked = spawnTsx([fixture("tsx-park.ts"), parkedMarker]);
+    const parkedResult = await waitForMarker(parkedMarker, parked);
+    expect(parkedResult.found, markerMessage(parkedMarker, parkedResult)).toBe(true);
+    const parkedPid = Number(readFileSync(parkedMarker, "utf-8"));
+    const failing = spawnTsx([fixture("tsx-fail.ts")]);
+    const failed = await waitForMarker(join(sessDir, "never"), failing);
+    expect(failed.found).toBe(false);
+    expect(pidAlive(parkedPid)).toBe(true);
+    checkAfterTeardown({ pgids: groups(parked, failing), pids: [parkedPid], dirs: [parked.tmp, failing.tmp] });
+  }, 40_000);
+
+  it.skipIf(process.platform === "win32")("a launcher that exits while its descendant lives on is stopped by the registered teardown", async () => {
+    const marker = join(sessDir, "orphan-pid");
+    const launcher = spawnTsx([fixture("tsx-orphan.ts"), marker]);
+    const result = await waitForMarker(marker, launcher);
+    expect(result.found, markerMessage(marker, result)).toBe(true);
+    const descendant = Number(readFileSync(marker, "utf-8"));
+    await launcher.done;
+    expect(launcher.pgid).toBeDefined();
+    expect(groupAlive(launcher.pgid as number)).toBe(true);
+    expect(pidAlive(descendant)).toBe(true);
+    checkAfterTeardown({ pgids: groups(launcher), pids: [descendant], dirs: [launcher.tmp] });
+  }, 40_000);
+
+  it.skipIf(process.platform === "win32")("a finished child's directory is removed by the registered teardown", async () => {
+    const marker = join(sessDir, "finished");
+    const spawned = spawnTsx([fixture("tsx-marker.ts"), marker]);
+    await spawned.done;
+    checkAfterTeardown({ pgids: groups(spawned), pids: [], dirs: [spawned.tmp] });
+  }, 40_000);
 
   it("survives a stale temp left linked to an ARCHIVE", () => {
     // The evidence-corrupting direction: a later cycle rewriting archived

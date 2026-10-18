@@ -19,7 +19,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "status",
     description:
-      "Project summary: phase statuses, ticket/issue counts, blockers. --compact (T-320): JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. sessionDiagnostics, arrangements/arrangementWarnings, and every other top-level field are kept whole.",
+      "Project summary: phase statuses, ticket/issue counts, blockers. --compact: JSON only, ignores --format. Reduces the payload: drops archivedNotes, deprecatedLessons, and issueFlow.semantics; reduces each session record (activeSessions/resumableSessions/expiredLeaseSessions) to sessionId, sourceDir, state, mode, ownerTask, leaseState, leaseExpiresAt, compactPending, dropping ticketId/ticketTitle; reduces bus to enabled, daemonState, deliveryMode, pendingMessages, unacknowledgedCritical, nextActions, dropping participants, wake, hookDelivery, deliveryCapabilities, and every other bus field. Other top-level fields are kept whole.",
     usage: "storybloq status [--format <json|md>] [--client-task-id <value>] [--compact]",
     flags: ["--format", "--client-task-id", "--compact"],
   },
@@ -296,7 +296,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   {
     name: "lesson digest",
     description:
-      "Ranked digest of active lessons. --limit/--select (T-320): one-line-per-lesson form; --select is phase:<id>/component:<name>/item:<id>, falls back to --limit.",
+      "Ranked digest of active lessons. --limit/--select: one-line-per-lesson form; --select is phase:<id>/component:<name>/item:<id>, falls back to --limit.",
     usage: "storybloq lesson digest [--format json|md] [--limit <n>] [--select <selector,...>]",
     flags: ["--format", "--limit", "--select"],
   },
@@ -470,7 +470,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "ruling propose",
-    description: "Propose a ruling (T-522). A proposal binds nothing until accepted; drafting a replacement revokes nothing. --for names the items that gain the citation at accept",
+    description: "Propose a ruling. A proposal binds nothing until accepted; drafting a replacement revokes nothing. --for names the items that gain the citation at accept",
     usage: "storybloq ruling propose --text <value> --attribution <owner-direct|owner-via-manager-with-owner-veto|manager-delegated> --date <value> [--scope-tag <value>] [--for <value>] [--proposes-to-supersede <id>] [--client-task-id <value>] [--context <value>] [--alternatives <value>] [--consequences <value>] [--reconsider-when <value>] [--commit] [--format <json|md>]",
     flags: ["--text", "--attribution", "--date", "--scope-tag", "--for", "--proposes-to-supersede", "--client-task-id", "--context", "--alternatives", "--consequences", "--reconsider-when", "--format", "--commit"],
   },
@@ -566,7 +566,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "setup-review",
-    description: "Run the setup flow's independent plan review and print the package's review lines",
+    description: "Setup plan review",
     usage: "storybloq setup-review <gate|run|status> [--setup <id>] [--backend <codex|claude>] [--new-cycle --reason <text>] [--skipped]",
     flags: ["--setup", "--backend", "--new-cycle", "--reason", "--skipped"],
   },
@@ -608,7 +608,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     name: "triage",
-    description: "Bulk issue triage (T-486): selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
+    description: "Bulk issue triage: selectors pick open issues for one action; a dry run unless --apply, which writes them in one transaction (over 50 needs --force). Earmarked, in-progress, conflicted and deleted issues are protected",
     usage: "storybloq triage [--older-than <days>] [--severity <list>] [--component <list>] [--status <list>] [--orphan] [--unphased] [--disposition <value|none>] [--title-matches <regex>] [--resolution-matches <regex>] [--ids <list>] [--resolve] [--reason <text>] [--kind <kind>] [--set-disposition <value|none>] [--ref <ref>] [--relate <ticket>] [--set-phase <phase|none>] [--set-resolution-kind <kind>] [--apply] [--force] [--format <json|md>]",
     flags: ["--older-than", "--severity", "--component", "--status", "--orphan", "--unphased", "--disposition", "--title-matches", "--resolution-matches", "--ids", "--resolve", "--reason", "--kind", "--set-disposition", "--ref", "--relate", "--set-phase", "--set-resolution-kind", "--apply", "--force", "--format"],
   },
@@ -1115,7 +1115,7 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { name: "storybloq_phase_create", description: "Create phase in roadmap", params: ["id","name","label","description","summary?","after?","atStart?","commit?"] },
   { name: "storybloq_lesson_list", description: "List lessons", params: ["status?","tag?","source?"] },
   { name: "storybloq_lesson_get", description: "Get lesson by ID", params: ["id"] },
-  { name: "storybloq_lesson_digest", description: "Ranked digest of active lessons. limit/select (T-320); see CLI lesson digest.", params: ["limit?","select?"] },
+  { name: "storybloq_lesson_digest", description: "Ranked digest of active lessons. limit/select; see CLI lesson digest.", params: ["limit?","select?"] },
   { name: "storybloq_lesson_create", description: "Create lesson", params: ["title","content","context","source","tags?","supersedes?","commit?"] },
   { name: "storybloq_lesson_update", description: "Update lesson", params: ["id","title?","content?","context?","tags?","status?","commit?"] },
   { name: "storybloq_lesson_reinforce", description: "Reinforce lesson: increment count and update lastValidated", params: ["id","commit?"] },

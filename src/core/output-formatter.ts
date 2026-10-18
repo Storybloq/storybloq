@@ -3602,7 +3602,7 @@ export function formatReference(
   lines.push("");
   lines.push("### JSON output envelope");
   lines.push("");
-  lines.push('`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn (ISS-1192).');
+  lines.push('`--format json` normally returns `{"version":1,"data":...}` or `{"version":1,"error":{"code":...,"message":...}}`. Partial loads add `warnings` and exit 3. `--raw` emits only `data`, retaining error envelopes but dropping partial-load warnings; the exit code still signals them. Exceptions: `gc`, `conflicts list`, `conflicts show`, `resolve`, and `team reserve` return `{"ok","data"}`; `team init` and `team setup` return bare objects; `session list/show` use their own text/json shapes; Bus commands use their versioned wire format. Those exceptions reject `--raw` during argument validation, before execution. Each command names its shape in `--help`. Use JSON to round-trip description/impact/content: markdown render fences grow when fed back through `update --stdin`; updates strip them and warn.');
   lines.push("");
   lines.push("Run `storybloq <command>`. Positional arguments appear after the command; ? marks optional flags. Use `<command> --help` for value types and choices, or `storybloq reference --format json` for full usage strings.");
   lines.push("");
@@ -3638,7 +3638,7 @@ export function formatReference(
   lines.push("");
   lines.push("With no .story/ project on the path, the MCP server starts degraded and registers only:");
   lines.push("");
-  lines.push("- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first (T-446)");
+  lines.push("- **storybloq_session_guard** (clientTaskId?) -- the ownership verdict, available here because the no-project case is exactly where the skill runs its Step 0.5 guard first");
   lines.push("- **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) -- context usage and session facts without a project");
   lines.push("- **storybloq_health** (format?, only?, refresh?) -- read-only tooling checks without a project");
   lines.push("- **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then dynamically register the full tool set");

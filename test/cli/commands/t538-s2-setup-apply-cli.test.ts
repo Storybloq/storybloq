@@ -176,7 +176,7 @@ describe("storybloq setup-apply (CLI)", () => {
 describe("the reference entry (review r1 #8)", () => {
   it("marks --setup optional: required only with --resume or --resolve, and refused with a stdin payload", () => {
     const reference = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "src", "skill", "reference.md"), "utf-8");
-    expect(reference).toContain("- **setup-apply** (--setup?, --resume?, --resolve?) - Setup: stdin payload; --setup only with --resume/--resolve\n");
+    expect(reference).toContain("- **setup-apply** (--setup?, --resume?, --resolve?) - stdin payload; --setup with --resume/--resolve\n");
   });
 });
 

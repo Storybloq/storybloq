@@ -102,7 +102,7 @@ Run `storybloq <command>`. Positional arguments appear after the command; ? mark
 - **health** (--only?, --refresh?, --format?) - Check the tooling around this project: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session messaging, duplicate hook rows. JSON is the {version, data} envelope; --raw unwraps it
 - **codex-review <kind>** (--session, --format?) - Run native Codex plan or code review for an autonomous session
 - **setup-review <gate|run|status>** (--setup?, --backend?, --new-cycle?, --reason, --skipped?) - Setup plan review
-- **setup-apply** (--setup?, --resume?, --resolve?) - Setup: stdin payload; --setup only with --resume/--resolve
+- **setup-apply** (--setup?, --resume?, --resolve?) - stdin payload; --setup with --resume/--resolve
 - **setup-report** (--setup, --historical?) - Live or frozen setup report
 - **session intel-start** (--client?) - Capture the auto-compact setting for the current process era (SessionStart hook)
 - **session intel-prompt** (--client?) - Sample context pressure and emit additionalContext at imperative pressure (UserPromptSubmit hook)
@@ -259,8 +259,8 @@ Arguments marked ? are optional in the registered schema; handlers may require c
 - **storybloq_ruling_withdraw** (id, reason?, clientTaskId?, commit?) - Withdraw a proposed ruling; proposed records only
 - **storybloq_selftest** - Integration smoke test: create/update/delete cycle
 - **storybloq_health** (format?, only?, refresh?) - Tooling check: auto-compact window, CLI version, Codex review bridge (launched and answered, not just registered), /story skill, cross-session message delivery. Works without .story/, read-only
-- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) - Run setup: payload, resume or resolutions; no .story/ needed. First line [exit N]
-- **storybloq_setup_report** (setup, historical?) - Live setup report, or the frozen one. Read-only
+- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) - Payload, resume or resolutions; no .story/. First line [exit N]
+- **storybloq_setup_report** (setup, historical?) - Live or frozen setup report. Read-only
 - **storybloq_review_lenses_prepare** (stage, diff, changedFiles, ticketDescription?, reviewRound?, priorDeferrals?, sessionId?, target?) - Prepare multi-lens review on @storybloq/lenses: activation, secrets gate, context packaging, cited-ruling delivery, complete lens prompts
 - **storybloq_review_lenses_synthesize** (stage?, lensResults, activeLenses, skippedLenses, reviewRound?, reviewId?, diff?, changedFiles?, sessionId?, citedRulingsUndelivered?) - Run the lenses merger over raw lens outputs; returns the ReviewVerdict envelope. Echo prepare's citedRulingsUndelivered here: without a sessionId it is a delivery hold's only route
 - **storybloq_review_lenses_judge** (reviewVerdict?, convergenceHistory?) - Three-value verdict over synthesize's ReviewVerdict and the convergence history (no judge agent). Returns capReasons, coverageOnlyCap and uncoveredCoreLenses; report capReasons with the round, or a coverage cap routes like a findings cap
@@ -309,7 +309,7 @@ With no .story/ project on the path, the MCP server starts degraded and register
 - **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) -- context usage and session facts without a project
 - **storybloq_health** (format?, only?, refresh?) -- read-only tooling checks without a project
 - **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then register the full tool set
-- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows once the project exists
+- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows
 - **storybloq_status** (format?) -- returns setup guidance instead of a project summary
 
 Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.

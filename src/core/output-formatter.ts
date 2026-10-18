@@ -3701,7 +3701,7 @@ export function formatReference(
   lines.push("- **storybloq_session_intel** (format?, sessionId?, transcript?, callerModel?, full?, clientTaskId?) -- context usage and session facts without a project");
   lines.push("- **storybloq_health** (format?, only?, refresh?) -- read-only tooling checks without a project");
   lines.push("- **storybloq_init** (name, type?, language?) -- bootstrap a .story/ project, then register the full tool set");
-  lines.push("- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows once the project exists");
+  lines.push("- **storybloq_setup_apply** (payload?, resume?, setup?, resolutions?) -- run an approved setup; the full tool set follows");
   lines.push("- **storybloq_status** (format?) -- returns setup guidance instead of a project summary");
   lines.push("");
   lines.push("Destructive, admin, and git-integration workflows (delete, reconcile, conflicts, resolve, merge-driver, team, gc, repair, config, feedback) are CLI-only in both modes; see the CLI Commands section above.");

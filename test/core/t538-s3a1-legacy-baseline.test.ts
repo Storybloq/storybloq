@@ -80,7 +80,7 @@ function payload(): Record<string, unknown> {
 }
 
 /** Every file setup wrote, by path, plus the output lines of each call. Snapshots are excluded: their names carry the clock. */
-async function capture(root: string, calls: Record<string, string[]>): Promise<string> {
+async function capture(root: string, calls: Record<string, readonly string[]>): Promise<string> {
   const files: Record<string, string> = {};
   const walk = async (dir: string): Promise<void> => {
     for (const e of await readdir(dir, { withFileTypes: true })) {

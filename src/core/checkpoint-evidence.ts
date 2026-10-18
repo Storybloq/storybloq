@@ -10,6 +10,7 @@
  * Both must run under the project lock, against the state that lock loaded.
  */
 import { COMPLETION_EVIDENCE_AUTHORITY, CONFLICT_EVIDENCE_AUTHORITY } from "./checkpoint-guard.js";
+import type { VerificationWriteAuthority } from "./setup-verification-guard.js";
 import {
   checkpointApproved,
   checkpointDigest,
@@ -83,9 +84,10 @@ export async function completeDependent(state: CheckpointResolver, candidate: Ti
 /**
  * `completeDependent`'s refusal and evidence as a prepared write, for a caller
  * that commits the completion in its own transaction (T-538 S3a-1:
- * setup-apply's restore-planned). Nothing is written here.
+ * setup-apply's restore-planned; S3a-2: setup-verify, which passes its
+ * verification authority through). Nothing is written here.
  */
-export async function prepareCompletionWrite(state: CheckpointResolver, candidate: Ticket, root: string): Promise<
+export async function prepareCompletionWrite(state: CheckpointResolver, candidate: Ticket, root: string, options?: { verificationAuthority?: VerificationWriteAuthority }): Promise<
   | { readonly kind: "prepared"; readonly ticket: Ticket; readonly op: { target: string; content: string } }
   | { readonly kind: "checkpoint-blocked"; readonly checkpoints: readonly string[] }
 > {
@@ -99,7 +101,7 @@ export async function prepareCompletionWrite(state: CheckpointResolver, candidat
   if (evidence.length > 0) next.checkpointEvidence = evidence;
   else delete next.checkpointEvidence;
   const ticket = next as Ticket;
-  return { kind: "prepared", ticket, op: await prepareTicketWrite(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY }) };
+  return { kind: "prepared", ticket, op: await prepareTicketWrite(ticket, root, { authority: COMPLETION_EVIDENCE_AUTHORITY, verificationAuthority: options?.verificationAuthority }) };
 }
 
 /**

@@ -60,7 +60,8 @@ import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import { hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta } from "./setup-meta.js";
+import { parseSetupMeta, type VerificationSpec } from "./setup-meta.js";
+import { ESTABLISHMENT_CREATION_AUTHORITY } from "./setup-verification-guard.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
   parseSetupPayload,
@@ -146,6 +147,38 @@ export function effectiveRevision(p: SetupPayload): string {
   return digestOf({ approved: approvedPayload(p), amendments: p.amendments });
 }
 
+/**
+ * The part of a ticket's `setup` field setup owns. An establishment ticket
+ * (T-538 S3a-2) opts in to a projection: its key, what it establishes and its
+ * verification spec, never what setup-verify records later (result, decision,
+ * reopenings). Any other value is hashed as it is, as before.
+ */
+function ownedSetup(setup: unknown): unknown {
+  if (typeof setup !== "object" || setup === null || Array.isArray(setup)) return setup ?? null;
+  const s = setup as Record<string, unknown>;
+  if (!("establishes" in s) && !("verification" in s)) return setup;
+  const v = s.verification;
+  const spec = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>).spec : undefined;
+  return { setupId: s.setupId, key: s.key, ...("supersededBy" in s && { supersededBy: s.supersededBy }), establishes: s.establishes, spec };
+}
+
+/** How long one setup-verify run may take, from spawn until its process group is gone. */
+export const VERIFICATION_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** The verification spec an establishment ticket is created with: its component's test stage as the payload names it. */
+export function verificationSpec(p: SetupPayload, t: SetupPayload["tickets"][number]): VerificationSpec | null {
+  if (t.establishes === undefined) return null;
+  const comp = p.quality.components.find((c) => c.id === t.establishes!.component)!;
+  const test = comp.test!;
+  return { setupId: p.setupId, component: comp.id, stage: "test", workdir: comp.workdir, command: test.command, runner: test.runner!, wrapper: test.wrapper!, timeoutMs: VERIFICATION_TIMEOUT_MS };
+}
+
+/** The setup field setup writes on a planned ticket. */
+function plannedSetupField(p: SetupPayload, t: SetupPayload["tickets"][number]): Record<string, unknown> {
+  const spec = verificationSpec(p, t);
+  return { setupId: p.setupId, key: t.key, ...(spec !== null && { establishes: t.establishes, verification: { spec } }) };
+}
+
 /** Setup-owned fields per entity (plan v5 1d); the digest a receipt records. */
 export const ownedDigest = {
   phase: (phase: { id: string; name: string; label: string; description: string }, position: number) =>
@@ -157,7 +190,7 @@ export const ownedDigest = {
    */
   ticket: (t: Ticket, planned?: { status?: "open" | "complete" }) => {
     const raw = t as Ticket & { setup?: unknown; ownerCheckpoint?: { digest?: string } };
-    const owned = { title: t.title, type: t.type, phase: t.phase, description: t.description, setup: raw.setup ?? null, checkpoint: raw.ownerCheckpoint?.digest ?? null };
+    const owned = { title: t.title, type: t.type, phase: t.phase, description: t.description, setup: ownedSetup(raw.setup), checkpoint: raw.ownerCheckpoint?.digest ?? null };
     return digestOf(planned?.status === undefined ? owned : { ...owned, status: t.status, completedDate: t.completedDate ?? null });
   },
   issue: (i: Issue) => digestOf({ title: i.title, impact: i.impact, components: i.components, setup: (i as Issue & { setup?: unknown }).setup ?? null }),
@@ -712,8 +745,8 @@ async function stepTicket(ctx: StepContext, key: string): Promise<void> {
   const base = await prepareNewTicketUnlocked({ title: t.title, type: t.type, phase: phaseIdOf(p, t.phase), description: t.description, blockedBy: [], parentTicket: null }, ctx.lr.state, ctx.root);
   // Already-built work is created complete, dated the day the setup began (stable across resumes and restores).
   const done = plannedStatus(t) === "complete" ? { status: "complete" as const, completedDate: ctx.progress.note.createdDate } : {};
-  const ticket = { ...base, ...done, setup: { setupId: p.setupId, key } } as Ticket;
-  const op = await prepareTicketWrite(ticket, ctx.root);
+  const ticket = { ...base, ...done, setup: plannedSetupField(p, t) } as Ticket;
+  const op = await prepareTicketWrite(ticket, ctx.root, t.establishes !== undefined ? { verificationAuthority: ESTABLISHMENT_CREATION_AUTHORITY } : undefined);
   await commit(ctx, [op], { step: `item:${key}`, target: `ticket:${ticket.id}`, ownedPre: null, ownedPost: ownedDigest.ticket(ticket, t) });
   ctx.out.push(`-> storybloq · ticket ${ticket.displayId ?? ticket.id} "${t.title}" created (${key})`);
 }
@@ -1125,10 +1158,12 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
         : state.tickets.filter((t) => ((t as Ticket & { ownerCheckpoint?: unknown }).ownerCheckpoint !== undefined) === (planned.kind === "checkpoint"));
       const matches = pool.filter((x) => x.title === planned.item.title && parseSetupMeta(planned.kind === "issue" ? "issue" : "ticket", x).kind === "none");
       if (matches.length > 0) {
+        // An establishment ticket is never adopted: an adopted ticket has no verification spec (T-538 S3a-2).
+        const establishing = planned.kind === "ticket" && planned.item.establishes !== undefined;
         out.push({
           kind: "unkeyed", class: "unkeyed item matches a planned item", target: `${key} (${matches.map(label).join(", ")})`,
           observed: `an item titled "${planned.item.title}" that no setup owns`, expected: `setup to create ${key}`,
-          resolutions: [...matches.map((x) => `adopt ${x.id}`), "replace", "stop"], ref: { key, kind: planned.kind },
+          resolutions: [...(establishing ? [] : matches.map((x) => `adopt ${x.id}`)), "replace", "stop"], ref: { key, kind: planned.kind },
         });
       }
       continue;
@@ -1141,6 +1176,13 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
     const digest = planned.kind === "issue" ? ownedDigest.issue(item as Issue) : ownedDigest.ticket(item as Ticket, plannedOf(planned));
     if (digest === r.ownedPost) continue;
     const fields = itemDrift(plan, planned, item);
+    // An establishment's key, what it establishes and its spec are fixed at creation; no resolution rewrites them (T-538 S3a-2).
+    const setupDrift = planned.kind === "ticket" && planned.item.establishes !== undefined
+      && serializeJSON(ownedSetup((item as Ticket & { setup?: unknown }).setup)) !== serializeJSON(ownedSetup(plannedSetupField(plan, planned.item)));
+    if (setupDrift) {
+      out.push(stopOnly("owned field edited", `${key} (${label(item)})`, "its establishes or verification spec differ from what setup wrote", "the values setup wrote; put them back by hand, then resume"));
+      continue;
+    }
     // Restoring the planned fields of a checkpoint must reach its create receipt: otherwise its own content changed.
     const contentChanged = planned.kind === "checkpoint"
       && ownedDigest.ticket(restoredTicket(plan, planned, item as Ticket, setupDate(state, p.setupId))) !== p.receipts.find((x) => x.step === `item:${key}`)!.ownedPost;
@@ -1847,6 +1889,8 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   // completion and reopen authorisation here, in this hold, and a refusal writes nothing (review S3a-1 #1).
   const completing = new Map<string, string>();
   let ownership: CompletionGuardOptions | null = null;
+  // Duplicate-key losers: an establishment's settlement is written under the creation authority's settlement case.
+  const settled = new Set<string>();
 
   for (const r of resolutions) {
     const f = findings.find((x) => x.target === r.target && x.resolutions.includes(r.resolution));
@@ -1919,9 +1963,13 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
       case "duplicate": {
         const keep = r.resolution.slice("keep ".length);
         for (const other of allKeyed(state, setupId, f.ref.key!).filter((x) => x.id !== keep)) {
-          const setup = { setupId, key: f.ref.key!, supersededBy: keep };
-          if (state.ticketByID(other.id)) tickets.set(other.id, { ...ticket(other.id), setup } as Ticket);
-          else issues.set(other.id, { ...issue(other.id), setup } as Issue);
+          // The loser keeps every other setup field (an establishment's spec included) and gives up its key.
+          const kept = (state.ticketByID(other.id) ? ticket(other.id) : issue(other.id)) as (Ticket | Issue) & { setup: Record<string, unknown> };
+          const setup = { ...kept.setup, supersededBy: keep };
+          if (state.ticketByID(other.id)) {
+            tickets.set(other.id, { ...ticket(other.id), setup } as Ticket);
+            settled.add(other.id);
+          } else issues.set(other.id, { ...issue(other.id), setup } as Issue);
           receipts.push({ step: `supersede:${other.id}`, target: other.id, ownedPre: null, ownedPost: sha256(keep) });
         }
         break;
@@ -1987,7 +2035,7 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   const ops: Array<{ target: string; content: string }> = [];
   for (const t of tickets.values()) {
     if (!completing.has(t.id)) {
-      ops.push(await prepareTicketWrite(t, root));
+      ops.push(await prepareTicketWrite(t, root, settled.has(t.id) ? { verificationAuthority: ESTABLISHMENT_CREATION_AUTHORITY } : undefined));
       continue;
     }
     // The owner checkpoint rule and the evidence, as the ticket CLI's completion applies them.

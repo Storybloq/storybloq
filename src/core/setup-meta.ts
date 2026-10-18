@@ -12,6 +12,12 @@
  *   The handover is a record too, but it is a file, found by its slug.
  *
  * A note with a key, or a ticket or issue with a record, is refused.
+ *
+ * T-538 S3a-2: an establishment ticket's item key also carries what it
+ * establishes and its verification: the spec setup fixed when it created the
+ * ticket, and what `storybloq setup-verify` recorded since (result, the
+ * owner's decision, reopenings). Both are written only under their
+ * authorities (setup-verification-guard.ts); only tickets carry them.
  */
 import { z } from "zod";
 import { SETUP_ID_PATTERN } from "./setup-review.js";
@@ -25,12 +31,80 @@ export const NOTE_SETUP_RECORDS = ["progress", "final"] as const;
 const setupId = z.string().regex(SETUP_ID_PATTERN, "is not a setup id (SS-<8 hex>)");
 const key = z.string().regex(SETUP_KEY_PATTERN, "is not an item key (K1 to K9999)");
 
+const text = z.string().min(1);
+
+/** The runners setup-verify reads evidence from, and what the stage command wraps them in. */
+export const TEST_RUNNERS = ["vitest", "jest", "pytest", "django", "go", "cargo", "flutter"] as const;
+export type TestRunner = (typeof TEST_RUNNERS)[number];
+export const TEST_WRAPPERS = ["none", "npm", "make", "django-manage"] as const;
+export type TestWrapper = (typeof TEST_WRAPPERS)[number];
+
+export const VERIFICATION_DROPPABLE = ["PYTEST_ADDOPTS", "GOFLAGS"] as const;
+export type VerificationDroppable = (typeof VERIFICATION_DROPPABLE)[number];
+
+export const EstablishesSchema = z.object({
+  component: text,
+  stage: z.literal("test"),
+  scaffold: key,
+}).strict();
+
+export const VerificationSpecSchema = z.object({
+  setupId,
+  component: text,
+  stage: z.literal("test"),
+  workdir: text,
+  command: text,
+  runner: z.enum(TEST_RUNNERS),
+  wrapper: z.enum(TEST_WRAPPERS),
+  timeoutMs: z.number().int().positive(),
+}).strict();
+export type VerificationSpec = z.infer<typeof VerificationSpecSchema>;
+
+/** The owner's adapter: an argv run with no shell, and the inherited variables it drops before the evidence options are added. */
+export const AdapterDecisionSchema = z.object({
+  argv: z.array(text).min(1),
+  drop: z.array(z.enum(VERIFICATION_DROPPABLE)),
+}).strict();
+export type AdapterDecision = z.infer<typeof AdapterDecisionSchema>;
+
+export const VerificationDecisionSchema = z.object({
+  kind: z.enum(["adapter", "leave-off", "stop"]),
+  adapter: AdapterDecisionSchema.optional(),
+  ownerWords: text,
+  at: text,
+}).strict().refine((d) => (d.kind === "adapter") === (d.adapter !== undefined), { message: "carries an adapter exactly when its kind is adapter" });
+export type VerificationDecision = z.infer<typeof VerificationDecisionSchema>;
+
+export const VerificationResultSchema = z.object({
+  status: z.enum(["verified", "left-off"]),
+  counts: z.object({ executed: z.number().int().nonnegative(), failed: z.number().int().nonnegative() }).strict().optional(),
+  tailDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  at: text,
+}).strict();
+export type VerificationResult = z.infer<typeof VerificationResultSchema>;
+
+export const VerificationSchema = z.object({
+  spec: VerificationSpecSchema,
+  result: VerificationResultSchema.optional(),
+  decision: VerificationDecisionSchema.optional(),
+  reopened: z.array(z.object({ at: text }).strict()).optional(),
+}).strict();
+export type Verification = z.infer<typeof VerificationSchema>;
+
 export const SetupItemMetaSchema = z.object({
   setupId,
   key,
   supersededBy: z.string().min(1).optional(),
 }).strict();
-export type SetupItemMeta = z.infer<typeof SetupItemMetaSchema>;
+
+/** A ticket's item key: an establishment ticket carries `establishes` and `verification` together. */
+export const SetupTicketMetaSchema = SetupItemMetaSchema.extend({
+  establishes: EstablishesSchema.optional(),
+  verification: VerificationSchema.optional(),
+}).strict().refine((m) => (m.establishes === undefined) === (m.verification === undefined), {
+  message: "carries establishes and verification together, or neither",
+});
+export type SetupItemMeta = z.infer<typeof SetupTicketMetaSchema>;
 
 export const SetupRecordMetaSchema = z.object({
   setupId,
@@ -64,6 +138,6 @@ export function parseSetupMeta(entity: SetupEntity, item: object): ParsedSetupMe
     return parsed.success ? { kind: "record", meta: parsed.data } : { kind: "invalid", reason: firstIssue(parsed.error) };
   }
   if (isObject && Object.hasOwn(raw, "record")) return { kind: "invalid", reason: `a ${entity} carries an item key, never a setup record` };
-  const parsed = SetupItemMetaSchema.safeParse(raw);
+  const parsed = (entity === "ticket" ? SetupTicketMetaSchema : SetupItemMetaSchema).safeParse(raw);
   return parsed.success ? { kind: "item", meta: parsed.data } : { kind: "invalid", reason: firstIssue(parsed.error) };
 }

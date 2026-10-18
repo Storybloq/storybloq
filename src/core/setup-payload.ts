@@ -20,7 +20,7 @@
 import { z } from "zod";
 import { isAbsolute, normalize, posix, sep } from "node:path";
 import { SETUP_ID_PATTERN } from "./setup-review.js";
-import { SETUP_KEY_PATTERN } from "./setup-meta.js";
+import { SETUP_KEY_PATTERN, TEST_RUNNERS, TEST_WRAPPERS } from "./setup-meta.js";
 
 export const SETUP_PAYLOAD_VERSION = 1;
 export const SETUP_PAYLOAD_MARKER = "<!-- storybloq-setup-payload v1 -->";
@@ -36,12 +36,6 @@ const StagePlan = z.object({
   status: z.enum(["established", "pending"]),
   reason: text.optional(),
 }).strict();
-
-/** The runners setup-verify reads evidence from, and what the stage command wraps them in (T-538 S3a-2). */
-export const TEST_RUNNERS = ["vitest", "jest", "pytest", "django", "go", "cargo", "flutter"] as const;
-export type TestRunner = (typeof TEST_RUNNERS)[number];
-export const TEST_WRAPPERS = ["none", "npm", "make", "django-manage"] as const;
-export type TestWrapper = (typeof TEST_WRAPPERS)[number];
 
 /** A test stage may name its runner and wrapper; a pending one an establishment ticket serves must. */
 const TestStagePlan = StagePlan.extend({

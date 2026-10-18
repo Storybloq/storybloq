@@ -48,6 +48,7 @@ import { listHandovers } from "./handover-parser.js";
 import { assertTeamWriteCapabilities, isTeamModeConfig } from "./team-capabilities.js";
 import { validateProject } from "./validation.js";
 import { assertCheckpointWriteAllowed, priorForGuard, type CheckpointWriteAuthority } from "./checkpoint-guard.js";
+import { assertVerificationWriteAllowed, type VerificationWriteAuthority } from "./setup-verification-guard.js";
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { applyTicketIdentityPolicy, type TicketIdentityReport } from "./ticket-counts.js";
 import { assertResolutionMetadataWrite, assertTicketResolutionWrite, createResolutionWriteContext, ResolutionWriteContextError, type ResolutionWriteContext } from "./resolution-write-guard.js";
@@ -419,7 +420,7 @@ export function filenameIdMismatchMessage(stem: string, id: string): string {
 export async function prepareTicketWrite(
   ticket: Ticket,
   root: string,
-  options?: { authority?: CheckpointWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
+  options?: { authority?: CheckpointWriteAuthority; verificationAuthority?: VerificationWriteAuthority; resolutionContext?: ResolutionWriteContext; touch?: TouchOption },
 ): Promise<{ target: string; content: string }> {
   const date = touchDate(options?.touch);
   const unstamped = TicketSchema.parse(ticket);
@@ -435,6 +436,7 @@ export async function prepareTicketWrite(
   const prior = priorForGuard(await prepareTicketWriteSeams.readPrior(target), `tickets/${unstamped.id}.json`);
   const parsed = date === null ? unstamped : touchUpdated(unstamped, prior, date);
   assertCheckpointWriteAllowed(prior, parsed, options?.authority);
+  assertVerificationWriteAllowed(prior, parsed, options?.verificationAuthority);
   // As for issues (Codex F1): nothing awaits between obtaining the context
   // and the decision.
   const ctx = heldResolutionContext(root, options?.resolutionContext);

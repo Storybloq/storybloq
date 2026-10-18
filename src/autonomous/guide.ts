@@ -20,6 +20,7 @@ import {
   type OwnerGoneCandidateTakeover,
   OwnerGoneCandidateCancelSchema,
   type OwnerGoneCandidateCancel,
+  issuesFinished,
 } from "./session-types.js";
 import {
   reconcileSessionReality,
@@ -606,6 +607,7 @@ function renderTerminalHandoverInstruction(state: FullSessionState): string {
   const doneIds = new Set<string>([
     ...(state.completedTickets ?? []).map((t) => t.id),
     ...(state.resolvedIssues ?? []),
+    ...(state.deferredIssues ?? []),
     ...(state.ticket ? [state.ticket.id] : []),
   ]);
   const remaining = (state.targetWork ?? [])
@@ -3032,7 +3034,7 @@ function guideLedgerReaders(root: string): {
       try {
         const { state: projectState } = await loadProject(root, { strict: false });
         const issue = projectState.issues.find((i) => i.id === issueId);
-        return issue ? { id: issue.id, status: issue.status } : null;
+        return issue ? { id: issue.id, status: issue.status, disposition: issue.disposition } : null;
       } catch {
         return undefined;
       }
@@ -4153,7 +4155,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
           "",
           compactionNotice,
           "",
-          `${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) done so far. ${compactionObserved ? "Client compaction confirmed." : "Compaction remains unverified."} Pick the next target item immediately.`,
+          `${written.completedTickets.length} ticket(s) and ${issuesFinished(written)} issue(s) done so far. ${compactionObserved ? "Client compaction confirmed." : "Compaction remains unverified."} Pick the next target item immediately.`,
         ].filter(Boolean));
       return dispatched;
     }
@@ -4187,7 +4189,7 @@ async function handleResume(root: string, args: GuideInput): Promise<McpToolResu
         "",
         compactionNotice,
         "",
-        `${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) done so far. ${compactionObserved ? "Client compaction confirmed." : "Compaction remains unverified."} Pick the next ticket or issue immediately.`,
+        `${written.completedTickets.length} ticket(s) and ${issuesFinished(written)} issue(s) done so far. ${compactionObserved ? "Client compaction confirmed." : "Compaction remains unverified."} Pick the next ticket or issue immediately.`,
         "",
         candidatesText,
         "",
@@ -4439,7 +4441,7 @@ async function handlePreCompact(root: string, args: GuideInput): Promise<McpTool
  */
 function buildCancelRefusal(state: FullSessionState): string {
   const workflowState = String(state.state);
-  const totalDone = state.completedTickets.length + (state.resolvedIssues ?? []).length;
+  const totalDone = state.completedTickets.length + issuesFinished(state);
   const cap = state.config.maxTicketsPerSession;
   const targetCount = state.targetWork?.length ?? 0;
 
@@ -4726,7 +4728,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
   // T-178: Soft gate -- reject context-motivated cancel in active auto sessions
   const isAutoMode = info.state.mode === "auto" || !info.state.mode;
   // ISS-084: Count both tickets and issues toward session cap
-  const totalDone = info.state.completedTickets.length + (info.state.resolvedIssues?.length ?? 0);
+  const totalDone = info.state.completedTickets.length + issuesFinished(info.state);
   const hasTicketsRemaining = (info.state.config.maxTicketsPerSession === 0) ||
     (totalDone < info.state.config.maxTicketsPerSession);
   const isWorkingState = !["SESSION_END", "HANDOVER", "COMPACT"].includes(info.state.state);
@@ -4986,7 +4988,7 @@ async function handleCancel(root: string, args: GuideInput): Promise<McpToolResu
     ? ` Shutdown is NOT yet complete: ${tail.unmet.join("; ")}. ${retryAdvice(cancelInfo.dir, resume.transitionId)}`
     : "";
   return {
-    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${(written.resolvedIssues ?? []).length} issue(s) were completed.${sweepNotes}${stashNote}${tailNote}${reportSection}` }],
+    content: [{ type: "text", text: `Session ${args.sessionId} cancelled. ${written.completedTickets.length} ticket(s) and ${issuesFinished(written)} issue(s) were completed.${sweepNotes}${stashNote}${tailNote}${reportSection}` }],
   };
 }
 
@@ -5009,7 +5011,7 @@ function guideResult(
     risk: state.ticket?.risk ?? "unknown",
     completed: [
       ...state.completedTickets.map((t) => (t as Record<string, unknown>).displayId as string | undefined ?? t.id),
-      ...(state.resolvedIssues ?? []).map((id) => state.resolvedIssueDisplayIds?.[id] ?? id),
+      ...[...(state.resolvedIssues ?? []), ...(state.deferredIssues ?? [])].map((id) => state.resolvedIssueDisplayIds?.[id] ?? id),
     ],
     currentStep: currentState,
     contextPressure: state.contextPressure?.level ?? "low",

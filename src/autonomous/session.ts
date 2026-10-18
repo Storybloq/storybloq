@@ -23,6 +23,7 @@ import {
   CURRENT_SESSION_SCHEMA_VERSION,
   parseSessionState,
   deriveWorkspaceId,
+  issuesFinished,
   type FullSessionState,
   type SessionState,
   type EventEntry,
@@ -792,7 +793,7 @@ export function refreshLease(state: FullSessionState): FullSessionState {
       ...state.contextPressure,
       guideCallCount: newCallCount,
       // ISS-084: Include resolved issues in work count
-      ticketsCompleted: (state.completedTickets?.length ?? 0) + (state.resolvedIssues?.length ?? 0),
+      ticketsCompleted: (state.completedTickets?.length ?? 0) + issuesFinished(state),
     },
   };
 }

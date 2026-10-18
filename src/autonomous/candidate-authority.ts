@@ -22,7 +22,8 @@
  * not look" lead somewhere different.
  */
 
-import type { WorkflowState, FinalizeCheckpoint, FullSessionState } from "./session-types.js";
+import type { WorkflowState, FinalizeCheckpoint, FullSessionState, IssueExit } from "./session-types.js";
+import { isNonActionableDisposition } from "../core/issue-disposition.js";
 import { WORKFLOW_STATES } from "./session-types.js";
 import type { ClaimEpoch, ClaimReconciliation } from "./claim-reconciliation.js";
 import { parseClaimEpoch } from "./claim-preflight.js";
@@ -124,6 +125,8 @@ export type LedgerRead<T> =
 export interface IssueAuthorityView {
   readonly id: string;
   readonly status: string;
+  /** ISS-1380: read only to accept a deferral FINALIZE is completing. */
+  readonly disposition?: string;
 }
 
 export interface TakeoverAuthorityInput {
@@ -348,6 +351,19 @@ export function authorityLedgerTargets(state: FullSessionState): AuthorityLedger
  * event still belongs to the PREVIOUS item, which is the wrong-kind
  * misclassification `finalizedItem` was introduced to remove.
  */
+/**
+ * ISS-1380: the exit the FINALIZE in progress is completing its issue with.
+ * Before `committed` it is `currentIssueExit`; the committed write clears that
+ * and records the exit on `finalizedItem`, which is read from then on.
+ */
+export function finalizingIssueExit(state: FullSessionState): IssueExit | null {
+  if (state.finalizeCheckpoint === "committed") {
+    const recorded = state.finalizedItem;
+    return recorded && recorded.kind === "issue" ? recorded.exit ?? null : null;
+  }
+  return state.currentIssueExit ?? null;
+}
+
 export function resolveFinalizeItem(state: FullSessionState): FinalizeItem {
   if (state.finalizeCheckpoint !== "committed") {
     if (state.ticket?.id) return { kind: "ticket", id: state.ticket.id };
@@ -613,10 +629,16 @@ export function decideTakeoverAuthority(input: TakeoverAuthorityInput): Takeover
           return refuse(posture, "issue-not-resolvable",
             `the issue this FINALIZE is completing (${item.id}) does not resolve in the ledger`);
         }
-        if (issue.value.status !== "resolved") {
+        // ISS-1380: a deferral leaves the issue open with its disposition, so
+        // that shape is accepted only for a recorded deferred exit.
+        const exit = finalizingIssueExit(state);
+        const deferredShape = exit?.exit === "deferred"
+          && (issue.value.status === "open" || issue.value.status === "inprogress")
+          && isNonActionableDisposition(issue.value.disposition);
+        if (issue.value.status !== "resolved" && !deferredShape) {
           return refuse(posture, "finalize-shape-inconsistent",
             `issue ${item.id} is ${issue.value.status} at FINALIZE/${checkpoint}, but ISSUE_FIX only routes ` +
-            "here once the issue reads resolved");
+            "here once the issue reads resolved or carries a recorded deferral");
         }
         if (!finalizationBaselineValid(state)) {
           return refuse(posture, "finalize-baseline-missing",

@@ -1,5 +1,7 @@
 import type { WorkflowStage, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { issuesFinished } from "../session-types.js";
+import { dispositionLabel } from "./issue-sweep.js";
 import { evaluatePressure, pressureMeetsThreshold } from "../context-pressure.js";
 import { nextTickets } from "../../core/queries.js";
 import { isEarmarkVisible } from "../../core/earmarks.js";
@@ -61,7 +63,7 @@ export class CompleteStage implements WorkflowStage {
     });
 
     const ticketsDone = ctx.state.completedTickets.length;
-    const issuesDone = (ctx.state.resolvedIssues ?? []).length;
+    const issuesDone = issuesFinished(ctx.state);
     const totalWorkDone = ticketsDone + issuesDone;
     const maxTickets = ctx.state.config.maxTicketsPerSession;
     const mode = ctx.state.mode ?? "auto";
@@ -223,13 +225,23 @@ export class CompleteStage implements WorkflowStage {
       const { handleHandoverCreate } = await import("../../cli/commands/handover.js");
       const completedIds = ctx.state.completedTickets.map((t) => (t as Record<string, unknown>).displayId as string | undefined ?? t.id).join(", ");
       const resolvedDisplayIds = ctx.state.resolvedIssueDisplayIds;
-      const resolvedIds = (ctx.state.resolvedIssues ?? []).map((id) => resolvedDisplayIds?.[id] ?? id).join(", ");
+      // ISS-1380: a closure is labelled with its kind; deferrals get their own line.
+      const exits = new Map((ctx.state.issueExits ?? []).map((e) => [e.id, e]));
+      const resolvedIds = (ctx.state.resolvedIssues ?? []).map((id) => {
+        const e = exits.get(id);
+        return `${resolvedDisplayIds?.[id] ?? id}${e?.exit === "disposed" && e.kind ? ` (${e.kind})` : ""}`;
+      }).join(", ");
+      const deferredIds = (ctx.state.deferredIssues ?? []).map((id) => {
+        const e = exits.get(id);
+        return `${resolvedDisplayIds?.[id] ?? id}${e?.disposition ? ` (${dispositionLabel(e.disposition)})` : ""}`;
+      }).join(", ");
       const content = [
         `# Checkpoint -- ${totalWorkDone} items completed`,
         "",
         `**Session:** ${ctx.state.sessionId}`,
         ...(completedIds ? [`**Tickets:** ${completedIds}`] : []),
         ...(resolvedIds ? [`**Issues resolved:** ${resolvedIds}`] : []),
+        ...(deferredIds ? [`**Issues deferred:** ${deferredIds}`] : []),
         "",
         "This is an automatic mid-session checkpoint. The session is still active.",
       ].join("\n");

@@ -581,7 +581,7 @@ export class CodeReviewStage implements WorkflowStage {
         } catch { /* best-effort */ }
       }
 
-      ctx.updateDraft({ ticket: undefined, currentIssue: null, reviews: { plan: [], code: [] } });
+      ctx.updateDraft({ ticket: undefined, currentIssue: null, currentIssueExit: null, reviews: { plan: [], code: [] } });
       return {
         action: "goto",
         target: "HANDOVER",

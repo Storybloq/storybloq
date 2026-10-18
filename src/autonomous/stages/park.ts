@@ -471,6 +471,14 @@ export async function parkCurrentIssue(
     const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
     await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
       const current = ps.issues.find((i) => i.id === issue.id);
+      // ISS-1380: a deferral already released the issue (open, this
+      // session's earmark cleared), so there is nothing to undo or write.
+      if (current && ctx.state.currentIssueExit?.exit === "deferred" && current.status === "open") {
+        outcome = current.earmark?.stage === "assigned" && current.earmark.holderSession !== ctx.state.sessionId
+          ? "not-ours"
+          : "parked";
+        return;
+      }
       // This session set the issue to "resolved" itself, before CODE_REVIEW
       // even ran (issue-fix.ts's report() refuses to leave ISSUE_FIX
       // otherwise). A park's whole job is to UNDO that when the fix did not
@@ -548,6 +556,7 @@ export async function parkCurrentIssue(
   // T-488: same as the ticket park above -- the attempt ends with the item.
   ctx.updateDraft({
     currentIssue: null,
+    currentIssueExit: null,
     itemAttempt: null,
     implementer: null,
     pendingReviewAttempt: null,

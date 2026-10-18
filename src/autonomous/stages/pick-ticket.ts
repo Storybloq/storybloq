@@ -417,6 +417,7 @@ export class PickTicketStage implements WorkflowStage {
 
     ctx.updateDraft({
       issuePickContinuation: null,
+      currentIssueExit: null,
       ticket: {
         id: ticket.id,
         displayId: ticket.displayId,
@@ -652,6 +653,8 @@ export class PickTicketStage implements WorkflowStage {
 
       ctx.updateDraft({
         currentIssue: { id: issue.id, displayId: issue.displayId, title: issue.title, severity: issue.severity },
+        // ISS-1380: the previous issue's exit never carries over to this one.
+        currentIssueExit: null,
         ticket: undefined,
         currentReviewEffort: issueEffort.level,
         currentReviewEffortSource: issueEffort.source,

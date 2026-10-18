@@ -1,12 +1,48 @@
 import { displayIdOf } from "../../core/resolver.js";
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
-import type { GuideReportInput, FullSessionState } from "../session-types.js";
+import type { GuideReportInput, FullSessionState, IssueExit } from "../session-types.js";
 import { effectiveReviewEffort } from "../review-effort.js";
 import { clearSameSessionEarmark } from "../../core/earmarks.js";
 import { loadCitationContext } from "../../core/ruling-loader.js";
 import { resolveEntityCitations } from "../../core/ruling.js";
 import { formatCitedRulingsSection } from "../../core/output-formatter.js";
 import type { IssueResolutionEpoch } from "../issue-resolution-epoch.js";
+import { classifySweepExit, releaseImage, dispositionLabel, inlineField, ISSUE_EXIT_LINES, type SweepExit } from "./issue-sweep.js";
+import { touchUpdated } from "../../core/metadata-touch.js";
+import { localDateOf } from "../../core/local-date.js";
+
+/**
+ * ISS-1380 (plan 2h): what to do when a deferral left the issue file unchanged.
+ * FINALIZE accepts it only after proving it from git and a fresh classification.
+ */
+export const DEFERRAL_UNCHANGED_HINT = (id: string): string =>
+  `If the deferral left .story/issues/${id}.json unchanged, it is not required in the commit. If this item changed nothing else either, leave the working tree clean and call me with completedAction: "files_staged" and nothing staged; it then completes without a commit.`;
+
+/**
+ * ISS-1380: one handover line per finished issue, naming its exit from the
+ * record captured when it finished, never from the issue file. An issue with
+ * no record (an older session) reads as resolved.
+ */
+export function finishedIssueLines(state: Pick<FullSessionState, "resolvedIssues" | "deferredIssues" | "issueExits" | "resolvedIssueDisplayIds">): string[] {
+  const exits = new Map((state.issueExits ?? []).map((e) => [e.id, e]));
+  return [...(state.resolvedIssues ?? []), ...(state.deferredIssues ?? [])].map((id) => {
+    const label = state.resolvedIssueDisplayIds?.[id] ?? id;
+    const e = exits.get(id);
+    const what = !e || e.exit === "fixed"
+      ? "resolved"
+      : e.exit === "disposed"
+        ? `closed as ${inlineField(e.kind ?? "")}: ${inlineField(e.reason ?? "")}`
+        : `deferred: ${inlineField(dispositionLabel(e.disposition ?? ""))}, ${inlineField(e.reason ?? "")}; evidence ${inlineField(e.ref ?? "")}`;
+    return `- ${label} (${what}${e && e.commitHash === null ? ", no commit" : ""})`;
+  });
+}
+
+/** ISS-1380: one line naming the exit an issue took, for FINALIZE and the reports. */
+export function issueExitLine(label: string, exit: IssueExit | null | undefined): string {
+  if (!exit || exit.exit === "fixed") return `Issue ${label} resolved (fixed).`;
+  if (exit.exit === "disposed") return `Issue ${label} closed as ${exit.kind}: ${exit.reason}`;
+  return `Issue ${label} deferred (${dispositionLabel(exit.disposition)}): ${exit.reason} (evidence ${exit.ref})`;
+}
 
 /**
  * ISSUE_FIX stage -- T-153: Fix a single issue picked from PICK_TICKET.
@@ -42,8 +78,7 @@ export class IssueFixStage implements WorkflowStage {
           "",
           "(Warning: could not load full issue details from .story/ -- using session state.)",
           "",
-          "Fix this issue, then update its status to \"resolved\" in `.story/issues/`.",
-          "Add a resolution description explaining the fix.",
+          ...ISSUE_EXIT_LINES,
           "",
           "When done, call `storybloq_autonomous_guide` with:",
           '```json',
@@ -51,7 +86,7 @@ export class IssueFixStage implements WorkflowStage {
           '```',
         ].join("\n"),
         reminders: [
-          "Update the issue JSON: set status to \"resolved\", add resolution text, set resolvedDate.",
+          ...ISSUE_EXIT_LINES,
           "Do NOT ask the user for confirmation.",
         ],
       };
@@ -82,8 +117,7 @@ export class IssueFixStage implements WorkflowStage {
         details,
         citedRulingsSection,
         "",
-        "Fix this issue, then update its status to \"resolved\" in `.story/issues/`.",
-        "Add a resolution description explaining the fix.",
+        ...ISSUE_EXIT_LINES,
         "",
         "When done, call `storybloq_autonomous_guide` with:",
         '```json',
@@ -91,7 +125,7 @@ export class IssueFixStage implements WorkflowStage {
         '```',
       ].join("\n"),
       reminders: [
-        "Update the issue JSON: set status to \"resolved\", add resolution text, set resolvedDate.",
+        ...ISSUE_EXIT_LINES,
         "Do NOT ask the user for confirmation.",
       ],
     };
@@ -104,7 +138,7 @@ export class IssueFixStage implements WorkflowStage {
     }
     const issueLabel = displayIdOf(issue);
 
-    // Verify the issue was actually resolved in project state
+    // Verify the issue was actually finished in project state
     let projectState;
     try {
       ({ state: projectState } = await ctx.loadProject());
@@ -112,11 +146,26 @@ export class IssueFixStage implements WorkflowStage {
       return { action: "retry", instruction: `Failed to load project state: ${err instanceof Error ? err.message : String(err)}. Check .story/ files for corruption, then report again.` };
     }
     const current = projectState.issues.find(i => i.id === issue.id);
-    if (!current || current.status !== "resolved") {
+    if (!current) {
       return {
         action: "retry",
-        instruction: `Issue ${issueLabel} is still ${current?.status ?? "missing"}. Update its status to "resolved" in .story/issues/${issue.id}.json with a resolution description and resolvedDate, then report again.`,
-        reminders: ["Set status to 'resolved', add resolution text, set resolvedDate."],
+        instruction: `Issue ${issueLabel} is still missing. Restore .story/issues/${issue.id}.json, then report again.`,
+        reminders: [...ISSUE_EXIT_LINES],
+      };
+    }
+
+    // ISS-1380: the same three exits as the issue sweep, through its own
+    // classifier. This unlocked pass only produces the retry texts; nothing is
+    // written until the classification is repeated under the lock below.
+    const sessionId = ctx.state.sessionId;
+    const first: SweepExit = await classifySweepExit(current, projectState, ctx.root, sessionId);
+    if (first.kind === "retry") {
+      return { action: "retry", instruction: first.text, reminders: [...(first.reminders ?? []), ...ISSUE_EXIT_LINES] };
+    }
+    if (first.kind === "conflicted") {
+      return {
+        action: "retry",
+        instruction: `Could not confirm ${issueLabel} is still owned by this session (${first.reason}). Re-check .story/issues/${issue.id}.json and report again.`,
       };
     }
 
@@ -139,36 +188,54 @@ export class IssueFixStage implements WorkflowStage {
     // OUR epoch over that foreign state. Both are fixed by re-checking
     // freshly-read state INSIDE the lock and treating a failed or refused
     // stamp as retryable rather than silently proceeding to FINALIZE.
+    //
+    // ISS-1380: the re-check is the classifier again, and it must give the
+    // same exit as the unlocked pass. A deferral writes the sweep's release
+    // image instead (open, this session's earmark cleared, stamped) and mints
+    // no epoch: nothing was resolved.
     const epoch: IssueResolutionEpoch = {
       issueId: issue.id,
-      sessionId: ctx.state.sessionId,
+      sessionId,
       establishedAt: new Date().toISOString(),
     };
-    let stamped = false;
+    const stampDate = localDateOf(new Date());
+    let exit = null as IssueExit | null;
     try {
       const { withProjectLock, writeIssueUnlocked } = await import("../../core/project-loader.js");
       await withProjectLock(ctx.root, { strict: false }, async ({ state: ps }) => {
         const freshIssue = ps.issues.find((i) => i.id === issue.id);
-        // Re-verified here, not trusted from the unlocked check above (codex
-        // round-2 finding #3): a foreign session's own reopen/reassign could
-        // have landed in between.
-        if (!freshIssue || freshIssue.status !== "resolved") return;
-        if (freshIssue.earmark?.stage === "assigned" && freshIssue.earmark.holderSession !== ctx.state.sessionId) {
+        if (!freshIssue) return;
+        const again = await classifySweepExit(freshIssue, ps, ctx.root, sessionId);
+        if (again.kind !== first.kind) return;
+        if (again.kind === "deferred") {
+          const image = touchUpdated(releaseImage(freshIssue, "deferred", sessionId), freshIssue, stampDate);
+          await writeIssueUnlocked(image, ctx.root, { touch: { date: stampDate } });
+          exit = { exit: "deferred", disposition: again.entry.disposition, reason: again.entry.reason, ref: again.entry.ref };
           return;
         }
-        const { item: next } = clearSameSessionEarmark(freshIssue, ctx.state.sessionId);
+        if (again.kind !== "fixed" && again.kind !== "disposed") return;
+        const { item: next } = clearSameSessionEarmark(freshIssue, sessionId);
         await writeIssueUnlocked({ ...next, resolutionEpoch: epoch } as typeof freshIssue, ctx.root);
-        stamped = true;
+        // The reason is captured here, from the record just proven, so a later
+        // edit to the issue cannot change what the reports say.
+        exit = again.kind === "fixed"
+          ? { exit: "fixed" }
+          : { exit: "disposed", kind: again.entry.kind, reason: (freshIssue.resolution ?? "").trim() };
       });
-    } catch { /* stamped stays false, handled below */ }
+    } catch { /* exit stays null, handled below */ }
 
-    if (!stamped) {
+    if (!exit) {
       return {
         action: "retry",
-        instruction: `Could not confirm ${issueLabel} is still resolved and owned by this session (it may have been reopened or reassigned). Re-check its status in .story/issues/${issue.id}.json and report again.`,
+        instruction: `Could not confirm ${issueLabel} is still finished and owned by this session (it may have been reopened, changed or reassigned). Re-check its status in .story/issues/${issue.id}.json and report again.`,
       };
     }
-    ctx.updateDraft({ issueResolutionEpoch: epoch } as Partial<FullSessionState>);
+    const settled: IssueExit = exit;
+    ctx.updateDraft({
+      issueResolutionEpoch: settled.exit === "deferred" ? null : epoch,
+      currentIssueExit: settled,
+    } as Partial<FullSessionState>);
+    ctx.appendEvent("issue_fix_exit", { id: issue.id, ...settled });
 
     // T-208: Optional code review for issue fixes.
     // T-461: a goto jumps straight to a stage without consulting its skip(),
@@ -179,7 +246,7 @@ export class IssueFixStage implements WorkflowStage {
       return { action: "goto", target: "CODE_REVIEW" };
     }
 
-    // Issue resolved -- route to FINALIZE for commit
+    // Issue finished -- route to FINALIZE for commit
     return {
       action: "goto",
       target: "FINALIZE",
@@ -187,12 +254,15 @@ export class IssueFixStage implements WorkflowStage {
         instruction: [
           "# Finalize Issue Fix",
           "",
-          `Issue ${issue.id} resolved. Time to commit.`,
+          `${issueExitLine(issue.id, settled)} Time to commit.`,
           "",
           "1. Run `git reset` to clear the staging area (ensures no stale files from prior operations)",
-          `2. Ensure .story/issues/${issue.id}.json is updated with status: "resolved"`,
+          `2. Ensure .story/issues/${issue.id}.json carries this exit`,
           "3. Stage only the files you modified for this fix (code + .story/ changes). Do NOT use `git add -A` or `git add .`",
           '4. Call me with completedAction: "files_staged"',
+          // ISS-1380 (plan 2h): a deferral the issue already carried can leave
+          // its file byte-identical to HEAD; FINALIZE proves that from git.
+          ...(settled.exit === "deferred" ? [DEFERRAL_UNCHANGED_HINT(issue.id)] : []),
         ].join("\n"),
         reminders: ["Stage both code changes and .story/ issue update in the same commit. Only stage files related to this fix."],
         transitionedFrom: "ISSUE_FIX",

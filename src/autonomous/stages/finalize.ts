@@ -1,6 +1,6 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput, FullSessionState } from "../session-types.js";
-import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree } from "../git-inspector.js";
+import { gitDiffCachedNames, gitHead, gitDiffTreeNames, gitResolveCommit, gitRevListAncestryPath, gitCommitterEmail, gitUserEmail, gitParentOf, gitTreeOf, gitWriteTree, gitPathDirty, gitChangedPaths, gitStatus } from "../git-inspector.js";
 import { parseClaimEpoch } from "../claim-preflight.js";
 import { effectiveReviewEffort, effortDisclosureLine, normalizeReviewEffortSource } from "../review-effort.js";
 import { checkBusShip } from "../../bus/store.js";
@@ -15,6 +15,8 @@ import { pendingKnowledgeReview, routeAfterFinalize } from "./knowledge-routing.
 import { finalizeEnterRoute, inspectLandedCommit, itemBaseline } from "../landed-commit.js";
 import { assertCheckpointEligible, describeIneligible } from "../../core/checkpoint-evidence.js";
 import type { ProjectState } from "../../core/project-state.js";
+import { classifySweepExit } from "./issue-sweep.js";
+import { issueExitLine, DEFERRAL_UNCHANGED_HINT } from "./issue-fix.js";
 
 // itemBaseline (ISS-922) lives in landed-commit.ts (T-534), shared with the retirement.
 
@@ -247,10 +249,56 @@ async function checkpointFinalizeBlock(ctx: StageContext, at: "enter" | "commit"
 }
 
 /**
+ * ISS-1380 (plan 2h, v2 notes 2): a deferral that left its issue file
+ * unchanged needs no issue file in the commit. True only when all of these
+ * hold, and any failed read is false so the ordinary guards apply:
+ * - the recorded exit is a deferral;
+ * - the issue file is clean (index, work tree, not untracked);
+ * - no commit between the item baseline and `commit` (HEAD when omitted)
+ *   touched it;
+ * - the issue exists and a fresh classification still gives that same
+ *   deferral, so restored actionable bytes never pass for one.
+ */
+export async function deferralLeftIssueUnchanged(ctx: StageContext, commit?: string): Promise<boolean> {
+  const exit = ctx.state.currentIssueExit;
+  const id = ctx.state.currentIssue?.id;
+  if (!exit || exit.exit !== "deferred" || !id) return false;
+  const path = `.story/issues/${id}.json`;
+  const dirty = await gitPathDirty(ctx.root, path);
+  if (!dirty.ok || dirty.data) return false;
+  const baseline = itemBaseline(ctx.state);
+  if (!baseline) return false;
+  let target = commit;
+  if (!target) {
+    const head = await gitHead(ctx.root);
+    if (!head.ok) return false;
+    target = head.data.hash;
+  }
+  if (target !== baseline) {
+    const changed = await gitChangedPaths(ctx.root, baseline, target);
+    if (!changed.ok) return false;
+    if (changed.data.some((c) => c.path === path || c.oldPath === path)) return false;
+  }
+  try {
+    const { state: projectState } = await ctx.loadProject();
+    const issue = projectState.issues.find((i) => i.id === id);
+    if (!issue) return false;
+    const fresh = await classifySweepExit(issue, projectState, ctx.root, ctx.state.sessionId);
+    return fresh.kind === "deferred"
+      && fresh.entry.disposition === exit.disposition
+      && fresh.entry.reason === exit.reason
+      && fresh.entry.ref === exit.ref;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * ISS-047 + T-153: the refusal for a staged set that is missing the session's
  * ticket or issue file, or null when the item's file is staged.
+ * ISS-1380: a deferral proven to have left its issue file unchanged is exempt.
  */
-function itemFileNotStaged(ctx: StageContext, staged: readonly string[]): string | null {
+async function itemFileNotStaged(ctx: StageContext, staged: readonly string[]): Promise<string | null> {
   const ticketId = ctx.state.ticket?.id;
   if (ticketId) {
     const ticketPath = `.story/tickets/${ticketId}.json`;
@@ -261,7 +309,7 @@ function itemFileNotStaged(ctx: StageContext, staged: readonly string[]): string
   const issueId = ctx.state.currentIssue?.id;
   if (issueId) {
     const issuePath = `.story/issues/${issueId}.json`;
-    if (!staged.includes(issuePath)) {
+    if (!staged.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx))) {
       return `Issue file ${issuePath} is not staged. Run \`git add ${issuePath}\` and call me again with completedAction: "files_staged".`;
     }
   }
@@ -356,7 +404,7 @@ export class FinalizeStage implements WorkflowStage {
         "",
         "1. Run `git reset` to clear the staging area (ensures no stale files from prior operations)",
         ctx.state.ticket ? `2. Update ticket ${ticketLabel(ctx)} status to "complete" in .story/` : "",
-        ctx.state.currentIssue ? `2. Ensure .story/issues/${ctx.state.currentIssue.id}.json is updated with status: "resolved"` : "",
+        ctx.state.currentIssue ? await issueStagingLine(ctx, ctx.state.currentIssue.id) : "",
         "3. Stage only the files you modified for this fix (code + .story/ changes). Do NOT use `git add -A` or `git add .`",
         "4. Call me with completedAction: \"files_staged\"",
       ].filter(Boolean).join("\n"),
@@ -425,7 +473,7 @@ export class FinalizeStage implements WorkflowStage {
       if (checkpoint === "staged_override") {
         const restaged = await gitDiffCachedNames(ctx.root);
         if (restaged.ok && restaged.data.length > 0) {
-          const missing = itemFileNotStaged(ctx, restaged.data);
+          const missing = await itemFileNotStaged(ctx, restaged.data);
           if (missing) return { action: "retry", instruction: missing };
         }
       }
@@ -468,7 +516,7 @@ export class FinalizeStage implements WorkflowStage {
         const earlyIssueId = ctx.state.currentIssue?.id;
         if (earlyIssueId) {
           const issuePath = `.story/issues/${earlyIssueId}.json`;
-          if (!treeResult.data.includes(issuePath)) {
+          if (!treeResult.data.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx, headResult.data.hash))) {
             return {
               action: "retry",
               instruction: `Commit detected (${headResult.data.hash.slice(0, 7)}) but issue file ${issuePath} is not in the commit. Amend the commit to include it: \`git add ${issuePath} && git commit --amend --no-edit\`, then report completedAction: "commit_done" with the new hash.`,
@@ -478,6 +526,28 @@ export class FinalizeStage implements WorkflowStage {
         // Commit is valid -- fast-forward checkpoint so handleCommit accepts it
         ctx.writeState({ finalizeCheckpoint: "precommit_passed" });
         return this.handleCommit(ctx, { ...report, commitHash: headResult.data.hash });
+      }
+      // ISS-1380 (plan 2h path A, v2 notes 1): a deferral that left its issue
+      // file unchanged, on an unmoved HEAD, completes without a commit -- but
+      // only on a repo-wide clean tree. An empty staging area alone would let
+      // unstaged or untracked work finish uncommitted.
+      if (stagedResult.ok && headResult.ok && previousHead && headResult.data.hash === previousHead
+        && await deferralLeftIssueUnchanged(ctx)) {
+        const status = await gitStatus(ctx.root);
+        if (!status.ok) {
+          return { action: "retry", instruction: `Could not confirm the working tree is clean (git error: ${status.message ?? "unknown"}). Check \`git status\`, then call me again with completedAction: "files_staged".` };
+        }
+        if (status.data.length > 0) {
+          return {
+            action: "retry",
+            instruction: [
+              "The deferral left its issue file unchanged, but the working tree is not clean, so this item cannot complete without a commit:",
+              ...status.data.map((line) => `  ${line}`),
+              'Stage and commit the changes that belong to this item (the issue file is not required), or resolve the rest, then call me again with completedAction: "files_staged".',
+            ].join("\n"),
+          };
+        }
+        return this.completeWithoutCommit(ctx);
       }
       // ISS-922: a session parked by a pre-fix CLI can arrive here with its
       // baseline already promoted onto the unreported work commit, so the
@@ -535,7 +605,7 @@ export class FinalizeStage implements WorkflowStage {
     }
 
     // ISS-047 + T-153: the ticket or issue file must be in the staged set
-    const notStaged = itemFileNotStaged(ctx, stagedResult.data);
+    const notStaged = await itemFileNotStaged(ctx, stagedResult.data);
     if (notStaged) return { action: "retry", instruction: notStaged };
 
     // ISS-099: Skip precommit round-trip -- go straight to commit instruction.
@@ -549,6 +619,34 @@ export class FinalizeStage implements WorkflowStage {
       action: "retry",
       instruction: await nowCommitInstruction(ctx, "Files staged. Now commit."),
     };
+  }
+
+  /**
+   * ISS-1380 (plan 2h path A): a deferral that left its issue file unchanged,
+   * with nothing else changed, completes without a commit. The git baselines,
+   * the attribution audit and the gate ack are untouched: nothing shipped.
+   */
+  private async completeWithoutCommit(ctx: StageContext): Promise<StageAdvance> {
+    const blocked = await checkpointFinalizeBlock(ctx, "commit");
+    if (blocked) return { action: "retry", instruction: blocked };
+    const currentIssue = ctx.state.currentIssue!;
+    const exit = ctx.state.currentIssueExit!;
+    const issueDisplayId = (currentIssue as Record<string, unknown>).displayId as string | undefined;
+    ctx.writeState({
+      finalizeCheckpoint: "committed",
+      finalizedItem: { kind: "issue", id: currentIssue.id, commitHash: null, exit },
+      knowledgeReview: null,
+      ...issueExitBookkeeping(ctx.state, currentIssue.id, exit, null),
+      resolvedIssueDisplayIds: {
+        ...(ctx.state.resolvedIssueDisplayIds ?? {}),
+        ...(issueDisplayId ? { [currentIssue.id]: issueDisplayId } : {}),
+      },
+      currentIssue: null,
+      currentIssueExit: null,
+      ticketStartedAt: null,
+    });
+    ctx.appendEvent("issue_fix_no_commit", { issueId: currentIssue.id, ...exit });
+    return routeAfterFinalize(ctx, { action: "goto", target: "COMPLETE" });
   }
 
   private async handlePrecommit(ctx: StageContext): Promise<StageAdvance> {
@@ -602,7 +700,7 @@ export class FinalizeStage implements WorkflowStage {
     const precommitIssueId = ctx.state.currentIssue?.id;
     if (precommitIssueId) {
       const issuePath = `.story/issues/${precommitIssueId}.json`;
-      if (!stagedResult.data.includes(issuePath)) {
+      if (!stagedResult.data.includes(issuePath) && !(await deferralLeftIssueUnchanged(ctx))) {
         return {
           action: "retry",
           instruction: `Pre-commit hooks may have modified the staged set. Issue file ${issuePath} is no longer staged. Run \`git add ${issuePath}\` and call me again with completedAction: "files_staged".`,
@@ -710,6 +808,14 @@ export class FinalizeStage implements WorkflowStage {
       }
       const candidates = candidatesResult.data;
       if (candidates.length === 0) {
+        // ISS-1380: a deferral that left its issue file unchanged has no
+        // commit touching it, so only the HEAD fast path can accept its work.
+        if (issueId && await deferralLeftIssueUnchanged(ctx)) {
+          return {
+            action: "retry",
+            instruction: `The deferral left ${expectedPath} unchanged, so no commit carries it. Report HEAD's hash (${fullHead.slice(0, 7)}) as the work commit.`,
+          };
+        }
         return {
           action: "retry",
           instruction: `No commit on the session ancestry path touched ${expectedPath}. ` +
@@ -818,15 +924,18 @@ export class FinalizeStage implements WorkflowStage {
     const currentIssue = ctx.state.currentIssue;
     if (currentIssue) {
       const issueDisplayId = (currentIssue as Record<string, unknown>).displayId as string | undefined;
+      const exit = ctx.state.currentIssueExit ?? null;
       ctx.writeState({
         finalizeCheckpoint: "committed",
         // T-450 step 7a: recorded in the SAME write that clears currentIssue
         // below, because after this write nothing else identifies the item.
-        finalizedItem: { kind: "issue", id: currentIssue.id, commitHash: normalizedHash },
+        // ISS-1380: the exit rides on the same record for the same reason;
+        // currentIssueExit is cleared by this write.
+        finalizedItem: { kind: "issue", id: currentIssue.id, commitHash: normalizedHash, ...(exit ? { exit } : {}) },
+        ...issueExitBookkeeping(ctx.state, currentIssue.id, exit, normalizedHash),
         // T-527: the review this commit owes, in the same write, so a crash
         // can never leave the commit recorded and the review lost.
         knowledgeReview: pendingKnowledgeReview(ctx.state, { kind: "issue", id: currentIssue.id }, normalizedHash),
-        resolvedIssues: [...(ctx.state.resolvedIssues ?? []), currentIssue.id],
         resolvedIssueDisplayIds: {
           ...(ctx.state.resolvedIssueDisplayIds ?? {}),
           ...(issueDisplayId ? { [currentIssue.id]: issueDisplayId } : {}),
@@ -857,6 +966,7 @@ export class FinalizeStage implements WorkflowStage {
           { commitHash: normalizedHash, itemKind: "issue" as const, itemId: currentIssue.id, overrideRequested, at: new Date().toISOString() },
         ],
         currentIssue: null,
+        currentIssueExit: null,
         ticketStartedAt: null,
         git: {
           ...ctx.state.git,
@@ -866,7 +976,7 @@ export class FinalizeStage implements WorkflowStage {
         },
       });
 
-      ctx.appendEvent("commit", { commitHash: normalizedHash, issueId: currentIssue.id, attributionOverrideRequested: overrideRequested });
+      ctx.appendEvent("commit", { commitHash: normalizedHash, issueId: currentIssue.id, attributionOverrideRequested: overrideRequested, ...(exit ? { issueExit: exit } : {}) });
 
       return routeAfterFinalize(ctx, { action: "goto", target: "COMPLETE" });
     }
@@ -932,6 +1042,42 @@ export class FinalizeStage implements WorkflowStage {
 
     return routeAfterFinalize(ctx, { action: "advance" });
   }
+}
+
+/**
+ * ISS-1380: the resolved and deferred lists and the exit audit entry the
+ * finishing write records for an issue. A fixed or disposed issue reads
+ * resolved and joins `resolvedIssues`; a deferral joins `deferredIssues`.
+ */
+function issueExitBookkeeping(
+  state: FullSessionState,
+  id: string,
+  exit: FullSessionState["currentIssueExit"],
+  commitHash: string | null,
+): Partial<FullSessionState> {
+  const deferred = exit?.exit === "deferred";
+  return {
+    ...(deferred
+      ? { deferredIssues: [...(state.deferredIssues ?? []), id] }
+      : { resolvedIssues: [...(state.resolvedIssues ?? []), id] }),
+    issueExits: [
+      ...(state.issueExits ?? []).filter((e) => e.id !== id),
+      { id, ...(exit ?? { exit: "fixed" as const }), commitHash },
+    ],
+  };
+}
+
+/**
+ * ISS-1380: FINALIZE's step-2 line for an issue. A deferral proven to have
+ * left its file unchanged is told so; every other exit names itself.
+ */
+async function issueStagingLine(ctx: StageContext, id: string): Promise<string> {
+  const exit = ctx.state.currentIssueExit;
+  if (!exit) return `2. Ensure .story/issues/${id}.json is updated with status: "resolved"`;
+  if (exit.exit === "deferred" && await deferralLeftIssueUnchanged(ctx)) {
+    return `2. ${DEFERRAL_UNCHANGED_HINT(id)}`;
+  }
+  return `2. Ensure .story/issues/${id}.json carries this exit: ${issueExitLine(id, exit)}`;
 }
 
 function ticketLabel(ctx: StageContext): string {

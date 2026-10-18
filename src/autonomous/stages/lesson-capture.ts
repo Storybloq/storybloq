@@ -1,5 +1,6 @@
 import type { WorkflowStage, StageResult, StageAdvance, StageContext } from "./types.js";
 import type { GuideReportInput } from "../session-types.js";
+import { issuesFinished } from "../session-types.js";
 
 /**
  * LESSON_CAPTURE -- postComplete stage that instructs the agent to capture
@@ -21,7 +22,7 @@ export class LessonCaptureStage implements WorkflowStage {
     const planReviews = ctx.state.reviews.plan ?? [];
     const codeReviews = ctx.state.reviews.code ?? [];
     const ticketsDone = ctx.state.completedTickets.length;
-    const issuesDone = (ctx.state.resolvedIssues ?? []).length;
+    const issuesDone = issuesFinished(ctx.state);
 
     // Summarize findings across all review rounds
     const planFindings = planReviews.reduce((sum, r) => sum + (r.findingCount ?? 0), 0);

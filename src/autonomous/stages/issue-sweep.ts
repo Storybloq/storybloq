@@ -63,6 +63,16 @@ export type SweepStepRecovery =
   | { kind: "settled"; updates: Partial<FullSessionState>; events: Array<{ type: string; data: Record<string, unknown> }> }
   | { kind: "pending"; reason: string };
 
+/**
+ * T-486 U4 (5i): the three exits, the L-094 premise check, and what
+ * owner_gated means. ISS-1380: shared with ISSUE_FIX, never copied.
+ */
+export const ISSUE_EXIT_LINES: readonly string[] = [
+  "Fix it and set it resolved; or resolve it with a kind (`wontfix`, `superseded`, `not_reproducible`, or `duplicate` with `duplicateOf`) and a reason; or set a non-actionable disposition with a reason and an evidence reference.",
+  "Verify the issue's premise against the code before acting on it.",
+  "`owner_gated` requests an owner decision; it does not record one.",
+];
+
 /** The text every blocked call returns while a sweep step is unconfirmed (5h). */
 export function sweepStepPendingText(reason: string): string {
   return `The issue sweep's last step could not be confirmed (${reason}). Nothing was acquired or advanced; retry the same call.`;
@@ -80,7 +90,7 @@ export function dispositionLabel(disposition: string): string {
  * breaks become one space, and backslashes, brackets and angle brackets are
  * backslash-escaped.
  */
-function inlineField(text: string): string {
+export function inlineField(text: string): string {
   return escapeMarkdownInline(text.replace(/\r\n|[\r\n\u2028\u2029]/g, " ").replace(/[\\[\]<>]/g, "\\$&"));
 }
 
@@ -565,11 +575,7 @@ export class IssueSweepStage implements WorkflowStage {
       `Severity: ${issue.severity}`,
       issue.impact ? `Impact: ${issue.impact}` : "",
       citedRulingsSection,
-      // T-486 U4 (5i): the three exits, the L-094 premise check, and what
-      // owner_gated means.
-      "Fix it and set it resolved; or resolve it with a kind (`wontfix`, `superseded`, `not_reproducible`, or `duplicate` with `duplicateOf`) and a reason; or set a non-actionable disposition with a reason and an evidence reference.",
-      "Verify the issue's premise against the code before acting on it.",
-      "`owner_gated` requests an owner decision; it does not record one.",
+      ...ISSUE_EXIT_LINES,
     ].filter(Boolean).join("\n");
   }
 

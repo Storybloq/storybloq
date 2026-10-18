@@ -52,7 +52,7 @@ export function buildActivePayload(
     lastGuideCall: session.lastGuideCall ?? null,
     completedThisSession: [
       ...(session.completedTickets?.map((t) => displayIdOf(t)) ?? []),
-      ...(session.resolvedIssues?.map((id) => issueDisplayIds[id] ?? id) ?? []),
+      ...[...(session.resolvedIssues ?? []), ...(session.deferredIssues ?? [])].map((id) => issueDisplayIds[id] ?? id),
     ],
     contextPressure: session.contextPressure?.level ?? "unknown",
     branch: session.git?.branch ?? null,

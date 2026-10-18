@@ -217,6 +217,8 @@ export interface SessionState {
   readonly claimEpoch?: ClaimEpoch | null;
   readonly completedTickets?: ReadonlyArray<{ readonly id: string; readonly displayId?: string }>;
   readonly resolvedIssues?: ReadonlyArray<string>;
+  /** ISS-1380: issues this session finished by an evidenced deferral. */
+  readonly deferredIssues?: ReadonlyArray<string>;
   /**
    * ISS-982: append-only, per-commit attribution audit trail. Written in the
    * SAME `writeState` call as each commit's `finalizeCheckpoint: "committed"`
@@ -1053,6 +1055,18 @@ const REVIEW_RECORD_IDENTITY_FIELDS = {
   }).optional().catch(undefined),
 } as const;
 
+/**
+ * ISS-1380: how ISSUE_FIX finished its issue, captured from the classification
+ * made under the lock, so every later report reads this record and never the
+ * issue file, which may have been edited since.
+ */
+export const IssueExitSchema = z.discriminatedUnion("exit", [
+  z.object({ exit: z.literal("fixed") }),
+  z.object({ exit: z.literal("disposed"), kind: z.string(), reason: z.string() }),
+  z.object({ exit: z.literal("deferred"), disposition: z.string(), reason: z.string(), ref: z.string() }),
+]);
+export type IssueExit = z.infer<typeof IssueExitSchema>;
+
 export const SessionStateSchema = z.object({
   schemaVersion: z.literal(CURRENT_SESSION_SCHEMA_VERSION),
   sessionId: z.string().uuid(),
@@ -1175,6 +1189,27 @@ export const SessionStateSchema = z.object({
   // T-382: Cached display IDs for resolved issues (canonical -> display)
   resolvedIssueDisplayIds: z.record(z.string()).default({}),
 
+  // ISS-1380: the exit ISSUE_FIX took for the current issue. Cleared by the
+  // committed write, which moves it onto `finalizedItem`, and by every pick.
+  currentIssueExit: IssueExitSchema.nullable().catch(null).default(null),
+
+  // ISS-1380: issues this session finished with a deferral. Kept apart from
+  // `resolvedIssues`, which only ever names issues that actually resolved.
+  deferredIssues: z.array(z.string()).default([]),
+
+  // ISS-1380: what each finished issue's exit was, for the reports only.
+  // Nothing recovers or authorizes from it, so a damaged container costs the
+  // disclosure and never the session (the resolvedIssuesMeta rule).
+  issueExits: z.array(z.object({
+    id: z.string(),
+    exit: z.enum(["fixed", "disposed", "deferred"]),
+    kind: z.string().optional(),
+    disposition: z.string().optional(),
+    reason: z.string().optional(),
+    ref: z.string().optional(),
+    commitHash: z.string().nullable(),
+  })).catch([]).default([]),
+
   // Completed tickets this session
   completedTickets: z.array(z.object({
     id: z.string(),
@@ -1242,7 +1277,11 @@ export const SessionStateSchema = z.object({
     z.object({
       kind: z.literal("issue"),
       id: z.string().min(1),
-      commitHash: z.string().min(1),
+      // ISS-1380: null only for a deferral that completed without a commit.
+      commitHash: z.string().min(1).nullable(),
+      // ISS-1380: the exit, kept here because `currentIssue` and
+      // `currentIssueExit` are cleared by the same committed write.
+      exit: IssueExitSchema.optional(),
     }),
     // The re-entry shape: FINALIZE reached `committed` with neither a ticket
     // nor an issue to attribute. Recorded POSITIVELY rather than as null,
@@ -2354,6 +2393,17 @@ export const SessionStateSchema = z.object({
 }).passthrough();
 
 export type FullSessionState = z.infer<typeof SessionStateSchema>;
+
+/**
+ * ISS-1380: the issues this session finished, resolved or deferred. ISS-084
+ * counts issue work toward the cap; a deferral took a pick and a commit too.
+ */
+export function issuesFinished(state: {
+  readonly resolvedIssues?: readonly string[] | null;
+  readonly deferredIssues?: readonly string[] | null;
+}): number {
+  return (state.resolvedIssues?.length ?? 0) + (state.deferredIssues?.length ?? 0);
+}
 
 // ---------------------------------------------------------------------------
 // T-450 step 6a: the cancellation transition record

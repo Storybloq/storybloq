@@ -769,7 +769,7 @@ export function formatCompactReport(data: CompactReportData): string {
   const endTime = data.endedAt ?? state.lastGuideCall ?? new Date().toISOString();
   const duration = state.startedAt ? formatDuration(state.startedAt, endTime) : "unknown";
   const ticketCount = state.completedTickets.length;
-  const issueCount = (state.resolvedIssues ?? []).length;
+  const issueCount = (state.resolvedIssues ?? []).length + (state.deferredIssues ?? []).length;
   const reviewRounds = state.reviews.plan.length + state.reviews.code.length;
   const totalFindings = [...state.reviews.plan, ...state.reviews.code].reduce((s, r) => s + r.findingCount, 0);
   const compactions = state.contextPressure?.compactionCount ?? 0;

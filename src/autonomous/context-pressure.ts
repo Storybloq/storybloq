@@ -1,4 +1,5 @@
 import type { FullSessionState, PressureLevel } from "./session-types.js";
+import { issuesFinished } from "./session-types.js";
 
 // ---------------------------------------------------------------------------
 // Pressure thresholds -- tier-based using config.compactThreshold (ISS-034)
@@ -50,7 +51,7 @@ export function evaluatePressure(state: FullSessionState): PressureLevel {
   // ISS-084: Compute work from source arrays, then subtract the last successful
   // compaction baseline. Session completion history remains cumulative while
   // pressure measures only work performed in the current context window.
-  const totalWork = (state.completedTickets?.length ?? 0) + (state.resolvedIssues?.length ?? 0);
+  const totalWork = (state.completedTickets?.length ?? 0) + issuesFinished(state);
   const workBaseline = state.contextPressure?.workItemsAtLastCompaction ?? 0;
   const tickets = Math.max(0, totalWork - workBaseline);
   const totalEventsBytes = state.contextPressure?.eventsLogBytes ?? 0;
@@ -92,7 +93,7 @@ export function pressureMeetsThreshold(
 export function pressureAfterCompaction(
   state: FullSessionState,
 ): FullSessionState["contextPressure"] {
-  const totalWork = (state.completedTickets?.length ?? 0) + (state.resolvedIssues?.length ?? 0);
+  const totalWork = (state.completedTickets?.length ?? 0) + issuesFinished(state);
   return {
     ...state.contextPressure,
     level: "low",

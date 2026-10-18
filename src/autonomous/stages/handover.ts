@@ -11,6 +11,8 @@ import { loadProject } from "../../core/project-loader.js";
 import { nextTickets } from "../../core/queries.js";
 import { knowledgeImpactSection } from "../knowledge-impact-summary.js";
 import { issueSweepSummaryLines } from "./issue-sweep.js";
+import { finishedIssueLines } from "./issue-fix.js";
+import { issuesFinished } from "../session-types.js";
 
 /** T-527: said in both instructions when the session accepted a knowledge review. */
 const KNOWLEDGE_SECTION_NOTE =
@@ -28,7 +30,7 @@ export class HandoverStage implements WorkflowStage {
 
   async enter(ctx: StageContext): Promise<StageResult> {
     const ticketsDone = ctx.state.completedTickets.length;
-    const issuesDone = (ctx.state.resolvedIssues ?? []).length;
+    const issuesDone = issuesFinished(ctx.state);
     const rotation = ctx.state.contextRotation;
     const knowledgeNote = (ctx.state.knowledgeImpacts ?? []).length > 0 ? KNOWLEDGE_SECTION_NOTE : null;
     if (rotation) {
@@ -190,9 +192,8 @@ export class HandoverStage implements WorkflowStage {
     } catch { /* best-effort */ }
 
     const ticketsDone = ctx.state.completedTickets.length;
-    const issuesDone = (ctx.state.resolvedIssues ?? []).length;
-    const resolvedDisplayIds = ctx.state.resolvedIssueDisplayIds;
-    const resolvedList = (ctx.state.resolvedIssues ?? []).map((id) => `- ${resolvedDisplayIds?.[id] ?? id} (resolved)`).join("\n");
+    const issuesDone = issuesFinished(ctx.state);
+    const resolvedList = finishedIssueLines(ctx.state).join("\n");
     // Terminal -- return advance but the walker will see SESSION_END is terminal
     return {
       action: "advance",

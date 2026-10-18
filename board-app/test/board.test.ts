@@ -794,13 +794,25 @@ test("an on-disk duplicate id refuses the board read and the editor without chan
   const server = createServer(f.root, "<h1>Board</h1>"),
     client = new Client({ name: "dup-test", version: "1" });
   try {
-    await f.put("tickets/T-001-copy.json", ticket("T-001", { title: "Copy" }));
-    const before = await storyInventory(f.root);
-    await assert.rejects(readBoard(f.root));
     const [a, b] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(a), client.connect(b)]);
     const call = async (name: string, args: Record<string, unknown>) =>
       (await client.callTool({ name, arguments: args })) as any;
+    // Real revisions first, so only the duplicate can refuse the saves below.
+    const revisionOf = async (kind: string, id: string) => {
+      const r = await call("storybloq_item_editor", { kind, id });
+      assert.equal(r.isError, undefined, JSON.stringify(r));
+      assert.match(r._meta.editor.revision, /^[a-f0-9]{64}$/);
+      return r._meta.editor.revision as string;
+    };
+    const ticketRevision = await revisionOf("tickets", "T-001"),
+      issueRevision = await revisionOf("issues", "ISS-001");
+    // A filename must equal its identity, so an on-disk duplicate can only
+    // arrive under a second filename, and that is the guard that refuses it.
+    await f.put("tickets/T-001-copy.json", ticket("T-001", { title: "Copy" }));
+    const before = await storyInventory(f.root);
+    const refusal = /A ledger filename does not match its identity/;
+    await assert.rejects(readBoard(f.root), refusal);
     for (const [name, args] of [
       ["storybloq_board_overview", {}],
       ["storybloq_item_editor", { kind: "tickets", id: "T-001" }],
@@ -809,7 +821,7 @@ test("an on-disk duplicate id refuses the board read and the editor without chan
         {
           kind: "tickets",
           id: "T-001",
-          revision: "a".repeat(64),
+          revision: ticketRevision,
           patch: { title: "Overwrite" },
         },
       ],
@@ -818,13 +830,14 @@ test("an on-disk duplicate id refuses the board read and the editor without chan
         {
           kind: "issues",
           id: "ISS-001",
-          revision: "a".repeat(64),
+          revision: issueRevision,
           patch: { title: "Overwrite" },
         },
       ],
     ] as const) {
       const r = await call(name, args);
       assert.equal(r.isError, true, name);
+      assert.match(JSON.stringify(r), refusal, name);
       assert.deepEqual(await storyInventory(f.root), before, name);
     }
   } finally {

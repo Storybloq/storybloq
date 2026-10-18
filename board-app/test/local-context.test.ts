@@ -26,7 +26,19 @@ async function connect(root: string) {
   return client;
 }
 const git = (root: string, ...args: string[]) =>
-  execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "commit.gpgSign=false",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-C",
+      root,
+      ...args,
+    ],
+    { stdio: "pipe" },
+  );
 
 test("local discovery pins canonical worktree root and ignores demo overrides", async () => {
   const a = await fixture();

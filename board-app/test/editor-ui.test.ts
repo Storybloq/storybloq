@@ -293,6 +293,37 @@ test("Cancel restores Edit focus and oversized fields remain disabled without en
     s.close();
   }
 });
+test("saving with an oversized field sends only the changed field in the patch", async () => {
+  const saves: any[] = [];
+  const s = await setup(async (name, args) => {
+    if (name === "storybloq_item_editor")
+      return { _meta: { editor: { ...editor, limitedFields: ["description"] } } };
+    if (name === "storybloq_item_save") {
+      saves.push(args);
+      return {
+        _meta: {
+          editor: {
+            ...editor,
+            limitedFields: ["description"],
+            fields: { ...editor.fields, title: "Draft" },
+          },
+        },
+      };
+    }
+    return basic(name, args);
+  });
+  try {
+    s.click("edit-item");
+    await tick();
+    s.change("edit-title", "Draft");
+    s.click("save-item");
+    await tick();
+    assert.equal(saves.length, 1);
+    assert.deepEqual(saves[0].patch, { title: "Draft" });
+  } finally {
+    s.close();
+  }
+});
 test("a pending save prevents navigation and a disposed view ignores its late acknowledgement", async () => {
   let resolveSave: any;
   const s = await setup(async (name, args) =>

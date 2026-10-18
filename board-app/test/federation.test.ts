@@ -462,8 +462,9 @@ test("node previews read only configured children or exact startup-approved exte
     });
     assert.equal(unknown.isError, true);
     await rm(join(f.root, "child/.story/tickets/T-002.json"));
+    // A valid ticket behind the link, so only the link itself can refuse it.
     await symlink(
-      "/etc/passwd",
+      join(external.root, ".story/tickets/T-002.json"),
       join(f.root, "child/.story/tickets/T-002.json"),
     );
     const unsafe: any = await denied.client.callTool({

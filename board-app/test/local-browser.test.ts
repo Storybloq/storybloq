@@ -69,18 +69,29 @@ test("protected loopback viewer denies foreign capability, origin, host and over
       { "content-type": "text/plain" },
     ])
       assert.equal((await s.post(body, bad)).status, 403);
-    const wrongHost = await new Promise<number>((resolve) => {
-      const req = request(
-        s.origin + "/api",
-        { method: "POST", headers: { ...s.headers, host: "evil.example" } },
-        (res) => {
-          res.resume();
-          resolve(res.statusCode!);
-        },
-      );
-      req.end(JSON.stringify(body));
-    });
-    assert.equal(wrongHost, 403);
+    // Identical requests with a valid fresh nonce each, differing only in Host.
+    const withHost = (host: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = request(
+          s.origin + "/api",
+          {
+            method: "POST",
+            headers: {
+              ...s.headers,
+              "x-storybloq-request": randomBytes(16).toString("hex"),
+              host,
+            },
+          },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode!);
+          },
+        );
+        req.on("error", reject);
+        req.end(JSON.stringify({ operation: "open" }));
+      });
+    assert.equal(await withHost(new URL(s.origin).host), 200);
+    assert.equal(await withHost("evil.example"), 403);
     assert.equal((await s.post({ operation: "other" })).status, 400);
     assert.equal(
       (

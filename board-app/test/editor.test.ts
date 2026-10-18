@@ -26,8 +26,25 @@ async function session() {
   const f = await fixture();
   const server = createServer(f.root, "<h1>Board</h1>");
   const client = new Client({ name: "editor-test", version: "1" });
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  await Promise.all([server.connect(a), client.connect(b)]);
+  const close = async () => {
+    try {
+      await client.close();
+    } finally {
+      try {
+        await server.close();
+      } finally {
+        await f.cleanup();
+      }
+    }
+  };
+  try {
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(a), client.connect(b)]);
+  } catch (error) {
+    // A failed connect still owns the fixture and both peers.
+    await close().catch(() => {});
+    throw error;
+  }
   const call = async (name: string, args: Record<string, unknown>) =>
     (await client.callTool({ name, arguments: args })) as any;
   const editor = async (kind = "tickets", id = "T-001") => {
@@ -44,11 +61,7 @@ async function session() {
     call,
     editor,
     disk,
-    close: async () => {
-      await client.close();
-      await server.close();
-      await f.cleanup();
-    },
+    close,
   };
 }
 

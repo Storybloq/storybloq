@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, rm, symlink, readFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  rm,
+  symlink,
+  readFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -156,14 +164,22 @@ test("handover boundaries reject symlinks, oversized and path arguments without 
   for (const mode of ["symlink", "oversize", "directory-link", "journal"]) {
     const f = await historyFixture();
     const c = await connect(f.root);
+    let outside: string | undefined;
     try {
       const target = join(f.root, ".story/handovers/2026-09-30-work.md");
       if (mode === "symlink") await symlink("/etc/passwd", target);
       else if (mode === "oversize")
         await writeFile(target, "x".repeat(1048577));
       else if (mode === "directory-link") {
+        // An isolated directory holding one valid handover, so only the link
+        // itself can refuse it.
+        outside = await mkdtemp(join(tmpdir(), "handovers-outside-"));
+        await writeFile(
+          join(outside, "2026-09-30-outside.md"),
+          "# Handover\n\nRecorded work.",
+        );
         await rm(join(f.root, ".story/handovers"), { recursive: true });
-        await symlink("/tmp", join(f.root, ".story/handovers"));
+        await symlink(outside, join(f.root, ".story/handovers"));
       } else await f.put(".txn.json", { secret: "DO_NOT_EXPOSE" });
       const r: any = await c.client.callTool({
         name: "storybloq_timeline",
@@ -191,6 +207,7 @@ test("handover boundaries reject symlinks, oversized and path arguments without 
     } finally {
       await c.close();
       await f.cleanup();
+      if (outside) await rm(outside, { recursive: true, force: true });
     }
   }
 });

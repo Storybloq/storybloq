@@ -4,8 +4,12 @@ import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import ts from "typescript";
-import { execFileSync } from "node:child_process";
 import { signature, generateWriterTypes } from "../writer-api.mjs";
+
+// Captured before any test regenerates it, so the comparison is against the
+// declaration this checkout carries, not one a sibling test just wrote.
+const declarationPath = "src/canonical-writes.d.mts";
+const workingDeclaration = await readFile(declarationPath, "utf8");
 
 const sample = `export async function write(id: string, updates: {title: string}, force = false, hooks?: {before: () => Promise<void>}): Promise<{output: string}> { throw new Error(); }`;
 async function compile(declaration, consumer) {
@@ -241,11 +245,7 @@ test("a locally declared or misbound NoteUpdateHatches is refused", () => {
     /canonical module/,
   );
 });
-test("the generated canonical API matches the committed file byte for byte", async () => {
-  const path = "src/canonical-writes.d.mts";
-  const committed = execFileSync("git", ["show", "HEAD:./" + path], {
-    encoding: "utf8",
-  });
-  assert.equal(await generateWriterTypes(), committed);
-  assert.equal(await readFile(path, "utf8"), committed);
+test("the generated canonical API matches the working-tree declaration byte for byte", async () => {
+  assert.equal(await generateWriterTypes(), workingDeclaration);
+  assert.equal(await readFile(declarationPath, "utf8"), workingDeclaration);
 });

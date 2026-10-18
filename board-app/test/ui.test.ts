@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { readFile } from "node:fs/promises";
@@ -39,15 +39,20 @@ const data: Overview = {
 };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const result = (overview = data) => ({ _meta: { overview } });
-async function setup(call: Parameters<typeof mountBoard>[1]) {
+async function setup(t: TestContext, call: Parameters<typeof mountBoard>[1]) {
   const dom = new JSDOM(await readFile("src/app.html", "utf8"));
   const d = dom.window.document,
     view = mountBoard(d, call);
+  // Registered before any assertion, so a failing test still tears down.
+  t.after(() => {
+    view.dispose();
+    dom.window.close();
+  });
   const click = (id: string) =>
     (d.getElementById(id) as HTMLButtonElement).click();
   return { dom, d, view, click };
 }
-test("Mac phase rail selects and toggles phases without losing search or type, resets pages and preserves focus", async () => {
+test("Mac phase rail selects and toggles phases without losing search or type, resets pages and preserves focus", async (t) => {
   const calls: any[] = [];
   const phased = {
     ...data,
@@ -65,7 +70,7 @@ test("Mac phase rail selects and toggles phases without losing search or type, r
       columns.map((c) => [c, { items: [card], offset: 0, total: 20 }]),
     ) as Overview["columns"],
   };
-  const { d, view, click, dom } = await setup(async (_name, args) => {
+  const { d, view, click, dom } = await setup(t, async (_name, args) => {
     calls.push(args);
     return result({
       ...phased,
@@ -113,19 +118,13 @@ test("Mac phase rail selects and toggles phases without losing search or type, r
   (d.querySelector('[data-phase="unphased"]') as HTMLButtonElement).click();
   await tick();
   assert.equal(calls.at(-1).phase, "unphased");
-  view.dispose();
-  dom.window.close();
 });
 test("an active Unphased filter keeps its toggle after the last unphased item gains a phase", async (t) => {
   const calls: any[] = [];
   let unphasedLeft = true;
-  const { d, view, dom } = await setup(async (_name, args) => {
+  const { d, view, dom } = await setup(t, async (_name, args) => {
     calls.push(args);
     return result({ ...data, hasUnphased: unphasedLeft });
-  });
-  t.after(() => {
-    view.dispose();
-    dom.window.close();
   });
   view.receive(result());
   const toggle = () =>
@@ -170,9 +169,9 @@ test("attention and muted text remain readable on normal and changed Fabric card
       }
   }
 });
-test("inert content, details, close focus and error recovery", async () => {
+test("inert content, details, close focus and error recovery", async (t) => {
   let fail = false;
-  const s = await setup(async (name) => {
+  const s = await setup(t, async (name) => {
     if (fail) throw Error("untrusted raw error");
     return name.endsWith("detail")
       ? {
@@ -214,13 +213,11 @@ test("inert content, details, close focus and error recovery", async () => {
   click("refresh");
   await tick();
   assert.match(d.getElementById("status")!.textContent!, /1 matching/);
-  view.dispose();
-  dom.window.close();
 });
-test("late board results cannot replace current results or enable obsolete rows", async () => {
+test("late board results cannot replace current results or enable obsolete rows", async (t) => {
   const pending: ((r: any) => void)[] = [];
   let details = 0;
-  const { d, view, click, dom } = await setup((name) => {
+  const { d, view, click, dom } = await setup(t, (name) => {
     if (name.endsWith("detail")) details++;
     return new Promise((r) => pending.push(r));
   });
@@ -236,10 +233,8 @@ test("late board results cannot replace current results or enable obsolete rows"
   pending[0](result({ ...data, project: "Old" }));
   await tick();
   assert.equal(d.getElementById("project")!.textContent, "Newest");
-  view.dispose();
-  dom.window.close();
 });
-test("mixed rows route canonical kind and ID; closed or superseded details never return", async () => {
+test("mixed rows route canonical kind and ID; closed or superseded details never return", async (t) => {
   const calls: any[] = [],
     pending: ((r: any) => void)[] = [];
   const issue: Card = {
@@ -250,7 +245,7 @@ test("mixed rows route canonical kind and ID; closed or superseded details never
     kind: "issues",
     severity: "high",
   };
-  const { d, view, click, dom } = await setup((name, args) => {
+  const { d, view, click, dom } = await setup(t, (name, args) => {
     calls.push({ name, args });
     return new Promise((r) => pending.push(r));
   });
@@ -277,10 +272,8 @@ test("mixed rows route canonical kind and ID; closed or superseded details never
   await tick();
   assert.equal(d.getElementById("detail")!.hidden, true);
   assert.ok(!d.body.textContent!.includes("OLD DETAIL"));
-  view.dispose();
-  dom.window.close();
 });
-test("independent pagination, applied search, kind filters and empty states", async () => {
+test("independent pagination, applied search, kind filters and empty states", async (t) => {
   const calls: any[] = [];
   const large = {
     ...data,
@@ -290,7 +283,7 @@ test("independent pagination, applied search, kind filters and empty states", as
       done: { ...data.columns.done, total: 20 },
     },
   };
-  const { d, view, click, dom } = await setup(async (_name, args) => {
+  const { d, view, click, dom } = await setup(t, async (_name, args) => {
     calls.push(args);
     return result({
       ...large,
@@ -332,11 +325,9 @@ test("independent pagination, applied search, kind filters and empty states", as
     d.getElementById("inProgress-items")!.textContent!,
     /No matching/,
   );
-  view.dispose();
-  dom.window.close();
 });
-test("controlled server repair messages are actionable and raw content stays hidden", async () => {
-  const { d, view, click, dom } = await setup(async () => ({
+test("controlled server repair messages are actionable and raw content stays hidden", async (t) => {
+  const { d, view, click, dom } = await setup(t, async () => ({
     isError: true,
     _meta: {
       boardError: {
@@ -349,10 +340,8 @@ test("controlled server repair messages are actionable and raw content stays hid
   click("refresh");
   await tick();
   assert.match(d.getElementById("error")!.textContent!, /Finish it locally/);
-  view.dispose();
-  dom.window.close();
 });
-test("polling cadence, visibility, busy/detail suppression, initial result and teardown", async () => {
+test("polling cadence, visibility, busy/detail suppression, initial result and teardown", async (t) => {
   let callback!: () => void,
     duration = 0,
     schedules = 0,
@@ -360,7 +349,7 @@ test("polling cadence, visibility, busy/detail suppression, initial result and t
     visible = true;
   const calls: any[] = [],
     pending: ((r: any) => void)[] = [];
-  const { d, view, click, dom } = await setup((name, args) => {
+  const { d, view, click, dom } = await setup(t, (name, args) => {
     calls.push({ name, args });
     return new Promise((r) => pending.push(r));
   });
@@ -411,7 +400,7 @@ test("polling cadence, visibility, busy/detail suppression, initial result and t
   assert.equal(d.getElementById("project")!.textContent, "Demo");
   dom.window.close();
 });
-test("background refresh preserves row focus and only real state changes highlight", async () => {
+test("background refresh preserves row focus and only real state changes highlight", async (t) => {
   const changed = {
     ...data,
     columns: {
@@ -419,7 +408,7 @@ test("background refresh preserves row focus and only real state changes highlig
       open: { ...data.columns.open, items: [{ ...card, blocked: true }] },
     },
   };
-  const { d, view, dom } = await setup(async () => result(changed));
+  const { d, view, dom } = await setup(t, async () => result(changed));
   view.receive(result());
   assert.equal(d.querySelector(".changed"), null);
   d.querySelector<HTMLButtonElement>(".item")!.focus();
@@ -430,13 +419,11 @@ test("background refresh preserves row focus and only real state changes highlig
   view.autoRefresh();
   await tick();
   assert.equal(d.querySelector(".changed"), null);
-  view.dispose();
-  dom.window.close();
 });
 
-test("background refresh restores browser-blurred focus but respects newly moved focus", async () => {
+test("background refresh restores browser-blurred focus but respects newly moved focus", async (t) => {
   let finish!: (r: any) => void;
-  const { d, view, dom } = await setup(
+  const { d, view, dom } = await setup(t, 
     () =>
       new Promise((r) => {
         finish = r;
@@ -456,13 +443,11 @@ test("background refresh restores browser-blurred focus but respects newly moved
   finish(result());
   await tick();
   assert.equal(d.activeElement?.id, "search");
-  view.dispose();
-  dom.window.close();
 });
 
-test("manual pagination restores a nearby pager when its button becomes unavailable", async () => {
+test("manual pagination restores a nearby pager when its button becomes unavailable", async (t) => {
   let finish!: (r: any) => void;
-  const { d, view, click, dom } = await setup(
+  const { d, view, click, dom } = await setup(t, 
     () =>
       new Promise((r) => {
         finish = r;
@@ -489,13 +474,11 @@ test("manual pagination restores a nearby pager when its button becomes unavaila
   );
   await tick();
   assert.equal(d.activeElement?.id, "open-previous");
-  view.dispose();
-  dom.window.close();
 });
 
-test("detail completion is announced without moving focus again", async () => {
+test("detail completion is announced without moving focus again", async (t) => {
   let finish!: (r: any) => void;
-  const { d, view, dom } = await setup(
+  const { d, view, dom } = await setup(t, 
     () =>
       new Promise((r) => {
         finish = r;
@@ -510,11 +493,9 @@ test("detail completion is announced without moving focus again", async () => {
   await tick();
   assert.match(d.getElementById("status")!.textContent!, /Details loaded/);
   assert.equal(d.activeElement?.id, "close-detail");
-  view.dispose();
-  dom.window.close();
 });
 
-test("responsive columns keep DOM reading order aligned with visual order and remove listeners", async () => {
+test("responsive columns keep DOM reading order aligned with visual order and remove listeners", async (t) => {
   const dom = new JSDOM(await readFile("src/app.html", "utf8"));
   const d = dom.window.document;
   let callback!: () => void,
@@ -530,6 +511,10 @@ test("responsive columns keep DOM reading order aligned with visual order and re
   };
   Object.defineProperty(dom.window, "matchMedia", { value: () => media });
   const view = mountBoard(d, async () => result());
+  t.after(() => {
+    view.dispose();
+    dom.window.close();
+  });
   assert.equal(
     d.querySelector(".board")!.firstElementChild?.id,
     "inProgress-column",
@@ -539,12 +524,11 @@ test("responsive columns keep DOM reading order aligned with visual order and re
   assert.equal(d.querySelector(".board")!.firstElementChild?.id, "open-column");
   view.dispose();
   assert.equal(removed, 1);
-  dom.window.close();
 });
 
-test("type filter disclosure dismisses without reads and applies a visible selection beside search", async () => {
+test("type filter disclosure dismisses without reads and applies a visible selection beside search", async (t) => {
   const calls: any[] = [];
-  const { d, dom, view, click } = await setup(async (_name, args) => {
+  const { d, dom, view, click } = await setup(t, async (_name, args) => {
     calls.push(args);
     return result();
   });
@@ -610,9 +594,9 @@ test("type filter disclosure dismisses without reads and applies a visible selec
   }
 });
 
-test("filter disclosure closes on deactivation and disposed controls cannot change it or request data", async () => {
+test("filter disclosure closes on deactivation and disposed controls cannot change it or request data", async (t) => {
   let calls = 0;
-  const { d, dom, view, click } = await setup(async () => {
+  const { d, dom, view, click } = await setup(t, async () => {
     calls++;
     return result();
   });

@@ -794,6 +794,9 @@ const MATRIX: Coverage[] = [
     check: (dir) => {
       gitify(dir);
       expect(addCap(dir, "--entry", "src/core/thing.ts", "--example", "thing()").code, "seed").toBe(0);
+      // Compacted first: a canonical rewrite of canonical bytes would hide a write.
+      const catalog = join(dir, ".story", "capabilities.json");
+      writeFileSync(catalog, JSON.stringify(JSON.parse(readFileSync(catalog, "utf-8"))));
       expectEmptyClearRefused(dir, ["capability", "update", "cap-thing"], "example");
       // The split is real: the second value is checked, and refused, on its own.
       const both = run(dir, "capability", "update", "cap-thing", "--clear", "example,summary", "--format", "json");

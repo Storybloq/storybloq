@@ -229,6 +229,8 @@ describe("clear through the registered MCP tools (ISS-1287)", () => {
     await tools.get("storybloq_capability_add")!.handler({ ...CAP, example: "storybloq thing" });
     const added = await tools.get("storybloq_term_add")!.handler({ id: "term-pen", term: "pen", definition: "The session model.", distinction: "Not hands." });
     expect(added.isError).toBeFalsy();
+    // Compacted first: a canonical rewrite of canonical bytes would hide a write.
+    writeFileSync(catalogPath(root), JSON.stringify(JSON.parse(readFileSync(catalogPath(root), "utf-8"))));
     for (const [tool, id, fields] of [
       ["storybloq_capability_update", "cap-thing", "example"],
       ["storybloq_term_update", "term-pen", "distinction, addedBy"],

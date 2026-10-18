@@ -148,6 +148,9 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
     try { process.kill(-pgid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
   };
   const pidIn = (file: string): number => (existsSync(file) ? Number(readFileSync(file, "utf-8").trim()) : 0);
+  const pgidOf = (pid: number): number => {
+    try { return Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf-8" }).trim()); } catch { return 0; }
+  };
 
   /** Starts the signal worker, waits until the reviewer is up, sends `sig` (if any) and reports how the worker ended. */
   async function run(mode: string, sig: NodeJS.Signals | null, listener?: string): Promise<{ ended: Ended | "hung"; stdout: string; groupGone: boolean }> {
@@ -161,19 +164,29 @@ describe.skipIf(process.platform === "win32")("a signal during a setup review en
     let stdout = "";
     child.stdout.on("data", (c) => { stdout += String(c); });
     const exit = new Promise<Ended>((r) => child.once("exit", (code, signal) => r({ code, signal })));
+    // "exit" can come before stdout has drained; "close" comes after both.
+    const closed = new Promise<void>((r) => child.once("close", () => r()));
     let pgid = 0;
     try {
-      // review-exit ends its own group at once, so the worker records the group id before it exits.
-      const pgidFile = `${pidFile}.pgid`;
-      const up = await until(() => (mode === "review-exit" ? pidIn(pgidFile) > 0 : pidIn(pidFile) > 0 && (mode !== "overlap" || stdout.includes("ready\n"))), 15_000);
-      expect(up).toBe(true);
-      pgid = mode === "review-exit" ? pidIn(pgidFile) : Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pidIn(pidFile))], { encoding: "utf-8" }).trim());
-      expect(pgid).toBeGreaterThan(0);
+      if (mode === "review-exit") {
+        // review-exit ends its own group at once, so the worker records the group id before it exits.
+        const pgidFile = `${pidFile}.pgid`;
+        expect(await until(() => pidIn(pgidFile) > 0, 15_000)).toBe(true);
+        pgid = pidIn(pgidFile);
+      } else {
+        // The group is recorded as soon as the reviewer's pid is known, so a later readiness failure still cleans it up.
+        expect(await until(() => pidIn(pidFile) > 0, 15_000)).toBe(true);
+        pgid = pgidOf(pidIn(pidFile));
+        expect(pgid).toBeGreaterThan(0);
+        if (mode === "overlap") expect(await until(() => stdout.includes("ready\n"), 15_000)).toBe(true);
+      }
       if (sig) child.kill(sig);
-      const ended = await within(exit, 8_000);
+      const ended = await within(exit.then(async (e) => { await closed; return e; }), 8_000);
       const groupGone = await until(() => !groupAlive(pgid), 3_000);
       return { ended, stdout, groupGone };
     } finally {
+      // A failure before the group was recorded: find it from the pid file while the reviewer still runs.
+      if (pgid === 0 && pidIn(pidFile) > 0) pgid = pgidOf(pidIn(pidFile));
       try { child.kill("SIGKILL"); } catch { /* gone */ }
       if (pgid > 0) { try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }
     }

@@ -12,7 +12,7 @@ import {
   mkdir,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { existsSync, constants as fsConstants } from "node:fs";
+import { existsSync, realpathSync, constants as fsConstants } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { join, resolve, relative, extname, dirname, basename, sep, isAbsolute } from "node:path";
 import { recordBoardTarget } from "./board-write-recorder.js";
@@ -2293,6 +2293,26 @@ function checkProjectLockFencing(): void {
   }
 }
 
+/**
+ * T-538 S2: runs `fn` outside any held project lock's context, as another
+ * process would, so a locked call started in it waits for the lock instead
+ * of failing with nested_lock. For work started under a lock that is meant
+ * to wait for it (a test standing in for a second process), never awaited
+ * by the holder.
+ */
+export function outsideProjectLock<T>(fn: () => T): T {
+  return projectLockContext.exit(() => resolutionContextChain.exit(fn));
+}
+
+/** A lock path with its directory resolved through symlinks (/tmp and /private/tmp are one lock). */
+function canonicalLockPath(lockPath: string): string {
+  try {
+    return join(realpathSync(dirname(lockPath)), basename(lockPath));
+  } catch {
+    return resolve(lockPath);
+  }
+}
+
 /** Acquires a project lock, executes fn, releases in finally. */
 async function withLock<T>(
   wrapDir: string,
@@ -2303,7 +2323,7 @@ async function withLock<T>(
   // one would wait out the acquisition deadline against itself. Fail at once
   // with a named error instead; the caller should use the unlocked primitive.
   const held = projectLockContext.getStore();
-  if (held && resolve(held.lockPath) === resolve(lockPath) && verifyProjectLockOwnership(held)) {
+  if (held && canonicalLockPath(held.lockPath) === canonicalLockPath(lockPath) && verifyProjectLockOwnership(held)) {
     throw new ProjectLoaderError(
       "nested_lock",
       `This operation already holds the project lock (${lockPath}); a locked handler called another locked handler. Call its unlocked primitive instead.`,

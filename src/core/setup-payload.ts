@@ -18,7 +18,7 @@
  * the same payload so one guarded note write carries both.
  */
 import { z } from "zod";
-import { isAbsolute, normalize, sep } from "node:path";
+import { isAbsolute, normalize, posix, sep } from "node:path";
 import { SETUP_ID_PATTERN } from "./setup-review.js";
 import { SETUP_KEY_PATTERN } from "./setup-meta.js";
 
@@ -183,6 +183,33 @@ function escapes(path: string): boolean {
   return n === ".." || n.startsWith(`..${sep}`) || n.startsWith("../");
 }
 
+/**
+ * Stage 1's test-command grammar: the recipe's test command is plain `cd`
+ * steps and test invocations joined by `&&`, so each component's test command
+ * must be one invocation that cannot move the shell or run anything else.
+ * The first token that breaks it, named for the refusal, or null.
+ */
+const TEST_COMMAND_TOKENS: ReadonlyArray<readonly [string, RegExp]> = [
+  ["a newline", /[\n\r]/],
+  ["&&", /&&/],
+  ["||", /\|\|/],
+  ["$(", /\$\(/],
+  ["`", /`/],
+  [";", /;/],
+  ["|", /\|/],
+  ["&", /&/],
+  ["(", /\(/],
+  [")", /\)/],
+  ["<", /</],
+  [">", />/],
+  ["cd", /(?:^|\s)cd(?:\s|$)/],
+];
+
+export function testCommandToken(command: string): string | null {
+  for (const [token, pattern] of TEST_COMMAND_TOKENS) if (pattern.test(command)) return token;
+  return null;
+}
+
 /** The first reference problem in an otherwise well-formed payload, or null. */
 function referenceProblem(p: SetupPayload): string | null {
   const kinds = new Map<string, "phase" | "ticket" | "checkpoint" | "issue">();
@@ -226,16 +253,33 @@ function referenceProblem(p: SetupPayload): string | null {
     for (const k of c.keys) if (!kinds.has(k)) return `coverage for ${c.requirement} names ${k}, which is not defined`;
     if (c.keys.length === 0 && c.deferral === undefined) return `coverage for ${c.requirement} maps to nothing and records no deferral`;
   }
+  const componentIds = new Set<string>();
   for (const comp of p.quality.components) {
+    if (componentIds.has(comp.id)) return `component id ${comp.id} is defined twice`;
+    componentIds.add(comp.id);
     if (escapes(comp.workdir)) return `component ${comp.id} has a workdir outside the project: ${comp.workdir}`;
     for (const stage of [comp.test, comp.build, comp.verify]) {
       if (stage && stage.status === "pending" && stage.reason === undefined) return `component ${comp.id} has a pending stage with no reason`;
+    }
+    const token = comp.test ? testCommandToken(comp.test.command) : null;
+    if (token !== null) {
+      return `component ${comp.id}'s test command uses ${token === "cd" ? "a cd step" : token === "a newline" ? token : `\`${token}\``}, but a component's test command is one invocation run from its workdir. ` +
+        "Put a multi-step test behind one script, such as an npm script or a Makefile target, and name that";
     }
   }
   // The recipe has one VERIFY stage: one start command and one readiness URL.
   if (p.quality.components.filter((c) => c.verify !== null).length > 1) return "more than one component has a verify plan; the recipe runs one";
   if (escapes(p.governance.canonicalFactsPath)) return `the canonical facts path leaves the project: ${p.governance.canonicalFactsPath}`;
-  for (const f of p.governance.files) if (escapes(f.path)) return `governance file ${f.path} leaves the project`;
+  const destinations = new Map<string, string>();
+  for (const f of p.governance.files) {
+    if (escapes(f.path)) return `governance file ${f.path} leaves the project`;
+    // RULES.md, ./RULES.md and a/../RULES.md are one file.
+    const dest = posix.normalize(f.path);
+    const earlier = destinations.get(dest);
+    if (earlier !== undefined) return `governance files ${earlier} and ${f.path} are the same file`;
+    destinations.set(dest, f.path);
+  }
+  if (p.frozen && escapes(p.frozen.handover.path)) return `the frozen handover path leaves the project: ${p.frozen.handover.path}`;
   // A cycle in blockedBy (gates included) can never be worked.
   const state = new Map<string, 1 | 2>();
   const visit = (k: string, path: string[]): string | null => {

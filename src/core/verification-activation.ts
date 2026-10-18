@@ -89,18 +89,27 @@ function dirOf(workdir: string): string {
   return n === "" ? "." : n;
 }
 
+/** One shell word, single-quoted: an embedded `'` becomes `'\''`, so nothing in it is expanded or run. */
+export function shellQuote(word: string): string {
+  return `'${word.replace(/'/g, "'\\''")}'`;
+}
+
+type Step = { readonly workdir: string; readonly command: string };
+
 /**
- * Stage 1's command: each step run from its component's directory, joined
- * only by `&&`, with a plain `cd` between directories (`cd frontend && npm
- * test && cd ../backend && pytest`), in payload order.
+ * Stage 1's test command, whose grammar check set 4 grades: each step run
+ * from its component's directory, joined only by `&&`, with a plain `cd`
+ * between directories (`cd 'frontend' && npm test && cd '../backend' &&
+ * pytest`), in payload order. Every workdir is quoted; the payload refuses a
+ * test command that could move the shell (`testCommandToken`).
  */
-export function chainCommand(steps: readonly { readonly workdir: string; readonly command: string }[]): string {
+export function chainCommand(steps: readonly Step[]): string {
   const parts: string[] = [];
   let cwd = ".";
   for (const step of steps) {
     const dir = dirOf(step.workdir);
     if (dir !== cwd) {
-      parts.push(`cd ${posix.relative(posix.join("/", cwd), posix.join("/", dir))}`);
+      parts.push(`cd ${shellQuote(posix.relative(posix.join("/", cwd), posix.join("/", dir)))}`);
       cwd = dir;
     }
     parts.push(step.command);
@@ -108,20 +117,35 @@ export function chainCommand(steps: readonly { readonly workdir: string; readonl
   return parts.join(" && ");
 }
 
+/**
+ * BUILD and VERIFY commands, which no grammar grades: each component runs in
+ * its own subshell from its quoted workdir, `(cd '<dir>' && (<command>))`,
+ * joined by `&&`, so a command that changes directory cannot move the next.
+ * A lone root command is written as it is.
+ */
+export function wrappedCommand(steps: readonly Step[]): string {
+  if (steps.length === 1 && dirOf(steps[0]!.workdir) === ".") return steps[0]!.command;
+  return steps.map((s) => `(cd ${shellQuote(dirOf(s.workdir))} && (${s.command}))`).join(" && ");
+}
+
 function commandStage(input: ActivationInput, of: "test" | "build", rule: Rule): { enabled: boolean; command: string | null } {
   const all = input.components.flatMap((c) => (c[of] ? [{ workdir: c.workdir, ...c[of]! }] : []));
   const ready = all.filter((s) => satisfied(s.status));
+  const join = of === "test" ? chainCommand : wrappedCommand;
   // The established components only; with none, the proposed command, written off.
-  const command = ready.length > 0 ? chainCommand(ready) : all.length > 0 ? chainCommand(all) : null;
+  const command = ready.length > 0 ? join(ready) : all.length > 0 ? join(all) : null;
   return { enabled: rule === "satisfied" && ready.length > 0, command };
 }
 
 function buildStage(input: ActivationInput, stage: RecipeStage): Record<string, unknown> {
   const rule = STAGE_MATRIX[input.level][stage];
   if (stage === "VERIFY") {
-    const verify = input.components.find((c) => c.verify !== null)?.verify ?? null;
+    // The guide starts VERIFY from the root and has no cwd field, so the start command carries its component's workdir.
+    const owner = input.components.find((c) => c.verify !== null);
+    const verify = owner?.verify ?? null;
     const enabled = rule === "satisfied" && input.verifyApplies && verify !== null && satisfied(verify.status);
-    return verify ? { enabled, startCommand: verify.startCommand, readinessUrl: verify.readinessUrl } : { enabled };
+    if (!owner || !verify) return { enabled };
+    return { enabled, startCommand: wrappedCommand([{ workdir: owner.workdir, command: verify.startCommand }]), readinessUrl: verify.readinessUrl };
   }
   const { enabled, command } = commandStage(input, stage === "BUILD" ? "build" : "test", rule);
   const out: Record<string, unknown> = { enabled };

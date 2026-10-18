@@ -77,6 +77,10 @@ describe("validate names setup-field problems", () => {
   });
 });
 
+function frozen(path: string): SetupPayload["frozen"] {
+  return { revision: "a".repeat(64), setupNote: "", handover: { path, content: "" }, historicalReport: "" };
+}
+
 function payload(over: Partial<SetupPayload> = {}): Record<string, unknown> {
   return {
     version: 1,
@@ -148,10 +152,55 @@ describe("the setup payload", () => {
       { id: "a", workdir: "a", test: null, build: null, verify: { startCommand: "npm run dev", readinessUrl: "http://localhost:3000", status: "established" } },
       { id: "b", workdir: "b", test: null, build: null, verify: { startCommand: "npm run dev", readinessUrl: "http://localhost:5173", status: "established" } },
     ] } }, /more than one component has a verify plan/],
+    ["an absolute frozen handover path", { frozen: frozen("/etc/handover.md") }, /frozen handover path leaves the project: \/etc\/handover.md/],
+    ["a frozen handover path escaping the project", { frozen: frozen("../outside/handover.md") }, /frozen handover path leaves the project/],
+    ["a component id defined twice with conflicting commands", { quality: { level: "full", verifyApplies: false, components: [
+      { id: "c", workdir: ".", test: { command: "npm test", status: "established" }, build: null, verify: null },
+      { id: "c", workdir: "api", test: { command: "pytest", status: "established" }, build: null, verify: null },
+    ] } }, /component id c is defined twice/],
+    ["two governance files that are the same file", { governance: { canonicalFactsPath: "CLAUDE.md", files: [
+      { path: "RULES.md", content: "a" }, { path: "a/../RULES.md", content: "b" },
+    ] } }, /governance files RULES.md and a\/..\/RULES.md are the same file/],
+    ["./RULES.md beside RULES.md", { governance: { canonicalFactsPath: "CLAUDE.md", files: [
+      { path: "./RULES.md", content: "a" }, { path: "RULES.md", content: "b" },
+    ] } }, /are the same file/],
     ["a decision checkpoint with criteria", { checkpoints: [{ key: "K4", title: "x", kind: "decision", criteria: "c", evidenceRefs: [], description: "", phase: "K1", blockedBy: [], gates: [] }] }, /needs exactly its question/],
     ["coverage naming nothing defined", { coverage: [{ requirement: "R1", text: "t", source: "s", keys: ["K77"] }] }, /names K77/],
     ["coverage with no keys and no deferral", { coverage: [{ requirement: "R1", text: "t", source: "s", keys: [] }] }, /records no deferral/],
   ] as const)("refuses %s", (_name, over, reason) => {
     expect(() => validateSetupPayload(payload(over as Partial<SetupPayload>))).toThrow(reason);
+  });
+});
+
+describe("a component's test command is one invocation (S2a finding 3)", () => {
+  const withTest = (command: string) => payload({ quality: { level: "full", verifyApplies: false, components: [
+    { id: "root", workdir: ".", test: { command, status: "established" }, build: null, verify: null },
+  ] } } as Partial<SetupPayload>);
+
+  it.each([
+    ["npm test; rm -rf build", ";"],
+    ["npm ci && npm test", "&&"],
+    ["npm test || true", "||"],
+    ["npm test | tee out", "|"],
+    ["npm test &", "&"],
+    ["(npm test)", "("],
+    ["npm test )", ")"],
+    ["npm test `x`", "`"],
+    ["npm test $(x)", "$("],
+    ["npm test > out", ">"],
+    ["npm test < in", "<"],
+    ["npm test\npytest", "a newline"],
+  ])("refuses %j, naming %s", (command, token) => {
+    expect(() => validateSetupPayload(withTest(command))).toThrow(`uses \`${token}\``.replace("`a newline`", "a newline"));
+  });
+
+  it("refuses a cd step and says to put a multi-step test behind one script", () => {
+    expect(() => validateSetupPayload(withTest("cd backend"))).toThrow(/uses a cd step.*one script, such as an npm script or a Makefile target/);
+  });
+
+  it("accepts one invocation with arguments", () => {
+    for (const command of ["npm test -- --run", "python manage.py test", "go test ./...", "make test"]) {
+      expect(() => validateSetupPayload(withTest(command))).not.toThrow();
+    }
   });
 });

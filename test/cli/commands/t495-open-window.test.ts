@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { handleReviewStats } from "../../../src/cli/commands/review-stats.js";
 import { openContractWindow, readContractWindow } from "../../../src/core/review-stats-window.js";
 import * as loaded from "../../../src/autonomous/review-contract.js";
-import { withProjectLock } from "../../../src/core/project-loader.js";
+import { outsideProjectLock, withProjectLock } from "../../../src/core/project-loader.js";
 import type { CommandContext } from "../../../src/cli/types.js";
 
 const dirs: string[] = [];
@@ -249,7 +249,8 @@ describe("T-495: the baseline is captured UNDER the lock", () => {
     let opening: Promise<{ exitCode?: number; output: string }> | undefined;
     await withProjectLock(root, { strict: false }, async () => {
       // Starts, reaches the lock, and waits: the lock is held by this block.
-      opening = handleReviewStats({ openWindow: true }, ctxFor(root)) as never;
+      // Outside this block's lock context, as a second process would be (T-538 nested_lock).
+      opening = outsideProjectLock(() => handleReviewStats({ openWindow: true }, ctxFor(root))) as never;
       await new Promise((r) => setTimeout(r, 50));
       // The contract in force changes DURING the wait.
       writeFileSync(join(root, "REVIEW.md"), edited, "utf-8");

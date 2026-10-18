@@ -6,7 +6,7 @@
  * write instead of making it, so one transaction can carry several.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +74,21 @@ describe("nested locks", () => {
     expect(caught).toBeInstanceOf(ProjectLoaderError);
     expect((caught as ProjectLoaderError).code).toBe("nested_lock");
     expect((caught as Error).message).toMatch(/unlocked primitive/);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it("a nested acquire through a symlink alias of the root fails at once with nested_lock (S2a finding 5)", async () => {
+    const dir = await project();
+    const aliasParent = await mkdtemp(join(tmpdir(), "t538-s2-alias-"));
+    dirs.push(aliasParent);
+    const alias = join(aliasParent, "link");
+    await symlink(dir, alias);
+    const started = Date.now();
+    let caught: unknown;
+    await withProjectLock(dir, { strict: true }, async () => {
+      caught = await withProjectLock(alias, { strict: true }, async () => {}).catch((e: unknown) => e);
+    });
+    expect((caught as ProjectLoaderError).code).toBe("nested_lock");
     expect(Date.now() - started).toBeLessThan(2000);
   });
 

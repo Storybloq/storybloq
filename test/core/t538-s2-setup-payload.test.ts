@@ -144,6 +144,10 @@ describe("the setup payload", () => {
     ["an absolute governance file", { governance: { canonicalFactsPath: "CLAUDE.md", files: [{ path: "/etc/x", content: "" }] } }, /leaves the project/],
     ["a workdir escaping the project", { quality: { level: "full", verifyApplies: false, components: [{ id: "c", workdir: "../x", test: null, build: null, verify: null }] } }, /outside the project/],
     ["a pending stage without a reason", { quality: { level: "full", verifyApplies: false, components: [{ id: "c", workdir: ".", test: { command: "pytest", status: "pending" }, build: null, verify: null }] } }, /pending stage with no reason/],
+    ["two verify plans", { quality: { level: "full", verifyApplies: true, components: [
+      { id: "a", workdir: "a", test: null, build: null, verify: { startCommand: "npm run dev", readinessUrl: "http://localhost:3000", status: "established" } },
+      { id: "b", workdir: "b", test: null, build: null, verify: { startCommand: "npm run dev", readinessUrl: "http://localhost:5173", status: "established" } },
+    ] } }, /more than one component has a verify plan/],
     ["a decision checkpoint with criteria", { checkpoints: [{ key: "K4", title: "x", kind: "decision", criteria: "c", evidenceRefs: [], description: "", phase: "K1", blockedBy: [], gates: [] }] }, /needs exactly its question/],
     ["coverage naming nothing defined", { coverage: [{ requirement: "R1", text: "t", source: "s", keys: ["K77"] }] }, /names K77/],
     ["coverage with no keys and no deferral", { coverage: [{ requirement: "R1", text: "t", source: "s", keys: [] }] }, /records no deferral/],

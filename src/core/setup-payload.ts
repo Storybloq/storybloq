@@ -232,6 +232,8 @@ function referenceProblem(p: SetupPayload): string | null {
       if (stage && stage.status === "pending" && stage.reason === undefined) return `component ${comp.id} has a pending stage with no reason`;
     }
   }
+  // The recipe has one VERIFY stage: one start command and one readiness URL.
+  if (p.quality.components.filter((c) => c.verify !== null).length > 1) return "more than one component has a verify plan; the recipe runs one";
   if (escapes(p.governance.canonicalFactsPath)) return `the canonical facts path leaves the project: ${p.governance.canonicalFactsPath}`;
   for (const f of p.governance.files) if (escapes(f.path)) return `governance file ${f.path} leaves the project`;
   // A cycle in blockedBy (gates included) can never be worked.

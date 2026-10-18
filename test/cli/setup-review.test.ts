@@ -611,6 +611,23 @@ describe("gate and skip write the setup under its lock (T-536)", () => {
     expect(readFileSync(join(setupDir(id), "setup.json"), "utf-8")).toBe(before);
   });
 
+  it("status reads the setup again once it holds the lock, not the copy it read before waiting", async () => {
+    const id = await openSetup();
+    const file = join(setupDir(id), "setup.json");
+    const held = await acquireProjectLockAsync(join(setupDir(id), "run.lock"));
+    const pending = handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
+    try {
+      const changed = JSON.parse(readFileSync(file, "utf-8"));
+      changed.probe = { ...changed.probe, version: "codex-cli 7.7.7" };
+      writeFileSync(file, JSON.stringify(changed));
+    } finally {
+      releaseProjectLock(held);
+    }
+    const s = await pending;
+    expect(s.exitCode).toBe(4);
+    expect(s.stdout).toContain("Reviewer probe: codex codex-cli 7.7.7");
+  });
+
   it("the owner's skip while the setup's lock is held exits 7 and records nothing", async () => {
     const id = await openSetup();
     const before = readFileSync(join(setupDir(id), "setup.json"), "utf-8");
@@ -654,7 +671,7 @@ describe("a published record is durable before it counts (T-536)", () => {
 });
 
 describe("a run killed inside publication, in fresh processes (T-536)", () => {
-  function worker(mode: "run-pause" | "run-sync-pause" | "run" | "status", id: string, goFile = ""): { child: ReturnType<typeof fork>; first: Promise<unknown> } {
+  function worker(mode: "run-pause" | "run-sync-pause" | "run" | "status" | "status-pause", id: string, goFile = ""): { child: ReturnType<typeof fork>; first: Promise<unknown> } {
     const fixture = join(import.meta.dirname, "fixtures", "setup-review-crash-worker.ts");
     const child = fork(fixture, [mode, project, store, id, fake.path, REVIEW_PACKET, goFile], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc"] });
     const first = new Promise((resolve, reject) => {
@@ -700,6 +717,22 @@ describe("a run killed inside publication, in fresh processes (T-536)", () => {
     const last = (await after.first) as SetupReviewResult;
     expect(last.exitCode).toBe(3);
     expect(last.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
+  });
+
+  it("status holds the lock until it has classified, so a run cannot publish under it", async () => {
+    const id = await openSetup();
+    const goStatus = join(store, "go-status");
+    const goRun = join(store, "go-run");
+    const status = worker("status-pause", id, goStatus);
+    expect(await status.first).toBe("classifying");
+    const run = worker("run-sync-pause", id, goRun);
+    const ran = await run.first;
+    const seen = new Promise((resolve) => status.child.on("message", (m) => { if (m !== "classifying") resolve(m); }));
+    writeFileSync(goStatus, "");
+    const shown = ((await seen) as SetupReviewResult).stdout;
+    writeFileSync(goRun, "");
+    expect(ran).toMatchObject({ exitCode: 7 });
+    expect(shown).not.toMatch(/Independent review: (approve|revise|reject)/);
   });
 });
 

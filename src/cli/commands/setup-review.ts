@@ -32,6 +32,8 @@ export interface SetupReviewDeps {
   readonly syncDir?: (path: string) => void;
   /** Grace between SIGTERM, SIGKILL and giving up on a timed-out reviewer. */
   readonly killGraceMs?: number;
+  /** Runs under the status lock just before the records are classified. */
+  readonly beforeStatusClassify?: () => void;
 }
 
 export interface SetupReviewIo {
@@ -468,6 +470,7 @@ export async function handleSetupReviewStatus(io: SetupReviewIo, opts: { setup: 
       if (u) return u;
       throw e;
     }
+    io.deps.beforeStatusClassify?.();
     return statusLines(paths, setup, packet);
   } finally {
     releaseProjectLock(lock);

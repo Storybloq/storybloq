@@ -4,7 +4,9 @@
  * and before the rename, tells the parent over IPC and blocks until it is
  * killed. `run-sync-pause` stops after the rename, before the directory sync,
  * tells the parent, waits for the go file to appear and then fails the sync.
- * `run` and `status` report their result over IPC and exit.
+ * `status-pause` stops just before status classifies, tells the parent and
+ * waits for the go file. `run` and `status` report their result over IPC and
+ * exit.
  */
 import { existsSync } from "node:fs";
 import { handleSetupReviewRun, handleSetupReviewStatus } from "../../../src/cli/commands/setup-review.js";
@@ -25,6 +27,14 @@ const io = {
           },
         }
       : {}),
+    ...(mode === "status-pause"
+      ? {
+          beforeStatusClassify: () => {
+            process.send!("classifying");
+            while (!existsSync(goFile!)) Atomics.wait(sleeper, 0, 0, 20);
+          },
+        }
+      : {}),
     ...(mode === "run-sync-pause"
       ? {
           syncDir: () => {
@@ -37,5 +47,5 @@ const io = {
   },
 };
 
-const result = mode === "status" ? await handleSetupReviewStatus(io, { setup: setupId }) : await handleSetupReviewRun(io, { setup: setupId });
+const result = mode === "status" || mode === "status-pause" ? await handleSetupReviewStatus(io, { setup: setupId }) : await handleSetupReviewRun(io, { setup: setupId });
 process.send!(result, () => process.exit(0));

@@ -6,7 +6,7 @@
  * names; and `--commit` commits the copied file with the ticket.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, mkdir, readdir, rename, symlink, truncate, unlink } from "node:fs/promises";
+import { chmod, mkdtemp, rm, readFile, writeFile, mkdir, readdir, rename, symlink, truncate, unlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -160,7 +160,28 @@ describe("the destination is never reached through a link", () => {
     await nothingIn(outside);
     expect(await readFile(ticketFile(dir, cp.id), "utf-8")).toBe(before);
   });
+  it("a swap during publication is refused before anything is created through it", async () => {
+    // A read-only target directory: a create through the swapped link would
+    // fail with a permission error, so the refusal must come first.
+    const dir = await project();
+    const cp = await immutable(dir);
+    const outside = await tempDir("t538-ev-out-");
+    await chmod(outside, 0o500);
+    const src = await source(dir, "demo.txt", "hello\n");
+    const cpDir = join(dir, "docs", "checkpoints", cp.id);
+    try {
+      await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }, {
+        async afterDestinationCheck() {
+          await rename(cpDir, `${cpDir}-moved`);
+          await symlink(outside, cpDir);
+        },
+      })).rejects.toThrow(/is a link or not a directory/);
+    } finally {
+      await chmod(outside, 0o700);
+    }
+  });
 });
+
 
 describe("the source is read once, from the file that was checked", () => {
   it("a final component replaced between the check and the open is refused", async () => {
@@ -202,6 +223,20 @@ describe("the source is read once, from the file that was checked", () => {
       async afterSourceCheck() {
         await rename(join(dir, "sub"), join(dir, "sub-old"));
         await symlink(outside, join(dir, "sub"));
+      },
+    })).rejects.toThrow(/changed while it was being read/);
+    expect(existsSync(join(dir, "docs"))).toBe(false);
+  });
+
+  it("an ancestor replaced by a link, even to the same directory moved inside the project, is refused", async () => {
+    const dir = await project();
+    const cp = await immutable(dir);
+    await mkdir(join(dir, "sub"));
+    const src = await source(dir, join("sub", "demo.txt"), "checked\n");
+    await expect(addCheckpointEvidence(dir, cp.id, expectedOf(cp), { file: src, actor: ACTOR }, {
+      async afterSourceCheck() {
+        await rename(join(dir, "sub"), join(dir, "sub-old"));
+        await symlink(join(dir, "sub-old"), join(dir, "sub"));
       },
     })).rejects.toThrow(/changed while it was being read/);
     expect(existsSync(join(dir, "docs"))).toBe(false);

@@ -29,6 +29,7 @@ if (args.includes("--version")) {
     return;
   }
   const answer = () => { process.stdout.write(name === "codex" ? "codex-cli 9.9.9\n" : "9.9.9 (Claude Code)\n"); process.exit(0); };
+  if (process.env["FAKE_" + up + "_VERSION_TERM_OK"] === "1") { process.on("SIGTERM", answer); setInterval(() => {}, 1000); return; }
   const slow = Number(process.env["FAKE_" + up + "_VERSION_SLOW_MS"] || 0);
   if (slow > 0) setTimeout(answer, slow); else answer();
   return;

@@ -76,6 +76,12 @@ describe("reviewer processes always end (T-536)", () => {
     expect(alive(pid)).toBe(false);
   }, 15_000);
 
+  it("a probe that answers only after the timeout's SIGTERM is not startable", async () => {
+    const fake = makeFakeBin(["codex"]);
+    const env = { PATH: fake.path, FAKE_CODEX_VERSION_TERM_OK: "1" };
+    expect(await within(probeBackend("codex", env, { timeoutMs: 300, killGraceMs: 200 }), 8_000)).toBeNull();
+  }, 15_000);
+
   it("a review timeout kills the reviewer's whole process group and settles even while a child holds the pipes", async () => {
     const fake = makeFakeBin(["codex"]);
     const pidFile = join(fake.stdinDir, "grandchild.pid");

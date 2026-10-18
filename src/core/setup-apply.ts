@@ -233,10 +233,28 @@ function stepDone(p: SetupPayload, step: string): boolean {
   return hasReceipt(p, step);
 }
 
-/** The approved plan with its amendments applied: a dropped checkpoint set leaves the plan, and so do its gates. */
+export const DROPPED_CHECKPOINTS_DEFERRAL = "its checkpoints were dropped (schema-5 enable refused)";
+
+/**
+ * The approved plan with its amendments applied: a dropped checkpoint set
+ * leaves the plan, and so do its gates, every dependency on a dropped key and
+ * every coverage reference to one (review r1 #3); a requirement left mapping
+ * to nothing records why.
+ */
 export function effectivePlan(p: SetupPayload): SetupPayload {
   const dropped = p.amendments.some((a) => a.class === "schema-5 enable refused" && a.resolution === "drop-checkpoints");
-  return dropped ? { ...p, checkpoints: [] } : p;
+  if (!dropped) return p;
+  const gone = new Set(p.checkpoints.map((c) => c.key));
+  return {
+    ...p,
+    checkpoints: [],
+    tickets: p.tickets.map((t) => ({ ...t, blockedBy: t.blockedBy.filter((k) => !gone.has(k)) })),
+    coverage: p.coverage.map((c) => {
+      const keys = c.keys.filter((k) => !gone.has(k));
+      if (keys.length === c.keys.length) return c;
+      return keys.length > 0 ? { ...c, keys } : { ...c, keys, deferral: c.deferral ?? DROPPED_CHECKPOINTS_DEFERRAL };
+    }),
+  };
 }
 
 /** The frozen block a receipt's revision names, current or superseded. */
@@ -1309,7 +1327,7 @@ async function stepFreeze(ctx: StepContext): Promise<void> {
   const p = ctx.progress.payload;
   const revision = effectiveRevision(p);
   const report = setupReportLines(ctx.lr.state, effectivePlan(p)).join("\n");
-  const setupNote = setupNoteContent(p, report);
+  const setupNote = setupNoteContent(effectivePlan(p), report);
   const old = p.frozen;
   let next: SetupPayload;
   if (old && old.setupNote === setupNote && old.historicalReport === report) {
@@ -1845,6 +1863,13 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
   if (roadmap) ops.push(await prepareRoadmapWrite(roadmap, root));
   if (config) ops.push(await prepareConfigWrite(config, root));
   const payload = { ...p, receipts: [...p.receipts, ...receipts], amendments: [...p.amendments, ...amendments] };
+  // The plan these resolutions leave must still be a valid plan before any of them is committed (review r1 #3).
+  try {
+    validateSetupPayload(effectivePlan(payload));
+  } catch (err) {
+    if (err instanceof SetupPayloadError) return `these resolutions would leave a plan that does not validate: ${err.message}`;
+    throw err;
+  }
   if (ops.length > 0 || receipts.length > 0 || amendments.length > 0) {
     ops.push(await progressWrite(root, progress, payload, today));
     await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));

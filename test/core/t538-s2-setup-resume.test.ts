@@ -510,6 +510,27 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect(result.lines).toContainEqual(expect.stringMatching(/^Created: 2 phases, 2 tickets, 0 checkpoints, 1 issues$/));
   });
 
+  it("drop-checkpoints also drops a ticket's dependency on a checkpoint and its coverage, and the resume completes (review r1 #3)", async () => {
+    const root = await folder();
+    await initProject(root, { name: "scaffold" });
+    await editJson(configPath(root), (raw) => { raw.team = { enabled: true }; });
+    const base = payload() as { tickets: Array<{ key: string; blockedBy: string[] }>; coverage: unknown[] };
+    const over = {
+      tickets: base.tickets.map((t) => (t.key === "K3" ? { ...t, blockedBy: ["K2", "K4"] } : t)),
+      coverage: [...base.coverage, { requirement: "R2", text: "accepted by the owner", source: "brief", keys: ["K4"] }],
+    };
+    expect((await setupApply(root, payload(over))).exitCode).toBe(4);
+    await reviewStore(root, { skipped: true });
+    const result = await resolve1(root, ".story/config.json", "drop-checkpoints");
+    expect([result.exitCode, result.lines.filter((l) => /^(Ambiguity|Setup stopped)/.test(l))]).toEqual([0, []]);
+    const { state } = await loadProject(root);
+    const k3 = state.tickets.find((t) => keyOf(t) === "K3")!;
+    expect(k3.blockedBy).toEqual([state.tickets.find((t) => keyOf(t) === "K2")!.id]);
+    const record = state.notes.find((n) => (n as { setup?: { record?: string } }).setup?.record === "final")!;
+    expect(record.content).toContain("- R1 (brief): sign in -> K2\n");
+    expect(record.content).toMatch(/- R2 \(brief\): accepted by the owner -> deferred: .*checkpoints were dropped/);
+  });
+
   it("two progress notes for one setup: keep one, the other is archived unfinished", async () => {
     const root = await stoppedAt("step:config");
     const note = JSON.parse(await readFile(join(root, ".story", "notes", "N-001.json"), "utf-8")) as Record<string, unknown>;

@@ -1666,7 +1666,7 @@ export async function setupResume(root: string, setupId: string, options: SetupA
 
 // --- Resolutions (plan v5 2a) -------------------------------------------------
 
-const ResolutionsSchema = z.array(z.object({
+export const ResolutionsSchema = z.array(z.object({
   target: z.string().min(1),
   resolution: z.string().min(1),
   ownerWords: z.string().min(1),

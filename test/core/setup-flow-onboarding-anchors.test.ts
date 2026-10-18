@@ -9,9 +9,15 @@ import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import { ResolutionsSchema } from "../../src/core/setup-apply.js";
 
 const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "skill");
 const read = (name: string): string => readFileSync(join(SKILL_DIR, name), "utf-8");
+
+// Review r1 #7: the engine takes the full 64-character revision; digest12 is for display only.
+const REVISION_SENTENCE =
+  "add `\"reviewRevision\": \"<revision>\"` to that answer, `<revision>` being the full 64-character revision of the amended packet you reviewed: send the same packet heredoc to `shasum -a 256` (`sha256sum` on Linux) and take the 64 hex characters its output starts with. The 12-character digest in a status line is for display only, and setup-apply refuses it. After the owner's skip no review is needed.";
 
 describe("setup-flow.md onboarding anchors (T-536)", () => {
   const flow = read("setup-flow.md");
@@ -92,11 +98,25 @@ describe("setup-flow.md onboarding anchors (T-536)", () => {
     for (const gone of ["storybloq_ticket_create", "storybloq_phase_create", "Pass 1:", "storybloq config set-overrides", "Verify after write"]) expect(flow).not.toContain(gone);
   });
 
+  it("the documented resolution, filled in, passes the engine's schema, and a digest12 does not (review r1 #7)", () => {
+    const shape = /a JSON array of `(\{[^`]+\})`/.exec(flow)?.[1];
+    const extra = /add `("reviewRevision": "<revision>")`/.exec(flow)?.[1];
+    expect(shape).toBeDefined();
+    expect(extra).toBeDefined();
+    const packet = "## Source requirements\nR1: sign in (source: brief, goals)\n## Owner answers and decisions\nnone\n## Existing-state evidence\nnone\n## Plan\nTicket: Sign in\n";
+    const revision = createHash("sha256").update(packet).digest("hex");
+    const fill = (template: string, value: string) => template
+      .replace("<the line's target>", "K2 (T-001)").replace("<the answer>", "accept-current").replace("<the owner's words>", "keep my title").replace("<revision>", value);
+    const answer = (value: string) => JSON.parse(fill(`${shape!.slice(0, -1)}, ${extra!}}`, value)) as unknown;
+    expect(ResolutionsSchema.safeParse([answer(revision)]).success).toBe(true);
+    expect(ResolutionsSchema.safeParse([answer(revision.slice(0, 12))]).success).toBe(false);
+  });
+
   it("routes each setup-apply exit code and the resume case (T-538)", () => {
     for (const line of [
       "   - `3`: interrupted. Run `storybloq setup-apply --resume --setup <id>`; a resume never duplicates anything.",
       "Send all the answers in one call, `storybloq setup-apply --setup <id> --resolve '<json>'`",
-      "add `\"reviewRevision\": \"<its digest12>\"` to that answer; after the owner's skip no review is needed.",
+      REVISION_SENTENCE,
       "An `enable refused` stop: relay its text verbatim.",
       "Exit 5 never comes from setup-apply.",
       "Ask nothing: run `storybloq setup-apply --resume --setup <id>` and continue at 1e step 3.",

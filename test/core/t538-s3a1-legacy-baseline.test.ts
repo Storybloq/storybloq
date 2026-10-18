@@ -96,8 +96,10 @@ async function capture(root: string, calls: Record<string, string[]>): Promise<s
   return `${JSON.stringify({ calls, files: sorted }, null, 2)}\n`;
 }
 
+/** Sets the date; a second call moves it (useFakeTimers alone keeps the first time once installed). */
 function clock(iso: string): void {
-  vi.useFakeTimers({ toFake: ["Date"], now: new Date(iso) });
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(iso));
 }
 
 describe("a legacy payload (no S3a fields) is byte-identical", () => {

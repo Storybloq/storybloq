@@ -9,6 +9,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
 import { makeFakeBin } from "../helpers/setup-review-fakes.js";
+import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { shouldSkipHousekeeping } from "../../src/cli/housekeeping.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "fixtures", "setup-review");
@@ -107,4 +110,28 @@ describe("reviewer processes always end (T-536)", () => {
     expect(run).toMatchObject({ timedOut: true, exitCode: null });
     expect(elapsed).toBeLessThan(3_000);
   }, 15_000);
+
+  for (const mode of ["review", "probe"] as const) {
+    it(`a process that timed out a ${mode} exits by itself while the escaped child is still alive`, async () => {
+      const fake = makeFakeBin(["codex"]);
+      const project = mkdtempSync(join(tmpdir(), "sr-exit-project-"));
+      const store = mkdtempSync(join(tmpdir(), "sr-exit-store-"));
+      const pidFile = join(fake.stdinDir, "escaped.pid");
+      const fixture = join(import.meta.dirname, "fixtures", "setup-review-exit-worker.ts");
+      const child = spawn(process.execPath, ["--import", "tsx", fixture, mode, project, store, fake.path, pidFile], { stdio: ["ignore", "pipe", "inherit"] });
+      let stdout = "";
+      child.stdout.on("data", (c) => { stdout += String(c); });
+      const exited = await within(new Promise<number | null>((r) => child.once("exit", (code) => r(code))), 10_000);
+      const pid = Number(readFileSync(pidFile, "utf-8"));
+      const stillAlive = alive(pid);
+      if (exited === "hung") child.kill("SIGKILL");
+      try {
+        expect(exited).toBe(0);
+        expect(stillAlive).toBe(true);
+        expect(stdout).toMatch(mode === "probe" ? /"version":null/ : /"exitCode":3/);
+      } finally {
+        try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+      }
+    }, 20_000);
+  }
 });

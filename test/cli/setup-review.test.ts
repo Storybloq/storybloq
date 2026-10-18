@@ -654,9 +654,9 @@ describe("a published record is durable before it counts (T-536)", () => {
 });
 
 describe("a run killed inside publication, in fresh processes (T-536)", () => {
-  function worker(mode: "run-pause" | "run" | "status", id: string): { child: ReturnType<typeof fork>; first: Promise<unknown> } {
+  function worker(mode: "run-pause" | "run-sync-pause" | "run" | "status", id: string, goFile = ""): { child: ReturnType<typeof fork>; first: Promise<unknown> } {
     const fixture = join(import.meta.dirname, "fixtures", "setup-review-crash-worker.ts");
-    const child = fork(fixture, [mode, project, store, id, fake.path, REVIEW_PACKET], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    const child = fork(fixture, [mode, project, store, id, fake.path, REVIEW_PACKET, goFile], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc"] });
     const first = new Promise((resolve, reject) => {
       child.once("message", resolve);
       child.once("exit", (code) => reject(new Error(`worker exited ${code} before reporting`)));
@@ -683,6 +683,23 @@ describe("a run killed inside publication, in fresh processes (T-536)", () => {
     expect(readdirSync(records).filter((n) => n.startsWith(".staging-"))).toEqual([]);
     expect(recordsOf(id).filter((x) => x.state === "completed")).toHaveLength(1);
     expect(existsSync(join(setupDir(id), "run.lock"))).toBe(false);
+  });
+
+  it("status never prints a verdict for a record renamed in but not yet synced, nor after its sync fails", async () => {
+    const id = await openSetup();
+    const go = join(store, "go");
+    const run = worker("run-sync-pause", id, go);
+    expect(await run.first).toBe("renamed");
+    const during = worker("status", id);
+    const seen = (await during.first) as SetupReviewResult;
+    expect(seen.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
+    const result = new Promise((resolve) => run.child.on("message", (m) => { if (m !== "renamed") resolve(m); }));
+    writeFileSync(go, "");
+    expect(await result).toMatchObject({ exitCode: 6 });
+    const after = worker("status", id);
+    const last = (await after.first) as SetupReviewResult;
+    expect(last.exitCode).toBe(3);
+    expect(last.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
   });
 });
 

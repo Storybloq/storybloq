@@ -30,6 +30,7 @@ import {
 } from "./session-types.js";
 import { describeSchemaIssues, summarizeZodIssues, type SchemaIssue } from "../core/zod-issues.js";
 import { withStalenessNote } from "./binary-staleness.js";
+import { sanitizeDisplayPath } from "../core/display-text.js";
 import {
   isContainedSessionDir,
   probeContainment,
@@ -1654,12 +1655,15 @@ function scanResumableSessions(root: string, onProbeFailed: "throw" | "skip"): S
  */
 export function describeUnreadableSessionEntry(entry: UnreadableSessionEntry): string {
   const canonical = SESSION_ID_REGEX.test(entry.sourceDir);
+  // A name that is not a session id is whatever is on disk: a newline or an
+  // escape sequence in it must not reach stderr raw and forge a line.
+  const dir = sanitizeDisplayPath(entry.dir);
   const inspect = canonical
     ? `Inspect: storybloq session show ${entry.sourceDir}`
-    : `Inspect: ${entry.dir} (its name is not a session id, so session show cannot select it)`;
+    : `Inspect: ${dir} (its name is not a session id, so session show cannot select it)`;
   return (
     "A session directory that may hold the active or compact-pending session could not be read: " +
-    withStalenessNote(describeLookupFailureBase(canonical ? entry.sourceDir : entry.dir, entry.failure, "")) +
+    withStalenessNote(describeLookupFailureBase(canonical ? entry.sourceDir : dir, entry.failure, "")) +
     " " +
     inspect
   );

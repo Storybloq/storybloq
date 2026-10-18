@@ -308,3 +308,19 @@ describe("every remedy names a real CLI command (ISS-1347)", () => {
     for (const command of named) expect(known, `storybloq ${command}`).toContain(command);
   });
 });
+
+describe("an unreadable entry whose name is not a session id", () => {
+  it("is described on one line with no raw control bytes", () => {
+    const name = "forged\n[storybloq] all clear\u001b[2K";
+    for (const failure of [
+      { kind: "unreadable", reason: "invalid-json" },
+      { kind: "unreadable", reason: "unreadable-file" },
+    ] as const) {
+      const text = describeUnreadableSessionEntry({ sourceDir: name, dir: `/x/${name}`, failure });
+      expect(text).not.toMatch(/[\u0000-\u001f\u007f]/);
+      expect(text.split("\n")).toHaveLength(1);
+      // Both places the name appears: the failure line and the Inspect address.
+      expect(text.match(/forged/g)).toHaveLength(2);
+    }
+  });
+});

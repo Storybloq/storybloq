@@ -305,20 +305,23 @@ const proposedPath = (target: string, setupId: string) => `${target}.storybloq-$
  * Resolved containment before a write (review r1 #1): the loader writers'
  * guardPath, on the deepest existing ancestor, so a directory that is a
  * symlink out of the project never carries a mkdir, create or `.proposed`.
+ * Only the preflight, before setup writes anything, refuses at exit 2; once
+ * setup has started it is a resumable stop at exit 4 (review r2 #4).
  */
-async function guardWrite(root: string, target: string, path: string): Promise<void> {
+async function guardWrite(root: string, target: string, path: string, preflight = false): Promise<void> {
   try {
     await guardPath(target, root);
   } catch (err) {
-    if (err instanceof ProjectLoaderError) throw new SetupStop(2, `the path ${path} resolves outside the project`);
-    throw err;
+    if (!(err instanceof ProjectLoaderError)) throw err;
+    if (preflight) throw new SetupStop(2, `the path ${path} resolves outside the project`);
+    throw ambiguity({ class: "path outside the project", target: path, observed: "a directory on the path resolves outside the project", expected: "the path inside the project; move the directory back, then resume", resolutions: ["stop"] });
   }
 }
 
 /** A payload path inside the project both lexically and once resolved. */
-async function containedTarget(root: string, path: string): Promise<string> {
+async function containedTarget(root: string, path: string, preflight = false): Promise<string> {
   const target = insideProject(root, path);
-  await guardWrite(root, target, path);
+  await guardWrite(root, target, path, preflight);
   return target;
 }
 
@@ -1605,7 +1608,7 @@ export async function setupApply(root: string, raw: unknown, options: SetupApply
   const out: string[] = [];
   return guarded(payload.setupId, out, async () => {
     // Before any write: every user-file path stays inside the project once resolved (review r1 #1).
-    for (const f of payload.governance.files) await containedTarget(absRoot, f.path);
+    for (const f of payload.governance.files) await containedTarget(absRoot, f.path, true);
     const wrap = join(absRoot, ".story");
     let start: Start = { kind: "run" };
     if (existsSync(join(wrap, "config.json")) || !(await bootstrap(absRoot, payload, out, options))) {

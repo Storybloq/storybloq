@@ -519,19 +519,23 @@ describe("a write never follows a symlinked directory out of the project (review
     expect(await readdir(outside)).toEqual([]);
   });
 
-  it("a resume never leaves a .proposed copy through a directory linked outside after the run began", async () => {
+  it("after the run began, a directory linked outside is a resumable stop at exit 4: nothing outside is written and the receipts stay (review r2 #4)", async () => {
     const root = await folder();
     const outside = await folder();
     faultAt("step:config");
     expect((await setupApply(root, withDocs())).exitCode).toBe(3);
     setupApplySeams.fault = () => {};
+    const before = (await progressPayload(root, "active")).receipts;
+    expect(before.length).toBeGreaterThan(0);
     await writeFile(join(outside, "GUIDE.md"), "# theirs\n");
     await symlink(outside, join(root, "docs"));
     const result = await setupResume(root, SID);
-    expect(result.exitCode).toBe(2);
-    expect(result.lines.at(-1)).toMatch(/docs\/GUIDE\.md resolves outside the project/);
+    expect(result.exitCode).toBe(4);
+    expect(result.lines).toContainEqual(expect.stringMatching(/^Ambiguity: path outside the project · docs\/GUIDE\.md · observed /));
+    expect(result.lines.at(-1)).toMatch(/docs\/GUIDE\.md.*Resume with storybloq setup-apply --resume --setup /);
     expect(await readdir(outside)).toEqual(["GUIDE.md"]);
     expect(await readFile(join(outside, "GUIDE.md"), "utf-8")).toBe("# theirs\n");
+    expect((await progressPayload(root, "active")).receipts).toEqual(before);
   });
 });
 

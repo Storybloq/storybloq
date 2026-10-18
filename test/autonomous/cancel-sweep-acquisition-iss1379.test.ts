@@ -28,6 +28,7 @@ const hoisted = vi.hoisted(() => ({
   lockFailuresConsumed: 0,
   issueWrites: [] as string[],
   ticketWrites: [] as string[],
+  crashAfterIssueWrite: 0,
 }));
 
 vi.mock("../../src/autonomous/git-inspector.js", () => ({
@@ -67,7 +68,12 @@ vi.mock("../../src/core/project-loader.js", async (importOriginal) => {
     },
     writeIssueUnlocked: async (...args: Parameters<typeof actual.writeIssueUnlocked>) => {
       hoisted.issueWrites.push(args[0].id);
-      return actual.writeIssueUnlocked(...args);
+      const written = await actual.writeIssueUnlocked(...args);
+      if (hoisted.crashAfterIssueWrite > 0) {
+        hoisted.crashAfterIssueWrite--;
+        throw new Error("simulated crash after an issue write");
+      }
+      return written;
     },
     writeTicketUnlocked: async (...args: Parameters<typeof actual.writeTicketUnlocked>) => {
       hoisted.ticketWrites.push(args[0].id);
@@ -103,6 +109,7 @@ beforeEach(() => {
   hoisted.lockFailuresConsumed = 0;
   hoisted.issueWrites = [];
   hoisted.ticketWrites = [];
+  hoisted.crashAfterIssueWrite = 0;
 });
 
 afterEach(() => {
@@ -498,6 +505,36 @@ describe("the issues this session's sweep holds are released or the cancel refus
     expect(issueText(root, "ISS-003")).toBe(three);
     expect(hoisted.issueWrites).toEqual([]);
     expectActive(dir);
+  });
+});
+
+describe("a release that reached disk before the cancel failed is never repeated (ISS-1379)", () => {
+  it("C2w: the first cancel stays active after one release lands; the retry leaves it as it is and releases the other", async () => {
+    const { sessionId, dir } = sweepSession({ current: "ISS-001", remaining: [], resolved: [] });
+    writeIssue(root, "ISS-001", acquiredBy(sessionId));
+    writeIssue(root, "ISS-002", acquiredBy(sessionId));
+    hoisted.crashAfterIssueWrite = 1;
+
+    const r = await cancel(root, sessionId);
+
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain(sweepStepPendingText("simulated crash after an issue write"));
+    expect(hoisted.crashAfterIssueWrite).toBe(0);
+    expect(hoisted.issueWrites).toEqual(["ISS-001"]);
+    expectReleasedOpen("ISS-001", sessionId);
+    expect(readIssue(root, "ISS-002").sweepAcquisition).toEqual(acquiredBy(sessionId).sweepAcquisition);
+    expectActive(dir);
+    const released = issueText(root, "ISS-001");
+    hoisted.issueWrites = [];
+
+    const again = await cancel(root, sessionId);
+
+    expect(again.isError).toBe(false);
+    expect(issueText(root, "ISS-001")).toBe(released);
+    expect(hoisted.issueWrites).toEqual(["ISS-002"]);
+    expectReleasedOpen("ISS-002", sessionId);
+    expect(eventsOfType(dir, "issue_sweep_cancel_release").map((e) => (e.data as Loose).id)).toEqual(["ISS-002"]);
+    expectEnded(dir);
   });
 });
 

@@ -477,6 +477,18 @@ describe("--resolve records the owner's choice (plan v5 2a)", () => {
     expect((await setupReport(root, SID, { historical: true })).lines).toContain(line);
   });
 
+  it("a removed stage override reports the recipe default, the same merge execution uses (review r2 #3)", async () => {
+    const root = await stoppedAt("step:governance:CLAUDE.md");
+    await editJson(configPath(root), (raw) => { delete (raw.recipeOverrides as { stages: Record<string, unknown> }).stages.TEST; });
+    await reviewStore(root, { skipped: true });
+    const result = await resolve1(root, ".story/config.json", "accept-current");
+    expect(result.exitCode).toBe(0);
+    const quality = (lines: readonly string[]) => lines.find((l) => l.startsWith("Quality: "));
+    for (const lines of [result.lines, (await setupReport(root, SID)).lines, (await setupReport(root, SID, { historical: true })).lines]) {
+      expect(quality(lines)).toBe("Quality: full; stages on: WRITE_TESTS, TEST");
+    }
+  });
+
   it("keep <id> supersedes the other item's key and leaves its content as it was", async () => {
     const root = await stoppedAt("step:config");
     const dup = JSON.parse(await readFile(join(root, ".story", "tickets", "T-001.json"), "utf-8")) as Record<string, unknown>;

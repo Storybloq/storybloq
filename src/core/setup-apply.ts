@@ -52,6 +52,7 @@ import { prepareNewTicketUnlocked } from "../cli/commands/ticket.js";
 import { buildCheckpointTicketUnlocked, prepareCheckpointCreateWrite } from "./checkpoint-lifecycle.js";
 import { enableCheckpointsStampUnlocked } from "./checkpoint-enable.js";
 import { computeInitialStages } from "./verification-activation.js";
+import { resolveRecipe } from "../autonomous/recipes/loader.js";
 import { validateProject } from "./validation.js";
 import { saveSnapshot } from "./snapshot.js";
 import { partitionByActionability, recommend, ticketCompletion } from "./recommend.js";
@@ -814,6 +815,19 @@ const INIT_PLACEHOLDER: Partial<Record<ProjectFact, string>> = { type: "generic"
 const proposedFact = (p: SetupPayload, f: ProjectFact): string => (f === "project" ? p.project.name : p.project[f]);
 const stagesOf = (c: Config): Record<string, unknown> => ((c as Config & { recipeOverrides?: { stages?: Record<string, unknown> } }).recipeOverrides?.stages) ?? {};
 
+/** The stages a session would run with: the project's recipe merged with its overrides, as the guide resolves them. */
+function effectiveStages(c: Config): Readonly<Record<string, Record<string, unknown>>> {
+  const recipe = (c as Config & { recipe?: unknown }).recipe;
+  const overrides = stagesOf(c);
+  const stages = overrides && typeof overrides === "object" && !Array.isArray(overrides) ? (overrides as Record<string, Record<string, unknown>>) : {};
+  try {
+    return resolveRecipe(typeof recipe === "string" ? recipe : "coding", { stages }).stages;
+  } catch {
+    // A recipe the guide itself would refuse; the report still reads the overrides as written.
+    return stages;
+  }
+}
+
 /** The reused scaffold's config as setup recorded it before its first change, or null on a fresh folder. */
 function scaffoldConfig(p: SetupPayload): Config | null {
   const pre = p.preImages.find((x) => x.target === ".story/config.json");
@@ -1307,7 +1321,9 @@ export function setupReportLines(state: ProjectState, p: SetupPayload): string[]
   const counts = userCounts(state, p, adopted);
   const { stages, pending } = computeInitialStages(activationInput(p));
   // Review r1 #6: enablement is the ledger config's; a stage an accepted amendment changed says so.
-  const ledgerOn = (name: string) => (stagesOf(state.config) as Record<string, { enabled?: unknown } | undefined>)[name]?.enabled === true;
+  // Review r2 #3: through the recipe's defaults-and-overrides merge execution uses, so a missing override reads the default.
+  const effective = effectiveStages(state.config);
+  const ledgerOn = (name: string) => effective[name]?.enabled === true;
   const onOff = (on: boolean) => (on ? "on" : "off");
   const on = Object.keys(stages).filter(ledgerOn);
   const keptStages = Object.entries(stages)

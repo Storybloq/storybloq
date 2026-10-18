@@ -37,6 +37,18 @@ const StagePlan = z.object({
   reason: text.optional(),
 }).strict();
 
+/** The runners setup-verify reads evidence from, and what the stage command wraps them in (T-538 S3a-2). */
+export const TEST_RUNNERS = ["vitest", "jest", "pytest", "django", "go", "cargo", "flutter"] as const;
+export type TestRunner = (typeof TEST_RUNNERS)[number];
+export const TEST_WRAPPERS = ["none", "npm", "make", "django-manage"] as const;
+export type TestWrapper = (typeof TEST_WRAPPERS)[number];
+
+/** A test stage may name its runner and wrapper; a pending one an establishment ticket serves must. */
+const TestStagePlan = StagePlan.extend({
+  runner: z.enum(TEST_RUNNERS).optional(),
+  wrapper: z.enum(TEST_WRAPPERS).optional(),
+}).strict();
+
 const VerifyPlan = z.object({
   startCommand: text,
   readinessUrl: text,
@@ -48,7 +60,7 @@ const Component = z.object({
   id: text,
   /** Relative to the project root; "." is the root. */
   workdir: text,
-  test: StagePlan.nullable(),
+  test: TestStagePlan.nullable(),
   build: StagePlan.nullable(),
   verify: VerifyPlan.nullable(),
 }).strict();
@@ -73,6 +85,11 @@ const Ticket = z.object({
   blockedBy: keys,
   /** Already-built work is a complete ticket; absent means open (never defaulted here, so a payload without it renders unchanged). */
   status: z.enum(["open", "complete"]).optional(),
+  /**
+   * T-538 S3a-2: this ticket establishes a component's test stage once its
+   * scaffold is built: its lifecycle belongs to `storybloq setup-verify`.
+   */
+  establishes: z.object({ component: text, stage: z.literal("test"), scaffold: key }).strict().optional(),
 }).strict();
 
 const Checkpoint = z.object({
@@ -362,8 +379,11 @@ function referenceProblem(p: SetupPayload): string | null {
   for (const block of [...(p.frozen ? [p.frozen] : []), ...p.frozenHistory]) {
     if (escapes(block.handover.path)) return `the frozen handover path leaves the project: ${block.handover.path}`;
   }
-  // A cycle in blockedBy (gates included) can never be worked.
   const edges = effectiveEdges(p);
+  // Before the cycle check, so a scaffold that waits on its own establishment is named as that.
+  const establishment = establishmentProblem(p, edges);
+  if (establishment !== null) return establishment;
+  // A cycle in blockedBy (gates included) can never be worked.
   const state = new Map<string, 1 | 2>();
   const visit = (k: string, path: string[]): string | null => {
     if (state.get(k) === 2) return null;
@@ -392,6 +412,51 @@ function referenceProblem(p: SetupPayload): string | null {
     }
   }
   return null;
+}
+
+/**
+ * The establishment rules (T-538 S3a-2), on the effective graph. Each
+ * establishment ticket serves one component whose test stage is pending and
+ * names its runner and wrapper; it is a task with no explicit status (only
+ * setup-verify moves it); it waits on its scaffold and nothing else, so its
+ * prerequisites are exactly the scaffold's plus the scaffold; and nothing it
+ * waits on waits on an establishment ticket, which would deadlock the two
+ * components even with no cycle.
+ */
+function establishmentProblem(p: SetupPayload, edges: Map<string, string[]>): string | null {
+  const establishing = p.tickets.filter((t) => t.establishes !== undefined);
+  const establishmentKeys = new Set(establishing.map((t) => t.key));
+  const served = new Map<string, string>();
+  for (const t of establishing) {
+    const e = t.establishes!;
+    const comp = p.quality.components.find((c) => c.id === e.component);
+    if (!comp) return `${t.key} establishes component ${e.component}, which is not a component`;
+    if (comp.test === null || comp.test.status !== "pending") return `${t.key} establishes ${e.component}'s test stage, which is not pending`;
+    if (comp.test.runner === undefined || comp.test.wrapper === undefined) return `${t.key} establishes ${e.component}'s test stage, which names no runner and wrapper`;
+    const other = served.get(e.component);
+    if (other !== undefined) return `${other} and ${t.key} both establish ${e.component}'s test stage`;
+    served.set(e.component, t.key);
+    if (t.type !== "task") return `${t.key} is an establishment ticket and must be a task`;
+    if (t.status !== undefined) return `${t.key} is an establishment ticket and carries no status; storybloq setup-verify completes it`;
+    const scaffold = p.tickets.find((x) => x.key === e.scaffold);
+    if (!scaffold) return `${t.key}'s scaffold ${e.scaffold} is not a ticket key`;
+    if (scaffold.establishes !== undefined) return `${t.key}'s scaffold ${e.scaffold} is itself an establishment ticket`;
+    if (plannedStatus(scaffold) === "complete") return `${t.key}'s scaffold ${e.scaffold} is already complete`;
+    const direct = [...new Set(edges.get(t.key) ?? [])];
+    const extra = direct.filter((k) => k !== e.scaffold);
+    if (extra.length > 0) return `${t.key} waits on ${extra.join(", ")}; an establishment ticket waits on its scaffold ${e.scaffold} alone`;
+    if (!direct.includes(e.scaffold)) return `${t.key} does not wait on its scaffold ${e.scaffold}`;
+    if (prerequisites(p, e.scaffold, edges).has(t.key)) return `${t.key}'s scaffold ${e.scaffold} waits on ${t.key}`;
+    for (const k of prerequisites(p, t.key, edges)) {
+      if (establishmentKeys.has(k)) return `${t.key} waits on ${k}, which is an establishment ticket`;
+    }
+  }
+  return null;
+}
+
+/** Whether a payload establishes any test stage: only then are the verification record and metadata written. */
+export function usesEstablishment(p: Pick<SetupPayload, "tickets">): boolean {
+  return p.tickets.some((t) => t.establishes !== undefined);
 }
 
 /** A ticket's planned status: an absent status is open. The only place that default applies. */

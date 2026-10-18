@@ -203,10 +203,10 @@ For an `interrupted` scaffold nothing changes: the engine keeps its config and p
 
 - `review`: `{"reviewer": "<codex|claude|none>", "outcome": "approved|round-limit|skipped", "lines": [<the package's review lines, verbatim>]}`; `ownerLabel`: the owner's name or role; `project`: `{"name", "type", "language"}`.
 - `phases`, in milestone order: `{"key", "id": "<lowercase-slug>", "name", "label", "description"}`.
-- `tickets`: `{"key", "title", "type": "task|feature|chore", "phase": "<phase key>", "description": "<the template lines>", "blockedBy": [<keys>]}`.
+- `tickets`: `{"key", "title", "type": "task|feature|chore", "phase": "<phase key>", "description": "<the template lines>", "blockedBy": [<keys>]}`. Work the repository or brief shows already built is a ticket with `"status": "complete"`, never a deferral; nothing open blocks it and no checkpoint gates it.
 - `checkpoints`: `{"key", "title", "kind": "decision|acceptance", "question"|"criteria", "evidenceRefs": [], "description", "phase", "blockedBy": [<what it reviews>], "gates": [<the work it holds back>]}`.
 - `issues` (imported GitHub issues): `{"key", "title", "body", "labels", "source": <number or null>}`.
-- `coverage`: `{"requirement": "R<n>", "text", "source", "keys": [<keys>]}`, plus `"deferral": "<why>"` for a deferred or already-built requirement.
+- `coverage`: `{"requirement": "R<n>", "text", "source", "keys": [<keys>]}`, plus `"deferral": "<why>"` for a deferred requirement.
 - `quality`: `{"level": "full|tests-only|minimal", "verifyApplies": <bool>, "components": [{"id", "workdir": "<. or dir>", "test", "build", "verify"}]}`, each stage `{"command", "status": "established|pending", "reason"}` (`verify`: `{"startCommand", "readinessUrl", "status", "reason"}`), `reason` only when pending, or `null`. The engine writes every recipe stage, with an explicit `enabled`, from these and the level.
 - `governance`: `{"canonicalFactsPath": "<CLAUDE.md or AGENTS.md>", "files": [{"path", "content"}]}`, only the approved files that do not exist yet; the engine never overwrites one.
 - `git`: `{"init": <true when the package initialises git>, "gitignore": [<the approved entries, at least .story/snapshots/, .story/sessions/ and .story/status.json>]}`.

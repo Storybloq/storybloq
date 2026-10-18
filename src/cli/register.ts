@@ -5618,13 +5618,19 @@ export function registerSetupVerifyCommand(yargs: Argv): Argv {
   return yargs.command(
     "setup-verify",
     "Run an establishment ticket's test command; a verified run completes it and turns its stages on",
-    (y) => y
-      .option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" })
-      .option("resolve", { type: "string", choices: ["adapter", "leave-off", "stop"], describe: "Record the owner's answer to an unreadable run" })
-      .option("argv", { type: "string", array: true, describe: "The adapter's command, one word per value, run with no shell" })
-      .option("drop", { type: "string", array: true, describe: "Inherited variables the adapter drops (PYTEST_ADDOPTS, GOFLAGS)" })
-      .option("owner-words", { type: "string", describe: "The owner's words for the resolution" })
-      .option("reopen", { type: "boolean", describe: "Reopen a ticket closed without a verification result" }),
+    (y) => arrayOptions(
+      y
+        .option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" })
+        .option("resolve", { type: "string", choices: ["adapter", "leave-off", "stop"], describe: "Record the owner's answer to an unreadable run" })
+        .option("owner-words", { type: "string", describe: "The owner's words for the resolution" })
+        .option("reopen", { type: "boolean", describe: "Reopen a ticket closed without a verification result" }),
+      {
+        // Each word is passed whole (a comma is part of it) and an empty word reaches setup-verify's own refusal.
+        argv: { comma: "literal", empty: "preserve", trim: "never", describe: "The adapter's command, one word per value, run with no shell" },
+        // An unknown or empty name reaches setup-verify's own refusal rather than vanishing.
+        drop: { comma: "split", emptyAfterSplit: "reject", empty: "preserve", trim: "always", describe: "Inherited variables the adapter drops (PYTEST_ADDOPTS, GOFLAGS)" },
+      },
+    ),
     async (argv) => {
       const { handleSetupVerify } = await import("./commands/setup-verify.js");
       try {

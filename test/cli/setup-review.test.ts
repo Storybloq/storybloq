@@ -425,6 +425,21 @@ describe("the store fails closed (T-536)", () => {
     expect(fake.invocations()).toHaveLength(2);
   });
 
+  it("an output write failure stops the run even when the next record write would succeed: no completed record without its answer", async () => {
+    fake = makeFakeBin(["claude"]);
+    const id = await openSetup();
+    let writes = 0;
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET, {
+      writeOutput: () => { throw new Error("disk full"); },
+      // The failed record's write fails; space comes back before any later write.
+      writeRecord: (path: string, text: string) => { if (writes++ === 0) throw new Error("disk full"); writeFileSync(path, text); },
+    }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).not.toMatch(/Independent review: approve/);
+    expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+    expect(recordsOf(id).filter((x) => x.state === "completed")).toEqual([]);
+  });
+
   it("status persists the revision before printing, and fails closed when it cannot", async () => {
     const id = await openSetup();
     const ok = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });

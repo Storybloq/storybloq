@@ -281,6 +281,27 @@ function insideProject(root: string, path: string): string {
 
 const proposedPath = (target: string, setupId: string) => `${target}.storybloq-${setupId}.proposed`;
 
+/**
+ * Resolved containment before a write (review r1 #1): the loader writers'
+ * guardPath, on the deepest existing ancestor, so a directory that is a
+ * symlink out of the project never carries a mkdir, create or `.proposed`.
+ */
+async function guardWrite(root: string, target: string, path: string): Promise<void> {
+  try {
+    await guardPath(target, root);
+  } catch (err) {
+    if (err instanceof ProjectLoaderError) throw new SetupStop(2, `the path ${path} resolves outside the project`);
+    throw err;
+  }
+}
+
+/** A payload path inside the project both lexically and once resolved. */
+async function containedTarget(root: string, path: string): Promise<string> {
+  const target = insideProject(root, path);
+  await guardWrite(root, target, path);
+  return target;
+}
+
 /** The `.proposed` copy is setup's only durable version until its step is receipted (1f); after that it goes. */
 async function removeProposed(target: string, setupId: string): Promise<void> {
   try {
@@ -296,7 +317,7 @@ async function removeProposed(target: string, setupId: string): Promise<void> {
  * version is left beside it as `.proposed` and the run stops for the owner.
  */
 async function createUserFile(root: string, path: string, content: string, setupId: string, klass: string): Promise<"created" | "present"> {
-  const target = insideProject(root, path);
+  const target = await containedTarget(root, path);
   await mkdir(dirname(target), { recursive: true });
   try {
     await atomicCreate(target, content);
@@ -306,6 +327,7 @@ async function createUserFile(root: string, path: string, content: string, setup
   }
   const current = await readFile(target, "utf-8");
   if (current === content) return "present";
+  await guardWrite(root, proposedPath(target, setupId), path);
   try {
     await atomicCreate(proposedPath(target, setupId), content);
   } catch (err) {
@@ -807,6 +829,7 @@ async function stepGitignore(ctx: StepContext): Promise<void> {
   if (missing.length > 0) {
     // A change to a file the user owns is never made by the engine (plan v5 1f).
     const proposed = `${current}${current.endsWith("\n") || current === "" ? "" : "\n"}${missing.join("\n")}\n`;
+    await guardWrite(ctx.root, proposedPath(target, p.setupId), ".gitignore");
     try {
       await atomicCreate(proposedPath(target, p.setupId), proposed);
     } catch (err) {
@@ -891,7 +914,8 @@ async function readOrNull(path: string): Promise<string | null> {
   }
 }
 
-async function leaveProposed(target: string, setupId: string, content: string): Promise<void> {
+async function leaveProposed(root: string, target: string, path: string, setupId: string, content: string): Promise<void> {
+  await guardWrite(root, proposedPath(target, setupId), path);
   try {
     await atomicCreate(proposedPath(target, setupId), content);
   } catch (err) {
@@ -1042,7 +1066,7 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
         resolutions: ["keep-current", "stop"], ref: { path },
       });
     } else if (current !== null && current !== f.content) {
-      await leaveProposed(target, p.setupId, f.content);
+      await leaveProposed(root, target, f.path, p.setupId, f.content);
       out.push({
         kind: "occupied", class: "user-owned target occupied", target: f.path,
         observed: `${current.length} bytes that are not setup's`,
@@ -1067,7 +1091,7 @@ async function classifySetup(root: string, state: ProjectState, p: SetupPayload)
       }
     } else if (current !== null && missing.length > 0) {
       // A change to a file the user owns is never made by the engine (plan v5 1f).
-      await leaveProposed(target, p.setupId, `${current}${current.endsWith("\n") || current === "" ? "" : "\n"}${missing.join("\n")}\n`);
+      await leaveProposed(root, target, ".gitignore", p.setupId, `${current}${current.endsWith("\n") || current === "" ? "" : "\n"}${missing.join("\n")}\n`);
       out.push({
         kind: "pointer", class: "pointer edit owed", target: ".gitignore",
         observed: `missing ${missing.join(", ")}`, expected: `the entries in .gitignore.storybloq-${p.setupId}.proposed`,
@@ -1456,6 +1480,8 @@ export async function setupApply(root: string, raw: unknown, options: SetupApply
   }
   const out: string[] = [];
   return guarded(payload.setupId, out, async () => {
+    // Before any write: every user-file path stays inside the project once resolved (review r1 #1).
+    for (const f of payload.governance.files) await containedTarget(absRoot, f.path);
     const wrap = join(absRoot, ".story");
     let start: Start = { kind: "run" };
     if (existsSync(join(wrap, "config.json")) || !(await bootstrap(absRoot, payload, out, options))) {

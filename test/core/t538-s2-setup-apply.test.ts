@@ -4,13 +4,13 @@
  * write leaves a setup that the same call finishes from the ledger alone.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, readdir, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, readdir, mkdir, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProject } from "../../src/core/init.js";
 import { loadProject, outsideProjectLock, withBootstrapLock, withProjectLock } from "../../src/core/project-loader.js";
-import { setupApply, setupApplySeams } from "../../src/core/setup-apply.js";
+import { setupApply, setupApplySeams, setupResume } from "../../src/core/setup-apply.js";
 import { parseSetupPayload, type SetupPayload } from "../../src/core/setup-payload.js";
 import { computeInitialStages } from "../../src/core/verification-activation.js";
 import { handleTicketCreate, handleTicketUpdate } from "../../src/cli/commands/ticket.js";
@@ -469,6 +469,36 @@ describe("files the user owns are never replaced (plan v5 1f)", () => {
     expect(result.exitCode).toBe(4);
     expect(result.lines).toContainEqual(expect.stringMatching(/^Ambiguity: corrupted receipt state · docs\/handover\.md/));
     expect(existsSync(join(root, "docs", "handover.md"))).toBe(false);
+  });
+});
+
+describe("a write never follows a symlinked directory out of the project (review r1 #1)", () => {
+  const withDocs = () => payload({ governance: { canonicalFactsPath: "CLAUDE.md", files: [{ path: "CLAUDE.md", content: "# demo\n" }, { path: "docs/GUIDE.md", content: "# guide\n" }] } });
+
+  it("a governance directory linked outside the project is exit 2, and nothing is written in or outside the project", async () => {
+    const root = await folder();
+    const outside = await folder();
+    await symlink(outside, join(root, "docs"));
+    const result = await setupApply(root, withDocs());
+    expect(result.exitCode).toBe(2);
+    expect(result.lines.at(-1)).toMatch(/docs\/GUIDE\.md resolves outside the project/);
+    expect((await readdir(root)).sort()).toEqual(["docs"]);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("a resume never leaves a .proposed copy through a directory linked outside after the run began", async () => {
+    const root = await folder();
+    const outside = await folder();
+    faultAt("step:config");
+    expect((await setupApply(root, withDocs())).exitCode).toBe(3);
+    setupApplySeams.fault = () => {};
+    await writeFile(join(outside, "GUIDE.md"), "# theirs\n");
+    await symlink(outside, join(root, "docs"));
+    const result = await setupResume(root, SID);
+    expect(result.exitCode).toBe(2);
+    expect(result.lines.at(-1)).toMatch(/docs\/GUIDE\.md resolves outside the project/);
+    expect(await readdir(outside)).toEqual(["GUIDE.md"]);
+    expect(await readFile(join(outside, "GUIDE.md"), "utf-8")).toBe("# theirs\n");
   });
 });
 

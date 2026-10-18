@@ -8,8 +8,11 @@
 import { discoverProjectRoot } from "../../core/project-root-discovery.js";
 import {
   findActiveSessionFull,
-  findResumableSession,
-  findSessionById,
+  findActiveSessionDetailed,
+  findResumableSessionDetailed,
+  findSessionByIdDetailed,
+  describeSessionLookupFailure,
+  describeUnreadableSessionEntry,
   prepareForCompact,
   markCompactionObserved,
   writeSessionSync,
@@ -22,6 +25,7 @@ import {
   LIMIT_KEYS,
   StateWriteUndurableError,
   type ActiveSessionInfo,
+  type UnreadableSessionEntry,
 } from "../../autonomous/session.js";
 import { WORKFLOW_STATES, type FullSessionState } from "../../autonomous/session-types.js";
 import {
@@ -153,8 +157,16 @@ export async function handleSessionCompactPrepare(
 
   try {
     await withSessionLock(root, async () => {
-      const found = findActiveSessionFull(root);
-      if (!found) return; // No active session -- silent no-op
+      const scan = findActiveSessionDetailed(root);
+      const found = scan.match;
+      if (!found) {
+        // No active session -- silent no-op. ISS-1347: a session that could
+        // not be read is not "no session", so each one is named on stderr.
+        for (const entry of scan.unreadable) {
+          process.stderr.write(`[storybloq] compact-prepare: ${describeUnreadableSessionEntry(entry)}\n`);
+        }
+        return;
+      }
 
       // ISS-899: was one of five hand-rolled copies of the ownership
       // precedence. Behaviour is unchanged -- callerMayAct is exactly the old
@@ -229,6 +241,9 @@ async function recordSubagentCompactionIgnored(
 ): Promise<void> {
   try {
     // Nothing to record without an active session; take no lock for it.
+    // ISS-1347: deliberately silent about unreadable sessions. There is no
+    // readable session to append the event to, and this runs on every
+    // subagent compaction, so a notice here would repeat without a remedy.
     if (!findActiveSessionFull(root)) return;
     await withSessionLock(root, async () => {
       const active = findActiveSessionFull(root);
@@ -606,10 +621,19 @@ export async function handleSessionResumePrompt(
       process.stdout.write(busMarker + message);
     };
 
-    const match = findResumableSession(root);
+    const scan = findResumableSessionDetailed(root);
+    const match = scan.match;
     if (!match) {
-      // T-183: Clean orphaned marker if no compactPending session exists at all
-      removeResumeMarker(root);
+      if (scan.unreadable.length === 0) {
+        // T-183: Clean orphaned marker if no compactPending session exists at all
+        removeResumeMarker(root);
+      } else {
+        // ISS-1347: an unreadable session may be the one this marker resumes,
+        // so the marker stays. The notice goes to stderr, never into context.
+        for (const entry of scan.unreadable) {
+          process.stderr.write(`[storybloq] resume-prompt: ${describeUnreadableSessionEntry(entry)}\n`);
+        }
+      }
       // No autonomous session to resume. On a post-compaction start, inject a
       // lightweight continuity breadcrumb so an orchestrate/pen session (which
       // has no autonomous session) does not lose project context. `source` is
@@ -701,8 +725,15 @@ export async function handleSessionResumePrompt(
     if (options.source === "compact" && verifiedSameOwner) {
       try {
         const observed = await withSessionLock(root, async () => {
-          const current = findSessionById(root, sessionId);
-          if (!current || current.state.state !== "COMPACT" || !current.state.compactPending) {
+          const lookup = findSessionByIdDetailed(root, sessionId);
+          if (lookup.kind !== "found") {
+            process.stderr.write(
+              `[storybloq] compaction observed not recorded: ${describeSessionLookupFailure(sessionId, lookup)}\n`,
+            );
+            return null;
+          }
+          const current = lookup.info;
+          if (current.state.state !== "COMPACT" || !current.state.compactPending) {
             return null;
           }
           let written: FullSessionState;
@@ -801,6 +832,26 @@ export async function handleSessionResumePrompt(
   }
 }
 
+/**
+ * ISS-1347: a named session that cannot be used, with the reason. `missing`
+ * still reads "Session X not found"; a damaged one names its cause.
+ */
+function foundOrThrow(root: string, sessionId: string): ActiveSessionInfo {
+  const lookup = findSessionByIdDetailed(root, sessionId);
+  if (lookup.kind !== "found") throw new Error(describeSessionLookupFailure(sessionId, lookup));
+  return lookup.info;
+}
+
+/** ISS-1347: "none found" also names every session directory the scan could not read. */
+function noSessionFound(base: string, unreadable: readonly UnreadableSessionEntry[], tail = ""): string {
+  if (unreadable.length === 0) return base + tail;
+  const n = unreadable.length;
+  return (
+    `${base}, and ${n} session director${n === 1 ? "y" : "ies"} could not be read:\n` +
+    unreadable.map((entry) => `- ${describeUnreadableSessionEntry(entry)}`).join("\n")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // session-clear-compact (admin escape hatch)
 // ---------------------------------------------------------------------------
@@ -823,15 +874,16 @@ export async function handleSessionClearCompact(
     let info: ActiveSessionInfo | null = null;
 
     if (sessionId) {
-      info = findSessionById(root, sessionId);
-      if (!info) throw new Error(`Session ${sessionId} not found`);
+      info = foundOrThrow(root, sessionId);
     } else {
-      // Scan for any compactPending session (findResumableSession has no lease filter)
-      const match = findResumableSession(root);
-      if (match) {
-        info = match.info;
+      // Scan for any compactPending session (the resumable scan has no lease filter)
+      const scan = findResumableSessionDetailed(root);
+      if (scan.match) {
+        info = scan.match.info;
       }
-      if (!info) throw new Error("No compactPending session found. Specify the session ID manually.");
+      if (!info) {
+        throw new Error(noSessionFound("No compactPending session found", scan.unreadable, ". Specify the session ID manually."));
+      }
     }
 
     if (!info.state.compactPending && info.state.state !== "COMPACT") {
@@ -937,11 +989,11 @@ export async function handleSessionStop(root: string, sessionId?: string): Promi
     let info: ActiveSessionInfo | null = null;
 
     if (sessionId) {
-      info = findSessionById(root, sessionId);
-      if (!info) throw new Error(`Session ${sessionId} not found`);
+      info = foundOrThrow(root, sessionId);
     } else {
-      info = findActiveSessionFull(root);
-      if (!info) throw new Error("No active session found");
+      const scan = findActiveSessionDetailed(root);
+      info = scan.match;
+      if (!info) throw new Error(noSessionFound("No active session found", scan.unreadable));
     }
 
     if (info.state.status !== "active") {

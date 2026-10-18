@@ -815,38 +815,197 @@ export interface ActiveSessionInfo {
 }
 
 /**
- * Find the active session for a workspace. Returns the best match by lastGuideCall.
- * Used by both hook-status (for status.json) and guide (for session management).
+ * A session directory a scan found but could not read as a session (ISS-1347).
+ *
+ * The active and resumable scans used to skip these, so a damaged session
+ * looked exactly like no session, and the resume-prompt hook then deleted the
+ * resume marker. A scan now reports them, and only a scan with no match AND
+ * none of these means "no session".
  */
-export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
-  const sessDir = sessionsRoot(root);
+export interface UnreadableSessionEntry {
+  readonly sourceDir: string;
+  readonly dir: string;
+  readonly failure: PresentSessionFailure;
+}
 
+/** What a detailed scan saw: the best match, and every entry it could not read. */
+export interface SessionScan<M> {
+  readonly match: M | null;
+  readonly unreadable: readonly UnreadableSessionEntry[];
+}
+
+/**
+ * The scan itself failed (ISS-1347): the sessions directory could not be
+ * listed, the workspace could not be resolved, or an entry's containment could
+ * not be checked. Nothing was established about any session, so a caller must
+ * not treat this as "no session".
+ */
+export class SessionScanError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "SessionScanError";
+  }
+}
+
+type ScanRead =
+  | { readonly kind: "found"; readonly state: FullSessionState }
+  | { readonly kind: "missing" }
+  | { readonly kind: "unreadable"; readonly failure: PresentSessionFailure; readonly raw: unknown };
+
+/**
+ * One read and one parse of an entry's state.json (ISS-1347). A healthy entry
+ * costs exactly what `readSessionResilient` costs, with the same result. A
+ * rejected one is classified from the SAME snapshot, which is also where the
+ * lifecycle fields come from, so the two cannot describe different revisions.
+ */
+function readSessionForScan(dir: string): ScanRead {
+  let text: string;
+  try {
+    text = readFileSync(statePath(dir), "utf-8");
+  } catch (err) {
+    const failure = classifyReadError(err, dir);
+    return failure.kind === "missing" ? failure : { kind: "unreadable", failure, raw: undefined };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { kind: "unreadable", failure: { kind: "unreadable", reason: "invalid-json" }, raw: undefined };
+  }
+  const state = parseSessionResilient(parsed, dir);
+  if (state) return { kind: "found", state };
+  return { kind: "unreadable", failure: classifyParsedFailure(parsed), raw: parsed };
+}
+
+/**
+ * An unreadable entry that still cannot be the session being looked for
+ * (ISS-1347). Only a `schema` failure qualifies: the bytes parsed to the
+ * current schema version, so the raw lifecycle fields mean what they say. An
+ * old finished session that happens to be damaged must not raise a notice on
+ * every hook forever. Anything else (an unknown status, a missing one, another
+ * version, unparseable bytes) stays reported.
+ */
+function rawLifecycleExcludes(
+  read: Extract<ScanRead, { kind: "unreadable" }>,
+  workspaceId: string,
+  resumable: boolean,
+): boolean {
+  if (read.failure.kind !== "unreadable" || read.failure.reason !== "schema") return false;
+  const raw = read.raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const fields = raw as Record<string, unknown>;
+  if (fields.status === "completed" || fields.status === "superseded") return true;
+  const lease = fields.lease;
+  if (lease && typeof lease === "object" && !Array.isArray(lease)) {
+    const leaseWorkspace = (lease as Record<string, unknown>).workspaceId;
+    if (typeof leaseWorkspace === "string" && leaseWorkspace !== "" && leaseWorkspace !== workspaceId) return true;
+  }
+  return resumable && fields.compactPending === false;
+}
+
+/**
+ * List the sessions directory and resolve the workspace (ISS-1347). Null only
+ * for an established absence of the directory; any other failure throws.
+ */
+function openSessionScan(root: string): { sessDir: string; entries: ReturnType<typeof readdirSync>; workspaceId: string } | null {
+  const sessDir = sessionsRoot(root);
   let entries: ReturnType<typeof readdirSync>;
   try {
     entries = readdirSync(sessDir, { withFileTypes: true });
-  } catch {
-    return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT" && probePath(sessDir) === "absent") return null;
+    throw new SessionScanError(
+      `could not list ${sessDir}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
-
   let workspaceId: string;
   try {
     workspaceId = deriveWorkspaceId(root);
-  } catch {
-    return null;
+  } catch (err) {
+    throw new SessionScanError(
+      `could not resolve the workspace ${root}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
   }
+  return { sessDir, entries, workspaceId };
+}
+
+/**
+ * T-251 containment, three ways (ISS-1347). A proven escape is skipped. A probe
+ * that could not look established nothing, so the detailed scans throw rather
+ * than read the candidate or let it vanish; the legacy wrappers keep their
+ * old skip.
+ */
+function scanContains(root: string, dir: string, onProbeFailed: "throw" | "skip"): boolean {
+  const containment = probeContainment(root, dir);
+  if (containment === "contained") return true;
+  if (containment === "escaped" || onProbeFailed === "skip") return false;
+  throw new SessionScanError(`could not check that ${dir} is inside the sessions directory, so it was not read`);
+}
+
+function scanRead(dir: string): ScanRead {
+  try {
+    return readSessionForScan(dir);
+  } catch (err) {
+    throw new SessionScanError(
+      `could not read ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * Find the active session for a workspace. Returns the best match by lastGuideCall.
+ * Used by both hook-status (for status.json) and guide (for session management).
+ * Null on any failure, including a scan failure; use findActiveSessionDetailed
+ * where an unreadable session must not read as no session.
+ */
+export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
+  try {
+    return scanActiveSessions(root, "skip").match;
+  } catch (err) {
+    if (err instanceof SessionScanError) return null;
+    throw err;
+  }
+}
+
+/**
+ * The active-session scan with every entry it could not read (ISS-1347).
+ * Throws SessionScanError when the scan itself failed.
+ */
+export function findActiveSessionDetailed(root: string): SessionScan<ActiveSessionInfo> {
+  return scanActiveSessions(root, "throw");
+}
+
+function scanActiveSessions(root: string, onProbeFailed: "throw" | "skip"): SessionScan<ActiveSessionInfo> {
+  const opened = openSessionScan(root);
+  if (!opened) return { match: null, unreadable: [] };
+  const { sessDir, entries, workspaceId } = opened;
 
   let best: ActiveSessionInfo | null = null;
   let bestGuideCall = 0;
+  const unreadable: UnreadableSessionEntry[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
     const dir = join(sessDir, entry.name);
+    // The session lock directory, when empty, is not a session: every locked
+    // command creates it. Same exemption as `listAllSessionsDetailed`.
+    if (String(entry.name) === ".lock" && lockDirIsEmpty(dir)) continue;
     // T-251: containment guard -- reject symlink escapes before any filesystem read.
-    if (!isContainedSessionDir(root, dir)) continue;
+    if (!scanContains(root, dir, onProbeFailed)) continue;
     // ISS-556: hot MCP path -- tolerate historical lensReviewHistory disposition corruption.
-    const session = readSessionResilient(dir);
-    if (!session) continue;
+    const read = scanRead(dir);
+    if (read.kind === "missing") continue;
+    if (read.kind === "unreadable") {
+      if (!rawLifecycleExcludes(read, workspaceId, false)) {
+        unreadable.push({ sourceDir: String(entry.name), dir, failure: read.failure });
+      }
+      continue;
+    }
+    const session = read.state;
     if (session.status !== "active") continue;
 
     // Workspace must match (missing = compatible for forward-compat)
@@ -871,7 +1030,7 @@ export function findActiveSessionFull(root: string): ActiveSessionInfo | null {
     }
   }
 
-  return best;
+  return { match: best, unreadable };
 }
 
 /**
@@ -1040,6 +1199,10 @@ export function describeSessionLookupFailure(
 function describeLookupFailureBase(
   sessionId: string,
   failure: SessionLookupFailure,
+  // ISS-1347: `session show` is the CLI command that inspects one session;
+  // there is no `session report` command (report is an MCP tool). A caller
+  // that appends its own inspection address passes "" to leave this out.
+  inspect = ` Inspect it with 'storybloq session show ${sessionId}'.`,
 ): string {
   switch (failure.kind) {
     case "missing":
@@ -1066,8 +1229,8 @@ function describeLookupFailureBase(
       // which is the same overclaim the remedies were just rewritten to avoid.
       return failure.reason === "schema"
         ? `Session ${sessionId} corrupt -- state.json failed validation: ` +
-            `${describeSchemaIssues(failure.issues ?? [], failure.issueCount)}. ` +
-            `Inspect it with 'storybloq session report ${sessionId}'.`
+            `${describeSchemaIssues(failure.issues ?? [], failure.issueCount)}.` +
+            inspect
         : failure.reason === "missing-state"
           ? `Session ${sessionId} incomplete or unavailable -- an entry exists at that path, but no readable state.json is in it. ` +
               "A session being created looks exactly like this, as does one whose state file was deleted -- and so does a " +
@@ -1086,8 +1249,8 @@ function describeLookupFailureBase(
             ? // The file WAS read; it is the parse that failed. Folding this into
               // the branch below said "could not be read (invalid-json)", which
               // sends an operator to check permissions over a syntax error.
-              `Session ${sessionId} corrupt -- state.json is not valid JSON. ` +
-                `Inspect it with 'storybloq session report ${sessionId}'.`
+              `Session ${sessionId} corrupt -- state.json is not valid JSON.` +
+                inspect
             : // NOT "state.json exists but could not be read". This branch is
               // `unreadable-file`, which covers EACCES, EIO, ENOTDIR and an ENOENT
               // whose follow-up probe could not answer -- none of which observed a
@@ -1095,7 +1258,7 @@ function describeLookupFailureBase(
               // that may never have been there, which is the same overclaim the
               // scanner's probes were rewritten to stop making.
               `Session ${sessionId} could not be read -- state.json ` +
-                `(${failure.reason}). Inspect it with 'storybloq session report ${sessionId}'.`;
+                `(${failure.reason}).` + inspect;
   }
 }
 
@@ -1116,30 +1279,7 @@ export function readSessionDetailed(dir: string): SessionLookup {
   try {
     raw = readFileSync(path, "utf-8");
   } catch (err) {
-    // ISS-897: "the directory survived but the file did not" is its own operator
-    // story, and it is the observable shape of `createSession` between its
-    // mkdir and its first write. Naming it separately from a genuine read error
-    // is what lets `session list` show the row and say what is wrong with it.
-    //
-    // Only when the directory is actually there, though. `findSessionByIdDetailed`
-    // pre-checks and is the sole caller today, so this branch is unreachable
-    // through it -- but the function is exported, and a direct caller reporting
-    // "corrupt" for a session that does not exist would be a worse lie than the
-    // undifferentiated failure this whole type replaced.
-    const presence = probePath(dir);
-    if ((err as NodeJS.ErrnoException).code === "ENOENT" && presence === "absent") {
-      return { kind: "missing" };
-    }
-    return {
-      kind: "unreadable",
-      // `missing-state` claims an entry IS there, so it is reserved for a probe
-        // that proved it. A probe that could not look (EACCES, EIO) proves
-        // nothing in either direction and must not borrow that claim.
-        reason:
-          (err as NodeJS.ErrnoException).code === "ENOENT" && presence === "present"
-            ? "missing-state"
-            : "unreadable-file",
-    };
+    return classifyReadError(err, dir);
   }
 
   let parsed: unknown;
@@ -1149,6 +1289,56 @@ export function readSessionDetailed(dir: string): SessionLookup {
     return { kind: "unreadable", reason: "invalid-json" };
   }
 
+  const fenced = versionFenceFailure(parsed);
+  if (fenced) return fenced;
+
+  // ISS-556: hot MCP path (all report/resume/cancel handlers) -- must tolerate
+  // historical lensReviewHistory disposition corruption or the session
+  // appears "not reachable via MCP" and autonomous mode cannot progress.
+  //
+  // Validates the snapshot already decoded above rather than re-reading, so
+  // the fence and the schema cannot disagree about which revision they saw.
+  const state = parseSessionResilient(parsed, dir);
+  if (!state) return schemaFailure(parsed);
+  return { kind: "found", info: { state, dir } };
+}
+
+/** A failure that is not `missing`: the entry is there and was not read as a session. */
+export type PresentSessionFailure = Exclude<SessionLookupFailure, { kind: "missing" }>;
+
+/**
+ * Why reading state.json failed, from the read error alone (ISS-1347: shared
+ * by `readSessionDetailed` and the scan reader so the two cannot drift).
+ */
+function classifyReadError(err: unknown, dir: string): SessionLookupFailure {
+  // ISS-897: "the directory survived but the file did not" is its own operator
+  // story, and it is the observable shape of `createSession` between its
+  // mkdir and its first write. Naming it separately from a genuine read error
+  // is what lets `session list` show the row and say what is wrong with it.
+  //
+  // Only when the directory is actually there, though. `findSessionByIdDetailed`
+  // pre-checks, but the scan reader (ISS-1347) does not: an entry deleted
+  // between the listing and this read is `missing`, and reporting it
+  // "corrupt" would be a worse lie than the undifferentiated failure this
+  // whole type replaced.
+  const presence = probePath(dir);
+  if ((err as NodeJS.ErrnoException).code === "ENOENT" && presence === "absent") {
+    return { kind: "missing" };
+  }
+  return {
+    kind: "unreadable",
+    // `missing-state` claims an entry IS there, so it is reserved for a probe
+      // that proved it. A probe that could not look (EACCES, EIO) proves
+      // nothing in either direction and must not borrow that claim.
+      reason:
+        (err as NodeJS.ErrnoException).code === "ENOENT" && presence === "present"
+          ? "missing-state"
+          : "unreadable-file",
+  };
+}
+
+/** The schemaVersion fence on a decoded snapshot, or null when it passes. */
+function versionFenceFailure(parsed: unknown): PresentSessionFailure | null {
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     const writerVersion = (parsed as Record<string, unknown>).schemaVersion;
     // PRESENT and unsupported, but not newer. Reported as its own reason rather
@@ -1169,30 +1359,33 @@ export function readSessionDetailed(dir: string): SessionLookup {
       };
     }
   }
+  return null;
+}
 
-  // ISS-556: hot MCP path (all report/resume/cancel handlers) -- must tolerate
-  // historical lensReviewHistory disposition corruption or the session
-  // appears "not reachable via MCP" and autonomous mode cannot progress.
-  //
-  // Validates the snapshot already decoded above rather than re-reading, so
-  // the fence and the schema cannot disagree about which revision they saw.
-  const state = parseSessionResilient(parsed, dir);
-  if (!state) {
-    // ISS-897: name the fields. The resilient parse already ran and failed, so
-    // re-running the strict schema costs one validation of an in-memory object
-    // and buys the operator the difference between "corrupt" and
-    // "startedAt expected string, received null".
-    const strict = parseSessionState(parsed);
-    return strict.success
-      ? { kind: "unreadable", reason: "schema" }
-      : {
-          kind: "unreadable",
-          reason: "schema",
-          issues: summarizeZodIssues(strict.error),
-          issueCount: strict.error.issues.length,
-        };
-  }
-  return { kind: "found", info: { state, dir } };
+/** A snapshot the resilient parse rejected and the fence passed: name the fields. */
+function schemaFailure(parsed: unknown): PresentSessionFailure {
+  // ISS-897: name the fields. The resilient parse already ran and failed, so
+  // re-running the strict schema costs one validation of an in-memory object
+  // and buys the operator the difference between "corrupt" and
+  // "startedAt expected string, received null".
+  const strict = parseSessionState(parsed);
+  return strict.success
+    ? { kind: "unreadable", reason: "schema" }
+    : {
+        kind: "unreadable",
+        reason: "schema",
+        issues: summarizeZodIssues(strict.error),
+        issueCount: strict.error.issues.length,
+      };
+}
+
+/**
+ * Classify a decoded snapshot the resilient parse rejected (ISS-1347). Same
+ * order of evidence as `readSessionDetailed`: the version fence, then the
+ * schema, both on this one snapshot.
+ */
+function classifyParsedFailure(parsed: unknown): PresentSessionFailure {
+  return versionFenceFailure(parsed) ?? schemaFailure(parsed);
 }
 
 /** Find a specific session by ID, reporting why the lookup failed. */
@@ -1384,33 +1577,55 @@ export function isCompactParkStale(state: FullSessionState, now = Date.now()): b
  * Separate from findActiveSessionFull to preserve single-session invariant.
  * Read-only -- no lock needed.
  */
-export function findResumableSession(root: string): { info: ActiveSessionInfo; stale: boolean } | null {
-  const sessDir = sessionsRoot(root);
-  let entries: ReturnType<typeof readdirSync>;
+export function findResumableSession(root: string): ResumableMatch | null {
   try {
-    entries = readdirSync(sessDir, { withFileTypes: true });
-  } catch {
-    return null;
+    return scanResumableSessions(root, "skip").match;
+  } catch (err) {
+    if (err instanceof SessionScanError) return null;
+    throw err;
   }
+}
 
-  let workspaceId: string;
-  try {
-    workspaceId = deriveWorkspaceId(root);
-  } catch {
-    return null;
-  }
+export interface ResumableMatch {
+  readonly info: ActiveSessionInfo;
+  readonly stale: boolean;
+}
 
-  let best: { info: ActiveSessionInfo; stale: boolean } | null = null;
+/**
+ * The compact-pending scan with every entry it could not read (ISS-1347).
+ * Throws SessionScanError when the scan itself failed.
+ */
+export function findResumableSessionDetailed(root: string): SessionScan<ResumableMatch> {
+  return scanResumableSessions(root, "throw");
+}
+
+function scanResumableSessions(root: string, onProbeFailed: "throw" | "skip"): SessionScan<ResumableMatch> {
+  const opened = openSessionScan(root);
+  if (!opened) return { match: null, unreadable: [] };
+  const { sessDir, entries, workspaceId } = opened;
+
+  let best: ResumableMatch | null = null;
   let bestPreparedAt = 0;
+  const unreadable: UnreadableSessionEntry[] = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(sessDir, entry.name);
+    // The session lock directory, when empty, is not a session: every locked
+    // command creates it. Same exemption as `listAllSessionsDetailed`.
+    if (String(entry.name) === ".lock" && lockDirIsEmpty(dir)) continue;
     // T-251: containment guard -- reject symlink escapes before any filesystem read.
-    if (!isContainedSessionDir(root, dir)) continue;
+    if (!scanContains(root, dir, onProbeFailed)) continue;
     // ISS-556: hot MCP path (compact hook resume discovery) -- tolerate disposition corruption.
-    const session = readSessionResilient(dir);
-    if (!session) continue;
+    const read = scanRead(dir);
+    if (read.kind === "missing") continue;
+    if (read.kind === "unreadable") {
+      if (!rawLifecycleExcludes(read, workspaceId, true)) {
+        unreadable.push({ sourceDir: String(entry.name), dir, failure: read.failure });
+      }
+      continue;
+    }
+    const session = read.state;
     if (session.status !== "active") continue;
     if (!session.compactPending) continue;
     if (session.lease?.workspaceId && session.lease.workspaceId !== workspaceId) continue;
@@ -1429,7 +1644,25 @@ export function findResumableSession(root: string): { info: ActiveSessionInfo; s
     }
   }
 
-  return best;
+  return { match: best, unreadable };
+}
+
+/**
+ * One line for a scan entry that could not be read (ISS-1347): the cause and
+ * its remedy, then where to inspect it. `session repair` is not offered: it
+ * supersedes orphaned sessions and rewrites none of these causes.
+ */
+export function describeUnreadableSessionEntry(entry: UnreadableSessionEntry): string {
+  const canonical = SESSION_ID_REGEX.test(entry.sourceDir);
+  const inspect = canonical
+    ? `Inspect: storybloq session show ${entry.sourceDir}`
+    : `Inspect: ${entry.dir} (its name is not a session id, so session show cannot select it)`;
+  return (
+    "A session directory that may hold the active or compact-pending session could not be read: " +
+    withStalenessNote(describeLookupFailureBase(canonical ? entry.sourceDir : entry.dir, entry.failure, "")) +
+    " " +
+    inspect
+  );
 }
 
 /**

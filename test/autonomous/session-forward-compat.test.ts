@@ -246,8 +246,9 @@ describe("ISS-902: findSessionById distinguishes absent from unreadable", () => 
     const message = describeSessionLookupFailure(created.sessionId, lookup);
     expect(message).toMatch(/corrupt/i);
     expect(message).not.toMatch(/not found/i);
-    // session_report is the tool that could already tell the operator this.
-    expect(message).toMatch(/session report/i);
+    // `session show` is the CLI command that inspects it (ISS-1347: there is
+    // no `session report` command; report is only the MCP tool).
+    expect(message).toMatch(/storybloq session show/i);
   });
 
   it("reports a schema-invalid state.json as corrupt, not missing", () => {

@@ -6,37 +6,46 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLI_PATH, E2ECliFixture } from "../helpers/e2e-cli.js";
-import { STOP_LINES } from "../../src/core/setup-review.js";
+import { projectKeyFor, STOP_LINES } from "../../src/core/setup-review.js";
+import { REVIEW_PACKET } from "../helpers/setup-review-fakes.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
 let fixture: E2ECliFixture;
 let project: string;
 let store: string;
+let emptyBin: string;
 
 beforeAll(async () => {
   fixture = await E2ECliFixture.create();
   project = mkdtempSync(join(tmpdir(), "sr-e2e-project-"));
   store = mkdtempSync(join(tmpdir(), "sr-e2e-store-"));
+  emptyBin = mkdtempSync(join(tmpdir(), "sr-e2e-bin-"));
 });
 afterAll(async () => {
   await fixture.cleanup();
   rmSync(project, { recursive: true, force: true });
   rmSync(store, { recursive: true, force: true });
+  rmSync(emptyBin, { recursive: true, force: true });
 });
 
-/** Runs the bundle with stdin left OPEN (never written, never ended) and a PATH with no reviewer on it (node's own directory can hold a real one). */
-function runOpenStdin(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+/**
+ * Runs the bundle with stdin left OPEN (never written, never ended) unless
+ * input is given, and a PATH that is a fresh empty directory, so no reviewer
+ * installed on this machine can be found.
+ */
+function runOpenStdin(args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [CLI_PATH, ...args], {
       cwd: project,
       stdio: ["pipe", "pipe", "pipe"],
-      env: fixture.env({ PATH: ["/usr/bin", "/bin"].join(":"), STORYBLOQ_SETUP_REVIEW_DIR: store }),
+      env: fixture.env({ PATH: emptyBin, STORYBLOQ_SETUP_REVIEW_DIR: store }),
     });
+    if (input !== undefined) child.stdin.end(input);
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`timed out; stdout so far:\n${stdout}`)); }, 15_000);
@@ -60,6 +69,16 @@ describe("setup-review via the built CLI (T-536)", () => {
     const skipped = await runOpenStdin(["setup-review", "status", "--setup", id, "--skipped"]);
     expect(skipped).toMatchObject({ code: 0, stdout: "Reviewer probe: none available\nIndependent review: skipped at the owner's request\n" });
     fixture.assertNoHousekeepingNotices();
+  });
+
+  it("prints the stop when the command fails on an error no handler expected", async () => {
+    const gate = await runOpenStdin(["setup-review", "gate"]);
+    const id = /^Setup id: (SS-[0-9a-f]{8})$/m.exec(gate.stdout)![1]!;
+    writeFileSync(join(store, projectKeyFor(project), id, "records"), "not a directory");
+    const status = await runOpenStdin(["setup-review", "status", "--setup", id], REVIEW_PACKET);
+    expect(status.code).toBe(6);
+    expect(status.stdout.startsWith("Setup review: ")).toBe(true);
+    expect(status.stdout.trimEnd().endsWith(STOP_LINES.join("\n"))).toBe(true);
   });
 
   it("lists the command in the reference", async () => {

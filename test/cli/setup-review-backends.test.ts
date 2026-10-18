@@ -7,7 +7,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { claudeArgs, codexArgs, parseReviewerOutput, reviewerEnv, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
+import { claudeArgs, codexArgs, parseReviewerOutput, probeBackend, reviewerEnv, runReviewer, SETUP_REVIEW_SCHEMA } from "../../src/core/setup-review-backends.js";
+import { makeFakeBin } from "../helpers/setup-review-fakes.js";
 import { shouldSkipHousekeeping } from "../../src/cli/housekeeping.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "fixtures", "setup-review");
@@ -59,4 +60,33 @@ describe("setup reviewer backends (T-536)", () => {
     expect(shouldSkipHousekeeping(["setup-review", "gate"])).toBe(true);
     expect(shouldSkipHousekeeping(["setup-review", "status", "--setup", "SS-00000000", "--skipped"])).toBe(true);
   });
+});
+
+describe("reviewer processes always end (T-536)", () => {
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const within = <T>(p: Promise<T>, ms: number): Promise<T | "hung"> => Promise.race([p, new Promise<"hung">((r) => setTimeout(() => r("hung"), ms))]);
+
+  it("a probe whose backend ignores SIGTERM settles as unavailable and the backend is killed", async () => {
+    const fake = makeFakeBin(["codex"]);
+    const pidFile = join(fake.stdinDir, "probe.pid");
+    const env = { PATH: fake.path, FAKE_CODEX_VERSION_HANG: "1", FAKE_PID_FILE: pidFile };
+    expect(await within(probeBackend("codex", env, { timeoutMs: 300, killGraceMs: 200 }), 8_000)).toBeNull();
+    const pid = Number(readFileSync(pidFile, "utf-8"));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(alive(pid)).toBe(false);
+  }, 15_000);
+
+  it("a review timeout kills the reviewer's whole process group and settles even while a child holds the pipes", async () => {
+    const fake = makeFakeBin(["codex"]);
+    const pidFile = join(fake.stdinDir, "grandchild.pid");
+    const env = { PATH: fake.path, FAKE_CODEX_MODE: "wrapper", FAKE_PID_FILE: pidFile };
+    const run = await within(runReviewer("codex", ["exec"], { cwd: fake.stdinDir, env, input: "packet", timeoutMs: 500, killGraceMs: 200 }), 8_000);
+    const pid = Number(readFileSync(pidFile, "utf-8"));
+    await new Promise((r) => setTimeout(r, 200));
+    const gone = !alive(pid);
+    if (!gone) process.kill(pid, "SIGKILL");
+    expect(run).not.toBe("hung");
+    expect(run).toMatchObject({ timedOut: true });
+    expect(gone).toBe(true);
+  }, 15_000);
 });

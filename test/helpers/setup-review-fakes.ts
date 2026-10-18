@@ -1,10 +1,10 @@
 /**
  * T-536: fake `codex` and `claude` binaries for the setup reviewer tests.
  *
- * Each fake is a small node script placed in a scratch bin directory that the
- * test puts first on PATH, beside a link to this node, with only the system
- * bin directories after it: node's own directory is never on PATH, because a
- * Homebrew or nvm node shares it with a real `claude` or `codex`. A fake's
+ * Each fake is a small node script placed in a scratch bin directory beside a
+ * link to this node, and that directory is the whole PATH: node's own
+ * directory and the system bin directories are never on it, so a reviewer the
+ * test omits cannot be found anywhere. A fake's
  * behaviour comes from FAKE_<NAME>_MODE in its environment, and every review
  * invocation appends one line to FAKE_LOG, so a test can count how many
  * backends actually started.
@@ -13,16 +13,25 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output";
+export type FakeMode = "approve" | "revise" | "timeout" | "invalid" | "exit1" | "slow" | "no-output" | "tamper" | "wrapper";
 
 const FAKE_SOURCE = String.raw`#!/usr/bin/env node
 const fs = require("node:fs");
 const name = __FAKE_NAME__;
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
-  if (process.env["FAKE_" + name.toUpperCase() + "_VERSION_FAIL"] === "1") process.exit(1);
-  process.stdout.write(name === "codex" ? "codex-cli 9.9.9\n" : "9.9.9 (Claude Code)\n");
-  process.exit(0);
+  const up = name.toUpperCase();
+  if (process.env["FAKE_" + up + "_VERSION_FAIL"] === "1") process.exit(1);
+  if (process.env["FAKE_" + up + "_VERSION_HANG"] === "1") {
+    process.on("SIGTERM", () => {});
+    if (process.env.FAKE_PID_FILE) fs.writeFileSync(process.env.FAKE_PID_FILE, String(process.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
+  const answer = () => { process.stdout.write(name === "codex" ? "codex-cli 9.9.9\n" : "9.9.9 (Claude Code)\n"); process.exit(0); };
+  const slow = Number(process.env["FAKE_" + up + "_VERSION_SLOW_MS"] || 0);
+  if (slow > 0) setTimeout(answer, slow); else answer();
+  return;
 }
 if (args.includes("--help")) {
   // FAKE_CLAUDE_OLD: a claude from before --permission-prompts existed.
@@ -52,6 +61,14 @@ process.stdin.on("end", () => {
     }
     process.exit(0);
   };
+  if (mode === "tamper") fs.appendFileSync("packet.md", "tampered while the reviewer ran\n");
+  if (mode === "wrapper") {
+    // A child that ignores SIGTERM and holds this process's stdout and stderr open.
+    const child = require("node:child_process").spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], { stdio: ["ignore", "inherit", "inherit"] });
+    fs.writeFileSync(process.env.FAKE_PID_FILE, String(child.pid));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (mode === "timeout") setTimeout(finish, 60000);
   else if (mode === "slow") setTimeout(finish, Number(process.env.FAKE_SLOW_MS || 1500));
   else finish();
@@ -62,7 +79,7 @@ export interface FakeBin {
   readonly dir: string;
   readonly log: string;
   readonly stdinDir: string;
-  /** PATH holding the fakes that exist, a link to node, and the system bin directories. */
+  /** PATH: the scratch bin alone, holding the fakes that exist and a link to node. */
   readonly path: string;
   invocations(): Array<{ name: string; args: string[]; cwd: string; claudecode: string | null; claudeSession: string[] }>;
   stdins(): Buffer[];

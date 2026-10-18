@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { fork, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -530,5 +530,167 @@ describe("probe identity and the skip path (T-536)", () => {
     expect(r.exitCode).toBe(3);
     expect(r.stdout).toContain("Reviewer probe: none available");
     expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+  });
+});
+
+describe("the review's own bytes and the setup's identity (T-536)", () => {
+  it("publishes no completed record when the stored packet changes while the reviewer runs", async () => {
+    extraEnv = { FAKE_CODEX_MODE: "tamper" };
+    const id = await openSetup();
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+    expect(r.exitCode).toBe(3);
+    expect(r.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
+    expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+    expect(recordsOf(id).filter((x) => x.state === "completed")).toEqual([]);
+    const s = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
+    expect(s.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
+  });
+
+  it("a record copied from another setup neither certifies nor counts there", async () => {
+    const a = await openSetup();
+    expect((await handleSetupReviewRun(io(REVIEW_PACKET), { setup: a })).exitCode).toBe(0);
+    const b = await openSetup();
+    const rec = recordsOf(a)[0]!.recordId;
+    mkdirSync(join(setupDir(b), "records"), { recursive: true });
+    spawnSync("/bin/cp", ["-R", join(setupDir(a), "records", rec), join(setupDir(b), "records", rec)]);
+    const s = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: b });
+    expect(s.exitCode).toBe(8);
+    expect(s.stdout).not.toContain("Independent review: approve");
+    const other = REVIEW_PACKET.replace("one-hour", "two-hour");
+    expect((await handleSetupReviewRun(io(other), { setup: b })).exitCode).toBe(0);
+    expect(recordsOf(b).filter((x) => x.setupId === b && x.state === "completed")).toHaveLength(1);
+    expect(recordsOf(b).find((x) => x.recordId !== rec)).toMatchObject({ round: 1 });
+  });
+
+  it("refuses a setup.json whose identity names another setup", async () => {
+    const a = await openSetup();
+    const b = await openSetup();
+    writeFileSync(join(setupDir(b), "setup.json"), readFileSync(join(setupDir(a), "setup.json")));
+    expect((await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: b })).exitCode).toBe(2);
+    expect((await handleSetupReviewRun(io(REVIEW_PACKET), { setup: b })).exitCode).toBe(2);
+    expect(reviews()).toBe(0);
+  });
+
+  it("prints the stop under an unreadable record, byte for byte", async () => {
+    const id = await openSetup();
+    await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id });
+    const rec = recordsOf(id)[0]!.recordId;
+    writeFileSync(join(setupDir(id), "records", rec, "record.json"), "{not json");
+    expect(await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id })).toEqual({
+      exitCode: 8,
+      stdout: `Reviewer probe: codex codex-cli 9.9.9\nIndependent review: record unreadable, invocation ${rec}\n${STOP}\n`,
+    });
+  });
+});
+
+describe("gate and skip write the setup under its lock (T-536)", () => {
+  it("a gate re-probe running beside run --new-cycle keeps the new cycle", async () => {
+    const id = await openSetup();
+    expect((await handleSetupReviewRun(io(REVIEW_PACKET), { setup: id })).exitCode).toBe(0);
+    extraEnv = { FAKE_CODEX_VERSION_SLOW_MS: "1500" };
+    const slowGate = gate(id);
+    extraEnv = {};
+    const other = REVIEW_PACKET.replace("one-hour", "two-hour");
+    expect((await handleSetupReviewRun(io(other), { setup: id, newCycle: true, reason: "Owner adjustment" })).exitCode).toBe(0);
+    expect((await slowGate).exitCode).toBe(0);
+    const setup = JSON.parse(readFileSync(join(setupDir(id), "setup.json"), "utf-8"));
+    expect(setup.cycle).toBe(2);
+    expect(setup.cycleReasons).toEqual({ "2": "Owner adjustment" });
+    expect(setup.probe).toEqual({ backend: "codex", version: "codex-cli 9.9.9" });
+  });
+
+  it("a gate re-probe while the setup's lock is held exits 7 and leaves setup.json alone", async () => {
+    const id = await openSetup();
+    const before = readFileSync(join(setupDir(id), "setup.json"), "utf-8");
+    const held = await acquireProjectLockAsync(join(setupDir(id), "run.lock"));
+    try {
+      expect((await gate(id)).exitCode).toBe(7);
+    } finally {
+      releaseProjectLock(held);
+    }
+    expect(readFileSync(join(setupDir(id), "setup.json"), "utf-8")).toBe(before);
+  });
+
+  it("the owner's skip while the setup's lock is held exits 7 and records nothing", async () => {
+    const id = await openSetup();
+    const before = readFileSync(join(setupDir(id), "setup.json"), "utf-8");
+    const held = await acquireProjectLockAsync(join(setupDir(id), "run.lock"));
+    try {
+      const s = await handleSetupReviewStatus(io(undefined), { setup: id, skipped: true });
+      expect(s.exitCode).toBe(7);
+      expect(s.stdout).not.toContain("skipped at the owner's request");
+    } finally {
+      releaseProjectLock(held);
+    }
+    expect(readFileSync(join(setupDir(id), "setup.json"), "utf-8")).toBe(before);
+  });
+});
+
+describe("a published record is durable before it counts (T-536)", () => {
+  const eio = (): never => { throw Object.assign(new Error("EIO: i/o error, fsync"), { code: "EIO" }); };
+
+  it("a directory sync failure after publishing prints the stop, and the next status reads the failure, never the verdict", async () => {
+    const id = await openSetup();
+    let calls = 0;
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET, { syncDir: () => { if (calls++ === 0) eio(); } }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout).not.toMatch(/Independent review: (approve|revise|reject)/);
+    expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+    expect(recordsOf(id).map((x) => x.state)).toEqual(["failed"]);
+    const s = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
+    expect(s.exitCode).toBe(3);
+    expect(s.stdout).not.toContain("Independent review: approve");
+  });
+
+  it("when no directory sync succeeds, nothing certifies afterwards", async () => {
+    const id = await openSetup();
+    const r = await handleSetupReviewRun(io(REVIEW_PACKET, { syncDir: eio }), { setup: id });
+    expect(r.exitCode).toBe(6);
+    expect(r.stdout.trimEnd().endsWith(STOP)).toBe(true);
+    expect(recordsOf(id).filter((x) => x.state === "completed")).toEqual([]);
+    const s = await handleSetupReviewStatus(io(REVIEW_PACKET), { setup: id });
+    expect(s.stdout).not.toContain("Independent review: approve");
+  });
+});
+
+describe("a run killed inside publication, in fresh processes (T-536)", () => {
+  function worker(mode: "run-pause" | "run" | "status", id: string): { child: ReturnType<typeof fork>; first: Promise<unknown> } {
+    const fixture = join(import.meta.dirname, "fixtures", "setup-review-crash-worker.ts");
+    const child = fork(fixture, [mode, project, store, id, fake.path, REVIEW_PACKET], { execArgv: ["--import", "tsx"], stdio: ["ignore", "ignore", "inherit", "ipc"] });
+    const first = new Promise((resolve, reject) => {
+      child.once("message", resolve);
+      child.once("exit", (code) => reject(new Error(`worker exited ${code} before reporting`)));
+    });
+    return { child, first };
+  }
+
+  it("leaves no record, a stale lock the next run recovers, and exactly one completed retry", async () => {
+    const id = await openSetup();
+    const paused = worker("run-pause", id);
+    expect(await paused.first).toBe("paused");
+    const records = join(setupDir(id), "records");
+    const staged = readdirSync(records).find((n) => n.startsWith(".staging-"))!;
+    expect(existsSync(join(records, staged, "record.json"))).toBe(true);
+    const exited = new Promise((r) => paused.child.once("exit", r));
+    paused.child.kill("SIGKILL");
+    await exited;
+    expect(existsSync(join(setupDir(id), "run.lock"))).toBe(true);
+
+    const status = worker("status", id);
+    expect(await status.first).toMatchObject({ exitCode: 4, stdout: expect.stringContaining(`Independent review: none for revision ${d12(REVIEW_PACKET)}`) });
+    const retry = worker("run", id);
+    expect(await retry.first).toMatchObject({ exitCode: 0 });
+    expect(readdirSync(records).filter((n) => n.startsWith(".staging-"))).toEqual([]);
+    expect(recordsOf(id).filter((x) => x.state === "completed")).toHaveLength(1);
+    expect(existsSync(join(setupDir(id), "run.lock"))).toBe(false);
+  });
+});
+
+describe("the fake reviewers (T-536)", () => {
+  it("puts nothing but the scratch bin on PATH, so an omitted reviewer cannot be found", () => {
+    const only = makeFakeBin(["codex"]);
+    expect(only.path).toBe(only.dir);
+    const found = spawnSync(join(only.dir, "node"), ["-e", "require('node:child_process').execFileSync('claude', ['--version'])"], { env: { PATH: only.path } });
+    expect(found.status).not.toBe(0);
   });
 });

@@ -21,7 +21,9 @@ const saved: Record<string, string | undefined> = {};
 let scratchHome: string;
 beforeAll(async () => {
   scratchHome = await mkdtemp(join(tmpdir(), "t538-s3a1-home-"));
-  for (const k of ["HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]) saved[k] = process.env[k];
+  for (const k of ["HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "TZ"]) saved[k] = process.env[k];
+  // Setup writes local dates; the zone is pinned so the bytes do not depend on the host (the clock inputs are UTC instants too).
+  process.env.TZ = "UTC";
   process.env.HOME = scratchHome;
   process.env.GIT_CONFIG_GLOBAL = join(scratchHome, "gitconfig");
   process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -105,7 +107,7 @@ function clock(iso: string): void {
 describe("a legacy payload (no S3a fields) is byte-identical", () => {
   it("on a fresh apply", async () => {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     const result = await setupApply(root, payload());
     expect(result.exitCode).toBe(0);
     await expect(await capture(root, { apply: result.lines })).toMatchFileSnapshot("./__golden__/t538-s3a1-legacy-fresh.json");
@@ -113,7 +115,7 @@ describe("a legacy payload (no S3a fields) is byte-identical", () => {
 
   it("on an apply interrupted at wiring and finished by resume on a later day", async () => {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     let fired = false;
     setupApplySeams.fault = (p) => {
       if (p === "step:wire:K3" && !fired) {
@@ -124,7 +126,7 @@ describe("a legacy payload (no S3a fields) is byte-identical", () => {
     const first = await setupApply(root, payload());
     expect(first.exitCode).toBe(3);
     setupApplySeams.fault = () => {};
-    clock("2026-10-22T09:00:00");
+    clock("2026-10-22T12:00:00Z");
     const resumed = await setupResume(root, SID);
     expect(resumed.exitCode).toBe(0);
     await expect(await capture(root, { apply: first.lines, resume: resumed.lines })).toMatchFileSnapshot("./__golden__/t538-s3a1-legacy-resumed.json");
@@ -132,7 +134,7 @@ describe("a legacy payload (no S3a fields) is byte-identical", () => {
 
   it("on a restore-planned resolution of an owner edit, then resume", async () => {
     const root = await folder();
-    clock("2026-10-20T12:00:00");
+    clock("2026-10-20T12:00:00Z");
     let fired = false;
     setupApplySeams.fault = (p) => {
       if (p === "step:config" && !fired) {
@@ -148,7 +150,7 @@ describe("a legacy payload (no S3a fields) is byte-identical", () => {
     raw.title = "the owner's title";
     raw.status = "inprogress";
     await writeFile(path, JSON.stringify(raw, null, 2) + "\n");
-    clock("2026-10-21T09:00:00");
+    clock("2026-10-21T12:00:00Z");
     const stopped = await setupResume(root, SID);
     expect(stopped.exitCode).toBe(4);
     const resolved = await setupResolve(root, SID, [{ target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "put it back" }]);

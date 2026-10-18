@@ -3068,11 +3068,16 @@ export function registerSetupVerifyTool(server: McpServer, root: string) {
     description: "Run an establishment ticket's test command; verified completes it and turns its stages on. First line [exit N]; relay the rest verbatim.",
     inputSchema: {
       ticket: z.string().describe("The establishment ticket (T-...)"),
+      resolve: z.enum(["adapter", "leave-off", "stop"]).optional().describe("The owner's answer to an unreadable run"),
+      argv: z.array(z.string()).optional().describe("Adapter command words, run with no shell"),
+      drop: z.array(z.string()).optional().describe("Inherited variables the adapter drops"),
+      ownerWords: z.string().optional().describe("The owner's words; required with resolve"),
+      reopen: z.boolean().optional().describe("Reopen a ticket closed without a result"),
     },
   }, async (args) => {
     try {
       const { handleSetupVerify } = await import("../cli/commands/setup-verify.js");
-      const result = await handleSetupVerify({ cwd: root, env: process.env }, { ticket: args.ticket });
+      const result = await handleSetupVerify({ cwd: root, env: process.env }, args);
       return { content: [{ type: "text" as const, text: `[exit ${result.exitCode}]\n${result.stdout}` }], ...(result.exitCode !== 0 ? { isError: true } : {}) };
     } catch (err: unknown) {
       return { content: [{ type: "text" as const, text: `[exit 2]\nSetup-verify refused: ${err instanceof Error ? err.message : String(err)}\n` }], isError: true };

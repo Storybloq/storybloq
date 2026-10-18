@@ -10,8 +10,14 @@
  * everything and takes a digest; the command runs outside the lock; the
  * second checks everything again and writes only when the digest is the same.
  *
- * Exit codes: 0 verified; 1 failed or no tests; 2 refused; 4 evidence
- * unreadable; 5 stale, or the process group's cleanup unconfirmed.
+ * The same command records the owner's answer to an unreadable run, in one
+ * hold: an adapter (an argv the next run uses, and the inherited variables it
+ * drops), leave-off (the ticket closes, the component is left off, the stages
+ * stay as they are) or stop (the decision only). `--reopen` reopens a ticket
+ * closed without a result by a writer outside the guard.
+ *
+ * Exit codes: 0 verified or recorded; 1 failed or no tests; 2 refused; 4
+ * evidence unreadable; 5 stale, or the process group's cleanup unconfirmed.
  */
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -20,6 +26,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   invalidateResolutionWriteContext,
   prepareConfigWrite,
+  prepareTicketWrite,
   runTransactionUnlocked,
   withProjectLock,
 } from "./project-loader.js";
@@ -29,7 +36,7 @@ import { checkpointState, hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
 import type { CompletionGuardOptions } from "./claims.js";
-import { parseSetupMeta, type SetupItemMeta } from "./setup-meta.js";
+import { parseSetupMeta, VERIFICATION_DROPPABLE, type AdapterDecision, type SetupItemMeta, type VerificationDecision, type VerificationDroppable } from "./setup-meta.js";
 import { VERIFICATION_RESULT_AUTHORITY } from "./setup-verification-guard.js";
 import { readRecord, recordActivation, type RecordComponent, type SetupVerificationRecord } from "./setup-verification-record.js";
 import { establishStage, SERVES, type StagesConfig } from "./verification-activation.js";
@@ -47,8 +54,16 @@ export interface SetupVerifyResult {
   readonly lines: string[];
 }
 
+export type VerificationResolution = "adapter" | "leave-off" | "stop";
+
 export interface SetupVerifyInput {
   readonly ticket: string;
+  /** The owner's answer to an unreadable run; `ownerWords` is required with it. */
+  readonly resolve?: VerificationResolution;
+  readonly argv?: readonly string[];
+  readonly drop?: readonly string[];
+  readonly ownerWords?: string;
+  readonly reopen?: boolean;
 }
 
 export interface SetupVerifyOptions {
@@ -139,7 +154,19 @@ export function workdirOf(root: string, workdir: string): string {
  * states, the record, the two served stages, the decision, the ownership
  * evidence and the environment the command runs with.
  */
-async function check(root: string, state: ProjectState, ref: string, env: Readonly<Record<string, string>>): Promise<Checked> {
+interface Identified {
+  readonly ticket: Ticket;
+  readonly meta: Meta;
+  readonly record: SetupVerificationRecord;
+  readonly component: RecordComponent;
+}
+
+/**
+ * What every operation checks first: the ticket is an establishment ticket,
+ * no setup is unfinished, it is the unique non-superseded owner of its key,
+ * and its spec matches the record's component.
+ */
+function identify(state: ProjectState, ref: string): Identified {
   const ticket = findTicket(state, ref);
   const parsed = parseSetupMeta("ticket", ticket);
   if (parsed.kind === "invalid") throw refuse(`${label(ticket)}'s setup field does not read: ${parsed.reason}.`);
@@ -173,27 +200,46 @@ async function check(root: string, state: ProjectState, ref: string, env: Readon
     ["wrapper", component.test.wrapper, spec.wrapper],
   ] as const).find(([, a, b]) => a !== b);
   if (mismatch) throw refuse(`${label(ticket)}'s verification spec and the setup verification record disagree on the ${mismatch[0]} of ${spec.component} (${String(mismatch[2])} against ${String(mismatch[1])}).`);
-  if (component.test.status === "verified" || component.test.status === "left-off") {
-    throw refuse(`${spec.component}'s test stage is already ${component.test.status === "verified" ? "verified" : "left off"}.`);
-  }
+  return { ticket, meta, record, component };
+}
 
+/** A component already verified or left off is terminal, whichever ticket asks; so is a ticket that is complete. */
+function assertOpen({ ticket, meta, component }: Identified): void {
+  const status = component.test!.status;
+  if (status === "verified" || status === "left-off") {
+    throw refuse(`${meta.verification.spec.component}'s test stage is already ${status === "verified" ? "verified" : "left off"}.`);
+  }
   if (ticket.status === "complete") {
     throw refuse(meta.verification.result
       ? `${label(ticket)} is already ${meta.verification.result.status === "verified" ? "verified" : "left off"}.`
       : `${label(ticket)} is complete without a verification result; reopen it with storybloq setup-verify --ticket ${label(ticket)} --reopen.`);
   }
-  workdirOf(root, spec.workdir);
-  const prerequisites = closure(state, ticket);
+}
 
-  let guard: CompletionGuardOptions;
+async function ownership(root: string): Promise<CompletionGuardOptions> {
   try {
-    guard = await collectCompletionOwnership(root);
+    return await collectCompletionOwnership(root);
   } catch (err) {
     if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
     throw refuse(`ownership cannot be verified: ${err.unreadable ? err.message : `the session store (.story/sessions) could not be read (${err.message}).`}`);
   }
+}
+
+/** Whether this caller may complete the ticket: the authority a run, an adapter, leave-off and stop all need. */
+function assertMayComplete(ticket: Ticket, guard: CompletionGuardOptions): void {
   const decision = authoriseStatusChange(ticket, { ...ticket, status: "complete" } as Ticket, guard, { claimFreeReopen: false }, label(ticket));
   if (!decision.ok) throw refuse(decision.reason);
+}
+
+async function check(root: string, state: ProjectState, ref: string, env: Readonly<Record<string, string>>): Promise<Checked> {
+  const found = identify(state, ref);
+  assertOpen(found);
+  const { ticket, meta, record, component } = found;
+  const spec = meta.verification.spec;
+  workdirOf(root, spec.workdir);
+  const prerequisites = closure(state, ticket);
+  const guard = await ownership(root);
+  assertMayComplete(ticket, guard);
 
   const digest = createHash("sha256").update(JSON.stringify({
     spec,
@@ -235,6 +281,17 @@ export function evidenceEnv(runner: TestRunner, base: NodeJS.ProcessEnv, junitPa
   }
   return { env };
 }
+
+/** The caller's environment without the variables the owner's adapter drops whole. */
+function withoutDropped(base: NodeJS.ProcessEnv, adapter: AdapterDecision | undefined): NodeJS.ProcessEnv {
+  if (adapter === undefined) return base;
+  const env = { ...base };
+  for (const name of adapter.drop) delete env[name];
+  return env;
+}
+
+/** The one inherited variable each runner's evidence option lives in. */
+const EVIDENCE_VARIABLE: Partial<Record<TestRunner, VerificationDroppable>> = { pytest: "PYTEST_ADDOPTS", go: "GOFLAGS" };
 
 function tailLines(tail: string): string[] {
   const lines = tail.replace(/\r\n?/g, "\n").split("\n");
@@ -300,6 +357,16 @@ function stale(ticket: Ticket, why: string): SetupVerifyResult {
 
 export async function setupVerify(root: string, input: SetupVerifyInput, options: SetupVerifyOptions = {}): Promise<SetupVerifyResult> {
   const absRoot = resolve(root);
+  const shape = inputShape(input);
+  if (shape !== null) return { exitCode: 2, lines: [`Setup-verify refused: ${shape}`] };
+  if (input.resolve !== undefined || input.reopen === true) {
+    try {
+      return await record(absRoot, input, options);
+    } catch (err) {
+      if (err instanceof Refusal) return { exitCode: 2, lines: err.lines };
+      throw err;
+    }
+  }
   const junitDir = await mkdtemp(join(tmpdir(), "storybloq-verify-"));
   try {
     const junitPath = join(junitDir, "junit.xml");
@@ -314,7 +381,8 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
         const pre = findTicket(state, input.ticket);
         const meta = parseSetupMeta("ticket", pre);
         const runner = meta.kind === "item" ? meta.meta.verification?.spec.runner : undefined;
-        const built = runner === undefined ? { env: {} } : evidenceEnv(runner, options.env ?? process.env, junitPath);
+        const adapter = meta.kind === "item" ? meta.meta.verification?.decision?.adapter : undefined;
+        const built = runner === undefined ? { env: {} } : evidenceEnv(runner, withoutDropped(options.env ?? process.env, adapter), junitPath);
         if ("incompatible" in built) incompatible = built.incompatible;
         else env = built.env;
         // The report path differs on every run, so the digest reads it as a placeholder.
@@ -330,10 +398,12 @@ export async function setupVerify(root: string, input: SetupVerifyInput, options
     if (incompatible !== null) return unreadable(checked.ticket, spec.runner, incompatible, "");
 
     // Outside the lock: the command in its own process group, read as it streams.
+    // The owner's adapter runs its argv with no shell; otherwise the spec's command runs through the shell.
+    const adapter = checked.meta.verification.decision?.adapter;
     const scanner = new EvidenceScanner();
     const run = await runInGroup({
-      command: "/bin/sh",
-      args: ["-c", spec.command],
+      command: adapter ? adapter.argv[0]! : "/bin/sh",
+      args: adapter ? adapter.argv.slice(1) : ["-c", spec.command],
       cwd: workdirOf(absRoot, spec.workdir),
       env: env!,
       timeoutMs: spec.timeoutMs,
@@ -378,4 +448,132 @@ function unreadable(ticket: Ticket, runner: TestRunner, reason: string, tail: st
       ...tailLines(tail),
     ],
   };
+}
+
+/** The flags that go together, checked before the lock: null when the input is well formed. */
+function inputShape(input: SetupVerifyInput): string | null {
+  const resolving = input.resolve !== undefined;
+  if (resolving && input.reopen === true) return "--resolve and --reopen do not go together.";
+  if (resolving && !["adapter", "leave-off", "stop"].includes(input.resolve!)) return `--resolve takes adapter, leave-off or stop, not ${input.resolve}.`;
+  if (resolving && (input.ownerWords === undefined || input.ownerWords.trim() === "")) return "a resolution records the owner's words: pass --owner-words.";
+  if (!resolving && input.ownerWords !== undefined) return "--owner-words goes with --resolve.";
+  if (input.resolve !== "adapter" && (input.argv !== undefined || input.drop !== undefined)) return "--argv and --drop go with --resolve adapter.";
+  if (input.resolve === "adapter") {
+    if (input.argv === undefined || input.argv.length === 0) return "an adapter needs a command: pass --argv with at least one word.";
+    if (input.argv.some((a) => a === "")) return "an adapter's argv has an empty word.";
+    const unknown = (input.drop ?? []).find((d) => !(VERIFICATION_DROPPABLE as readonly string[]).includes(d));
+    if (unknown !== undefined) return `--drop names ${unknown}; an adapter drops only ${VERIFICATION_DROPPABLE.join(" or ")}.`;
+  }
+  return null;
+}
+
+/**
+ * A resolution or a reopen: one hold, one transaction. The decision goes on
+ * both the ticket (`verification.decision`) and the record's component
+ * (`decision`, the same object).
+ */
+async function record(root: string, input: SetupVerifyInput, options: SetupVerifyOptions): Promise<SetupVerifyResult> {
+  let result: SetupVerifyResult | null = null;
+  await withProjectLock(root, { strict: true, deadlineMs: options.lockDeadlineMs }, async ({ state }) => {
+    const found = identify(state, input.ticket);
+    result = input.reopen === true
+      ? await reopen(root, found)
+      : await resolveWith(root, state, found, input, options.env ?? process.env);
+  });
+  return result!;
+}
+
+async function resolveWith(root: string, state: ProjectState, found: Identified, input: SetupVerifyInput, env: NodeJS.ProcessEnv): Promise<SetupVerifyResult> {
+  assertOpen(found);
+  const { ticket, meta, record } = found;
+  const spec = meta.verification.spec;
+  workdirOf(root, spec.workdir);
+  const kind = input.resolve!;
+  const at = new Date().toISOString();
+  let adapter: AdapterDecision | undefined;
+  if (kind === "adapter") {
+    const drop = [...new Set(input.drop ?? [])] as VerificationDroppable[];
+    const own = EVIDENCE_VARIABLE[spec.runner];
+    const unrelated = drop.find((d) => d !== own);
+    if (unrelated !== undefined) throw refuse(`--drop names ${unrelated}, which ${spec.runner} does not read; ${own === undefined ? `a ${spec.runner} adapter drops nothing` : `a ${spec.runner} adapter drops only ${own}`}.`);
+    if (drop.length > 0 && !("incompatible" in evidenceEnv(spec.runner, env, "<report>"))) {
+      throw refuse(`--drop ${drop.join(" ")}: ${drop.join(" ")} does not conflict with the evidence options here, so the unreadable run did not come from it; drop nothing.`);
+    }
+    adapter = { argv: [...input.argv!], drop };
+  }
+  const decision: VerificationDecision = { kind, ...(adapter ? { adapter } : {}), ownerWords: input.ownerWords!.trim(), at };
+
+  const guard = await ownership(root);
+  assertMayComplete(ticket, guard);
+
+  const setup = { ...(ticket as Ticket & { setup: Record<string, unknown> }).setup };
+  const leaveOff = kind === "leave-off";
+  setup.verification = { ...meta.verification, decision, ...(leaveOff ? { result: { status: "left-off", at } } : {}) };
+  const nextRecord: SetupVerificationRecord = {
+    ...record,
+    components: record.components.map((c) => (c.id !== spec.component ? c : {
+      ...c,
+      ...(leaveOff ? { test: { ...c.test!, status: "left-off" as const } } : {}),
+      decision,
+    })),
+  };
+
+  let ticketOp: Awaited<ReturnType<typeof prepareTicketWrite>>;
+  if (leaveOff) {
+    const next = { ...ticket, status: "complete", completedDate: localDateOf(new Date()), setup } as Ticket;
+    const authorised = authoriseStatusChange(ticket, next, guard, { claimFreeReopen: false }, label(ticket));
+    if (!authorised.ok) throw refuse(authorised.reason);
+    const completion = await prepareCompletionWrite(state, authorised.ticket, root, { verificationAuthority: VERIFICATION_RESULT_AUTHORITY });
+    if (completion.kind === "checkpoint-blocked") throw refuse(describeCheckpointBlock(label(ticket), completion.checkpoints));
+    ticketOp = completion.op;
+  } else {
+    ticketOp = await prepareTicketWrite({ ...ticket, setup } as Ticket, root, { verificationAuthority: VERIFICATION_RESULT_AUTHORITY });
+  }
+  // The stages are not touched: leave-off turns nothing on, and an adapter or stop changes only the decision.
+  const nextConfig = { ...state.config, setupVerification: nextRecord } as Config;
+  const ops = [ticketOp, await prepareConfigWrite(nextConfig, root)];
+  await runTransactionUnlocked(root, ops.map((o) => ({ op: "write" as const, ...o })));
+  invalidateResolutionWriteContext(root);
+
+  if (kind === "leave-off") return { exitCode: 0, lines: [`Left off: ${spec.component} test; ${label(ticket)} is complete and the stages are unchanged.`] };
+  if (kind === "stop") return { exitCode: 0, lines: [`Decision recorded for ${label(ticket)}: stop. Nothing else changed.`] };
+  return { exitCode: 0, lines: [adapterLine(ticket, spec.runner, spec.workdir, adapter!, env)] };
+}
+
+/** What the next run will do: the argv, and exactly what each dropped variable held and what replaces it. */
+function adapterLine(ticket: Ticket, runner: TestRunner, workdir: string, adapter: AdapterDecision, env: NodeJS.ProcessEnv): string {
+  const replaced = evidenceEnv(runner, withoutDropped(env, adapter), "<report>");
+  const drops = adapter.drop.map((name) => {
+    const held = env[name];
+    const now = "env" in replaced ? replaced.env[name] : undefined;
+    return `${name} (${held === undefined ? "not set" : JSON.stringify(held)}) is dropped and replaced by ${now === undefined ? "nothing" : `${name}=${now}`}`;
+  });
+  return `Decision recorded for ${label(ticket)}: adapter. The next storybloq setup-verify --ticket ${label(ticket)} runs ${JSON.stringify(adapter.argv)} in ${workdir} with no shell${drops.length > 0 ? `; ${drops.join("; ")}` : ""}.`;
+}
+
+/**
+ * The recovery for a ticket a writer outside the guard closed without a
+ * result. With claim material on the ticket, ownership is checked against it
+ * as it stands; claim-free, the reopen is this command's only for a
+ * canonical establishment ticket that is complete with no result and whose
+ * component is still pending (v3 note 2).
+ */
+async function reopen(root: string, found: Identified): Promise<SetupVerifyResult> {
+  const { ticket, meta, component } = found;
+  const spec = meta.verification.spec;
+  if (meta.verification.result) throw refuse(`${label(ticket)} is already ${meta.verification.result.status === "verified" ? "verified" : "left off"}.`);
+  const status = component.test!.status;
+  if (status !== "pending") throw refuse(`${spec.component}'s test stage is ${status === "verified" ? "already verified" : status === "left-off" ? "already left off" : status}, not pending.`);
+  if (ticket.status !== "complete") throw refuse(`${label(ticket)} is ${ticket.status}, not complete; there is nothing to reopen.`);
+
+  const guard = await ownership(root);
+  const setup = { ...(ticket as Ticket & { setup: Record<string, unknown> }).setup };
+  setup.verification = { ...meta.verification, reopened: [...(meta.verification.reopened ?? []), { at: new Date().toISOString() }] };
+  const next = { ...ticket, status: "open", completedDate: null, setup } as Ticket;
+  const authorised = authoriseStatusChange(ticket, next, guard, { claimFreeReopen: true }, label(ticket));
+  if (!authorised.ok) throw refuse(authorised.reason);
+  const op = await prepareTicketWrite(authorised.ticket, root, { verificationAuthority: VERIFICATION_RESULT_AUTHORITY });
+  await runTransactionUnlocked(root, [{ op: "write" as const, ...op }]);
+  invalidateResolutionWriteContext(root);
+  return { exitCode: 0, lines: [`Reopened: ${label(ticket)} is open; run storybloq setup-verify --ticket ${label(ticket)}.`] };
 }

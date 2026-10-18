@@ -5618,11 +5618,24 @@ export function registerSetupVerifyCommand(yargs: Argv): Argv {
   return yargs.command(
     "setup-verify",
     "Run an establishment ticket's test command; a verified run completes it and turns its stages on",
-    (y) => y.option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" }),
+    (y) => y
+      .option("ticket", { type: "string", demandOption: true, describe: "The establishment ticket (T-...)" })
+      .option("resolve", { type: "string", choices: ["adapter", "leave-off", "stop"], describe: "Record the owner's answer to an unreadable run" })
+      .option("argv", { type: "string", array: true, describe: "The adapter's command, one word per value, run with no shell" })
+      .option("drop", { type: "string", array: true, describe: "Inherited variables the adapter drops (PYTEST_ADDOPTS, GOFLAGS)" })
+      .option("owner-words", { type: "string", describe: "The owner's words for the resolution" })
+      .option("reopen", { type: "boolean", describe: "Reopen a ticket closed without a verification result" }),
     async (argv) => {
       const { handleSetupVerify } = await import("./commands/setup-verify.js");
       try {
-        const result = await handleSetupVerify({ cwd: process.cwd(), env: process.env }, { ticket: argv.ticket as string });
+        const result = await handleSetupVerify({ cwd: process.cwd(), env: process.env }, {
+          ticket: argv.ticket as string,
+          resolve: argv.resolve as "adapter" | "leave-off" | "stop" | undefined,
+          argv: argv.argv as string[] | undefined,
+          drop: argv.drop as string[] | undefined,
+          ownerWords: argv["owner-words"] as string | undefined,
+          reopen: argv.reopen as boolean | undefined,
+        });
         process.stdout.write(result.stdout);
         process.exitCode = result.exitCode;
       } catch (err: unknown) {

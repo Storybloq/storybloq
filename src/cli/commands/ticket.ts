@@ -537,6 +537,9 @@ async function resolveCompletionGuard(
     return await collectCompletionOwnership(root);
   } catch (err) {
     if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
+    if (err.unreadable) {
+      throw new CliValidationError("invalid_input", `Cannot verify ticket ownership: ${err.message} Re-run with --force to complete anyway.`);
+    }
     // An unreadable or malformed session store is NOT proof that no session is
     // running. Treating it as an empty veto set would let a completion clear a
     // live session's claim on email evidence alone, which is the exact ISS-784

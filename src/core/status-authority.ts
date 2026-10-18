@@ -20,13 +20,22 @@ import type { ClaimEpoch } from "../autonomous/claim-reconciliation.js";
 import { clearClaimOnComplete, guardCompletedTicketMutation, hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
 import { clearSameSessionEarmark } from "./earmarks.js";
 
-/** The session store could not be read: no proof that no session is running. */
-export class CompletionOwnershipUnavailable extends Error {}
+/**
+ * The session store could not be read: no proof that no session is running.
+ * `unreadable` is set when the scan worked but an entry that may hold this
+ * ticket's epoch could not be read; its message names that entry (ISS-1402).
+ */
+export class CompletionOwnershipUnavailable extends Error {
+  constructor(message: string, readonly unreadable = false) {
+    super(message);
+  }
+}
 
 /**
  * The caller's ownership evidence for a status change: its git identity and
- * the epoch of the local active session, if any. An unreadable session store
- * throws `CompletionOwnershipUnavailable` rather than reading as "none".
+ * the epoch of the local active session, if any. A scan that fails, or an
+ * entry it cannot read (which may hold this ticket's epoch), throws
+ * `CompletionOwnershipUnavailable` rather than reading as "none" (ISS-1402).
  */
 export async function collectCompletionOwnership(root: string): Promise<CompletionGuardOptions> {
   let completingUser: string | null = null;
@@ -38,9 +47,12 @@ export async function collectCompletionOwnership(root: string): Promise<Completi
   }
 
   const activeEpochs: ClaimEpoch[] = [];
+  let unreadable: string | null = null;
   try {
-    const { findActiveSessionFull } = await import("../autonomous/session.js");
-    const active = findActiveSessionFull(root);
+    const { findActiveSessionDetailed, describeUnreadableSessionEntry } = await import("../autonomous/session.js");
+    const scan = findActiveSessionDetailed(root);
+    if (scan.unreadable.length > 0) unreadable = describeUnreadableSessionEntry(scan.unreadable[0]!);
+    const active = scan.match;
     // Only status "active" records veto. Archived and superseded ones retain a
     // stale epoch for the ticket forever, and scanning them would block every
     // later legitimate claimant.
@@ -51,6 +63,8 @@ export async function collectCompletionOwnership(root: string): Promise<Completi
   } catch (err) {
     throw new CompletionOwnershipUnavailable(err instanceof Error ? err.message : String(err));
   }
+  // An entry the scan could not read may be the session holding this ticket: no veto set can be trusted.
+  if (unreadable !== null) throw new CompletionOwnershipUnavailable(unreadable, true);
 
   return { completingUser, activeEpochs };
 }

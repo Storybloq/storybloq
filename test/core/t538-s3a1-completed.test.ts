@@ -5,7 +5,7 @@
  * states a status, and restored with its date.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
-import { mkdtemp, mkdir, readdir, rm, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, rm, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import { parseSetupMeta } from "../../src/core/setup-meta.js";
 import { retireCheckpoint } from "../../src/core/checkpoint-lifecycle.js";
 import { parseOwnerCheckpoint } from "../../src/core/owner-checkpoint.js";
 import { setupPaths } from "../../src/core/setup-review.js";
+import { handleTicketUpdate } from "../../src/cli/commands/ticket.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -359,5 +360,73 @@ describe("restore-planned meets the ordinary lifecycle authorisation (review S3a
     } finally {
       await rm(join(scratchHome, "gitconfig"), { force: true });
     }
+  });
+});
+
+describe("an unreadable session store refuses claim-bound completion (ISS-1402)", () => {
+  const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  async function finished(): Promise<string> {
+    const root = await folder();
+    clock("2026-10-20T12:00:00Z");
+    expect((await setupApply(root, payload())).exitCode).toBe(0);
+    vi.useRealTimers();
+    return root;
+  }
+  async function damage(root: string, how: "malformed" | "unreadable"): Promise<void> {
+    const dir = join(root, ".story", "sessions", SESSION_ID);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "state.json"), how === "malformed" ? "{ not json" : JSON.stringify({ status: "active" }));
+    if (how === "unreadable") await chmod(join(dir, "state.json"), 0o000);
+  }
+  async function own<T>(fn: () => Promise<T>): Promise<T> {
+    await writeFile(join(scratchHome, "gitconfig"), "[user]\n\temail = sam@example.com\n");
+    try {
+      return await fn();
+    } finally {
+      await rm(join(scratchHome, "gitconfig"), { force: true });
+    }
+  }
+  const claimed = (r: Record<string, unknown>) => { r.claim = { user: "sam@example.com", branch: "main", since: "2026-10-20" }; };
+
+  for (const how of ["malformed", "unreadable"] as const) {
+    it(`ticket complete refuses a claim-only completion over a ${how} session entry, naming it; --force still bypasses`, async () => {
+      const root = await finished();
+      await editTicket(root, "T-002", claimed);
+      await damage(root, how);
+      const before = await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8");
+      await own(async () => {
+        await expect(handleTicketUpdate("T-002", { status: "complete" }, "json", root)).rejects.toThrow(
+          new RegExp(`^Cannot verify ticket ownership: A session directory that may hold the active or compact-pending session could not be read: .*${SESSION_ID}.* Re-run with --force to complete anyway\\.$`, "s"));
+        expect(await readFile(join(root, ".story", "tickets", "T-002.json"), "utf-8")).toBe(before);
+        await handleTicketUpdate("T-002", { status: "complete" }, "json", root, true);
+      });
+      expect((await ticketFile(root, "T-002")).status).toBe("complete");
+      await chmod(join(root, ".story", "sessions", SESSION_ID, "state.json"), 0o644);
+    });
+
+    it(`restore-planned refuses a claim-bound completion over a ${how} session entry, writing nothing`, async () => {
+      const root = await folder();
+      clock("2026-10-20T12:00:00Z");
+      faultOnce("step:config");
+      expect((await setupApply(root, payload())).exitCode).toBe(3);
+      setupApplySeams.fault = () => {};
+      await editTicket(root, "T-001", (r) => { r.status = "inprogress"; r.completedDate = null; claimed(r); });
+      expect((await setupResume(root, SID)).exitCode).toBe(4);
+      await damage(root, how);
+      const before = await readFile(join(root, ".story", "tickets", "T-001.json"), "utf-8");
+      const result = await own(() => setupResolve(root, SID, [{ target: "K2 (T-001)", resolution: "restore-planned", ownerWords: "it is built" }]));
+      expect(result.exitCode).toBe(2);
+      expect(result.lines.at(-1)).toMatch(new RegExp(`^Setup refused: K2 \\(T-001\\): restore-planned refused: ownership cannot be verified: A session directory that may hold .*${SESSION_ID}`, "s"));
+      expect(await readFile(join(root, ".story", "tickets", "T-001.json"), "utf-8")).toBe(before);
+      await chmod(join(root, ".story", "sessions", SESSION_ID, "state.json"), 0o644);
+    });
+  }
+
+  it("a healthy store completes a claim-only ticket as before", async () => {
+    const root = await finished();
+    await editTicket(root, "T-002", claimed);
+    await own(() => handleTicketUpdate("T-002", { status: "complete" }, "json", root));
+    const done = await ticketFile(root, "T-002");
+    expect([done.status, "claim" in done]).toEqual(["complete", false]);
   });
 });

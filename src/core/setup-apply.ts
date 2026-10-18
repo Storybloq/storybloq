@@ -59,7 +59,7 @@ import { partitionByActionability, recommend, ticketCompletion } from "./recomme
 import { hasOwnerCheckpoint } from "./owner-checkpoint.js";
 import { describeCheckpointBlock, prepareCompletionWrite } from "./checkpoint-evidence.js";
 import { authoriseStatusChange, collectCompletionOwnership, CompletionOwnershipUnavailable } from "./status-authority.js";
-import type { CompletionGuardOptions } from "./claims.js";
+import { hasClaimMaterial, type CompletionGuardOptions } from "./claims.js";
 import { parseSetupMeta } from "./setup-meta.js";
 import { classify as classifyReview, digest12, loadRecords, readSetup, setupPaths, SETUP_ID_PATTERN } from "./setup-review.js";
 import {
@@ -1891,18 +1891,25 @@ async function resolveUnderLock(root: string, lr: LoadResult, setupId: string, r
           const planned = plannedItems(plan).find((x) => x.item.key === f.ref.key)!;
           const current = ticket(f.ref.id!);
           let next = r.resolution === "restore-planned" ? restoredTicket(plan, planned, current, progress.note.createdDate) : current;
-          if (next.status !== current.status) {
-            try {
-              ownership ??= await collectCompletionOwnership(root);
-            } catch (err) {
-              if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
-              return `${r.target}: restore-planned changes its status, and ownership cannot be verified: local session state could not be read (${err.message}).`;
+          // Every restore that writes complete work, or takes work out of complete, is a lifecycle write.
+          if (JSON.stringify(next) !== JSON.stringify(current) && (next.status === "complete" || current.status === "complete")) {
+            // Evidence is gathered when a verdict needs it, as the ticket updater does: a reopen, or claim material.
+            const needsOwnership = (current.status === "complete" && next.status !== "complete") || hasClaimMaterial(next);
+            let guard: CompletionGuardOptions = { completingUser: null, activeEpochs: [] };
+            if (needsOwnership) {
+              try {
+                guard = ownership ??= await collectCompletionOwnership(root);
+              } catch (err) {
+                if (!(err instanceof CompletionOwnershipUnavailable)) throw err;
+                return `${r.target}: restore-planned refused: ownership cannot be verified: ${err.unreadable ? err.message : `local session state could not be read (${err.message}).`}`;
+              }
             }
-            // The setup's own planned open may be restored on a claim-free ticket; any claim must be the caller's.
-            const decision = authoriseStatusChange(current, next, ownership, { claimFreeReopen: true }, label(current));
+            // claimFreeReopen holds only here: the owner's own restore-planned answer, during this unfinished setup,
+            // restoring the setup's planned open. The ticket CLI keeps --force for a claim-free reopen (ISS-981).
+            const decision = authoriseStatusChange(current, next, guard, { claimFreeReopen: true }, label(current));
             if (!decision.ok) return `${r.target}: restore-planned refused: ${decision.reason}`;
             next = decision.ticket;
-            if (next.status === "complete") completing.set(next.id, r.target);
+            if (next.status === "complete" && current.status !== "complete") completing.set(next.id, r.target);
           }
           if (r.resolution === "restore-planned") tickets.set(next.id, next);
           baseline(step, `ticket:${next.id}`, ownedDigest.ticket(next, plannedOf(planned)));

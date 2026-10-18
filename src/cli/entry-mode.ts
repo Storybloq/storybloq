@@ -14,12 +14,17 @@ export type EntryMode =
   | { readonly kind: "mcp" | "board"; readonly deprecatedPrefix: readonly string[] };
 
 export function resolveEntryMode(userArgs: readonly string[]): EntryMode {
-  if (userArgs.includes("--board-mcp")) return { kind: "board", deprecatedPrefix: [] };
-  if (userArgs.includes("--mcp")) return { kind: "mcp", deprecatedPrefix: [] };
+  let i = 0;
+  while (i < userArgs.length && COMPAT_PREFIX_FLAGS.has(userArgs[i] as string)) i++;
+  const deprecatedPrefix = userArgs.slice(0, i);
+  if (userArgs[i] === "--mcp") return { kind: "mcp", deprecatedPrefix };
+  if (userArgs[i] === "--board-mcp") return { kind: "board", deprecatedPrefix };
   return { kind: "cli" };
 }
 
 /** The stderr line for a server selector that was not the first argument, or null. */
 export function entryDeprecationLine(mode: EntryMode): string | null {
-  return null;
+  if (mode.kind === "cli" || mode.deprecatedPrefix.length === 0) return null;
+  const selector = mode.kind === "mcp" ? "--mcp" : "--board-mcp";
+  return `storybloq: put ${selector} first; the arguments before it (${mode.deprecatedPrefix.join(" ")}) are deprecated\n`;
 }
